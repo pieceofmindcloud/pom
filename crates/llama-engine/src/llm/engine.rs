@@ -128,6 +128,17 @@ enum MtpObserve<'a> {
     Skip,
 }
 
+/// The MTP mode a load asks the fit for: none, VRAM (which the fit may still
+/// turn into host memory), or host memory from the start when the deployment
+/// placed MTP there.
+fn requested_mtp_fit_mode(cfg: &EngineConfig) -> MtpFitMode {
+    match (cfg.mtp, cfg.mtp_placement) {
+        (false, _) => MtpFitMode::Disabled,
+        (true, crate::MtpPlacement::Ram) => MtpFitMode::Ram,
+        (true, _) => MtpFitMode::Vram,
+    }
+}
+
 impl LlmEngine {
     /// Escolhe o modelo que pode respaldar o contexto MTP.
     ///
@@ -194,15 +205,7 @@ impl LlmEngine {
             }
         }
 
-        let vram_plan = fit_plan(
-            model_path,
-            cfg,
-            if cfg.mtp {
-                MtpFitMode::Vram
-            } else {
-                MtpFitMode::Disabled
-            },
-        )?;
+        let vram_plan = fit_plan(model_path, cfg, requested_mtp_fit_mode(cfg))?;
         let vram_loaded = LoadedModel::load(model_path, &vram_plan)?;
         let mut loaded = Some(vram_loaded.clone());
         let mut engine = Self::from_loaded(
@@ -588,15 +591,7 @@ impl LlmEngine {
     #[allow(dead_code)]
     pub fn pool(model_path: &str, cfg: &EngineConfig, n: usize) -> Result<Vec<Self>> {
         let n = n.max(1);
-        let plan = fit_plan(
-            model_path,
-            cfg,
-            if cfg.mtp {
-                MtpFitMode::Vram
-            } else {
-                MtpFitMode::Disabled
-            },
-        )?;
+        let plan = fit_plan(model_path, cfg, requested_mtp_fit_mode(cfg))?;
         let loaded = LoadedModel::load(model_path, &plan)?;
         let mtp_unavailable_reason = plan.mtp_unavailable_reason.clone();
         let mtp_loaded =

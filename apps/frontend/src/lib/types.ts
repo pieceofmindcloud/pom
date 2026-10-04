@@ -1919,6 +1919,8 @@ export interface DeployLoadDistribution {
  * derived from the live runtime context and is read from `/v1/models`; there
  * is no absolute output-capacity knob in this deployment shape.
  */
+export type MtpPlacement = "auto" | "vram" | "ram";
+
 export interface RuntimeParams {
   /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
   inference_mode: InferenceMode;
@@ -1966,6 +1968,8 @@ export interface RuntimeParams {
   mtp_min_probability: number;
   /** Permite o recuo do MTP para pesos e cache em RAM quando a VRAM falhar. */
   mtp_cpu_fallback_enabled?: boolean;
+  /** Where the MTP block goes: with the model when it all fits (auto), always in VRAM, or always in RAM. */
+  mtp_placement?: MtpPlacement;
   unload_if_idle?: boolean;
   idle_minutes?: number;
 }

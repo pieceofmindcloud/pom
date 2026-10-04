@@ -92,6 +92,7 @@ pub(crate) fn engine_config_from_node(
         need_embeddings,
         mtp: cfg.mtp_effective(),
         mtp_cpu_fallback_enabled: cfg.mtp_cpu_fallback_enabled,
+        mtp_placement: cfg.mtp_placement,
         rs_seq_window,
         moe_external_executor,
         moe_external_executor_layers,
@@ -298,6 +299,9 @@ pub struct NodeConfig {
     /// o operador pode desligar o recuo se a medição local não compensar.
     #[serde(default = "default_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
+    /// Onde o bloco MTP fica: automático, sempre na VRAM ou sempre na RAM.
+    #[serde(default)]
+    pub mtp_placement: llama_engine::MtpPlacement,
     /// Descarrega os pesos quando este peer fica ocioso.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -376,6 +380,7 @@ impl NodeConfig {
             mtp_draft_tokens: p.mtp_draft_tokens,
             mtp_min_probability: p.mtp_min_probability,
             mtp_cpu_fallback_enabled: p.mtp_cpu_fallback_enabled,
+            mtp_placement: p.mtp_placement,
             unload_if_idle: p.unload_if_idle,
             idle_minutes: p.idle_minutes,
         }
@@ -2226,6 +2231,7 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

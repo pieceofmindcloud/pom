@@ -532,6 +532,23 @@ its compute buffers. Reserving only the KV let the fit fill that card, and the d
 failed with `cudaMalloc failed: out of memory` on its compute buffers and MTP
 was dropped. When the reserve does not fit without taking layers from the main
 model, the existing policy applies: the main layers win and MTP falls back.
+A deployment chooses where MTP goes with `mtp_placement` ("Where MTP runs" in
+the deployment forms):
+
+- `auto` (the default): MTP goes to VRAM only when the whole main model still
+  fits there with it; otherwise it goes to host memory and the main model keeps
+  every layer on the GPU.
+- `vram`: MTP takes its VRAM first. The joint fit is accepted even when it
+  offloads fewer main layers than the main model would get alone, and it runs
+  even when the main model alone already did not fit entirely; the main model
+  takes the memory that is left and gives up layers to host memory.
+- `ram`: the fit is asked for host memory from the start; MTP spends no VRAM
+  and runs on the CPU.
+
+`mtp_cpu_fallback_enabled` keeps its meaning in every placement: whether a
+VRAM attempt that fails may fall back to host memory instead of leaving the
+deployment without MTP.
+
 If the context of a draft whose weights are in VRAM still cannot be created,
 with its KV on the card and then in host memory, the draft is loaded again in
 host memory and attached there instead of MTP being given up.

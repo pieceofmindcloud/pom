@@ -118,6 +118,9 @@ pub struct RuntimeParams {
     /// Permite recuar o MTP para a RAM quando a VRAM não comportar o contexto.
     #[serde(default = "d_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
+    /// Onde o bloco MTP fica: `auto`, `vram` ou `ram`.
+    #[serde(default)]
+    pub mtp_placement: llama_engine::MtpPlacement,
     /// Descarrega os pesos depois de um período sem requisições neste peer.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -252,6 +255,7 @@ impl Default for RuntimeParams {
             mtp_draft_tokens: d_mtp_draft_tokens(),
             mtp_min_probability: d_mtp_min_probability(),
             mtp_cpu_fallback_enabled: d_mtp_cpu_fallback_enabled(),
+            mtp_placement: Default::default(),
             unload_if_idle: false,
             idle_minutes: d_idle_minutes(),
         }
@@ -301,6 +305,7 @@ impl From<&NodeConfig> for RuntimeParams {
             mtp_draft_tokens: c.mtp_draft_tokens,
             mtp_min_probability: c.mtp_min_probability,
             mtp_cpu_fallback_enabled: c.mtp_cpu_fallback_enabled,
+            mtp_placement: c.mtp_placement,
             unload_if_idle: c.unload_if_idle,
             idle_minutes: c.idle_minutes,
         }

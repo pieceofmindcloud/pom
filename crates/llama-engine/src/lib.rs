@@ -31,6 +31,7 @@ pub mod tp_probe;
 pub mod wire;
 
 pub use kv_cache::KvCacheType;
+pub use mtp::MtpPlacement;
 
 /// Folga conservadora para a projeção de alocação CUDA: 256 MiB mantém o ganho
 /// de capacidade observado no modelo híbrido sem voltar a consumir 1 GiB.

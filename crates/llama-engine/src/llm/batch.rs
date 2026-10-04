@@ -334,6 +334,7 @@ mod pool_tests {
             need_embeddings: true,
             mtp: false,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),

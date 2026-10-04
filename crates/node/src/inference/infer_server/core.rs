@@ -1781,6 +1781,7 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

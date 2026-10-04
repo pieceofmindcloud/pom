@@ -116,6 +116,8 @@ pub struct EngineConfig {
     /// Permite recuar o bloco `nextn` para pesos e cache na RAM se a tentativa
     /// com a VRAM falhar. Só é lido quando `mtp` está ligado.
     pub mtp_cpu_fallback_enabled: bool,
+    /// Where the deployment wants the MTP block. See `crate::MtpPlacement`.
+    pub mtp_placement: crate::MtpPlacement,
     /// Quantos snapshots de estado recorrente manter por sequência
     /// (`llama_context_params::n_rs_seq`), para permitir desfazer um
     /// rascunho especulativo recusado num modelo híbrido/recorrente
@@ -323,20 +325,29 @@ pub(super) fn mtp_mode_for_nextn_availability(
     }
 }
 
-/// O fit conjunto só pode habilitar o MTP se conservar o encaixe integral que
-/// o modelo principal obteve sozinho. `common_fit_params` usa a mesma contagem
-/// para as camadas principais e as camadas `nextn`; aceitar um resultado
-/// reduzido aqui faria o sufixo MTP empurrar camadas principais para a CPU.
+/// Decides where MTP goes once the joint fit answered.
+///
+/// By default the joint fit may only enable MTP in VRAM if it keeps the full
+/// offload the main model got on its own: `common_fit_params` counts the main
+/// layers and the `nextn` layers together, and accepting a reduced result
+/// would let the MTP suffix push main layers to the CPU. MTP then goes to host
+/// memory.
+///
+/// With `mtp_first` (the deployment placed MTP in VRAM), MTP owns
+/// its share of VRAM: any joint fit that succeeded is accepted, and the main
+/// model takes what is left, giving up layers to host memory if it has to.
 pub(super) fn choose_mtp_fit_mode(
     requested: MtpFitMode,
     primary_gpu_layers: i32,
     mtp_gpu_layers: Option<i32>,
+    mtp_first: bool,
 ) -> MtpFitMode {
     match requested {
         MtpFitMode::Disabled => MtpFitMode::Disabled,
         MtpFitMode::Vram if primary_gpu_layers == -1 && mtp_gpu_layers == Some(-1) => {
             MtpFitMode::Vram
         }
+        MtpFitMode::Vram if mtp_first && mtp_gpu_layers.is_some() => MtpFitMode::Vram,
         MtpFitMode::Vram | MtpFitMode::Ram => MtpFitMode::Ram,
     }
 }
@@ -741,6 +752,7 @@ mod fit_memory_margin_tests {
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -928,7 +940,7 @@ mod fit_memory_margin_tests {
         // Reproduz a inversão de 27fda8b: o fit principal cabe inteiro, mas
         // o fit conjunto só cabe se remover camadas. Nesse caso o MTP cede.
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(50)),
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(50), false),
             MtpFitMode::Ram
         );
     }
@@ -936,11 +948,11 @@ mod fit_memory_margin_tests {
     #[test]
     fn mtp_em_vram_so_e_aceito_quando_o_fit_conjunto_tambem_cabe() {
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(-1)),
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(-1), false),
             MtpFitMode::Vram
         );
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, -1, None),
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, None, false),
             MtpFitMode::Ram
         );
     }
@@ -948,15 +960,38 @@ mod fit_memory_margin_tests {
     #[test]
     fn principal_reduzido_nao_da_direito_ao_mtp_na_vram() {
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, 50, Some(-1)),
+            choose_mtp_fit_mode(MtpFitMode::Vram, 50, Some(-1), false),
             MtpFitMode::Ram
+        );
+    }
+
+    #[test]
+    fn mtp_placed_in_vram_keeps_its_vram_and_the_model_takes_the_rest() {
+        // The joint fit had to take main layers off the GPU: accepted.
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(40), true),
+            MtpFitMode::Vram
+        );
+        // Even when the main model alone was already partly in host memory.
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, 30, Some(26), true),
+            MtpFitMode::Vram
+        );
+        // No joint fit at all: there is nothing to accept.
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, None, true),
+            MtpFitMode::Ram
+        );
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Disabled, -1, Some(-1), true),
+            MtpFitMode::Disabled
         );
     }
 
     #[test]
     fn mtp_desligado_mantem_a_distribuicao_do_fit_principal() {
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Disabled, 50, Some(50)),
+            choose_mtp_fit_mode(MtpFitMode::Disabled, 50, Some(50), false),
             MtpFitMode::Disabled
         );
     }
@@ -1019,6 +1054,7 @@ mod fit_memory_margin_tests {
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -1545,13 +1581,16 @@ pub(super) fn fit_plan(
     }
 
     let primary_gpu_layers = primary_mparams.n_gpu_layers;
-    let mut selected_mtp_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, None);
+    // The deployment placed MTP in VRAM: it gets its share first and the main
+    // model fits in the rest.
+    let mtp_first = cfg.mtp_placement == crate::MtpPlacement::Vram;
+    let mut selected_mtp_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, None, mtp_first);
     let mut selected_n_gpu_layers = primary_mparams.n_gpu_layers;
     let mut selected_n_ctx = primary_cparams.n_ctx;
     let mut selected_tensor_split = primary_tensor_split;
     let mut selected_tensor_buft_overrides = primary_tensor_buft_overrides;
 
-    if mtp_mode == MtpFitMode::Vram && primary_gpu_layers == -1 {
+    if mtp_mode == MtpFitMode::Vram && (primary_gpu_layers == -1 || mtp_first) {
         // First discover the native layer split, then charge each NextN layer's
         // KV to the device llama.cpp assigned to it. Refit until the split and
         // the reservation agree; otherwise use the CPU companion rather than
@@ -1589,7 +1628,8 @@ pub(super) fn fit_plan(
                 )
             };
             let joint_gpu_layers = (mtp_status == 0).then_some(mtp_mparams.n_gpu_layers);
-            let joint_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, joint_gpu_layers);
+            let joint_mode =
+                choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, joint_gpu_layers, mtp_first);
             if joint_mode != MtpFitMode::Vram {
                 selected_mtp_mode = joint_mode;
                 tracing::info!(

@@ -294,7 +294,11 @@ describe("RuntimeParamsForm", () => {
     );
 
     expect(screen.getByRole("checkbox", { name: /ciclos/i })).toBeTruthy();
-    expect(screen.getByRole("checkbox", { name: /recuo.*MTP/i })).toBeTruthy();
+    // Onde o MTP fica é uma escolha entre três lugares, não um interruptor.
+    expect(screen.queryByRole("checkbox", { name: /recuo.*MTP/i })).toBeNull();
+    const placement = screen.getByRole("combobox", { name: "Onde o MTP fica" }) as HTMLSelectElement;
+    expect(placement.value).toBe("auto");
+    expect(Array.from(placement.options).map((option) => option.value)).toEqual(["auto", "vram", "ram"]);
   });
 
   it("mantém f16 como padrão e grava f8 quando o cluster confirma a capacidade", () => {

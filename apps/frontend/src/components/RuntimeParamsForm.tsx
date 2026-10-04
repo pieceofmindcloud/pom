@@ -16,7 +16,7 @@
 import { useState } from "react";
 import { Check } from "lucide-react";
 import { AlertTooltip, Field, Input, Select } from "./ui";
-import type { DeploymentCapabilities, RuntimeCapability, RuntimeParams, WireDtype } from "../lib/types";
+import type { DeploymentCapabilities, MtpPlacement, RuntimeCapability, RuntimeParams, WireDtype } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 type Knob = {
@@ -387,16 +387,19 @@ export function RuntimeParamsForm({
         capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {MTP_KNOBS.map((k) => numeric(k))}
-          {pomDesenv && (
-            <CapabilitySwitch
-              alwaysVisible
-              checked={value.mtp_cpu_fallback_enabled ?? true}
-              onChange={(v) => onChange({ ...value, mtp_cpu_fallback_enabled: v })}
+          <Field label={t("deploy.mtpPlacement")} hint={t("deploy.mtpPlacementHint")}>
+            <Select
+              aria-label={t("deploy.mtpPlacement")}
+              name="mtp_placement"
               disabled={disabled}
-              label={t("deploy.mtpCpuFallback")}
-              hint={t("deploy.mtpCpuFallbackHint")}
-            />
-          )}
+              value={value.mtp_placement ?? "auto"}
+              onChange={(event) => onChange({ ...value, mtp_placement: event.target.value as MtpPlacement })}
+            >
+              <option value="auto">{t("deploy.mtpPlacementAuto")}</option>
+              <option value="vram">{t("deploy.mtpPlacementVram")}</option>
+              <option value="ram">{t("deploy.mtpPlacementRam")}</option>
+            </Select>
+          </Field>
         </div>
       )}
     </div>

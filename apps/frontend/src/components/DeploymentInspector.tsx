@@ -31,7 +31,7 @@ import { useState, type ReactNode } from "react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
 import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
 import { SidecarPicker, type SidecarPick } from "./SidecarPicker";
-import type { SidecarOption, SidecarSlot } from "../lib/types";
+import type { MtpPlacement, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -233,6 +233,12 @@ function showNumber(value: unknown): string {
 }
 
 /** O valor, quando não há nada a mexer nele. */
+const MTP_PLACEMENT_LABELS: Record<MtpPlacement, string> = {
+  auto: "deploy.mtpPlacementAuto",
+  vram: "deploy.mtpPlacementVram",
+  ram: "deploy.mtpPlacementRam",
+};
+
 function ReadValue({ children }: { children: ReactNode }) {
   return (
     <span className="truncate text-right font-mono text-[0.65rem] text-fg">{children}</span>
@@ -664,14 +670,23 @@ export function DeploymentInspector({
           onToggle: (next) => set({ cycle_detection_enabled: next }),
           tip: t("deploy.cycleDetectionHint"),
         })}
-        {toggle({
-          key: "mtp_cpu_fallback_enabled",
-          label: t("deploy.mtpCpuFallback"),
-          alwaysVisible: true,
-          checked: value.mtp_cpu_fallback_enabled ?? true,
-          onToggle: (next) => set({ mtp_cpu_fallback_enabled: next }),
-          tip: t("deploy.mtpCpuFallbackHint"),
-        })}
+        <InspectorRow label={t("deploy.mtpPlacement")} tip={t("deploy.mtpPlacementHint")}>
+          {readOnly ? (
+            <ReadValue>{t(MTP_PLACEMENT_LABELS[value.mtp_placement ?? "auto"])}</ReadValue>
+          ) : (
+            <Select
+              aria-label={t("deploy.mtpPlacement")}
+              name="mtp_placement"
+              value={value.mtp_placement ?? "auto"}
+              onChange={(event) => set({ mtp_placement: event.target.value as MtpPlacement })}
+              compact
+            >
+              <option value="auto">{t("deploy.mtpPlacementAuto")}</option>
+              <option value="vram">{t("deploy.mtpPlacementVram")}</option>
+              <option value="ram">{t("deploy.mtpPlacementRam")}</option>
+            </Select>
+          )}
+        </InspectorRow>
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

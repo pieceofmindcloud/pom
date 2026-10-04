@@ -880,11 +880,11 @@ describe("DeployModel · MTP", () => {
     expect(switchEl).toBeTruthy();
     fireEvent.click(switchEl);
 
-    const ramFallback = await screen.findByRole("checkbox", {
-      name: "Permitir recuo do MTP para a RAM",
-    });
-    expect(ramFallback.getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(ramFallback);
+    const placement = (await screen.findByRole("combobox", {
+      name: "Onde o MTP fica",
+    })) as HTMLSelectElement;
+    expect(placement.value).toBe("auto");
+    fireEvent.change(placement, { target: { value: "vram" } });
 
     await waitFor(() => {
       expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
@@ -920,7 +920,7 @@ describe("DeployModel · MTP", () => {
       };
       expect(body.kind).toBe("whole");
       expect(body.params.mtp_enabled).toBe(true);
-      expect(body.params.mtp_cpu_fallback_enabled).toBe(false);
+      expect(body.params.mtp_placement).toBe("vram");
       expect(body.params.mtp_draft_tokens).toBe(5);
     });
   });

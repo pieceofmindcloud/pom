@@ -81,7 +81,7 @@ formam a fronteira de licenciamento: o primeiro define DTOs e ABI C v1, o
 segundo é uma `cdylib` de teste e o terceiro é o único carregador de plugins.
 O licenciamento é por `plugin_code` independente, não de um produto único -
 `pom-plugin-host` sobe uma instância por plugin ativo, e os nomes com
-"enterprise" ficaram por história de git. O contrato e as lacunas de extração
+"enterprise" ficaram por história de git (o plugin de logs agora é `"logs"`). O contrato e as lacunas de extração
 estão em `docs/subsystems/enterprise-licensing.md`.
 
 ## Maintaining this file

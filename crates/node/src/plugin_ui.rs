@@ -585,7 +585,7 @@ mod tests {
     fn manifest() -> Value {
         json!({
             "schema": "pom-plugin-ui/v1",
-            "plugin_code": "enterprise",
+            "plugin_code": "logs",
             "menu": [{"id":"logs","label":{"en":"Request logs","pt-BR":"Logs"},"icon":"list-tree","to":"/logs","group":"logs","profiles":["admin"]}],
             "routes": [{"path":"/logs","screen":"logs","profiles":["admin","node"],"full_bleed":true}],
             "screens": {"logs": {"module":"ui/logs.js","styles":["ui/logs.css"]}},
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn accepts_a_well_formed_manifest() {
-        let parsed = PluginUiManifest::parse("enterprise", manifest()).expect("valid");
+        let parsed = PluginUiManifest::parse("logs", manifest()).expect("valid");
         assert!(parsed.serves("ui/logs.js"));
         assert_eq!(parsed.menu[0].icon.as_deref(), Some("list-tree"));
         assert!(!parsed.serves("ui/other.js"));
@@ -623,7 +623,7 @@ mod tests {
             json!("docs/guides/getting-started.md"),
             json!("docs/reference/configuration.md"),
         ]);
-        let parsed = PluginUiManifest::parse("enterprise", value).expect("valid");
+        let parsed = PluginUiManifest::parse("logs", value).expect("valid");
         assert!(parsed.is_icon_image("ui/icon.png"));
         assert!(parsed.is_documentation("docs/guides/getting-started.md"));
     }
@@ -632,7 +632,7 @@ mod tests {
     fn rejects_icon_or_documentation_outside_declared_assets() {
         let mut value = manifest();
         value["icon_image"] = json!("ui/icon.png");
-        assert!(PluginUiManifest::parse("enterprise", value).is_err());
+        assert!(PluginUiManifest::parse("logs", value).is_err());
 
         let mut value = manifest();
         value["documentation"] = json!({
@@ -642,7 +642,7 @@ mod tests {
                 "asset": "ui/bad.md"
             }]
         });
-        assert!(PluginUiManifest::parse("enterprise", value).is_err());
+        assert!(PluginUiManifest::parse("logs", value).is_err());
     }
 
     #[test]
@@ -653,7 +653,7 @@ mod tests {
             .unwrap()
             .remove("profiles");
         with_roles["menu"][0]["roles"] = json!(["admin", "infer"]);
-        let parsed = PluginUiManifest::parse("enterprise", with_roles).expect("roles valid");
+        let parsed = PluginUiManifest::parse("logs", with_roles).expect("roles valid");
         assert_eq!(
             parsed.menu[0].roles.as_deref().unwrap(),
             ["admin".to_owned(), "infer".to_owned()]
@@ -665,13 +665,13 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("profiles");
-        let parsed = PluginUiManifest::parse("enterprise", without_roles).expect("roles default");
+        let parsed = PluginUiManifest::parse("logs", without_roles).expect("roles default");
         assert_eq!(parsed.menu[0].roles, None);
         assert_eq!(parsed.menu[0].profiles, None);
 
         let mut invalid_roles = manifest();
         invalid_roles["menu"][0]["roles"] = json!(["root"]);
-        assert!(PluginUiManifest::parse("enterprise", invalid_roles).is_err());
+        assert!(PluginUiManifest::parse("logs", invalid_roles).is_err());
     }
 
     #[test]
@@ -683,7 +683,7 @@ mod tests {
             .remove("profiles");
         with_roles["routes"][0]["roles"] = json!(["admin", "infer"]);
 
-        let parsed = PluginUiManifest::parse("enterprise", with_roles).expect("roles valid");
+        let parsed = PluginUiManifest::parse("logs", with_roles).expect("roles valid");
         assert_eq!(
             parsed.routes[0].roles.as_deref().unwrap(),
             ["admin".to_owned(), "infer".to_owned()]
@@ -692,7 +692,7 @@ mod tests {
 
         let mut invalid_roles = manifest();
         invalid_roles["routes"][0]["roles"] = json!(["root"]);
-        assert!(PluginUiManifest::parse("enterprise", invalid_roles).is_err());
+        assert!(PluginUiManifest::parse("logs", invalid_roles).is_err());
     }
 
     #[test]
@@ -700,7 +700,7 @@ mod tests {
         let bad = |edit: fn(&mut Value)| {
             let mut value = manifest();
             edit(&mut value);
-            PluginUiManifest::parse("enterprise", value).is_err()
+            PluginUiManifest::parse("logs", value).is_err()
         };
         assert!(bad(|v| v["schema"] = json!("pom-plugin-ui/v0")));
         assert!(bad(|v| v["plugin_code"] = json!("other")));
@@ -720,23 +720,23 @@ mod tests {
         assert!(bad(
             |v| v["i18n"] = json!({"en":"i18n/en.json","xx_YY":"i18n/pt-BR.json"})
         ));
-        assert!(PluginUiManifest::parse("enterprise", json!({"schema": 1})).is_err());
+        assert!(PluginUiManifest::parse("logs", json!({"schema": 1})).is_err());
     }
 
     #[test]
     fn accepts_a_catalog_only_inside_the_plugin_namespace() {
         assert!(validate_catalog(
-            "enterprise",
-            &json!({"enterprise.logs.title":"Logs {n, plural, one {# row} other {# rows}}"})
+            "logs",
+            &json!({"logs.title":"Logs {n, plural, one {# row} other {# rows}}"})
         )
         .is_ok());
-        assert!(validate_catalog("enterprise", &json!({})).is_ok());
-        assert!(validate_catalog("enterprise", &json!({"nav.logs":"hijack"})).is_err());
-        assert!(validate_catalog("enterprise", &json!({"enterprisex.a":"x"})).is_err());
-        assert!(validate_catalog("enterprise", &json!({"enterprise.a":1})).is_err());
-        assert!(validate_catalog("enterprise", &json!(["enterprise.a"])).is_err());
+        assert!(validate_catalog("logs", &json!({})).is_ok());
+        assert!(validate_catalog("logs", &json!({"nav.logs":"hijack"})).is_err());
+        assert!(validate_catalog("logs", &json!({"logsx.a":"x"})).is_err());
+        assert!(validate_catalog("logs", &json!({"logs.a":1})).is_err());
+        assert!(validate_catalog("logs", &json!(["logs.a"])).is_err());
         let huge = "x".repeat(MAX_CATALOG_TEXT + 1);
-        assert!(validate_catalog("enterprise", &json!({"enterprise.a": huge})).is_err());
+        assert!(validate_catalog("logs", &json!({"logs.a": huge})).is_err());
     }
 
     /// The public pom-plugin-base release currently ships this UI manifest shape.
@@ -834,11 +834,11 @@ mod tests {
         }
     }
 
-    /// O manifesto que o plugin `enterprise` (pom-plugin-logs) entrega hoje.
+    /// O manifesto que o plugin `logs` (pom-plugin-logs) entrega hoje.
     #[test]
-    fn accepts_the_manifest_shipped_by_the_enterprise_plugin() {
+    fn accepts_the_manifest_shipped_by_the_logs_plugin() {
         let value: Value = serde_json::from_str(r#"{
-          "schema":"pom-plugin-ui/v1","plugin_code":"enterprise",
+          "schema":"pom-plugin-ui/v1","plugin_code":"logs",
           "menu":[{"id":"request-logs","label":{"en":"Request logs","pt-BR":"Logs de Requisições"},"icon":"list-tree","to":"/logs","group":"logs","profiles":["admin"]},
                   {"id":"statistics","label":{"en":"Statistics","pt-BR":"Estatísticas"},"icon":"chart-no-axes-column","to":"/estatisticas","profiles":["admin"]}],
           "routes":[{"path":"/logs","screen":"logs","profiles":["admin"],"full_bleed":true},
@@ -847,7 +847,7 @@ mod tests {
                      "stats":{"module":"ui/screens.js","export":"stats","styles":["ui/plugin.css"]}},
           "i18n":{"en":"i18n/en.json","pt-BR":"i18n/pt-BR.json"},
           "assets":["ui/screens.js","ui/plugin.css","i18n/en.json","i18n/pt-BR.json"]}"#).unwrap();
-        let parsed = PluginUiManifest::parse("enterprise", value).expect("valid");
+        let parsed = PluginUiManifest::parse("logs", value).expect("valid");
         assert_eq!(parsed.screens["stats"].export.as_deref(), Some("stats"));
         assert_eq!(parsed.i18n.len(), 2);
     }
@@ -866,7 +866,7 @@ mod tests {
     fn slots_point_at_declared_screens() {
         let mut value = manifest();
         value["slots"] = json!({ "chat.telemetry": "logs" });
-        let parsed = PluginUiManifest::parse("enterprise", value.clone()).expect("valid slot");
+        let parsed = PluginUiManifest::parse("logs", value.clone()).expect("valid slot");
         assert_eq!(parsed.slots["chat.telemetry"], "logs");
         let served = serde_json::to_value(&parsed).unwrap();
         assert_eq!(served["slots"]["chat.telemetry"], "logs");
@@ -879,7 +879,7 @@ mod tests {
         ] {
             let mut bad = value.clone();
             bad["slots"] = slots;
-            assert!(PluginUiManifest::parse("enterprise", bad).is_err());
+            assert!(PluginUiManifest::parse("logs", bad).is_err());
         }
     }
 
@@ -887,7 +887,7 @@ mod tests {
     fn manifest_without_i18n_is_still_valid() {
         let mut value = manifest();
         value.as_object_mut().unwrap().remove("i18n");
-        assert!(PluginUiManifest::parse("enterprise", value)
+        assert!(PluginUiManifest::parse("logs", value)
             .unwrap()
             .i18n
             .is_empty());

@@ -2511,7 +2511,7 @@ mod replicated_admin_logs_tests {
         let mut state = testkit::state_with("enterprise-free", vec![]).await;
         state
             .database
-            .save_local_setting("plugin_license:enterprise", &serde_json::json!({}))
+            .save_local_setting("plugin_license:logs", &serde_json::json!({}))
             .expect("register an inactive runtime for the test");
         state.plugins = crate::plugins::PluginManager::runtime_with_database(
             "enterprise-free",
@@ -2544,16 +2544,16 @@ mod replicated_admin_logs_tests {
             .expect("status response");
         assert_eq!(status.status(), StatusCode::OK);
         let plugins: serde_json::Value = body_of(status).await;
-        let enterprise = plugins
+        let logs = plugins
             .as_array()
             .expect("plugin list")
             .iter()
-            .find(|plugin| plugin["code"] == "enterprise")
-            .expect("enterprise plugin entry");
-        assert_eq!(enterprise["active"], false);
-        assert_eq!(enterprise["state"], "needs_activation");
+            .find(|plugin| plugin["code"] == "logs")
+            .expect("logs plugin entry");
+        assert_eq!(logs["active"], false);
+        assert_eq!(logs["state"], "needs_activation");
         assert_eq!(
-            enterprise["manage_url"],
+            logs["manage_url"],
             "https://pieceofmind.cloud/enterprise"
         );
 

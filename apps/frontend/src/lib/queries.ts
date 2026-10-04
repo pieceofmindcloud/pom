@@ -309,13 +309,13 @@ export function usePluginUi() {
 }
 
 /**
- * The `"enterprise"` plugin's status specifically (Request Logs/Statistics).
+ * The `"logs"` plugin's status specifically (Request Logs/Statistics).
  * Built on `usePlugins()` so callers gating those two screens do not need to
  * know about the rest of the catalog.
  */
 export function useEnterpriseStatus() {
   const query = usePlugins();
-  const status = query.data?.find((plugin) => plugin.code === "enterprise") ?? inactivePlugin("enterprise");
+  const status = query.data?.find((plugin) => plugin.code === "logs") ?? inactivePlugin("logs");
 
   return { ...query, data: status };
 }

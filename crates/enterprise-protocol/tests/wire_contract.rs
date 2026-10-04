@@ -29,7 +29,7 @@ fn validate_discovery_lists_the_plugin_codes_the_license_grants() {
     assert_eq!(response.payload.status, "active");
     // A descoberta é o que o cliente faz primeiro: sem plugin_code, o servidor
     // responde só com a lista de códigos que a chave concede.
-    assert_eq!(response.payload.licensed_plugins, vec!["enterprise"]);
+    assert_eq!(response.payload.licensed_plugins, vec!["logs"]);
     assert!(response.payload.activation_required);
     assert_eq!(response.payload.activation_id, None);
 }
@@ -39,9 +39,9 @@ fn validate_with_a_plugin_code_also_previews_the_release() {
     let response =
         decode_response::<ValidateResponse>(VALIDATE_PLUGIN.as_bytes()).expect("validate body");
 
-    assert_eq!(response.payload.licensed_plugins, vec!["enterprise"]);
+    assert_eq!(response.payload.licensed_plugins, vec!["logs"]);
     let release = response.payload.eligible_release.expect("release elegível");
-    assert_eq!(release.release_id, "ent-0.8.0-linux-x86_64");
+    assert_eq!(release.release_id, "logs-0.8.0-linux-x86_64");
     assert_eq!(release.version, "0.8.0");
 }
 
@@ -51,9 +51,9 @@ fn activation_carries_the_lease_the_grant_and_the_plugin_manifest() {
         decode_response::<ActivationResponse>(ACTIVATE.as_bytes()).expect("activation body");
     let payload = response.payload;
 
-    assert_eq!(payload.plugin_code, "enterprise");
-    assert_eq!(payload.licensed_plugins, vec!["enterprise"]);
-    assert_eq!(payload.plugin_release_id, "ent-0.8.0-linux-x86_64");
+    assert_eq!(payload.plugin_code, "logs");
+    assert_eq!(payload.licensed_plugins, vec!["logs"]);
+    assert_eq!(payload.plugin_release_id, "logs-0.8.0-linux-x86_64");
     assert_eq!(
         payload.plugin_manifest.plugin_abi,
         enterprise_protocol::PLUGIN_ABI_VERSION
@@ -62,7 +62,7 @@ fn activation_carries_the_lease_the_grant_and_the_plugin_manifest() {
     // manifesto que diz o que aquela versão entrega.
     assert_eq!(
         payload.plugin_manifest.feature_set,
-        vec!["enterprise.request_logs", "enterprise.statistics"]
+        vec!["logs.request_logs", "logs.statistics"]
     );
     // Existing server responses omit the optional preference schema, and
     // serializing them preserves the old signed manifest shape.
@@ -148,8 +148,8 @@ fn status_reports_the_lease_and_what_the_license_still_grants() {
         decode_response::<LicenseStatusResponse>(STATUS.as_bytes()).expect("status body");
 
     assert_eq!(response.payload.state, "active");
-    assert_eq!(response.payload.licensed_plugins, vec!["enterprise"]);
-    assert_eq!(response.payload.plugin_release_id, "ent-0.8.0-linux-x86_64");
+    assert_eq!(response.payload.licensed_plugins, vec!["logs"]);
+    assert_eq!(response.payload.plugin_release_id, "logs-0.8.0-linux-x86_64");
 }
 
 /// base64url sem padding, o mesmo que o servidor usa para o corpo do grant.

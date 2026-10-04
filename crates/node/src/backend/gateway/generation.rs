@@ -2821,7 +2821,7 @@ pub fn spawn_logged_generation_with_stops(
             &audit_for_begin,
             crate::reqlog::AuditEvent::Begin(begin.clone()),
             plugins_for_begin.ingest_audit_event(
-                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::plugins::LOGS_PLUGIN_CODE,
                 crate::reqlog::AuditEvent::Begin(begin),
             ),
         )
@@ -2938,7 +2938,7 @@ pub fn spawn_logged_generation_with_stops(
                 completion: completion.clone(),
             },
             plugins.ingest_audit_event(
-                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::plugins::LOGS_PLUGIN_CODE,
                 crate::reqlog::AuditEvent::Complete {
                     id: request_id,
                     completion,
@@ -2993,13 +2993,13 @@ pub(crate) fn record_rejected(
             completion: completion.clone(),
         };
         if plugins
-            .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, begin_event.clone())
+            .ingest_audit_event(crate::plugins::LOGS_PLUGIN_CODE, begin_event.clone())
             .await
         {
             audit.replicate_event(begin_event);
             if plugins
                 .ingest_audit_event(
-                    crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                    crate::plugins::LOGS_PLUGIN_CODE,
                     complete_event.clone(),
                 )
                 .await

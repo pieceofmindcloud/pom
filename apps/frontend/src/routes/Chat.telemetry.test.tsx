@@ -53,7 +53,7 @@ const timings: GenerationTimings = {
 };
 
 const plugin: ResolvedPluginSlot = {
-  code: "enterprise",
+  code: "logs",
   slot: "chat.telemetry",
   screen: { module: "ui/screens.js", export: "chatTelemetry" },
   version: "1.0.0",

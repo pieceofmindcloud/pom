@@ -295,10 +295,10 @@ describe("plugin UI registry", () => {
 
   it("replaces both native Enterprise menu destinations when claimed by plugin manifests", () => {
     const statisticsPlugin: ActivePluginUi = {
-      code: "enterprise",
+      code: "logs",
       manifest: {
         schema: "pom-plugin-ui/v1",
-        plugin_code: "enterprise",
+        plugin_code: "logs",
         menu: [{ id: "stats", label: { en: "Statistics" }, to: "/estatisticas", roles: ["admin"] }],
         routes: [{ path: "/estatisticas", screen: "stats", profiles: ["admin"] }],
         screens: { stats: { module: "stats.js" } },
@@ -312,8 +312,8 @@ describe("plugin UI registry", () => {
 
     expect(logs?.children?.map(({ labelKey }) => labelKey)).toContain("plugin:acme:logs");
     expect(logs?.children?.map(({ labelKey }) => labelKey)).not.toContain("nav.requestLogs");
-    expect(statistics?.labelKey).toBe("plugin:enterprise:stats");
-    expect(resolvePluginRoute("/estatisticas")?.code).toBe("enterprise");
+    expect(statistics?.labelKey).toBe("plugin:logs:stats");
+    expect(resolvePluginRoute("/estatisticas")?.code).toBe("logs");
   });
 
   it("does not let two plugins claim the same POM extension route", () => {

@@ -583,14 +583,14 @@ mod policy_tests {
         for path in [
             "/api/ui/plugins/activate",
             "/api/ui/plugins/checkout",
-            "/api/ui/plugins/enterprise/refresh",
-            "/api/ui/plugins/enterprise/deactivate",
-            "/api/ui/plugins/enterprise/update/check",
-            "/api/ui/plugins/enterprise/update/apply",
+            "/api/ui/plugins/logs/refresh",
+            "/api/ui/plugins/logs/deactivate",
+            "/api/ui/plugins/logs/update/check",
+            "/api/ui/plugins/logs/update/apply",
             "/api/ui/plugins/github-repositories",
             "/api/ui/plugins/github-repositories/repository-id/refresh",
             "/api/ui/plugins/github-repositories/repository-id/install",
-            "/api/ui/plugins/enterprise/preferences",
+            "/api/ui/plugins/logs/preferences",
         ] {
             let scope = route_scope(&Method::POST, path);
             assert_eq!(scope, RouteScope::InferNodeAdmin, "rota={path}");

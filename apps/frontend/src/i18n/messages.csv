@@ -22,7 +22,7 @@ about.pluginBaseLink,POM Plugin Base,POM Plugin Base
 about.pomUpdateApply,Install and restart,Instalar e reiniciar
 about.pomUpdateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
 about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
-about.pomUpdateNeedsPlugin,POM update checks currently borrow the enterprise plugin's license.,A verificação de atualização do POM hoje usa o lease do plugin enterprise.
+about.pomUpdateNeedsPlugin,POM update checks currently borrow the logs plugin's license.,A verificação de atualização do POM hoje usa o lease do plugin logs.
 about.pomUpdateOpenPlugins,Open Plugins,Abrir Plugins
 about.pomUpdateRelease,Release {release_id},Release {release_id}
 about.pomUpdateSubtitle,"On-demand check and, once confirmed, installation of a new POM build.","Verificação sob demanda e, após confirmação, instalação de uma nova versão do POM."

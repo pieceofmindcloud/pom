@@ -13,7 +13,7 @@
 //! A atualização do binário `pom` em si (`crate::pom_core_update`) NÃO faz
 //! parte deste gerenciador de propósito: ela é outra fronteira de produto
 //! (vai virar GitHub Releases público, sem licença nenhuma) e só empresta,
-//! por baixo dos panos, o lease do plugin `"enterprise"` enquanto esse
+//! por baixo dos panos, o lease do plugin `"logs"` enquanto esse
 //! mecanismo de transição não muda. Ver `crate::pom_core_update`.
 //!
 //! **Contrato do servidor de licenças** (confirmado contra o servidor real, e
@@ -54,7 +54,7 @@ use tokio::sync::{Mutex, RwLock};
 /// `crate::reqlog`, `crate::backend::gateway::generation`
 /// e `crate::pom_core_update` precisam de um `plugin_code` concreto, não do
 /// código dinâmico de outra instância.
-pub(crate) const ENTERPRISE_PLUGIN_CODE: &str = "enterprise";
+pub(crate) const LOGS_PLUGIN_CODE: &str = "logs";
 
 const PERSISTED_SETTING_PREFIX: &str = "plugin_license:";
 const PUBLIC_INSTALL_SETTING_PREFIX: &str = "plugin_public_install:";
@@ -4343,11 +4343,7 @@ fn plugin_database_path_for(
     code: &str,
     pom_database_path: Option<&std::path::Path>,
 ) -> std::path::PathBuf {
-    let filename = if code == "enterprise" {
-        "logs.db".to_owned()
-    } else {
-        format!("{code}.db")
-    };
+    let filename = format!("{code}.db");
     pom_database_path
         .and_then(std::path::Path::parent)
         .map(|directory| directory.join(&filename))
@@ -4921,10 +4917,10 @@ mod tests {
     }
 
     #[test]
-    fn enterprise_plugin_database_uses_persistent_pom_database_directory() {
+    fn logs_plugin_database_uses_persistent_pom_database_directory() {
         let database = std::path::Path::new("/data/pom.db");
         assert_eq!(
-            plugin_database_path_for("enterprise", Some(database)),
+            plugin_database_path_for("logs", Some(database)),
             std::path::Path::new("/data/logs.db")
         );
         assert_eq!(
@@ -4936,7 +4932,7 @@ mod tests {
     #[test]
     fn plugin_path_accepts_semver_build_metadata_in_release_id() {
         let path = plugin_path(
-            "enterprise",
+            "logs",
             "ent-0.1.0+build.1-linux-x86_64",
             "linux",
             "x86_64",
@@ -4945,7 +4941,7 @@ mod tests {
 
         assert!(path
             .to_string_lossy()
-            .ends_with("plugins/enterprise/ent-0.1.0+build.1-linux-x86_64-x86_64.so"));
+            .ends_with("plugins/logs/ent-0.1.0+build.1-linux-x86_64-x86_64.so"));
     }
 
     #[test]
@@ -4990,13 +4986,13 @@ mod tests {
     #[test]
     fn features_for_code_takes_only_the_features_of_that_plugin() {
         let feature_set = vec![
-            "enterprise.request_logs".to_string(),
-            "enterprise.statistics".to_string(),
+            "logs.request_logs".to_string(),
+            "logs.statistics".to_string(),
             "sample.other_feature".to_string(),
         ];
 
         assert_eq!(
-            features_for_code("enterprise", &feature_set),
+            features_for_code("logs", &feature_set),
             vec!["request_logs".to_string(), "statistics".to_string()]
         );
         assert_eq!(
@@ -5023,7 +5019,7 @@ mod tests {
         let database =
             Arc::new(crate::db::PomDb::open(directory.path().join("pom.db")).expect("database"));
         let service = Arc::new(MockLicenseService::new());
-        let mut response = activation("enterprise", "ent-1");
+        let mut response = activation("logs", "ent-1");
         response.plugin_manifest.preferences = Some(enterprise_protocol::PluginPreferencesSchema {
             features: vec![enterprise_protocol::PluginBooleanPreference {
                 key: "include_headers".into(),
@@ -5037,15 +5033,15 @@ mod tests {
             }),
         });
         service
-            .grant("enterprise", response, b"plugin-binary".to_vec())
+            .grant("logs", response, b"plugin-binary".to_vec())
             .await;
         let manager = PluginManager::test_manager_with_database(
-            &["enterprise"],
+            &["logs"],
             service.clone(),
             database.clone(),
         );
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
-        activate_ready(&runtime, "PM-enterprise", "0.1.0").await;
+        let runtime = manager.runtime_for("logs").expect("runtime");
+        activate_ready(&runtime, "PM-logs", "0.1.0").await;
         let schema = runtime
             .persisted_state()
             .await
@@ -5095,7 +5091,7 @@ mod tests {
             storage_directory: None,
         };
         assert!(manager
-            .save_preferences("enterprise", invalid_key)
+            .save_preferences("logs", invalid_key)
             .await
             .is_err());
         let invalid_directory = enterprise_protocol::PluginPreferences {
@@ -5103,13 +5099,13 @@ mod tests {
             storage_directory: Some("relative/path".into()),
         };
         assert!(manager
-            .save_preferences("enterprise", invalid_directory)
+            .save_preferences("logs", invalid_directory)
             .await
             .is_err());
         let missing = directory.path().join("created-on-save");
         manager
             .save_preferences(
-                "enterprise",
+                "logs",
                 enterprise_protocol::PluginPreferences {
                     features: [("include_headers".into(), true)].into(),
                     storage_directory: Some(missing.to_string_lossy().into_owned()),
@@ -5119,7 +5115,7 @@ mod tests {
             .expect("an absent absolute directory is created on save");
         assert!(missing.is_dir());
         manager
-            .save_preferences("enterprise", preferences.clone())
+            .save_preferences("logs", preferences.clone())
             .await
             .expect("save local preferences");
         assert_eq!(
@@ -5128,15 +5124,15 @@ mod tests {
             "local values must override schema defaults"
         );
         let persisted = database
-            .local_setting_json("plugin_license:enterprise")
+            .local_setting_json("plugin_license:logs")
             .unwrap()
             .expect("license record");
         assert!(!persisted.contains(&storage.to_string_lossy().to_string()));
 
         let restored =
-            PluginManager::test_manager_with_database(&["enterprise"], service, database);
+            PluginManager::test_manager_with_database(&["logs"], service, database);
         let restored_runtime = restored
-            .runtime_for("enterprise")
+            .runtime_for("logs")
             .expect("restored runtime");
         restored_runtime.restore().await;
         assert_eq!(
@@ -5151,14 +5147,14 @@ mod tests {
         let service = Arc::new(MockLicenseService::new());
         service
             .grant(
-                "enterprise",
-                activation("enterprise", "ent-1"),
+                "logs",
+                activation("logs", "ent-1"),
                 b"plugin-binary".to_vec(),
             )
             .await;
-        let manager = PluginManager::test_manager(&["enterprise"], service);
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
-        activate_ready(&runtime, "PM-enterprise", "0.1.0").await;
+        let manager = PluginManager::test_manager(&["logs"], service);
+        let runtime = manager.runtime_for("logs").expect("runtime");
+        activate_ready(&runtime, "PM-logs", "0.1.0").await;
 
         let (persisted, version) = runtime
             .persisted_with_semver()
@@ -5395,8 +5391,8 @@ mod tests {
         let service = Arc::new(MockLicenseService::new());
         service
             .grant(
-                "enterprise",
-                activation("enterprise", "ent-1"),
+                "logs",
+                activation("logs", "ent-1"),
                 b"plugin-binary".to_vec(),
             )
             .await;
@@ -5407,21 +5403,21 @@ mod tests {
                 b"plugin-binary".to_vec(),
             )
             .await;
-        let manager = PluginManager::test_manager(&["enterprise", "sample"], service.clone());
-        let enterprise = manager.runtime_for("enterprise").expect("runtime");
+        let manager = PluginManager::test_manager(&["logs", "sample"], service.clone());
+        let logs = manager.runtime_for("logs").expect("runtime");
         let sample = manager.runtime_for("sample").expect("runtime");
-        activate_ready(&enterprise, "PM-enterprise", "0.1.0").await;
+        activate_ready(&logs, "PM-logs", "0.1.0").await;
         activate_ready(&sample, "PM-sample", "0.1.0").await;
 
-        assert!(manager.status("enterprise").await.expect("status").active);
+        assert!(manager.status("logs").await.expect("status").active);
         assert!(manager.status("sample").await.expect("status").active);
 
         manager
-            .deactivate("enterprise")
+            .deactivate("logs")
             .await
-            .expect("deactivate enterprise");
+            .expect("deactivate logs");
 
-        assert!(!manager.status("enterprise").await.expect("status").active);
+        assert!(!manager.status("logs").await.expect("status").active);
         assert!(
             manager.status("sample").await.expect("status").active,
             "revogar um plugin não pode desativar o outro"
@@ -5461,7 +5457,7 @@ mod tests {
         let manager = PluginManager::runtime_with_database("node-dynamic", database);
 
         assert!(manager.runtime_for("future.plugin-v2").is_some());
-        assert!(manager.runtime_for(ENTERPRISE_PLUGIN_CODE).is_none());
+        assert!(manager.runtime_for(LOGS_PLUGIN_CODE).is_none());
     }
 
     #[tokio::test]
@@ -5489,9 +5485,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn activation_batches_enterprise_and_base_without_a_compiled_catalog() {
+    async fn activation_batches_logs_and_base_without_a_compiled_catalog() {
         let service = Arc::new(MockLicenseService::new());
-        for (code, activation_id) in [("enterprise", "ent-1"), ("base", "base-1")] {
+        for (code, activation_id) in [("logs", "ent-1"), ("base", "base-1")] {
             service
                 .grant(
                     code,
@@ -5506,16 +5502,16 @@ mod tests {
         let manager = PluginManager::test_manager(&[], service.clone());
 
         let error = manager
-            .activate("PM-enterprise-and-base")
+            .activate("PM-logs-and-base")
             .await
             .expect_err("both mock manifests fail after their codes are selected");
 
         assert_eq!(error.code(), LicenseErrorCode::ServerError);
         let mut calls = service.manifest_calls().await;
         calls.sort();
-        assert_eq!(calls, ["base", "enterprise"]);
+        assert_eq!(calls, ["base", "logs"]);
         assert!(manager.runtime_for("base").is_some());
-        assert!(manager.runtime_for("enterprise").is_some());
+        assert!(manager.runtime_for("logs").is_some());
     }
 
     #[tokio::test]
@@ -5579,9 +5575,9 @@ mod tests {
     async fn invalid_license_keeps_the_plugin_inactive_and_returns_a_stable_error() {
         let service = Arc::new(MockLicenseService::new());
         service
-            .deny("enterprise", LicenseErrorCode::InvalidKey)
+            .deny("logs", LicenseErrorCode::InvalidKey)
             .await;
-        let manager = PluginManager::test_manager(&["enterprise"], service);
+        let manager = PluginManager::test_manager(&["logs"], service);
 
         let error = manager
             .activate("PM-invalid")
@@ -5589,17 +5585,17 @@ mod tests {
             .expect_err("must reject");
 
         assert_eq!(error.code(), LicenseErrorCode::InvalidKey);
-        assert!(!manager.status("enterprise").await.expect("status").active);
+        assert!(!manager.status("logs").await.expect("status").active);
     }
 
     #[tokio::test]
     async fn heartbeat_persists_authoritative_lease_data() {
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
-        let manager = PluginManager::test_manager(&["enterprise"], service);
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let manager = PluginManager::test_manager(&["logs"], service);
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
 
         runtime
@@ -5617,13 +5613,13 @@ mod tests {
         );
         assert_eq!(persisted.activation_count, Some(1));
         assert_eq!(persisted.max_activations, Some(5));
-        assert_eq!(persisted.licensed_plugins, ["enterprise"]);
+        assert_eq!(persisted.licensed_plugins, ["logs"]);
         assert_eq!(
             persisted.activation_candidates[0].plugin_code,
             "next_plugin"
         );
 
-        let status = manager.status("enterprise").await.expect("status");
+        let status = manager.status("logs").await.expect("status");
         assert_eq!(status.state, LicenseState::Active);
         assert_eq!(
             status.lease_expires_at.as_deref(),
@@ -5646,23 +5642,23 @@ mod tests {
     #[tokio::test]
     async fn refresh_publishes_the_license_expiry_from_the_status_endpoint() {
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
         service
             .set_license_expires_at(Some("2027-09-15T00:00:00.000Z"))
             .await;
-        let manager = PluginManager::test_manager(&["enterprise"], service);
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let manager = PluginManager::test_manager(&["logs"], service);
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         assert_eq!(
             runtime.status().await.license_expires_at.as_deref(),
             Some("2099-12-31T00:00:00Z")
         );
 
-        manager.refresh("enterprise").await.expect("refresh");
+        manager.refresh("logs").await.expect("refresh");
 
-        let status = manager.status("enterprise").await.expect("status");
+        let status = manager.status("logs").await.expect("status");
         assert_eq!(
             status.license_expires_at.as_deref(),
             Some("2027-09-15T00:00:00.000Z")
@@ -5673,11 +5669,11 @@ mod tests {
     #[tokio::test]
     async fn transient_heartbeat_failure_enters_degraded_without_deactivating() {
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
-        let manager = PluginManager::test_manager(&["enterprise"], service);
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let manager = PluginManager::test_manager(&["logs"], service);
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
 
         runtime.mark_heartbeat_failure(true).await;
@@ -5692,8 +5688,8 @@ mod tests {
         let service = Arc::new(MockLicenseService::new());
         service
             .grant(
-                "enterprise",
-                activation("enterprise", "ent-1"),
+                "logs",
+                activation("logs", "ent-1"),
                 b"plugin-binary".to_vec(),
             )
             .await;
@@ -5704,18 +5700,18 @@ mod tests {
                 b"plugin-binary".to_vec(),
             )
             .await;
-        let manager = PluginManager::test_manager(&["enterprise", "sample"], service.clone());
-        let enterprise = manager.runtime_for("enterprise").expect("runtime");
+        let manager = PluginManager::test_manager(&["logs", "sample"], service.clone());
+        let logs = manager.runtime_for("logs").expect("runtime");
         let sample = manager.runtime_for("sample").expect("runtime");
-        activate_ready(&enterprise, "PM-enterprise", "0.1.0").await;
+        activate_ready(&logs, "PM-logs", "0.1.0").await;
         activate_ready(&sample, "PM-sample", "0.1.0").await;
         service.set_heartbeat_error(LicenseErrorCode::Revoked).await;
 
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let runtime = manager.runtime_for("logs").expect("runtime");
         let error = runtime.heartbeat("nonce-1").await.expect_err("revoked");
 
         assert_eq!(error.code(), LicenseErrorCode::Revoked);
-        assert!(!manager.status("enterprise").await.expect("status").active);
+        assert!(!manager.status("logs").await.expect("status").active);
         assert!(
             manager.status("sample").await.expect("status").active,
             "o heartbeat de um plugin não deve afetar o outro"
@@ -5725,18 +5721,18 @@ mod tests {
     #[tokio::test]
     async fn persisted_state_never_contains_the_license_key() {
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
-        let manager = PluginManager::test_manager(&["enterprise"], service);
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let manager = PluginManager::test_manager(&["logs"], service);
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-secret-license", "0.1.0").await;
 
         let persisted = serde_json::to_vec(&runtime.persisted_state().await.expect("persisted"))
             .expect("state JSON");
 
         assert!(!String::from_utf8_lossy(&persisted).contains("PM-secret-license"));
-        assert!(String::from_utf8_lossy(&persisted).contains("lease-enterprise"));
+        assert!(String::from_utf8_lossy(&persisted).contains("lease-logs"));
     }
 
     /// `apply_update` baixando e reiniciando o host de verdade é integração
@@ -5746,10 +5742,10 @@ mod tests {
     /// host.
     #[tokio::test]
     async fn detects_a_plugins_own_update_without_touching_pom_core() {
-        let mut updated = activation("enterprise", "ent-1");
-        let service = Arc::new(MockLicenseService::single("enterprise", updated.clone()));
-        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let mut updated = activation("logs", "ent-1");
+        let service = Arc::new(MockLicenseService::single("logs", updated.clone()));
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         assert!(runtime.status().await.available_update.is_none());
         let installed_at = "2026-09-20T10:15:00.000Z".to_owned();
@@ -5766,7 +5762,7 @@ mod tests {
         updated.plugin_manifest.release_id = "ent-2".into();
         updated.plugin_manifest.version = "0.2.0".into();
         service
-            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .grant("logs", updated, b"plugin-binary".to_vec())
             .await;
 
         runtime.detect_update().await.expect("detect update");
@@ -5805,10 +5801,10 @@ mod tests {
     /// Sem revogar a release anterior em nenhum momento.
     #[tokio::test]
     async fn refresh_button_does_not_lose_an_update_signalled_by_heartbeat() {
-        let mut updated = activation("enterprise", "ent-0.1.0+build.1-linux-x86_64");
-        let service = Arc::new(MockLicenseService::single("enterprise", updated.clone()));
-        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let mut updated = activation("logs", "ent-0.1.0+build.1-linux-x86_64");
+        let service = Arc::new(MockLicenseService::single("logs", updated.clone()));
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         runtime
             .mock_host_ready
@@ -5820,7 +5816,7 @@ mod tests {
         updated.plugin_manifest.release_id = "ent-0.1.0+build.2-linux-x86_64".into();
         updated.plugin_manifest.version = "0.1.0+build.2".into();
         service
-            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .grant("logs", updated, b"plugin-binary".to_vec())
             .await;
         // O heartbeat do servidor já sinaliza a mudança, e (como o incidente
         // relatado) seu próprio campo `plugin_release_id` também avança para
@@ -5829,7 +5825,7 @@ mod tests {
             .signal_heartbeat_release_change("ent-0.1.0+build.2-linux-x86_64")
             .await;
 
-        manager.refresh("enterprise").await.expect("refresh");
+        manager.refresh("logs").await.expect("refresh");
 
         let available = runtime
             .status()
@@ -5856,10 +5852,10 @@ mod tests {
     /// precisa aparecer.
     #[tokio::test]
     async fn a_background_heartbeat_alone_also_surfaces_the_update() {
-        let mut updated = activation("enterprise", "ent-1");
-        let service = Arc::new(MockLicenseService::single("enterprise", updated.clone()));
-        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let mut updated = activation("logs", "ent-1");
+        let service = Arc::new(MockLicenseService::single("logs", updated.clone()));
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         runtime
             .mock_host_ready
@@ -5868,7 +5864,7 @@ mod tests {
         updated.plugin_manifest.release_id = "ent-2".into();
         updated.plugin_manifest.version = "0.2.0".into();
         service
-            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .grant("logs", updated, b"plugin-binary".to_vec())
             .await;
         service.signal_heartbeat_release_change("ent-2").await;
 
@@ -5892,16 +5888,16 @@ mod tests {
 
     #[tokio::test]
     async fn applying_a_different_release_than_advertised_is_rejected_without_downloading() {
-        let mut updated = activation("enterprise", "ent-1");
-        let service = Arc::new(MockLicenseService::single("enterprise", updated.clone()));
-        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let mut updated = activation("logs", "ent-1");
+        let service = Arc::new(MockLicenseService::single("logs", updated.clone()));
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
 
         updated.plugin_release_id = "ent-2".into();
         updated.plugin_manifest.release_id = "ent-2".into();
         service
-            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .grant("logs", updated, b"plugin-binary".to_vec())
             .await;
         runtime.detect_update().await.expect("detect update");
 
@@ -6025,7 +6021,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enterprise_activation_passes_logs_db_in_the_pom_database_directory() {
+    async fn logs_activation_passes_logs_db_in_the_pom_database_directory() {
         let _serial = REAL_HOST.lock().await;
         let directory = tempfile::tempdir().expect("tempdir");
         let _environment = RestoreEnvironment::capture(&[
@@ -6047,24 +6043,24 @@ mod tests {
         let database =
             Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("abrir banco do POM"));
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
-        let manager = PluginManager::test_manager_with_database(&["enterprise"], service, database);
+        let manager = PluginManager::test_manager_with_database(&["logs"], service, database);
 
         assert_eq!(
             manager
                 .activate("PM-test-key")
                 .await
                 .expect("ativar plugin"),
-            vec!["enterprise"]
+            vec!["logs"]
         );
         let expected_path = data_dir.join("logs.db");
         let host_log = std::fs::read_to_string(&host_log).expect("ler log do host");
         assert!(host_log.contains(&format!("POM_PLUGIN_DB={}", expected_path.display())));
         assert!(!host_log.contains("enterprise.db"));
         manager
-            .runtime_for("enterprise")
+            .runtime_for("logs")
             .expect("runtime")
             .stop_host_for_test()
             .await;
@@ -6092,17 +6088,17 @@ mod tests {
             crate::db::PomDb::open(directory.path().join("pom.db")).expect("abrir banco do POM"),
         );
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
         let manager =
-            PluginManager::test_manager_with_database(&["enterprise"], service, database.clone());
+            PluginManager::test_manager_with_database(&["logs"], service, database.clone());
 
         let error = manager
             .activate("PM-test-key")
             .await
             .expect_err("handshake recusado deve falhar a instalação");
-        let status = manager.status("enterprise").await.expect("status");
+        let status = manager.status("logs").await.expect("status");
         assert_eq!(
             error.code(),
             LicenseErrorCode::ServerError,
@@ -6130,7 +6126,7 @@ mod tests {
             std::fs::read_to_string(&host_log).unwrap_or_default()
         );
         let persisted = database
-            .local_setting_json("plugin_license:enterprise")
+            .local_setting_json("plugin_license:logs")
             .expect("ler estado persistido")
             .expect("estado de licença persistido");
         assert!(persisted.contains("plugin recusou configuração"));
@@ -6161,7 +6157,7 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, upstream).await });
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let plugin_path = dir.path().join("enterprise-plugin.bin");
+        let plugin_path = dir.path().join("logs-plugin.bin");
         std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
         let host_log = dir.path().join("host.log");
         let token = "t".repeat(32);
@@ -6178,11 +6174,11 @@ mod tests {
             crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
         );
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
         let manager =
-            PluginManager::test_manager_with_database(&["enterprise"], service.clone(), db);
+            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
         let context = |key: &str| {
             serde_json::json!({
                 "gateway": {
@@ -6194,7 +6190,7 @@ mod tests {
         };
         manager.set_host_context(context("sk-first")).await;
 
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         {
             let mut persisted = runtime.persisted.lock().await;
@@ -6246,7 +6242,7 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(request("/api/ui/plugins/enterprise/proxy/hello?x=1", None))
+            .oneshot(request("/api/ui/plugins/logs/proxy/hello?x=1", None))
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -6258,7 +6254,7 @@ mod tests {
         let root = app
             .clone()
             .oneshot(request(
-                "/api/ui/plugins/enterprise/proxy/?folder=/workspace",
+                "/api/ui/plugins/logs/proxy/?folder=/workspace",
                 None,
             ))
             .await
@@ -6270,7 +6266,7 @@ mod tests {
         let forged = app
             .clone()
             .oneshot(request(
-                "/api/ui/plugins/enterprise/proxy/hello",
+                "/api/ui/plugins/logs/proxy/hello",
                 Some("http://evil.example"),
             ))
             .await
@@ -6297,7 +6293,7 @@ mod tests {
         let reply = app
             .clone()
             .oneshot(rpc(
-                "/api/ui/plugins/enterprise/rpc/directory.set_node",
+                "/api/ui/plugins/logs/rpc/directory.set_node",
                 r#"{"node_id":"n1","person":"Ana"}"#,
                 Some("http://salem:8080"),
             ))
@@ -6309,9 +6305,9 @@ mod tests {
         assert_eq!(reply["params"]["person"], "Ana");
         assert!(reply["profile"].is_string());
         for (uri, body, origin, status) in [
-            ("/api/ui/plugins/enterprise/rpc/insights", "{}", Some("http://evil.example"), axum::http::StatusCode::FORBIDDEN),
-            ("/api/ui/plugins/enterprise/rpc/Bad.Op", "{}", None, axum::http::StatusCode::BAD_REQUEST),
-            ("/api/ui/plugins/enterprise/rpc/insights", "not json", None, axum::http::StatusCode::BAD_REQUEST),
+            ("/api/ui/plugins/logs/rpc/insights", "{}", Some("http://evil.example"), axum::http::StatusCode::FORBIDDEN),
+            ("/api/ui/plugins/logs/rpc/Bad.Op", "{}", None, axum::http::StatusCode::BAD_REQUEST),
+            ("/api/ui/plugins/logs/rpc/insights", "not json", None, axum::http::StatusCode::BAD_REQUEST),
             ("/api/ui/plugins/nope/rpc/insights", "{}", None, axum::http::StatusCode::BAD_GATEWAY),
         ] {
             let response = app.clone().oneshot(rpc(uri, body, origin)).await.unwrap();
@@ -6363,7 +6359,7 @@ mod tests {
             fake_host.display()
         );
         let dir = tempfile::tempdir().expect("tempdir");
-        let plugin_path = dir.path().join("enterprise-plugin.bin");
+        let plugin_path = dir.path().join("logs-plugin.bin");
         std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
         let host_log = dir.path().join("ingest.log");
 
@@ -6377,16 +6373,16 @@ mod tests {
             crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
         );
         let service = Arc::new(MockLicenseService::single(
-            "enterprise",
-            activation("enterprise", "ent-1"),
+            "logs",
+            activation("logs", "ent-1"),
         ));
         // `test_manager_with_database` não dispara o `restore()` de boot (ver
         // `from_codes`): aqui o estado é montado à mão logo abaixo, e uma
         // restauração concorrente o sobrescreveria a partir do banco em um
         // instante fora do controle do teste.
         let manager =
-            PluginManager::test_manager_with_database(&["enterprise"], service.clone(), db);
-        let runtime = manager.runtime_for("enterprise").expect("runtime");
+            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         {
             let mut persisted = runtime.persisted.lock().await;
@@ -6552,7 +6548,7 @@ mod plugin_checkout_tests {
                 "/v1/checkout/plans",
                 get(|| async {
                     axum::Json(serde_json::json!({
-                        "plans": [{"code": "enterprise", "plugin_codes": ["enterprise"], "checkout_available": true}]
+                        "plans": [{"code": "logs", "plugin_codes": ["logs"], "checkout_available": true}]
                     }))
                 }),
             )
@@ -6578,7 +6574,7 @@ mod plugin_checkout_tests {
     async fn checkout_uses_the_plan_that_sells_the_plugin_and_returns_the_stripe_page() {
         let (base, server, seen) = stub("https://checkout.stripe.com/c/pay/cs_test_1").await;
         let request = PluginCheckoutRequest {
-            plugin_code: "enterprise".into(),
+            plugin_code: "logs".into(),
             interval: Some("month".into()),
             locale: Some("en".into()),
         };
@@ -6588,7 +6584,7 @@ mod plugin_checkout_tests {
         assert_eq!(url, "https://checkout.stripe.com/c/pay/cs_test_1");
         assert_eq!(
             seen.lock().unwrap().clone().unwrap(),
-            serde_json::json!({"plan_code": "enterprise", "plugin_code": "enterprise", "interval": "month", "locale": "en"})
+            serde_json::json!({"plan_code": "logs", "plugin_code": "logs", "interval": "month", "locale": "en"})
         );
 
         let unsold = PluginCheckoutRequest {
@@ -6604,7 +6600,7 @@ mod plugin_checkout_tests {
             "checkout_not_offered"
         );
         let invalid = PluginCheckoutRequest {
-            plugin_code: "enterprise".into(),
+            plugin_code: "logs".into(),
             interval: Some("week".into()),
             locale: None,
         };
@@ -6622,7 +6618,7 @@ mod plugin_checkout_tests {
     async fn a_session_pointing_elsewhere_is_refused() {
         let (base, server, _) = stub("https://evil.example/pay").await;
         let request = PluginCheckoutRequest {
-            plugin_code: "enterprise".into(),
+            plugin_code: "logs".into(),
             interval: None,
             locale: None,
         };

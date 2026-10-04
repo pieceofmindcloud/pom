@@ -195,7 +195,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   quando não há essa leitura.
   `PluginStatus` é o contrato local de UM plugin independente (ver
   `crates/node/src/plugins.rs`), consumido por `usePlugins`/`useEnterpriseStatus`
-  (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"enterprise"`
+  (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"logs"`
   especificamente). Quando inativo, `useEnterpriseStatus` remove caches de
   auditoria para não reexibir dados antigos. A atualização do binário `pom`
   em si é um contrato separado, `PomCoreUpdateStatus`/`usePomCoreUpdateStatus`

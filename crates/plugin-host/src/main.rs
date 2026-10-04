@@ -476,8 +476,8 @@ mod tests {
             b"pom_base_plugin_v1\0"
         );
         assert_eq!(
-            plugin_entry_symbol("enterprise").expect("enterprise symbol"),
-            b"pom_enterprise_plugin_v1\0"
+            plugin_entry_symbol("logs").expect("enterprise symbol"),
+            b"pom_logs_plugin_v1\0"
         );
     }
 

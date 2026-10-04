@@ -836,7 +836,7 @@ impl Discovery {
             while let Some(events) = remote_audit_rx.recv().await {
                 for event in events {
                     if !plugins
-                        .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, event.clone())
+                        .ingest_audit_event(crate::plugins::LOGS_PLUGIN_CODE, event.clone())
                         .await
                         && !remote_audit_log.try_ingest_remote_ordered(event)
                     {

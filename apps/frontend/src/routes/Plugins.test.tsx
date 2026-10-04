@@ -220,10 +220,10 @@ describe("Plugins", () => {
   });
 
   it("mostra uma falha de instalação sem apresentar o plugin como pronto", () => {
-    mocks.catalog.data = { plugins: [publicPlugin("enterprise", { display_name: "Enterprise" })] };
-    mocks.plugins.data = [pluginStatus("enterprise", {
+    mocks.catalog.data = { plugins: [publicPlugin("logs", { display_name: "Enterprise" })] };
+    mocks.plugins.data = [pluginStatus("logs", {
       state: "active",
-      licensed_plugins: ["enterprise"],
+      licensed_plugins: ["logs"],
       installation_error: "handshake ready do plugin host falhou: plugin recusou configuração",
     })];
     renderPage();
@@ -453,12 +453,12 @@ describe("Plugins", () => {
   it("uses a licensed plugin's authenticated status for its inactive activation candidate", () => {
     mocks.catalog.data = { plugins: [publicPlugin("analytics_plus")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise", "analytics_plus"],
+        licensed_plugins: ["logs", "analytics_plus"],
         plugin_usage: [
-          { plugin_code: "enterprise", activation_count: 1, max_activations: 5 },
+          { plugin_code: "logs", activation_count: 1, max_activations: 5 },
           { plugin_code: "analytics_plus", activation_count: 2, max_activations: 5 },
         ],
         activation_candidates: [],
@@ -483,10 +483,10 @@ describe("Plugins", () => {
   it("shows the activation form for an inactive public plugin that requires a license", () => {
     mocks.catalog.data = { plugins: [publicPlugin("candidate")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise"],
+        licensed_plugins: ["logs"],
         activation_candidates: [activationCandidate("candidate")],
       }),
       pluginStatus("candidate"),
@@ -499,10 +499,10 @@ describe("Plugins", () => {
   it("keeps activation visible for an inactive plugin outside the current license context", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("not-eligible")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise"],
+        licensed_plugins: ["logs"],
         activation_candidates: [],
       }),
       pluginStatus("not-eligible"),
@@ -538,10 +538,10 @@ describe("Plugins", () => {
   it("keeps activation available for expired and revoked plugins beside another active plugin", () => {
     mocks.catalog.data = { plugins: [publicPlugin("expired_plugin"), publicPlugin("revoked_plugin")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise"],
+        licensed_plugins: ["logs"],
       }),
       pluginStatus("expired_plugin", { state: "expired" }),
       pluginStatus("revoked_plugin", { state: "revoked" }),
@@ -953,8 +953,8 @@ describe("Plugins", () => {
 
   it("keeps license activation available for a running local development build", () => {
     mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
-    mocks.catalog.data = { plugins: [publicPlugin("enterprise")] };
-    mocks.plugins.data = [pluginStatus("enterprise", {
+    mocks.catalog.data = { plugins: [publicPlugin("logs")] };
+    mocks.plugins.data = [pluginStatus("logs", {
       active: true,
       development_install: true,
       state: "needs_activation",

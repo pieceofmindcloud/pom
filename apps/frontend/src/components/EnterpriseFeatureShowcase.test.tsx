@@ -17,15 +17,15 @@ vi.mock("../lib/api", async () => {
 vi.mock("../lib/queries", () => ({ usePublicPluginCatalog: () => mocks.catalog }));
 
 const enterprise = {
-  code: "enterprise",
+  code: "logs",
   display_name: "Statistics and Logs",
   description: "Advanced observability for POM.",
   description_pt_br: null,
   requires_license: true,
-  icon_url: "https://license.pieceofmind.cloud/v1/plugins/enterprise/images/icon",
+  icon_url: "https://license.pieceofmind.cloud/v1/plugins/logs/images/icon",
   screenshot_urls: [
-    "https://license.pieceofmind.cloud/v1/plugins/enterprise/images/screenshot_1",
-    "https://license.pieceofmind.cloud/v1/plugins/enterprise/images/screenshot_2",
+    "https://license.pieceofmind.cloud/v1/plugins/logs/images/screenshot_1",
+    "https://license.pieceofmind.cloud/v1/plugins/logs/images/screenshot_2",
   ],
   pricing: { monthly: { amount: 1499, currency: "brl", interval: "month" }, annual: null },
   releases: [],
@@ -69,7 +69,7 @@ describe("EnterpriseFeatureShowcase", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Comprar agora" })[0]);
 
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/checkout", {
-      plugin_code: "enterprise",
+      plugin_code: "logs",
       interval: "month",
       locale: "pt-BR",
     }));

@@ -68,6 +68,13 @@ describe("serviços de plugin", () => {
     expect(tether.style.left).toBe("116px");
   });
 
+  it("dentro do card expandido fica sob a borda dele, qualquer que seja a altura", () => {
+    wrap(<PluginServiceTether services={[qdrant]} />);
+    const tether = screen.getByTestId("plugin-service-tether");
+    expect(tether.style.top).toBe("100%");
+    expect(tether.style.left).toBe("16px");
+  });
+
   it("não desenha nada para uma máquina sem serviços", () => {
     wrap(<PluginServiceTether services={[]} position={{ left: 0, top: 0 }} size={{ width: 1, height: 1 }} />);
     expect(screen.queryByTestId("plugin-service-tether")).toBeNull();

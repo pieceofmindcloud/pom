@@ -502,25 +502,31 @@ stays cached for the process, so the next load of the same model does not
 repeat the measurement. There is no vendor API, card table or fixed priority
 per backend.
 
-The ordering is only applied if every result is finite and positive, each
-boundary between neighboring speeds exceeds 25% and every handle uses the same
-backend. If a backend reports no memory, does not initialize, does not allocate
-or does not run the graph, if the speeds are equivalent, or if the backends are
-heterogeneous or unknown, the result is undetermined and POM does not guess: it
-leaves `llama_model_params.devices` null, keeping the current order and
-behavior. The same applies to a single device, which does not pay for the
+The ordering is only applied if every device reports its total memory and
+every handle uses the same backend. If a backend reports no memory, or if the
+backends are heterogeneous or unknown, POM does not guess: it leaves
+`llama_model_params.devices` null, keeping the current order and behavior. A
+speed measurement that failed, or speeds within 25% of each other, only mean
+that cards of the same size keep their current order. The same applies to a single device, which does not pay for the
 probe. The backend guard is needed because an explicit list can change the copy
 and split topology of a mixed Vulkan/CUDA graph; the automatic fit must not turn
-a synthetic measurement into a new heterogeneous path. When there is
-confidence, the explicit list is passed both to `common_fit_params` and to the
-real load, from slowest to fastest. Since the fit fills layers from back to
-front, the fastest device gets the final range and the output head, which is
-walked on every token, while the ranges stay contiguous and the number of graph
-boundaries does not grow.
+a reordering into a new heterogeneous path. When the order applies, the
+explicit list is passed both to `common_fit_params` and to the
+real load, from the largest total memory to the smallest. The fit fills the
+devices in the order it is given: the first takes layers up to its memory
+budget and each next device takes what is left, so the largest card is used to
+its limit and the unused memory, and any layer that spills to system memory,
+ends up on a smaller one. (With a slowest-first order, a 12 GB RTX 3060 was
+filled to 376 MiB free with one layer overflowing while a 16 GB RTX 5060 Ti
+after it kept 3 GB unused.) Cards of the same size are ordered by the measured
+speed, fastest first, when the difference exceeds 25%; otherwise they keep
+their order. The ranges stay contiguous and the number of graph boundaries does
+not grow; the final range and the output head sit on the last device that
+received layers.
 
 The KV cache is not artificially moved to the slow device. It is accessed on
 every token, grows with the context and follows the layer's device; so the fast
-device also gets the KV of the layers it runs and the head, within the memory
+device also gets the KV of the layers it runs, within the memory
 limit. Free memory is still the hard constraint for weights, context and
 temporaries. This policy avoids trading a repeated crossing for a nominal byte
 saving and keeps the existing fallback to `offload_kqv=false` when the KV does

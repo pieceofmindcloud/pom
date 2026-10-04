@@ -244,7 +244,7 @@ visibilidade dos controles de implantação na UI local.
   executor externo de MoE fica de fora da pré-visualização. A reserva MTP não abre um modelo nem constrói um
   grafo especulativo: para arquiteturas conhecidas, `fit_plan` calcula somente
   o KV determinístico dos blocos `nextn` a partir da metadata GGUF, e o coloca
-  no último dispositivo da ordem slow-to-fast. O custo de compute fica para a
+  no último dispositivo da ordem de carga (do mais rápido ao mais lento), onde ficam as últimas camadas. O custo de compute fica para a
   criação real do contexto, que pode recuar para a RAM sem abortar o processo.
   A captura identifica o eixo de tokens pela quantidade conhecida de tokens do
   microlote físico e pela forma do tensor. `n_embd_inp` valida a forma 2D ou

@@ -40,7 +40,7 @@ import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
 import { sumVram } from "../lib/gpu";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
-import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
+import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, PluginService, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { PipelineGatewayNode, type PipelineCycleCost, type PipelineRouteCost } from "./PipelineGatewayNode";
 import { PluginServiceTether } from "./PluginServices";
@@ -161,6 +161,8 @@ type NetworkNodeProps = {
   perf?: ChatTelemetryPeerPerf;
   speed?: PeerSpeed;
   compact?: boolean;
+  /** Serviços de plugin a pendurar sob o card expandido, que tem altura variável. */
+  services?: PluginService[];
   onToggleCompact?: () => void;
   onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
   onPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
@@ -170,7 +172,7 @@ type NetworkNodeProps = {
 
 const UNRATED = { decode: { tone: "unknown", ratio: null }, prefill: { tone: "unknown", ratio: null } } as const satisfies PeerSpeed;
 
-function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen }: NetworkNodeProps) {
+function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, services, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen }: NetworkNodeProps) {
   const system = range.node?.system;
   /*
    * Uma máquina pode ter mais de uma placa, e o card em miniatura mostrava só
@@ -292,6 +294,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
         compact
       />
     )}
+    {services && <PluginServiceTether services={services} />}
   </article>;
 }
 
@@ -549,7 +552,7 @@ export function ModelNetworkCanvas({
       })}
       {ranges.map((range, index) => {
         const id = keyFor(range);
-        return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />;
+        return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} services={ranges.findIndex((other) => other.node_id === range.node_id) === index ? range.node?.plugin_services : undefined} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />;
       })}
       {/* O que os plugins de cada máquina servem à rede (o Qdrant como banco
           de RAG, por exemplo), ligado ao card dela. Uma máquina com várias
@@ -558,6 +561,9 @@ export function ModelNetworkCanvas({
         const services = range.node?.plugin_services ?? [];
         if (services.length === 0 || ranges.findIndex((other) => other.node_id === range.node_id) !== index) return null;
         const id = keyFor(range);
+        // O card expandido cresce com o conteúdo e pendura os próprios selos;
+        // o compacto tem altura fixa e corta o que sai dele, então ficam aqui.
+        if (!compactOf(id)) return null;
         return <PluginServiceTether key={`services-${id}`} services={services} position={positionOf(range, index)} size={sizeOf(id)} />;
       })}
       {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} nameOf={nameOf} dragging={dragging === GATEWAY_LAYOUT_ID} onPointerDown={(event) => beginDrag(GATEWAY_LAYOUT_ID, gatewayPosition, event)} onPointerMove={(event) => drag(GATEWAY_LAYOUT_ID, GATEWAY_SIZE, event)} onPointerUp={endDrag} />}

@@ -1,52 +1,63 @@
 const MIN_CONFIDENT_SPEED_RATIO: f64 = 1.25;
 
-/// Returns a device permutation ordered from slowest to fastest only when the
-/// measurements are complete and every adjacent speed boundary is clear.
+/// Returns a device permutation ordered from the largest memory to the
+/// smallest.
 ///
-/// A missing/non-finite/non-positive score, or a difference small enough to be
-/// benchmark noise, returns `None` so callers keep llama.cpp's current order.
-pub fn confident_slow_to_fast_order(scores: &[Option<f64>]) -> Option<Vec<usize>> {
-    if scores.len() <= 1 {
+/// llama.cpp's fit fills the devices in the order it is given: the first one
+/// takes layers up to its memory budget and each next one takes what is left.
+/// Putting the largest card first uses the most memory of one card and leaves
+/// the slack, and any layer that spills to system memory, on a smaller one.
+/// With a speed order instead, a 12 GB card was filled to the brim, spilling
+/// part of a layer, while a 16 GB card after it kept 3 GB unused.
+///
+/// Cards of the same size are ordered by a clearly different measured speed,
+/// fastest first; otherwise they keep their current relative order. A device
+/// that reports no memory makes the result `None`, so callers keep llama.cpp's
+/// current order.
+pub fn largest_memory_first_order(
+    total_bytes: &[u64],
+    scores: &[Option<f64>],
+) -> Option<Vec<usize>> {
+    if total_bytes.len() <= 1 || total_bytes.contains(&0) {
         return None;
     }
-
-    if scores
-        .iter()
-        .any(|score| !matches!(score, Some(value) if value.is_finite() && *value > 0.0))
-    {
-        return None;
-    }
-
-    let mut order: Vec<usize> = (0..scores.len()).collect();
+    let speed = |index: usize| {
+        scores
+            .get(index)
+            .copied()
+            .flatten()
+            .filter(|score| score.is_finite() && *score > 0.0)
+    };
+    let mut order: Vec<usize> = (0..total_bytes.len()).collect();
+    // A stable sort: what neither rule separates stays where it was.
     order.sort_by(|&left, &right| {
-        scores[left]
-            .unwrap()
-            .partial_cmp(&scores[right].unwrap())
-            .expect("finite device speed scores are comparable")
+        total_bytes[right]
+            .cmp(&total_bytes[left])
+            .then_with(|| match (speed(left), speed(right)) {
+                (Some(left), Some(right)) if left / right >= MIN_CONFIDENT_SPEED_RATIO => {
+                    std::cmp::Ordering::Less
+                }
+                (Some(left), Some(right)) if right / left >= MIN_CONFIDENT_SPEED_RATIO => {
+                    std::cmp::Ordering::Greater
+                }
+                _ => std::cmp::Ordering::Equal,
+            })
     });
-
-    if order.windows(2).any(|pair| {
-        let slower = scores[pair[0]].unwrap();
-        let faster = scores[pair[1]].unwrap();
-        faster / slower < MIN_CONFIDENT_SPEED_RATIO
-    }) {
-        return None;
-    }
-
     Some(order)
 }
 
-/// Returns a speed order only when all devices use the same backend.
+/// Returns a memory order only when all devices use the same backend.
 ///
 /// The llama.cpp scheduler supports an explicit device order for a homogeneous
 /// backend, but a mixed backend graph has backend-specific split and copy
 /// paths. Keep llama.cpp's default order when backend identity is incomplete or
-/// heterogeneous, so a benchmark cannot change that graph topology.
-pub fn confident_slow_to_fast_order_for_backends(
+/// heterogeneous, so a reordering cannot change that graph topology.
+pub fn largest_memory_first_order_for_backends(
+    total_bytes: &[u64],
     scores: &[Option<f64>],
     backend_names: &[Option<&str>],
 ) -> Option<Vec<usize>> {
-    if scores.len() != backend_names.len()
+    if total_bytes.len() != backend_names.len()
         || backend_names.len() <= 1
         || backend_names.iter().any(Option::is_none)
         || backend_names.windows(2).any(|pair| pair[0] != pair[1])
@@ -54,81 +65,101 @@ pub fn confident_slow_to_fast_order_for_backends(
         return None;
     }
 
-    confident_slow_to_fast_order(scores)
+    largest_memory_first_order(total_bytes, scores)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{confident_slow_to_fast_order, confident_slow_to_fast_order_for_backends};
+    use super::{largest_memory_first_order, largest_memory_first_order_for_backends};
+
+    const GIB: u64 = 1 << 30;
 
     #[test]
     fn um_dispositivo_mantem_a_ordem_atual() {
-        assert_eq!(confident_slow_to_fast_order(&[Some(100.0)]), None);
+        assert_eq!(
+            largest_memory_first_order(&[16 * GIB], &[Some(100.0)]),
+            None
+        );
     }
 
     #[test]
-    fn velocidades_claramente_diferentes_ordenam_do_lento_ao_rapido() {
+    fn a_placa_com_mais_memoria_vem_primeiro() {
         assert_eq!(
-            confident_slow_to_fast_order(&[Some(400.0), Some(100.0)]),
+            largest_memory_first_order(&[12 * GIB, 16 * GIB], &[]),
             Some(vec![1, 0])
         );
-    }
-
-    #[test]
-    fn velocidades_equivalentes_mantem_a_ordem_atual() {
         assert_eq!(
-            confident_slow_to_fast_order(&[Some(100.0), Some(105.0)]),
-            None
+            largest_memory_first_order(&[12 * GIB, 24 * GIB, 16 * GIB], &[]),
+            Some(vec![1, 2, 0])
         );
     }
 
     #[test]
-    fn velocidade_indeterminada_mantem_a_ordem_atual() {
-        assert_eq!(confident_slow_to_fast_order(&[Some(400.0), None]), None);
-        assert_eq!(confident_slow_to_fast_order(&[None, None]), None);
+    fn a_memoria_decide_mesmo_quando_a_placa_menor_e_a_rapida() {
+        // O dispositivo 1 é o rápido, mas o 0 tem mais memória: é ele que o fit
+        // deve encher primeiro.
         assert_eq!(
-            confident_slow_to_fast_order(&[Some(f64::NAN), Some(400.0)]),
-            None
-        );
-        assert_eq!(
-            confident_slow_to_fast_order(&[Some(0.0), Some(400.0)]),
-            None
+            largest_memory_first_order(&[16 * GIB, 4 * GIB], &[Some(80.0), Some(400.0)]),
+            Some(vec![0, 1])
         );
     }
 
     #[test]
-    fn pouca_memoria_nao_passa_a_frente_da_velocidade_mensuravel() {
-        // O dispositivo 0 tem mais memória, mas o 1 é o rápido. A ordem de
-        // carregamento deve continuar sendo decidida pela medição, não pelos
-        // bytes livres que serão usados pelo fit.
-        let synthetic_devices = [(80.0, 16_u64), (400.0, 4_u64)];
-        let scores = synthetic_devices
-            .iter()
-            .map(|&(speed, _free_gib)| Some(speed))
-            .collect::<Vec<_>>();
-        let order = confident_slow_to_fast_order(&scores);
+    fn placas_do_mesmo_tamanho_sao_desempatadas_pela_velocidade_clara() {
+        assert_eq!(
+            largest_memory_first_order(&[16 * GIB, 16 * GIB], &[Some(100.0), Some(400.0)]),
+            Some(vec![1, 0])
+        );
+        // Diferença pequena é ruído de medição: a ordem atual fica.
+        assert_eq!(
+            largest_memory_first_order(&[16 * GIB, 16 * GIB], &[Some(100.0), Some(105.0)]),
+            Some(vec![0, 1])
+        );
+        // Sem medição utilizável, idem.
+        for scores in [
+            vec![Some(400.0), None],
+            vec![Some(f64::NAN), Some(400.0)],
+            vec![Some(0.0), Some(400.0)],
+            vec![],
+        ] {
+            assert_eq!(
+                largest_memory_first_order(&[16 * GIB, 16 * GIB], &scores),
+                Some(vec![0, 1])
+            );
+        }
+    }
 
-        assert_eq!(order, Some(vec![0, 1]));
+    #[test]
+    fn memoria_desconhecida_mantem_a_ordem_atual() {
+        assert_eq!(largest_memory_first_order(&[0, 16 * GIB], &[]), None);
     }
 
     #[test]
     fn backends_heterogeneos_nao_recebem_ordem_explicita() {
-        let scores = [Some(400.0), Some(100.0)];
         let backends = [Some("Vulkan"), Some("CUDA")];
-
         assert_eq!(
-            confident_slow_to_fast_order_for_backends(&scores, &backends),
+            largest_memory_first_order_for_backends(&[12 * GIB, 16 * GIB], &[], &backends),
+            None
+        );
+        assert_eq!(
+            largest_memory_first_order_for_backends(
+                &[12 * GIB, 16 * GIB],
+                &[],
+                &[Some("CUDA"), None]
+            ),
             None
         );
     }
 
     #[test]
-    fn backend_homogeneo_preserva_ordenacao_confiavel() {
-        let scores = [Some(400.0), Some(100.0)];
+    fn backend_homogeneo_recebe_a_ordem_por_memoria() {
         let backends = [Some("CUDA"), Some("CUDA")];
-
         assert_eq!(
-            confident_slow_to_fast_order_for_backends(&scores, &backends),
+            largest_memory_first_order_for_backends(
+                &[12 * GIB, 16 * GIB],
+                &[Some(100.0), Some(400.0)],
+                &backends
+            ),
             Some(vec![1, 0])
         );
     }

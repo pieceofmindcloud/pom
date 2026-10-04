@@ -1315,10 +1315,17 @@ pub(super) fn fit_plan(
         .iter()
         .map(Option::as_deref)
         .collect::<Vec<_>>();
-    let ordered_devices = device_placement::confident_slow_to_fast_order_for_backends(
+    let total_memories = device_memories
+        .iter()
+        .map(|memory| memory.total_bytes as u64)
+        .collect::<Vec<_>>();
+    let ordered_devices = device_placement::largest_memory_first_order_for_backends(
+        &total_memories,
         &speed_scores,
         &backend_name_refs,
     )
+    // A partial memory snapshot names fewer devices than there are: no order.
+    .filter(|order| order.len() == available_devices.len())
     .filter(|order| {
         order
             .iter()
@@ -1343,8 +1350,9 @@ pub(super) fn fit_plan(
         tracing::info!(
             device_backend_names = ?backend_names,
             device_speed_scores = ?speed_scores,
-            speed_order_applied = !ordered_devices.is_empty(),
-            "llama.cpp fit sondou a velocidade relativa dos dispositivos"
+            device_total_bytes = ?total_memories,
+            memory_order_applied = !ordered_devices.is_empty(),
+            "llama.cpp fit ordenou os dispositivos pela memória (velocidade só desempata)"
         );
     }
     let fit_memories = device_memories

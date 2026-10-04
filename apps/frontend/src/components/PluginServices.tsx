@@ -80,8 +80,13 @@ export function PluginServiceTether({
   size,
 }: {
   services: PluginService[];
-  position: CanvasPosition;
-  size: CardSize;
+  /**
+   * Onde o card está e o tamanho dele. Sem eles, o selo é filho do próprio
+   * card e fica logo abaixo da borda dele: o card expandido cresce com o
+   * conteúdo, e só ele sabe a altura que tem.
+   */
+  position?: CanvasPosition;
+  size?: CardSize;
 }) {
   if (services.length === 0) return null;
   const worst = services.find((service) => service.status === "error") ?? services[0];
@@ -89,7 +94,7 @@ export function PluginServiceTether({
     <div
       data-testid="plugin-service-tether"
       className="pointer-events-none absolute z-10"
-      style={{ left: position.left + 16, top: position.top + size.height }}
+      style={position && size ? { left: position.left + 16, top: position.top + size.height } : { left: 16, top: "100%" }}
     >
       <span
         aria-hidden="true"

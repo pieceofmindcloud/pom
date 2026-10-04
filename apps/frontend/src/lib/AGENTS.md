@@ -206,8 +206,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   license server with `credentials: "omit"`; it does not use `api.ts` or send
   the connection key or administrative session. It validates required fields
   for each commercial release and discards plugins without a valid release.
-  GitHub repository metadata in the catalog is ignored because GitHub sources
-  are local. Missing optional fields remain unknown; images are accepted only
+  GitHub sources stay local: the catalog's `github_url` (a free plugin the
+  license server lists as installed from GitHub) is only a suggestion, accepted
+  solely as `https://github.com/<owner>/<repo>`, and the Plugins card registers
+  that repository only when the operator clicks "Install from GitHub", the same
+  as pasting it in the repository box. Nothing is registered or installed from
+  the catalog on its own; other repository fields stay ignored. `featured` and
+  `pom_team` are display badges. Missing optional fields remain unknown; images are accepted only
   from the expected public host and URLs may not embed credentials. Published
   `description_pt_br` values are validated too. License state, activation
   candidates and usage by `plugin_code` come from the node's authenticated API

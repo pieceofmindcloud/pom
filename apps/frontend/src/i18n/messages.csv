@@ -1487,6 +1487,10 @@ plugins.activeTitle,Active,Ativo
 plugins.annualPrice,{price}/year,{price}/ano
 plugins.availableRelease,Available release,Release disponível
 plugins.buy,Buy,Comprar
+plugins.featured,Featured,Destaque
+plugins.pomTeam,POM team,Equipe POM
+plugins.community,Community,Comunidade
+plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
 plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
 plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.

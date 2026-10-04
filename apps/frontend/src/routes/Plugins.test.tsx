@@ -289,6 +289,26 @@ describe("Plugins", () => {
     expect(screen.getByRole("button", { name: "Instalar atualização" })).toBeTruthy();
   });
 
+  it("registra o repositório GitHub de um plugin gratuito do catálogo só quando o operador clica", async () => {
+    mocks.post.mockResolvedValue({});
+    mocks.catalog.data = {
+      plugins: [
+        publicPlugin("community_tool", {
+          display_name: "Community Tool", requires_license: false, featured: true, pom_team: false,
+          github_url: "https://github.com/dev/pom-plugin-community",
+        }),
+      ],
+    };
+    renderPage();
+    expect(screen.getByText("Destaque")).toBeTruthy();
+    expect(screen.getByText("Comunidade")).toBeTruthy();
+    expect(mocks.post).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Instalar do GitHub" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/github-repositories", {
+      repository_url: "https://github.com/dev/pom-plugin-community",
+    }));
+  });
+
   it("mostra a release do sistema local em vez da última release global", () => {
     mocks.catalog.data = {
       plugins: [publicPlugin("cross-platform", {

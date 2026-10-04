@@ -29,6 +29,12 @@ export interface PublicPluginCatalogEntry {
     annual: PublicPluginPrice | null;
   };
   releases: PublicPluginRelease[];
+  /** Shown first in the store (destaque). */
+  featured: boolean;
+  /** Made by the POM team; false for a community plugin, null from an older license server. */
+  pom_team: boolean | null;
+  /** Free plugin installed from this public GitHub repository instead of the license server. */
+  github_url: string | null;
 }
 
 export interface PublicPluginCatalog {
@@ -110,6 +116,19 @@ function publicPrice(value: unknown): PublicPluginPrice | null {
   return { amount, currency: currency.toUpperCase(), interval };
 }
 
+function githubUrl(value: unknown): string | null {
+  const candidate = nonEmptyString(value);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    const path = url.pathname.split("/").filter(Boolean);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || path.length !== 2 || url.username || url.password) return null;
+    return `https://github.com/${path[0]}/${path[1]}`;
+  } catch {
+    return null;
+  }
+}
+
 function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
   if (!isRecord(value)) return null;
   const code = nonEmptyString(value.code);
@@ -139,6 +158,9 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
       annual: publicPrice(pricing.annual),
     },
     releases,
+    featured: value.featured === true,
+    pom_team: typeof value.pom_team === "boolean" ? value.pom_team : null,
+    github_url: githubUrl(value.github_url),
   };
 }
 

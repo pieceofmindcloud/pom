@@ -829,7 +829,7 @@ enterprise.store.step1.body,The button opens Stripe Checkout with the official p
 enterprise.store.step1.title,Buy with Stripe,Compre com Stripe
 enterprise.store.step2.body,"After payment, the confirmation page shows your license key.","Depois do pagamento, a página de confirmação mostra a sua chave de licença."
 enterprise.store.step2.title,Get your license key,Receba a sua chave de licença
-enterprise.store.step3.body,"Paste the key in Settings, Plugins. The plugin installs itself and these screens replace this page.","Cole a chave em Configurações, Plugins. O plugin se instala sozinho e as telas substituem esta página."
+enterprise.store.step3.body,"Paste the key in the Plugins menu. The plugin installs itself and these screens replace this page.","Cole a chave no menu Plugins. O plugin se instala sozinho e as telas substituem esta página."
 enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
 enterprise.store.stepsLabel,How it works,Como funciona
 enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos

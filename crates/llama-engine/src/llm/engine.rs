@@ -42,7 +42,12 @@ fn text_mrope_positions(n_tokens: usize, start: u32) -> Result<Vec<sys::llama_po
     let mut storage = vec![0 as sys::llama_pos; n_tokens.saturating_mul(4)];
     for row in 0..n_tokens {
         let position = start + row as u32;
-        write_mrope_position(&mut storage, n_tokens, row, [position, position, position, 0])?;
+        write_mrope_position(
+            &mut storage,
+            n_tokens,
+            row,
+            [position, position, position, 0],
+        )?;
     }
     Ok(storage)
 }
@@ -56,7 +61,11 @@ mod mrope_text_tests {
         let storage = text_mrope_positions(3, 10).unwrap();
         // Section-major: [s0 rows][s1 rows][s2 rows][s3 rows].
         assert_eq!(storage, vec![10, 11, 12, 10, 11, 12, 10, 11, 12, 0, 0, 0]);
-        assert_eq!(storage.len(), 3 * 4, "llama.cpp reads n_tokens * 4 positions");
+        assert_eq!(
+            storage.len(),
+            3 * 4,
+            "llama.cpp reads n_tokens * 4 positions"
+        );
     }
 }
 
@@ -103,7 +112,10 @@ mod wide_image_tests {
     #[test]
     fn each_row_becomes_contiguous_copies_of_itself() {
         let wide = widen_embedding_rows(&[1.0, 2.0, 3.0, 4.0], 2, 3);
-        assert_eq!(wide, vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]);
+        assert_eq!(
+            wide,
+            vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]
+        );
     }
 }
 
@@ -400,12 +412,38 @@ impl LlmEngine {
                             "contexto do rascunho MTP externo falhou na VRAM ({vram_error}); \
                                  tentando de novo com execução no host (offload_kqv=false)"
                         );
-                        return Self::from_loaded_with_mtp_offload(
+                        let host_kv = Self::from_loaded_with_mtp_offload(
                             target_loaded.clone(),
                             cfg,
                             fit_memory_applied,
                             effective_n_gpu_layers,
                             Some(draft_loaded),
+                            false,
+                        );
+                        if host_kv.as_ref().is_ok_and(|engine| engine.mtp_ready()) {
+                            return host_kv;
+                        }
+                        // The weights fit in VRAM but the context does not,
+                        // even with its KV in host memory: the compute
+                        // buffers follow the weights. The GPU copy was
+                        // released with the attempt above; a draft loaded in
+                        // host memory needs nothing from the card.
+                        let reason = match &host_kv {
+                            Ok(engine) => engine.mtp_initial_context_error.clone().unwrap_or_default(),
+                            Err(error) => format!("{error:#}"),
+                        };
+                        warn!(
+                            "contexto do rascunho MTP externo não coube na placa nem com o KV no host \
+                             ({reason}); carregando o rascunho na RAM"
+                        );
+                        drop(host_kv);
+                        let draft_cpu = LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)?;
+                        return Self::from_loaded_with_mtp_offload(
+                            target_loaded.clone(),
+                            cfg,
+                            fit_memory_applied,
+                            effective_n_gpu_layers,
+                            Some(draft_cpu),
                             false,
                         );
                     }

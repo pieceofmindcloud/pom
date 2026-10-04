@@ -348,6 +348,51 @@ pub(super) fn mtp_mode_without_gpu_fit(requested: MtpFitMode) -> MtpFitMode {
     }
 }
 
+/// What the compute buffers of an external MTP draft context are allowed for
+/// in the fit. The draft runs one block over a `n_ubatch` batch; 510 MiB was
+/// measured for a Qwen NextN block with `n_ubatch = 512`.
+const EXTERNAL_MTP_DRAFT_COMPUTE_BYTES: usize = 512 << 20;
+
+/// Device memory an external MTP draft needs besides its KV: its weights,
+/// taken as the size of the file that is really loaded (an upper bound: the
+/// token embedding in it stays in host memory), plus its compute buffers.
+/// A shared draft is loaded as its completed copy, which carries the target's
+/// embedding and output head and is larger than the draft itself (1.8 GB
+/// became 2.7 GB), so that copy is what is measured. `None` when there is no
+/// external draft or its file cannot be read.
+pub(super) fn external_mtp_draft_bytes(
+    draft_path: Option<&str>,
+    target_path: &str,
+) -> Option<usize> {
+    let draft = std::path::Path::new(draft_path?);
+    let loaded = crate::mtp_draft::ready_draft_path(draft, std::path::Path::new(target_path))
+        .unwrap_or_else(|_| draft.to_path_buf());
+    let size = std::fs::metadata(loaded).ok()?.len();
+    usize::try_from(size)
+        .ok()?
+        .checked_add(EXTERNAL_MTP_DRAFT_COMPUTE_BYTES)
+}
+
+/// Adds the external draft's weights and compute to the device its block is
+/// loaded on: the one that holds the last NextN layer's KV, which is the last
+/// device with a cost, or the last device when the KV costs nothing.
+pub(super) fn with_external_mtp_draft(
+    mut costs: Vec<usize>,
+    draft_bytes: Option<usize>,
+) -> Vec<usize> {
+    let Some(draft_bytes) = draft_bytes else {
+        return costs;
+    };
+    let device = costs
+        .iter()
+        .rposition(|&cost| cost > 0)
+        .or(costs.len().checked_sub(1));
+    if let Some(device) = device {
+        costs[device] = costs[device].saturating_add(draft_bytes);
+    }
+    costs
+}
+
 pub(super) fn fit_memory_margins_with_mtp(
     margins: &[usize],
     mtp_cost: &[usize],
@@ -753,6 +798,43 @@ mod fit_memory_margin_tests {
                 tensor_split: vec![7.5, 3.5],
             })
         );
+    }
+
+    #[test]
+    fn an_external_mtp_draft_is_reserved_on_the_device_of_its_block() {
+        // The KV of the last NextN layer is on device 1: the draft goes there.
+        assert_eq!(
+            with_external_mtp_draft(vec![0, 160], Some(3000)),
+            vec![0, 3160]
+        );
+        assert_eq!(
+            with_external_mtp_draft(vec![160, 0], Some(3000)),
+            vec![3160, 0]
+        );
+        // No KV cost (host KV): the last device, where the final layers are.
+        assert_eq!(
+            with_external_mtp_draft(vec![0, 0], Some(3000)),
+            vec![0, 3000]
+        );
+        // A draft inside the model itself reserves nothing extra.
+        assert_eq!(with_external_mtp_draft(vec![0, 160], None), vec![0, 160]);
+        assert_eq!(
+            with_external_mtp_draft(Vec::new(), Some(3000)),
+            Vec::<usize>::new()
+        );
+
+        assert_eq!(external_mtp_draft_bytes(None, "/models/target.gguf"), None);
+        assert_eq!(
+            external_mtp_draft_bytes(Some("/nonexistent/draft.gguf"), "/models/target.gguf"),
+            None
+        );
+        // A file that is not a readable draft is measured as it is.
+        let draft =
+            std::env::temp_dir().join(format!("pom-draft-size-{}.gguf", std::process::id()));
+        std::fs::write(&draft, vec![0u8; 4096]).unwrap();
+        let bytes = external_mtp_draft_bytes(draft.to_str(), "/models/target.gguf");
+        std::fs::remove_file(&draft).unwrap();
+        assert_eq!(bytes, Some(4096 + EXTERNAL_MTP_DRAFT_COMPUTE_BYTES));
     }
 
     #[test]
@@ -1478,6 +1560,8 @@ pub(super) fn fit_plan(
         let mtp_info = crate::gguf::read_info(std::path::Path::new(model_path)).ok();
         let mut reserved_mtp_cost = vec![0usize; physical_devices];
         let mut exhausted_attempts = true;
+        let external_draft_bytes =
+            external_mtp_draft_bytes(cfg.mtp_draft_path.as_deref(), model_path);
 
         for attempt in 0..MAX_MTP_FIT_ATTEMPTS {
             let mut joint_margins =
@@ -1536,13 +1620,17 @@ pub(super) fn fit_plan(
                 exhausted_attempts = false;
                 break;
             };
-            let actual_mtp_cost = estimate.costs;
+            // An external draft is a second model on the device of the last
+            // NextN layer. Reserving only its KV let the fit fill that card and
+            // the draft then failed to allocate its weights and compute.
+            let actual_mtp_cost = with_external_mtp_draft(estimate.costs, external_draft_bytes);
             let effective_tensor_split = estimate.tensor_split;
             tracing::info!(
                 attempt,
                 mtp_vram_cost_estimate = ?actual_mtp_cost,
                 mtp_tensor_split = ?effective_tensor_split.get(..physical_devices),
-                "llama.cpp fit calculou o KV MTP por dispositivo pela divisão efetiva de camadas"
+                external_draft_bytes = external_draft_bytes.unwrap_or(0),
+                "llama.cpp fit calculou a reserva MTP por dispositivo pela divisão efetiva de camadas"
             );
 
             if actual_mtp_cost == reserved_mtp_cost {

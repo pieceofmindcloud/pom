@@ -14,6 +14,7 @@ import {
   ListTree,
   MessagesSquare,
   Network,
+  Puzzle,
   Rocket,
   Scissors,
   Search,
@@ -108,6 +109,10 @@ export const NAV: NavSection[] = [
     ],
   },
   { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/estatisticas" },
+  // The plugin catalog is a storefront with a place of its own in the menu,
+  // not a setting. The menus of the installed plugins are inserted right
+  // after it, before Documentation (`withPluginMenus`).
+  { labelKey: "nav.plugins", icon: Puzzle, to: "/plugins" },
   // The repo's own documentation, not a screen that reads the cluster: the
   // folder AGENTS.md files and subsystem READMEs embedded at build time.
   {
@@ -137,11 +142,6 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
       { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
-      // O catálogo de plugins é uma vitrine: precisa ser alcançável sem que o
-      // operador esbarre antes numa tela bloqueada. Fica antes de "Sobre", que
-      // é a casa da atualização do `pom` em si - itens distintos de propósito,
-      // porque atualizar um plugin e atualizar o binário não são a mesma coisa.
-      { labelKey: "nav.plugins", to: "/plugins", icon: Blocks },
       { labelKey: "nav.about", to: "/config/sobre", icon: Info },
     ],
   },

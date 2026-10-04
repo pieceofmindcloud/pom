@@ -65,14 +65,17 @@ describe("navigation structure", () => {
     });
   });
 
-  it("exposes the plugin catalog in the menu, apart from About", () => {
-    // Sem esta entrada a tela de Plugins só era alcançável esbarrando numa
-    // funcionalidade bloqueada - o catálogo existe justamente para ser
-    // navegado antes da compra.
+  it("gives the plugin catalog its own menu item, right before Documentation", () => {
+    // O catálogo é uma vitrine: tem lugar próprio no menu, fora de
+    // Configurações, e os menus dos plugins instalados entram logo depois dele.
+    const labels = NAV.map((section) => section.labelKey);
+    const plugins = NAV.find((section) => section.labelKey === "nav.plugins");
+    expect(plugins?.to).toBe("/plugins");
+    expect(labels.indexOf("nav.plugins")).toBe(labels.indexOf("nav.documentation") - 1);
+
     const settings = NAV.find((section) => section.labelKey === "nav.settings");
     const entries = settings?.children?.map((child) => [child.labelKey, child.to]);
-
-    expect(entries).toContainEqual(["nav.plugins", "/plugins"]);
+    expect(entries).not.toContainEqual(["nav.plugins", "/plugins"]);
     expect(entries).toContainEqual(["nav.about", "/config/sobre"]);
   });
 
@@ -150,7 +153,6 @@ describe("navForProfile", () => {
       "/config/preferencias",
       "/config/armazenamento",
       "/config/preferencias/admin",
-      "/plugins",
       "/config/sobre",
     ]);
 

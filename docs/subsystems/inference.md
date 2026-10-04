@@ -524,6 +524,18 @@ their order. The ranges stay contiguous and the number of graph boundaries does
 not grow; the final range and the output head sit on the last device that
 received layers.
 
+An external MTP draft (`mtp_draft_path`) is a second model loaded on the device
+of the last NextN layer. The joint fit reserves there, besides the NextN KV,
+the weights of the file that is really loaded (the completed copy of a shared
+draft, which is larger than the draft itself; an upper bound) and 512 MiB for
+its compute buffers. Reserving only the KV let the fit fill that card, and the draft then
+failed with `cudaMalloc failed: out of memory` on its compute buffers and MTP
+was dropped. When the reserve does not fit without taking layers from the main
+model, the existing policy applies: the main layers win and MTP falls back.
+If the context of a draft whose weights are in VRAM still cannot be created,
+with its KV on the card and then in host memory, the draft is loaded again in
+host memory and attached there instead of MTP being given up.
+
 The KV cache is not artificially moved to the slow device. It is accessed on
 every token, grows with the context and follows the layer's device; so the fast
 device also gets the KV of the layers it runs, within the memory

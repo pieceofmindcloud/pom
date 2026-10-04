@@ -175,11 +175,11 @@ describe("guarda de perfil por rota", () => {
   }
 
   const enterpriseManifest = (profiles: string[]) => ({
-    code: "enterprise",
+    code: "logs",
     version: "1.0.0",
     manifest: {
       schema: "pom-plugin-ui/v1",
-      plugin_code: "enterprise",
+      plugin_code: "logs",
       menu: [
         { id: "logs", label: { en: "Request Logs" }, to: "/logs", profiles },
         { id: "stats", label: { en: "Statistics" }, to: "/estatisticas", profiles },
@@ -240,10 +240,10 @@ describe("guarda de perfil por rota", () => {
   it("renders the plugin-provided screen instead of the fallback, per manifest profile", async () => {
     pluginUi.plugins = [enterpriseManifest(["admin", "node"])];
     open("/logs", "admin");
-    expect(await screen.findByText("tela-plugin:enterprise:logs")).toBeTruthy();
+    expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
     cleanup();
     open("/estatisticas", "node");
-    expect(await screen.findByText("tela-plugin:enterprise:stats")).toBeTruthy();
+    expect(await screen.findByText("tela-plugin:logs:stats")).toBeTruthy();
     cleanup();
     // infer não está nos perfis do manifesto: recusa, e não cai na propaganda.
     open("/logs", "infer");
@@ -305,11 +305,11 @@ describe("guarda de perfil por rota", () => {
       },
     });
     pluginUi.plugins = [
-      logsPlugin("enterprise"),
+      logsPlugin("requests"),
       logsPlugin("audit"),
     ];
-    open("/enterprise/logs", "admin");
-    expect(await screen.findByText("tela-plugin:enterprise:logs")).toBeTruthy();
+    open("/requests/logs", "admin");
+    expect(await screen.findByText("tela-plugin:requests:logs")).toBeTruthy();
     cleanup();
     open("/audit/logs", "admin");
     expect(await screen.findByText("tela-plugin:audit:logs")).toBeTruthy();

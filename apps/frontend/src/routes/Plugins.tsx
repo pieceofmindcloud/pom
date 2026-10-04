@@ -333,6 +333,9 @@ type PluginCardProps = {
   onGithubRefresh: (id: string) => void;
   onGithubRemove: (id: string) => void;
   onGithubInstall: (repository: GithubRepository, release: GithubRepositoryRelease, update: boolean) => void;
+  /** Registers the catalog entry's GitHub repository, so its releases can be installed here. */
+  onGithubAdd: (repositoryUrl: string) => void;
+  githubAddBusy: boolean;
 };
 
 function PluginCard({
@@ -359,6 +362,8 @@ function PluginCard({
   onGithubRefresh,
   onGithubRemove,
   onGithubInstall,
+  onGithubAdd,
+  githubAddBusy,
 }: PluginCardProps) {
   const { t } = useI18n();
   const uiPlugin = pluginUiSnapshot().find((plugin) => plugin.code === code);
@@ -474,6 +479,9 @@ function PluginCard({
           <p className="mt-0.5 truncate font-mono text-[0.68rem] text-faint">{code}</p>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <Badge tone={badgeTone}>{licenseLabel}</Badge>
+            {entry?.featured && <Badge tone="iris">{t("plugins.featured")}</Badge>}
+            {entry?.pom_team === true && <Badge tone="neutral">{t("plugins.pomTeam")}</Badge>}
+            {entry?.pom_team === false && <Badge tone="neutral">{t("plugins.community")}</Badge>}
             {fromGithub && <Badge tone="neutral">GitHub</Badge>}
             {status?.development_install && <Badge tone="neutral">{t("plugins.devInstalled")}</Badge>}
           </div>
@@ -659,6 +667,16 @@ function PluginCard({
           {active && status?.public_install === true && (
             <Button variant="outline" loading={busyCode === code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onDeactivate(code)}>
               {t("plugins.githubUninstall")}
+            </Button>
+          )}
+          {!active && !repository && entry?.github_url && (
+            <Button
+              variant="primary"
+              loading={githubAddBusy}
+              icon={<Download className="h-3.5 w-3.5" />}
+              onClick={() => onGithubAdd(entry.github_url!)}
+            >
+              {t("plugins.githubAddFromCatalog")}
             </Button>
           )}
           {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
@@ -1039,6 +1057,10 @@ export function Plugins() {
                     onGithubRefresh={(id) => void runGithubAction(id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}/refresh`))}
                     onGithubRemove={(id) => void runGithubAction(id, () => api.del(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}`))}
                     onGithubInstall={(repository, release, update) => setInstallTarget({ repository, release, update })}
+                    githubAddBusy={githubBusyId === "add"}
+                    onGithubAdd={(repositoryUrl) => void runGithubAction("add", () => api.post("/api/ui/plugins/github-repositories", {
+                      repository_url: repositoryUrl,
+                    }))}
                   />
                 ))}
               </div>

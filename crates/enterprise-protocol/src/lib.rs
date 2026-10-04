@@ -450,7 +450,7 @@ mod tests {
     fn activation_payload_matches_the_published_server_wire_contract() {
         let payload = ActivationPayload {
             license_key: "PM-test".into(),
-            plugin_code: "enterprise".into(),
+            plugin_code: "logs".into(),
             fingerprint_scheme: FINGERPRINT_SCHEME.into(),
             fingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .into(),
@@ -466,7 +466,7 @@ mod tests {
             serde_json::to_value(payload).expect("activation payload JSON"),
             serde_json::json!({
                 "license_key": "PM-test",
-                "plugin_code": "enterprise",
+                "plugin_code": "logs",
                 "fingerprint_scheme": "pom-fingerprint-v1",
                 "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "installation_id_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -483,7 +483,7 @@ mod tests {
             "license_id": "lic-123",
             "activation_id": "act-456",
             "lease_id": "lease-789",
-            "licensed_plugins": ["analytics_plus", "enterprise"],
+            "licensed_plugins": ["analytics_plus", "logs"],
             "license_expires_at": "2099-11-30T12:00:00Z",
             "activation_count": 3,
             "max_activations": 10,
@@ -505,7 +505,7 @@ mod tests {
         }))
         .expect("published license status payload");
 
-        assert_eq!(status.licensed_plugins, ["analytics_plus", "enterprise"]);
+        assert_eq!(status.licensed_plugins, ["analytics_plus", "logs"]);
         assert_eq!(
             status.license_expires_at.as_deref(),
             Some("2099-11-30T12:00:00Z")

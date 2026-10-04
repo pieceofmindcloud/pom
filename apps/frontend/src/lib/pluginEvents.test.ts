@@ -54,9 +54,9 @@ describe("pom-plugin-events/v1", () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     try {
-      await expect(scopedPluginApi("enterprise").rpc("directory.set_node", { node_id: "n1" })).resolves.toEqual({ ok: true });
+      await expect(scopedPluginApi("logs").rpc("directory.set_node", { node_id: "n1" })).resolves.toEqual({ ok: true });
       const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-      expect(url).toContain("/api/ui/plugins/enterprise/rpc/directory.set_node");
+      expect(url).toContain("/api/ui/plugins/logs/rpc/directory.set_node");
       expect(init.method).toBe("POST");
       expect(JSON.parse(String(init.body))).toEqual({ node_id: "n1" });
     } finally {

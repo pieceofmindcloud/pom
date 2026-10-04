@@ -19,8 +19,8 @@ import { usePublicPluginCatalog } from "../lib/queries";
 import type { PublicPluginPrice } from "../lib/pluginCatalog";
 import { useI18n } from "../i18n/provider";
 
-const PLUGIN_CODE = "enterprise";
-const STORE_URL = "https://pieceofmind.cloud/plugins/index.html?plugin=enterprise";
+const PLUGIN_CODE = "logs";
+const STORE_URL = "https://pieceofmind.cloud/plugins/index.html?plugin=logs";
 
 type ShowcaseKind = "logs" | "statistics";
 type Interval = "month" | "year";

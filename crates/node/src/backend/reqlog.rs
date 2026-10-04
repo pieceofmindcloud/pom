@@ -1371,7 +1371,7 @@ pub async fn list_requests(
 ) -> impl IntoResponse {
     let plugin_status = state
         .plugins
-        .status(crate::plugins::ENTERPRISE_PLUGIN_CODE)
+        .status(crate::plugins::LOGS_PLUGIN_CODE)
         .await;
     if !plugin_status.is_some_and(|status| status.has_feature("request_logs")) {
         return (
@@ -1398,7 +1398,7 @@ pub async fn list_requests(
     if let Some(response) = state
         .plugins
         .query_audit(
-            crate::plugins::ENTERPRISE_PLUGIN_CODE,
+            crate::plugins::LOGS_PLUGIN_CODE,
             "list",
             serde_json::to_value(&query).unwrap_or_default(),
         )
@@ -1428,7 +1428,7 @@ pub async fn stats_requests(
 ) -> impl IntoResponse {
     let plugin_status = state
         .plugins
-        .status(crate::plugins::ENTERPRISE_PLUGIN_CODE)
+        .status(crate::plugins::LOGS_PLUGIN_CODE)
         .await;
     if !plugin_status.is_some_and(|status| status.has_feature("statistics")) {
         return (
@@ -1455,7 +1455,7 @@ pub async fn stats_requests(
     if let Some(response) = state
         .plugins
         .query_audit(
-            crate::plugins::ENTERPRISE_PLUGIN_CODE,
+            crate::plugins::LOGS_PLUGIN_CODE,
             "stats",
             serde_json::to_value(&query).unwrap_or_default(),
         )

@@ -38,7 +38,7 @@ static API: PluginApiV1 = PluginApiV1 {
 };
 
 #[no_mangle]
-pub unsafe extern "C" fn pom_enterprise_plugin_v1() -> *const PluginApiV1 {
+pub unsafe extern "C" fn pom_logs_plugin_v1() -> *const PluginApiV1 {
     &API
 }
 
@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn fixture_exports_the_v1_abi_and_all_required_callbacks() {
-        let api = unsafe { &*pom_enterprise_plugin_v1() };
+        let api = unsafe { &*pom_logs_plugin_v1() };
 
         assert_eq!(api.abi_version, enterprise_protocol::PLUGIN_ABI_VERSION);
         assert!(!api.plugin_version.is_null());
@@ -67,6 +67,6 @@ mod tests {
     #[test]
     fn fixture_exports_the_generic_base_and_enterprise_entrypoints() {
         assert_eq!(unsafe { pom_base_plugin_v1() }, &API);
-        assert_eq!(unsafe { pom_enterprise_plugin_v1() }, &API);
+        assert_eq!(unsafe { pom_logs_plugin_v1() }, &API);
     }
 }

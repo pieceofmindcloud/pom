@@ -176,9 +176,12 @@ runtime é Rust (`crates/node/src/inference/infer_server.rs`,
 - `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
   runtime. Todas as máquinas do cluster compilam um executável `pom` com CPU, CUDA e Vulkan,
   mais `pom-plugin-host`; os builds usam cache mounts e o frontend é
-  independente. O target adicional `dev-runtime` instala Rust/Cargo e
-  ferramentas nativas só na imagem de desenvolvimento local; `runtime` não
-  inclui compilador. O commit do host vira `ENV
+  independente. Há duas imagens finais: `runtime`, a de distribuição, sem
+  compilador; e `dev-runtime`, a de desenvolvimento, com Rust/Cargo e
+  ferramentas nativas. O toolchain fica no estágio `dev-os`, sobre o sistema
+  operacional (`runtime-os`) e antes de qualquer arquivo do POM, e
+  `dev-runtime` copia os artefatos prontos de `runtime`: um build do POM
+  reaproveita as camadas do toolchain em vez de reinstalá-lo. O commit do host vira `ENV
   POM_BUILD_COMMIT` no runtime, sem invalidar as camadas Cargo/npm. O
   `docker-entrypoint.sh` faz `exec` do `pom` e exporta `POM_PLUGIN_HOST`; na
   ativacao, o `pom` inicia o host como filho com o plugin baixado e IPC por

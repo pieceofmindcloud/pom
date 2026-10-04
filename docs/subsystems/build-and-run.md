@@ -447,9 +447,13 @@ loses offload on the first click.
   runtime uses the CUDA `runtime` image for cuBLAS in release mode (`base` in
   source), keeps the Vulkan loader and RADV, sets `POM_HOME=/app` and uses
   `docker-entrypoint.sh`. `POM_BUILD_COMMIT` is exported as an `ENV` only in
-  the runtime. The local `dev-runtime` target derives from it and installs
-  Rust/Cargo under world-readable toolchain directories, plus native tools for
-  plugin rebuilds. The cluster's optional development overlays use this target
+  the runtime. There are two final images. `runtime` is the distribution
+  image and has no compiler. `dev-runtime` is the development image: its
+  toolchain (Rust/Cargo under world-readable directories, native compilers,
+  Node) is installed in the `dev-os` stage, on top of the operating system
+  stage `runtime-os` and before any POM file, and the POM files are then
+  copied from `runtime`. A POM build therefore reuses the toolchain layers
+  from cache; only `RUST_TOOLCHAIN` or the package list reruns them. The cluster's optional development overlays use this target
   and give non-root nodes a writable `CARGO_HOME` in the project data volume;
   plugin build output stays in
   `<project_root>/.pom-dev-plugin-builds`, not in

@@ -276,7 +276,9 @@ does not get past that clip. The minimized choice is persisted in the browser.
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust
-  screen without a public network secret.
+  screen without a public network secret. On the row of the network this node
+  already belongs to, Join is replaced by "Leave network" for a member and by
+  no action at all for the principal.
 - `/setup` -> `Setup`, the real first access wizard, **full screen** and with
   the access gate's identity (see "First access wizard" below).
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the

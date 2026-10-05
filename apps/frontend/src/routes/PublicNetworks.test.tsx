@@ -7,16 +7,19 @@ import { PublicNetworks } from "./PublicNetworks";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
+  node: { data: undefined as { authority_level: "primary" | "secondary" | null } | undefined },
 }));
 
 vi.mock("../lib/api", () => ({
-  api: { get: mocks.get },
+  api: { get: mocks.get, post: mocks.post },
 }));
 vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: undefined }),
+  useNode: () => mocks.node,
 }));
 vi.mock("../lib/toast", () => ({
-  useToast: () => ({ fromError: vi.fn() }),
+  useToast: () => ({ fromError: vi.fn(), success: vi.fn() }),
 }));
 
 const networks = [
@@ -78,8 +81,20 @@ const networks = [
 
 const publicHealth = vi.fn();
 
+/** Serves the catalog and, when given, the network this node already belongs to. */
+function serve(local?: (typeof networks)[number]) {
+  mocks.get.mockImplementation((path: string) => {
+    if (path === "/api/public/networks") return Promise.resolve(networks);
+    if (path === "/api/public/network" && local) return Promise.resolve(local);
+    if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+    return Promise.reject(new Error("no local network"));
+  });
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", publicHealth);
+  mocks.node.data = undefined;
+  mocks.post.mockResolvedValue({});
   mocks.get.mockImplementation((path: string) => {
     if (path === "/api/public/networks") return Promise.resolve(networks);
     if (path.startsWith("/api/public/networks/locate?")) {
@@ -159,5 +174,42 @@ describe("PublicNetworks", () => {
     expect(within(dialog).getByRole("link", { name: "Discord" })).toBeTruthy();
     expect(within(dialog).getByText("Equipe Sul")).toBeTruthy();
     expect(within(dialog).getByText("fingerprint-curitiba")).toBeTruthy();
+  });
+
+  it("offers Leave instead of Join on the network this node already belongs to", async () => {
+    mocks.node.data = { authority_level: null };
+    serve(networks[0]);
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const row = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    const leave = await within(row).findByRole("button", { name: "Sair da rede" });
+    expect(within(row).queryByRole("button", { name: "Entrar na rede" })).toBeNull();
+    const other = screen.getByText("Rede Lisboa").closest("tr")!;
+    expect(within(other).getByRole("button", { name: "Entrar na rede" })).toBeTruthy();
+
+    fireEvent.click(leave);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sair da rede" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/leave"));
+  });
+
+  it("offers no action to the principal on its own network", async () => {
+    mocks.node.data = { authority_level: "primary" };
+    serve(networks[0]);
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const other = (await screen.findByText("Rede Lisboa")).closest("tr")!;
+    const row = screen.getByText("Rede Curitiba").closest("tr")!;
+    await waitFor(() => expect(within(row).queryByRole("button", { name: "Entrar na rede" })).toBeNull());
+    expect(within(row).queryByRole("button", { name: "Sair da rede" })).toBeNull();
+    expect(within(other).getByRole("button", { name: "Entrar na rede" })).toBeTruthy();
   });
 });

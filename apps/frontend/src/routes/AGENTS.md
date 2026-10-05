@@ -52,6 +52,11 @@ Per-file list:
   O nome de cada rede abre um `Modal` com todo o registro público, incluindo
   descrição, regras e o campo único de canais Discord ou Telegram renderizados
   como Markdown; a confirmação de entrada continua sendo uma ação separada.
+  The action column depends on membership: the row whose fingerprint matches
+  `/api/public/network` (the network this node is already in) never offers
+  Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
+  confirmation as Forget network in `NetworkSettings.tsx`); the principal
+  (`authority_level === "primary"` from `useNode`) gets no action there.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 

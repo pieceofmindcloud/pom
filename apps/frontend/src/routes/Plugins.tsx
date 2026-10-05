@@ -1097,24 +1097,28 @@ export function Plugins() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
-      <FullBleedHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
+      <FullBleedHeader
+        title={t("plugins.title")}
+        subtitle={t("plugins.subtitle")}
+        actions={(
+          <div role="tablist" aria-label={t("plugins.tabsLabel")} className="inline-flex rounded-lg border border-line bg-raised/40 p-1">
+            {(["catalog", "develop"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={tab === value}
+                onClick={() => setTab(value)}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris ${tab === value ? "bg-surface text-fg shadow-sm" : "text-muted hover:text-fg"}`}
+              >
+                {value === "catalog" ? t("plugins.tabCatalog") : t("plugins.tabDevelop")}
+              </button>
+            ))}
+          </div>
+        )}
+      />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
-        <div role="tablist" aria-label={t("plugins.tabsLabel")} className="mb-5 inline-flex rounded-lg border border-line bg-raised/40 p-1">
-          {(["catalog", "develop"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={tab === value}
-              onClick={() => setTab(value)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris ${tab === value ? "bg-surface text-fg shadow-sm" : "text-muted hover:text-fg"}`}
-            >
-              {value === "catalog" ? t("plugins.tabCatalog") : t("plugins.tabDevelop")}
-            </button>
-          ))}
-        </div>
-
         {tab === "catalog" ? (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,21rem)]">
           <div className="order-2 min-w-0 space-y-4 lg:order-1">

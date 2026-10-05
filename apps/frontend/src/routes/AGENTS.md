@@ -104,7 +104,8 @@ Per-file list:
   encoded `plugin=<code>` parameter via `lib/pluginPurchase.ts`. Cards are
   compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
   catalog, GitHub repository and local state for the same code share one card.
-  The screen has two tabs. "Plugins" searches and pages the store on the
+  The screen has two tabs, on the right side of the title bar
+  (`FullBleedHeader` `actions`). "Plugins" searches and pages the store on the
   license server (`GET /v1/plugins?q=&page=&per_page=10`, featured and POM-team
   plugins first; the full unpaged catalog is still read to decide whether the
   license form shows and to name the plugins a key granted). Plugins known only

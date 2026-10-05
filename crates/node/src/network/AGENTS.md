@@ -92,6 +92,11 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   `PublicStats` publish models, node count and VRAM under a separate switch
   (`NetworkChat::{public_stats, public_stats_enabled}`); the slot is filled by
   `webui::spawn_public_stats_publisher`, never by the swarm loop.
+  `Describe` and `Directory` are answered by any node from `DirectoryBoard`
+  (own public network; known public networks when the node is a relay or in a
+  public network), filled by `gateway::spawn_directory_board_publisher`.
+  `default_directory_relays` is the list of relay keys a fresh installation
+  asks (`DEFAULT_DIRECTORY_RELAYS` plus `POM_DIRECTORY_RELAYS`).
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
   response próprio, limites de texto/arquivo, fila limitada, rate limit e
   writer de persistência fora do loop do swarm. A ação original leva a API key;

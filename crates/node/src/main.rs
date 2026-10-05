@@ -1497,6 +1497,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::plugins::spawn_serving_watcher(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     crate::webui::spawn_public_stats_publisher(gw_state.clone());
+    crate::gateway::spawn_directory_board_publisher(gw_state.clone());
 }
 
 /// Sobe o nó configurado: rede, gateway com todas as rotas e, se houver, a

@@ -350,7 +350,7 @@ export function Setup() {
           cluster_id: clusterId,
           visibility: setup.network.visibility,
           network: setup.network,
-          public_directory: splitList(setup.publicDirectory),
+          public_directory: directoryReplicas(setup.publicDirectory),
         },
         { auth: false },
       );
@@ -373,7 +373,7 @@ export function Setup() {
     try {
       await api.post("/api/setup/save", {
         profile: setup.profile,
-        public_directory: splitList(setup.publicDirectory),
+        public_directory: directoryReplicas(setup.publicDirectory),
         connection_key: setup.connectionKey.trim(),
         advertise_addr: setup.advertiseAddr.trim(),
         cluster_id: clusterIdFromDocument(setup.trustDocument) || setup.network.public_name.trim(),
@@ -439,6 +439,15 @@ export function Setup() {
 
 function splitList(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+/**
+ * The directory field also takes relay keys (`pk:...`) to ask for the public
+ * networks. Those are not directory replicas: the node only stores addresses
+ * there, and refuses the save otherwise.
+ */
+export function directoryReplicas(value: string): string[] {
+  return splitList(value).filter((item) => !item.startsWith("pk:"));
 }
 
 /** Casca do wizard com a identidade do site: painel escuro flutuante, marca e trilha de passos. */
@@ -911,7 +920,7 @@ export function PublicDirectoryPanel({ setup, onUse, onAddress, t }: { setup: Se
         <Field label={t("firstRun.publicDirectoryAddress")} hint={t("firstRun.publicDirectoryAddressHint")}>
           <Input
             value={setup.publicDirectory}
-            placeholder="http://host:8080"
+            placeholder="pk:... / http://host:8080"
             onChange={(event) => onAddress?.(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setAttempt((value) => value + 1); } }}
           />

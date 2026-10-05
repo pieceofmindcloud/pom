@@ -918,10 +918,10 @@ firstRun.privateDetail,Only machines with the connection key and the trust.json 
 firstRun.public,Public,Pública
 firstRun.publicDetail,Listed in the public directory; anyone with the trust.json can join.,Aparece no diretório público; qualquer um com o trust.json pode entrar.
 firstRun.publicDirectory,Public networks,Redes públicas
-firstRun.publicDirectoryAddress,Node or directory address,Endereço de um nó ou diretório
-firstRun.publicDirectoryAddressHint,"A machine that has joined nothing has nobody to ask yet. Enter the address of any POM node you can reach to list the public networks it knows, then press Enter. Separate several with commas.",Uma máquina que não entrou em nada ainda não tem a quem perguntar. Informe o endereço de qualquer nó POM alcançável para listar as redes públicas que ele conhece e pressione Enter. Separe vários com vírgulas.
-firstRun.publicDirectoryDetail,Public networks known to the node or directory below. You can talk to one before joining it.,Redes públicas conhecidas pelo nó ou diretório abaixo. Você pode conversar com uma delas antes de entrar.
-firstRun.publicDirectoryEmpty,No public network listed. Enter the address of a node or directory above.,Nenhuma rede pública listada. Informe acima o endereço de um nó ou diretório.
+firstRun.publicDirectoryAddress,Relay key or node address,Chave de relé ou endereço de nó
+firstRun.publicDirectoryAddressHint,"A machine that has joined nothing has nobody to ask yet. Enter the key of a relay (pk:...) or the address of any POM node you can reach to list the public networks it knows, then press Enter. Separate several with commas.",Uma máquina que não entrou em nada ainda não tem a quem perguntar. Informe a chave de um relé (pk:...) ou o endereço de qualquer nó POM alcançável para listar as redes públicas que ele conhece e pressione Enter. Separe vários com vírgulas.
+firstRun.publicDirectoryDetail,Public networks known to the relays of this installation and to the relay or node below. You can talk to one before joining it.,Redes públicas conhecidas pelos relés desta instalação e pelo relé ou nó abaixo. Você pode conversar com uma delas antes de entrar.
+firstRun.publicDirectoryEmpty,No public network listed. Enter a relay key or a node address above.,Nenhuma rede pública listada. Informe acima a chave de um relé ou o endereço de um nó.
 firstRun.publicDirectoryFailed,Could not read the public directory.,Não foi possível ler o diretório público.
 firstRun.publicDirectoryLoading,Looking up the directory...,Consultando o diretório...
 firstRun.publicDirectoryNodes,{count} nodes,{count} nós

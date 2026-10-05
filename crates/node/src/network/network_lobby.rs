@@ -41,6 +41,12 @@ pub struct LobbyLimits;
 
 impl LobbyLimits {
     pub const FRAME_BYTES: usize = 64 * 1024;
+    /// Bound of an answer. Larger than a request's because a directory answer
+    /// carries whole network descriptions, trust document included; it is
+    /// read by the side that asked, from a peer it chose to dial.
+    pub const RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+    /// Networks in one directory answer.
+    pub const DIRECTORY_NETWORKS: usize = 64;
     pub const TEXT_BYTES: usize = 2 * 1024;
     pub const MESSAGE_ID_BYTES: usize = 64;
     pub const CARD_TEXT_BYTES: usize = 96;
@@ -156,6 +162,41 @@ pub enum LobbyRequest {
     /// part of the conversation: no card, no presence, and it is answered
     /// under its own switch, with the lobby chat on or off.
     Info,
+    /// Ask a node which public network it belongs to. Answers what its
+    /// unauthenticated `GET /api/public/network` answers, over the keyed
+    /// connection, so it also reaches a node behind NAT.
+    Describe,
+    /// Ask a node which public networks it knows. Answered by nodes that
+    /// serve as a relay or belong to a public network: both hear the
+    /// announces of every cluster that meets on them, which is what a machine
+    /// that has joined nothing lacks (`DirectoryBoard`).
+    Directory,
+}
+
+/// Relay keys (`pk:...`) every installation asks for the public networks, in
+/// addition to `POM_DIRECTORY_RELAYS` and to the relays already configured.
+/// Empty until the product runs public relays of its own.
+pub const DEFAULT_DIRECTORY_RELAYS: &[&str] = &[];
+
+/// Keys from [`DEFAULT_DIRECTORY_RELAYS`] and the `DIRECTORY_RELAYS`
+/// environment variable (comma separated), without repeats.
+pub fn default_directory_relays() -> Vec<String> {
+    let mut keys: Vec<String> = DEFAULT_DIRECTORY_RELAYS
+        .iter()
+        .map(|key| key.to_string())
+        .collect();
+    if let Ok(value) = crate::brand::env("DIRECTORY_RELAYS") {
+        keys.extend(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_string),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    keys.retain(|key| seen.insert(key.clone()));
+    keys
 }
 
 /// What a public network chose to publish about itself: the same three facts
@@ -182,7 +223,7 @@ pub struct LobbyMessage {
     pub sent_at: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LobbyResponse {
     pub accepted: bool,
     #[serde(default)]
@@ -196,6 +237,15 @@ pub struct LobbyResponse {
     /// principal has not computed it yet; asking again shortly gets it.
     #[serde(default)]
     pub info: Option<NetworkInfo>,
+    /// The answer to `Describe` (zero or one entry) and to `Directory`. What
+    /// arrives here is a claim: the asker checks each entry against its own
+    /// trust document (`gateway::validated_listed_network`).
+    #[serde(default)]
+    pub networks: Vec<crate::gateway::PublicNetworkView>,
+    /// `Describe` and `Directory` are answered from a board filled on demand;
+    /// `true` means it is being filled and asking again shortly gets it.
+    #[serde(default)]
+    pub pending: bool,
 }
 
 impl LobbyResponse {
@@ -425,12 +475,126 @@ impl PublicStats {
     }
 }
 
+// ── Any node: what it tells about public networks ────────────────────────────
+
+type Listed = Vec<crate::gateway::PublicNetworkView>;
+
+/// What a node answers to `Describe` and `Directory`.
+///
+/// Like [`PublicStats`], the swarm loop only reads it: the listing resolves
+/// pkarr records and talks to other nodes. A request that finds a slot
+/// missing or stale wakes `gateway::spawn_directory_board_publisher`.
+#[derive(Default)]
+pub struct DirectoryBoard {
+    /// This node's own public network, if it is in one.
+    own: Mutex<Option<(Instant, Listed)>>,
+    /// The networks this node knows; inner `None` when it does not answer
+    /// directory queries (neither a relay nor in a public network).
+    known: Mutex<Option<(Instant, Option<Listed>)>>,
+    callers: Mutex<HashMap<String, (Instant, u32)>>,
+    wanted: tokio::sync::Notify,
+}
+
+/// What the board has for one request.
+#[derive(Debug, PartialEq)]
+pub enum BoardAnswer {
+    Ready(Listed),
+    /// Not filled yet (or too old to serve); a refresh was requested.
+    Pending,
+    /// This node does not answer that question.
+    Disabled,
+}
+
+impl DirectoryBoard {
+    /// Per-machine rate, shared by `Describe` and `Directory`.
+    pub fn allow(&self, node_id: &str) -> bool {
+        let now = Instant::now();
+        let mut callers = self.callers.lock().expect("directory board callers lock");
+        if callers.len() >= LobbyLimits::INFO_CALLERS {
+            callers.retain(|_, (started, _)| {
+                now.duration_since(*started) < LobbyLimits::INFO_WINDOW
+            });
+            if callers.len() >= LobbyLimits::INFO_CALLERS {
+                return false;
+            }
+        }
+        let entry = callers.entry(node_id.to_string()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= LobbyLimits::INFO_WINDOW {
+            *entry = (now, 0);
+        }
+        if entry.1 >= LobbyLimits::INFO_PER_WINDOW {
+            return false;
+        }
+        entry.1 += 1;
+        true
+    }
+
+    fn stale(at: Option<Instant>) -> bool {
+        at.is_none_or(|at| at.elapsed() >= INFO_REFRESH)
+    }
+
+    pub fn own(&self) -> BoardAnswer {
+        let slot = self.own.lock().expect("directory board own lock").clone();
+        if Self::stale(slot.as_ref().map(|(at, _)| *at)) {
+            self.wanted.notify_one();
+        }
+        match slot {
+            Some((at, listed)) if at.elapsed() < INFO_MAX_AGE => BoardAnswer::Ready(listed),
+            _ => BoardAnswer::Pending,
+        }
+    }
+
+    pub fn known(&self) -> BoardAnswer {
+        let slot = self.known.lock().expect("directory board known lock").clone();
+        if Self::stale(slot.as_ref().map(|(at, _)| *at)) {
+            self.wanted.notify_one();
+        }
+        match slot {
+            Some((at, Some(listed))) if at.elapsed() < INFO_MAX_AGE => BoardAnswer::Ready(listed),
+            Some((at, None)) if at.elapsed() < INFO_MAX_AGE => BoardAnswer::Disabled,
+            _ => BoardAnswer::Pending,
+        }
+    }
+
+    /// Stores a fresh board. `known` is `None` when this node does not answer
+    /// directory queries. The list is cut to what one answer can carry.
+    pub fn publish(&self, own: Listed, known: Option<Listed>) {
+        let now = Instant::now();
+        *self.own.lock().expect("directory board own lock") = Some((now, own));
+        *self.known.lock().expect("directory board known lock") =
+            Some((now, known.map(fit_directory_answer)));
+    }
+
+    /// Resolves when a request found the board missing or stale.
+    pub async fn wanted(&self) {
+        self.wanted.notified().await;
+    }
+}
+
+/// Keeps as many networks as fit one answer frame, in the order given.
+fn fit_directory_answer(mut listed: Listed) -> Listed {
+    listed.truncate(LobbyLimits::DIRECTORY_NETWORKS);
+    // Leave room for the envelope around the list.
+    let budget = LobbyLimits::RESPONSE_BYTES - 64 * 1024;
+    let mut used = 0_usize;
+    let mut kept = 0_usize;
+    for network in &listed {
+        used += serde_json::to_vec(network).map(|bytes| bytes.len()).unwrap_or(budget);
+        if used > budget {
+            break;
+        }
+        kept += 1;
+    }
+    listed.truncate(kept);
+    listed
+}
+
 // ── Codec ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct LobbyCodec;
 
-async fn read_msg<T, R>(io: &mut R) -> std::io::Result<T>
+async fn read_msg<T, R>(io: &mut R, bound: usize) -> std::io::Result<T>
 where
     T: serde::de::DeserializeOwned,
     R: AsyncRead + Unpin + Send,
@@ -438,7 +602,7 @@ where
     let mut len_buf = [0_u8; 4];
     io.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > LobbyLimits::FRAME_BYTES {
+    if len > bound {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "lobby frame exceeds the size bound",
@@ -450,14 +614,14 @@ where
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
 }
 
-async fn write_msg<T, W>(io: &mut W, message: &T) -> std::io::Result<()>
+async fn write_msg<T, W>(io: &mut W, message: &T, bound: usize) -> std::io::Result<()>
 where
     T: Serialize,
     W: AsyncWrite + Unpin + Send,
 {
     let data = serde_json::to_vec(message)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
-    if data.len() > LobbyLimits::FRAME_BYTES {
+    if data.len() > bound {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "lobby frame exceeds the size bound",
@@ -481,7 +645,7 @@ impl request_response::Codec for LobbyCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_msg(io).await
+        read_msg(io, LobbyLimits::FRAME_BYTES).await
     }
 
     async fn read_response<T>(
@@ -492,7 +656,7 @@ impl request_response::Codec for LobbyCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_msg(io).await
+        read_msg(io, LobbyLimits::RESPONSE_BYTES).await
     }
 
     async fn write_request<T>(
@@ -504,7 +668,7 @@ impl request_response::Codec for LobbyCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_msg(io, &request).await
+        write_msg(io, &request, LobbyLimits::FRAME_BYTES).await
     }
 
     async fn write_response<T>(
@@ -516,7 +680,7 @@ impl request_response::Codec for LobbyCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_msg(io, &response).await
+        write_msg(io, &response, LobbyLimits::RESPONSE_BYTES).await
     }
 }
 
@@ -868,7 +1032,10 @@ mod tests {
                 {
                     let text = match request {
                         LobbyRequest::Post { text, .. } => text,
-                        LobbyRequest::Fetch { .. } | LobbyRequest::Info => String::new(),
+                        LobbyRequest::Fetch { .. }
+                        | LobbyRequest::Info
+                        | LobbyRequest::Describe
+                        | LobbyRequest::Directory => String::new(),
                     };
                     let node_id = node_id_of_peer(&peer).unwrap_or_default();
                     let _ = swarm.behaviour_mut().send_response(
@@ -878,6 +1045,8 @@ mod tests {
                             error: None,
                             node_id: node_id.clone(),
                             info: None,
+                            networks: Vec::new(),
+                            pending: false,
                             messages: vec![LobbyMessage {
                                 message_id: "m1".into(),
                                 sender_node_id: node_id,
@@ -942,6 +1111,138 @@ mod tests {
         }
         assert!(!stats.allow("asker"));
         assert!(stats.allow("someone-else"));
+    }
+
+    fn listed(name: &str, description: String) -> crate::gateway::PublicNetworkView {
+        serde_json::from_value(serde_json::json!({
+            "cluster_id": name,
+            "name": name,
+            "fingerprint": format!("fp-{name}"),
+            "trust_document": "{}",
+            "organization": "",
+            "description": description,
+            "rules": "",
+            "channels": "",
+            "country_code": "BR",
+            "country_name": "Brasil",
+            "city": "Curitiba",
+            "geo_label": "br.curitiba",
+            "access_policy": "anyone_with_anchor",
+            "location": null,
+            "discovered_via": "pkarr",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_directory_answer_is_cut_to_what_one_frame_carries() {
+        let many: Vec<_> = (0..200).map(|i| listed(&format!("n{i}"), String::new())).collect();
+        assert_eq!(
+            fit_directory_answer(many).len(),
+            LobbyLimits::DIRECTORY_NETWORKS
+        );
+        // Three descriptions of 900 KiB do not fit 2 MiB: the third is dropped.
+        let heavy: Vec<_> = (0..3)
+            .map(|i| listed(&format!("h{i}"), "x".repeat(900 * 1024)))
+            .collect();
+        let kept = fit_directory_answer(heavy);
+        assert_eq!(kept.len(), 2);
+        let frame = serde_json::to_vec(&LobbyResponse {
+            accepted: true,
+            networks: kept,
+            ..LobbyResponse::default()
+        })
+        .unwrap();
+        assert!(frame.len() <= LobbyLimits::RESPONSE_BYTES);
+    }
+
+    /// A directory answer is far larger than a request may be; it has to cross
+    /// the real codec, not only fit the arithmetic.
+    #[tokio::test]
+    async fn a_directory_answer_larger_than_a_request_frame_reaches_the_asker() {
+        let relay = crate::identity::Identity::generate();
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(relay.libp2p_keypair())
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )
+            .unwrap()
+            .with_behaviour(|_| network_lobby_behaviour())
+            .unwrap()
+            .build();
+        swarm
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let address = loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
+                break address;
+            }
+        };
+        let relay_peer = *swarm.local_peer_id();
+        tokio::spawn(async move {
+            loop {
+                if let SwarmEvent::Behaviour(request_response::Event::Message {
+                    message:
+                        request_response::Message::Request {
+                            request, channel, ..
+                        },
+                    ..
+                }) = swarm.select_next_some().await
+                {
+                    assert_eq!(request, LobbyRequest::Directory);
+                    let _ = swarm.behaviour_mut().send_response(
+                        channel,
+                        LobbyResponse {
+                            accepted: true,
+                            networks: vec![
+                                listed("big", "d".repeat(300 * 1024)),
+                                listed("small", String::new()),
+                            ],
+                            ..LobbyResponse::default()
+                        },
+                    );
+                }
+            }
+        });
+
+        let fresh = crate::identity::Identity::generate();
+        let client = LobbyClient::start(&fresh).unwrap();
+        let response = client
+            .request_at(relay_peer, vec![address], LobbyRequest::Directory)
+            .await
+            .unwrap();
+        assert!(response.accepted);
+        assert_eq!(response.networks.len(), 2);
+        assert_eq!(response.networks[0].description.len(), 300 * 1024);
+    }
+
+    #[tokio::test]
+    async fn the_directory_board_tells_pending_from_disabled_and_asks_to_be_filled() {
+        let board = DirectoryBoard::default();
+        assert_eq!(board.known(), BoardAnswer::Pending);
+        assert_eq!(board.own(), BoardAnswer::Pending);
+        tokio::time::timeout(Duration::from_millis(200), board.wanted())
+            .await
+            .expect("an empty board asks to be filled");
+
+        // A node that is neither a relay nor in a public network.
+        board.publish(Vec::new(), None);
+        assert_eq!(board.known(), BoardAnswer::Disabled);
+        assert_eq!(board.own(), BoardAnswer::Ready(Vec::new()));
+
+        board.publish(Vec::new(), Some(Vec::new()));
+        assert_eq!(board.known(), BoardAnswer::Ready(Vec::new()));
+        // A fresh board does not ask again.
+        assert!(tokio::time::timeout(Duration::from_millis(50), board.wanted())
+            .await
+            .is_err());
+
+        for _ in 0..LobbyLimits::INFO_PER_WINDOW {
+            assert!(board.allow("asker"));
+        }
+        assert!(!board.allow("asker"));
     }
 
     #[test]

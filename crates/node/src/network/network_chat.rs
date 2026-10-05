@@ -497,6 +497,9 @@ pub struct NetworkChat {
     /// What this network publishes about itself to non-members, on the
     /// principal (`network_lobby::PublicStats`).
     public_stats: crate::network_lobby::PublicStats,
+    /// What this node answers about public networks to whoever asks by key
+    /// (`network_lobby::DirectoryBoard`).
+    directory_board: crate::network_lobby::DirectoryBoard,
 }
 
 impl NetworkChat {
@@ -533,6 +536,7 @@ impl NetworkChat {
                 notices: Mutex::new(std::collections::VecDeque::new()),
                 lobby_guests: Default::default(),
                 public_stats: Default::default(),
+                directory_board: Default::default(),
             }),
             receiver,
         )
@@ -561,6 +565,10 @@ impl NetworkChat {
 
     pub fn lobby_guests(&self) -> &crate::network_lobby::LobbyGuests {
         &self.lobby_guests
+    }
+
+    pub fn directory_board(&self) -> &crate::network_lobby::DirectoryBoard {
+        &self.directory_board
     }
 
     pub fn public_stats(&self) -> &crate::network_lobby::PublicStats {

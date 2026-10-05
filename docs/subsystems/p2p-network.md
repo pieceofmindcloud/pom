@@ -1458,6 +1458,39 @@ computed while nobody asks, and stats older than 5 minutes are not served.
 answers `stats_disabled`. Latency is deliberately absent: nobody measures a
 route to a network that was not joined.
 
+**Asking a node about public networks.** Two more requests carry public
+data only and are answered by **any** node, principal or not:
+
+- `Describe` answers the public network the node belongs to (zero or one
+  entry) - what its unauthenticated `GET /api/public/network` answers, over
+  the keyed connection, so it also reaches a node behind NAT. The public
+  networks listing uses it as the fallback for a gossip candidate whose
+  gateway does not answer over HTTP (`gateway::describe_by_key`).
+- `Directory` answers the public networks the node knows. It is answered by
+  nodes that gather them: a node in a public network and, whatever its own
+  network, a node that serves as a relay (`gateway::gathers_public_networks`).
+  Every cluster that uses a relay meets on it - all clusters share the one
+  announce topic - so a relay is who a machine that has joined nothing can
+  ask. Any other node answers `directory_disabled`.
+
+Both are served from `DirectoryBoard`, filled on demand by
+`gateway::spawn_directory_board_publisher` exactly like `PublicStats`: the
+first request answers `pending: true`, the next one has the list, and the
+listing runs at most once per 30 s. An answer carries at most 64 networks and
+2 MiB (`LobbyLimits::RESPONSE_BYTES`; requests keep the 64 KiB bound), and the
+rate is the `Info` one. **An answer is a claim, not a fact**: the asker keeps
+an entry only when its trust document matches its fingerprint and
+`cluster_id`, and derives the publisher key from that document
+(`gateway::validated_listed_network`). A relay can omit a network; it cannot
+forge one or point it at another key. The descriptive fields (name, city,
+`lobby_chat`, `public_stats`) are as the answering node reports them.
+
+Which relays a fresh installation asks: `DEFAULT_DIRECTORY_RELAYS`
+(`network_lobby.rs`, empty today), the `POM_DIRECTORY_RELAYS` environment
+variable (comma separated `pk:` keys), the `relay_peers` already in the
+config, and the keys typed in the wizard. They are keys, resolved through
+pkarr at dial time, never addresses.
+
 The candidate's side is `LobbyClient`: a small swarm of its own over the node
 key, dial only (TCP, QUIC, relay client, DCuTR), that resolves the publisher's
 `pk:` key through pkarr at dial time. It is separate from the cluster swarm on

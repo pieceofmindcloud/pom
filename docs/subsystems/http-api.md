@@ -84,7 +84,13 @@ last):
   <address>/api/public/networks`, the networks that node lists). A listed
   network is accepted only when its trust document matches its fingerprint and
   `cluster_id`, and its publisher key is derived from that document
-  (`gateway::validated_listed_network`). With no address the list is empty.
+  (`gateway::validated_listed_network`). Entries of `replicas` that start with
+  `pk:` are relay keys instead: together with `POM_DIRECTORY_RELAYS`, the
+  built-in list and the config's `relay_peers`, each is asked for its
+  directory over the lobby protocol (`p2p-network.md`, 6.1) under the same
+  validation. With no relay and no address the list is empty.
+  `GET /api/public/networks` on a node that serves as a relay now lists the
+  networks it hears through gossip even when its own network is not public.
 - **Published stats of another network**: `GET
   /api/ui/network-chat/lobby/info?key=pk:...` (and `GET /api/setup/lobby/info`
   in setup mode) asks that network's principal for `{models, node_count,

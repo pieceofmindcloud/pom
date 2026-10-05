@@ -1144,7 +1144,13 @@ faz o download autenticado do blob persistido.
   `gateway::listed_public_networks` (what the node at a given address lists,
   filtered by `validated_listed_network`) - in practice the second is what
   fills the list, since networks are found through cluster discovery and pkarr
-  and no directory replica is configured by default. The local
+  and no directory replica is configured by default. `pk:` entries are relay
+  keys, asked through `relay_directory` (lobby `Directory` request).
+  `gateway::collect_public_networks` is the listing behind
+  `GET /api/public/networks` and behind the node's `DirectoryBoard`; it gathers
+  gossip candidates when the node is in a public network or serves as a relay
+  (`gathers_public_networks`) and falls back to `describe_by_key` when a
+  candidate's gateway does not answer. The local
   hardware card is sampled once a minute, not per poll. `network_chat_snapshot`
   takes `?room=lobby` and always reports `lobbyEnabled` and `lobbyGuests`.
   The same file has `lobby_info` / `setup_lobby_info` (another network's

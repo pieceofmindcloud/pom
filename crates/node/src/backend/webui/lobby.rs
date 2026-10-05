@@ -232,14 +232,24 @@ pub async fn setup_public_networks(
         .flatten()
         .unwrap_or_default()
         .replicas;
-    replicas.extend(
-        query
-            .replicas
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-    );
+    // The same field takes relay keys (`pk:...`) and addresses. Keys are the
+    // normal case: a relay is found by its key, like every other node.
+    let mut relay_keys = network_lobby::default_directory_relays();
+    relay_keys.extend(state.config.read().await.relay_peers.iter().cloned());
+    for entry in query
+        .replicas
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if entry.starts_with("pk:") {
+            relay_keys.push(entry.to_string());
+        } else {
+            replicas.push(entry.to_string());
+        }
+    }
+    relay_keys.sort();
+    relay_keys.dedup();
     let replicas = match crate::public_directory::PublicDirectorySettings::from_urls(replicas.iter())
         .and_then(|settings| settings.effective_with_env())
     {
@@ -270,7 +280,45 @@ pub async fn setup_public_networks(
             networks.push(network);
         }
     }
+    let from_relays =
+        futures::future::join_all(relay_keys.iter().map(|key| relay_directory(key))).await;
+    for network in from_relays.into_iter().flatten() {
+        if !networks
+            .iter()
+            .any(|known| known.fingerprint == network.fingerprint)
+        {
+            networks.push(network);
+        }
+    }
     Json(networks).into_response()
+}
+
+/// The public networks the relay under `key` knows, each checked against its
+/// own trust document. A relay that is still filling its board is asked once
+/// more; one that does not answer contributes nothing.
+async fn relay_directory(key: &str) -> Vec<crate::gateway::PublicNetworkView> {
+    let Ok(client) = network_lobby::client().await else {
+        return Vec::new();
+    };
+    let mut response = match client.request(key, LobbyRequest::Directory).await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::debug!("lobby: relé {key} não respondeu ao diretório: {error:#}");
+            return Vec::new();
+        }
+    };
+    if response.accepted && response.pending {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Ok(again) = client.request(key, LobbyRequest::Directory).await {
+            response = again;
+        }
+    }
+    response
+        .networks
+        .into_iter()
+        .take(network_lobby::LobbyLimits::DIRECTORY_NETWORKS)
+        .filter_map(crate::gateway::validated_listed_network)
+        .collect()
 }
 
 #[cfg(test)]

@@ -39,8 +39,10 @@ Per-file list:
   it does not accept (`admin` founds its own network and stays available).
   `PublicDirectoryPanel`, in the join step, lists public networks from
   `GET /api/setup/public-networks`. A machine in setup mode has nobody to ask,
-  so the panel has an address field (bound to `publicDirectory`) for a node or
-  directory to ask; Enter or Refresh asks again: "Join" fills the trust fields like the manual block and clears any
+  so the panel has a field (bound to `publicDirectory`) for a relay key
+  (`pk:...`) or a node address to ask, on top of the relays the installation
+  already knows; Enter or Refresh asks again. `directoryReplicas` keeps the
+  keys out of the `public_directory` sent on save: "Join" fills the trust fields like the manual block and clears any
   connection key, and "Chat" opens `LobbyChat` against `/api/setup/lobby`
   without a session. A listed network with `public_stats` shows a line with
   its nodes, VRAM and models (`DirectoryNetworkStats`). Pastas, disco, reservas, senha (`admin`) e

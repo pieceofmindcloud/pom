@@ -9,6 +9,7 @@ import {
   addressHost,
   canContinue,
   createRandomNetworkName,
+  directoryReplicas,
   formatAdvertiseAddress,
   isReadyToSave,
   JoinScreen,
@@ -159,6 +160,16 @@ describe("NetworkScreen", () => {
   });
 });
 
+describe("directoryReplicas", () => {
+  it("keeps relay keys out of what is saved as directory replicas", () => {
+    expect(directoryReplicas("pk:abc, https://dir.example ,pk:def,http://10.0.0.1:8080")).toEqual([
+      "https://dir.example",
+      "http://10.0.0.1:8080",
+    ]);
+    expect(directoryReplicas("pk:abc")).toEqual([]);
+  });
+});
+
 describe("PublicDirectoryPanel", () => {
   const listed = {
     cluster_id: "curitiba",
@@ -193,7 +204,7 @@ describe("PublicDirectoryPanel", () => {
     expect(screen.getAllByRole("button", { name: /publicNetworks.chat/ }).length).toBe(1);
 
     // The address of a node to ask is typed here, and Enter asks again.
-    const address = screen.getByPlaceholderText("http://host:8080");
+    const address = screen.getByPlaceholderText("pk:... / http://host:8080");
     fireEvent.change(address, { target: { value: "http://192.0.2.10:8080" } });
     expect(onAddress).toHaveBeenCalledWith("http://192.0.2.10:8080");
     fireEvent.keyDown(address, { key: "Enter" });

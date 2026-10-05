@@ -139,7 +139,7 @@ pub(super) async fn network_chat_policy(
     }))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PublicNetworkView {
     pub cluster_id: String,
     pub name: String,
@@ -847,6 +847,51 @@ pub(super) async fn public_networks(
     State(state): State<GatewayState>,
     Query(query): Query<PublicNetworksQuery>,
 ) -> impl IntoResponse {
+    Json(collect_public_networks(&state, &query).await)
+}
+
+/// Whether this node gathers the announces of other clusters into a list of
+/// public networks. A node in a public network does, and so does a relay
+/// whatever its own network: every cluster that uses it meets there, and that
+/// is what makes it able to answer a machine that has joined nothing.
+async fn gathers_public_networks(state: &GatewayState) -> bool {
+    allow_public_p2p_discovery(state.auth.read().await.network.visibility)
+        || state
+            .pkarr_publisher
+            .as_ref()
+            .is_some_and(|publisher| publisher.desired_record().is_relay)
+}
+
+/// Asks a candidate for its network over the keyed lobby connection. The
+/// fallback for a candidate whose gateway cannot be reached over HTTP, which
+/// is every node behind NAT.
+async fn describe_by_key(pubkey_hex: &str) -> Option<PublicNetworkView> {
+    let key = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(pubkey_hex)?;
+    let client = crate::network_lobby::client().await.ok()?;
+    let ask = || client.request(&key, crate::network_lobby::LobbyRequest::Describe);
+    let mut response = tokio::time::timeout(Duration::from_secs(6), ask())
+        .await
+        .ok()?
+        .ok()?;
+    if response.accepted && response.pending {
+        // The other node fills its board on demand: one short second chance.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        response = tokio::time::timeout(Duration::from_secs(6), ask())
+            .await
+            .ok()?
+            .ok()?;
+    }
+    response
+        .networks
+        .into_iter()
+        .next()
+        .and_then(validated_listed_network)
+}
+
+async fn collect_public_networks(
+    state: &GatewayState,
+    query: &PublicNetworksQuery,
+) -> Vec<PublicNetworkView> {
     let mut networks = Vec::new();
     let has_geo_filter = query
         .geo_prefix
@@ -856,19 +901,19 @@ pub(super) async fn public_networks(
             .geo_suffix
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
-    if let Some(local) = local_public_network(&state).await {
-        if !has_geo_filter || matches_geo_label(&local.geo_label, &query) {
+    if let Some(local) = local_public_network(state).await {
+        if !has_geo_filter || matches_geo_label(&local.geo_label, query) {
             networks.push(local);
         }
     }
 
-    if let Err(error) = publish_local_directory_record(&state).await {
+    if let Err(error) = publish_local_directory_record(state).await {
         warn!("não foi possível atualizar o registro local do diretório federado: {error:#}");
     }
-    let directory_records = read_directory_records(&state).await;
+    let directory_records = read_directory_records(state).await;
     for record in directory_records {
         let network = view_from_directory_record(record);
-        if has_geo_filter && !matches_geo_label(&network.geo_label, &query) {
+        if has_geo_filter && !matches_geo_label(&network.geo_label, query) {
             continue;
         }
         if !networks
@@ -883,13 +928,13 @@ pub(super) async fn public_networks(
         .database
         .public_network_geo_cache()
         .unwrap_or_default();
-    let visibility = state.auth.read().await.network.visibility;
-    let mut candidates = if allow_public_p2p_discovery(visibility) {
+    let gathers = gathers_public_networks(state).await;
+    let mut candidates = if gathers {
         state.network.alive_peers().await
     } else {
         Vec::new()
     };
-    if allow_public_p2p_discovery(visibility) {
+    if gathers {
         for peer in state.network.public_discovered_peers().await {
             if !candidates.iter().any(|known| known.node_id == peer.node_id) {
                 candidates.push(peer);
@@ -923,7 +968,7 @@ pub(super) async fn public_networks(
             && !pkarr_record
                 .geo_label
                 .as_deref()
-                .is_some_and(|label| matches_geo_label(label, &query))
+                .is_some_and(|label| matches_geo_label(label, query))
         {
             continue;
         }
@@ -947,6 +992,7 @@ pub(super) async fn public_networks(
             }
         }
         bases.extend(peer.gateway_candidates_with_tls(state.peer_http.tls_enabled()));
+        let mut listed = false;
         for base in bases {
             let response = client
                 .get(format!("{base}/api/public/network"))
@@ -962,7 +1008,7 @@ pub(super) async fn public_networks(
             let Ok(network) = response.json::<PublicNetworkView>().await else {
                 continue;
             };
-            if has_geo_filter && !matches_geo_label(&network.geo_label, &query) {
+            if has_geo_filter && !matches_geo_label(&network.geo_label, query) {
                 continue;
             }
             geo_cache.retain(|entry| entry.node_id != peer.node_id);
@@ -978,7 +1024,26 @@ pub(super) async fn public_networks(
             {
                 networks.push(network);
             }
+            listed = true;
             break;
+        }
+        // No gateway answered. A network already listed needs no second
+        // answer from another of its members; otherwise ask by key.
+        let known_cluster = peer.cluster_id.as_deref().is_some_and(|cluster| {
+            networks
+                .iter()
+                .any(|known: &PublicNetworkView| known.cluster_id == cluster)
+        });
+        if !listed && !known_cluster {
+            if let Some(network) = describe_by_key(&peer.pubkey).await {
+                if (!has_geo_filter || matches_geo_label(&network.geo_label, query))
+                    && !networks
+                        .iter()
+                        .any(|known: &PublicNetworkView| known.fingerprint == network.fingerprint)
+                {
+                    networks.push(network);
+                }
+            }
         }
     }
 
@@ -986,7 +1051,29 @@ pub(super) async fn public_networks(
         warn!("não foi possível atualizar o índice geo de redes públicas: {error:#}");
     }
 
-    Json(networks).into_response()
+    networks
+}
+
+/// Fills `DirectoryBoard` on demand: this node's own public network and, when
+/// it gathers them, the public networks it knows. The swarm loop answers
+/// `Describe` and `Directory` from the board and wakes this task when it is
+/// stale; one listing per `network_lobby::INFO_REFRESH` at most, none while
+/// nobody asks.
+pub(crate) fn spawn_directory_board_publisher(state: GatewayState) {
+    tokio::spawn(async move {
+        loop {
+            state.network_chat.directory_board().wanted().await;
+            let own: Vec<PublicNetworkView> =
+                local_public_network(&state).await.into_iter().collect();
+            let known = if gathers_public_networks(&state).await {
+                Some(collect_public_networks(&state, &PublicNetworksQuery::default()).await)
+            } else {
+                None
+            };
+            state.network_chat.directory_board().publish(own, known);
+            tokio::time::sleep(crate::network_lobby::INFO_REFRESH).await;
+        }
+    });
 }
 
 /// Probe the same IPv6 dual-stack bind used by the gateway before any model

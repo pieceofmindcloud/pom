@@ -388,7 +388,9 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   served from VRAM and only misses cross PCIe, for batches of up to 32 tokens
   (generation; prefill keeps the regular offload). The fit context counts the
   cache, so with the fit on it keeps fewer whole expert layers on the GPU. The
-  cache does not run across more than one device. Measured on a whole
+  size is per GPU: on a node with two GPUs (an RTX over CUDA and a Radeon over
+  Vulkan, say) both cards keep their share of the layers in VRAM and each one
+  caches the experts of its own layers (one cache per device in the fork). Measured on a whole
   Qwen3.8-Flash-Next UD-IQ3_XXS (78 GB) with one 16 GB GPU: generation 14.95 ->
   19.26 tok/s with all experts in RAM and an 8000 MiB cache.
 - **A slice that exists on no machine** -> `blocked` ("slice L{}-{} exists on

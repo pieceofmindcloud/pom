@@ -1190,7 +1190,8 @@ pub(super) fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
 /// sends to the CPU buffer.
 pub(super) const MOE_EXPERTS_PATTERN: &std::ffi::CStr = c"\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
 
-/// The cache size llama.cpp takes in bytes, from the deployment's MiB.
+/// The cache size llama.cpp takes in bytes, from the deployment's MiB. It is
+/// per GPU: with several GPUs each one caches the experts of its own layers.
 pub(super) fn moe_cache_bytes(cfg: &EngineConfig) -> usize {
     cfg.moe_cache_mib as usize * 1024 * 1024
 }

@@ -1050,6 +1050,22 @@ mod fit_memory_margin_tests {
         b
     }
 
+    /// The cache stays only where the fit sent routed experts to host memory.
+    #[test]
+    fn a_plan_keeps_experts_in_host_only_with_an_exps_override() {
+        let mut plan = empty_fit_plan(&cfg_for_fit_plan());
+        assert!(!plan_keeps_experts_in_host(&plan));
+        plan.tensor_buft_overrides = vec![
+            sys::llama_model_tensor_buft_override { pattern: c"blk\\.3\\.ffn_(up|down|gate_up|gate)_(ch|)exps".as_ptr(), buft: ptr::null_mut() },
+            sys::llama_model_tensor_buft_override { pattern: ptr::null(), buft: ptr::null_mut() },
+        ];
+        assert!(plan_keeps_experts_in_host(&plan));
+        plan.tensor_buft_overrides = vec![
+            sys::llama_model_tensor_buft_override { pattern: c"blk\\.3\\.attn_q".as_ptr(), buft: ptr::null_mut() },
+        ];
+        assert!(!plan_keeps_experts_in_host(&plan));
+    }
+
     /// A cache that does not fit is halved until it does, then turned off.
     #[test]
     fn the_moe_cache_halves_then_turns_off() {
@@ -1337,7 +1353,49 @@ pub fn apply_mtp_context_batch_params(cparams: &mut sys::llama_context_params, c
     cparams.n_ubatch = effective_mtp_n_ubatch(cfg);
 }
 
+/// The memory fit, with the MoE expert cache only where it pays.
+///
+/// The cache size is one value for the whole deployment, but it only helps a
+/// node whose experts do not all fit in VRAM: elsewhere it pushes expert layers
+/// out of the GPU just to serve some of them back, and takes the VRAM other
+/// contexts (the MTP draft) needed. So the fit runs first without the cache,
+/// and the cache is kept only when that plan leaves routed experts in host
+/// memory.
 pub(super) fn fit_plan(
+    model_path: &str,
+    cfg: &EngineConfig,
+    mtp_mode: MtpFitMode,
+) -> Result<FitPlan> {
+    if cfg.moe_cache_mib == 0 || !fit_can_adjust_layers(cfg) {
+        return fit_plan_with_cache(model_path, cfg, mtp_mode);
+    }
+    let without_cache = EngineConfig {
+        moe_cache_mib: 0,
+        ..cfg.clone()
+    };
+    let plan = fit_plan_with_cache(model_path, &without_cache, mtp_mode)?;
+    if plan.applied && !plan_keeps_experts_in_host(&plan) {
+        tracing::info!(
+            moe_cache_mib = cfg.moe_cache_mib,
+            "cache de experts do MoE desligado neste nó: todos os experts cabem na VRAM"
+        );
+        return Ok(plan);
+    }
+    fit_plan_with_cache(model_path, cfg, mtp_mode)
+}
+
+/// Whether a fitted plan sends routed MoE experts to host memory: the fit
+/// does it with `tensor_buft_overrides` on the `*_exps` tensors.
+pub(super) fn plan_keeps_experts_in_host(plan: &FitPlan) -> bool {
+    plan.tensor_buft_overrides.iter().any(|entry| {
+        !entry.pattern.is_null()
+            && unsafe { std::ffi::CStr::from_ptr(entry.pattern) }
+                .to_str()
+                .is_ok_and(|pattern| pattern.contains("exps"))
+    })
+}
+
+fn fit_plan_with_cache(
     model_path: &str,
     cfg: &EngineConfig,
     mtp_mode: MtpFitMode,

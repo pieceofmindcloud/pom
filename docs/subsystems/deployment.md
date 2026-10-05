@@ -386,8 +386,12 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   overrides set before it. `RuntimeParams.moe_cache_mib` (`0` = off) becomes
   `llama_context_params::moe_cache_size`: recently used experts held in RAM are
   served from VRAM and only misses cross PCIe, for batches of up to 32 tokens
-  (generation; prefill keeps the regular offload). The fit context counts the
-  cache, so with the fit on it keeps fewer whole expert layers on the GPU. The
+  (generation; prefill keeps the regular offload). With the fit on, each node
+  first fits without the cache and keeps it only when that plan leaves routed
+  experts in host memory (`fit_plan`): a node whose experts all fit in VRAM
+  would otherwise lose expert layers and the MTP draft's room to the cache. When
+  the cache stays, the fit counts it and keeps fewer whole expert layers on the
+  GPU. The
   size is per GPU: on a node with two GPUs (an RTX over CUDA and a Radeon over
   Vulkan, say) both cards keep their share of the layers in VRAM and each one
   caches the experts of its own layers (one cache per device in the fork). Measured on a whole

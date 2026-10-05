@@ -67,7 +67,8 @@ last):
   accepting new members. It is edited by the principal through `POST
   /api/ui/network/settings` and is advisory - no route enforces it. `lobby_chat`
   is `true` while the network answers lobby chat from non-members (the
-  `network.lobby_chat` switch and the network Chat are both on).
+  `network.lobby_chat` switch and the network Chat are both on), and
+  `public_stats` says it publishes models, node count and VRAM.
 - **Lobby, candidate side** (`webui/lobby.rs`): `GET
   /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`
   (`{key, message_id, text}`) make this node talk to **another** network's
@@ -79,6 +80,12 @@ last):
   /api/setup/public-networks?replicas=<csv>`, which lists the public networks of
   the federated directory alone (cache merged with the replicas' answer) - setup
   mode has no cluster to discover through.
+- **Published stats of another network**: `GET
+  /api/ui/network-chat/lobby/info?key=pk:...` (and `GET /api/setup/lobby/info`
+  in setup mode) asks that network's principal for `{models, node_count,
+  vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with
+  `accepted: true` means the principal is still computing; ask again in a few
+  seconds. Only meaningful for networks whose view has `public_stats: true`.
 - **Lobby, member side**: `GET /api/ui/network-chat?room=lobby` reads the lobby
   room instead of the main one. Every snapshot also carries `room`,
   `lobbyEnabled` and `lobbyGuests` (`[{nodeId, card}]`, the candidates present
@@ -188,7 +195,7 @@ that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
 `/api/setup/auto-discovery/status`, `/api/setup/auto-discovery/start`,
 `/api/setup/auto-discovery/search`, `/api/setup/public-networks`,
-`/api/setup/lobby` and `/api/setup/save` only exist in the
+`/api/setup/lobby`, `/api/setup/lobby/info` and `/api/setup/save` only exist in the
 first access router; `/api/setup/save` installs the root and `pom.json` before
 restarting. The routes of port 8181 (`/v1/prefill`, `/v1/step`,
 `/v1/step-stream`, `/v1/link`, `/v1/session/*`, `/v1/tp/reduce`, `/health`) are

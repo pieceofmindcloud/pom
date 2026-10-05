@@ -41,7 +41,8 @@ Per-file list:
   `GET /api/setup/public-networks` (the typed `publicDirectory` replicas ride
   along): "Join" fills the trust fields like the manual block and clears any
   connection key, and "Chat" opens `LobbyChat` against `/api/setup/lobby`
-  without a session. Pastas, disco, reservas, senha (`admin`) e
+  without a session. A listed network with `public_stats` shows a line with
+  its nodes, VRAM and models (`DirectoryNetworkStats`). Pastas, disco, reservas, senha (`admin`) e
   workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
   com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
   `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
@@ -69,7 +70,10 @@ Per-file list:
   "Closed" button instead of Join; the list (or "Any role" when the record has
   none) is shown in the details modal and travels to the wizard in the
   `sessionStorage` handoff. A network with `lobby_chat` also gets "Chat", which
-  opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`.
+  opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`. A
+  network with `public_stats` that this node is not in gets its nodes, VRAM and
+  models columns from `usePublicStats` (`../lib/publicStats`); latency stays
+  unavailable for it.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
@@ -83,7 +87,8 @@ Per-file list:
   members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
   `lib/types.ts`); unchecking all of them advertises the network as closed.
   "Lobby chat" (`lobby_chat`) lets machines that are not members talk to the
-  network; the checkbox is disabled unless the network is public. País e cidade usam a referência de geografia
+  network; the checkbox is disabled unless the network is public. "Published
+  stats" (`public_stats`) follows the same rule. País e cidade usam a referência de geografia
   do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
   `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
   circuitos publicados, reservas de relé e hole punches - porque dois nós atrás

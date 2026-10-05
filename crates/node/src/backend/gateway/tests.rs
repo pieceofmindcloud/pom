@@ -2506,6 +2506,7 @@ mod replicated_admin_logs_tests {
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
             lobby_chat: false,
+            public_stats: false,
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: Vec::new(),

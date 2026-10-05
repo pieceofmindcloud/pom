@@ -583,6 +583,17 @@ function NetworkInfoPanel({
               {t("network.lobbyChatEnable")}
             </label>
           </Field>
+          <Field label={t("network.publicStats")} hint={t("network.publicStatsHint")} className="md:col-span-2">
+            <label className="flex items-center gap-2 text-sm text-fg">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.public_stats)}
+                disabled={!publicNetwork}
+                onChange={(event) => update({ public_stats: event.target.checked })}
+              />
+              {t("network.publicStatsEnable")}
+            </label>
+          </Field>
           <Field label={t("network.country")} hint={publicNetwork ? t("network.countryRequired") : undefined}>
             <Select required={publicNetwork} value={draft.country_code} onChange={(event) => {
               const country = geo?.countries.find((item) => item.code === event.target.value);
@@ -619,6 +630,7 @@ function NetworkInfoPanel({
           <KeyValue label={t("network.visibility")}><span>{visibilityLabel(draft.visibility, t)}</span></KeyValue>
           <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>
           <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>
+          <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats && publicNetwork ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>
           <KeyValue label={t("network.lobbyChat")}><span>{t(draft.lobby_chat && publicNetwork ? "network.lobbyChatOn" : "network.lobbyChatOff")}</span></KeyValue>
           <KeyValue label={t("network.country")}><span>{draft.country_name || t("network.notProvided")}</span></KeyValue>
           <KeyValue label={t("network.city")}><span>{draft.city || t("network.notProvided")}</span></KeyValue>

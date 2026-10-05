@@ -54,6 +54,13 @@ impl LobbyLimits {
     pub const REQUESTS_PER_SECOND: u32 = 4;
     /// Candidates tracked at once; a new one beyond this is refused.
     pub const GUESTS: usize = 64;
+    /// Model names published in the network's public stats.
+    pub const INFO_MODELS: usize = 64;
+    /// `Info` requests one machine may send per [`Self::INFO_WINDOW`].
+    pub const INFO_PER_WINDOW: u32 = 6;
+    pub const INFO_WINDOW: Duration = Duration::from_secs(10);
+    /// Machines whose `Info` rate is tracked at once.
+    pub const INFO_CALLERS: usize = 4096;
 }
 
 /// How long a candidate stays listed after its last request.
@@ -145,14 +152,22 @@ pub enum LobbyRequest {
     },
     /// Read the recent history. Also what keeps the candidate listed.
     Fetch { card: LobbyCard },
+    /// Ask what the network publishes about itself (`NetworkInfo`). It is not
+    /// part of the conversation: no card, no presence, and it is answered
+    /// under its own switch, with the lobby chat on or off.
+    Info,
 }
 
-impl LobbyRequest {
-    pub fn card(&self) -> &LobbyCard {
-        match self {
-            Self::Post { card, .. } | Self::Fetch { card } => card,
-        }
-    }
+/// What a public network chose to publish about itself: the same three facts
+/// the Public networks screen shows for the local network.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkInfo {
+    /// Models known to the cluster, sorted.
+    pub models: Vec<String>,
+    pub node_count: u32,
+    /// Sum of the dedicated VRAM the nodes report; `None` when none reports.
+    #[serde(default)]
+    pub vram_total_mb: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,6 +192,10 @@ pub struct LobbyResponse {
     pub node_id: String,
     #[serde(default)]
     pub messages: Vec<LobbyMessage>,
+    /// Only in the answer to `Info`. `None` with `accepted: true` means the
+    /// principal has not computed it yet; asking again shortly gets it.
+    #[serde(default)]
+    pub info: Option<NetworkInfo>,
 }
 
 impl LobbyResponse {
@@ -331,6 +350,78 @@ impl LobbyGuests {
             .expect("lobby guests lock")
             .get(node_id)
             .map(|guest| guest.card.hostname.clone())
+    }
+}
+
+// ── Principal side: published stats ──────────────────────────────────────────
+
+/// How old the published stats may get before a request asks for a refresh.
+pub const INFO_REFRESH: Duration = Duration::from_secs(30);
+/// Past this age the stats are not served at all.
+pub const INFO_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+
+/// The stats a principal publishes, and who is asking for them.
+///
+/// The swarm loop answers from this slot and never computes: the numbers come
+/// from the cluster view, which reads every peer over HTTP. A request that
+/// finds the slot stale wakes the gateway task that fills it
+/// (`webui::spawn_public_stats_publisher`), so nothing is computed while
+/// nobody asks.
+#[derive(Default)]
+pub struct PublicStats {
+    slot: Mutex<Option<(Instant, NetworkInfo)>>,
+    callers: Mutex<HashMap<String, (Instant, u32)>>,
+    wanted: tokio::sync::Notify,
+}
+
+impl PublicStats {
+    /// Applies the per-machine rate of `Info`.
+    pub fn allow(&self, node_id: &str) -> bool {
+        let now = Instant::now();
+        let mut callers = self.callers.lock().expect("public stats callers lock");
+        if callers.len() >= LobbyLimits::INFO_CALLERS {
+            callers.retain(|_, (started, _)| {
+                now.duration_since(*started) < LobbyLimits::INFO_WINDOW
+            });
+            if callers.len() >= LobbyLimits::INFO_CALLERS {
+                return false;
+            }
+        }
+        let entry = callers.entry(node_id.to_string()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= LobbyLimits::INFO_WINDOW {
+            *entry = (now, 0);
+        }
+        if entry.1 >= LobbyLimits::INFO_PER_WINDOW {
+            return false;
+        }
+        entry.1 += 1;
+        true
+    }
+
+    /// The stats to serve now, asking for a refresh when they are stale.
+    pub fn current(&self) -> Option<NetworkInfo> {
+        let slot = self.slot.lock().expect("public stats slot lock").clone();
+        let age = slot.as_ref().map(|(at, _)| at.elapsed());
+        if age.is_none_or(|age| age >= INFO_REFRESH) {
+            self.wanted.notify_one();
+        }
+        slot.filter(|(at, _)| at.elapsed() < INFO_MAX_AGE)
+            .map(|(_, info)| info)
+    }
+
+    pub fn publish(&self, mut info: NetworkInfo) {
+        info.models.truncate(LobbyLimits::INFO_MODELS);
+        *self.slot.lock().expect("public stats slot lock") = Some((Instant::now(), info));
+    }
+
+    /// Drops what was published, when the operator turns the switch off.
+    pub fn clear(&self) {
+        *self.slot.lock().expect("public stats slot lock") = None;
+    }
+
+    /// Resolves when a request found the stats missing or stale.
+    pub async fn wanted(&self) {
+        self.wanted.notified().await;
     }
 }
 
@@ -777,7 +868,7 @@ mod tests {
                 {
                     let text = match request {
                         LobbyRequest::Post { text, .. } => text,
-                        LobbyRequest::Fetch { .. } => String::new(),
+                        LobbyRequest::Fetch { .. } | LobbyRequest::Info => String::new(),
                     };
                     let node_id = node_id_of_peer(&peer).unwrap_or_default();
                     let _ = swarm.behaviour_mut().send_response(
@@ -786,6 +877,7 @@ mod tests {
                             accepted: true,
                             error: None,
                             node_id: node_id.clone(),
+                            info: None,
                             messages: vec![LobbyMessage {
                                 message_id: "m1".into(),
                                 sender_node_id: node_id,
@@ -818,6 +910,38 @@ mod tests {
         // The frame carries no node id: the principal read it off the handshake.
         assert_eq!(response.node_id, candidate.node_id.0);
         assert_eq!(response.messages[0].text, "hello");
+    }
+
+    #[tokio::test]
+    async fn published_stats_are_served_from_the_slot_and_ask_for_a_refresh_when_stale() {
+        let stats = PublicStats::default();
+        // Nothing yet: the request gets nothing and wakes the publisher.
+        assert_eq!(stats.current(), None);
+        tokio::time::timeout(Duration::from_millis(200), stats.wanted())
+            .await
+            .expect("an empty slot asks for a refresh");
+
+        stats.publish(NetworkInfo {
+            models: (0..200).map(|index| format!("model-{index:03}")).collect(),
+            node_count: 3,
+            vram_total_mb: Some(48_000),
+        });
+        let served = stats.current().unwrap();
+        assert_eq!(served.node_count, 3);
+        assert_eq!(served.models.len(), LobbyLimits::INFO_MODELS);
+        // Fresh stats do not ask again.
+        assert!(tokio::time::timeout(Duration::from_millis(50), stats.wanted())
+            .await
+            .is_err());
+
+        stats.clear();
+        assert_eq!(stats.current(), None);
+
+        for _ in 0..LobbyLimits::INFO_PER_WINDOW {
+            assert!(stats.allow("asker"));
+        }
+        assert!(!stats.allow("asker"));
+        assert!(stats.allow("someone-else"));
     }
 
     #[test]

@@ -171,6 +171,10 @@ pub(crate) struct PublicNetworkView {
     /// operator's switch and the network Chat are both on).
     #[serde(default)]
     pub lobby_chat: bool,
+    /// The network publishes models, node count and VRAM to non-members,
+    /// asked live from its principal.
+    #[serde(default)]
+    pub public_stats: bool,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
     #[serde(default)]
@@ -237,6 +241,7 @@ fn directory_network_from_view(
         access_policy: view.access_policy,
         accepted_enrollments: view.accepted_enrollments.clone(),
         lobby_chat: view.lobby_chat,
+        public_stats: view.public_stats,
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
         directory_replicas: view.directory_replicas.clone(),
@@ -268,6 +273,7 @@ fn view_from_directory_record(
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments,
         lobby_chat: network.lobby_chat,
+        public_stats: network.public_stats,
         location: network.location,
         discovered_via: "directory".to_string(),
         directory_replicas: network.directory_replicas,
@@ -626,6 +632,7 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
         lobby_chat: network.lobby_chat && state.network_chat.enabled(),
+        public_stats: network.public_stats,
         location: network
             .location
             .clone()

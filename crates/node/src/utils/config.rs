@@ -165,6 +165,11 @@ pub struct NetworkSettings {
     /// with the network Chat on.
     #[serde(default)]
     pub lobby_chat: bool,
+    /// Publishes the served models, the node count and the total VRAM to
+    /// machines that are not members, answered live by the principal
+    /// (`network_lobby::PublicStats`). Only takes effect on a public network.
+    #[serde(default)]
+    pub public_stats: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<NetworkLocation>,
 }

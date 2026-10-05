@@ -88,7 +88,10 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   runs in setup mode. The principal's handler is
   `discovery.rs::answer_lobby_request`; inside the network the lobby is the
   `lobby` room of `network_chat.rs`, which gained `ChatAction::LobbyPresence`
-  and `NetworkChat::{lobby_guests, lobby_enabled}`.
+  and `NetworkChat::{lobby_guests, lobby_enabled}`. The `Info` request and
+  `PublicStats` publish models, node count and VRAM under a separate switch
+  (`NetworkChat::{public_stats, public_stats_enabled}`); the slot is filled by
+  `webui::spawn_public_stats_publisher`, never by the swarm loop.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
   response próprio, limites de texto/arquivo, fila limitada, rate limit e
   writer de persistência fora do loop do swarm. A ação original leva a API key;

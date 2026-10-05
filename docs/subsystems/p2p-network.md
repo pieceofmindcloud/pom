@@ -1442,6 +1442,22 @@ candidates tracked. A blocked `node_id` and a current member are refused
 `lobby_disabled`. What a candidate reads is the lobby room only - the
 `network` room, files and direct messages never leave the members.
 
+**Published stats.** The same protocol carries a third request, `Info`, that
+is not part of the conversation: no card, no presence, and its own switch,
+`network.public_stats` (off by default, public networks only), independent of
+the lobby chat and of the network Chat. The answer is `NetworkInfo { models,
+node_count, vram_total_mb }` - the three facts the Public networks screen
+shows for the local network, computed the same way from the cluster view
+(`webui::network_info_from_cluster`). The swarm loop never computes them,
+because the cluster view reads every peer over HTTP: it answers from
+`PublicStats` and, when the slot is missing or older than 30 s, wakes
+`webui::spawn_public_stats_publisher`. So the first request after a quiet
+period answers `info: null` and the next one has the numbers, nothing is
+computed while nobody asks, and stats older than 5 minutes are not served.
+`Info` is limited to 6 requests per 10 s per machine; with the switch off it
+answers `stats_disabled`. Latency is deliberately absent: nobody measures a
+route to a network that was not joined.
+
 The candidate's side is `LobbyClient`: a small swarm of its own over the node
 key, dial only (TCP, QUIC, relay client, DCuTR), that resolves the publisher's
 `pk:` key through pkarr at dial time. It is separate from the cluster swarm on

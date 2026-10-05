@@ -106,6 +106,107 @@ pub async fn setup_lobby_post(Json(post): Json<LobbyPost>) -> Response {
     exchange(&post.key, Some((post.message_id, post.text))).await
 }
 
+async fn info_exchange(key: &str) -> Response {
+    let client = match network_lobby::client().await {
+        Ok(client) => client,
+        Err(error) => {
+            warn!("lobby: não foi possível iniciar o cliente: {error:#}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "lobby_unavailable" })),
+            )
+                .into_response();
+        }
+    };
+    match client.request(key.trim(), LobbyRequest::Info).await {
+        Ok(response) => Json(json!({
+            "accepted": response.accepted,
+            "error": response.error,
+            "info": response.info,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /api/ui/network-chat/lobby/info?key=pk:...` - models, node count and
+/// VRAM the network published under `key` chose to show, asked from its
+/// principal now. `info: null` with `accepted: true` means it is still being
+/// computed there.
+pub(super) async fn lobby_info(_auth: ConnectionAuth, Query(query): Query<LobbyQuery>) -> Response {
+    info_exchange(&query.key).await
+}
+
+/// `GET /api/setup/lobby/info?key=pk:...` - the same, from the setup wizard.
+pub async fn setup_lobby_info(Query(query): Query<LobbyQuery>) -> Response {
+    info_exchange(&query.key).await
+}
+
+/// The three facts of a cluster view that a network publishes, computed the
+/// way the Public networks screen computes them for the local network
+/// (`apps/frontend/src/lib/networkStats.ts`), so both rows agree.
+pub(crate) fn network_info_from_cluster(cluster: &serde_json::Value) -> network_lobby::NetworkInfo {
+    let peers = cluster["peers"].as_array().cloned().unwrap_or_default();
+    let mut models = std::collections::BTreeSet::new();
+    let mut add = |value: &serde_json::Value| {
+        if let Some(model) = value.as_str().filter(|model| !model.is_empty()) {
+            models.insert(model.to_string());
+        }
+    };
+    for entry in cluster["model_inventory"].as_array().into_iter().flatten() {
+        add(&entry["model_id"]);
+    }
+    for peer in &peers {
+        add(&peer["model"]);
+    }
+    add(&cluster["active_model"]);
+    let mut vram_total_mb = None;
+    for peer in &peers {
+        for gpu in peer["node"]["system"]["gpus"].as_array().into_iter().flatten() {
+            if let Some(total) = gpu["vram_total_mb"].as_f64().filter(|mb| *mb > 0.0) {
+                *vram_total_mb.get_or_insert(0_u64) += total as u64;
+            }
+        }
+    }
+    network_lobby::NetworkInfo {
+        models: models.into_iter().collect(),
+        node_count: peers.len() as u32,
+        vram_total_mb,
+    }
+}
+
+/// Fills `PublicStats` on demand. The swarm loop cannot compute the stats
+/// (they need the cluster view, which reads every peer over HTTP), so it wakes
+/// this task when a request finds them stale; at most one cluster read per
+/// [`network_lobby::INFO_REFRESH`], and none while nobody asks.
+pub(crate) fn spawn_public_stats_publisher(state: GatewayState) {
+    tokio::spawn(async move {
+        loop {
+            state.network_chat.public_stats().wanted().await;
+            if !state.network_chat.public_stats_enabled().await {
+                state.network_chat.public_stats().clear();
+                continue;
+            }
+            let response = cluster(HeaderMap::new(), State(state.clone())).await;
+            let view = match axum::body::to_bytes(response.into_body(), usize::MAX).await {
+                Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes).ok(),
+                Err(_) => None,
+            };
+            if let Some(view) = view.filter(|view| view["peers"].is_array()) {
+                state
+                    .network_chat
+                    .public_stats()
+                    .publish(network_info_from_cluster(&view));
+            }
+            tokio::time::sleep(network_lobby::INFO_REFRESH).await;
+        }
+    });
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct SetupPublicNetworksQuery {
     /// Directory ingresses typed in the wizard, comma separated. They add to
@@ -152,4 +253,35 @@ pub async fn setup_public_networks(
     let client = reqwest::Client::new();
     Json(crate::gateway::directory_public_networks(&state.database, &client, replicas).await)
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn published_stats_match_what_the_local_row_shows() {
+        let cluster = json!({
+            "active_model": "qwen3",
+            "model_inventory": [{ "model_id": "qwen3" }, { "model_id": "gemma" }],
+            "peers": [
+                { "model": "qwen3", "node": { "system": { "gpus": [
+                    { "vram_total_mb": 16000.0 }, { "vram_total_mb": 8000.5 }
+                ] } } },
+                // Unified memory reports no dedicated VRAM, and is not a zero.
+                { "model": "", "node": { "system": { "gpus": [{ "vram_total_mb": null }] } } },
+                // A peer that could not be read still counts as a node.
+                { "model": "llama", "node": null },
+            ],
+        });
+        let info = network_info_from_cluster(&cluster);
+        assert_eq!(info.models, vec!["gemma", "llama", "qwen3"]);
+        assert_eq!(info.node_count, 3);
+        assert_eq!(info.vram_total_mb, Some(24_000));
+
+        let empty = network_info_from_cluster(&json!({ "peers": [] }));
+        assert_eq!(empty.node_count, 0);
+        assert_eq!(empty.vram_total_mb, None);
+        assert!(empty.models.is_empty());
+    }
 }

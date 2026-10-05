@@ -1143,6 +1143,10 @@ faz o download autenticado do blob persistido.
   for the wizard, built on `gateway::directory_public_networks`. The local
   hardware card is sampled once a minute, not per poll. `network_chat_snapshot`
   takes `?room=lobby` and always reports `lobbyEnabled` and `lobbyGuests`.
+  The same file has `lobby_info` / `setup_lobby_info` (another network's
+  published stats), `network_info_from_cluster` and
+  `spawn_public_stats_publisher`, the on-demand task that fills the principal's
+  `PublicStats` from the cluster view (started in `spawn_gateway_companions`).
   `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
   through pkarr on the node and answers only `direct|relayed|unresolved` plus a
   relay count (30 s cache; keys the node does not list get 404). `GET/POST

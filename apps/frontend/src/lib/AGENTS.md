@@ -95,6 +95,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `peerSpeed.ts` - `rateSpeed`: tom de decode/prefill de uma fatia pela razão
   para a mais rápida do mesmo modelo; com uma só medida, `solo`.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
+- `publicStats.ts` - `usePublicStats(endpoint, key, enabled, refreshKey)`:
+  models, node count and VRAM of a network this machine is not in, asked from
+  that network's principal through the node. 30 s cache, one retry after 3 s
+  when the principal answers that it is still computing, `null` otherwise.
 - `networkStats.ts` - agrega somente dados presentes no `ClusterView`: nós,
   RTT médio, VRAM conhecida e modelos servidos. Cada métrica permanece nula
   quando a fonte não a fornece, para a UI mostrar indisponível sem inventar

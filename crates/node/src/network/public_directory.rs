@@ -108,6 +108,9 @@ pub(crate) struct PublicDirectoryNetwork {
     /// The publisher answers lobby requests from non-members.
     #[serde(default)]
     pub lobby_chat: bool,
+    /// The publisher answers `Info` requests with models, nodes and VRAM.
+    #[serde(default)]
+    pub public_stats: bool,
     pub location: Option<crate::config::NetworkLocation>,
     #[serde(default)]
     pub relay_hints: Vec<String>,
@@ -366,6 +369,7 @@ impl PublicDirectoryNetwork {
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
             lobby_chat: false,
+            public_stats: false,
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: vec!["https://directory.example".to_string()],

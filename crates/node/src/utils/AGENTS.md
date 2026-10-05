@@ -179,6 +179,9 @@ never affected.
 `NetworkSettings.lobby_chat` opens the lobby room of the network Chat to
 machines that are not members (`network/network_lobby.rs`). It is off by
 default and only takes effect on a public network with the network Chat on.
+`NetworkSettings.public_stats` publishes the served models, node count and
+total VRAM to non-members, answered live by the principal; off by default and
+public networks only.
 
 ## Ligações
 

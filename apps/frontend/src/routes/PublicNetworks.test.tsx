@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { resetPublicLocatorCache } from "../lib/publicLocator";
+import { resetPublicStatsCache } from "../lib/publicStats";
 import { PublicNetworks } from "./PublicNetworks";
 
 const mocks = vi.hoisted(() => ({
@@ -109,6 +110,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetPublicLocatorCache();
+  resetPublicStatsCache();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -268,5 +270,32 @@ describe("PublicNetworks", () => {
     fireEvent.click(within(open).getByRole("button", { name: "Conversar" }));
     expect(await screen.findByRole("dialog", { name: "Lobby de Rede Curitiba" })).toBeTruthy();
     await waitFor(() => expect(mocks.get).toHaveBeenCalledWith("/api/ui/network-chat/lobby?key=pk%3Acuritiba", { auth: true }));
+  });
+
+  it("shows models, nodes and VRAM of a network that publishes them, and asks no other", async () => {
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([{ ...networks[0], public_stats: true }, networks[1]]);
+      if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+      if (path === "/api/ui/network-chat/lobby/info?key=pk%3Acuritiba") {
+        return Promise.resolve({ accepted: true, error: null, info: { models: ["gemma", "qwen3"], node_count: 4, vram_total_mb: 49152 } });
+      }
+      return Promise.reject(new Error("no local network"));
+    });
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const row = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    expect(await within(row).findByText("gemma, qwen3")).toBeTruthy();
+    expect(within(row).getByText("4")).toBeTruthy();
+    expect(within(row).getByText("48.0 GB")).toBeTruthy();
+    // Latency to a network that was not joined is not measured by anyone.
+    expect(within(row).getAllByText("Indisponível").length).toBe(1);
+
+    const silent = screen.getByText("Rede São Paulo").closest("tr")!;
+    expect(within(silent).queryByText("gemma, qwen3")).toBeNull();
+    expect(mocks.get.mock.calls.some(([path]) => String(path).includes("lobby/info?key=pk%3Asao-paulo"))).toBe(false);
   });
 });

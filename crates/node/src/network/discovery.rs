@@ -1804,12 +1804,34 @@ async fn answer_lobby_request(
     use crate::network_lobby::{
         GuestSeen, LobbyLimits, LobbyMessage, LobbyRequest, LobbyResponse, LOBBY_ROOM,
     };
-    if network.profile() != crate::profile::NodeProfile::Admin || !chat.lobby_enabled().await {
-        return LobbyResponse::rejected("lobby_disabled");
-    }
     let Some(node_id) = crate::network_lobby::node_id_of_peer(&peer) else {
         return LobbyResponse::rejected("identity_unsupported");
     };
+    // The published stats answer under their own switch and leave no
+    // presence: asking what a network runs is not entering its lobby.
+    if matches!(request, LobbyRequest::Info) {
+        if network.profile() != crate::profile::NodeProfile::Admin
+            || !chat.public_stats_enabled().await
+        {
+            return LobbyResponse::rejected("stats_disabled");
+        }
+        if chat.node_is_blocked(&node_id).await {
+            return LobbyResponse::rejected("node_blocked");
+        }
+        if !chat.public_stats().allow(&node_id) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        return LobbyResponse {
+            accepted: true,
+            error: None,
+            node_id,
+            messages: Vec::new(),
+            info: chat.public_stats().current(),
+        };
+    }
+    if network.profile() != crate::profile::NodeProfile::Admin || !chat.lobby_enabled().await {
+        return LobbyResponse::rejected("lobby_disabled");
+    }
     if chat.node_is_blocked(&node_id).await {
         return LobbyResponse::rejected("node_blocked");
     }
@@ -1818,7 +1840,10 @@ async fn answer_lobby_request(
     if node_id == network.node_id || peers.iter().any(|member| member.node_id == node_id) {
         return LobbyResponse::rejected("already_member");
     }
-    let card = request.card().clone().sanitized();
+    let card = match &request {
+        LobbyRequest::Post { card, .. } | LobbyRequest::Fetch { card } => card.clone().sanitized(),
+        LobbyRequest::Info => unreachable!("Info is answered above"),
+    };
     let is_post = matches!(request, LobbyRequest::Post { .. });
     let seen = match chat.lobby_guests().admit(&node_id, &card, is_post) {
         Ok(seen) => seen,
@@ -1901,6 +1926,7 @@ async fn answer_lobby_request(
         error: None,
         node_id,
         messages,
+        info: None,
     }
 }
 

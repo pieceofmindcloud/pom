@@ -1054,6 +1054,7 @@ async fn start_setup_mode(
             "/api/setup/lobby",
             get(webui::setup_lobby_fetch).post(webui::setup_lobby_post),
         )
+        .route("/api/setup/lobby/info", get(webui::setup_lobby_info))
         .merge(crate::webapp::routes())
         .with_state(webui::SetupState {
             config,
@@ -1495,6 +1496,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::plugins::spawn_host_context(gw_state.clone());
     crate::plugins::spawn_serving_watcher(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+    crate::webui::spawn_public_stats_publisher(gw_state.clone());
 }
 
 /// Sobe o nó configurado: rede, gateway com todas as rotas e, se houver, a

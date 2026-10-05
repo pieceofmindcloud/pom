@@ -494,6 +494,9 @@ pub struct NetworkChat {
     /// Candidates present in the lobby: fed by lobby requests on the
     /// principal and by relayed `LobbyPresence` frames on every other member.
     lobby_guests: crate::network_lobby::LobbyGuests,
+    /// What this network publishes about itself to non-members, on the
+    /// principal (`network_lobby::PublicStats`).
+    public_stats: crate::network_lobby::PublicStats,
 }
 
 impl NetworkChat {
@@ -529,6 +532,7 @@ impl NetworkChat {
                 typing: Mutex::new(HashMap::new()),
                 notices: Mutex::new(std::collections::VecDeque::new()),
                 lobby_guests: Default::default(),
+                public_stats: Default::default(),
             }),
             receiver,
         )
@@ -557,6 +561,19 @@ impl NetworkChat {
 
     pub fn lobby_guests(&self) -> &crate::network_lobby::LobbyGuests {
         &self.lobby_guests
+    }
+
+    pub fn public_stats(&self) -> &crate::network_lobby::PublicStats {
+        &self.public_stats
+    }
+
+    /// Whether this network publishes its models, node count and VRAM to
+    /// non-members: a public network with the operator's switch set. It does
+    /// not depend on the network Chat being on.
+    pub async fn public_stats_enabled(&self) -> bool {
+        let config = self.auth.read().await;
+        config.network.public_stats
+            && config.network.visibility == crate::config::NetworkVisibility::Public
     }
 
     /// Whether this network opened a lobby to non-members: a public network

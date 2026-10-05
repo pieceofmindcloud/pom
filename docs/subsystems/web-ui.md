@@ -289,7 +289,11 @@ does not get past that clip. The minimized choice is persisted in the browser.
   (`PublicDirectoryPanel`), so a machine that has joined nothing can ask first.
   Members read and answer in the "Lobby" tab of `/network-chat`, which lists
   each candidate with its declared hardware (`LobbyHardwareCard`). The switch
-  is "Lobby chat" in Network settings.
+  is "Lobby chat" in Network settings. A network with `public_stats` fills the
+  nodes, VRAM and models columns of a row this node is not a member of
+  (`lib/publicStats.ts`, asked from that network's principal through this
+  node); latency stays unavailable there. The switch is "Published stats" in
+  Network settings.
 - `/setup` -> `Setup`, the real first access wizard, **full screen** and with
   the access gate's identity (see "First access wizard" below).
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the

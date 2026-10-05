@@ -8,6 +8,7 @@ import { Button, ErrorState, PageHeader, Select, Skeleton } from "../components/
 import { api } from "../lib/api";
 import { networkStats, type NetworkStats } from "../lib/networkStats";
 import { usePublicLocator, type PublicLocator } from "../lib/publicLocator";
+import { usePublicStats } from "../lib/publicStats";
 import { useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -34,6 +35,8 @@ interface PublicNetwork {
   accepted_enrollments?: EnrollmentRole[];
   /** The network answers lobby chat from machines that are not members. */
   lobby_chat?: boolean;
+  /** The network publishes models, node count and VRAM to non-members. */
+  public_stats?: boolean;
   location: { latitude: number; longitude: number; accuracy_m?: number } | null;
   discovered_via: string;
   directory_replicas?: string[];
@@ -210,11 +213,15 @@ export function PublicNetworks() {
   );
 }
 
-function NetworkRow({ network, distance, stats, membership, joining, leaving, onJoin, onLeave, onChat, onDetails, t, refreshKey }: { network: PublicNetwork; distance: number | null; stats: NetworkStats | null; membership: "none" | "member" | "principal"; joining: boolean; leaving: boolean; onJoin: () => void; onLeave: () => void; onChat: () => void; onDetails: () => void; t: (key: string, values?: Record<string, string | number>) => string; refreshKey: number }) {
+function NetworkRow({ network, distance, stats: localStats, membership, joining, leaving, onJoin, onLeave, onChat, onDetails, t, refreshKey }: { network: PublicNetwork; distance: number | null; stats: NetworkStats | null; membership: "none" | "member" | "principal"; joining: boolean; leaving: boolean; onJoin: () => void; onLeave: () => void; onChat: () => void; onDetails: () => void; t: (key: string, values?: Record<string, string | number>) => string; refreshKey: number }) {
   const unavailable = t("publicNetworks.unavailable");
   const location = [network.country_name || network.country_code, network.city].filter(Boolean).join(" / ") || unavailable;
-  const models = stats?.models.length ? stats.models.join(", ") : unavailable;
   const reachability = usePublicLocator(network.publisher_key, refreshKey);
+  // The local network is read from this node's own cluster; any other one is
+  // asked from its principal, and only when it chose to publish.
+  const publishedStats = usePublicStats("/api/ui/network-chat/lobby/info", network.publisher_key, membership === "none" && Boolean(network.public_stats), refreshKey);
+  const stats = localStats ?? publishedStats;
+  const models = stats?.models.length ? stats.models.join(", ") : unavailable;
   const closed = network.accepted_enrollments?.length === 0;
   return <tr className="align-top transition-colors hover:bg-raised/45"><td className="max-w-[15rem] px-4 py-3.5"><button type="button" className="group text-left" onClick={onDetails} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t("publicNetworks.distance", { value: distance.toFixed(0) })}</span>}<p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[15rem] break-all px-4 py-3.5 font-mono text-[0.68rem] text-muted">{network.geo_label || unavailable}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.averageLatencyMs != null ? `${stats.averageLatencyMs.toFixed(1)} ms` : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><div className="flex flex-wrap items-center gap-2">{membership === "none" && network.lobby_chat && <Button size="sm" onClick={(event) => { event.stopPropagation(); onChat(); }} icon={<MessageCircle className="h-3.5 w-3.5" />}>{t("publicNetworks.chat")}</Button>}{membership === "none" ? <Button size="sm" variant="primary" loading={joining} disabled={joining || closed} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={(event) => { event.stopPropagation(); onJoin(); }} icon={<ArrowRight className="h-3.5 w-3.5" />}>{t(closed ? "publicNetworks.closed" : "publicNetworks.join")}</Button> : membership === "member" ? <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={(event) => { event.stopPropagation(); onLeave(); }} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button> : null}</div></td></tr>;
 }

@@ -452,6 +452,8 @@ export interface NetworkSettings {
   accepted_enrollments: EnrollmentRole[];
   /** Opens the lobby room of the network Chat to machines that are not members. */
   lobby_chat: boolean;
+  /** Publishes served models, node count and total VRAM to non-members. */
+  public_stats: boolean;
   location: NetworkLocation | null;
 }
 

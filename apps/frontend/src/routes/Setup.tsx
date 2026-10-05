@@ -16,6 +16,7 @@ import clsx from "clsx";
 import type { WizardStage, WizardStep } from "./setupWizardTypes";
 import { setupNextStage, setupPreviousStage, setupStepsFor, type SetupProfile } from "./setupWizardFlow";
 import { api } from "../lib/api";
+import { usePublicStats } from "../lib/publicStats";
 import type { EnrollmentRole } from "../lib/types";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -856,7 +857,20 @@ interface DirectoryNetwork {
   access_policy?: AccessPolicy;
   accepted_enrollments?: EnrollmentRole[];
   lobby_chat?: boolean;
+  public_stats?: boolean;
   directory_replicas?: string[];
+}
+
+/** What a listed network publishes about itself, asked from its principal. */
+function DirectoryNetworkStats({ network, t }: { network: DirectoryNetwork; t: Translate }) {
+  const stats = usePublicStats("/api/setup/lobby/info", network.publisher_key, Boolean(network.public_stats));
+  if (!stats) return null;
+  const parts = [
+    t("firstRun.publicDirectoryNodes", { count: stats.nodeCount }),
+    stats.vramTotalMb != null ? t("firstRun.publicDirectoryVram", { value: (stats.vramTotalMb / 1024).toFixed(1) }) : null,
+    stats.models.length ? stats.models.join(", ") : null,
+  ].filter(Boolean);
+  return <p className="truncate text-xs text-faint" data-testid={`directory-stats-${network.cluster_id}`}>{parts.join(" - ")}</p>;
 }
 
 /**
@@ -903,6 +917,7 @@ export function PublicDirectoryPanel({ setup, onUse, t }: { setup: SetupState; o
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-fg">{network.name || network.cluster_id}</p>
                 <p className="truncate text-xs text-muted">{[network.organization, [network.country_name || network.country_code, network.city].filter(Boolean).join(" / ")].filter(Boolean).join(" - ")}</p>
+                <DirectoryNetworkStats network={network} t={t} />
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {network.lobby_chat && (

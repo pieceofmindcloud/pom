@@ -894,6 +894,11 @@ export interface ChatCapabilities {
   coverage: "complete" | "incomplete" | "unavailable";
   /** Thinking is available only when the active deployment leaves it enabled. */
   thinking: "supported" | "unsupported" | "unavailable";
+  /**
+   * A machine of the active pipeline unloaded its model for idleness, or is
+   * loading it again: the next answer waits for the reload.
+   */
+  asleep?: boolean;
   /** The network has a RAG server and retrieval is on. Absent on an older node. */
   rag?: "supported" | "unavailable";
   /** Collections of the RAG server a message may keep its search to. */

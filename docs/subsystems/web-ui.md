@@ -913,6 +913,11 @@ without forcing a re-render per token. Only the stop button or sending a new
 message aborts the previous request. The conversation keeps three things
 besides the turns:
 
+- While an answer has not started, `ChatWaitingLine` shows a line that
+  changes every few seconds (`lib/chatWaiting.ts`, texts under `chat.wait.*`).
+  The sets follow the wait: `wake` while `chat/capabilities` reports
+  `asleep` - a machine of the pipeline unloaded its model for idleness or is
+  loading it again - then `pieces`, `assemble` and `long` as the seconds pass.
 - The single file field reads `GET /api/ui/chat/capabilities`, which aggregates
   the active head and the coverage without reusing the topology the `infer`
   profile cannot query. It accepts any file type, button and drag and drop.

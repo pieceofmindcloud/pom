@@ -687,6 +687,17 @@ pub enum ServerState {
     Thermal,
 }
 
+/// What `NodeRuntime::wake_from_idle` found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// The model is loaded.
+    Ready,
+    /// A load was already running.
+    Loading,
+    /// This call started the load.
+    Started,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeStatus {
     pub state: ServerState,
@@ -893,32 +904,57 @@ impl NodeRuntime {
         }
     }
 
+    /// Start loading an idle deployment and return at once, without waiting
+    /// for the model. Idempotent: a peer already loading or ready is left
+    /// alone, and the operation lock keeps concurrent wake-ups from starting
+    /// two loads.
+    ///
+    /// This is what a remote gateway calls. Holding one HTTP call open for the
+    /// whole load made the wake depend on a connection surviving minutes of
+    /// silence, on every transport; the gateway asks again instead until the
+    /// answer is `Ready`.
+    pub async fn wake_from_idle(&self) -> Result<Wake> {
+        let _operation = self.operation.lock().await;
+        let state = self.status.read().await.state;
+        match state {
+            ServerState::Idle => {
+                let Some(cfg) = self.config.read().await.clone() else {
+                    bail!("deployment idle sem configuração");
+                };
+                self.note_request();
+                info!(
+                    "⏰ acordando a implantação ociosa: {} camadas {}-{}",
+                    cfg.model_label, cfg.start_layer, cfg.end_layer
+                );
+                // Keep the operation lock while transitioning Idle ->
+                // Starting so concurrent requests cannot duplicate a load.
+                self.apply_locked(cfg, true, true).await?;
+                Ok(Wake::Started)
+            }
+            ServerState::Ready => Ok(Wake::Ready),
+            ServerState::Starting => {
+                // A request is waiting for this load: it must not look idle
+                // again to the evaluator the moment it becomes ready.
+                self.note_request();
+                Ok(Wake::Loading)
+            }
+            ServerState::Failed => bail!(
+                "o modelo não conseguiu recarregar: {}",
+                self.status.read().await.detail
+            ),
+            ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
+            ServerState::Disabled => bail!("o deployment não está configurado"),
+        }
+    }
+
     /// Ensure this peer is ready for a planned request. Idle peers are loaded;
     /// peers already starting are awaited; ready peers return immediately.
-    /// The caller may invoke this on all planned peers concurrently, and the
-    /// operation lock keeps duplicate wake-ups idempotent.
+    /// Returns whether this call started the load. Used for the local node,
+    /// where waiting costs no connection (`wait_until_ready` is a `Notify`).
     pub async fn reload_from_idle(&self) -> Result<bool> {
-        let reloaded = {
-            let _operation = self.operation.lock().await;
-            match self.status.read().await.state {
-                ServerState::Idle => {
-                    let Some(cfg) = self.config.read().await.clone() else {
-                        bail!("deployment idle sem configuração");
-                    };
-                    self.note_request();
-                    // Keep the operation lock while transitioning Idle ->
-                    // Starting so concurrent requests cannot duplicate a load.
-                    self.apply_locked(cfg, true).await?;
-                    true
-                }
-                ServerState::Ready | ServerState::Starting => false,
-                ServerState::Failed => bail!("o modelo não conseguiu recarregar"),
-                ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
-                ServerState::Disabled => bail!("o deployment não está configurado"),
-            }
-        };
+        let wake = self.wake_from_idle().await?;
         self.wait_until_ready().await?;
-        Ok(reloaded)
+        Ok(wake == Wake::Started)
     }
 
     /// Evaluate the per-peer policy from the existing monitor. This method is
@@ -968,6 +1004,10 @@ impl NodeRuntime {
             ),
         );
         self.status_changed.notify_waiters();
+        info!(
+            "💤 modelo descarregado após {} min sem requisições; a próxima requisição o recarrega",
+            cfg.idle_minutes
+        );
         if let Err(error) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Idle) {
             warn!("não deu para anotar a fatia ociosa: {error}");
         }
@@ -1117,7 +1157,7 @@ impl NodeRuntime {
     /// server, re-announce the new layer range, start the new server.
     pub async fn apply(&self, cfg: NodeConfig) -> Result<()> {
         let _operation = self.operation.lock().await;
-        self.apply_locked(cfg, true).await
+        self.apply_locked(cfg, true, false).await
     }
 
     /// Retoma uma fatia que o journal marcou como pendente depois de um crash.
@@ -1125,10 +1165,22 @@ impl NodeRuntime {
     /// resetá-la para 1 antes de iniciar o servidor nativo.
     pub async fn apply_after_restart(&self, cfg: NodeConfig) -> Result<()> {
         let _operation = self.operation.lock().await;
-        self.apply_locked(cfg, false).await
+        self.apply_locked(cfg, false, false).await
     }
 
-    async fn apply_locked(&self, mut cfg: NodeConfig, persist_attempt: bool) -> Result<()> {
+    /// Stops the current generation and starts the server for `cfg`.
+    ///
+    /// `waking` is the reload of an idle deployment: the node keeps announcing
+    /// `idle` while the model loads, so a gateway that plans in the meantime
+    /// waits for it (`reload_model`) instead of probing a server that is not
+    /// up yet and dropping the peer from the plan. The health watcher clears
+    /// the flag when the model answers.
+    async fn apply_locked(
+        &self,
+        mut cfg: NodeConfig,
+        persist_attempt: bool,
+        waking: bool,
+    ) -> Result<()> {
         if let Some(auth) = &self.auth {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
@@ -1221,7 +1273,7 @@ impl NodeRuntime {
             RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
         self.status_changed.notify_waiters();
         self.request_activity.mark_now();
-        self.net.set_idle(false);
+        self.net.set_idle(waking);
         // A configuração nova só vira capacidade efetiva depois que o
         // `/health` do processo novo responder `model_loaded`.
         self.net.set_runtime_generation(generation);
@@ -1333,7 +1385,7 @@ impl NodeRuntime {
                 policy.cooldown_secs
             ),
         );
-        self.apply_locked(cfg, true).await
+        self.apply_locked(cfg, true, false).await
     }
 
     async fn clear_active_for_thermal(

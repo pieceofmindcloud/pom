@@ -281,7 +281,17 @@ resets the activity. It sends the authenticated `reload_model` event in
 parallel to each planned idle peer; the event is idempotent for a second
 request that wakes the same machine, and each recipient loads its own slice.
 So the first request may wait for the load, but the hops are not warmed up
-sequentially nor wait on each other. The supervisor waits for the idle
+sequentially nor wait on each other. The event answers at once (`loading` or
+`ready`) and the gateway repeats it every second until every peer is `ready`
+(15 min ceiling): one call held open for the whole load depended on a
+connection surviving minutes of silence, and when it broke the request failed
+while the peer went on loading. A waking peer keeps announcing `idle` until its
+model answers, so a second request that arrives during the load waits for it
+instead of dropping the peer from the plan. Once the pipeline is awake the
+gateway waits for the peers' announcement (up to 5 s) and runs admission and
+planning again, because an idle peer announces no runtime capabilities and a
+plan made while it slept would run degraded. The wait shows up in the trace as
+the `pipeline_wake` gateway span. The supervisor waits for the idle
 generation to shut down completely before starting the new one, and the
 model's FFI release runs off the async executor in `spawn_blocking`; the
 gateway and `/health` stay responsive during that interval. The status goes

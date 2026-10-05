@@ -47,6 +47,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
   persisted message patch settles.
+- `chatWaiting.ts` - which line the Chat shows before the first token: the
+  set (`wake`, `pieces`, `assemble`, `long`) from the `asleep` flag and the
+  elapsed time, and the rotation inside it. Texts are `chat.wait.<set>.<n>`;
+  `WAITING_SET_SIZE` has to match the catalog (a test checks it).
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; peer/client f32/f16 conversion, f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
@@ -654,12 +658,12 @@ When updating this file, preserve this bar for all agents and keep entries conci
   `model.serving`, `model.stopped`, `preferences.changed`) preservando `id`.
   `scopedPluginApi(code).rpc(op, params)` posts to the plugin's own API
   (`/api/ui/plugins/<code>/rpc/<op>`).
+- `defaultPasswordNotice.ts` - the bell's default-password notice: read and
+  dismissed state in `localStorage` per `boot_id`, so it returns unread on
+  every start of the node and not on a page reload.
 - `pluginInbox.ts` - caixa de entrada dos plugins no sino: perguntas
   `notification.confirm` com Aceitar/Recusar (só nesta aba) e avisos
   `notification.notify` sem botões, não lidos até o sino abrir
   (`markPluginNoticesRead`; ids lidos no `localStorage`).
-- `defaultPasswordNotice.ts` - the bell's default-password notice: read and
-  dismissed state in `localStorage` per `boot_id`, so it returns unread on
-  every start of the node and not on a page reload.
 - `pluginI18n.ts` - carrega/valida/instala os catálogos de texto do plugin
   (`syncPluginCatalogs`), nos idiomas selecionados. Ver `docs/subsystems/plugins-ui.md`.

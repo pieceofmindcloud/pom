@@ -259,8 +259,10 @@ quebra o produto inteiro.
   anotada em `backend/reqlog.rs` é avaliada fora do caminho quente pelo monitor
   existente: o modelo é descarregado, o peer continua anunciado e entra em
   `idle`; a próxima requisição recarrega localmente e envia o evento autenticado
-  `reload_model` aos peers ociosos do plano para carregamento paralelo. Não há
-  timer ou `sleep` novo na inferência. → `deployment.md`, `p2p-network.md`
+  `reload_model` aos peers ociosos do plano para carregamento paralelo,
+  repetindo o evento até todos responderem `ready` e replanejando em seguida.
+  Não há timer ou `sleep` novo na inferência: a espera só existe enquanto uma
+  pipeline ociosa acorda. → `deployment.md`, `p2p-network.md`
 - **Nenhum peso trafega na rede por causa do fatiamento**: cada peer extrai a
   própria faixa da própria cópia. Transferência de arquivo é ato explícito do
   operador. → `slicing.md`, `file-transfer.md`

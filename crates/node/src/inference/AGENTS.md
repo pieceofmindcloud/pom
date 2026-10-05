@@ -22,7 +22,9 @@ supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
 anotação da fatia servida (estado Pending/Serving/Idle em
 `models/lastslice.rs`). Quando a política por deployment pede descarregamento
 ocioso, `RequestActivity` é avaliado pelo monitor existente fora do caminho de
-inferência; a restauração recebe `reload_model`, espera o `/health` do runtime
+inferência; a restauração recebe `reload_model` (`NodeRuntime::wake_from_idle`
+starts the load and returns; `reload_from_idle` also waits, for the local
+node), keeps `idle` announced while the model loads, espera o `/health` do runtime
 e volta a anunciar `serving`. O supervisor só inicia a próxima geração depois
 de o supervisor anterior terminar o encerramento, incluindo a liberação nativa
 do modelo, e essa liberação roda em `spawn_blocking` para não parar o executor

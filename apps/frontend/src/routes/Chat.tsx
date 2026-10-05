@@ -28,6 +28,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
+import { ChatWaitingLine } from "../components/ChatWaitingLine";
 import { PluginSlot, usePluginSlot } from "../components/PluginSlot";
 import { TelemetryLine } from "../components/TelemetryLine";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
@@ -1135,21 +1136,7 @@ function ChatScreen() {
                 </AnimatePresence>
                 {streaming &&
                   !session.messages[session.messages.length - 1]?.content && (
-                    <div className="flex items-center gap-2 text-sm text-muted">
-                      <span className="flex gap-1">
-                        {[0, 1, 2].map((i) => (
-                          <span
-                            key={i}
-                            className="h-1.5 w-1.5 rounded-full bg-iris"
-                            style={{
-                              animation: "pulse-soft 1.2s ease-in-out infinite",
-                              animationDelay: `${i * 0.16}s`,
-                            }}
-                          />
-                        ))}
-                      </span>
-                      {t("chat.through")}
-                    </div>
+                    <ChatWaitingLine asleep={chatCapabilities.data?.asleep === true} />
                   )}
               </div>
             )}

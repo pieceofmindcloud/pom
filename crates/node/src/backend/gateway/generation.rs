@@ -65,85 +65,186 @@ fn log_early_outcome(outcome: &str, reason: &str) {
     warn!("⛔ requisição encerrada antes do plano ({outcome}): {reason}");
 }
 
-/// Wakes every idle step selected for this request at once. This is a control
-/// event on the gateway port, not an inference hop, so all peers begin their
-/// local load concurrently before the first prefill is sent. The event is
-/// idempotent if another request has already woken the same peer.
+/// Wakes every idle step selected for this request at once and waits until
+/// all of them are ready. This is a control event on the gateway port, not an
+/// inference hop, so all peers begin their local load concurrently before the
+/// first prefill is sent. The event is idempotent if another request has
+/// already woken the same peer.
+///
+/// A remote peer answers the event at once (`loading` or `ready`) and the
+/// gateway repeats it every `IDLE_RELOAD_POLL`. One call held open for the
+/// whole load depended on a connection surviving minutes of silence - a model
+/// takes longer to load than a tunnel request or an idle QUIC stream lives -
+/// and when it broke the request failed while the peer went on loading.
 const IDLE_RELOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Deadline of one `reload_model` call. It only has to carry the answer.
+const IDLE_RELOAD_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(not(test))]
+const IDLE_RELOAD_POLL: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const IDLE_RELOAD_POLL: Duration = Duration::from_millis(20);
+/// How long the gateway waits for the woken peers' announcement after they
+/// answered `ready`. The plan is rebuilt from it: an idle peer announces no
+/// runtime capabilities, so a plan made while it slept would run degraded.
+const IDLE_ANNOUNCE_WAIT: Duration = Duration::from_secs(5);
+
+fn idle_steps<'a>(
+    plan: &PipelinePlan,
+    peers: &'a [crate::network::PeerInfo],
+) -> Vec<&'a crate::network::PeerInfo> {
+    let mut idle: Vec<&crate::network::PeerInfo> = Vec::new();
+    for step in &plan.steps {
+        if let Some(peer) = peers
+            .iter()
+            .find(|peer| peer.node_id == step.node_id && peer.idle)
+        {
+            if !idle.iter().any(|known| known.node_id == peer.node_id) {
+                idle.push(peer);
+            }
+        }
+    }
+    idle
+}
 
 async fn reload_idle_pipeline(
     state: &GatewayState,
     plan: &PipelinePlan,
     peers: &[crate::network::PeerInfo],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     reload_idle_pipeline_with_timeout(state, plan, peers, IDLE_RELOAD_TIMEOUT).await
 }
 
+/// Asks one remote peer to load until it answers `ready`. A call that does not
+/// arrive is tried again - the peer may be busy starting its server - and only
+/// the peer saying the load cannot happen ends the wait.
+async fn wake_remote_peer(
+    state: &GatewayState,
+    peer: &crate::network::PeerInfo,
+    last_error: &std::sync::Mutex<Option<String>>,
+) -> anyhow::Result<()> {
+    let node_id = &peer.node_id;
+    loop {
+        let call = state
+            .control_post_json(
+                peer,
+                "/api/internal/reload_model",
+                &serde_json::json!({ "event": "reload_model" }),
+                IDLE_RELOAD_CALL_TIMEOUT,
+            )
+            .await;
+        let transient = match call {
+            Ok(response) if response.status().is_success() => {
+                let body = response
+                    .json::<serde_json::Value>()
+                    .await
+                    .unwrap_or(serde_json::Value::Null);
+                if body.get("state").and_then(|value| value.as_str()) != Some("loading") {
+                    return Ok(());
+                }
+                None
+            }
+            // The tunnel's own answer for a gateway that is not listening.
+            Ok(response) if response.status() == reqwest::StatusCode::BAD_GATEWAY => {
+                Some("HTTP 502".to_string())
+            }
+            Ok(response) => {
+                let status = response.status();
+                let reason = response
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .and_then(|body| {
+                        body.get("error")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| format!("HTTP {status}"));
+                anyhow::bail!("reload_model falhou para {node_id}: {reason}");
+            }
+            Err(error) => Some(format!("{error:#}")),
+        };
+        if let Some(reason) = transient {
+            debug!("reload_model para {node_id} ainda sem resposta: {reason}");
+            if let Ok(mut slot) = last_error.lock() {
+                *slot = Some(format!("{node_id}: {reason}"));
+            }
+        }
+        tokio::time::sleep(IDLE_RELOAD_POLL).await;
+    }
+}
+
+/// Returns whether any peer had to be woken.
 async fn reload_idle_pipeline_with_timeout(
     state: &GatewayState,
     plan: &PipelinePlan,
     peers: &[crate::network::PeerInfo],
     timeout: Duration,
-) -> anyhow::Result<()> {
-    if !plan.steps.iter().any(|step| {
-        peers
-            .iter()
-            .any(|peer| peer.node_id == step.node_id && peer.idle)
-    }) {
-        return Ok(());
+) -> anyhow::Result<bool> {
+    let idle = idle_steps(plan, peers);
+    if idle.is_empty() {
+        return Ok(false);
     }
-    let requests = plan
-        .steps
-        .iter()
-        .filter_map(|step| {
-            let peer = peers.iter().find(|peer| peer.node_id == step.node_id)?;
-            if !peer.idle {
-                return None;
-            }
-            let node_id = peer.node_id.clone();
-            if node_id == state.network.node_id {
-                let runtime = state.runtime.clone();
-                return Some(Ok(async move {
-                    runtime
-                        .reload_from_idle()
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| {
-                            anyhow::anyhow!("reload_model falhou para {node_id}: {error}")
-                        })
-                }
-                .boxed()));
-            }
-            let peer = peer.clone();
-            Some(Ok(async move {
-                let response = state
-                    .control_post_json(
-                        &peer,
-                        "/api/internal/reload_model",
-                        &serde_json::json!({ "event": "reload_model" }),
-                        timeout,
-                    )
+    let started = Instant::now();
+    info!(
+        "⏰ pipeline ociosa: acordando {} peer(s) antes do prefill ({})",
+        idle.len(),
+        idle.iter()
+            .map(|peer| peer.node_id.chars().take(8).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let last_error = std::sync::Mutex::new(None);
+    let requests = idle.iter().map(|peer| {
+        let last_error = &last_error;
+        async move {
+            if peer.node_id == state.network.node_id {
+                let node_id = &peer.node_id;
+                return state
+                    .runtime
+                    .reload_from_idle()
                     .await
-                    .map_err(|error| {
-                        anyhow::anyhow!("reload_model falhou para {node_id}: {error:#}")
-                    })?;
-                if response.status().is_success() {
-                    Ok(())
-                } else {
-                    Err(anyhow::anyhow!(
-                        "reload_model falhou para {node_id}: HTTP {}",
-                        response.status()
-                    ))
-                }
+                    .map(|_| ())
+                    .map_err(|error| anyhow::anyhow!("reload_model falhou para {node_id}: {error}"));
             }
-            .boxed()))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+            wake_remote_peer(state, peer, last_error).await
+        }
+        .boxed()
+    });
     let results = tokio::time::timeout(timeout, futures::future::try_join_all(requests))
         .await
-        .map_err(|_| anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}"))?;
+        .map_err(|_| {
+            let detail = last_error
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .map(|reason| format!(" (última falha: {reason})"))
+                .unwrap_or_default();
+            anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}{detail}")
+        })?;
     results?;
-    Ok(())
+    info!(
+        "✅ pipeline acordada em {:.1}s",
+        started.elapsed().as_secs_f64()
+    );
+    Ok(true)
+}
+
+/// After a wake, waits until the gossip shows the woken peers as loaded. A
+/// peer clears `idle` and announces its runtime capabilities when its model
+/// answers, and the plan has to be rebuilt from that announcement. Bounded: if
+/// it does not arrive the request goes on with what the admission probe reads.
+async fn wait_for_woken_announcements(state: &GatewayState, woken: &[String]) {
+    let deadline = Instant::now() + IDLE_ANNOUNCE_WAIT;
+    loop {
+        let peers = state.all_peers().await;
+        let pending = woken
+            .iter()
+            .any(|node_id| peers.iter().any(|peer| &peer.node_id == node_id && peer.idle));
+        if !pending || Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[cfg(test)]
@@ -262,6 +363,106 @@ mod reload_tests {
 
         first_task.abort();
         second_task.abort();
+    }
+
+    /// Answers `loading` until the given call, then `ready`; or a fixed 503.
+    #[derive(Clone)]
+    struct LoadingPeer {
+        calls: Arc<AtomicUsize>,
+        ready_at: usize,
+        refusal: Option<&'static str>,
+    }
+
+    async fn loading_reload(
+        State(peer): State<LoadingPeer>,
+        _body: Bytes,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let call = peer.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(reason) = peer.refusal {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "event": "reload_model", "error": reason })),
+            );
+        }
+        let state = if call >= peer.ready_at { "ready" } else { "loading" };
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "event": "reload_model", "state": state })),
+        )
+    }
+
+    async fn spawn_loading_server(peer: LoadingPeer) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("porta de teste");
+        let port = listener.local_addr().expect("endereço de teste").port();
+        let router = Router::new()
+            .route("/api/internal/reload_model", post(loading_reload))
+            .with_state(peer);
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (port, task)
+    }
+
+    /// The wake is short calls repeated until the peer is ready, never one
+    /// call held open for the whole model load.
+    #[tokio::test]
+    async fn a_loading_peer_is_asked_again_until_it_is_ready() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (port, server) = spawn_loading_server(LoadingPeer {
+            calls: calls.clone(),
+            ready_at: 3,
+            refusal: None,
+        })
+        .await;
+        let mut peer = crate::gateway::testkit::peer("idle-loading", "loading", port);
+        peer.idle = true;
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["idle-loading"]);
+
+        let woke =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
+                .await
+                .expect("o peer fica pronto na terceira resposta");
+        assert!(woke, "a pipeline estava ociosa e foi acordada");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_cannot_load_ends_the_wait_with_its_reason() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (port, server) = spawn_loading_server(LoadingPeer {
+            calls: calls.clone(),
+            ready_at: 1,
+            refusal: Some("o modelo aguarda resfriamento"),
+        })
+        .await;
+        let mut peer = crate::gateway::testkit::peer("idle-hot", "hot", port);
+        peer.idle = true;
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["idle-hot"]);
+
+        let error =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
+                .await
+                .expect_err("a recusa do peer encerra a espera");
+        assert!(error.to_string().contains("resfriamento"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "uma recusa não é repetida");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_with_no_idle_peer_is_not_woken() {
+        let peer = crate::gateway::testkit::peer("awake", "awake", 1);
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["awake"]);
+        let woke =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(1))
+                .await
+                .unwrap();
+        assert!(!woke);
     }
 
     #[tokio::test]
@@ -524,109 +725,153 @@ pub(super) async fn generate_stream_inner(
         "validation",
     );
 
-    let orchestration_started = Instant::now();
-    let orchestration_wall = wall_clock_ms();
-    // O anúncio P2P pode chegar depois da carga local. A admissão devolve a
-    // fotografia executável do `/health` junto com cada peer, para que o
-    // planejador não transforme essa janela de propagação num buraco falso.
-    let peers = ready_for_pipeline(
-        &state.peer_http,
-        &state.admission_health,
-        &state.network,
-        state.all_peers().await,
-        ADMISSION_PROBE_TIMEOUT,
-    )
-    .await;
-    record_gateway_span(
-        &mut gateway_spans,
-        request_started,
-        orchestration_started,
-        orchestration_wall,
-        "orchestration",
-    );
-
     // `qwen3:8b@d-4f2a91c3` escolhe **qual** implantação atende; o nome pelado
     // deixa a escolha para quem monta o pipeline. Ver `deployment::split_selector`.
     let (model, deploy_id) = crate::deployment::split_selector(&model);
-
-    // Total layers for THIS model, as reported by a peer that serves it.
-    let total_layers = peers
-        .iter()
-        .find(|p| match deploy_id {
-            Some(id) => p.deploy_id == id,
-            None => p.model == model,
-        })
-        .map(|p| p.total_layers)
-        .unwrap_or(32);
-
-    let route_rtt = state
-        .network
-        .rtts
-        .fresh_snapshot()
-        .into_iter()
-        .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
-        .collect::<std::collections::HashMap<_, _>>();
-    let selection_started = Instant::now();
-    let selection_wall = wall_clock_ms();
     let prefix_model = format!(
         "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
         model,
         deploy_id.unwrap_or("<default>")
     );
     let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
-    // Planejamento por tempo de entrega (`fastest`): velocidade medida de cada
-    // peer, fila de toda a rede, RTT de cada aresta e o prefixo já retido.
-    // Sem nenhum caminho viável por ele, o planejador guloso de antes decide.
-    let fastest = plan_by_delivery_time(
-        &state,
-        &peers,
-        model,
-        deploy_id,
-        total_layers,
-        &route_rtt,
-        preferred_head.as_deref(),
-        &prefix_model,
-        &cache_prompt,
-        budget.total,
-        images.is_empty(),
-    )
-    .await;
-    let (planned, planned_return) = match fastest {
-        Some((plan, mode)) => (Some(plan), Some(mode)),
-        None => (
-            crate::pipeline::plan_pipeline_with_rtt_from_head(
-                &peers,
-                model,
-                deploy_id,
-                total_layers,
-                &state.loads,
-                &route_rtt,
-                preferred_head.as_deref(),
-            )
-            .await,
-            None,
-        ),
-    };
-    let Some(mut plan) = planned else {
-        let error = format!(
-            "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+
+    // Admission and planning run once, or twice when the chosen pipeline was
+    // asleep (`unload_if_idle`): the first pass finds the idle peers and wakes
+    // them, the second plans again over the pipeline that is now loaded. The
+    // plan of the first pass is not used for inference - an idle peer
+    // announces no runtime capabilities, so that plan would run degraded.
+    let mut woke_idle = false;
+    let (mut plan, planned_return) = loop {
+        let orchestration_started = Instant::now();
+        let orchestration_wall = wall_clock_ms();
+        // O anúncio P2P pode chegar depois da carga local. A admissão devolve a
+        // fotografia executável do `/health` junto com cada peer, para que o
+        // planejador não transforme essa janela de propagação num buraco falso.
+        let peers = ready_for_pipeline(
+            &state.peer_http,
+            &state.admission_health,
+            &state.network,
+            state.all_peers().await,
+            ADMISSION_PROBE_TIMEOUT,
+        )
+        .await;
+        record_gateway_span(
+            &mut gateway_spans,
+            request_started,
+            orchestration_started,
+            orchestration_wall,
+            "orchestration",
         );
-        log_early_outcome("recusado", &error);
-        let _ = tx.send(GenEvent::Failed(error)).await;
-        return;
+
+        // Total layers for THIS model, as reported by a peer that serves it.
+        let total_layers = peers
+            .iter()
+            .find(|p| match deploy_id {
+                Some(id) => p.deploy_id == id,
+                None => p.model == model,
+            })
+            .map(|p| p.total_layers)
+            .unwrap_or(32);
+
+        let route_rtt = state
+            .network
+            .rtts
+            .fresh_snapshot()
+            .into_iter()
+            .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
+            .collect::<std::collections::HashMap<_, _>>();
+        let selection_started = Instant::now();
+        let selection_wall = wall_clock_ms();
+        // Planejamento por tempo de entrega (`fastest`): velocidade medida de cada
+        // peer, fila de toda a rede, RTT de cada aresta e o prefixo já retido.
+        // Sem nenhum caminho viável por ele, o planejador guloso de antes decide.
+        let fastest = plan_by_delivery_time(
+            &state,
+            &peers,
+            model,
+            deploy_id,
+            total_layers,
+            &route_rtt,
+            preferred_head.as_deref(),
+            &prefix_model,
+            &cache_prompt,
+            budget.total,
+            images.is_empty(),
+        )
+        .await;
+        let (planned, planned_return) = match fastest {
+            Some((plan, mode)) => (Some(plan), Some(mode)),
+            None => (
+                crate::pipeline::plan_pipeline_with_rtt_from_head(
+                    &peers,
+                    model,
+                    deploy_id,
+                    total_layers,
+                    &state.loads,
+                    &route_rtt,
+                    preferred_head.as_deref(),
+                )
+                .await,
+                None,
+            ),
+        };
+        let Some(plan) = planned else {
+            let error = format!(
+                "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+            );
+            log_early_outcome("recusado", &error);
+            let _ = tx.send(GenEvent::Failed(error)).await;
+            return;
+        };
+        record_gateway_span(
+            &mut gateway_spans,
+            request_started,
+            selection_started,
+            selection_wall,
+            "pipeline_selection",
+        );
+        if woke_idle {
+            break (plan, planned_return);
+        }
+        let wake_started = Instant::now();
+        let wake_wall = wall_clock_ms();
+        let woken: Vec<String> = idle_steps(&plan, &peers)
+            .iter()
+            .map(|peer| peer.node_id.clone())
+            .collect();
+        match reload_idle_pipeline(&state, &plan, &peers).await {
+            Ok(false) => break (plan, planned_return),
+            Ok(true) => {
+                wait_for_woken_announcements(&state, &woken).await;
+                record_gateway_span(
+                    &mut gateway_spans,
+                    request_started,
+                    wake_started,
+                    wake_wall,
+                    "pipeline_wake",
+                );
+                if cancellation.is_cancelled() {
+                    log_early_outcome("cancelado", "o cliente desistiu enquanto a pipeline acordava");
+                    return;
+                }
+                woke_idle = true;
+            }
+            Err(error) => {
+                log_early_outcome("reload_model", &error.to_string());
+                let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+                return;
+            }
+        }
     };
-    if let Err(error) = reload_idle_pipeline(&state, &plan, &peers).await {
-        log_early_outcome("reload_model", &error.to_string());
-        let _ = tx.send(GenEvent::Failed(error.to_string())).await;
-        return;
-    }
-    record_gateway_span(
-        &mut gateway_spans,
-        request_started,
-        selection_started,
-        selection_wall,
-        "pipeline_selection",
-    );
+    // The window read before the wake came from peers with no loaded runtime.
+    let session_window = if woke_idle {
+        match state.runtime_capacity_for_model(Some(model)).await {
+            (Some(capacity), false) => Some(capacity.n_ctx),
+            _ => session_window,
+        }
+    } else {
+        session_window
+    };
 
     // The gateway may be a middle or tail peer. Vision is an admission fact
     // of the selected head, so only reject here when this process owns that

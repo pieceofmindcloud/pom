@@ -56,11 +56,14 @@ local do receptor.
 
 O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
 de geração dispara `reload_model` em paralelo para os peers ociosos da pipeline
-planejada. O evento é uma barreira idempotente: peer pronto retorna, peer
-iniciando é aguardado e peer ocioso carrega o runtime remoto. A espera da
-rodada tem teto de 15 minutos, para uma carga fria concluir sem deixar a
-requisição pendurada indefinidamente; o descarregamento continua sendo
-avaliado pelo monitor já existente.
+planejada. The event is idempotent and answers at once: `ready`, or `loading`
+when the peer was idle (the call starts the load) or already loading. The
+gateway repeats it every second until every planned peer is `ready`, with a
+15 min ceiling, instead of holding one call open for the whole model load;
+a 503 carries the reason a load cannot happen and ends the wait. After the
+wake it waits for the peers' announcement and plans again
+(`generate_stream_inner`, span `pipeline_wake`). O descarregamento continua
+sendo avaliado pelo monitor já existente.
 
 O `serve_with_quic` encerra o endpoint HTTP/3 com um canal one-shot, para que
 um pedido de parada emitido antes do primeiro poll da task não seja perdido.

@@ -638,7 +638,10 @@ in liveness expiry: an idle peer stays alive, reachable and part of the plan.
 On receiving a request for a plan that contains idle peers, the gateway reloads
 the local peer and fires `POST /api/internal/reload_model` in parallel to the
 other idle peers. That call uses the `connection_key` and the internal marker,
-and only orders each recipient's local load. There is no extra synchronous
+and only orders each recipient's local load: it returns at once with
+`state: loading|ready` and the gateway repeats it until every peer is ready
+(`gateway/generation.rs`, `reload_idle_pipeline`). A peer keeps `idle` set
+while it loads and clears it when its model answers. There is no extra synchronous
 connection on the normal inference hop and no timer to decide idleness; the
 decision uses the recorded local activity and the existing monitor. Shutting
 down a generation's QUIC endpoint is a local one-shot signal, with no

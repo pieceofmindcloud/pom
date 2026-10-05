@@ -878,11 +878,16 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
         "unavailable"
     };
     let rag_collections = crate::rag::collections(&state).await;
+    // A machine of the pipeline has its model unloaded (`unload_if_idle`) or
+    // is loading it again: the next answer waits for the reload, and the Chat
+    // says so instead of looking stuck.
+    let asleep = matching.iter().any(|peer| peer.idle);
 
     Json(json!({
         "active_model": active_model,
         "vision": vision_state,
         "coverage": coverage_state,
+        "asleep": asleep,
         "thinking": thinking_state,
         // A plugin of some machine serves retrieval to this network.
         "rag": rag_state,

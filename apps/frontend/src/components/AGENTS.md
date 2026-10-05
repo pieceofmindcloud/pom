@@ -208,7 +208,12 @@ Per-file list:
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
   so an invisible exit layer never blocks the next hamburger click. A ação de
   sair da rede não fica exposta no menu.
-- `Notifications.tsx` — The activity bell: counts running slicing jobs
+- `ChatWaitingLine.tsx` — The Chat's line between sending and the first
+  token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
+  the "starting our engines" set while the deployment wakes from idle.
+- `Notifications.tsx` — The activity bell: carries the default-password
+  notice (once per start of the node, `lib/defaultPasswordNotice.ts`; it
+  replaced the fixed `DefaultPasswordNotice` banner), counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
   inside the popover. Offers can be accepted/rejected right there

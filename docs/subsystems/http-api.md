@@ -530,7 +530,10 @@ request's validation. A peer only enters that capacity after its `/health`
 confirms the model is loaded; during a restart, the previous announcement is
 withdrawn. An idle peer chosen by the plan is woken by `reload_model` before
 generation and the request waits for its `/health`; the planned idle peers are
-woken in parallel, with a 15-minute ceiling for the barrier. A live peer on an
+woken in parallel, with a 15-minute ceiling for the barrier.
+`POST /api/internal/reload_model` answers at once with `state: "loading"` or
+`"ready"` (503 with `error` when the load cannot happen) and the gateway
+repeats it until every peer is ready. A live peer on an
 alternative route blocks neither the catalog nor admission. A planned non-idle
 peer without that confirmation keeps the model pending, instead of falling back
 to the local capacity and hiding an old stage.
@@ -871,7 +874,9 @@ metadata up to the deployment's head, which combines it with the global
 relays keep the field together with the existing metadata.
 `GET /api/ui/chat/capabilities` publishes `thinking: "supported"`,
 `"unsupported"` or `"unavailable"` for the UI, based on the global
-configuration of the active model's head.
+configuration of the active model's head. Its `asleep` flag is true while a
+machine of the active pipeline has its model unloaded for idleness or is
+loading it again, so the Chat can say the next answer waits for the reload.
 
 `GET /api/ui/deployments` deduplicates the persisted copies by `deploy_id` and
 marks `serving` only when a live peer announces the deployment. The record can

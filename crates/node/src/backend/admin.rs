@@ -403,9 +403,12 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
 }
 
 /// Named node-to-node event used to wake all idle peers in one planned
-/// pipeline. The sender dispatches these requests concurrently and waits for
-/// each local health watcher, so no hop reloads sequentially through the
-/// inference chain.
+/// pipeline. It starts the load and answers at once with `state`: `loading`
+/// while the model comes up, `ready` when it is loaded. The gateway sends it
+/// to every idle peer concurrently and repeats it until all answer `ready`, so
+/// no call stays open for the length of a model load and no hop reloads
+/// sequentially through the inference chain. A load that cannot happen
+/// (failed, thermal, not configured) is a 503 with the reason.
 async fn internal_reload_model(
     _auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
@@ -417,12 +420,13 @@ async fn internal_reload_model(
             Json(json!({ "error": "evento desconhecido" })),
         );
     }
-    match state.runtime.reload_from_idle().await {
-        Ok(reloaded) => (
+    match state.runtime.wake_from_idle().await {
+        Ok(wake) => (
             StatusCode::OK,
             Json(json!({
                 "event": "reload_model",
-                "reloaded": reloaded,
+                "state": if wake == crate::runtime::Wake::Ready { "ready" } else { "loading" },
+                "reloaded": wake == crate::runtime::Wake::Started,
             })),
         ),
         Err(error) => (

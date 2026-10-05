@@ -658,5 +658,8 @@ When updating this file, preserve this bar for all agents and keep entries conci
   `notification.confirm` com Aceitar/Recusar (só nesta aba) e avisos
   `notification.notify` sem botões, não lidos até o sino abrir
   (`markPluginNoticesRead`; ids lidos no `localStorage`).
+- `defaultPasswordNotice.ts` - the bell's default-password notice: read and
+  dismissed state in `localStorage` per `boot_id`, so it returns unread on
+  every start of the node and not on a page reload.
 - `pluginI18n.ts` - carrega/valida/instala os catálogos de texto do plugin
   (`syncPluginCatalogs`), nos idiomas selecionados. Ver `docs/subsystems/plugins-ui.md`.

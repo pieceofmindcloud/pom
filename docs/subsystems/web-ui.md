@@ -347,8 +347,12 @@ the normal `NAV` projection.
   to the network with the password `admin`; the workspace is `~/pom_workspace`.
   Everything can be adjusted later, inside POM. While the password is the
   default one, the gate does not ask for it (`useAdminSurface` logs in with it
-  when `/api/access` says `default_password`) and `DefaultPasswordNotice` shows
-  a fixed banner asking to change it in Preferences.
+  when `/api/access` says `default_password`) and the bell
+  (`Notifications.tsx`) carries a notice asking to change it in Preferences.
+  The notice is sent once per start of the node (`boot_id` of `/api/access`,
+  state in `lib/defaultPasswordNotice.ts`): opening the bell reads it, it can
+  be dismissed, and it comes back unread after a restart. Ignoring it blocks
+  nothing.
 
 The shell uses `.pom-login*` and `.pom-setup*` (`index.css`): the floating dark
 panel with the `assets/pom-mark-dark.png` mark, the `BrandLanguageSwitch`

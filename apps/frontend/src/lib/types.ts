@@ -177,6 +177,8 @@ export interface AdminAccessStatus {
   requires_password: boolean;
   /** A senha em vigor é a padrão do primeiro acesso (`admin`). */
   default_password?: boolean;
+  /** Identifies this run of the node; changes on every restart. */
+  boot_id?: string;
   gateway_port: number;
 }
 

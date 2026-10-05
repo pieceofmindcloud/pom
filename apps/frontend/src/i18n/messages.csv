@@ -1417,6 +1417,7 @@ notifications.pluginNoticeLocal,This interface,Nesta interface
 notifications.pluginNoticeNetwork,From the network,Da rede
 notifications.pluginNoticeNew,New,Nova
 notifications.principalTransferAccepted,Principal role accepted,Papel de principal aceito
+notifications.defaultPasswordTitle,Default administrative password,Senha administrativa padrão
 notifications.principalTransferAcceptedDetail,{host} accepted the principal role offer.,{host} aceitou a oferta do papel de principal.
 notifications.principalTransferDetail,"{host} offered you the principal role. Until you accept, {host} remains the principal.","{host} ofereceu a você o papel de principal. Até você aceitar, {host} continua sendo o principal."
 notifications.principalTransferRejected,Principal transfer rejected,Transferência de principal recusada

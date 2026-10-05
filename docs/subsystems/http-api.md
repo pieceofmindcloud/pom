@@ -305,7 +305,8 @@ The pipeline routes are not part of that boundary: `/api/generate`,
 server routes on `inference_port`, stay reachable over IPv4 and IPv6 so the
 libp2p tunnel's HTTP fallback is not interrupted. `GET /api/access` is the only
 public exception of administration, since it only reports the mode, whether a
-password is needed, the port and `default_password` - the password in effect
+password is needed, the port, `boot_id` (random per run of the process, which
+is how the interface repeats a notice once per start) and `default_password` - the password in effect
 is still the first access default (`admin`, `auth::DEFAULT_ADMIN_PASSWORD`). It
 is a flag written in `pom.json` (`admin_password_default`) next to the hash, so
 this public route never runs Argon2; `POST /api/setup/save` sets it (the UI

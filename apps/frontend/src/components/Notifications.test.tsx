@@ -7,8 +7,10 @@ import { api } from "../lib/api";
 import type { NetworkOffer } from "../lib/types";
 import { Notifications } from "./Notifications";
 import { addPendingPluginConfirm, addPluginNotice, pendingPluginConfirms, pluginNotices, resetPluginInboxForTest } from "../lib/pluginInbox";
+import { resetDefaultPasswordNoticeForTest } from "../lib/defaultPasswordNotice";
 
 const queryMocks = vi.hoisted(() => ({
+  access: { data: { default_password: false, boot_id: "boot-1" } },
   jobs: { data: { jobs: [] } },
   transfers: { data: { jobs: [] }, refetch: vi.fn() },
   offers: { data: { offers: [] as NetworkOffer[] }, refetch: vi.fn() },
@@ -16,6 +18,7 @@ const queryMocks = vi.hoisted(() => ({
 
 vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
 vi.mock("../lib/queries", () => ({
+  useAdminAccess: () => queryMocks.access,
   useJobs: () => queryMocks.jobs,
   useTransfers: () => queryMocks.transfers,
   useOffers: () => queryMocks.offers,
@@ -51,6 +54,45 @@ describe("Notifications network offers", () => {
     cleanup();
     vi.clearAllMocks();
     resetPluginInboxForTest();
+    resetDefaultPasswordNoticeForTest();
+    queryMocks.access.data = { default_password: false, boot_id: "boot-1" };
+  });
+
+  it("warns about the default password once per start of the node", () => {
+    queryMocks.access.data = { default_password: true, boot_id: "boot-1" };
+    const first = renderNotifications([]);
+    const bell = () => screen.getByRole("button", { name: /atividade/i });
+    expect(bell().textContent).toBe("1");
+
+    // Opening the bell reads it: it stays listed and stops counting.
+    fireEvent.click(bell());
+    expect(screen.getByText("Senha administrativa padrão")).toBeTruthy();
+    expect(screen.getByText(/ainda é a padrão \(admin\)/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Trocar senha" })).toBeTruthy();
+    fireEvent.click(bell());
+    expect(bell().textContent).toBe("");
+
+    // A page reload on the same start does not bring it back as new.
+    first.unmount();
+    const reloaded = renderNotifications([]);
+    expect(bell().textContent).toBe("");
+
+    // Dismissed, it leaves the bell for this start.
+    fireEvent.click(bell());
+    fireEvent.click(screen.getByRole("button", { name: "Remover aviso" }));
+    expect(screen.queryByTestId("default-password-notice")).toBeNull();
+
+    // The node restarted: the notice is sent again.
+    reloaded.unmount();
+    queryMocks.access.data = { default_password: true, boot_id: "boot-2" };
+    renderNotifications([]);
+    expect(bell().textContent).toBe("1");
+  });
+
+  it("sends no password notice once the password was changed", () => {
+    renderNotifications([]);
+    fireEvent.click(screen.getByRole("button", { name: /atividade/i }));
+    expect(screen.queryByTestId("default-password-notice")).toBeNull();
   });
 
   it("shows a plugin notice without actions and marks it read when the bell opens", () => {

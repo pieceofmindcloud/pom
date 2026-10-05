@@ -733,7 +733,18 @@ pub(super) struct AdminAccessStatus {
     /// A senha em vigor é a padrão do primeiro acesso: a interface entra sem
     /// perguntar e pede para trocá-la.
     pub(super) default_password: bool,
+    /// Identifies this run of the process (`boot_id`). The interface warns
+    /// about the default password once per start, and this is how it tells a
+    /// restart from a page reload.
+    pub(super) boot_id: &'static str,
     pub(super) gateway_port: u16,
+}
+
+/// Random per process, never persisted: a restart is a new id. It says nothing
+/// about the node, which matters because `/api/access` is read before login.
+fn boot_id() -> &'static str {
+    static BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BOOT_ID.get_or_init(|| Uuid::new_v4().simple().to_string())
 }
 
 pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -742,6 +753,7 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
         admin_exposure: cfg.admin_exposure,
         requires_password: cfg.admin_exposure.requires_password(),
         default_password: cfg.admin_exposure.requires_password() && cfg.admin_password_default,
+        boot_id: boot_id(),
         gateway_port: cfg.gateway_port,
     })
 }

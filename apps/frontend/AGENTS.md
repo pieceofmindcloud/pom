@@ -59,8 +59,9 @@ remain local until the deploy preflight.
   (see `src/routes/AGENTS.md`). `routes/SetupWizard.tsx` and
   `components/setup-wizard/*` are visual mock references only. After setup the
   panel password is `admin`: while `/api/access` reports `default_password`,
-  `useAdminSurface` enters with it instead of showing the gate, and
-  `components/DefaultPasswordNotice.tsx` keeps a banner asking to change it.
+  `useAdminSurface` enters with it instead of showing the gate, and the bell
+  shows a notice asking to change it, once per start of the node
+  (`lib/defaultPasswordNotice.ts`, keyed by the `boot_id` of `/api/access`).
 
 ### App.tsx route table
 

@@ -1804,18 +1804,16 @@ async fn answer_lobby_request(
     use crate::network_lobby::{
         GuestSeen, LobbyLimits, LobbyMessage, LobbyRequest, LobbyResponse, LOBBY_ROOM,
     };
-    let Some(node_id) = crate::network_lobby::node_id_of_peer(&peer) else {
-        return LobbyResponse::rejected("identity_unsupported");
-    };
+    // A chat request names its sender with the node key's signature over this
+    // transport. The public reads carry no identity: they are rate limited by
+    // the transport peer and say nothing about who asked.
+    let caller = peer.to_string();
     // What a node tells about public networks is public data and has nothing
     // to do with the lobby or with being the principal: any node answers,
     // from the board the gateway keeps.
     if matches!(request, LobbyRequest::Describe | LobbyRequest::Directory) {
         use crate::network_lobby::BoardAnswer;
-        if chat.node_is_blocked(&node_id).await {
-            return LobbyResponse::rejected("node_blocked");
-        }
-        if !chat.directory_board().allow(&node_id) {
+        if !chat.directory_board().allow(&caller) {
             return LobbyResponse::rejected("rate_limited");
         }
         let answer = if matches!(request, LobbyRequest::Describe) {
@@ -1826,13 +1824,11 @@ async fn answer_lobby_request(
         return match answer {
             BoardAnswer::Ready(networks) => LobbyResponse {
                 accepted: true,
-                node_id,
                 networks,
                 ..LobbyResponse::default()
             },
             BoardAnswer::Pending => LobbyResponse {
                 accepted: true,
-                node_id,
                 pending: true,
                 ..LobbyResponse::default()
             },
@@ -1847,16 +1843,12 @@ async fn answer_lobby_request(
         {
             return LobbyResponse::rejected("stats_disabled");
         }
-        if chat.node_is_blocked(&node_id).await {
-            return LobbyResponse::rejected("node_blocked");
-        }
-        if !chat.public_stats().allow(&node_id) {
+        if !chat.public_stats().allow(&caller) {
             return LobbyResponse::rejected("rate_limited");
         }
         return LobbyResponse {
             accepted: true,
             error: None,
-            node_id,
             info: chat.public_stats().current(),
             ..LobbyResponse::default()
         };
@@ -1864,6 +1856,15 @@ async fn answer_lobby_request(
     if network.profile() != crate::profile::NodeProfile::Admin || !chat.lobby_enabled().await {
         return LobbyResponse::rejected("lobby_disabled");
     }
+    let proof = match &request {
+        LobbyRequest::Post { identity, .. } | LobbyRequest::Fetch { identity, .. } => identity,
+        LobbyRequest::Info | LobbyRequest::Describe | LobbyRequest::Directory => {
+            unreachable!("answered above")
+        }
+    };
+    let Some(node_id) = proof.verified_node_id(&peer) else {
+        return LobbyResponse::rejected("identity_invalid");
+    };
     if chat.node_is_blocked(&node_id).await {
         return LobbyResponse::rejected("node_blocked");
     }
@@ -1873,7 +1874,9 @@ async fn answer_lobby_request(
         return LobbyResponse::rejected("already_member");
     }
     let card = match &request {
-        LobbyRequest::Post { card, .. } | LobbyRequest::Fetch { card } => card.clone().sanitized(),
+        LobbyRequest::Post { card, .. } | LobbyRequest::Fetch { card, .. } => {
+            card.clone().sanitized()
+        }
         LobbyRequest::Info | LobbyRequest::Describe | LobbyRequest::Directory => {
             unreachable!("answered above")
         }

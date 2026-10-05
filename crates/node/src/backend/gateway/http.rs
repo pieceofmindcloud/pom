@@ -934,6 +934,12 @@ async fn collect_public_networks(
     } else {
         Vec::new()
     };
+    // Admitted peers are this node's own cluster: asking one of them by key
+    // can only describe the network this node is already in.
+    let members: std::collections::HashSet<String> = candidates
+        .iter()
+        .map(|peer| peer.node_id.clone())
+        .collect();
     if gathers {
         for peer in state.network.public_discovered_peers().await {
             if !candidates.iter().any(|known| known.node_id == peer.node_id) {
@@ -1034,7 +1040,7 @@ async fn collect_public_networks(
                 .iter()
                 .any(|known: &PublicNetworkView| known.cluster_id == cluster)
         });
-        if !listed && !known_cluster {
+        if !listed && !known_cluster && !members.contains(&peer.node_id) {
             if let Some(network) = describe_by_key(&peer.pubkey).await {
                 if (!has_geo_filter || matches_geo_label(&network.geo_label, query))
                     && !networks

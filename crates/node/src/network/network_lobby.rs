@@ -2,9 +2,11 @@
 //!
 //! A candidate talks to the network's principal before joining, so the admin
 //! can decide on admission. The candidate is not in the cluster: it has no API
-//! key, no gossip announce and no admission. What it has is its node key, and
-//! the Noise handshake already proves it - the principal derives the
-//! candidate's `node_id` from the transport `PeerId` and never from the frame.
+//! key, no gossip announce and no admission. What it has is its node key. The
+//! connection runs under a transport key derived from it (see
+//! [`transport_keypair`]), and each chat request carries the node key's
+//! signature over that transport identity: the principal names the candidate
+//! by the key that signed, never by a field the frame merely states.
 //!
 //! The protocol is pull only. A candidate posts a text or fetches the recent
 //! history, and every request carries its hardware card; the principal never
@@ -152,12 +154,16 @@ impl LobbyCard {
 pub enum LobbyRequest {
     /// Say something in the lobby.
     Post {
+        identity: LobbyIdentity,
         card: LobbyCard,
         message_id: String,
         text: String,
     },
     /// Read the recent history. Also what keeps the candidate listed.
-    Fetch { card: LobbyCard },
+    Fetch {
+        identity: LobbyIdentity,
+        card: LobbyCard,
+    },
     /// Ask what the network publishes about itself (`NetworkInfo`). It is not
     /// part of the conversation: no card, no presence, and it is answered
     /// under its own switch, with the lobby chat on or off.
@@ -259,18 +265,76 @@ impl LobbyResponse {
     }
 }
 
-/// `node_id` of the peer on the other end of an authenticated connection:
-/// `SHA256(pubkey)` of the Ed25519 key inside its `PeerId`.
-pub fn node_id_of_peer(peer: &PeerId) -> Option<String> {
-    let multihash = peer.as_ref();
-    // Code 0x00 = identity: the digest is the protobuf-encoded public key.
-    if multihash.code() != 0x00 {
-        return None;
+// ── Identity: a transport key of its own, bound to the node key ──────────────
+
+const TRANSPORT_KEY_DOMAIN: &[u8] = b"pom/network-lobby/transport-key/1";
+const IDENTITY_DOMAIN: &[u8] = b"pom/network-lobby/identity/1:";
+
+/// The libp2p key the lobby client connects with.
+///
+/// It is **not** the node key, on purpose. The cluster swarm already runs
+/// under the node key, and a peer that holds two connections to one `PeerId`
+/// spreads its requests across them (`request_response` picks the connection
+/// by request id). A lobby connection only speaks the lobby protocol, so
+/// under the node key it would swallow about half of that peer's inference
+/// tunnel, chat, log and audit requests meant for the cluster swarm. A
+/// separate `PeerId` keeps the two apart; the derivation is deterministic so
+/// the candidate keeps one identity across restarts.
+pub fn transport_keypair(identity: &crate::identity::Identity) -> libp2p::identity::Keypair {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(TRANSPORT_KEY_DOMAIN);
+    hasher.update(identity.signing_key.to_bytes());
+    let mut seed: [u8; 32] = hasher.finalize().into();
+    libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+        .expect("a 32-byte Ed25519 seed is always a valid libp2p key")
+}
+
+fn identity_message(transport: &PeerId) -> Vec<u8> {
+    let mut message = IDENTITY_DOMAIN.to_vec();
+    message.extend_from_slice(&transport.to_bytes());
+    message
+}
+
+/// Proof that the transport identity of a lobby connection belongs to a
+/// node: the node key's signature over that transport `PeerId`. It is only
+/// worth something together with the transport private key, which never
+/// leaves the node, so replaying it from another connection proves nothing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LobbyIdentity {
+    /// The node's Ed25519 public key, hex.
+    pub pubkey: String,
+    /// Signature over the transport `PeerId`, hex.
+    pub signature: String,
+}
+
+impl LobbyIdentity {
+    pub fn sign(identity: &crate::identity::Identity, transport: &PeerId) -> Self {
+        use ed25519_dalek::Signer;
+        Self {
+            pubkey: identity.public_key_hex(),
+            signature: hex::encode(
+                identity
+                    .signing_key
+                    .sign(&identity_message(transport))
+                    .to_bytes(),
+            ),
+        }
     }
-    let public = libp2p::identity::PublicKey::try_decode_protobuf(multihash.digest()).ok()?;
-    let ed25519 = public.try_into_ed25519().ok()?;
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&ed25519.to_bytes()).ok()?;
-    Some(crate::identity::NodeId::from_pubkey(&key).0)
+
+    /// The `node_id` this proof names, when it was signed for `transport`.
+    pub fn verified_node_id(&self, transport: &PeerId) -> Option<String> {
+        use ed25519_dalek::Verifier;
+        let pubkey: [u8; 32] = hex::decode(&self.pubkey).ok()?.try_into().ok()?;
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&pubkey).ok()?;
+        let signature: [u8; 64] = hex::decode(&self.signature).ok()?.try_into().ok()?;
+        key.verify(
+            &identity_message(transport),
+            &ed25519_dalek::Signature::from_bytes(&signature),
+        )
+        .ok()?;
+        Some(crate::identity::NodeId::from_pubkey(&key).0)
+    }
 }
 
 // ── Principal side: presence and rate ────────────────────────────────────────
@@ -724,15 +788,18 @@ pub struct LobbyClient {
     pkarr: crate::pkarr_node::PkarrNode,
     dial_cache: Mutex<HashMap<String, (Instant, Vec<Multiaddr>)>>,
     node_id: String,
+    proof: LobbyIdentity,
 }
 
 impl LobbyClient {
-    /// Builds the swarm over the node identity and starts its task. It
-    /// listens on nothing: the same key may already be listening in the
-    /// cluster swarm, and a candidate only ever dials.
+    /// Builds the swarm and starts its task. It connects under
+    /// [`transport_keypair`], not the node key, and listens on nothing: a
+    /// candidate only ever dials.
     pub fn start(identity: &crate::identity::Identity) -> Result<Arc<Self>> {
         let pkarr = crate::pkarr_node::PkarrNode::from_signing_key(&identity.signing_key)?;
-        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(identity.libp2p_keypair())
+        let transport = transport_keypair(identity);
+        let proof = LobbyIdentity::sign(identity, &transport.public().to_peer_id());
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(transport)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default().nodelay(true),
@@ -813,7 +880,13 @@ impl LobbyClient {
             pkarr,
             dial_cache: Mutex::new(HashMap::new()),
             node_id: identity.node_id.0.clone(),
+            proof,
         }))
+    }
+
+    /// The proof a chat request carries so the principal can name this node.
+    pub fn proof(&self) -> LobbyIdentity {
+        self.proof.clone()
     }
 
     /// This machine's `node_id`, so the screen can tell its own messages.
@@ -1031,14 +1104,19 @@ mod tests {
                     ..
                 }) = swarm.select_next_some().await
                 {
-                    let text = match request {
-                        LobbyRequest::Post { text, .. } => text,
+                    let text = match &request {
+                        LobbyRequest::Post { text, .. } => text.clone(),
                         LobbyRequest::Fetch { .. }
                         | LobbyRequest::Info
                         | LobbyRequest::Describe
                         | LobbyRequest::Directory => String::new(),
                     };
-                    let node_id = node_id_of_peer(&peer).unwrap_or_default();
+                    let node_id = match &request {
+                        LobbyRequest::Post { identity, .. } | LobbyRequest::Fetch { identity, .. } => {
+                            identity.verified_node_id(&peer).unwrap_or_default()
+                        }
+                        _ => String::new(),
+                    };
                     let _ = swarm.behaviour_mut().send_response(
                         channel,
                         LobbyResponse {
@@ -1069,6 +1147,7 @@ mod tests {
                 principal_peer,
                 vec![address],
                 LobbyRequest::Post {
+                    identity: client.proof(),
                     card: card("candidate"),
                     message_id: "m1".into(),
                     text: "hello".into(),
@@ -1077,7 +1156,8 @@ mod tests {
             .await
             .unwrap();
         assert!(response.accepted);
-        // The frame carries no node id: the principal read it off the handshake.
+        // The principal named the candidate by the key that signed for the
+        // transport it actually saw, not by anything the frame states.
         assert_eq!(response.node_id, candidate.node_id.0);
         assert_eq!(response.messages[0].text, "hello");
     }
@@ -1258,9 +1338,39 @@ mod tests {
     }
 
     #[test]
-    fn node_id_comes_from_the_peer_id_key() {
+    fn the_lobby_connects_under_a_key_that_is_not_the_node_key() {
         let identity = crate::identity::Identity::generate();
-        let peer_id = identity.libp2p_keypair().public().to_peer_id();
-        assert_eq!(node_id_of_peer(&peer_id).as_deref(), Some(identity.node_id.0.as_str()));
+        let node_peer = identity.libp2p_keypair().public().to_peer_id();
+        let transport = transport_keypair(&identity).public().to_peer_id();
+        // Two connections under one PeerId would split the cluster's requests.
+        assert_ne!(transport, node_peer);
+        // Stable across restarts, and different for another node.
+        assert_eq!(transport, transport_keypair(&identity).public().to_peer_id());
+        let other = crate::identity::Identity::generate();
+        assert_ne!(transport, transport_keypair(&other).public().to_peer_id());
+    }
+
+    #[test]
+    fn a_lobby_identity_names_the_node_only_on_the_transport_it_was_signed_for() {
+        let identity = crate::identity::Identity::generate();
+        let transport = transport_keypair(&identity).public().to_peer_id();
+        let proof = LobbyIdentity::sign(&identity, &transport);
+        assert_eq!(
+            proof.verified_node_id(&transport).as_deref(),
+            Some(identity.node_id.0.as_str())
+        );
+
+        // Replayed from someone else's connection, it proves nothing.
+        let thief = crate::identity::Identity::generate();
+        let thief_transport = transport_keypair(&thief).public().to_peer_id();
+        assert_eq!(proof.verified_node_id(&thief_transport), None);
+
+        // Claiming another node's key without its signature fails too.
+        let forged = LobbyIdentity {
+            pubkey: identity.public_key_hex(),
+            signature: LobbyIdentity::sign(&thief, &thief_transport).signature,
+        };
+        assert_eq!(forged.verified_node_id(&thief_transport), None);
+        assert_eq!(LobbyIdentity::default().verified_node_id(&transport), None);
     }
 }

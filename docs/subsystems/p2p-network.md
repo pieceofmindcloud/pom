@@ -1421,9 +1421,19 @@ credential does not apply. Its own request/response protocol is
   flagged `member` or not. The principal never opens a stream to a candidate
   and keeps no session, only a presence entry that expires 90 s after the last
   request - the candidate's poll is what keeps it listed.
-- Nothing in the frame names the sender. The principal derives the candidate's
-  `node_id` from the `PeerId` the Noise handshake proved
-  (`node_id_of_peer`: `SHA256` of the Ed25519 key inside it).
+- The lobby connection runs under a **transport key derived from the node
+  key** (`transport_keypair`), never the node key itself, and `Post`/`Fetch`
+  carry `LobbyIdentity`: the node's public key and its signature over the
+  transport `PeerId`. The principal names the candidate by the key that signed
+  for the transport it actually sees (`LobbyIdentity::verified_node_id`), so a
+  proof replayed from another connection is worthless; without a valid one the
+  request answers `identity_invalid`. The public reads (`Info`, `Describe`,
+  `Directory`) carry no identity and are rate limited by the transport peer.
+  The separate key is not cosmetic: the cluster swarm already runs under the
+  node key, and a peer holding two connections to one `PeerId` picks the
+  connection by request id, so a lobby connection under the node key would
+  swallow about half of that peer's inference tunnel, chat, log and audit
+  requests meant for the cluster swarm.
 - A candidate's text becomes an ordinary `ChatAction::Text` in room `lobby`,
   stamped with the principal's clock and with a `message_id` namespaced by the
   sender, persisted and relayed to the members by the existing star. Members
@@ -1465,7 +1475,9 @@ data only and are answered by **any** node, principal or not:
   entry) - what its unauthenticated `GET /api/public/network` answers, over
   the keyed connection, so it also reaches a node behind NAT. The public
   networks listing uses it as the fallback for a gossip candidate whose
-  gateway does not answer over HTTP (`gateway::describe_by_key`).
+  gateway does not answer over HTTP (`gateway::describe_by_key`); admitted
+  peers are never asked, since they can only describe this node's own
+  network.
 - `Directory` answers the public networks the node knows. It is answered by
   nodes that gather them: a node in a public network and, whatever its own
   network, a node that serves as a relay (`gateway::gathers_public_networks`).
@@ -1491,8 +1503,8 @@ variable (comma separated `pk:` keys), the `relay_peers` already in the
 config, and the keys typed in the wizard. They are keys, resolved through
 pkarr at dial time, never addresses.
 
-The candidate's side is `LobbyClient`: a small swarm of its own over the node
-key, dial only (TCP, QUIC, relay client, DCuTR), that resolves the publisher's
+The candidate's side is `LobbyClient`: a small swarm of its own under the
+derived transport key, dial only (TCP, QUIC, relay client, DCuTR), that resolves the publisher's
 `pk:` key through pkarr at dial time. It is separate from the cluster swarm on
 purpose, so it also runs in setup mode, where the node has no cluster yet. It
 is started on first use (`network_lobby::client`). End to end coverage of the

@@ -56,11 +56,15 @@ async fn exchange(key: &str, post: Option<(String, String)>) -> Response {
     let card = local_card().await;
     let request = match post {
         Some((message_id, text)) => LobbyRequest::Post {
+            identity: client.proof(),
             card,
             message_id,
             text,
         },
-        None => LobbyRequest::Fetch { card },
+        None => LobbyRequest::Fetch {
+            identity: client.proof(),
+            card,
+        },
     };
     match client.request(key, request).await {
         // A refusal by the principal (`accepted: false`) is an answer, not a

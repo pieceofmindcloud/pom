@@ -81,8 +81,10 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   machine that is **not** a member uses to talk to a public network's principal
   before joining (`docs/subsystems/p2p-network.md`, 6.1). Holds the frame types
   and bounds (`LobbyLimits`), the self-declared hardware card (`LobbyCard`,
-  clamped by `sanitized`), `node_id_of_peer` (the sender is named by its
-  transport `PeerId`, never by the frame), `LobbyGuests` (presence plus the
+  clamped by `sanitized`), `transport_keypair` and `LobbyIdentity` (the lobby connects
+  under a key derived from the node key and proves the node with a signature
+  over that transport `PeerId`; it must never share the cluster swarm's
+  `PeerId`), `LobbyGuests` (presence plus the
   per-candidate rate, used by the principal and, fed by relayed frames, by
   every member) and `LobbyClient`, the candidate's dial-only swarm that also
   runs in setup mode. The principal's handler is

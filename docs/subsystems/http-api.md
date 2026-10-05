@@ -77,9 +77,14 @@ last):
   `accepted: false` with its code, and a transport failure is `502`. They sit
   under the `/api/ui/network-chat` scope. The setup router serves the same
   handlers at `GET|POST /api/setup/lobby`, plus `GET
-  /api/setup/public-networks?replicas=<csv>`, which lists the public networks of
-  the federated directory alone (cache merged with the replicas' answer) - setup
-  mode has no cluster to discover through.
+  /api/setup/public-networks?replicas=<csv>`. Setup mode has no cluster and no
+  pkarr discovery, so it asks the given addresses (plus the installation's
+  configured replicas), each in two ways: as a directory replica (signed
+  records, merged with the cache) and as a node (`GET
+  <address>/api/public/networks`, the networks that node lists). A listed
+  network is accepted only when its trust document matches its fingerprint and
+  `cluster_id`, and its publisher key is derived from that document
+  (`gateway::validated_listed_network`). With no address the list is empty.
 - **Published stats of another network**: `GET
   /api/ui/network-chat/lobby/info?key=pk:...` (and `GET /api/setup/lobby/info`
   in setup mode) asks that network's principal for `{models, node_count,

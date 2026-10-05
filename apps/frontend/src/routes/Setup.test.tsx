@@ -178,7 +178,8 @@ describe("PublicDirectoryPanel", () => {
       { ...listed, cluster_id: "lisboa", name: "Rede Lisboa", fingerprint: "fp2", accepted_enrollments: [] },
     ] as never);
     const onUse = vi.fn();
-    wrap(<PublicDirectoryPanel setup={{ ...base, profile: "node", publicDirectory: "https://dir.example" }} onUse={onUse} t={t} />);
+    const onAddress = vi.fn();
+    wrap(<PublicDirectoryPanel setup={{ ...base, profile: "node", publicDirectory: "https://dir.example" }} onUse={onUse} onAddress={onAddress} t={t} />);
 
     const open = (await screen.findByText("Rede Curitiba")).closest("div.flex")!;
     // The setup router has no session, and the typed replicas ride along.
@@ -190,6 +191,13 @@ describe("PublicDirectoryPanel", () => {
     const closed = screen.getByRole("button", { name: "publicNetworks.closed" }) as HTMLButtonElement;
     expect(closed.disabled).toBe(true);
     expect(screen.getAllByRole("button", { name: /publicNetworks.chat/ }).length).toBe(1);
+
+    // The address of a node to ask is typed here, and Enter asks again.
+    const address = screen.getByPlaceholderText("http://host:8080");
+    fireEvent.change(address, { target: { value: "http://192.0.2.10:8080" } });
+    expect(onAddress).toHaveBeenCalledWith("http://192.0.2.10:8080");
+    fireEvent.keyDown(address, { key: "Enter" });
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
   });
 });
 

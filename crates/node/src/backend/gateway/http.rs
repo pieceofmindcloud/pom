@@ -348,6 +348,59 @@ pub(crate) async fn directory_public_networks(
     networks
 }
 
+/// Entries accepted from one node's listing.
+const LISTED_NETWORKS_MAX: usize = 256;
+
+/// Accepts a network another node listed only if it certifies itself: the
+/// trust document must be the one the fingerprint and the `cluster_id` name.
+/// The publisher key is derived from that document, never taken from the
+/// listing, so a node cannot point someone else's network at its own key.
+/// The descriptive fields stay as listed; they are not signed on this path.
+pub(crate) fn validated_listed_network(mut view: PublicNetworkView) -> Option<PublicNetworkView> {
+    let document = crate::admin_trust::parse_transported(&view.trust_document).ok()?;
+    if document.anchor.cluster_id != view.cluster_id
+        || crate::admin_trust::anchor_fingerprint(&document) != view.fingerprint
+    {
+        return None;
+    }
+    view.publisher_key =
+        crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&document.primary.pubkey)?;
+    view.discovered_via = "node".to_string();
+    Some(view)
+}
+
+/// The public networks the nodes at `bases` list right now
+/// (`GET <base>/api/public/networks`). A configured node learns networks from
+/// its cluster and pkarr; a node in setup mode has neither, so it asks one
+/// that does.
+pub(crate) async fn listed_public_networks(
+    client: &reqwest::Client,
+    bases: Vec<String>,
+) -> Vec<PublicNetworkView> {
+    let answers = futures::future::join_all(bases.into_iter().map(|base| {
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(format!("{}/api/public/networks", base.trim_end_matches('/')))
+                .timeout(Duration::from_secs(8))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response.json::<Vec<PublicNetworkView>>().await.ok()
+        }
+    }))
+    .await;
+    answers
+        .into_iter()
+        .flatten()
+        .flat_map(|listed| listed.into_iter().take(LISTED_NETWORKS_MAX))
+        .filter_map(validated_listed_network)
+        .collect()
+}
+
 /// Fetches the replicas, validates and merges into the cached records, and
 /// returns the cache plus the records learned in this pass.
 async fn merge_directory_replicas(

@@ -1140,7 +1140,11 @@ faz o download autenticado do blob persistido.
   `webui/lobby.rs` is the candidate's side of the lobby over HTTP
   (`/api/ui/network-chat/lobby` behind the operator session, `/api/setup/lobby`
   on the setup router) and `setup_public_networks`, the directory-only listing
-  for the wizard, built on `gateway::directory_public_networks`. The local
+  for the wizard, built on `gateway::directory_public_networks` plus
+  `gateway::listed_public_networks` (what the node at a given address lists,
+  filtered by `validated_listed_network`) - in practice the second is what
+  fills the list, since networks are found through cluster discovery and pkarr
+  and no directory replica is configured by default. The local
   hardware card is sampled once a minute, not per poll. `network_chat_snapshot`
   takes `?room=lobby` and always reports `lobbyEnabled` and `lobbyGuests`.
   The same file has `lobby_info` / `setup_lobby_info` (another network's

@@ -215,10 +215,12 @@ pub struct SetupPublicNetworksQuery {
     pub replicas: String,
 }
 
-/// `GET /api/setup/public-networks` - the public networks the federated
-/// directory lists. Setup mode has no cluster and no pkarr discovery, so this
-/// is the directory alone: the cached records merged with what the replicas
-/// answer now.
+/// `GET /api/setup/public-networks` - the public networks a machine in setup
+/// mode can learn about. It has no cluster and no pkarr discovery, so it asks
+/// the addresses it was given, each in both ways: as a directory replica
+/// (signed records, merged with the local cache) and as a node (the networks
+/// that node lists, accepted only when they certify themselves). With no
+/// address there is nobody to ask and the list is empty.
 pub async fn setup_public_networks(
     State(state): State<SetupState>,
     Query(query): Query<SetupPublicNetworksQuery>,
@@ -250,9 +252,25 @@ pub async fn setup_public_networks(
                 .into_response()
         }
     };
-    let client = reqwest::Client::new();
-    Json(crate::gateway::directory_public_networks(&state.database, &client, replicas).await)
-        .into_response()
+    // A node with cluster TLS presents a certificate derived from its own
+    // key, which no public authority signs. Accepting it here is safe for this
+    // read only: every entry is checked against its own trust document.
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap_or_default();
+    let mut networks =
+        crate::gateway::directory_public_networks(&state.database, &client, replicas.clone())
+            .await;
+    for network in crate::gateway::listed_public_networks(&client, replicas).await {
+        if !networks
+            .iter()
+            .any(|known| known.fingerprint == network.fingerprint)
+        {
+            networks.push(network);
+        }
+    }
+    Json(networks).into_response()
 }
 
 #[cfg(test)]

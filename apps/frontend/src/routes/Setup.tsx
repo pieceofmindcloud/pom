@@ -880,7 +880,7 @@ function DirectoryNetworkStats({ network, t }: { network: DirectoryNetwork; t: T
  * before joining - that is the point of listing it here - and "Join" fills the
  * same trust fields the manual block does.
  */
-export function PublicDirectoryPanel({ setup, onUse, t }: { setup: SetupState; onUse: (network: DirectoryNetwork) => void; t: Translate }) {
+export function PublicDirectoryPanel({ setup, onUse, onAddress, t }: { setup: SetupState; onUse: (network: DirectoryNetwork) => void; onAddress?: (value: string) => void; t: Translate }) {
   const [networks, setNetworks] = useState<DirectoryNetwork[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -906,6 +906,16 @@ export function PublicDirectoryPanel({ setup, onUse, t }: { setup: SetupState; o
       </summary>
       <div className="space-y-2 pt-3">
         <p className="text-xs leading-relaxed text-muted">{t("firstRun.publicDirectoryDetail")}</p>
+        {/* A machine that joined nothing has nobody to ask: the list comes
+            from the node or directory named here. */}
+        <Field label={t("firstRun.publicDirectoryAddress")} hint={t("firstRun.publicDirectoryAddressHint")}>
+          <Input
+            value={setup.publicDirectory}
+            placeholder="http://host:8080"
+            onChange={(event) => onAddress?.(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setAttempt((value) => value + 1); } }}
+          />
+        </Field>
         {networks === null && <p className="text-xs text-faint">{t("firstRun.publicDirectoryLoading")}</p>}
         {networks?.length === 0 && <p className="text-xs text-faint">{t(failed ? "firstRun.publicDirectoryFailed" : "firstRun.publicDirectoryEmpty")}</p>}
         {(networks ?? []).map((network) => {
@@ -988,6 +998,7 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
       <PublicDirectoryPanel
         setup={setup}
         t={t}
+        onAddress={(publicDirectory) => update({ publicDirectory })}
         onUse={(network) => {
           applyTrust(network.trust_document);
           updateNetwork({ public_name: network.name || network.cluster_id, visibility: "public", access_policy: network.access_policy ?? "anyone_with_anchor" });

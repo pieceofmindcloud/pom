@@ -713,7 +713,8 @@ fn license_error_code_from_wire(code: &str) -> Option<LicenseErrorCode> {
         "SUSPENDED" => LicenseErrorCode::Suspended,
         "REVOKED" | "RELEASE_REVOKED" => LicenseErrorCode::Revoked,
         "FINGERPRINT_MISMATCH" => LicenseErrorCode::FingerprintMismatch,
-        "LEASE_UNKNOWN" => LicenseErrorCode::LeaseUnknown,
+        // O servidor só responde ACTIVATION_UNKNOWN ao desativar: ele não conhece esta ativação.
+        "LEASE_UNKNOWN" | "ACTIVATION_UNKNOWN" => LicenseErrorCode::LeaseUnknown,
         "RATE_LIMITED" => LicenseErrorCode::RateLimited,
         _ => return None,
     })
@@ -1805,13 +1806,23 @@ impl PluginRuntime {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhuma licença ativa.")
         })?;
-        self.service
+        if let Err(error) = self
+            .service
             .deactivate(
                 &persisted.activation_id,
                 &persisted.activation_token,
                 &self.fingerprint,
             )
-            .await?;
+            .await
+        {
+            // Um servidor que não conhece a ativação (trocado, ou com o banco
+            // refeito) não tem vaga a liberar; recusar aqui deixaria o plugin
+            // preso a uma licença que nenhum servidor reconhece.
+            if error.code() != LicenseErrorCode::LeaseUnknown {
+                return Err(error);
+            }
+            tracing::warn!(plugin_code = %self.code, activation_id = %persisted.activation_id, "license server does not know this activation; removing it locally");
+        }
         if let Some(host) = self.host.lock().await.take() {
             let _ = host.stop().await;
         }
@@ -4518,6 +4529,7 @@ pub(crate) mod tests_support {
         manifest_errors: Arc<Mutex<HashMap<String, LicenseErrorCode>>>,
         download_calls: Arc<Mutex<u32>>,
         deactivate_calls: Arc<Mutex<u32>>,
+        deactivate_error: Arc<Mutex<Option<LicenseErrorCode>>>,
         license_expires_at: Arc<Mutex<Option<String>>>,
     }
 
@@ -4538,6 +4550,7 @@ pub(crate) mod tests_support {
                 manifest_errors: Arc::new(Mutex::new(HashMap::new())),
                 download_calls: Arc::new(Mutex::new(0)),
                 deactivate_calls: Arc::new(Mutex::new(0)),
+                deactivate_error: Arc::new(Mutex::new(None)),
                 license_expires_at: Arc::new(Mutex::new(None)),
             }
         }
@@ -4607,6 +4620,10 @@ pub(crate) mod tests_support {
 
         pub(crate) async fn download_calls(&self) -> u32 {
             *self.download_calls.lock().await
+        }
+
+        pub(crate) async fn fail_deactivate(&self, code: LicenseErrorCode) {
+            *self.deactivate_error.lock().await = Some(code);
         }
 
         pub(crate) async fn deactivate_calls(&self) -> u32 {
@@ -4804,7 +4821,10 @@ pub(crate) mod tests_support {
             _fingerprint: &Fingerprint,
         ) -> Result<(), LicenseClientError> {
             *self.deactivate_calls.lock().await += 1;
-            Ok(())
+            match *self.deactivate_error.lock().await {
+                Some(code) => Err(LicenseClientError::new(code, "desativação recusada")),
+                None => Ok(()),
+            }
         }
 
         async fn status(
@@ -5384,6 +5404,36 @@ mod tests {
         assert!(service.manifest_calls().await.is_empty());
         assert_eq!(service.deactivate_calls().await, 0);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn deactivate_clears_an_activation_the_server_does_not_know() {
+        let service = Arc::new(MockLicenseService::new());
+        service
+            .grant("logs", activation("logs", "ent-1"), b"plugin-binary".to_vec())
+            .await;
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
+        let logs = manager.runtime_for("logs").expect("runtime");
+        activate_ready(&logs, "PM-logs", "0.1.0").await;
+
+        service.fail_deactivate(LicenseErrorCode::ServerError).await;
+        assert!(manager.deactivate("logs").await.is_err());
+        assert!(
+            manager.status("logs").await.expect("status").active,
+            "uma falha comum do servidor mantém a licença"
+        );
+
+        let unknown = parse_license_error(
+            StatusCode::NOT_FOUND,
+            br#"{"code":"ACTIVATION_UNKNOWN","message_for_user":"This activation does not exist."}"#,
+            "deactivate",
+        );
+        service.fail_deactivate(unknown.code()).await;
+        manager
+            .deactivate("logs")
+            .await
+            .expect("an activation unknown to the server is removed locally");
+        assert!(!manager.status("logs").await.expect("status").active);
     }
 
     #[tokio::test]

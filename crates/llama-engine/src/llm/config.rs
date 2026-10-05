@@ -1050,6 +1050,16 @@ mod fit_memory_margin_tests {
         b
     }
 
+    /// A cache that does not fit is halved until it does, then turned off.
+    #[test]
+    fn the_moe_cache_halves_then_turns_off() {
+        let mut steps = vec![8000];
+        while *steps.last().unwrap() > 0 {
+            steps.push(moe_cache_retry_mib(*steps.last().unwrap()));
+        }
+        assert_eq!(steps, vec![8000, 4000, 2000, 1000, 0]);
+    }
+
     fn cfg_for_fit_plan() -> EngineConfig {
         EngineConfig {
             n_ctx: 4096,
@@ -1189,6 +1199,14 @@ pub(super) fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
 /// llama.cpp's `LLM_FFN_EXPS_REGEX`: the routed expert tensors `--cpu-moe`
 /// sends to the CPU buffer.
 pub(super) const MOE_EXPERTS_PATTERN: &std::ffi::CStr = c"\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
+
+/// The next MoE expert cache size to try after a context failed to fit: half,
+/// and off once half is under 512 MiB (fewer slots than that rarely hold the
+/// experts of one token).
+pub(super) fn moe_cache_retry_mib(mib: u32) -> u32 {
+    let half = mib / 2;
+    if half < 512 { 0 } else { half }
+}
 
 /// The cache size llama.cpp takes in bytes, from the deployment's MiB. It is
 /// per GPU: with several GPUs each one caches the experts of its own layers.

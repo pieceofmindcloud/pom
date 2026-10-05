@@ -526,12 +526,31 @@ impl LlmEngine {
         mtp_loaded: Option<Arc<LoadedModel>>,
         mtp_offload_kqv: bool,
     ) -> Result<Self> {
-        match Self::with_model_and_mtp_offload(
-            loaded.clone(),
-            cfg,
-            mtp_loaded.clone(),
-            mtp_offload_kqv,
-        ) {
+        // The MoE expert cache is per GPU and the memory fit does not run when
+        // the experts stay in RAM: a cache too big for what the layers, the KV
+        // and the compute buffers leave free fails the context. Halve it until
+        // it fits, then turn it off, instead of failing the whole load.
+        let mut cache_cfg = cfg.clone();
+        let first = loop {
+            match Self::with_model_and_mtp_offload(
+                loaded.clone(),
+                &cache_cfg,
+                mtp_loaded.clone(),
+                mtp_offload_kqv,
+            ) {
+                Err(error) if cache_cfg.moe_cache_mib > 0 => {
+                    let next = moe_cache_retry_mib(cache_cfg.moe_cache_mib);
+                    warn!(
+                        "llama context failed with a {} MiB MoE expert cache per GPU: {error}; retrying with {} MiB",
+                        cache_cfg.moe_cache_mib, next
+                    );
+                    cache_cfg.moe_cache_mib = next;
+                }
+                result => break result,
+            }
+        };
+        let cfg = &cache_cfg;
+        match first {
             Ok(mut engine) => {
                 engine.fit_memory_applied = fit_memory_applied;
                 engine.effective_n_gpu_layers = effective_n_gpu_layers;

@@ -219,7 +219,8 @@ origin. Errors come back as `checkout_request_invalid` (400),
 
 `GET /api/ui/plugins` publishes the local states of the plugins restored or
 seen by the runtime. The public catalog `GET /v1/plugins` is read directly by
-the browser and includes plugins with no local state yet. Each local state has
+the browser and includes plugins with no local state yet; the Plugins screen
+asks it for one page at a time (`q`, `page`, `per_page`, answered with `total`). Each local state has
 its own entitlement, `manage_url` and `available_update`. The answer starts at
 `needs_activation`. The `state` field follows the license, while `active`
 requires the host installed and ready. A failure after the license was
@@ -231,6 +232,10 @@ the others. `POST /api/ui/plugins/activate` only receives `{license_key}` (no
 `plugin_code`: the `{activated: [...]}` answer names which plugins that key
 granted and installed). `POST /api/ui/plugins/:code/refresh|deactivate` and
 `POST /api/ui/plugins/:code/update/check|apply` act on a single plugin.
+Deactivating an activation the license server answers `ACTIVATION_UNKNOWN` for
+(a server moved to a new database, or an activation already deleted there)
+removes it locally: there is no slot left to free on the server. Any other
+error keeps the license.
 
 Plugins are local to each node, so activating a license, registering a GitHub
 repository, installing, updating and using a plugin's UI is allowed to the

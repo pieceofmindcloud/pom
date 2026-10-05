@@ -1,13 +1,14 @@
-import { ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Hammer, KeyRound, Package, RefreshCw, Save, Settings, ShieldCheck, Trash2, X, XCircle } from "lucide-react";
+import { AlertTriangle, BookOpen, ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Hammer, KeyRound, Package, RefreshCw, Save, Search, Settings, ShieldCheck, Sparkles, Trash2, Upload, X, XCircle } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Tone } from "../components/ui";
 import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Select, Skeleton } from "../components/ui";
 import { Confirm, Modal } from "../components/Confirm";
+import { PlatformIcon } from "../components/PlatformIcon";
 import { ApiError, api } from "../lib/api";
-import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
+import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPlugin, usePublicPluginCatalog } from "../lib/queries";
 import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
-import { releaseForTarget, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
+import { releaseForTarget, supportedPlatforms, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
 import { navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { pluginAssetUrl, pluginUiSnapshot } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
@@ -25,6 +26,13 @@ function stateTone(state: PluginStatus["state"] | null): Tone {
       return "neutral";
   }
 }
+
+/** Cards per page of the store; two columns from `xl`. */
+const PAGE_SIZE = 10;
+/** The reference plugin the "Develop your plugin" tab puts first. */
+const EXAMPLE_PLUGIN_CODE = "base";
+const EXAMPLE_PLUGIN_REPOSITORY = "https://github.com/pieceofmindcloud/pom-plugin-base";
+const PUBLISH_PLUGIN_URL = "https://pieceofmind.cloud/plugins/publicar/";
 
 function formatPrice(price: PublicPluginPrice | null, locale: string): string | null {
   if (price?.amount === null || price?.amount === undefined || !price.currency) return null;
@@ -456,6 +464,12 @@ function PluginCard({
     status.active || status.licensed_plugins.includes(code)
   ));
   const chosenIsInstalled = Boolean(chosen && installedFromThisRepository && sameVersion(chosen.tag_name, status?.plugin_version));
+  // One version: the installed one, otherwise the newest this node could install.
+  const version = status?.plugin_version
+    ?? release?.version
+    ?? releases[0]?.tag_name.replace(/^v/i, "")
+    ?? null;
+  const platforms = entry ? supportedPlatforms(entry.releases) : [];
   const githubBusy = repository !== null && githubBusyId === repository.id;
 
   return (
@@ -476,7 +490,6 @@ function PluginCard({
         )}
         <div className="min-w-0 flex-1">
           <h2 className="truncate font-display text-sm font-semibold text-fg">{name}</h2>
-          <p className="mt-0.5 truncate font-mono text-[0.68rem] text-faint">{code}</p>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <Badge tone={badgeTone}>{licenseLabel}</Badge>
             {entry?.featured && <Badge tone="iris">{t("plugins.featured")}</Badge>}
@@ -569,14 +582,18 @@ function PluginCard({
         )}
 
         <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-          <div>
-            <dt className="eyebrow mb-0.5 text-[0.6rem]">{t("plugins.version")}</dt>
-            <dd className="font-mono text-fg">{status?.plugin_version ?? "-"}</dd>
-          </div>
-          {release && (
+          {version && (
             <div>
-              <dt className="eyebrow mb-0.5 text-[0.6rem]">{t("plugins.availableRelease")}</dt>
-              <dd className="font-mono text-fg">{`${release.version} · ${release.channel} · ${release.os} / ${release.arch}`}</dd>
+              <dt className="eyebrow mb-0.5 text-[0.6rem]">{t("plugins.version")}</dt>
+              <dd className="font-mono text-fg">{version}</dd>
+            </div>
+          )}
+          {platforms.length > 0 && (
+            <div>
+              <dt className="eyebrow mb-0.5 text-[0.6rem]">{t("plugins.platforms")}</dt>
+              <dd className="flex items-center gap-2 pt-0.5 text-muted">
+                {platforms.map((os) => <PlatformIcon key={os} os={os} label={t(`plugins.platform.${os}`)} />)}
+              </dd>
             </div>
           )}
           {active && installedAt && (
@@ -794,6 +811,21 @@ export function Plugins() {
   const node = useNode();
   const developmentEnabled = node.data?.profile === "admin" && node.data?.pom_desenv === true;
   const developmentSources = useDevelopmentPluginSources(developmentEnabled);
+  const [tab, setTab] = useState<"catalog" | "develop">("catalog");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+  // The license server searches and pages the store; the whole catalog above
+  // still decides activation and names the plugins a key granted.
+  const storePage = usePublicPluginCatalog({ q: query || undefined, page, perPage: PAGE_SIZE });
+  const examplePlugin = usePublicPlugin(EXAMPLE_PLUGIN_CODE);
   const [licenseKey, setLicenseKey] = useState("");
   const [activateBusy, setActivateBusy] = useState(false);
   const [activateError, setActivateError] = useState(false);
@@ -806,7 +838,7 @@ export function Plugins() {
   const [developmentBusyRepository, setDevelopmentBusyRepository] = useState<string | null>(null);
   const [developmentFailure, setDevelopmentFailure] = useState<{ repository: string; error: DevelopmentPluginError } | null>(null);
   const [developmentResult, setDevelopmentResult] = useState<DevelopmentPluginRebuildResult | null>(null);
-  const [installTarget, setInstallTarget] = useState<{ repository: GithubRepository; release: GithubRepositoryRelease; update: boolean } | null>(null);
+  const [installTarget, setInstallTarget] = useState<{ repository: GithubRepository; release: GithubRepositoryRelease; update: boolean; trusted: boolean } | null>(null);
   const [preferencesCode, setPreferencesCode] = useState<string | null>(null);
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
   const [deactivateTarget, setDeactivateTarget] = useState<string | null>(null);
@@ -971,25 +1003,44 @@ export function Plugins() {
     return !licensed || status?.state === "expired" || status?.state === "revoked";
   });
   // Um card por `plugin_code`: catálogo comercial, repositório GitHub e estado
-  // local ativo se somam no mesmo card quando falam do mesmo plugin.
+  // local ativo se somam no mesmo card quando falam do mesmo plugin. A página
+  // vem do license-server; o que só existe neste nó (repositório cadastrado ou
+  // plugin ativo fora da loja) entra na primeira página, filtrado pela busca.
+  const pageEntries = storePage.data?.plugins ?? [];
+  const catalogCodes = new Set([...publicEntries, ...pageEntries].map((entry) => entry.code));
+  const needle = query.toLowerCase();
+  const matchesQuery = (code: string, name?: string | null) =>
+    !needle || code.toLowerCase().includes(needle) || (name ?? "").toLowerCase().includes(needle);
   const codes: string[] = [];
   const addCode = (code: string) => {
     if (!codes.includes(code)) codes.push(code);
   };
-  publicEntries.forEach((entry) => addCode(entry.code));
-  repositories.forEach((repository) => addCode(repository.manifest.plugin_code));
-  localStatuses.filter((status) => status.active).forEach((status) => addCode(status.code));
-  const cards = codes.map((code) => ({
+  pageEntries.forEach((entry) => addCode(entry.code));
+  if (page === 1) {
+    repositories
+      .filter((repository) => !catalogCodes.has(repository.manifest.plugin_code)
+        && matchesQuery(repository.manifest.plugin_code, repository.manifest.display_name))
+      .forEach((repository) => addCode(repository.manifest.plugin_code));
+    localStatuses
+      .filter((status) => status.active && !catalogCodes.has(status.code) && matchesQuery(status.code))
+      .forEach((status) => addCode(status.code));
+  }
+  const cardFor = (code: string) => ({
     code,
-    entry: publicEntries.find((entry) => entry.code === code) ?? null,
+    entry: pageEntries.find((entry) => entry.code === code)
+      ?? publicEntries.find((entry) => entry.code === code)
+      ?? (code === EXAMPLE_PLUGIN_CODE ? examplePlugin.data ?? null : null),
     status: localByCode.get(code) ?? null,
     repository: repositoryByCode.get(code) ?? null,
     licenseStatus: licenseStatusByCode.get(code) ?? localByCode.get(code) ?? null,
-  }));
+  });
+  const cards = codes.map(cardFor);
+  const total = storePage.data?.total ?? null;
+  const pageCount = total === null ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE));
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
   const targetOs = node.data?.system.os ?? null;
   const targetArch = node.data?.system.arch ?? null;
-  const deactivateCard = cards.find(({ status }) => status?.code === deactivateTarget);
+  const deactivateCard = deactivateTarget ? cardFor(deactivateTarget) : undefined;
   const deactivateName = deactivateCard?.entry?.display_name ?? deactivateCard?.repository?.manifest.display_name ?? deactivateTarget ?? "";
   const uninstallingPublicPlugin = deactivateCard?.status?.public_install === true;
   const uninstallingLocalDevelopmentPlugin = Boolean(
@@ -997,24 +1048,97 @@ export function Plugins() {
       && !deactivateCard.status.public_install
       && !deactivateCard.status.licensed_plugins.includes(deactivateCard.code),
   );
-  const preferencesCard = cards.find(({ code }) => code === preferencesCode);
+  const preferencesCard = preferencesCode ? cardFor(preferencesCode) : undefined;
   const preferencesSchema = preferencesCard?.status?.preferences_schema ?? null;
+  const exampleCard = cardFor(EXAMPLE_PLUGIN_CODE);
+  const addRepository = (repositoryUrl: string) => void runGithubAction("add", () => api.post("/api/ui/plugins/github-repositories", {
+    repository_url: repositoryUrl,
+  }));
+
+  function renderCard({ code, entry, status, repository, licenseStatus }: ReturnType<typeof cardFor>) {
+    return (
+      <PluginCard
+        key={code}
+        code={code}
+        entry={entry}
+        status={status}
+        repository={repository}
+        licenseStatus={licenseStatus}
+        licenseStatusAvailable={licenseStatusAvailable}
+        busyCode={busyCode}
+        githubBusyId={githubBusyId}
+        githubFailedId={githubFailedId}
+        githubFailureMessage={githubFailureMessage}
+        updateFailedCode={updateFailedCode}
+        deactivateFailedCode={deactivateFailedCode}
+        locale={locale}
+        targetOs={targetOs}
+        targetArch={targetArch}
+        onRefresh={(target) => void refresh(target)}
+        onDeactivate={(target) => {
+          setDeactivateFailedCode(null);
+          setDeactivateTarget(target);
+        }}
+        onApplyUpdate={(target, releaseId) => void applyUpdate(target, releaseId)}
+        onOpenPreferences={(target) => {
+          setPreferencesError(null);
+          setPreferencesCode(target);
+        }}
+        onBuy={(target) => navigateToPluginPurchase(target.code)}
+        onGithubRefresh={(id) => void runGithubAction(id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}/refresh`))}
+        onGithubRemove={(id) => void runGithubAction(id, () => api.del(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}`))}
+        // Only the POM team's own plugins skip the unverified-code warning.
+        onGithubInstall={(target, release, update) => setInstallTarget({ repository: target, release, update, trusted: entry?.pom_team === true })}
+        githubAddBusy={githubBusyId === "add"}
+        onGithubAdd={addRepository}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
       <FullBleedHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
+        <div role="tablist" aria-label={t("plugins.tabsLabel")} className="mb-5 inline-flex rounded-lg border border-line bg-raised/40 p-1">
+          {(["catalog", "develop"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={tab === value}
+              onClick={() => setTab(value)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris ${tab === value ? "bg-surface text-fg shadow-sm" : "text-muted hover:text-fg"}`}
+            >
+              {value === "catalog" ? t("plugins.tabCatalog") : t("plugins.tabDevelop")}
+            </button>
+          ))}
+        </div>
+
+        {tab === "catalog" ? (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,21rem)]">
           <div className="order-2 min-w-0 space-y-4 lg:order-1">
-            {catalog.isLoading && (
+            <label className="relative block">
+              <span className="sr-only">{t("plugins.searchLabel")}</span>
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" aria-hidden="true" />
+              <Input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={t("plugins.searchPlaceholder")}
+                aria-label={t("plugins.searchLabel")}
+                className="pl-9"
+                autoComplete="off"
+              />
+            </label>
+            {storePage.isLoading && (
               <div role="status" aria-label={t("plugins.catalogLoading")} className="grid gap-4 xl:grid-cols-2">
                 <Skeleton className="h-44 w-full" />
                 <Skeleton className="h-44 w-full" />
               </div>
             )}
-            {catalog.isError && (
-              <ErrorState title={t("plugins.catalogError")} error={catalog.error} onRetry={() => void catalog.refetch()} />
+            {storePage.isError && (
+              <ErrorState title={t("plugins.catalogError")} error={storePage.error} onRetry={() => void storePage.refetch()} />
             )}
             {plugins.isError && (
               <ErrorState title={t("plugins.licenseStatusError")} error={plugins.error} onRetry={() => void refreshPluginData()} />
@@ -1025,56 +1149,87 @@ export function Plugins() {
 
             {cards.length > 0 && (
               <div className="grid gap-4 xl:grid-cols-2">
-                {cards.map(({ code, entry, status, repository, licenseStatus }) => (
-                  <PluginCard
-                    key={code}
-                    code={code}
-                    entry={entry}
-                    status={status}
-                    repository={repository}
-                    licenseStatus={licenseStatus}
-                    licenseStatusAvailable={licenseStatusAvailable}
-                    busyCode={busyCode}
-                    githubBusyId={githubBusyId}
-                    githubFailedId={githubFailedId}
-                    githubFailureMessage={githubFailureMessage}
-                    updateFailedCode={updateFailedCode}
-                    deactivateFailedCode={deactivateFailedCode}
-                    locale={locale}
-                    targetOs={targetOs}
-                    targetArch={targetArch}
-                    onRefresh={(target) => void refresh(target)}
-                    onDeactivate={(target) => {
-                      setDeactivateFailedCode(null);
-                      setDeactivateTarget(target);
-                    }}
-                    onApplyUpdate={(target, releaseId) => void applyUpdate(target, releaseId)}
-                    onOpenPreferences={(target) => {
-                      setPreferencesError(null);
-                      setPreferencesCode(target);
-                    }}
-                    onBuy={(target) => navigateToPluginPurchase(target.code)}
-                    onGithubRefresh={(id) => void runGithubAction(id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}/refresh`))}
-                    onGithubRemove={(id) => void runGithubAction(id, () => api.del(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}`))}
-                    onGithubInstall={(repository, release, update) => setInstallTarget({ repository, release, update })}
-                    githubAddBusy={githubBusyId === "add"}
-                    onGithubAdd={(repositoryUrl) => void runGithubAction("add", () => api.post("/api/ui/plugins/github-repositories", {
-                      repository_url: repositoryUrl,
-                    }))}
-                  />
-                ))}
+                {cards.map(renderCard)}
               </div>
             )}
 
-            {!catalog.isLoading && !catalog.isError && licenseStatusAvailable && !githubRepositories.isLoading
-              && repositories.length === 0 && cards.length === 0 && (
+            {!storePage.isLoading && !storePage.isError && licenseStatusAvailable && !githubRepositories.isLoading
+              && cards.length === 0 && (
               <Panel>
-                <Empty icon={<Package className="h-5 w-5" />} title={t("plugins.catalogEmpty")} />
+                <Empty
+                  icon={<Package className="h-5 w-5" />}
+                  title={query ? t("plugins.searchEmpty", { query }) : t("plugins.catalogEmpty")}
+                />
               </Panel>
+            )}
+
+            {pageCount > 1 && (
+              <nav aria-label={t("plugins.pagination")} className="flex items-center justify-between gap-3">
+                <Button
+                  variant="outline"
+                  disabled={page <= 1 || storePage.isFetching}
+                  icon={<ChevronLeft className="h-3.5 w-3.5" />}
+                  onClick={() => setPage(page - 1)}
+                >
+                  {t("plugins.pagePrevious")}
+                </Button>
+                <p className="text-xs text-muted" aria-live="polite">{t("plugins.pageStatus", { page, pages: pageCount })}</p>
+                <Button
+                  variant="outline"
+                  disabled={page >= pageCount || storePage.isFetching}
+                  onClick={() => setPage(page + 1)}
+                >
+                  {t("plugins.pageNext")}
+                  <ChevronRight className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+              </nav>
             )}
           </div>
 
           <div className="order-1 min-w-0 space-y-4 self-start lg:order-2">
+            {shouldShowActivation && (
+              <Panel>
+                <PanelHeader
+                  eyebrow={t("plugins.activationEyebrow")}
+                  title={t("plugins.formTitle")}
+                  subtitle={t("plugins.formSubtitle")}
+                  actions={<KeyRound className="h-5 w-5 text-iris" />}
+                />
+                <form className="space-y-3 px-5 py-4" onSubmit={(event) => void activate(event)}>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.licenseKeyLabel")}</span>
+                    <Input
+                      type="password"
+                      name="plugin-license-key"
+                      autoComplete="off"
+                      aria-label={t("plugins.licenseKeyLabel")}
+                      placeholder={t("plugins.licenseKeyPlaceholder")}
+                      value={licenseKey}
+                      onChange={(event) => setLicenseKey(event.target.value)}
+                    />
+                  </label>
+                  {activateError && <p role="alert" className="text-xs text-rose">{t("plugins.activationFailed")}</p>}
+                  {activatedCodes && activatedCodes.length > 0 && (
+                    <p role="status" className="text-xs text-aqua">
+                      {t("plugins.activationSucceeded", {
+                        plugins: activatedCodes.map((code) => publicEntries.find((entry) => entry.code === code)?.display_name ?? code).join(", "),
+                      })}
+                    </p>
+                  )}
+                  <Button variant="primary" type="submit" loading={activateBusy} icon={<ShieldCheck className="h-3.5 w-3.5" />}>
+                    {t("plugins.activate")}
+                  </Button>
+                  <p className="text-xs leading-relaxed text-faint">{t("plugins.keyPrivacy")}</p>
+                </form>
+              </Panel>
+            )}
+            <GithubSourceCard
+              busy={githubBusyId === "add"}
+              failed={githubFailedId === "add"}
+              failureMessage={githubFailureMessage}
+              listError={githubRepositories.error}
+              onAdd={addRepository}
+            />
             {developmentEnabled && (
               <Panel>
                 <PanelHeader
@@ -1132,53 +1287,73 @@ export function Plugins() {
                 </div>
               </Panel>
             )}
-            <GithubSourceCard
-              busy={githubBusyId === "add"}
-              failed={githubFailedId === "add"}
-              failureMessage={githubFailureMessage}
-              listError={githubRepositories.error}
-              onAdd={(repositoryUrl) => void runGithubAction("add", () => api.post("/api/ui/plugins/github-repositories", {
-                repository_url: repositoryUrl,
-              }))}
-            />
-            {shouldShowActivation && (
-              <Panel>
-                <PanelHeader
-                  eyebrow={t("plugins.activationEyebrow")}
-                  title={t("plugins.formTitle")}
-                  subtitle={t("plugins.formSubtitle")}
-                  actions={<KeyRound className="h-5 w-5 text-iris" />}
-                />
-                <form className="space-y-3 px-5 py-4" onSubmit={(event) => void activate(event)}>
-                  <label className="block">
-                    <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.licenseKeyLabel")}</span>
-                    <Input
-                      type="password"
-                      name="plugin-license-key"
-                      autoComplete="off"
-                      aria-label={t("plugins.licenseKeyLabel")}
-                      placeholder={t("plugins.licenseKeyPlaceholder")}
-                      value={licenseKey}
-                      onChange={(event) => setLicenseKey(event.target.value)}
-                    />
-                  </label>
-                  {activateError && <p role="alert" className="text-xs text-rose">{t("plugins.activationFailed")}</p>}
-                  {activatedCodes && activatedCodes.length > 0 && (
-                    <p role="status" className="text-xs text-aqua">
-                      {t("plugins.activationSucceeded", {
-                        plugins: activatedCodes.map((code) => publicEntries.find((entry) => entry.code === code)?.display_name ?? code).join(", "),
-                      })}
-                    </p>
-                  )}
-                  <Button variant="primary" type="submit" loading={activateBusy} icon={<ShieldCheck className="h-3.5 w-3.5" />}>
-                    {t("plugins.activate")}
-                  </Button>
-                  <p className="text-xs leading-relaxed text-faint">{t("plugins.keyPrivacy")}</p>
-                </form>
-              </Panel>
-            )}
           </div>
         </div>
+        ) : (
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,21rem)]">
+          <div className="min-w-0 space-y-4">
+            <Panel className="border-iris/40 bg-iris/5">
+              <PanelHeader
+                eyebrow={t("plugins.developEyebrow")}
+                title={t("plugins.developTitle")}
+                subtitle={t("plugins.developDescription")}
+                actions={<Sparkles className="h-5 w-5 text-iris" aria-hidden="true" />}
+              />
+              <div className="space-y-4 px-5 py-4">
+                {exampleCard.entry || exampleCard.repository ? (
+                  <div className="max-w-xl">{renderCard(exampleCard)}</div>
+                ) : (
+                  <div className="space-y-2">
+                    {examplePlugin.isLoading && <p role="status" className="text-xs text-muted">{t("plugins.catalogLoading")}</p>}
+                    <Button
+                      variant="primary"
+                      loading={githubBusyId === "add"}
+                      icon={<Download className="h-3.5 w-3.5" />}
+                      onClick={() => addRepository(EXAMPLE_PLUGIN_REPOSITORY)}
+                    >
+                      {t("plugins.githubAddFromCatalog")}
+                    </Button>
+                    {githubFailedId === "add" && (
+                      <p role="alert" className="break-words text-xs text-rose">{t("plugins.githubSourceFailed")} {githubFailureMessage}</p>
+                    )}
+                  </div>
+                )}
+                <a
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-iris underline"
+                  href={EXAMPLE_PLUGIN_REPOSITORY}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
+                  {t("plugins.developSource")}
+                </a>
+              </div>
+            </Panel>
+          </div>
+          <div className="min-w-0 space-y-4 self-start">
+            <Panel>
+              <PanelHeader
+                eyebrow={t("plugins.publishEyebrow")}
+                title={t("plugins.publishTitle")}
+                subtitle={t("plugins.publishDescription")}
+                actions={<Upload className="h-5 w-5 text-iris" aria-hidden="true" />}
+              />
+              <div className="space-y-3 px-5 py-4">
+                <p className="text-xs leading-relaxed text-muted">{t("plugins.publishReview")}</p>
+                <a
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-iris px-3 py-2 text-xs font-medium text-white hover:bg-iris/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+                  href={PUBLISH_PLUGIN_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  {t("plugins.publishLink")}
+                </a>
+              </div>
+            </Panel>
+          </div>
+        </div>
+        )}
       </div>
 
       {preferencesCard && preferencesSchema && (
@@ -1198,7 +1373,20 @@ export function Plugins() {
         title={installTarget
           ? t(installTarget.update ? "plugins.githubUpdateConfirmTitle" : "plugins.githubInstallConfirmTitle", { name: installTarget.repository.manifest.display_name })
           : ""}
-        description={installTarget ? t("plugins.githubInstallConfirmDescription", { version: installTarget.release.tag_name }) : ""}
+        description={installTarget ? (
+          <div className="space-y-3">
+            <p>{t("plugins.githubInstallConfirmDescription", { version: installTarget.release.tag_name })}</p>
+            {!installTarget.trusted && (
+              <div role="alert" className="flex gap-2 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2.5 text-xs text-fg">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber" aria-hidden="true" />
+                <div>
+                  <p className="font-medium">{t("plugins.unverifiedTitle")}</p>
+                  <p className="mt-1 leading-relaxed text-muted">{t("plugins.unverifiedWarning")}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : ""}
         confirmLabel={installTarget?.update ? t("plugins.githubUpdate") : t("plugins.githubInstall")}
         busy={installTarget !== null && githubBusyId === installTarget.repository.id}
         onConfirm={() => {

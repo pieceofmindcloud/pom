@@ -203,7 +203,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
   explícita do operador.
 - `pluginCatalog.ts` - reads the public plugin catalog directly from the
-  license server with `credentials: "omit"`; it does not use `api.ts` or send
+  license server with `credentials: "omit"`; `fetchPublicPluginCatalog` takes an
+  optional `{q, page, perPage}` (search and paging done by the server, `total`
+  is null from a server without paging), `fetchPublicPlugin(code)` reads one
+  entry, and `supportedPlatforms` lists the systems with builds; it does not use `api.ts` or send
   the connection key or administrative session. It validates required fields
   for each commercial release and discards plugins without a valid release.
   GitHub sources stay local: the catalog's `github_url` (a free plugin the

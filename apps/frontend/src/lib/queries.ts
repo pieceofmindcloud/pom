@@ -32,7 +32,7 @@ import {
 export const DEFAULT_ADMIN_PASSWORD = "admin";
 import { modelDownloadJobs } from "./modelProvider";
 import { getTrendingModels } from "./publicModelDiscovery";
-import { fetchPublicPluginCatalog } from "./pluginCatalog";
+import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
   SidecarLink,
@@ -283,14 +283,29 @@ export function useDevelopmentPluginSources(enabled: boolean) {
   });
 }
 
-/** Public store metadata is fetched directly without node credentials or cookies. */
-export function usePublicPluginCatalog() {
+/**
+ * Public store metadata is fetched directly without node credentials or cookies.
+ * Without a query it is the whole catalog; with one, the license server searches
+ * and pages it, and the previous page stays on screen while the next one loads.
+ */
+export function usePublicPluginCatalog(query?: PublicPluginCatalogQuery) {
   return useQuery({
-    queryKey: keys.publicPluginCatalog,
-    queryFn: ({ signal }) => fetchPublicPluginCatalog(signal),
+    queryKey: query ? [...keys.publicPluginCatalog, query] : keys.publicPluginCatalog,
+    queryFn: ({ signal }) => fetchPublicPluginCatalog(signal, query),
     retry: false,
     staleTime: 60_000,
     refetchInterval: 60_000,
+    placeholderData: query ? (previous) => previous : undefined,
+  });
+}
+
+/** One public store entry by plugin code (null when the store does not list it). */
+export function usePublicPlugin(code: string) {
+  return useQuery({
+    queryKey: [...keys.publicPluginCatalog, "entry", code],
+    queryFn: ({ signal }) => fetchPublicPlugin(code, signal),
+    retry: false,
+    staleTime: 60_000,
   });
 }
 

@@ -454,6 +454,10 @@ Per-file list:
   `assets/brand/pom-logo-dark.png` is the whole change. `variant` is only about
   filling: `"card"` pads (setup screen), `"band"` fills edge to edge (the
   sidebar header, which is the band). `LogoMark` (the real artwork, `<img>` from `/brand/`, served as a static asset because it is a detailed raster shown small) + `Logo` with wordmark. Name, tagline and image URL all come from `lib/brand` (`brand.json` at the repository root), never from literals here; callers size it through `size` only, so sidebar, setup screen and tab icon follow one source. The mark carries its own glow on transparency, so it gets no plate behind it.
+- `PlatformIcon.tsx` - Windows, Linux and macOS marks drawn inline in
+  `currentColor` (lucide has no brand icons), each with its name as the
+  accessible label and title. The Plugins cards use them for the systems a
+  plugin publishes builds for.
 - `MachineIcon.tsx` — `machineKind(system)` classifies a machine from its
   `SystemLoad` (nvidia GPU box, Apple Silicon Mac, Windows, Linux) into a
   label/icon/accent color; `MachineIcon` renders it. Reused by Dashboard,

@@ -1505,9 +1505,20 @@ plugins.activationUsage.partial,Partially used,Parcialmente utilizada
 plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.activeTitle,Active,Ativo
 plugins.annualPrice,{price}/year,{price}/ano
-plugins.availableRelease,Available release,Release disponível
 plugins.buy,Buy,Comprar
+plugins.developDescription,"The example of how to build a POM plugin: screens, menu, preferences and the host interface. Install it to see it working, then use its repository as the starting point for yours.","O exemplo de como desenvolver um plugin do POM: telas, menu, preferências e a interface com o host. Instale para ver funcionando e use o repositório dele como ponto de partida para o seu."
+plugins.developEyebrow,Example plugin,Plugin de exemplo
+plugins.developSource,View the source code on GitHub,Ver o código-fonte no GitHub
+plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
 plugins.featured,Featured,Destaque
+plugins.pageNext,Next,Próxima
+plugins.pagePrevious,Previous,Anterior
+plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
+plugins.pagination,Plugin pages,Páginas de plugins
+plugins.platform.linux,Linux,Linux
+plugins.platform.macos,macOS,macOS
+plugins.platform.windows,Windows,Windows
+plugins.platforms,Platforms,Plataformas
 plugins.pomTeam,POM team,Equipe POM
 plugins.community,Community,Comunidade
 plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
@@ -1590,6 +1601,11 @@ plugins.preferencesSave,Save preferences,Salvar preferências
 plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
 plugins.preferencesTitle,Plugin preferences,Preferências do plugin
 plugins.pricing,Pricing,Preços
+plugins.publishDescription,Submit your plugin's public GitHub repository on the POM website.,Envie o repositório público do seu plugin pelo site do POM.
+plugins.publishEyebrow,Publish,Publicar
+plugins.publishLink,Submit my plugin,Enviar meu plugin
+plugins.publishReview,Every submission goes through a review process before it is published in the plugin list.,Todo envio passa por um processo de revisão antes de ser efetivamente publicado na lista de plugins.
+plugins.publishTitle,Publish your plugin on POM,Publique seu plugin no POM
 plugins.refresh,Refresh,Atualizar
 plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
 plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
@@ -1599,6 +1615,9 @@ plugins.screenshotOpen,Open screenshot {number} of {name},Abrir captura de tela 
 plugins.screenshotPrevious,Previous screenshot,Captura de tela anterior
 plugins.screenshots,Screenshots,Capturas de tela
 plugins.screenshotsTitle,Screenshots for {name},Capturas de tela de {name}
+plugins.searchEmpty,"No plugin matches ""{query}"".","Nenhum plugin corresponde a ""{query}""."
+plugins.searchLabel,Search plugins,Buscar plugins
+plugins.searchPlaceholder,Search by name or description,Buscar por nome ou descrição
 plugins.state.active,License active,Licença ativa
 plugins.state.degraded,Degraded,Degradado
 plugins.state.expired,Expired,Expirado
@@ -1606,7 +1625,12 @@ plugins.state.needs_activation,Not activated,Não ativado
 plugins.state.revoked,Revoked,Revogado
 plugins.state.unavailable,Unavailable,Indisponível
 plugins.subtitle,"Independent plugins for this node, each with its own license, version and lifecycle.","Plugins independentes para este nó, cada um com sua própria licença, versão e ciclo de vida."
+plugins.tabCatalog,Plugins,Plugins
+plugins.tabDevelop,Develop your plugin,Desenvolva seu plugin
+plugins.tabsLabel,Plugin sections,Seções de plugins
 plugins.title,Plugins,Plugins
+plugins.unverifiedTitle,Unverified code,Código não verificado
+plugins.unverifiedWarning,This plugin was not made by the POM team and its code has not been verified. It may harm your computer. You install it at your own risk.,Este plugin não foi feito pelo time do POM e o código dele não foi verificado. Ele pode causar danos ao seu computador. A instalação é por sua conta e risco.
 plugins.updateApply,Install update,Instalar atualização
 plugins.updateApplyFailed,Could not apply the plugin update.,Não foi possível aplicar a atualização do plugin.
 plugins.updateAvailable,Update available: {version},Atualização disponível: {version}

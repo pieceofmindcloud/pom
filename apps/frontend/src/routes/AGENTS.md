@@ -104,17 +104,29 @@ Per-file list:
   encoded `plugin=<code>` parameter via `lib/pluginPurchase.ts`. Cards are
   compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
   catalog, GitHub repository and local state for the same code share one card.
-  The right column contains the "Add from GitHub" card (public repository URL)
-  above license activation. A repository card shows its manifest description
+  The screen has two tabs. "Plugins" searches and pages the store on the
+  license server (`GET /v1/plugins?q=&page=&per_page=10`, featured and POM-team
+  plugins first; the full unpaged catalog is still read to decide whether the
+  license form shows and to name the plugins a key granted). Plugins known only
+  to this node (a registered repository or an active plugin outside the store)
+  are appended to the first page and filtered by the same search text. Its
+  right column is, in order, license activation, the "Add from GitHub" card
+  (public repository URL) and the development builds. "Develop your plugin"
+  highlights `pom-plugin-base` (the example plugin, as its own card or an
+  install button) and links to `https://pieceofmind.cloud/plugins/publicar/`,
+  saying that a submission is reviewed before it is listed. Cards no longer
+  show the plugin code; one Version field shows the installed version or else
+  the newest one this node can install, and the supported systems are icons
+  (`components/PlatformIcon.tsx`). Installing from GitHub anything whose
+  catalog entry is not `pom_team: true` adds an unverified-code warning to the
+  confirmation (the install is at the operator's own risk). A repository card shows its manifest description
   and screenshots (`raw.githubusercontent.com`), refresh/remove icon actions,
   and a selector containing only releases compatible with this node
   (`available_for_node`), defaulting to the latest. Its action is Install,
   Update (when the public installation came from that repository), or disabled
   Installed (when the selected tag is already current). Install/update requires
   confirmation; this source does not check `requires_license` or contact the
-  license server. The card does not show features or the last update check, and
-  the commercial release row appears only when the catalog has a release for
-  the node's target. Activation, installation, update and deactivation
+  license server. The card does not show features or the last update check. Activation, installation, update and deactivation
   invalidate `keys.pluginUi` so the plugin menu updates immediately; 30-second
   polling covers changes made outside this tab. One form activates every
   `plugin_code` granted by the server in a batch (`POST

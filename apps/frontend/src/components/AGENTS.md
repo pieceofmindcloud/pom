@@ -571,7 +571,8 @@ Key logic carriers:
   nunca roda as duas na mesma rodada (`lib/speculation.ts`); os números do MTP
   e onde ele fica só aparecem com o MTP escolhido, e os do lookup só com ele), *Configurações POM* (desativar embeddings, ajuste de memória,
   chunks em voo, fusão de fatias, precisão do estado oculto) e *Configurações
-  POM (DESENV)* (motor de inferência e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
+  POM (DESENV)* (motor de inferência, experts do MoE na RAM, cache de experts
+  na GPU e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto

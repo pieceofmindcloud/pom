@@ -1198,8 +1198,8 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   context, sessions, max tokens, batch, prefill chunk, sampling, the
   installation's K/V cache, disabling thinking/embeddings and the speculation
   choice), *POM settings* (fit to memory, chunks in flight, merging neighboring
-  slices and hidden-state precision) and *POM settings (DEV)* (inference engine
-  and per-peer idle unloading). That section only
+  slices and hidden-state precision) and *POM settings (DEV)* (inference engine,
+  MoE experts in RAM, the GPU expert cache and per-peer idle unloading). That section only
   shows up when `NodeInfo.pom_desenv` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:
   with names of different widths, icons to the right of the text came out

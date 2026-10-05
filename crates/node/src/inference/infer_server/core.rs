@@ -1788,6 +1788,8 @@ mod tests {
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
             mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

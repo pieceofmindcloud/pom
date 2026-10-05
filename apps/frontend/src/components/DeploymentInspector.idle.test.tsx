@@ -172,3 +172,18 @@ describe("DeploymentInspector DRY", () => {
     expect(screen.getByRole("spinbutton", { name: "DRY base" })).toBeTruthy();
   });
 });
+
+describe("DeploymentInspector MoE experts in RAM", () => {
+  it("offers the experts in RAM and the GPU expert cache only under POM_DESENV", () => {
+    const onChange = mount({ ...params }, vi.fn(), undefined, true);
+    fireEvent.click(screen.getByRole("checkbox", { name: "MoE experts in RAM" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ moe_experts_in_ram: true }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Expert cache on GPU (MiB)" }), { target: { value: "8000" } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ moe_cache_mib: 8000 }));
+    cleanup();
+
+    mount({ ...params }, vi.fn(), undefined, false);
+    expect(screen.queryByRole("checkbox", { name: "MoE experts in RAM" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Expert cache on GPU (MiB)" })).toBeNull();
+  });
+});

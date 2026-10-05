@@ -379,6 +379,18 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   other than `99` is explicit and turns this layer fit off. In
   `tensor_parallel`, the planner normalizes `fit_memory` to off because the
   native fit does not support `split-mode tensor`.
+- **MoE experts in RAM and the GPU expert cache** (POM settings (DEV)):
+  `RuntimeParams.moe_experts_in_ram` keeps every routed expert in host memory,
+  computed by the CPU (llama.cpp's `--cpu-moe`, as a `tensor_buft_overrides`
+  entry); it turns the layer fit off, because `common_fit_params` refuses
+  overrides set before it. `RuntimeParams.moe_cache_mib` (`0` = off) becomes
+  `llama_context_params::moe_cache_size`: recently used experts held in RAM are
+  served from VRAM and only misses cross PCIe, for batches of up to 32 tokens
+  (generation; prefill keeps the regular offload). The fit context counts the
+  cache, so with the fit on it keeps fewer whole expert layers on the GPU. The
+  cache does not run across more than one device. Measured on a whole
+  Qwen3.8-Flash-Next UD-IQ3_XXS (78 GB) with one 16 GB GPU: generation 14.95 ->
+  19.26 tok/s with all experts in RAM and an 8000 MiB cache.
 - **A slice that exists on no machine** -> `blocked` ("slice L{}-{} exists on
   no machine in the cluster"). `plan.blocked` and empty `steps` are the two
   400 refusals of `deploy`.

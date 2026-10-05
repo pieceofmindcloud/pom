@@ -146,6 +146,17 @@ pub struct RuntimeParams {
     /// Onde o bloco MTP fica: `auto`, `vram` ou `ram`.
     #[serde(default)]
     pub mtp_placement: llama_engine::MtpPlacement,
+    /// Todos os experts roteados de um MoE ficam na RAM e a CPU os calcula
+    /// (o `--cpu-moe` do llama.cpp); a VRAM fica com o resto do modelo. Pula o
+    /// ajuste de memória, que recusa overrides definidos antes dele.
+    #[serde(default)]
+    pub moe_experts_in_ram: bool,
+    /// Cache na GPU, em MiB, dos experts que ficaram na RAM: os usados há
+    /// pouco são servidos da VRAM, só as faltas sobem pelo PCIe (lotes de até
+    /// 32 tokens). `0` desliga. Com o ajuste de memória ligado, o ajuste conta
+    /// o cache e deixa menos camadas de experts inteiras na GPU.
+    #[serde(default)]
+    pub moe_cache_mib: u32,
     /// Descarrega os pesos depois de um período sem requisições neste peer.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -291,6 +302,8 @@ impl Default for RuntimeParams {
             mtp_min_probability: d_mtp_min_probability(),
             mtp_cpu_fallback_enabled: d_mtp_cpu_fallback_enabled(),
             mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             unload_if_idle: false,
             idle_minutes: d_idle_minutes(),
         }
@@ -347,6 +360,8 @@ impl From<&NodeConfig> for RuntimeParams {
             mtp_min_probability: c.mtp_min_probability,
             mtp_cpu_fallback_enabled: c.mtp_cpu_fallback_enabled,
             mtp_placement: c.mtp_placement,
+            moe_experts_in_ram: c.moe_experts_in_ram,
+            moe_cache_mib: c.moe_cache_mib,
             unload_if_idle: c.unload_if_idle,
             idle_minutes: c.idle_minutes,
         }

@@ -214,6 +214,8 @@ mod decision_prefix_tests {
             mtp: false,
             mtp_cpu_fallback_enabled: true,
             mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),

@@ -94,6 +94,8 @@ pub(crate) fn engine_config_from_node(
         mtp: cfg.mtp_effective(),
         mtp_cpu_fallback_enabled: cfg.mtp_cpu_fallback_enabled,
         mtp_placement: cfg.mtp_placement,
+        moe_experts_in_ram: cfg.moe_experts_in_ram,
+        moe_cache_mib: cfg.moe_cache_mib,
         rs_seq_window,
         moe_external_executor,
         moe_external_executor_layers,
@@ -328,6 +330,17 @@ pub struct NodeConfig {
     /// Onde o bloco MTP fica: automático, sempre na VRAM ou sempre na RAM.
     #[serde(default)]
     pub mtp_placement: llama_engine::MtpPlacement,
+    /// Todos os experts roteados de um MoE ficam na RAM e a CPU os calcula
+    /// (o `--cpu-moe` do llama.cpp); a VRAM fica com o resto do modelo. Pula o
+    /// ajuste de memória, que recusa overrides definidos antes dele.
+    #[serde(default)]
+    pub moe_experts_in_ram: bool,
+    /// Cache na GPU, em MiB, dos experts que ficaram na RAM: os usados há
+    /// pouco são servidos da VRAM, só as faltas sobem pelo PCIe (lotes de até
+    /// 32 tokens). `0` desliga. Com o ajuste de memória ligado, o ajuste conta
+    /// o cache e deixa menos camadas de experts inteiras na GPU.
+    #[serde(default)]
+    pub moe_cache_mib: u32,
     /// Descarrega os pesos quando este peer fica ocioso.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -413,6 +426,8 @@ impl NodeConfig {
             mtp_min_probability: p.mtp_min_probability,
             mtp_cpu_fallback_enabled: p.mtp_cpu_fallback_enabled,
             mtp_placement: p.mtp_placement,
+            moe_experts_in_ram: p.moe_experts_in_ram,
+            moe_cache_mib: p.moe_cache_mib,
             unload_if_idle: p.unload_if_idle,
             idle_minutes: p.idle_minutes,
         }
@@ -2324,6 +2339,8 @@ mod tests {
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
             mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

@@ -556,6 +556,7 @@ deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
 deploy.knob.max_sessionsHint,"Generations served at once. Each one reserves its own full context, so this multiplies the KV-cache VRAM: two sessions at 32k cost the same as one at 64k.","Gerações atendidas ao mesmo tempo. Cada uma reserva o contexto inteiro, então isto multiplica a VRAM do cache KV: duas sessões a 32k custam o mesmo que uma a 64k."
 deploy.knob.min_p,Min-p,Min-p
 deploy.knob.min_pHint,"Drops every candidate token whose probability is below this fraction of the most likely one, after top-k and top-p. 0 is off; 0.05 is a common value.","Descarta todo token candidato cuja probabilidade fica abaixo desta fração do mais provável, depois do top-k e do top-p. 0 desliga; 0,05 é um valor comum."
+deploy.knob.moe_cache_mibHint,"VRAM, in MiB, that keeps the recently used experts held in RAM: only the misses cross PCIe, for batches of up to 32 tokens (generation). 0 turns it off. With the memory fit on, the fit counts it and keeps fewer whole expert layers on the GPU.","VRAM, em MiB, que guarda os experts da RAM usados há pouco: só as faltas atravessam o PCIe, em lotes de até 32 tokens (a geração). 0 desliga. Com o ajuste de memória ligado, o ajuste conta esse espaço e deixa menos camadas de experts inteiras na GPU."
 deploy.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 deploy.knob.mtp_draft_tokensHint,How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.,Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.
 deploy.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
@@ -612,6 +613,7 @@ deploy.missing,"{count}{count, plural, =1 { layer missing} other { layers missin
 deploy.model,Model to deploy,Modelo a implantar
 deploy.modelDetail,Shard sets that a cluster machine already has.,Conjuntos de fatias que alguma máquina do cluster já tem.
 deploy.modelLayers,{count} layers in model,{count} camadas no modelo
+deploy.moeExpertsInRamHint,"Keep every routed expert of a MoE model in RAM, computed by the CPU, and give the VRAM to the rest of the model. Turns the memory fit off. Pair it with the GPU expert cache.","Mantém todos os experts roteados de um modelo MoE na RAM, calculados pela CPU, e deixa a VRAM para o resto do modelo. Desliga o ajuste de memória. Use junto com o cache de experts na GPU."
 deploy.moveDown,Move {range} later in the order,Atrasar {range} na ordem
 deploy.moveUp,Move {range} earlier in the order,Adiantar {range} na ordem
 deploy.mtp,Multi-token prediction (MTP),Predição multi-token (MTP)
@@ -961,6 +963,7 @@ inspector.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 inspector.knob.max_new_tokens,Max. tokens,Máx. tokens
 inspector.knob.max_sessions,Sessions,Sessões
 inspector.knob.min_p,Min-p,Min-p
+inspector.knob.moe_cache_mib,Expert cache on GPU (MiB),Cache de experts na GPU (MiB)
 inspector.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 inspector.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
 inspector.knob.n_batch,Batch,Batch
@@ -978,6 +981,7 @@ inspector.knob.speculative_lookup_window,Lookup window,Janela de busca
 inspector.knob.temperature,Temperature,Temperatura
 inspector.knob.top_k,Top-k,Top-k
 inspector.knob.top_p,Top-p,Top-p
+inspector.moeExpertsInRam,MoE experts in RAM,Experts do MoE na RAM
 inspector.noEmbeddings,Disable embeddings,Desativar embeddings
 inspector.noThinking,Disable thinking,Desativar thinking
 inspector.readOnly,Read only,Somente leitura

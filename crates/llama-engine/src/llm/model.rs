@@ -557,8 +557,27 @@ impl LoadedModel {
         if !plan.tensor_split.is_empty() {
             mparams.tensor_split = plan.tensor_split.as_ptr();
         }
+        // `--cpu-moe`: every routed expert to the CPU buffer. The fit is off in
+        // this mode (`fit_can_adjust_layers`), so the plan carries no overrides
+        // of its own; the vector lives until the load below consumes it.
+        let experts_in_ram = if plan.config.moe_experts_in_ram && plan.tensor_buft_overrides.is_empty() {
+            vec![
+                sys::llama_model_tensor_buft_override {
+                    pattern: MOE_EXPERTS_PATTERN.as_ptr(),
+                    buft: unsafe { sys::ggml_backend_cpu_buffer_type() },
+                },
+                sys::llama_model_tensor_buft_override {
+                    pattern: ptr::null(),
+                    buft: ptr::null_mut(),
+                },
+            ]
+        } else {
+            Vec::new()
+        };
         if !plan.tensor_buft_overrides.is_empty() {
             mparams.tensor_buft_overrides = plan.tensor_buft_overrides.as_ptr();
+        } else if !experts_in_ram.is_empty() {
+            mparams.tensor_buft_overrides = experts_in_ram.as_ptr();
         }
 
         let model = unsafe { sys::llama_model_load_from_file(path.as_ptr(), mparams) };
@@ -680,6 +699,8 @@ mod mtp_draft_tests {
             mtp: true,
             mtp_cpu_fallback_enabled: true,
             mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),

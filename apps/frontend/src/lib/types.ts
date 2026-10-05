@@ -166,6 +166,10 @@ export interface NodeConfig {
   /** Local peer unload policy; absent means the pre-feature default. */
   unload_if_idle?: boolean;
   idle_minutes?: number;
+  /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
+  moe_experts_in_ram?: boolean;
+  /** GPU cache, in MiB, for the experts kept in RAM; 0 turns it off. */
+  moe_cache_mib?: number;
 }
 
 /** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
@@ -2003,6 +2007,10 @@ export interface RuntimeParams {
   mtp_placement?: MtpPlacement;
   unload_if_idle?: boolean;
   idle_minutes?: number;
+  /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
+  moe_experts_in_ram?: boolean;
+  /** GPU cache, in MiB, for the experts kept in RAM; 0 turns it off. */
+  moe_cache_mib?: number;
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */

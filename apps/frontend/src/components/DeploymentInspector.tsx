@@ -111,7 +111,8 @@ type NumericKey =
   | "speculative_lookup_window"
   | "mtp_draft_tokens"
   | "mtp_min_probability"
-  | "idle_minutes";
+  | "idle_minutes"
+  | "moe_cache_mib";
 
 /**
  * `step` só existe onde o valor não é inteiro: sem ele o navegador recusa
@@ -399,7 +400,7 @@ export function DeploymentInspector({
             aria-label={label}
             name={key}
             type="number"
-            min={key === "idle_minutes" ? 1 : undefined}
+            min={key === "idle_minutes" ? 1 : key === "moe_cache_mib" ? 0 : undefined}
             step={NUMERIC_STEP[key]}
             value={shown(key)}
             onChange={(event) => setKnob(key, event.target.value)}
@@ -783,6 +784,15 @@ export function DeploymentInspector({
             )}
           </InspectorRow>
         )}
+        {toggle({
+          key: "moe_experts_in_ram",
+          label: t("inspector.moeExpertsInRam"),
+          alwaysVisible: true,
+          checked: value.moe_experts_in_ram ?? false,
+          onToggle: (next) => set({ moe_experts_in_ram: next }),
+          tip: t("deploy.moeExpertsInRamHint"),
+        })}
+        {numeric("moe_cache_mib")}
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

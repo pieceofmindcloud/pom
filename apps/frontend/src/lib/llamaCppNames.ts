@@ -37,6 +37,8 @@ export const LLAMA_CPP_NAMES: Partial<Record<keyof RuntimeParams | "cache_type_k
   speculative_decoding_enabled: "spec_type ngram (--spec-type)",
   speculative_k: "n_max (--draft-max)",
   mtp_enabled: "spec_type mtp (--spec-type)",
+  moe_experts_in_ram: "cpu_moe (--cpu-moe)",
+  moe_cache_mib: "moe_cache_size (--moe-cache-mib)",
   mtp_draft_tokens: "n_max (--draft-max)",
   mtp_min_probability: "p_min (--draft-p-min)",
 };

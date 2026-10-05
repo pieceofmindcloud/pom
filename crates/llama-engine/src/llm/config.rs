@@ -123,6 +123,13 @@ pub struct EngineConfig {
     pub mtp_cpu_fallback_enabled: bool,
     /// Where the deployment wants the MTP block. See `crate::MtpPlacement`.
     pub mtp_placement: crate::MtpPlacement,
+    /// Keep every routed MoE expert in host memory, computed by the CPU
+    /// (llama.cpp's `--cpu-moe`). The memory fit is skipped: it refuses
+    /// overrides set before it.
+    pub moe_experts_in_ram: bool,
+    /// GPU cache, in MiB, for the MoE experts kept in host memory
+    /// (`llama_context_params::moe_cache_size`); `0` disables it.
+    pub moe_cache_mib: u32,
     /// Quantos snapshots de estado recorrente manter por sequência
     /// (`llama_context_params::n_rs_seq`), para permitir desfazer um
     /// rascunho especulativo recusado num modelo híbrido/recorrente
@@ -759,6 +766,8 @@ mod fit_memory_margin_tests {
             mtp: true,
             mtp_cpu_fallback_enabled: true,
             mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -1062,6 +1071,8 @@ mod fit_memory_margin_tests {
             mtp: true,
             mtp_cpu_fallback_enabled: true,
             mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -1172,7 +1183,16 @@ pub(super) struct FitPlan {
 }
 
 pub(super) fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
-    cfg.fit_memory && cfg.n_gpu_layers == DEFAULT_GPU_LAYERS
+    cfg.fit_memory && cfg.n_gpu_layers == DEFAULT_GPU_LAYERS && !cfg.moe_experts_in_ram
+}
+
+/// llama.cpp's `LLM_FFN_EXPS_REGEX`: the routed expert tensors `--cpu-moe`
+/// sends to the CPU buffer.
+pub(super) const MOE_EXPERTS_PATTERN: &std::ffi::CStr = c"\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
+
+/// The cache size llama.cpp takes in bytes, from the deployment's MiB.
+pub(super) fn moe_cache_bytes(cfg: &EngineConfig) -> usize {
+    cfg.moe_cache_mib as usize * 1024 * 1024
 }
 
 pub(super) fn empty_fit_plan(cfg: &EngineConfig) -> FitPlan {
@@ -1549,6 +1569,11 @@ pub(super) fn fit_plan(
         apply_cache_types(&mut params, cfg.cache_type_k, cfg.cache_type_v);
         params.embeddings = cfg.need_embeddings;
         params.n_rs_seq = cfg.rs_seq_window;
+        // The fit has to count the expert cache, or it fills the VRAM the
+        // cache is allocated from at context creation.
+        if !mtp {
+            params.moe_cache_size = moe_cache_bytes(cfg);
+        }
         params
     };
 

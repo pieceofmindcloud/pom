@@ -664,6 +664,7 @@ impl LlmEngine {
         apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
         cparams.embeddings = generic_embeddings_compatible(cfg.need_embeddings, n_embd, n_embd_out);
         cparams.n_rs_seq = cfg.rs_seq_window;
+        cparams.moe_cache_size = moe_cache_bytes(cfg);
         apply_thread_params(&mut cparams, cfg);
 
         // ── Residual capture callback ────────────────────────────────────────

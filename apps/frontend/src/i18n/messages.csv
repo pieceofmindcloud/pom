@@ -918,6 +918,7 @@ firstRun.privateDetail,Only machines with the connection key and the trust.json 
 firstRun.public,Public,Pública
 firstRun.publicDetail,Listed in the public directory; anyone with the trust.json can join.,Aparece no diretório público; qualquer um com o trust.json pode entrar.
 firstRun.publicLocationDetail,"Public networks publish their location in the directory, so people can find the closest one.","Redes públicas publicam a localização no diretório, para quem procura achar a mais próxima."
+firstRun.roleNotAccepted,This network is not accepting new members with this role right now.,Esta rede não está aceitando novos membros com este papel no momento.
 firstRun.savedDetail,POM is restarting. The panel password is admin - POM will ask you to change it.,O POM está reiniciando. A senha do painel é admin - o POM vai pedir para você trocá-la.
 firstRun.searchAgain,Search again,Procurar de novo
 firstRun.startDetail,"How will this machine take part? Everything else can be adjusted later, inside POM.","Como esta máquina vai participar? O resto você ajusta depois, dentro do POM."
@@ -1144,6 +1145,8 @@ nav.storage,Storage,Armazenamento
 nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
+network.acceptedEnrollments,Accepting new members,Aceitando novos membros
+network.acceptedEnrollmentsHint,"Advertised in the public directory. With none selected the network shows as closed and nobody can start joining it from there. Current members are not affected.","Anunciado no diretório público. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue iniciar a entrada por lá. Os membros atuais não são afetados."
 network.accessAnyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
 network.accessAuthorized,Authorized people,Pessoas autorizadas
 network.accessLocalOnly,This machine only,Apenas esta máquina
@@ -1200,6 +1203,10 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
+network.enrollment.infer,Inference nodes,Nós de inferência
+network.enrollment.node,Network nodes,Nós da rede
+network.enrollmentClosed,Not accepting new members,Não aceita novos membros
+network.enrollmentOpen,Any role,Qualquer papel
 network.firewallEyebrow,Windows Firewall,Firewall do Windows
 network.firewallLastError,Windows did not confirm the requested firewall rules. You can try again or continue without QUIC.,O Windows não confirmou as regras de firewall solicitadas. Você pode tentar de novo ou continuar sem QUIC.
 network.firewallNeeded,Some POM ports are not allowed yet.,Algumas portas do POM ainda não estão liberadas.
@@ -1710,6 +1717,8 @@ publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
+publicNetworks.closed,Closed,Fechada
+publicNetworks.closedDetail,This network is not accepting new members right now.,Esta rede não está aceitando novos membros no momento.
 publicNetworks.country,Country,País
 publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
 publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório

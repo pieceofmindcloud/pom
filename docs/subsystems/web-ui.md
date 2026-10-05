@@ -278,7 +278,11 @@ does not get past that clip. The minimized choice is persisted in the browser.
   what the public catalog does not provide. The join button reuses the trust
   screen without a public network secret. On the row of the network this node
   already belongs to, Join is replaced by "Leave network" for a member and by
-  no action at all for the principal.
+  no action at all for the principal. A network whose `accepted_enrollments`
+  is empty shows a disabled "Closed" button; with a partial list Join stays
+  enabled and the wizard's first screen disables the roles that are not
+  accepted. The principal edits the list in Network settings ("Accepting new
+  members").
 - `/setup` -> `Setup`, the real first access wizard, **full screen** and with
   the access gate's identity (see "First access wizard" below).
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the

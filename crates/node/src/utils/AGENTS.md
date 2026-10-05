@@ -169,6 +169,13 @@ de rede. Ela é usada tanto pelo wizard quanto pela edição posterior e exige
 nome público, país e cidade quando a visibilidade é pública; redes locais e
 privadas podem deixar esses campos vazios.
 
+`NetworkSettings.accepted_enrollments` (`AcceptedEnrollments`, a list of
+`EnrollmentRole`: `node`, `infer`) is what the network advertises as open to
+new members. A missing field deserializes to every role, an empty list means
+closed. It is an advertisement for the public directory only: admission
+(`Network::public_peer_is_admitted`) does not read it and current members are
+never affected.
+
 ## Ligações
 
 - **`config`** é usado por quase tudo: `main.rs`, `network/identity.rs`

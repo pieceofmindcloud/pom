@@ -33,7 +33,10 @@ Per-file list:
   sistema, IP (da LAN, só no wizard local), CPU, RAM e GPU. The admin's
   preferred address is optional and never pre-filled: the network is found by
   the principal's key, and neither the trust root nor joining from Public
-  networks brings an IP bootstrap. Pastas, disco, reservas, senha (`admin`) e
+  networks brings an IP bootstrap. When the wizard was opened from Public
+  networks, `SetupState.joinAccepts` holds that network's
+  `accepted_enrollments` and `StartScreen` disables the `node`/`infer` roles
+  it does not accept (`admin` founds its own network and stays available). Pastas, disco, reservas, senha (`admin`) e
   workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
   com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
   `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
@@ -57,6 +60,10 @@ Per-file list:
   Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
   confirmation as Forget network in `NetworkSettings.tsx`); the principal
   (`authority_level === "primary"` from `useNode`) gets no action there.
+  A network advertising an empty `accepted_enrollments` gets a disabled
+  "Closed" button instead of Join; the list (or "Any role" when the record has
+  none) is shown in the details modal and travels to the wizard in the
+  `sessionStorage` handoff.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
@@ -66,7 +73,9 @@ Per-file list:
   leitura somente leitura com nome, descrição, regras, organização, canais,
   visibilidade e localização; um administrador autorizado pode editar o bloco
   completo. A edição grava no nó, propaga o envelope assinado aos peers e
-  atualiza a descoberta pública. País e cidade usam a referência de geografia
+  atualiza a descoberta pública. The editable block includes "Accepting new
+  members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
+  `lib/types.ts`); unchecking all of them advertises the network as closed. País e cidade usam a referência de geografia
   do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
   `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
   circuitos publicados, reservas de relé e hole punches - porque dois nós atrás

@@ -50,6 +50,7 @@ const queryMocks = vi.hoisted(() => ({
         geo_label: "com.br.curitiba.node",
         visibility: "private",
         access_policy: "authorized",
+        accepted_enrollments: ["node", "infer"],
         location: { latitude: -25.4, longitude: -49.2 },
       },
       can_edit: false,

@@ -16,6 +16,7 @@ import clsx from "clsx";
 import type { WizardStage, WizardStep } from "./setupWizardTypes";
 import { setupNextStage, setupPreviousStage, setupStepsFor, type SetupProfile } from "./setupWizardFlow";
 import { api } from "../lib/api";
+import type { EnrollmentRole } from "../lib/types";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Field, Input, Select } from "../components/ui";
@@ -80,6 +81,7 @@ interface PublicJoinPayload {
   cluster_id?: string;
   trust_document?: string;
   access_policy?: AccessPolicy;
+  accepted_enrollments?: EnrollmentRole[];
   directory_replicas?: string[];
 }
 
@@ -141,6 +143,12 @@ interface AutoDiscoveryStatus {
 
 export interface SetupState {
   profile: SetupProfile | null;
+  /**
+   * Roles the public network picked in the directory advertises as open, or
+   * `null` when the wizard was not opened from there. Only narrows the role
+   * choice on the first screen; it is not sent to the node.
+   */
+  joinAccepts: EnrollmentRole[] | null;
   publicDirectory: string;
   connectionKey: string;
   advertiseAddr: string;
@@ -216,6 +224,7 @@ function gigabytes(mb: number | null | undefined): string | null {
 
 const INITIAL: SetupState = {
   profile: null,
+  joinAccepts: null,
   publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
@@ -304,6 +313,7 @@ export function Setup() {
       const network = JSON.parse(raw) as PublicJoinPayload;
       setSetup((current) => ({
         ...current,
+        joinAccepts: network.accepted_enrollments ?? null,
         publicDirectory: network.directory_replicas?.join(", ") ?? current.publicDirectory,
         trustDocument: network.trust_document ?? "",
         trustFingerprint: "",
@@ -526,17 +536,21 @@ export function StartScreen({ setup, hardware, update, t }: { setup: SetupState;
       <div className="grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label={t("firstRun.startTitle")}>
         {roles.map((role, index) => {
           const selected = setup.profile === role.id;
+          // `admin` founds a network of its own, so the joined one never closes it.
+          const notAccepted = role.id !== "admin" && setup.joinAccepts !== null && !setup.joinAccepts.includes(role.id);
           return (
             <motion.button
               key={role.id}
               type="button"
               role="radio"
               aria-checked={selected}
+              disabled={notAccepted}
+              title={notAccepted ? t("firstRun.roleNotAccepted") : undefined}
               onClick={() => update({ profile: role.id })}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.08 * index, duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-              className={clsx("pom-setup-choice", selected && "is-selected")}
+              className={clsx("pom-setup-choice", selected && "is-selected", notAccepted && "cursor-not-allowed opacity-45")}
             >
               <span className="pom-setup-choice-icon">{role.icon}</span>
               <span className="mt-3 block font-display text-[0.95rem] font-semibold text-fg">{role.title}</span>

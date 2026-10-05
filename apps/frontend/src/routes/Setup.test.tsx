@@ -14,12 +14,14 @@ import {
   JoinScreen,
   LocalDiscoveryPanel,
   NetworkScreen,
+  StartScreen,
   TrustFields,
   type SetupState,
 } from "./Setup";
 
 const base: SetupState = {
   profile: "infer",
+  joinAccepts: null,
   publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
@@ -113,6 +115,21 @@ describe("what the wizard requires", () => {
     expect(canContinue("setup-profile", { ...base, profile: null })).toBe(false);
     expect(canContinue("setup-profile", { ...base, profile: "admin", nodeName: " " })).toBe(false);
     expect(canContinue("setup-profile", { ...base, profile: "admin" })).toBe(true);
+  });
+});
+
+describe("StartScreen", () => {
+  it("only offers the roles the public network being joined accepts", () => {
+    render(
+      <LocaleProvider initialLocale="en">
+        <StartScreen setup={{ ...base, profile: null, joinAccepts: ["infer"] }} hardware={null} update={() => undefined} t={(key) => key} />
+      </LocaleProvider>,
+    );
+    const role = (name: string) => screen.getByRole("radio", { name: new RegExp(name) }) as HTMLButtonElement;
+    expect(role("setupWizard.node").disabled).toBe(true);
+    expect(role("setupWizard.infer").disabled).toBe(false);
+    // Founding a network of one's own is never closed by the one being joined.
+    expect(role("setupWizard.admin").disabled).toBe(false);
   });
 });
 

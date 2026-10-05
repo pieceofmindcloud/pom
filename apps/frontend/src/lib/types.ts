@@ -426,6 +426,10 @@ export interface NodeInfo {
 export type NetworkVisibility = "local" | "private" | "public";
 export type NetworkAccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
 
+/** A role a new machine can enroll with; `admin` is never an enrollment. */
+export type EnrollmentRole = "node" | "infer";
+export const ENROLLMENT_ROLES: EnrollmentRole[] = ["node", "infer"];
+
 export interface NetworkLocation {
   latitude: number;
   longitude: number;
@@ -444,6 +448,8 @@ export interface NetworkSettings {
   geo_label: string;
   visibility: NetworkVisibility;
   access_policy: NetworkAccessPolicy;
+  /** Roles the network advertises as open to new members; empty means closed. */
+  accepted_enrollments: EnrollmentRole[];
   location: NetworkLocation | null;
 }
 

@@ -102,6 +102,9 @@ pub(crate) struct PublicDirectoryNetwork {
     pub city: String,
     pub geo_label: String,
     pub access_policy: crate::config::NetworkAccessPolicy,
+    /// Enrollment roles the publisher advertises as open; empty means closed.
+    #[serde(default)]
+    pub accepted_enrollments: crate::config::AcceptedEnrollments,
     pub location: Option<crate::config::NetworkLocation>,
     #[serde(default)]
     pub relay_hints: Vec<String>,
@@ -358,6 +361,7 @@ impl PublicDirectoryNetwork {
             city: "Curitiba".to_string(),
             geo_label: "br.curitiba".to_string(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            accepted_enrollments: Default::default(),
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: vec!["https://directory.example".to_string()],

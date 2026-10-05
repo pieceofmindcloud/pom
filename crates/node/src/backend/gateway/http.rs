@@ -163,6 +163,10 @@ pub(crate) struct PublicNetworkView {
     pub city: String,
     pub geo_label: String,
     pub access_policy: crate::config::NetworkAccessPolicy,
+    /// Enrollment roles the network advertises as open; empty means it is not
+    /// accepting new members and the directory disables its join button.
+    #[serde(default)]
+    pub accepted_enrollments: crate::config::AcceptedEnrollments,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
     #[serde(default)]
@@ -227,6 +231,7 @@ fn directory_network_from_view(
         city: view.city.clone(),
         geo_label: view.geo_label.clone(),
         access_policy: view.access_policy,
+        accepted_enrollments: view.accepted_enrollments.clone(),
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
         directory_replicas: view.directory_replicas.clone(),
@@ -256,6 +261,7 @@ fn view_from_directory_record(
         city: network.city,
         geo_label: network.geo_label,
         access_policy: network.access_policy,
+        accepted_enrollments: network.accepted_enrollments,
         location: network.location,
         discovered_via: "directory".to_string(),
         directory_replicas: network.directory_replicas,
@@ -576,6 +582,7 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         city: network.city.clone(),
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
+        accepted_enrollments: network.accepted_enrollments.clone(),
         location: network
             .location
             .clone()

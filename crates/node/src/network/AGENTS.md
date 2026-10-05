@@ -209,7 +209,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   configuráveis e não autoridade. O registro assinado inclui descrição,
   regras e canais em Markdown junto do convite, e `relay_hints` (`pk:` keys
   only). The record carries no address: the network is found by the
-  publisher's key. Um nó privado consulta esses ingressos por saída, mas não usa seu
+  publisher's key. It also carries `accepted_enrollments`, the enrollment roles
+  the publisher advertises as open (empty = not accepting new members); the
+  field is signed with the rest of the record. Um nó privado consulta esses ingressos por saída, mas não usa seu
   swarm privado como descoberta pública.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
   `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o

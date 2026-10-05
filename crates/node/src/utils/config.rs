@@ -84,6 +84,41 @@ impl Default for NetworkAccessPolicy {
     }
 }
 
+/// A role a new machine can enroll with. `admin` is absent on purpose: it is
+/// never an enrollment, administrative authority comes from the grant chain.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum EnrollmentRole {
+    Node,
+    Infer,
+}
+
+/// The enrollment roles a network currently advertises as open. Empty means
+/// the network is not accepting new members. The default is every role, so a
+/// config written before the field existed stays open.
+///
+/// This is an advertisement read by the public directory, not admission:
+/// `Network::public_peer_is_admitted` does not consult it, and members that
+/// already joined are never affected by a change here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct AcceptedEnrollments(pub Vec<EnrollmentRole>);
+
+impl Default for AcceptedEnrollments {
+    fn default() -> Self {
+        Self(vec![EnrollmentRole::Node, EnrollmentRole::Infer])
+    }
+}
+
+impl AcceptedEnrollments {
+    /// Sorted and without repeats, so equal sets serialize (and sign) equally.
+    pub fn normalized(mut self) -> Self {
+        self.0.sort();
+        self.0.dedup();
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkLocation {
     pub latitude: f64,
@@ -121,6 +156,9 @@ pub struct NetworkSettings {
     pub visibility: NetworkVisibility,
     #[serde(default)]
     pub access_policy: NetworkAccessPolicy,
+    /// Which enrollment roles the network advertises as open right now.
+    #[serde(default)]
+    pub accepted_enrollments: AcceptedEnrollments,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<NetworkLocation>,
 }
@@ -1353,6 +1391,29 @@ mod tests {
         let error = validate_network_settings(&settings)
             .expect_err("uma rede pública sem localização não deve ser salva");
         assert!(error.to_string().contains("país e cidade"));
+    }
+
+    #[test]
+    fn accepted_enrollments_default_to_open_and_an_empty_list_closes_the_network() {
+        let untouched: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            untouched.accepted_enrollments.0,
+            vec![EnrollmentRole::Node, EnrollmentRole::Infer]
+        );
+
+        let closed: NetworkSettings =
+            serde_json::from_str(r#"{"accepted_enrollments":[]}"#).unwrap();
+        assert!(closed.accepted_enrollments.0.is_empty());
+
+        let only_infer = AcceptedEnrollments(vec![
+            EnrollmentRole::Infer,
+            EnrollmentRole::Infer,
+        ])
+        .normalized();
+        assert_eq!(
+            serde_json::to_value(&only_infer).unwrap(),
+            serde_json::json!(["infer"])
+        );
     }
 
     #[test]

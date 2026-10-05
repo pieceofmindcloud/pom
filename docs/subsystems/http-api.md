@@ -61,7 +61,11 @@ last):
 - **Public networks** (`gateway/http.rs`, no authentication): `GET
   /api/public/network` (the local network, when public) and `GET
   /api/public/networks` (local, directory and pkarr candidates) return
-  `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. `GET
+  `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. The
+  view includes `accepted_enrollments`, the list of enrollment roles (`node`,
+  `infer`) the network advertises as open; an empty list means it is not
+  accepting new members. It is edited by the principal through `POST
+  /api/ui/network/settings` and is advisory - no route enforces it. `GET
   /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
   node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
   only accepts keys the node already lists (404 otherwise) and caches the answer

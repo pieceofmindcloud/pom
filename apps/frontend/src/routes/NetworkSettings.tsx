@@ -45,7 +45,8 @@ import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useW
 import { useGeoReference } from "../lib/queries";
 import { networkStats } from "../lib/networkStats";
 import { useToast } from "../lib/toast";
-import type { AdminNode, ClusterView, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
+import { ENROLLMENT_ROLES } from "../lib/types";
+import type { AdminNode, ClusterView, EnrollmentRole, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings({ participantsOnly = false }: { participantsOnly?: boolean }) {
@@ -557,6 +558,20 @@ function NetworkInfoPanel({
               <option value="local_only">{t("network.accessLocalOnly")}</option>
             </Select>
           </Field>
+          <Field label={t("network.acceptedEnrollments")} hint={t("network.acceptedEnrollmentsHint")} className="md:col-span-2">
+            <div className="flex flex-wrap gap-x-5 gap-y-2">
+              {ENROLLMENT_ROLES.map((role) => (
+                <label key={role} className="flex items-center gap-2 text-sm text-fg">
+                  <input
+                    type="checkbox"
+                    checked={draft.accepted_enrollments.includes(role)}
+                    onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })}
+                  />
+                  {t(`network.enrollment.${role}`)}
+                </label>
+              ))}
+            </div>
+          </Field>
           <Field label={t("network.country")} hint={publicNetwork ? t("network.countryRequired") : undefined}>
             <Select required={publicNetwork} value={draft.country_code} onChange={(event) => {
               const country = geo?.countries.find((item) => item.code === event.target.value);
@@ -592,6 +607,7 @@ function NetworkInfoPanel({
           <KeyValue label={t("network.channels")}>{draft.channels ? <Markdown>{draft.channels}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
           <KeyValue label={t("network.visibility")}><span>{visibilityLabel(draft.visibility, t)}</span></KeyValue>
           <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>
+          <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>
           <KeyValue label={t("network.country")}><span>{draft.country_name || t("network.notProvided")}</span></KeyValue>
           <KeyValue label={t("network.city")}><span>{draft.city || t("network.notProvided")}</span></KeyValue>
           {draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
@@ -604,6 +620,11 @@ function NetworkInfoPanel({
 
 function visibilityLabel(value: NetworkSettingsData["visibility"], t: (key: string, values?: Record<string, string | number>) => string) {
   return t(`network.visibility${value[0].toUpperCase()}${value.slice(1)}`);
+}
+
+/** "Not accepting new members" for an empty list, the role names otherwise. */
+export function acceptedEnrollmentsLabel(roles: EnrollmentRole[], t: (key: string) => string) {
+  return roles.length === 0 ? t("network.enrollmentClosed") : roles.map((role) => t(`network.enrollment.${role}`)).join(", ");
 }
 
 function accessLabel(value: NetworkSettingsData["access_policy"], t: (key: string, values?: Record<string, string | number>) => string) {

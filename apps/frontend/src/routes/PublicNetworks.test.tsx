@@ -212,4 +212,37 @@ describe("PublicNetworks", () => {
     expect(within(row).queryByRole("button", { name: "Sair da rede" })).toBeNull();
     expect(within(other).getByRole("button", { name: "Entrar na rede" })).toBeTruthy();
   });
+
+  it("disables joining a network that advertises no accepted enrollment", async () => {
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") {
+        return Promise.resolve([
+          { ...networks[0], accepted_enrollments: [] },
+          { ...networks[1], accepted_enrollments: ["infer"] },
+          networks[2],
+        ]);
+      }
+      if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+      return Promise.reject(new Error("no local network"));
+    });
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const closed = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    const button = within(closed).getByRole("button", { name: "Fechada" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(within(closed).queryByRole("button", { name: "Entrar na rede" })).toBeNull();
+    // A partial list and a record without the list both stay joinable.
+    for (const name of ["Rede São Paulo", "Rede Lisboa"]) {
+      const row = screen.getByText(name).closest("tr")!;
+      expect((within(row).getByRole("button", { name: "Entrar na rede" }) as HTMLButtonElement).disabled).toBe(false);
+    }
+
+    fireEvent.click(screen.getByText("Rede São Paulo"));
+    const dialog = await screen.findByRole("dialog", { name: "Detalhes de Rede São Paulo" });
+    expect(within(dialog).getByText("Nós de inferência")).toBeTruthy();
+  });
 });

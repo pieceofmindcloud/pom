@@ -2504,6 +2504,7 @@ mod replicated_admin_logs_tests {
             city: "Curitiba".into(),
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            accepted_enrollments: Default::default(),
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: Vec::new(),

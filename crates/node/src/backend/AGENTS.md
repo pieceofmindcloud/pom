@@ -1133,6 +1133,9 @@ faz o download autenticado do blob persistido.
   `GET /api/public/network(s)` exposes public network metadata, including the
   signed trust document, Markdown description/rules/channels, the publisher
   `pk:` key and `relay_hints` for the no-secret join flow - never an address.
+  The view also carries `accepted_enrollments` (roles open to new members;
+  empty = closed), which the directory screen uses to disable joining. It is
+  advisory: no route refuses a join because of it.
   `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
   through pkarr on the node and answers only `direct|relayed|unresolved` plus a
   relay count (30 s cache; keys the node does not list get 404). `GET/POST

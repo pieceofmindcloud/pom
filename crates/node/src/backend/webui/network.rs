@@ -127,6 +127,7 @@ async fn apply_network_settings_with_key(
     settings.country_code = settings.country_code.trim().to_ascii_uppercase();
     settings.country_name = settings.country_name.trim().to_string();
     settings.city = settings.city.trim().to_string();
+    settings.accepted_enrollments = settings.accepted_enrollments.normalized();
     if settings.visibility == NetworkVisibility::Public {
         settings.geo_label = config::geo_network_label(
             &settings.country_code,

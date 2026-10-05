@@ -10,6 +10,7 @@ import { usePublicLocator, type PublicLocator } from "../lib/publicLocator";
 import { useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
+import type { EnrollmentRole } from "../lib/types";
 
 interface PublicNetwork {
   cluster_id: string;
@@ -28,6 +29,8 @@ interface PublicNetwork {
   city: string;
   geo_label: string;
   access_policy: "authorized" | "anyone_with_anchor" | "local_only";
+  /** Roles the network advertises as open; empty means it takes no new members. */
+  accepted_enrollments?: EnrollmentRole[];
   location: { latitude: number; longitude: number; accuracy_m?: number } | null;
   discovered_via: string;
   directory_replicas?: string[];
@@ -207,7 +210,8 @@ function NetworkRow({ network, distance, stats, membership, joining, leaving, on
   const location = [network.country_name || network.country_code, network.city].filter(Boolean).join(" / ") || unavailable;
   const models = stats?.models.length ? stats.models.join(", ") : unavailable;
   const reachability = usePublicLocator(network.publisher_key, refreshKey);
-  return <tr className="align-top transition-colors hover:bg-raised/45"><td className="max-w-[15rem] px-4 py-3.5"><button type="button" className="group text-left" onClick={onDetails} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t("publicNetworks.distance", { value: distance.toFixed(0) })}</span>}<p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[15rem] break-all px-4 py-3.5 font-mono text-[0.68rem] text-muted">{network.geo_label || unavailable}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.averageLatencyMs != null ? `${stats.averageLatencyMs.toFixed(1)} ms` : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5">{membership === "none" ? <Button size="sm" variant="primary" loading={joining} disabled={joining} onClick={(event) => { event.stopPropagation(); onJoin(); }} icon={<ArrowRight className="h-3.5 w-3.5" />}>{t("publicNetworks.join")}</Button> : membership === "member" ? <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={(event) => { event.stopPropagation(); onLeave(); }} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button> : null}</td></tr>;
+  const closed = network.accepted_enrollments?.length === 0;
+  return <tr className="align-top transition-colors hover:bg-raised/45"><td className="max-w-[15rem] px-4 py-3.5"><button type="button" className="group text-left" onClick={onDetails} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t("publicNetworks.distance", { value: distance.toFixed(0) })}</span>}<p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[15rem] break-all px-4 py-3.5 font-mono text-[0.68rem] text-muted">{network.geo_label || unavailable}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.averageLatencyMs != null ? `${stats.averageLatencyMs.toFixed(1)} ms` : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5">{membership === "none" ? <Button size="sm" variant="primary" loading={joining} disabled={joining || closed} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={(event) => { event.stopPropagation(); onJoin(); }} icon={<ArrowRight className="h-3.5 w-3.5" />}>{t(closed ? "publicNetworks.closed" : "publicNetworks.join")}</Button> : membership === "member" ? <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={(event) => { event.stopPropagation(); onLeave(); }} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button> : null}</td></tr>;
 }
 
 function PublicNetworkDetails({ network, onClose, t }: { network: PublicNetwork | null; onClose: () => void; t: (key: string, values?: Record<string, string | number>) => string }) {
@@ -222,6 +226,7 @@ function PublicNetworkDetails({ network, onClose, t }: { network: PublicNetwork 
           <DetailBlock label={t("network.organization")}><span>{value(network.organization)}</span></DetailBlock>
           <DetailBlock label={t("network.visibility")}><span>{t("network.visibilityPublic")}</span></DetailBlock>
           <DetailBlock label={t("network.accessPolicy")}><span>{accessPolicyLabel(network.access_policy, t)}</span></DetailBlock>
+          <DetailBlock label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(network.accepted_enrollments, t)}</span></DetailBlock>
           <DetailBlock label={t("network.country")}><span>{value(network.country_name || network.country_code)}</span></DetailBlock>
           <DetailBlock label={t("network.city")}><span>{value(network.city)}</span></DetailBlock>
           <DetailBlock label={t("publicNetworks.fingerprint")}><span className="break-all font-mono text-xs">{value(network.fingerprint)}</span></DetailBlock>
@@ -248,6 +253,12 @@ function PublicNetworkDetails({ network, onClose, t }: { network: PublicNetwork 
 
 function DetailBlock({ label, children }: { label: string; children: ReactNode }) {
   return <div className="min-w-0"><div className="eyebrow mb-1">{label}</div><div className="min-w-0 break-words text-sm text-fg">{children}</div></div>;
+}
+
+/** A record without the list predates it and is open to every role. */
+function acceptedEnrollmentsLabel(roles: EnrollmentRole[] | undefined, t: (key: string) => string) {
+  if (!roles) return t("network.enrollmentOpen");
+  return roles.length === 0 ? t("network.enrollmentClosed") : roles.map((role) => t(`network.enrollment.${role}`)).join(", ");
 }
 
 function accessPolicyLabel(value: PublicNetwork["access_policy"], t: (key: string) => string) {

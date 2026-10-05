@@ -719,9 +719,17 @@ impl Config {
         self.setup_model = None;
     }
 
-    /// Inference port this node should use, falling back to the default.
+    /// Inference port this node should use. Without one configured it follows
+    /// the gateway port (8080 -> 8181, as before): nodes that share a host
+    /// network, each with its own gateway port, then each bind their own
+    /// inference port instead of all taking 8181 - with two of them serving a
+    /// model, the second one could not start ("Address already in use").
     pub fn inference_port_or_default(&self) -> u16 {
-        self.inference_port.unwrap_or(DEFAULT_INFERENCE_PORT)
+        self.inference_port.unwrap_or_else(|| {
+            self.gateway_port
+                .checked_add(DEFAULT_INFERENCE_PORT - default_gateway_port())
+                .unwrap_or(DEFAULT_INFERENCE_PORT)
+        })
     }
 
     pub fn active_api_key(&self) -> Option<&ApiKey> {
@@ -1010,6 +1018,17 @@ fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_default_inference_port_follows_the_gateway_port() {
+        let mut config: Config =
+            serde_json::from_value(serde_json::json!({"profile": "admin", "connection_key": "k", "gateway_port": 8080})).unwrap();
+        assert_eq!(config.inference_port_or_default(), 8181, "the single-node default is unchanged");
+        config.gateway_port = 8082;
+        assert_eq!(config.inference_port_or_default(), 8183);
+        config.inference_port = Some(9000);
+        assert_eq!(config.inference_port_or_default(), 9000, "a configured port wins");
+    }
+
     /// A peer address with no port is what produces `invalid port value` — the
     /// resolver splits on the last colon and finds hex where a port belongs.
     /// Measured, not assumed: an unbracketed IPv6 *with* a port resolves fine.

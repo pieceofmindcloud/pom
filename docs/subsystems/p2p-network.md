@@ -1402,6 +1402,56 @@ notifications"). With the network Chat off, the notice is refused like any other
 action. An older peer does not know the variant and refuses the frame (first
 version policy).
 
+### 6.1 Lobby: talking to a network before joining it
+
+A public network can open the `lobby` room of its Chat to machines that are
+**not** members, so an admin can talk to a candidate before admitting it. The
+code is `network/network_lobby.rs`; the switch is `network.lobby_chat`, off by
+default, and it only takes effect on a public network with the network Chat on
+(`NetworkChat::lobby_enabled`). The public directory record and
+`PublicNetworkView` carry `lobby_chat` so the directory only offers the chat
+where it will be answered.
+
+A candidate has no API key, no announce and no admission, so the star's
+credential does not apply. Its own request/response protocol is
+`/pom/network-lobby/1.0.0`, and it is **pull only**:
+
+- `Post { card, message_id, text }` says something; `Fetch { card }` reads.
+  Both are answered with the last 50 text messages of the lobby room, each
+  flagged `member` or not. The principal never opens a stream to a candidate
+  and keeps no session, only a presence entry that expires 90 s after the last
+  request - the candidate's poll is what keeps it listed.
+- Nothing in the frame names the sender. The principal derives the candidate's
+  `node_id` from the `PeerId` the Noise handshake proved
+  (`node_id_of_peer`: `SHA256` of the Ed25519 key inside it).
+- A candidate's text becomes an ordinary `ChatAction::Text` in room `lobby`,
+  stamped with the principal's clock and with a `message_id` namespaced by the
+  sender, persisted and relayed to the members by the existing star. Members
+  answer through the normal authenticated path with `room_id: "lobby"`.
+- `card` is the candidate's self-declared hardware (hostname, OS, CPU count,
+  RAM, GPUs with VRAM), clamped on both ends. The principal relays it to the
+  members as `ChatAction::LobbyPresence` when the candidate appears, when the
+  card changes and every 45 s while present; it is kept in memory only, and a
+  member's API key can never originate one (`lobby_presence_not_allowed`).
+
+Because the frame is accepted before any credential, the bounds are tight and
+separate from the Chat's: 64 KiB per frame, 2 KiB of text, text only, 4
+requests per second and 6 texts per 30 s per candidate, and at most 64
+candidates tracked. A blocked `node_id` and a current member are refused
+(`node_blocked`, `already_member`); with the lobby off every request answers
+`lobby_disabled`. What a candidate reads is the lobby room only - the
+`network` room, files and direct messages never leave the members.
+
+The candidate's side is `LobbyClient`: a small swarm of its own over the node
+key, dial only (TCP, QUIC, relay client, DCuTR), that resolves the publisher's
+`pk:` key through pkarr at dial time. It is separate from the cluster swarm on
+purpose, so it also runs in setup mode, where the node has no cluster yet. It
+is started on first use (`network_lobby::client`). End to end coverage of the
+transport, the codec and the identity derivation is
+`network_lobby::tests::a_candidate_reaches_a_principal_and_is_named_by_its_transport_key`;
+the principal's handler (`discovery.rs::answer_lobby_request`) has no test
+with a live cluster swarm.
+
 ## 7. Defects noted
 
 - **DEFECT NOTED: bitswap is an orphan protocol** - `bitswap_behaviour` is in

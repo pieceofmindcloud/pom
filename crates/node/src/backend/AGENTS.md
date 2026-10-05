@@ -1135,7 +1135,14 @@ faz o download autenticado do blob persistido.
   `pk:` key and `relay_hints` for the no-secret join flow - never an address.
   The view also carries `accepted_enrollments` (roles open to new members;
   empty = closed), which the directory screen uses to disable joining. It is
-  advisory: no route refuses a join because of it.
+  advisory: no route refuses a join because of it. `lobby_chat` says the
+  network answers lobby chat from non-members right now.
+  `webui/lobby.rs` is the candidate's side of the lobby over HTTP
+  (`/api/ui/network-chat/lobby` behind the operator session, `/api/setup/lobby`
+  on the setup router) and `setup_public_networks`, the directory-only listing
+  for the wizard, built on `gateway::directory_public_networks`. The local
+  hardware card is sampled once a minute, not per poll. `network_chat_snapshot`
+  takes `?room=lobby` and always reports `lobbyEnabled` and `lobbyGuests`.
   `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
   through pkarr on the node and answers only `direct|relayed|unresolved` plus a
   relay count (30 s cache; keys the node does not list get 404). `GET/POST

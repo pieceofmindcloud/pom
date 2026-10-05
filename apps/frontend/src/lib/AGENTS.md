@@ -123,6 +123,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   this is a capability slice, not a general peer list.
   `useNetworkChat` polls the authenticated network-chat snapshot so the Sidebar
   can show unread messages while the chat route está desmontada.
+  It takes the room (`"network"` by default, `"lobby"` for the room that
+  non-members read); only the main room uses the bare `keys.networkChat`
+  entry the Sidebar counter and the plugin bridge share.
   `useClusterLogs` lê o log de processo da réplica local do admin,
   opcionalmente filtrado por `deploy_id`, e atualiza a consola a cada segundo.
   `useGeoReference` consulta `/api/ui/network/geo-reference` para preencher os

@@ -159,6 +159,12 @@ pub struct NetworkSettings {
     /// Which enrollment roles the network advertises as open right now.
     #[serde(default)]
     pub accepted_enrollments: AcceptedEnrollments,
+    /// Opens the `lobby` room of the network Chat to machines that are not
+    /// members, so an admin can talk to a candidate before admitting it
+    /// (`network/network_lobby.rs`). Only takes effect on a public network
+    /// with the network Chat on.
+    #[serde(default)]
+    pub lobby_chat: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<NetworkLocation>,
 }

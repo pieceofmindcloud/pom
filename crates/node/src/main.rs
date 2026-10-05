@@ -129,6 +129,8 @@ mod network;
 mod network_chat;
 #[path = "network/network_chat_policy.rs"]
 mod network_chat_policy;
+#[path = "network/network_lobby.rs"]
+mod network_lobby;
 #[cfg(test)]
 #[path = "network/network_chat_tests.rs"]
 mod network_chat_tests;
@@ -1044,6 +1046,14 @@ async fn start_setup_mode(
             axum::routing::post(webui::search_setup_auto_discovery),
         )
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
+        .route(
+            "/api/setup/public-networks",
+            get(webui::setup_public_networks),
+        )
+        .route(
+            "/api/setup/lobby",
+            get(webui::setup_lobby_fetch).post(webui::setup_lobby_post),
+        )
         .merge(crate::webapp::routes())
         .with_state(webui::SetupState {
             config,

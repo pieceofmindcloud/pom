@@ -176,6 +176,10 @@ closed. It is an advertisement for the public directory only: admission
 (`Network::public_peer_is_admitted`) does not read it and current members are
 never affected.
 
+`NetworkSettings.lobby_chat` opens the lobby room of the network Chat to
+machines that are not members (`network/network_lobby.rs`). It is off by
+default and only takes effect on a public network with the network Chat on.
+
 ## Ligações
 
 - **`config`** é usado por quase tudo: `main.rs`, `network/identity.rs`

@@ -179,4 +179,40 @@ describe("NetworkChat", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(participants?.className).toContain("block");
   });
+
+  it("opens the lobby room with the candidates' hardware and sends to it", async () => {
+    mocks.get.mockResolvedValue({
+      ...enabledSnapshot,
+      lobbyEnabled: true,
+      lobbyGuests: [{
+        nodeId: "candidate-node-id",
+        card: { hostname: "forasteiro", os: "linux", arch: "x86_64", cpu_count: 16, ram_total_mb: 65536, gpus: [{ name: "RTX 5060 Ti", vram_total_mb: 16384 }] },
+      }],
+    });
+    mount();
+
+    fireEvent.click(await screen.findByRole("tab", { name: /Lobby/ }));
+    expect(await screen.findByTestId("lobby-card-candidate-node-id")).toBeTruthy();
+    expect(screen.getByText("forasteiro")).toBeTruthy();
+    expect(screen.getByText("RTX 5060 Ti")).toBeTruthy();
+    expect(screen.getByText("16 GB")).toBeTruthy();
+    // No file goes to a room that non-members read.
+    expect(screen.queryByRole("button", { name: "Anexar arquivo" })).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText("Escreva para o lobby…"), { target: { value: "Bem-vindo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith(expect.objectContaining({
+        action: expect.objectContaining({ kind: "text", room_id: "lobby", text: "Bem-vindo" }),
+      }));
+    });
+    // Typing is a signal of the members' room only.
+    expect(mocks.post.mock.calls.every(([request]) => request.action.kind !== "typing")).toBe(true);
+  });
+
+  it("shows no room switch while the network has no lobby", async () => {
+    mount();
+    expect(await screen.findByText("Olá da rede")).toBeTruthy();
+    expect(screen.queryByRole("tab")).toBeNull();
+  });
 });

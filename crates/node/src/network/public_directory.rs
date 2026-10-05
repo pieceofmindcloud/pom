@@ -105,6 +105,9 @@ pub(crate) struct PublicDirectoryNetwork {
     /// Enrollment roles the publisher advertises as open; empty means closed.
     #[serde(default)]
     pub accepted_enrollments: crate::config::AcceptedEnrollments,
+    /// The publisher answers lobby requests from non-members.
+    #[serde(default)]
+    pub lobby_chat: bool,
     pub location: Option<crate::config::NetworkLocation>,
     #[serde(default)]
     pub relay_hints: Vec<String>,
@@ -362,6 +365,7 @@ impl PublicDirectoryNetwork {
             geo_label: "br.curitiba".to_string(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
+            lobby_chat: false,
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: vec!["https://directory.example".to_string()],

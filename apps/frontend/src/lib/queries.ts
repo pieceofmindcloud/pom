@@ -51,6 +51,7 @@ import type {
   Job,
   NodeInfo,
   NetworkInfoView,
+  NetworkChatRoom,
   NetworkChatSnapshot,
   GeoReferenceResponse,
   NetworkOffer,
@@ -400,10 +401,12 @@ export function useCluster() {
  * Keeping one query source means a message received off the chat screen is
  * visible to the menu without mounting the chat route.
  */
-export function useNetworkChat() {
+export function useNetworkChat(room: NetworkChatRoom = "network") {
   return useQuery({
-    queryKey: keys.networkChat,
-    queryFn: () => api.get<NetworkChatSnapshot>("/api/ui/network-chat"),
+    // The main room keeps the bare key: the menu's unread counter and the
+    // plugin bridge share that cache entry.
+    queryKey: room === "network" ? keys.networkChat : [...keys.networkChat, room],
+    queryFn: () => api.get<NetworkChatSnapshot>(room === "network" ? "/api/ui/network-chat" : `/api/ui/network-chat?room=${room}`),
     refetchInterval: 1200,
     retry: false,
   });

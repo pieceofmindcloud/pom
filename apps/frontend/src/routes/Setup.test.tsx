@@ -14,6 +14,7 @@ import {
   JoinScreen,
   LocalDiscoveryPanel,
   NetworkScreen,
+  PublicDirectoryPanel,
   StartScreen,
   TrustFields,
   type SetupState,
@@ -155,6 +156,40 @@ describe("NetworkScreen", () => {
     expect(screen.queryByText("setupWizard.country")).toBeNull();
     fireEvent.click(screen.getByText("firstRun.public"));
     await waitFor(() => expect(screen.getByText("setupWizard.country")).toBeTruthy());
+  });
+});
+
+describe("PublicDirectoryPanel", () => {
+  const listed = {
+    cluster_id: "curitiba",
+    name: "Rede Curitiba",
+    fingerprint: "fp",
+    publisher_key: "pk:curitiba",
+    trust_document: "{}",
+    organization: "Equipe Sul",
+    country_name: "Brasil",
+    country_code: "BR",
+    city: "Curitiba",
+  };
+
+  it("lists the directory in the wizard, with chat only where a lobby is open", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue([
+      { ...listed, lobby_chat: true },
+      { ...listed, cluster_id: "lisboa", name: "Rede Lisboa", fingerprint: "fp2", accepted_enrollments: [] },
+    ] as never);
+    const onUse = vi.fn();
+    wrap(<PublicDirectoryPanel setup={{ ...base, profile: "node", publicDirectory: "https://dir.example" }} onUse={onUse} t={t} />);
+
+    const open = (await screen.findByText("Rede Curitiba")).closest("div.flex")!;
+    // The setup router has no session, and the typed replicas ride along.
+    expect(get).toHaveBeenCalledWith("/api/setup/public-networks?replicas=https%3A%2F%2Fdir.example", { auth: false });
+    expect(open.querySelectorAll("button").length).toBe(2);
+    fireEvent.click(screen.getByRole("button", { name: "firstRun.publicDirectoryUse" }));
+    expect(onUse).toHaveBeenCalledWith(expect.objectContaining({ cluster_id: "curitiba" }));
+
+    const closed = screen.getByRole("button", { name: "publicNetworks.closed" }) as HTMLButtonElement;
+    expect(closed.disabled).toBe(true);
+    expect(screen.getAllByRole("button", { name: /publicNetworks.chat/ }).length).toBe(1);
   });
 });
 

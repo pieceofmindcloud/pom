@@ -36,7 +36,12 @@ Per-file list:
   networks brings an IP bootstrap. When the wizard was opened from Public
   networks, `SetupState.joinAccepts` holds that network's
   `accepted_enrollments` and `StartScreen` disables the `node`/`infer` roles
-  it does not accept (`admin` founds its own network and stays available). Pastas, disco, reservas, senha (`admin`) e
+  it does not accept (`admin` founds its own network and stays available).
+  `PublicDirectoryPanel`, in the join step, lists the federated directory from
+  `GET /api/setup/public-networks` (the typed `publicDirectory` replicas ride
+  along): "Join" fills the trust fields like the manual block and clears any
+  connection key, and "Chat" opens `LobbyChat` against `/api/setup/lobby`
+  without a session. Pastas, disco, reservas, senha (`admin`) e
   workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
   com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
   `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
@@ -63,7 +68,8 @@ Per-file list:
   A network advertising an empty `accepted_enrollments` gets a disabled
   "Closed" button instead of Join; the list (or "Any role" when the record has
   none) is shown in the details modal and travels to the wizard in the
-  `sessionStorage` handoff.
+  `sessionStorage` handoff. A network with `lobby_chat` also gets "Chat", which
+  opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
@@ -75,7 +81,9 @@ Per-file list:
   completo. A edição grava no nó, propaga o envelope assinado aos peers e
   atualiza a descoberta pública. The editable block includes "Accepting new
   members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
-  `lib/types.ts`); unchecking all of them advertises the network as closed. País e cidade usam a referência de geografia
+  `lib/types.ts`); unchecking all of them advertises the network as closed.
+  "Lobby chat" (`lobby_chat`) lets machines that are not members talk to the
+  network; the checkbox is disabled unless the network is public. País e cidade usam a referência de geografia
   do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
   `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
   circuitos publicados, reservas de relé e hole punches - porque dois nós atrás
@@ -242,7 +250,11 @@ Per-file list:
   `PageHeader` pattern instead of a rounded outer panel. No
   celular, participantes ficam ocultos até o botão `Ver online` ser acionado;
   a entrada da Sidebar recebe o contador de mensagens não lidas e a abertura
-  da rota marca o snapshot atual como lido.
+  da rota marca o snapshot atual como lido. When the snapshot says
+  `lobbyEnabled`, a tab pair switches between the `network` and `lobby` rooms
+  (`useNetworkChat(room)`). The lobby tab lists the candidates with
+  `LobbyHardwareCard`, sends text with `room_id: "lobby"`, and offers neither
+  files nor typing, because machines that are not members read that room.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

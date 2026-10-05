@@ -407,6 +407,18 @@ Per-file list:
   is aborted when the machine changes, and the option select is keyed by kind
   plus `start-end` (`keyOf`), not by array index, so a reordered list cannot
   silently point at another range.
+- `LobbyChat.tsx` - Chat with a network this machine has **not** joined
+  (`docs/subsystems/p2p-network.md`, 6.1). A modal that polls the node every
+  3 s (`GET <endpoint>?key=<publisher_key>`) and posts through it; the browser
+  never talks to the other network. `endpoint` is
+  `/api/ui/network-chat/lobby` on a configured node and `/api/setup/lobby` in
+  the wizard, where requests go without a session. Shows each message as
+  member or candidate, the principal's refusal codes as sentences, and the
+  hardware card the network sees. Test: `LobbyChat.test.tsx`.
+- `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
+  OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens
+  with, without live usage, because nobody measures a non-member. Used by
+  `LobbyChat` (own card) and by the lobby tab of `routes/NetworkChat.tsx`.
 - `Confirm.tsx` - Two exports. `Modal` is the shell (veil + panel + header +
   footer) rendered via `createPortal` straight into `document.body`. The portal
   is not preference: `position: fixed` stops being relative to the viewport when

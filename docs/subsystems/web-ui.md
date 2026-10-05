@@ -282,7 +282,14 @@ does not get past that clip. The minimized choice is persisted in the browser.
   is empty shows a disabled "Closed" button; with a partial list Join stays
   enabled and the wizard's first screen disables the roles that are not
   accepted. The principal edits the list in Network settings ("Accepting new
-  members").
+  members"). A network with `lobby_chat` gets a "Chat" button that opens
+  `components/LobbyChat.tsx`: a conversation with that network's lobby through
+  this node, with the hardware card the network will see. The same component
+  runs in the setup wizard, whose join step lists the federated directory
+  (`PublicDirectoryPanel`), so a machine that has joined nothing can ask first.
+  Members read and answer in the "Lobby" tab of `/network-chat`, which lists
+  each candidate with its declared hardware (`LobbyHardwareCard`). The switch
+  is "Lobby chat" in Network settings.
 - `/setup` -> `Setup`, the real first access wizard, **full screen** and with
   the access gate's identity (see "First access wizard" below).
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the

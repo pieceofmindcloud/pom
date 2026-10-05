@@ -84,6 +84,17 @@ pub enum ChatAction {
         level: String,
         sent_at: DateTime<Utc>,
     },
+    /// A candidate is present in the lobby (`network_lobby.rs`). Only the
+    /// principal originates it, from a lobby request it authenticated by the
+    /// transport; `sender_node_id` is the candidate. Kept in memory only.
+    LobbyPresence {
+        message_id: String,
+        room_id: String,
+        sender_node_id: String,
+        recipient_node_id: Option<String>,
+        card: crate::network_lobby::LobbyCard,
+        sent_at: DateTime<Utc>,
+    },
 }
 
 impl ChatAction {
@@ -107,7 +118,8 @@ impl ChatAction {
             Self::Text { sender_node_id, .. }
             | Self::File { sender_node_id, .. }
             | Self::Typing { sender_node_id, .. }
-            | Self::PluginNotice { sender_node_id, .. } => sender_node_id,
+            | Self::PluginNotice { sender_node_id, .. }
+            | Self::LobbyPresence { sender_node_id, .. } => sender_node_id,
         }
     }
 
@@ -116,7 +128,8 @@ impl ChatAction {
             Self::Text { room_id, .. }
             | Self::File { room_id, .. }
             | Self::Typing { room_id, .. }
-            | Self::PluginNotice { room_id, .. } => room_id,
+            | Self::PluginNotice { room_id, .. }
+            | Self::LobbyPresence { room_id, .. } => room_id,
         }
     }
 
@@ -125,7 +138,8 @@ impl ChatAction {
             Self::Text { message_id, .. }
             | Self::File { message_id, .. }
             | Self::Typing { message_id, .. }
-            | Self::PluginNotice { message_id, .. } => message_id,
+            | Self::PluginNotice { message_id, .. }
+            | Self::LobbyPresence { message_id, .. } => message_id,
         }
     }
 
@@ -142,6 +156,9 @@ impl ChatAction {
             }
             | Self::PluginNotice {
                 recipient_node_id, ..
+            }
+            | Self::LobbyPresence {
+                recipient_node_id, ..
             } => recipient_node_id.as_deref(),
         }
     }
@@ -152,6 +169,7 @@ impl ChatAction {
             Self::File { .. } => "file",
             Self::Typing { .. } => "typing",
             Self::PluginNotice { .. } => "plugin_notice",
+            Self::LobbyPresence { .. } => "lobby_presence",
         }
     }
 
@@ -159,7 +177,7 @@ impl ChatAction {
         match self {
             Self::Text { text, .. } => Some(text),
             Self::PluginNotice { body, .. } => Some(body),
-            Self::File { .. } | Self::Typing { .. } => None,
+            Self::File { .. } | Self::Typing { .. } | Self::LobbyPresence { .. } => None,
         }
     }
 
@@ -225,7 +243,15 @@ impl ChatAction {
                     Ok(())
                 }
             }
-            Self::Text { .. } | Self::File { .. } | Self::Typing { .. } => Ok(()),
+            Self::LobbyPresence { room_id, .. }
+                if room_id != crate::network_lobby::LOBBY_ROOM =>
+            {
+                Err("lobby_room_invalid")
+            }
+            Self::Text { .. }
+            | Self::File { .. }
+            | Self::Typing { .. }
+            | Self::LobbyPresence { .. } => Ok(()),
         }
     }
 }
@@ -393,6 +419,28 @@ impl ChatEvent {
                 title: Some(title.clone()),
                 level: Some(level.clone()),
             },
+            ChatAction::LobbyPresence {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                sent_at,
+                ..
+            } => Self {
+                message_id: message_id.clone(),
+                room_id: room_id.clone(),
+                sender_node_id: sender_node_id.clone(),
+                recipient_node_id: recipient_node_id.clone(),
+                kind: "lobby_presence".into(),
+                text: None,
+                file_name: None,
+                mime_type: None,
+                file_data: Vec::new(),
+                sent_at: sent_at.to_rfc3339(),
+                plugin_code: None,
+                title: None,
+                level: None,
+            },
         }
     }
 }
@@ -443,6 +491,9 @@ pub struct NetworkChat {
     rate: Mutex<HashMap<String, RateWindow>>,
     typing: Mutex<HashMap<String, (ChatEvent, Instant)>>,
     notices: Mutex<std::collections::VecDeque<(ChatEvent, Instant)>>,
+    /// Candidates present in the lobby: fed by lobby requests on the
+    /// principal and by relayed `LobbyPresence` frames on every other member.
+    lobby_guests: crate::network_lobby::LobbyGuests,
 }
 
 impl NetworkChat {
@@ -477,6 +528,7 @@ impl NetworkChat {
                 rate: Mutex::new(HashMap::new()),
                 typing: Mutex::new(HashMap::new()),
                 notices: Mutex::new(std::collections::VecDeque::new()),
+                lobby_guests: Default::default(),
             }),
             receiver,
         )
@@ -501,6 +553,21 @@ impl NetworkChat {
 
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn lobby_guests(&self) -> &crate::network_lobby::LobbyGuests {
+        &self.lobby_guests
+    }
+
+    /// Whether this network opened a lobby to non-members: a public network
+    /// with the network Chat on and the operator's lobby switch set.
+    pub async fn lobby_enabled(&self) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let config = self.auth.read().await;
+        config.network.lobby_chat
+            && config.network.visibility == crate::config::NetworkVisibility::Public
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ChatEvent> {
@@ -558,6 +625,11 @@ impl NetworkChat {
             anyhow::bail!("network_chat_disabled")
         }
         action.validate().map_err(|error| anyhow::anyhow!(error))?;
+        // Presence is the principal's statement about a transport it
+        // authenticated; a member's API key never vouches for one.
+        if matches!(action, ChatAction::LobbyPresence { .. }) {
+            anyhow::bail!("lobby_presence_not_allowed")
+        }
         if api_key.is_empty() {
             anyhow::bail!("api_key_missing")
         }
@@ -609,6 +681,16 @@ impl NetworkChat {
                 typing.remove(action.sender_node_id());
             }
             let _ = self.live.send(event);
+            return Ok(true);
+        }
+        if let ChatAction::LobbyPresence {
+            sender_node_id,
+            card,
+            ..
+        } = &action
+        {
+            self.lobby_guests
+                .remember(sender_node_id, card.clone().sanitized());
             return Ok(true);
         }
         if matches!(action, ChatAction::PluginNotice { .. }) {

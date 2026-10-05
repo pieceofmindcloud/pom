@@ -11,7 +11,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, Check, ChevronDown, Copy, Cpu, Database, Download, HardDrive, Landmark, Monitor, Radar, RefreshCw, Server, Sparkles, Upload } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, Cpu, Database, Download, Globe2, HardDrive, Landmark, MessageCircle, Monitor, Radar, RefreshCw, Server, Sparkles, Upload } from "lucide-react";
 import clsx from "clsx";
 import type { WizardStage, WizardStep } from "./setupWizardTypes";
 import { setupNextStage, setupPreviousStage, setupStepsFor, type SetupProfile } from "./setupWizardFlow";
@@ -21,6 +21,7 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Field, Input, Select } from "../components/ui";
 import { BrandLanguageSwitch } from "../components/BrandLanguageSwitch";
+import { LobbyChat } from "../components/LobbyChat";
 import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 import pomMark from "../assets/pom-mark-dark.png";
 
@@ -841,6 +842,90 @@ export function DiscoveredMachineCard({ peer, t }: { peer: AutoDiscoveryPeer; t:
   );
 }
 
+/** A public network as the federated directory lists it to the wizard. */
+interface DirectoryNetwork {
+  cluster_id: string;
+  name: string;
+  fingerprint: string;
+  publisher_key: string;
+  trust_document: string;
+  organization: string;
+  country_name: string;
+  country_code: string;
+  city: string;
+  access_policy?: AccessPolicy;
+  accepted_enrollments?: EnrollmentRole[];
+  lobby_chat?: boolean;
+  directory_replicas?: string[];
+}
+
+/**
+ * Public networks, inside the wizard. A machine that has joined nothing has
+ * no cluster to discover networks through, so this is the federated directory
+ * alone (`GET /api/setup/public-networks`). Each network can be talked to
+ * before joining - that is the point of listing it here - and "Join" fills the
+ * same trust fields the manual block does.
+ */
+export function PublicDirectoryPanel({ setup, onUse, t }: { setup: SetupState; onUse: (network: DirectoryNetwork) => void; t: Translate }) {
+  const [networks, setNetworks] = useState<DirectoryNetwork[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [chatTarget, setChatTarget] = useState<DirectoryNetwork | null>(null);
+  const replicas = setup.publicDirectory.trim();
+
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+    void api.get<DirectoryNetwork[]>(`/api/setup/public-networks?replicas=${encodeURIComponent(replicas)}`, { auth: false })
+      .then((listed) => { if (!cancelled) setNetworks(Array.isArray(listed) ? listed : []); })
+      .catch(() => { if (!cancelled) { setNetworks([]); setFailed(true); } });
+    return () => { cancelled = true; };
+    // `replicas` is read when the list is asked for, not on every keystroke.
+  }, [attempt]);
+
+  const role = setup.profile === "node" || setup.profile === "infer" ? setup.profile : null;
+  return (
+    <details className="pom-setup-details mt-5" data-testid="setup-public-directory">
+      <summary>
+        <span className="flex items-center gap-2"><Globe2 className="h-4 w-4" />{t("firstRun.publicDirectory")}</span>
+        <ChevronDown className="h-4 w-4" />
+      </summary>
+      <div className="space-y-2 pt-3">
+        <p className="text-xs leading-relaxed text-muted">{t("firstRun.publicDirectoryDetail")}</p>
+        {networks === null && <p className="text-xs text-faint">{t("firstRun.publicDirectoryLoading")}</p>}
+        {networks?.length === 0 && <p className="text-xs text-faint">{t(failed ? "firstRun.publicDirectoryFailed" : "firstRun.publicDirectoryEmpty")}</p>}
+        {(networks ?? []).map((network) => {
+          const accepted = network.accepted_enrollments;
+          const closed = accepted !== undefined && (accepted.length === 0 || (role !== null && !accepted.includes(role)));
+          const selected = setup.trustDocument === network.trust_document;
+          return (
+            <div key={`${network.cluster_id}:${network.fingerprint}`} className={clsx("flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2.5", selected ? "border-aqua/50 bg-aqua/5" : "border-white/10")}>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-fg">{network.name || network.cluster_id}</p>
+                <p className="truncate text-xs text-muted">{[network.organization, [network.country_name || network.country_code, network.city].filter(Boolean).join(" / ")].filter(Boolean).join(" - ")}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {network.lobby_chat && (
+                  <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setChatTarget(network)}>
+                    <MessageCircle className="h-3.5 w-3.5" />{t("publicNetworks.chat")}
+                  </button>
+                )}
+                <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" disabled={closed} title={closed ? t("firstRun.roleNotAccepted") : undefined} onClick={() => onUse(network)}>
+                  {t(closed ? "publicNetworks.closed" : selected ? "firstRun.publicDirectorySelected" : "firstRun.publicDirectoryUse")}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setAttempt((value) => value + 1)}>
+          <RefreshCw className="h-3.5 w-3.5" />{t("publicNetworks.refresh")}
+        </button>
+      </div>
+      <LobbyChat network={chatTarget && { name: chatTarget.name || chatTarget.cluster_id, publisher_key: chatTarget.publisher_key }} endpoint="/api/setup/lobby" onClose={() => setChatTarget(null)} />
+    </details>
+  );
+}
+
 export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: Translate }) {
   const [manualOpen, setManualOpen] = useState(false);
   const networkName = trustNetworkMetadata(setup.trustDocument)?.public_name ?? clusterIdFromDocument(setup.trustDocument);
@@ -885,6 +970,22 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
           </motion.div>
         )}
       </AnimatePresence>
+      <PublicDirectoryPanel
+        setup={setup}
+        t={t}
+        onUse={(network) => {
+          applyTrust(network.trust_document);
+          updateNetwork({ public_name: network.name || network.cluster_id, visibility: "public", access_policy: network.access_policy ?? "anyone_with_anchor" });
+          update({
+            joinAccepts: network.accepted_enrollments ?? null,
+            // A public network needs no shared secret; one left over from the
+            // local discovery would be sent to a network it does not belong to.
+            connectionKey: "",
+            ...(network.directory_replicas?.length ? { publicDirectory: network.directory_replicas.join(", ") } : {}),
+          });
+          void fingerprintFromTrustDocument(network.trust_document).then((fingerprint) => update({ trustFingerprint: fingerprint ?? "" }));
+        }}
+      />
       <details className="pom-setup-details mt-5" open={manualOpen} onToggle={(event) => setManualOpen((event.target as HTMLDetailsElement).open)}>
         <summary>
           <span>{t("firstRun.manualJoin")}</span>

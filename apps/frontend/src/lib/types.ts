@@ -450,6 +450,8 @@ export interface NetworkSettings {
   access_policy: NetworkAccessPolicy;
   /** Roles the network advertises as open to new members; empty means closed. */
   accepted_enrollments: EnrollmentRole[];
+  /** Opens the lobby room of the network Chat to machines that are not members. */
+  lobby_chat: boolean;
   location: NetworkLocation | null;
 }
 
@@ -551,8 +553,53 @@ export interface NetworkChatParticipant {
   profile: string;
 }
 
+/** Hardware a lobby candidate declares about itself. Not verified by anyone. */
+export interface LobbyCard {
+  hostname: string;
+  os: string;
+  arch: string;
+  cpu_count: number;
+  ram_total_mb: number;
+  gpus: { name: string; vram_total_mb: number | null }[];
+}
+
+/** A machine in the lobby that is not a member of the network. */
+export interface LobbyGuest {
+  nodeId: string;
+  card: LobbyCard;
+}
+
+/** One lobby message as the network's principal hands it to a candidate. */
+export interface LobbyMessage {
+  message_id: string;
+  sender_node_id: string;
+  sender_name: string;
+  /** The sender is a member of the network, not another candidate. */
+  member: boolean;
+  text: string;
+  sent_at: string;
+}
+
+/** What this node got back from another network's lobby. */
+export interface LobbyExchange {
+  accepted: boolean;
+  error: string | null;
+  /** This machine's `node_id`, as the principal derived it. */
+  node_id: string;
+  card: LobbyCard;
+  messages: LobbyMessage[];
+}
+
+export type NetworkChatRoom = "network" | "lobby";
+
 export interface NetworkChatSnapshot {
   enabled: boolean;
+  /** The room `messages` belongs to. */
+  room?: NetworkChatRoom;
+  /** The network accepts lobby chat from non-members right now. */
+  lobbyEnabled?: boolean;
+  /** Candidates present in the lobby, with their declared hardware. */
+  lobbyGuests?: LobbyGuest[];
   messages: NetworkChatEvent[];
   participants: NetworkChatParticipant[];
   typing: NetworkChatEvent[];

@@ -167,6 +167,10 @@ pub(crate) struct PublicNetworkView {
     /// accepting new members and the directory disables its join button.
     #[serde(default)]
     pub accepted_enrollments: crate::config::AcceptedEnrollments,
+    /// The network answers lobby chat from non-members right now (the
+    /// operator's switch and the network Chat are both on).
+    #[serde(default)]
+    pub lobby_chat: bool,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
     #[serde(default)]
@@ -232,6 +236,7 @@ fn directory_network_from_view(
         geo_label: view.geo_label.clone(),
         access_policy: view.access_policy,
         accepted_enrollments: view.accepted_enrollments.clone(),
+        lobby_chat: view.lobby_chat,
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
         directory_replicas: view.directory_replicas.clone(),
@@ -262,6 +267,7 @@ fn view_from_directory_record(
         geo_label: network.geo_label,
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments,
+        lobby_chat: network.lobby_chat,
         location: network.location,
         discovered_via: "directory".to_string(),
         directory_replicas: network.directory_replicas,
@@ -304,9 +310,49 @@ fn validate_public_directory_semantics(
 async fn read_directory_records(
     state: &GatewayState,
 ) -> Vec<crate::public_directory::SignedPublicDirectoryRecord> {
-    let settings = directory_settings(state);
-    let client = state.peer_http.plain();
-    let responses = futures::future::join_all(settings.replicas.into_iter().map(|base| {
+    let (records, learned) = merge_directory_replicas(
+        &state.database,
+        &state.peer_http.plain(),
+        directory_settings(state).replicas,
+    )
+    .await;
+    replicate_directory_records(state, learned).await;
+    records
+}
+
+/// The public networks a node can list from the federated directory alone:
+/// the local cache merged with what `replicas` answer now. It needs no
+/// cluster, which is what lets the setup wizard show the directory.
+pub(crate) async fn directory_public_networks(
+    database: &crate::db::PomDb,
+    client: &reqwest::Client,
+    replicas: Vec<String>,
+) -> Vec<PublicNetworkView> {
+    let (records, _) = merge_directory_replicas(database, client, replicas).await;
+    let mut networks: Vec<PublicNetworkView> = Vec::new();
+    for record in records {
+        let network = view_from_directory_record(record);
+        if !networks
+            .iter()
+            .any(|known| known.fingerprint == network.fingerprint)
+        {
+            networks.push(network);
+        }
+    }
+    networks
+}
+
+/// Fetches the replicas, validates and merges into the cached records, and
+/// returns the cache plus the records learned in this pass.
+async fn merge_directory_replicas(
+    database: &crate::db::PomDb,
+    client: &reqwest::Client,
+    replicas: Vec<String>,
+) -> (
+    Vec<crate::public_directory::SignedPublicDirectoryRecord>,
+    Vec<crate::public_directory::SignedPublicDirectoryRecord>,
+) {
+    let responses = futures::future::join_all(replicas.into_iter().map(|base| {
         let client = client.clone();
         async move {
             let response = client
@@ -332,10 +378,7 @@ async fn read_directory_records(
 
     let now = crate::public_directory::current_time_secs()
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
-    let mut records = state
-        .database
-        .public_directory_records()
-        .unwrap_or_default();
+    let mut records = database.public_directory_records().unwrap_or_default();
     let mut changed = false;
     let mut learned = Vec::new();
     for incoming in responses.into_iter().flatten().flatten() {
@@ -366,12 +409,11 @@ async fn read_directory_records(
     });
     changed |= before != records.len();
     if changed {
-        if let Err(error) = state.database.save_public_directory_records(&records) {
+        if let Err(error) = database.save_public_directory_records(&records) {
             warn!("não foi possível salvar o cache do diretório federado: {error:#}");
         }
     }
-    replicate_directory_records(state, learned).await;
-    records
+    (records, learned)
 }
 
 async fn replicate_directory_records(
@@ -583,6 +625,7 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
+        lobby_chat: network.lobby_chat && state.network_chat.enabled(),
         location: network
             .location
             .clone()

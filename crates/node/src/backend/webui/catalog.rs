@@ -2571,14 +2571,23 @@ pub(super) async fn chat_history(
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct NetworkChatQuery {
+    /// `network` (default) or `lobby`. Any other value reads the main room.
+    #[serde(default)]
+    room: Option<String>,
+}
+
 pub(super) async fn network_chat_snapshot(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
+    Query(query): Query<NetworkChatQuery>,
 ) -> Response {
-    let mut messages = match state
-        .network_chat
-        .history(crate::network_chat::NETWORK_CHAT_ROOM, 100)
-    {
+    let room = match query.room.as_deref() {
+        Some(crate::network_lobby::LOBBY_ROOM) => crate::network_lobby::LOBBY_ROOM,
+        _ => crate::network_chat::NETWORK_CHAT_ROOM,
+    };
+    let mut messages = match state.network_chat.history(room, 100) {
         Ok(messages) => messages,
         Err(error) => {
             tracing::error!("não foi possível ler o Chat da rede: {error:#}");
@@ -2623,6 +2632,16 @@ pub(super) async fn network_chat_snapshot(
         "typing": state.network_chat.typing_snapshot(),
         "notices": state.network_chat.notice_snapshot(),
         "dropped": state.network_chat.dropped(),
+        "room": room,
+        "lobbyEnabled": state.network_chat.lobby_enabled().await,
+        // Candidates talking in the lobby, with the hardware they declared.
+        "lobbyGuests": state
+            .network_chat
+            .lobby_guests()
+            .snapshot()
+            .into_iter()
+            .map(|(node_id, card)| json!({ "nodeId": node_id, "card": card }))
+            .collect::<Vec<_>>(),
     }))
     .into_response()
 }

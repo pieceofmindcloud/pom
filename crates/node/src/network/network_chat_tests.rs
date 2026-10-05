@@ -203,3 +203,62 @@ async fn plugin_notices_are_validated_kept_in_memory_and_never_persisted() {
         .is_empty());
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() {
+    let path = std::env::temp_dir().join(format!(
+        "pom-network-chat-lobby-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let database = std::sync::Arc::new(crate::db::PomDb::open(&path).unwrap());
+    let config: crate::config::Config = serde_json::from_value(serde_json::json!({
+        "profile": "admin",
+        "connection_key": "cluster-key",
+    }))
+    .unwrap();
+    let auth = std::sync::Arc::new(tokio::sync::RwLock::new(config));
+    let (chat, _receiver) =
+        super::network_chat::NetworkChat::new(database.clone(), auth.clone(), true);
+    let presence = |room: &str| ChatAction::LobbyPresence {
+        message_id: "p1".into(),
+        room_id: room.into(),
+        sender_node_id: "candidate".into(),
+        recipient_node_id: None,
+        card: crate::network_lobby::LobbyCard {
+            hostname: "h".repeat(4_000),
+            ram_total_mb: 64_000,
+            ..Default::default()
+        },
+        sent_at: chrono::Utc::now(),
+    };
+
+    // Presence only exists in the lobby room.
+    assert_eq!(presence("network").validate(), Err("lobby_room_invalid"));
+    assert!(chat.accept(presence("lobby")).unwrap());
+    let guests = chat.lobby_guests().snapshot();
+    assert_eq!(guests.len(), 1);
+    assert_eq!(guests[0].0, "candidate");
+    // The relayed card is clamped again on arrival.
+    assert_eq!(
+        guests[0].1.hostname.len(),
+        crate::network_lobby::LobbyLimits::CARD_TEXT_BYTES
+    );
+    assert!(database.network_chat_messages("lobby", 10).unwrap().is_empty());
+
+    // A member cannot originate a presence, whatever its key.
+    let error = chat
+        .validate_original(&presence("lobby"), "sk-anything", "candidate")
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "lobby_presence_not_allowed");
+
+    // The lobby is off until the network is public and the switch is set.
+    assert!(!chat.lobby_enabled().await);
+    auth.write().await.network.lobby_chat = true;
+    assert!(!chat.lobby_enabled().await);
+    auth.write().await.network.visibility = crate::config::NetworkVisibility::Public;
+    assert!(chat.lobby_enabled().await);
+    chat.set_enabled(false);
+    assert!(!chat.lobby_enabled().await);
+    let _ = std::fs::remove_file(path);
+}

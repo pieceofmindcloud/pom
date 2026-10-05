@@ -65,7 +65,25 @@ last):
   view includes `accepted_enrollments`, the list of enrollment roles (`node`,
   `infer`) the network advertises as open; an empty list means it is not
   accepting new members. It is edited by the principal through `POST
-  /api/ui/network/settings` and is advisory - no route enforces it. `GET
+  /api/ui/network/settings` and is advisory - no route enforces it. `lobby_chat`
+  is `true` while the network answers lobby chat from non-members (the
+  `network.lobby_chat` switch and the network Chat are both on).
+- **Lobby, candidate side** (`webui/lobby.rs`): `GET
+  /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`
+  (`{key, message_id, text}`) make this node talk to **another** network's
+  principal before joining it (`p2p-network.md`, 6.1). Both answer
+  `{accepted, error, node_id, card, messages}`: a refusal by the principal is
+  `accepted: false` with its code, and a transport failure is `502`. They sit
+  under the `/api/ui/network-chat` scope. The setup router serves the same
+  handlers at `GET|POST /api/setup/lobby`, plus `GET
+  /api/setup/public-networks?replicas=<csv>`, which lists the public networks of
+  the federated directory alone (cache merged with the replicas' answer) - setup
+  mode has no cluster to discover through.
+- **Lobby, member side**: `GET /api/ui/network-chat?room=lobby` reads the lobby
+  room instead of the main one. Every snapshot also carries `room`,
+  `lobbyEnabled` and `lobbyGuests` (`[{nodeId, card}]`, the candidates present
+  and their declared hardware). A member posts to the lobby with the ordinary
+  `POST /api/ui/network-chat` and `room_id: "lobby"`. `GET
   /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
   node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
   only accepts keys the node already lists (404 otherwise) and caches the answer
@@ -169,7 +187,8 @@ that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/models`, `/api/setup/admin-anchor/preview`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
 `/api/setup/auto-discovery/status`, `/api/setup/auto-discovery/start`,
-`/api/setup/auto-discovery/search` and `/api/setup/save` only exist in the
+`/api/setup/auto-discovery/search`, `/api/setup/public-networks`,
+`/api/setup/lobby` and `/api/setup/save` only exist in the
 first access router; `/api/setup/save` installs the root and `pom.json` before
 restarting. The routes of port 8181 (`/v1/prefill`, `/v1/step`,
 `/v1/step-stream`, `/v1/link`, `/v1/session/*`, `/v1/tp/reduce`, `/health`) are

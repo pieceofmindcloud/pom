@@ -578,6 +578,7 @@ struct DiscBehaviour {
     infer_tunnel: request_response::Behaviour<InferTunnelCodec>,
     cluster_logs: request_response::Behaviour<ClusterLogsCodec>,
     network_chat: request_response::Behaviour<NetworkChatCodec>,
+    network_lobby: request_response::Behaviour<crate::network_lobby::LobbyCodec>,
     audit: request_response::Behaviour<AuditCodec>,
 }
 
@@ -753,6 +754,7 @@ impl Discovery {
                 let infer_tunnel = infer_tunnel::infer_tunnel_behaviour();
                 let cluster_logs = cluster_logs::cluster_logs_behaviour();
                 let network_chat = network_chat::network_chat_behaviour();
+                let network_lobby = crate::network_lobby::network_lobby_behaviour();
                 let audit = reqlog::audit_behaviour();
 
                 DiscBehaviour {
@@ -767,6 +769,7 @@ impl Discovery {
                     infer_tunnel,
                     cluster_logs,
                     network_chat,
+                    network_lobby,
                     audit,
                 }
             })?
@@ -1569,6 +1572,28 @@ async fn handle_event(
             request_response::Event::ResponseSent { .. } => {}
         },
 
+        // ── Lobby: non-members talking to the principal ───────────────────
+        SwarmEvent::Behaviour(DiscBehaviourEvent::NetworkLobby(event)) => match event {
+            request_response::Event::Message {
+                peer,
+                message:
+                    request_response::Message::Request {
+                        request, channel, ..
+                    },
+                ..
+            } => {
+                let response = answer_lobby_request(swarm, network, chat, peer, request).await;
+                let _ = swarm
+                    .behaviour_mut()
+                    .network_lobby
+                    .send_response(channel, response);
+            }
+            request_response::Event::InboundFailure { peer, error, .. } => {
+                debug!("network-lobby: pedido de {peer} falhou: {error:?}");
+            }
+            _ => {}
+        },
+
         // ── Chat da rede: o principal valida e retransmite ────────────────
         SwarmEvent::Behaviour(DiscBehaviourEvent::NetworkChat(event)) => match event {
             request_response::Event::Message { peer, message, .. } => match message {
@@ -1760,6 +1785,122 @@ async fn accept_original_chat(
         }
         Ok(false) => ChatResponse::rejected("network_chat_disabled"),
         Err(error) => ChatResponse::rejected(error.to_string()),
+    }
+}
+
+/// Answers one lobby request from a machine that is not a member.
+///
+/// Nothing in the frame identifies the sender: `node_id` comes from the
+/// `PeerId` the Noise handshake proved. A text becomes an ordinary `lobby`
+/// room message and is relayed to the members through the star; the answer is
+/// the recent history of that room, which is public by definition.
+async fn answer_lobby_request(
+    swarm: &mut Swarm<DiscBehaviour>,
+    network: &Network,
+    chat: &Arc<NetworkChat>,
+    peer: PeerId,
+    request: crate::network_lobby::LobbyRequest,
+) -> crate::network_lobby::LobbyResponse {
+    use crate::network_lobby::{
+        GuestSeen, LobbyLimits, LobbyMessage, LobbyRequest, LobbyResponse, LOBBY_ROOM,
+    };
+    if network.profile() != crate::profile::NodeProfile::Admin || !chat.lobby_enabled().await {
+        return LobbyResponse::rejected("lobby_disabled");
+    }
+    let Some(node_id) = crate::network_lobby::node_id_of_peer(&peer) else {
+        return LobbyResponse::rejected("identity_unsupported");
+    };
+    if chat.node_is_blocked(&node_id).await {
+        return LobbyResponse::rejected("node_blocked");
+    }
+    let peers = network.alive_peers().await;
+    // A member has the authenticated room; the lobby path is for outsiders.
+    if node_id == network.node_id || peers.iter().any(|member| member.node_id == node_id) {
+        return LobbyResponse::rejected("already_member");
+    }
+    let card = request.card().clone().sanitized();
+    let is_post = matches!(request, LobbyRequest::Post { .. });
+    let seen = match chat.lobby_guests().admit(&node_id, &card, is_post) {
+        Ok(seen) => seen,
+        Err(error) => return LobbyResponse::rejected(error),
+    };
+    if seen == GuestSeen::Announce {
+        let presence = network_chat::ChatAction::LobbyPresence {
+            message_id: uuid::Uuid::new_v4().simple().to_string(),
+            room_id: LOBBY_ROOM.to_string(),
+            sender_node_id: node_id.clone(),
+            recipient_node_id: None,
+            card,
+            sent_at: chrono::Utc::now(),
+        };
+        relay_chat(swarm, network, chat, presence, None).await;
+    }
+    if let LobbyRequest::Post {
+        message_id, text, ..
+    } = request
+    {
+        let text = text.trim().to_string();
+        if text.is_empty() || text.len() > LobbyLimits::TEXT_BYTES {
+            return LobbyResponse::rejected("text_invalid");
+        }
+        if message_id.is_empty()
+            || message_id.len() > LobbyLimits::MESSAGE_ID_BYTES
+            || !message_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return LobbyResponse::rejected("message_id_invalid");
+        }
+        // Namespaced by the sender so a candidate cannot shadow (the insert
+        // ignores a repeated id) a message someone else is about to send.
+        let action = network_chat::ChatAction::Text {
+            message_id: format!("lobby-{}-{message_id}", &node_id[..node_id.len().min(16)]),
+            room_id: LOBBY_ROOM.to_string(),
+            sender_node_id: node_id.clone(),
+            recipient_node_id: None,
+            text,
+            // The principal's clock: a candidate does not order the room.
+            sent_at: chrono::Utc::now(),
+        };
+        match chat.accept(action.clone()) {
+            Ok(true) => relay_chat(swarm, network, chat, action, None).await,
+            Ok(false) => return LobbyResponse::rejected("lobby_disabled"),
+            Err(error) => return LobbyResponse::rejected(error.to_string()),
+        }
+    }
+    let history = match chat.history(LOBBY_ROOM, LobbyLimits::HISTORY) {
+        Ok(history) => history,
+        Err(error) => return LobbyResponse::rejected(error.to_string()),
+    };
+    let messages = history
+        .into_iter()
+        .filter(|event| event.kind == "text" && event.recipient_node_id.is_none())
+        .map(|event| {
+            let member = if event.sender_node_id == network.node_id {
+                Some(network.hostname.clone())
+            } else {
+                peers
+                    .iter()
+                    .find(|member| member.node_id == event.sender_node_id)
+                    .map(|member| member.hostname.clone())
+            };
+            let sender_name = member
+                .clone()
+                .or_else(|| chat.lobby_guests().hostname(&event.sender_node_id))
+                .unwrap_or_default();
+            LobbyMessage {
+                message_id: event.message_id,
+                sender_node_id: event.sender_node_id,
+                sender_name,
+                member: member.is_some(),
+                text: event.text.unwrap_or_default(),
+                sent_at: event.sent_at,
+            }
+        })
+        .collect();
+    LobbyResponse {
+        accepted: true,
+        error: None,
+        node_id,
+        messages,
     }
 }
 

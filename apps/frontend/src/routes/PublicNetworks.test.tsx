@@ -245,4 +245,28 @@ describe("PublicNetworks", () => {
     const dialog = await screen.findByRole("dialog", { name: "Detalhes de Rede São Paulo" });
     expect(within(dialog).getByText("Nós de inferência")).toBeTruthy();
   });
+
+  it("offers lobby chat only on networks that opened one", async () => {
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([{ ...networks[0], lobby_chat: true }, networks[1]]);
+      if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+      if (path.startsWith("/api/ui/network-chat/lobby?")) {
+        return Promise.resolve({ accepted: true, error: null, node_id: "me", card: { hostname: "eu", os: "linux", arch: "x86_64", cpu_count: 4, ram_total_mb: 8192, gpus: [] }, messages: [] });
+      }
+      return Promise.reject(new Error("no local network"));
+    });
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const open = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    const other = screen.getByText("Rede São Paulo").closest("tr")!;
+    expect(within(other).queryByRole("button", { name: "Conversar" })).toBeNull();
+
+    fireEvent.click(within(open).getByRole("button", { name: "Conversar" }));
+    expect(await screen.findByRole("dialog", { name: "Lobby de Rede Curitiba" })).toBeTruthy();
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith("/api/ui/network-chat/lobby?key=pk%3Acuritiba", { auth: true }));
+  });
 });

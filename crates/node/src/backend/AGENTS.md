@@ -670,7 +670,7 @@ faz o download autenticado do blob persistido.
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
   inference `/health` before planning, trying every inference address in
   `Network::inference_bases` order (the host that already answered first) with
-  the `ADMISSION_PROBE_TIMEOUT` of 300ms each, then `/health` over the libp2p
+  the `ADMISSION_PROBE_TIMEOUT` of 100ms each, then `/health` over the libp2p
   tunnel (`infer_tunnel::health_via_tunnel`, 3 s). The peer answers `/health`
   without waiting for its engine (a busy peer returns its last snapshot with
   `busy: true`), so a peer mid-prefill stays in the plan. Session lifecycle

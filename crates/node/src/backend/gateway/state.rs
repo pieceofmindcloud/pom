@@ -11,13 +11,19 @@ pub const DEFAULT_MAX_TOKENS: u32 = 512;
 ///
 /// Um peer vivo na LAN responde `/health` em poucos milissegundos - as próprias
 /// chamadas de decode da inferência medem 12-18 ms de ida e volta. Quem não
-/// respondeu em 300 ms não é "lento": ou engoliu o SYN, ou está desligado, e nos
+/// respondeu em 100 ms não é "lento": ou engoliu o SYN, ou está desligado, e nos
 /// dois casos ele não vai servir esta requisição. Antes deste teto quem mandava
 /// era o `peer_client::CONNECT_TIMEOUT` de 2 s, e como `join_all` só termina com
 /// o mais lento, **um** anunciante inalcançável custava 2,005 s a toda
 /// inferência do cluster - medido em produção, constante entre motores, tamanhos
 /// de prompt e frio/quente.
-pub(crate) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+///
+/// Eram 300 ms. O teto vale por endereço, e os endereços de um peer são
+/// tentados em sequência: dois endereços mortos de um peer que nem servia o
+/// modelo custavam 609 ms de TTFT a uma requisição cujos hops respondiam em
+/// 6 ms (2026-10-05). Um peer vivo mais distante que este teto ainda entra
+/// pelo túnel (`TUNNEL_HEALTH_TIMEOUT`).
+pub(crate) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Quanto tempo um peer que falhou a sonda fica fora sem ser sondado de novo.
 ///
@@ -1062,7 +1068,7 @@ fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<
 }
 
 /// Prazo da sonda `/health` pelo túnel: um circuito pelo relé na internet não
-/// cabe nos 300 ms da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
+/// cabe no teto da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
 const TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A sonda de admissão segue a rota fixada (`route_plan`): rota de túnel vai

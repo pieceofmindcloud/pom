@@ -232,7 +232,7 @@ announcer. The answer carries the executable identity (`model_label`/
 replace the P2P snapshot while the next `Announce` is still in transit. So a new
 deployment does not fail with a coverage gap just because gossip arrived after
 the local load. What changed is the price. The deadline is
-`ADMISSION_PROBE_TIMEOUT` of 300 ms, not the general client's 2 s
+`ADMISSION_PROBE_TIMEOUT` of 100 ms, not the general client's 2 s
 `CONNECT_TIMEOUT`, and whoever fails goes into quarantine for
 `ADMISSION_FAILURE_COOLDOWN` (`AdmissionHealth`, in `gateway/state.rs`), staying
 out of the plan without being probed again. Before that, since `join_all` only

@@ -202,6 +202,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
   e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
   explícita do operador.
+- `speculation.ts` - the single speculation choice (`none`/`mtp`/`lookup`) over
+  `mtp_enabled` + `speculative_decoding_enabled`, and `MTP_MIN_PROBABILITY`
+  (0.75, the node's default), written when MTP is chosen.
 - `pluginCatalog.ts` - reads the public plugin catalog directly from the
   license server with `credentials: "omit"`; `fetchPublicPluginCatalog` takes an
   optional `{q, page, perPage}` (search and paging done by the server, `total`

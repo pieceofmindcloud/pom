@@ -507,10 +507,14 @@ Per-file list:
   seria inventar um registro que ninguém guardou. Cada linha expande
   (`VersionList`) e mostra `deployment.versions` da mais nova para a mais
   antiga, com a badge "Ativa" em `active_version` e um botão "Reimplantar esta
-  versão" (`redeployDeployment(id, { version })`). O botão "Reimplantar com
-  novos parâmetros" abre o `RedeployDialog`, que semeia do
-  `versions[active].params` (não do `nodes[0].config`) e no submit manda só
-  `params` + `per_node` - o backend decide reusar ou anexar versão. Também
+  versão" (`redeployDeployment(id, { version })`). "Reimplantar com novos
+  parâmetros" (na linha) e "Editar e reimplantar" (no inspetor de uma versão)
+  abrem à direita, no lugar do inspetor de leitura, o `RedeployPanel`: o mesmo
+  `DeploymentInspector` editável da tela de implantar, semeado com a versão
+  ativa ou com a versão aberta (não com o `nodes[0].config`), mais os ajustes
+  por máquina (`n_gpu_layers`, KV na GPU) e "Recarregar com estes valores", que
+  manda só `params` + `per_node` - o backend decide reusar ou anexar versão. O
+  lado direito mostra uma coisa de cada vez. Também
   ativa uma implantação e a desimplanta pelo `deploy_id`. O painel do job de
   reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
   Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
@@ -622,7 +626,7 @@ Per-file list:
   each mode owns its own controls (Pipeline: size list, one explicit layer
   range, or Tensor Parallelism's rank count). The Tensor Parallelism tab only
   mounts when `useNode().data.pom_desenv === true` (the same
-  `POM_DESENV=1`-gated pattern as `DeploymentInspector`/`RuntimeParamsForm`);
+  `POM_DESENV=1`-gated pattern as `DeploymentInspector`);
   without it the screen never offers or sends `mode: "tensor_parallel"`, and an
   effect snaps a stale selection back to `"pipeline"` if the flag turns out
   false after the first render. Pipeline builds a by-size plan
@@ -693,11 +697,11 @@ Key logic carriers:
   `onAsk`). Only then does `ChatScreen` fetch the per-node network RTT and
   runtimes for the environment. `onAsk` sends the plugin's question as a turn
   whose visible text differs from the request content.
-- `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
-  knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8)
-  and `fit_memory_margin_mb` (per-device VRAM safety reserve).
+- `DeployModel` and `Deployments` both edit the runtime knobs through
+  `DeploymentInspector` (the Deploy Studio inspector, and the History redeploy
+  panel), so a new property cannot reach one screen and miss the other.
   As duas telas leem `NodeInfo.pom_desenv` de `useNode`; o Deploy Studio, o
-  inspetor do histórico e a caixa de reimplantação falham fechados. A flag só
+  inspetor do histórico e o painel de reimplantação falham fechados. A flag só
   esconde os controles de desenvolvimento locais; o estado de planejamento,
   lançamento e reimplantação mantém os valores recebidos da implantação,
   mesmo quando este nó não pode editá-los.

@@ -316,6 +316,40 @@ describe("Deployments", () => {
     }));
   });
 
+  it("edita e reimplanta a partir de uma versão, no mesmo inspetor à direita", async () => {
+    listDeployments.mockResolvedValue({
+      node_id: "eu",
+      deployments: [
+        row("d-aaaaaaaa", {
+          serving: true,
+          isDefault: true,
+          versions: [
+            { version: 1, n_ctx: 8192 },
+            { version: 2, n_ctx: 16384 },
+          ],
+          activeVersion: 2,
+        }),
+      ],
+    });
+    redeployDeployment.mockResolvedValue({ job_id: "j3", deploy_id: "d-aaaaaaaa" });
+
+    mount();
+    await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
+    click(screen.getByRole("button", { name: "Ver versões" }));
+    click(screen.getByRole("button", { name: "Ver as propriedades da versão 1" }));
+    click(screen.getByText("Editar e reimplantar"));
+
+    // O painel de leitura dá lugar ao de edição, semeado com a versão 1.
+    expect(screen.queryByText("Propriedades da versão 1")).toBeNull();
+    const panel = screen.getByText("Reimplantar qwen3:8b").closest("aside")!;
+    const nCtx = panel.querySelector('input[name="n_ctx"]') as HTMLInputElement;
+    expect(nCtx.value).toBe("8192");
+    click(within(panel).getByText("Recarregar com estes valores"));
+    await waitFor(() => expect(redeployDeployment).toHaveBeenCalled());
+    const [, body] = redeployDeployment.mock.calls[0] as [string, { params: RuntimeParams }];
+    expect(body.params.n_ctx).toBe(8192);
+  });
+
   /**
    * O mesmo inspetor da tela de implantar, aqui em somente leitura: é o que
    * responde "com que parâmetros esta versão subiu?" sem obrigar a abrir o

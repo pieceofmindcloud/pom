@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { Shards } from "./Shards";
@@ -121,12 +121,15 @@ function renderScreen() {
 }
 
 describe("Shards", () => {
-  it("shows the linked projector with the machine and the path where it lives", () => {
+  it("shows the linked projector, with the machine and the path in a details window", () => {
     renderScreen();
     const [gemma] = screen.getAllByTestId("sidecar-link-editor");
     const vision = within(gemma).getByTestId("sidecar-picker-mmproj");
     expect(vision.textContent).toContain("mmproj-gemma-3-4b-it-f16.gguf");
-    expect(vision.textContent).toContain("salem: /library/mmproj-gemma-3-4b-it-f16.gguf");
+    // The paths per machine no longer fill the screen; they open on demand.
+    expect(vision.textContent).not.toContain("/library/mmproj-gemma-3-4b-it-f16.gguf");
+    fireEvent.click(within(vision).getByRole("button", { name: "More info" }));
+    expect(screen.getByRole("dialog").textContent).toContain("salem: /library/mmproj-gemma-3-4b-it-f16.gguf");
     // A projector of another width is never offered for this model.
     expect(vision.textContent).not.toContain("mmproj-other.gguf");
     // The MTP draft of the same architecture and width is offered.

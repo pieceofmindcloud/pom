@@ -1,4 +1,6 @@
 import clsx from "clsx";
+import { Info } from "lucide-react";
+import { useState } from "react";
 import { useI18n } from "../i18n/provider";
 import { bytes } from "../lib/format";
 import type {
@@ -9,7 +11,8 @@ import type {
   SidecarOption,
   SidecarSlot,
 } from "../lib/types";
-import { Select } from "./ui";
+import { Modal } from "./Confirm";
+import { Button, Select } from "./ui";
 
 /** What the picker holds: a mode, or "link" to leave the model's saved link in charge. */
 export type SidecarPick = { mode: SidecarMode | "link"; file?: SidecarFile | null };
@@ -67,9 +70,10 @@ export function sidecarOptions(
 /**
  * Choose the vision projector or the MTP draft of a model.
  *
- * The select names each file with its size and the machines that hold it;
- * the full name and the path on every machine sit below it, wrapped, because
- * a path is what the operator recognizes and a narrow select cannot show it.
+ * The select names each file with its size and the machines that hold it.
+ * Below it one line sums the chosen file up; the full name and the path on
+ * every machine open in a window, because a list of paths per machine took
+ * the whole inspector while saying nothing the operator needs at a glance.
  * On the deploy screen `slot` adds what the plan will do with the choice.
  */
 export function SidecarPicker({
@@ -97,6 +101,7 @@ export function SidecarPicker({
   compact?: boolean;
 }) {
   const { t } = useI18n();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const selectedKey = keyOf(value);
   const selectedFile =
     value.mode === "file" && value.file
@@ -148,20 +153,44 @@ export function SidecarPicker({
         <p className="text-[0.62rem] leading-relaxed text-faint">{t("sidecars.noneCompatible")}</p>
       )}
       {shownFile && (
-        <div className="rounded-md border border-line bg-raised/40 px-2 py-1.5 text-[0.62rem] leading-relaxed">
-          <p className="break-all font-mono text-fg">{shownFile.file_name}</p>
-          <p className="text-faint">
-            {bytes(shownFile.size_bytes)}
-            {shownFile.general_name ? ` · ${shownFile.general_name}` : ""}
-          </p>
-          <ul className="mt-1 space-y-0.5">
-            {shownFile.holders.map((holder) => (
-              <li key={holder.node_id} className="break-all font-mono text-muted">
-                <span className="font-sans font-medium text-fg">{holder.hostname}</span>: {holder.path}
-              </li>
-            ))}
-          </ul>
+        <div className="flex min-w-0 items-center justify-between gap-2 text-[0.62rem]">
+          <span className="min-w-0 truncate text-faint">
+            {bytes(shownFile.size_bytes)} · {t("sidecars.machineCount", { count: shownFile.holders.length })}
+          </span>
+          <button
+            type="button"
+            onClick={() => setDetailsOpen(true)}
+            className="inline-flex shrink-0 items-center gap-1 rounded text-iris underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+          >
+            <Info className="h-3 w-3" aria-hidden="true" />
+            {t("sidecars.details")}
+          </button>
         </div>
+      )}
+      {shownFile && (
+        <Modal
+          open={detailsOpen}
+          title={kind === "mmproj" ? t("sidecars.vision") : t("sidecars.mtp")}
+          onClose={() => setDetailsOpen(false)}
+          footer={<Button variant="ghost" onClick={() => setDetailsOpen(false)}>{t("common.close")}</Button>}
+        >
+          <div className="space-y-3 text-xs leading-relaxed">
+            <div>
+              <p className="break-all font-mono text-fg">{shownFile.file_name}</p>
+              <p className="text-faint">
+                {bytes(shownFile.size_bytes)}
+                {shownFile.general_name ? ` · ${shownFile.general_name}` : ""}
+              </p>
+            </div>
+            <ul className="space-y-1">
+              {shownFile.holders.map((holder) => (
+                <li key={holder.node_id} className="break-all font-mono text-muted">
+                  <span className="font-sans font-medium text-fg">{holder.hostname}</span>: {holder.path}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </Modal>
       )}
       {slot?.problem ? (
         <p role="alert" className="text-[0.62rem] leading-relaxed text-amber">{slot.problem}</p>

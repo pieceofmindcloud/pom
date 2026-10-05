@@ -132,8 +132,9 @@ pub struct RuntimeParams {
     pub speculative_lookup_window: u32,
     /// Predição multi-token pelo bloco `nextn` do modelo. Interruptor
     /// separado do de cima de propósito: são mecanismos diferentes, e só
-    /// este usa peso treinado do modelo. Ver `crate::mtp`.
-    #[serde(default)]
+    /// este usa peso treinado do modelo. Ver `crate::mtp`. Ligado por padrão:
+    /// o gateway só o usa quando o plano suporta (`mtp_enabled_for_plan`).
+    #[serde(default = "d_true")]
     pub mtp_enabled: bool,
     #[serde(default = "d_mtp_draft_tokens")]
     pub mtp_draft_tokens: u32,
@@ -219,8 +220,9 @@ pub(super) fn d_speculative_lookup_window() -> u32 {
 pub(super) fn d_mtp_draft_tokens() -> u32 {
     3
 }
+/// O mesmo piso que a tela grava ao ligar o MTP (`MTP_MIN_PROBABILITY`).
 pub(super) fn d_mtp_min_probability() -> f32 {
-    0.0
+    0.75
 }
 pub(super) fn d_dry_base() -> f32 {
     1.75
@@ -284,7 +286,7 @@ impl Default for RuntimeParams {
             speculative_decoding_enabled: false,
             speculative_k: d_speculative_k(),
             speculative_lookup_window: d_speculative_lookup_window(),
-            mtp_enabled: false,
+            mtp_enabled: d_true(),
             mtp_draft_tokens: d_mtp_draft_tokens(),
             mtp_min_probability: d_mtp_min_probability(),
             mtp_cpu_fallback_enabled: d_mtp_cpu_fallback_enabled(),

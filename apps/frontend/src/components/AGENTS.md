@@ -543,8 +543,9 @@ Key logic carriers:
   representa uma implantação ainda não aplicada.
 - `SidecarPicker.tsx` - the vision projector / MTP draft picker shared by the
   three screens: a select naming each compatible file with its size and
-  machines, and below it the full name and the path on every machine,
-  wrapped. On the deploy screen it also says whether the target already has
+  machines, and below it one line (size and machine count) with "More info",
+  which opens a window with the full name and the path on every machine - the
+  per-machine list used to fill the inspector. On the deploy screen it also says whether the target already has
   the file, copies it from another machine, or why it cannot. `sidecarOptions`
   builds the options from the cluster catalog with the backend's
   compatibility rule.
@@ -560,9 +561,10 @@ Key logic carriers:
   do llama.cpp - temperatura, top-p, top-k, min-p, penalidades de repetição,
   presença e frequência, DRY - seguida da semente; base, tamanho permitido e
   janela do DRY só aparecem com o multiplicador acima de 0, que é o que liga o
-  DRY; os combos de cache KV da
-  instalação; e os interruptores, com onde o MTP fica logo depois dos números
-  do MTP), *Configurações POM* (desativar embeddings, ajuste de memória,
+  DRY; os combos de cache KV da instalação; os interruptores; e a
+  **Especulação**, uma escolha só - Nenhuma, MTP ou lookup -, porque o gateway
+  nunca roda as duas na mesma rodada (`lib/speculation.ts`); os números do MTP
+  e onde ele fica só aparecem com o MTP escolhido, e os do lookup só com ele), *Configurações POM* (desativar embeddings, ajuste de memória,
   chunks em voo, fusão de fatias, precisão do estado oculto) e *Configurações
   POM (DESENV)* (motor de inferência e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
@@ -586,27 +588,6 @@ Key logic carriers:
   desligada, os controles somem, mas os valores recebidos continuam no estado
   e seguem no pedido quando um controle visível é editado. O modo ausente é
   apresentado como `dense` (`llama.cpp`).
-- `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
-  inferência usados pelo Deploy Studio e pela tela de implantações registradas;
-  inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,
-  1..8) e a reserva configurável do fit (`fit_memory_margin_mb`, em MiB), e
-  mantém os ajustes por máquina fora do bloco global. Também expõe o detector de
-  ciclos, seus limites de janela e o número de repetições. Todo campo numérico
-  passa `tip` para o `Field` (dica no `[i]`, sem texto fixo no layout);
-  `deploy.knob.<chave>Hint` no `locales.ts` é a fonte, e todas as chaves de
-  `KNOBS` agora têm uma. `CapabilitySwitch` usa o
-  estado tri-state retornado pelo plano: oculta incompatíveis, mantém
-  indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
-  controle `no_embeddings`.
-  O seletor `hidden_state_dtype` mantém f16 como padrão, oferece f32 como
-  opção sem perda de quatro bytes por valor e f8/i4g64/i4g128 como escolhas
-  explícitas com perda. f32/f16 não exigem capability; os formatos com perda
-  ficam desabilitados até todos os peers selecionados anunciarem suporte, e a
-  dica mostra o motivo da capability correspondente ao formato escolhido.
-  `RuntimeParamsForm` não depende do `POM_DESENV`: a amostragem completa e a
-  semente ficam na grade de números, na mesma ordem do inspetor e com a mesma
-  regra do DRY, e onde o MTP
-  fica aparece junto dos números do MTP.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `PeerDetailCard.ContextReservationNotice` (PeerDetailCard.tsx) - when the

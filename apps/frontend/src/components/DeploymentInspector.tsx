@@ -30,8 +30,9 @@
  * inspetor. É a mesma razão de o controle ter largura fixa à direita.
  */
 import { useState, type ReactNode } from "react";
+import { Check } from "lucide-react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
-import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
+import { speculationModeOf, speculationPatch, type SpeculationMode } from "../lib/speculation";
 import { SidecarPicker, type SidecarPick } from "./SidecarPicker";
 import {
   DEFAULT_SAMPLER_SEED,
@@ -50,6 +51,37 @@ import type {
   WireDtype,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+
+/** A caixinha de marcar do inspetor (`role="checkbox"` + `aria-label`, que é como os testes a encontram). */
+export function Tick({
+  on,
+  label,
+  onToggle,
+  disabled = false,
+}: {
+  on: boolean;
+  label: string;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onToggle}
+      className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] border transition-colors duration-150 ${
+        on
+          ? "border-iris bg-iris text-white"
+          : "border-line-strong bg-ink text-transparent hover:border-iris/60"
+      }`}
+    >
+      <Check className="h-3 w-3" strokeWidth={3} />
+    </button>
+  );
+}
 
 /** Toda linha do inspetor: `[i]` · nome · controle. */
 const ROW =
@@ -436,9 +468,15 @@ export function DeploymentInspector({
     );
   }
 
-  const speculativeOn = value.speculative_decoding_enabled ?? false;
   const dryOn = (value.dry_multiplier ?? 0) > 0;
-  const mtpOn = value.mtp_enabled ?? false;
+  const speculation = speculationModeOf(value);
+  const speculationCapability = (mode: SpeculationMode) =>
+    mode === "mtp" ? capabilities?.mtp : mode === "lookup" ? capabilities?.speculative_decoding : undefined;
+  const chosenCapability = speculationCapability(speculation);
+  // Uma escolha cujo suporte o nó ainda não sabe dizer fica disponível, mas avisada.
+  const speculationAlert = chosenCapability?.state === "unknown"
+    ? `${t("inspector.capabilityUnknown")} ${chosenCapability.reason}`
+    : chosenCapability?.warning || undefined;
 
   return (
     <>
@@ -520,37 +558,40 @@ export function DeploymentInspector({
             )}
           </InspectorRow>
         )}
-        {toggle({
-          key: "speculative_decoding_enabled",
-          label: t("deploy.speculative"),
-          capability: capabilities?.speculative_decoding,
-          checked: speculativeOn,
-          onToggle: (next) => set({ speculative_decoding_enabled: next }),
-          tip: t("deploy.speculativeHint"),
-        })}
-        {speculativeOn && capabilities?.speculative_decoding?.state !== "unsupported" && (
+        <InspectorRow
+          label={t("deploy.speculationMode")}
+          tip={t("deploy.speculationModeHint")}
+          alert={speculationAlert}
+        >
+          {readOnly ? (
+            <ReadValue>{t(`deploy.speculationMode.${speculation}`)}</ReadValue>
+          ) : (
+            <Select
+              aria-label={t("deploy.speculationMode")}
+              name="speculation_mode"
+              value={speculation}
+              onChange={(event) => set(speculationPatch(event.target.value as SpeculationMode, value))}
+              compact
+            >
+              {(["none", "mtp", "lookup"] as const)
+                .filter((mode) => mode === "none" || mode === speculation || speculationCapability(mode)?.state !== "unsupported")
+                .map((mode) => (
+                  <option key={mode} value={mode}>{t(`deploy.speculationMode.${mode}`)}</option>
+                ))}
+            </Select>
+          )}
+        </InspectorRow>
+        {speculation === "lookup" && capabilities?.speculative_decoding?.state !== "unsupported" && (
           <>
             {numeric("speculative_k")}
             {numeric("speculative_lookup_window")}
           </>
         )}
-        {toggle({
-          key: "mtp_enabled",
-          label: t("deploy.mtp"),
-          capability: capabilities?.mtp,
-          checked: mtpOn,
-          onToggle: (next) =>
-            set({
-              mtp_enabled: next,
-              ...(next ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
-            }),
-          tip: t("deploy.mtpHint"),
-        })}
-        {mtpOn && capabilities?.mtp?.state !== "unsupported" && (
+        {speculation === "mtp" && capabilities?.mtp?.state !== "unsupported" && (
           <>
             {numeric("mtp_draft_tokens")}
             {numeric("mtp_min_probability")}
-                <InspectorRow label={t("deploy.mtpPlacement")} tip={t("deploy.mtpPlacementHint")}>
+            <InspectorRow label={t("deploy.mtpPlacement")} tip={t("deploy.mtpPlacementHint")}>
               {readOnly ? (
                 <ReadValue>{t(MTP_PLACEMENT_LABELS[value.mtp_placement ?? "auto"])}</ReadValue>
               ) : (
@@ -569,7 +610,7 @@ export function DeploymentInspector({
             </InspectorRow>
           </>
         )}
-        {mtpOn && sidecars && !readOnly && (
+        {speculation === "mtp" && sidecars && !readOnly && (
           <div className="px-0.5 py-1.5">
             <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.mtp")}</p>
             <SidecarPicker

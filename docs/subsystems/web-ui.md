@@ -402,7 +402,8 @@ process was started with exactly `POM_DESENV=1`. `DeployModel` and History
 completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", the
 inference engine and idle unloading) when the flag is false; the whole sampler
 (min-p, frequency, DRY), the seed and where MTP runs are default settings
-shown to everyone, in the deploy inspector and in the redeploy box. On the `/implantar` screen, Tensor, the
+shown to everyone, in the deploy inspector and in History's redeploy panel
+(the same inspector, editable, on the right side of the list). On the `/implantar` screen, Tensor, the
 Simple/Complete strategies and the "Back to the node's plan" button are also
 hidden when `pom_desenv` is false. This is only local visibility: the UI and the
 backend keep the deployment values received over the network, even when the
@@ -1186,11 +1187,10 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   first new field. It has three categories, and the boundary between them is
   whose parameter it is - *Default settings* (what llama.cpp already has:
   context, sessions, max tokens, batch, prefill chunk, sampling, the
-  installation's K/V cache, disabling thinking/embeddings, speculative and
-  MTP), *POM settings* (inference engine, fit to memory, chunks in flight,
-  merging neighboring slices and hidden-state precision) and *POM settings
-  (DEV)* (inference engine, the cycle detector's three windows, its switch and
-  the MTP fallback to RAM, plus per-peer idle unloading). That section only
+  installation's K/V cache, disabling thinking/embeddings and the speculation
+  choice), *POM settings* (fit to memory, chunks in flight, merging neighboring
+  slices and hidden-state precision) and *POM settings (DEV)* (inference engine
+  and per-peer idle unloading). That section only
   shows up when `NodeInfo.pom_desenv` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:
   with names of different widths, icons to the right of the text came out
@@ -1230,9 +1230,13 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   bytes per value, while f8 and i4 are lossy. In the globals, the whole model
   facts section and its machine selector are not shown: the machine chosen on
   the map is the only one that counts for the deployment. In the globals, the
-  execution section separates lookup speculation from MTP; when MTP is checked,
-  the minimum probability starts at `0.75`, but stays a field the operator can
-  edit and the changed value goes into the deploy. The **Inference engine**
+  execution section has one **Speculation** choice - None, MTP or lookup -
+  because the gateway never runs both in the same round (with both stored, MTP
+  wins); MTP's numbers and where it runs only show with MTP chosen. A new
+  deployment starts with MTP on (`RuntimeParams` default, used only when the
+  plan supports it) and the minimum probability at `0.75`, a field the operator
+  can still edit. The vision projector and the MTP draft show one summary line;
+  the path on every machine opens in a "More info" window. The **Inference engine**
   section only shows up when the GGUF's real metadata reports more than one
   expert. The UI presents `dense` (llama.cpp) and `moe`, and sends the choice in
   whole model, sliced pipeline and Tensor Parallelism modes. The backend also

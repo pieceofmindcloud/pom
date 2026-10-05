@@ -863,18 +863,21 @@ frame's deadline. Now the route is **measured once and pinned**.
   (the return of the direct reply and of remote-stream).
 - **When it measures.** The planner (`spawn_planner`, started by
   `Network::start`) measures every edge with no analysis, with an analysis
-  older than 5 min or whose peer changed addresses, ports, `deploy_id` or layer
+  older than 3 min or whose peer changed addresses, ports, `deploy_id` or layer
   range. A deployment that becomes `serving` changes the announced range, so
   the analysis runs before the first request. An analysis that found no route
-  repeats every 5 s in the background when the edge had no route yet; with a
-  route, an empty analysis **keeps** the existing route and renews its
-  deadline - the probe has a short cap and a busy peer did not answer in time,
-  erasing the tunnel route. The route only goes away when a real frame fails on
-  it (`record_failure`).
+  repeats every 5 s in the background. With a route already there, an empty
+  analysis **keeps** it - the probe has a short cap and a busy peer did not
+  answer in time - and renews its deadline so frames keep using it, but the edge
+  stays due and is measured again 5 s later instead of a full 3 min later. The route only goes away when a real
+  frame fails on it (`record_failure`).
 - **How it measures.** With the real transport, in parallel, two samples per
   route (the smaller wins, because the first pays the handshake): `GET /health`
   over HTTP with the pinned client, an HTTP/3 POST per QUIC endpoint (any status
-  proves the path) and `/health` through the tunnel. A 500 ms ceiling per direct
+  proves the path) and `/health` through the tunnel. The tunnel's own 502 for a
+  server that is not listening does not count: the direct probes fail against
+  that same closed port, and counting it left the tunnel as the only route of a
+  peer measured while its deployment was still loading. A 500 ms ceiling per direct
   probe and 2 s through the tunnel. The list comes out sorted by RTT; within
   2 ms QUIC wins, then HTTP, then tunnel. QUIC only enters with the cluster's
   QUIC policy on.

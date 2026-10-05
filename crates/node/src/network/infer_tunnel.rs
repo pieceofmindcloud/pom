@@ -559,6 +559,10 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
 ///
 /// Frames de inferência continuam sendo POSTs. A única exceção é o GET curto
 /// de `/health` usado pela medição direcional de RTT.
+/// The status `serve_loopback` answers when the peer's own server is not
+/// listening: the tunnel reached the peer, the destination did not exist.
+pub(crate) const NOTHING_LISTENING_STATUS: u16 = 502;
+
 pub async fn serve_loopback(
     http: &reqwest::Client,
     port: u16,
@@ -609,7 +613,7 @@ pub async fn serve_loopback(
         // from a successful-but-erroring response, without inventing a new
         // status code space just for the tunnel.
         Err(e) => TunnelResponse {
-            status: 502,
+            status: NOTHING_LISTENING_STATUS,
             body: e.to_string().into_bytes(),
         },
     }

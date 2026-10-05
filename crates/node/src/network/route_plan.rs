@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 /// Validade de uma análise. Depois disso a aresta é medida de novo, mesmo
 /// sem falha: um caminho melhor pode ter surgido (hole punch novo, IPv6 que
 /// voltou).
-pub const PLAN_TTL: Duration = Duration::from_secs(300);
+pub const PLAN_TTL: Duration = Duration::from_secs(180);
 
 /// How long after the last frame an edge stays pinned. It covers the gap
 /// between legs of a generation and between turns of a conversation, without
@@ -175,6 +175,10 @@ struct EdgePlan {
     strikes: u32,
     measured_at: Instant,
     fingerprint: u64,
+    /// The last analysis found no route and this one was kept. The edge stays
+    /// due for analysis (`claim_measurement`), which repeats every
+    /// `EMPTY_RETRY` until something answers.
+    unanswered: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -299,7 +303,9 @@ impl RouteBook {
     }
 
     /// Records an analysis result. An empty list keeps the existing route
-    /// (renewing its deadline); only a real frame's failure erases it.
+    /// (renewing its deadline, so `active` still returns it), which only a
+    /// real frame's failure erases, and leaves the edge due for analysis, so
+    /// it repeats after `EMPTY_RETRY` instead of `PLAN_TTL`.
     pub fn install(
         &self,
         node_id: &str,
@@ -334,19 +340,33 @@ impl RouteBook {
             // another session's prefill chunk) did not answer in time - the
             // tunnel route vanished and the session lifecycle went to
             // unreachable direct addresses. The route stays until a real frame
-            // fails on it (`record_failure` exhausts and erases it), and the
-            // analysis repeats on schedule.
+            // fails on it (`record_failure` exhausts and erases it).
+            //
+            // The renewed deadline keeps the route in use, but the edge stays
+            // due for analysis (`unanswered`): an analysis nobody answered
+            // says nothing about the edge, and treating it as fresh held a
+            // route measured while the peer was reloading for a whole
+            // `PLAN_TTL` after the peer came back.
             if let Some(edge) = edges.get_mut(&key) {
                 edge.measured_at = Instant::now();
                 edge.fingerprint = fingerprint;
-                warn!(
-                    "route {} to {label}: no route answered the analysis; keeping {}",
-                    plane.as_str(),
-                    edge.routes
-                        .get(edge.active)
-                        .map(PlannedRoute::describe)
-                        .unwrap_or_default()
-                );
+                let kept = edge
+                    .routes
+                    .get(edge.active)
+                    .map(PlannedRoute::describe)
+                    .unwrap_or_default();
+                if edge.unanswered {
+                    debug!(
+                        "route {} to {label}: still no answer to the analysis; keeping {kept}",
+                        plane.as_str()
+                    );
+                } else {
+                    warn!(
+                        "route {} to {label}: no route answered the analysis; keeping {kept}",
+                        plane.as_str()
+                    );
+                }
+                edge.unanswered = true;
             }
             return;
         }
@@ -378,6 +398,7 @@ impl RouteBook {
                 strikes: 0,
                 measured_at: Instant::now(),
                 fingerprint,
+                unanswered: false,
             },
         );
     }
@@ -462,7 +483,9 @@ impl RouteBook {
         let now = Instant::now();
         let fresh = self.edges.read().ok().is_some_and(|edges| {
             edges.get(&key).is_some_and(|edge| {
-                edge.fingerprint == fingerprint && now.duration_since(edge.measured_at) < PLAN_TTL
+                edge.fingerprint == fingerprint
+                    && !edge.unanswered
+                    && now.duration_since(edge.measured_at) < PLAN_TTL
             })
         });
         if fresh {
@@ -829,6 +852,16 @@ async fn probe_quic(
     best
 }
 
+/// Whether a tunnel reply proves a path to the peer's server. Any status the
+/// server itself gave does, as in the direct probes. The tunnel's own "nothing
+/// is listening" does not: the direct probes fail against that same closed
+/// port, so counting it made the tunnel the only route of every peer measured
+/// while its server was down - a deployment being loaded - and that route was
+/// then kept for `PLAN_TTL`.
+fn tunnel_reply_proves_route(status: u16) -> bool {
+    status != crate::infer_tunnel::NOTHING_LISTENING_STATUS
+}
+
 async fn probe_tunnel(target: &EdgeTarget) -> Option<PlannedRoute> {
     let tunnel = target.tunnel.as_ref()?;
     let sender = crate::infer_tunnel::tunnel_sender()?;
@@ -852,7 +885,7 @@ async fn probe_tunnel(target: &EdgeTarget) -> Option<PlannedRoute> {
             .await
             .ok()?;
         match tokio::time::timeout(TUNNEL_PROBE_TIMEOUT, response).await {
-            Ok(Ok(Ok(_))) => {
+            Ok(Ok(Ok(response))) if tunnel_reply_proves_route(response.status) => {
                 let rtt = started.elapsed();
                 best = Some(best.map_or(rtt, |b| b.min(rtt)));
             }
@@ -1085,6 +1118,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_tunnel_answering_for_a_closed_port_is_not_a_route() {
+        assert!(!tunnel_reply_proves_route(crate::infer_tunnel::NOTHING_LISTENING_STATUS));
+        // The server answered, even while loading: the path exists.
+        assert!(tunnel_reply_proves_route(200));
+        assert!(tunnel_reply_proves_route(503));
+    }
+
     /// An empty analysis (a probe that did not answer in time on a busy peer)
     /// does not erase a route that worked; only a real frame's failure does.
     #[test]
@@ -1102,8 +1143,12 @@ mod tests {
             RouteKind::Tunnel
         );
         assert!(
+            book.claim_measurement("peer", Plane::Inference, 2),
+            "an unanswered analysis leaves the edge due, not held for PLAN_TTL"
+        );
+        assert!(
             !book.claim_measurement("peer", Plane::Inference, 2),
-            "deadline renewed"
+            "and repeats only after EMPTY_RETRY"
         );
         assert_eq!(
             book.record_failure("peer", Plane::Inference),

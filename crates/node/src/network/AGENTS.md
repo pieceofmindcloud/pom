@@ -265,7 +265,7 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   remote-stream). `relayed_nodes` lista os peers alcançados só por circuito
   num relé, refeita a cada volta do planejador a partir de
   `Network::libp2p_links`. `spawn_planner`, iniciado por `Network::start`, mede toda
-  aresta sem análise, vencida (5 min) ou cujo peer mudou endereços, portas,
+  aresta sem análise, vencida (3 min) ou cujo peer mudou endereços, portas,
   `deploy_id` ou faixa de camadas - por isso a implantação que fica `serving` já
   dispara a análise antes da primeira requisição. `measure_edge` sonda em
   paralelo com o transporte real: `GET /health` por HTTP com o cliente pinado,
@@ -276,8 +276,12 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   guard every frame and every return delivery holds: with a frame in flight or
   until `PIN_GRACE` (60 s) after the last one, the planner neither probes the
   edge nor swaps its route, and `active` ignores `PLAN_TTL`; only the frame's
-  own failure swaps it. An empty analysis keeps the existing route (refreshing
-  its deadline and fingerprint); only an exhausted `record_failure` erases it.
+  own failure swaps it. An empty analysis keeps the existing route (renewing
+  its deadline, so `active` still returns it) but leaves the edge due, so the
+  analysis repeats after `EMPTY_RETRY` (5 s); only an exhausted `record_failure` erases it. The tunnel probe does
+  not count the tunnel's own "nothing is listening" 502
+  (`infer_tunnel::NOTHING_LISTENING_STATUS`) as a route: a peer measured while
+  its server was down used to get the tunnel as its only route for a whole `PLAN_TTL`.
   `establish_budget` dá o orçamento de
   conexão: 3x o RTT medido entre 100 ms e o teto, 150 ms sem medição.
   `snapshot`/`signature` alimentam o campo `route_plan` de `/api/ui/cluster`.

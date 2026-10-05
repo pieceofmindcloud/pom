@@ -925,6 +925,10 @@ faz o download autenticado do blob persistido.
   fila para o scan atual terminar. O enriquecimento registra início e conclusão
   (inclusive descarte), e uma falha terminal marca `metadata_error` no item e
   não impede os demais, então a passagem termina com `metadata_complete: true`.
+  Um arquivo que o enriquecimento descarta (sidecar que só o header revela,
+  como um draft MTP sem o prefixo `mtp-` ou sem extensão) sai também do
+  inventário atual (`drop_discarded`): pendente para sempre, ele reiniciava o
+  enriquecimento em laço, centenas de vezes por segundo.
   O resultado publicado é reutilizado nas requisições da interface; modelo cujo
   caminho, tamanho e mtime não mudaram não é relido. Nova leitura só ocorre em
   refresh por TTL ou invalidação. O survey de implantação só recusa uma

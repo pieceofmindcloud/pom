@@ -56,6 +56,58 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// A sidecar the fast scan cannot tell by name (an MTP draft called
+    /// `Ckpt_Q38.gguf`) enters as a pending model and the enrichment drops it.
+    /// It has to leave the inventory too: left there it stayed pending, and
+    /// every finished enrichment started the next one in a tight loop.
+    #[test]
+    fn a_sidecar_known_only_by_its_header_does_not_stay_pending() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-catalog-discarded-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        std::fs::write(
+            models.join("model.gguf"),
+            crate::splitter::test_gguf_bytes(1),
+        )
+        .unwrap();
+        std::fs::write(
+            models.join("Ckpt_Q38.gguf"),
+            crate::catalog::tests::mtp_draft_fixture("llama", 64, 32),
+        )
+        .unwrap();
+
+        let fast = crate::catalog::discover_fast(std::slice::from_ref(&models), &shards);
+        assert_eq!(
+            fast.models.len(),
+            2,
+            "the fast scan cannot tell the draft by name"
+        );
+        let input = pending_metadata(&fast);
+        let enriched = crate::catalog::enrich(input.clone());
+        assert_eq!(
+            enriched.models.len(),
+            1,
+            "the header shows the draft is not a model"
+        );
+
+        let mut current = fast;
+        reconcile_enriched_catalog(&mut current, &enriched);
+        let removed = drop_discarded(&mut current, &input, &enriched);
+
+        assert_eq!(removed.len(), 1);
+        assert!(removed[0].ends_with("Ckpt_Q38.gguf"));
+        assert!(
+            pending_metadata(&current).models.is_empty(),
+            "nothing left to enrich again"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
     /// The inventory a refresh publishes has to carry the sidecars itself:
     /// the enrichment only runs while a model still lacks its headers, so a
     /// list filled only there was empty again after the next refresh - the

@@ -510,6 +510,47 @@ pub(super) fn pending_metadata(catalog: &Catalog) -> Catalog {
     pending
 }
 
+/// Files the enrichment read and discarded leave the current inventory too.
+///
+/// The fast scan only knows sidecars by name (`mmproj*`, `mtp-*`); one known
+/// only by its header (an MTP draft named `Ckpt_Q38`, or with no extension at
+/// all) enters as a pending model, and `catalog::enrich` drops it once the
+/// header shows what it is. Left in the inventory it stayed pending forever,
+/// and every finished enrichment started the next one at once - hundreds of
+/// passes per second. Returns the paths removed.
+pub(super) fn drop_discarded(
+    current: &mut Catalog,
+    input: &Catalog,
+    enriched: &Catalog,
+) -> Vec<String> {
+    let kept: std::collections::HashSet<&str> = enriched
+        .models
+        .iter()
+        .map(|model| model.path.as_str())
+        .collect();
+    let discarded: std::collections::HashSet<&str> = input
+        .models
+        .iter()
+        .map(|model| model.path.as_str())
+        .filter(|path| !kept.contains(path))
+        .collect();
+    if discarded.is_empty() {
+        return Vec::new();
+    }
+    let mut removed = Vec::new();
+    current.models.retain(|model| {
+        let drop = !catalog::metadata_is_current(model) && discarded.contains(model.path.as_str());
+        if drop {
+            removed.push(model.path.clone());
+        }
+        !drop
+    });
+    if !removed.is_empty() {
+        catalog::rebuild_shard_sets(current);
+    }
+    removed
+}
+
 /// Copy completed metadata into a newer inventory by filesystem identity.
 /// Inventory refreshes necessarily create a new `Arc`, so pointer equality is
 /// not a valid publication condition. `sidecars` is left alone: the newer
@@ -616,6 +657,17 @@ pub(super) fn spawn_enrichment(
 
             let applied =
                 reconcile_enriched_catalog(Arc::make_mut(&mut current.catalog), &enriched);
+            let discarded =
+                drop_discarded(Arc::make_mut(&mut current.catalog), &partial, &enriched);
+            if !discarded.is_empty() {
+                let catalog = Arc::make_mut(&mut current.catalog);
+                catalog.metadata_complete = catalog.models.iter().all(catalog::metadata_is_current);
+                info!(
+                    "catálogo: {} arquivo(s) não são modelos implantáveis (projetor ou rascunho MTP): {}",
+                    discarded.len(),
+                    discarded.join(", ")
+                );
+            }
             current.enriching = None;
             let pending = pending_metadata(&current.catalog);
             let failed = enriched

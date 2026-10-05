@@ -41,7 +41,7 @@ remain local until the deploy preflight.
 ## src root
 
 - `index.html` - dark default (`data-theme="dark"`), two pre-paint scripts: theme from `localStorage` `codai.theme` (system preference deliberately does not decide) and `lang` from `codai.locale` / browser locales, so the first paint already matches the app state.
-- `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (basename `/admin-ui`, opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`.
+- `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (basename `/admin-ui`, opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`. Before rendering, an address outside the basename (the node answers any unknown GET with this page, e.g. `/setup`) is replaced by the same path under `/admin-ui`; without that the router renders nothing and the screen is blank.
 - `index.css` - design tokens and global styles (see below).
 - `App.tsx` - shell and route table (see below); after setup detection it probes
   the public administrative exposure and gates the whole shell with the human

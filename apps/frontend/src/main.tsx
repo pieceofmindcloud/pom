@@ -21,6 +21,18 @@ const queryClient = new QueryClient({
   },
 });
 
+const BASENAME = "/admin-ui";
+
+/*
+ * The node answers any unknown GET with this page, but the router only
+ * renders under its basename: opened at `/setup`, it drew nothing at all. Move
+ * such an address under the basename instead of leaving a blank screen.
+ */
+const { pathname, search, hash } = window.location;
+if (pathname !== BASENAME && !pathname.startsWith(`${BASENAME}/`)) {
+  window.location.replace(`${BASENAME}${pathname}${search}${hash}`);
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
@@ -32,7 +44,7 @@ createRoot(document.getElementById("root")!).render(
                   assumes, and it keeps the dev console free of deprecation
                   noise so a real warning stands out. */}
               <BrowserRouter
-                basename="/admin-ui"
+                basename={BASENAME}
                 future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
               >
                 <App />

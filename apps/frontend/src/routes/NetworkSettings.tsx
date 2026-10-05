@@ -190,7 +190,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     try {
       await api.post("/api/ui/network/leave");
       toast.success(t("network.forgetNetworkStarted"), t("network.forgetNetworkStartedDetail"));
-      window.setTimeout(() => window.location.assign("/setup"), 1500);
+      window.setTimeout(() => window.location.assign("/admin-ui/setup"), 1500);
     } catch (e) {
       toast.fromError(t("network.forgetNetworkFailed"), e);
     } finally {

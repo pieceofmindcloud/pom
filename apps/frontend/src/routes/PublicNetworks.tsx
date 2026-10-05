@@ -149,7 +149,7 @@ export function PublicNetworks() {
     try {
       sessionStorage.setItem("pom.public-network-join", JSON.stringify(network));
       await api.post("/api/ui/network/leave");
-      window.setTimeout(() => window.location.assign("/setup"), 1500);
+      window.setTimeout(() => window.location.assign("/admin-ui/setup"), 1500);
     } catch (reason) {
       sessionStorage.removeItem("pom.public-network-join");
       toast.fromError(t("publicNetworks.joinFailed"), reason);
@@ -163,7 +163,7 @@ export function PublicNetworks() {
     try {
       await api.post("/api/ui/network/leave");
       toast.success(t("network.forgetNetworkStarted"), t("network.forgetNetworkStartedDetail"));
-      window.setTimeout(() => window.location.assign("/setup"), 1500);
+      window.setTimeout(() => window.location.assign("/admin-ui/setup"), 1500);
     } catch (reason) {
       toast.fromError(t("network.forgetNetworkFailed"), reason);
       setLeaving(false);

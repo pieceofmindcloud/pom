@@ -1486,7 +1486,7 @@ forge one or point it at another key. The descriptive fields (name, city,
 `lobby_chat`, `public_stats`) are as the answering node reports them.
 
 Which relays a fresh installation asks: `DEFAULT_DIRECTORY_RELAYS`
-(`network_lobby.rs`, empty today), the `POM_DIRECTORY_RELAYS` environment
+(`network_lobby.rs`, one relay key today), the `POM_DIRECTORY_RELAYS` environment
 variable (comma separated `pk:` keys), the `relay_peers` already in the
 config, and the keys typed in the wizard. They are keys, resolved through
 pkarr at dial time, never addresses.

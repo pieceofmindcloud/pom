@@ -175,8 +175,9 @@ pub enum LobbyRequest {
 
 /// Relay keys (`pk:...`) every installation asks for the public networks, in
 /// addition to `POM_DIRECTORY_RELAYS` and to the relays already configured.
-/// Empty until the product runs public relays of its own.
-pub const DEFAULT_DIRECTORY_RELAYS: &[&str] = &[];
+/// A key here must parse as a pkarr key: `default_directory_relays_are_keys`.
+pub const DEFAULT_DIRECTORY_RELAYS: &[&str] =
+    &["pk:kyqrhnypyqfu7ic43ej1i7a5kjmyh8nxxrpumzmxjqk6dty4xq6o"];
 
 /// Keys from [`DEFAULT_DIRECTORY_RELAYS`] and the `DIRECTORY_RELAYS`
 /// environment variable (comma separated), without repeats.
@@ -1243,6 +1244,17 @@ mod tests {
             assert!(board.allow("asker"));
         }
         assert!(!board.allow("asker"));
+    }
+
+    /// A key that does not parse is never dialed, and nothing would say so.
+    #[test]
+    fn default_directory_relays_are_keys() {
+        for key in DEFAULT_DIRECTORY_RELAYS {
+            assert!(
+                crate::pkarr_node::peer_id_from_uri(key).is_some(),
+                "{key} is not a pkarr key"
+            );
+        }
     }
 
     #[test]

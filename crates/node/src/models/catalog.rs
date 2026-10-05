@@ -361,12 +361,19 @@ const MTP_DRAFT_MAX_TENSORS: u64 = 256;
 
 /// What a GGUF is, when it is a sidecar. Read from the header, with the name
 /// only as a hint: the observed MTP draft calls itself `Ckpt_Q38`.
+///
+/// A slice cut by POM is never a draft, however few tensors it has: a short
+/// tail range of a model with `nextn` (13 layers, 177 tensors) has exactly the
+/// shape of one, and treating it as a sidecar dropped a slice that had just
+/// been cut from the catalog. The `pom.start_layer`/`pom.end_layer` the
+/// splitter writes (`shard_range`) are what tells them apart.
 pub(crate) fn sidecar_kind(filename: &str, info: &GgufInfo) -> Option<SidecarKind> {
     let lower = filename.to_ascii_lowercase();
     if info.architecture.as_deref() == Some("clip") || lower.contains("mmproj") {
         return Some(SidecarKind::Mmproj);
     }
     let draft_shaped = info.nextn_predict_layers.is_some_and(|layers| layers > 0)
+        && info.shard_range.is_none()
         && info.split_count.unwrap_or(1) <= 1
         && info.tensor_count > 0
         && info.tensor_count <= MTP_DRAFT_MAX_TENSORS;
@@ -2184,6 +2191,13 @@ pub(crate) mod tests {
         assert_eq!(sidecar_kind("Qwen-Q2_K.gguf", &info), None);
         info.tensor_count = 34;
         assert_eq!(sidecar_kind("Ckpt.gguf", &info), Some(SidecarKind::Mtp));
+        // A short tail slice of the same model has as few tensors as a draft.
+        let slice = GgufInfo {
+            tensor_count: 177,
+            shard_range: Some((52, 64)),
+            ..info.clone()
+        };
+        assert_eq!(sidecar_kind("bcdcd8ef.gguf", &slice), None);
         info.split_count = Some(3);
         info.tensor_count = 0;
         assert_eq!(sidecar_kind("Qwen-00001-of-00003.gguf", &info), None);

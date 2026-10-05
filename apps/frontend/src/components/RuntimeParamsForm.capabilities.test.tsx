@@ -257,7 +257,7 @@ describe("RuntimeParamsForm", () => {
     const onChange = vi.fn();
     render(
       <LocaleProvider initialLocale="pt-BR">
-        <RuntimeParamsForm value={requested} onChange={onChange} pomDesenv={false} />
+        <RuntimeParamsForm value={requested} onChange={onChange} />
       </LocaleProvider>,
     );
 
@@ -272,13 +272,12 @@ describe("RuntimeParamsForm", () => {
     }));
   });
 
-  it("mantém os controles de desenvolvimento quando a flag está ligada", () => {
+  it("mostra onde o MTP fica com o MTP ligado, sem depender do POM_DESENV", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <RuntimeParamsForm
           value={{ ...FORM_PARAMS, mtp_enabled: true }}
           onChange={vi.fn()}
-          pomDesenv
         />
       </LocaleProvider>,
     );

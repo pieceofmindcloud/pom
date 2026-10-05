@@ -15,12 +15,14 @@
  * **Três categorias, e a fronteira entre elas é de quem é o parâmetro:**
  *
  * * *Configurações padrões* - o que o llama.cpp já tem: contexto, lote,
- *   amostragem, cache KV, e os interruptores de recurso do próprio motor.
+ *   amostragem (temperatura, top-p/top-k/min-p, penalidades, DRY e semente),
+ *   cache KV, e os interruptores de recurso do próprio motor, com onde o MTP
+ *   fica logo abaixo dos números do MTP.
  * * *Configurações POM* - o que existe porque a inferência é distribuída:
  *   desativar embeddings, ajuste de memória, chunks de prefill em voo, fusão
  *   de fatias e a precisão do estado oculto entre peers.
- * * *Configurações POM (DESENV)* - o motor de inferência, o detector de ciclo
- *   e o recuo do MTP, que ainda estão sendo medidos.
+ * * *Configurações POM (DESENV)* - o motor de inferência e o descarregamento
+ *   ocioso, que ainda estão sendo medidos.
  *
  * **O ícone de informação vem antes do nome**, e não depois: os nomes têm
  * larguras diferentes, e um `[i]` colado ao fim de cada um deixava a coluna de
@@ -103,23 +105,25 @@ const DEFAULT_NUMERIC_KNOBS: NumericKey[] = [
   "n_batch",
   "n_ubatch",
   "prefill_chunk_tokens",
+  // Amostragem na ordem do llama.cpp: temperatura e os cortes do conjunto de
+  // candidatos, depois as penalidades de repetição, depois o DRY (que também é
+  // uma penalidade de repetição, por sequência). A semente vem logo depois.
   "temperature",
   "top_p",
   "top_k",
+  "min_p",
   "repeat_penalty",
   "repeat_last_n",
   "presence_penalty",
-];
-
-/** Sampler settings of llama.cpp that few deployments touch; shown with the development settings. */
-const DEV_SAMPLING_KNOBS: NumericKey[] = [
   "frequency_penalty",
-  "min_p",
   "dry_multiplier",
   "dry_base",
   "dry_allowed_length",
   "dry_penalty_last_n",
 ];
+
+/** O DRY se desliga com o multiplicador em 0; os outros números dele só valem ligado. */
+const DRY_DETAIL_KNOBS: NumericKey[] = ["dry_base", "dry_allowed_length", "dry_penalty_last_n"];
 
 export const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
   f32: "F32",
@@ -433,12 +437,30 @@ export function DeploymentInspector({
   }
 
   const speculativeOn = value.speculative_decoding_enabled ?? false;
+  const dryOn = (value.dry_multiplier ?? 0) > 0;
   const mtpOn = value.mtp_enabled ?? false;
 
   return (
     <>
       <Section title={t("inspector.sectionDefaults")} tone="iris">
-        {DEFAULT_NUMERIC_KNOBS.map((key) => numeric(key))}
+        {DEFAULT_NUMERIC_KNOBS.filter((key) => dryOn || !DRY_DETAIL_KNOBS.includes(key)).map((key) => numeric(key))}
+        <InspectorRow label={t("inspector.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
+          {readOnly ? (
+            <ReadValue>{value.seed ?? DEFAULT_SAMPLER_SEED}</ReadValue>
+          ) : (
+            <Input
+              aria-label={t("inspector.knob.seed")}
+              name="seed"
+              type="text"
+              inputMode="numeric"
+              value={value.seed ?? DEFAULT_SAMPLER_SEED}
+              onChange={(event) => set({ seed: seedText(event.target.value) })}
+              onBlur={() => {
+                if (!value.seed) set({ seed: DEFAULT_SAMPLER_SEED });
+              }}
+            />
+          )}
+        </InspectorRow>
 
         {cacheTypes &&
           (["k", "v"] as const).map((part) => {
@@ -528,6 +550,23 @@ export function DeploymentInspector({
           <>
             {numeric("mtp_draft_tokens")}
             {numeric("mtp_min_probability")}
+                <InspectorRow label={t("deploy.mtpPlacement")} tip={t("deploy.mtpPlacementHint")}>
+              {readOnly ? (
+                <ReadValue>{t(MTP_PLACEMENT_LABELS[value.mtp_placement ?? "auto"])}</ReadValue>
+              ) : (
+                <Select
+                  aria-label={t("deploy.mtpPlacement")}
+                  name="mtp_placement"
+                  value={value.mtp_placement ?? "auto"}
+                  onChange={(event) => set({ mtp_placement: event.target.value as MtpPlacement })}
+                  compact
+                >
+                  <option value="auto">{t("deploy.mtpPlacementAuto")}</option>
+                  <option value="vram">{t("deploy.mtpPlacementVram")}</option>
+                  <option value="ram">{t("deploy.mtpPlacementRam")}</option>
+                </Select>
+              )}
+            </InspectorRow>
           </>
         )}
         {mtpOn && sidecars && !readOnly && (
@@ -703,41 +742,6 @@ export function DeploymentInspector({
             )}
           </InspectorRow>
         )}
-        {DEV_SAMPLING_KNOBS.map((key) => numeric(key))}
-        <InspectorRow label={t("inspector.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
-          {readOnly ? (
-            <ReadValue>{value.seed ?? DEFAULT_SAMPLER_SEED}</ReadValue>
-          ) : (
-            <Input
-              aria-label={t("inspector.knob.seed")}
-              name="seed"
-              type="text"
-              inputMode="numeric"
-              value={value.seed ?? DEFAULT_SAMPLER_SEED}
-              onChange={(event) => set({ seed: seedText(event.target.value) })}
-              onBlur={() => {
-                if (!value.seed) set({ seed: DEFAULT_SAMPLER_SEED });
-              }}
-            />
-          )}
-        </InspectorRow>
-        <InspectorRow label={t("deploy.mtpPlacement")} tip={t("deploy.mtpPlacementHint")}>
-          {readOnly ? (
-            <ReadValue>{t(MTP_PLACEMENT_LABELS[value.mtp_placement ?? "auto"])}</ReadValue>
-          ) : (
-            <Select
-              aria-label={t("deploy.mtpPlacement")}
-              name="mtp_placement"
-              value={value.mtp_placement ?? "auto"}
-              onChange={(event) => set({ mtp_placement: event.target.value as MtpPlacement })}
-              compact
-            >
-              <option value="auto">{t("deploy.mtpPlacementAuto")}</option>
-              <option value="vram">{t("deploy.mtpPlacementVram")}</option>
-              <option value="ram">{t("deploy.mtpPlacementRam")}</option>
-            </Select>
-          )}
-        </InspectorRow>
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

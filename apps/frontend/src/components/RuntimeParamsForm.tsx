@@ -44,23 +44,24 @@ export const KNOBS: Knob[] = [
   { key: "max_sessions", min: 1, max: 16 },
   { key: "prefill_chunk_tokens", min: 32, step: 32 },
   { key: "prefill_max_inflight_chunks", min: 1, max: 8 },
+  // Amostragem na ordem do llama.cpp: cortes do conjunto de candidatos,
+  // penalidades de repetição e o DRY; a semente vem logo depois da grade.
   { key: "temperature", min: 0, max: 2, step: 0.05 },
   { key: "top_p", min: 0, max: 1, step: 0.05 },
   { key: "top_k", min: 0 },
+  { key: "min_p", min: 0, max: 1, step: 0.01 },
   { key: "repeat_penalty", min: 1, max: 2, step: 0.01 },
   { key: "repeat_last_n", min: 0 },
   { key: "presence_penalty", min: -2, max: 2, step: 0.05 },
-];
-
-/** Sampler settings of llama.cpp that few deployments touch; development only. */
-export const DEV_SAMPLING_KNOBS: Knob[] = [
   { key: "frequency_penalty", min: -2, max: 2, step: 0.05 },
-  { key: "min_p", min: 0, max: 1, step: 0.01 },
   { key: "dry_multiplier", min: 0, max: 5, step: 0.05 },
   { key: "dry_base", min: 1, max: 4, step: 0.05 },
   { key: "dry_allowed_length", min: 1, max: 50 },
   { key: "dry_penalty_last_n", min: 0, max: 8192 },
 ];
+
+/** O DRY se desliga com o multiplicador em 0; os outros números dele só valem ligado. */
+const DRY_DETAIL_KEYS: (keyof RuntimeParams)[] = ["dry_base", "dry_allowed_length", "dry_penalty_last_n"];
 
 /**
  * Só aparecem com a especulação ligada: fora dali são dois números sem efeito
@@ -219,14 +220,12 @@ export function RuntimeParamsForm({
    */
   isTp = false,
   capabilities,
-  pomDesenv = false,
 }: {
   value: RuntimeParams;
   onChange: (next: RuntimeParams) => void;
   disabled?: boolean;
   isTp?: boolean;
   capabilities?: DeploymentCapabilities;
-  pomDesenv?: boolean;
 }) {
   const { t } = useI18n();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -286,7 +285,21 @@ export function RuntimeParamsForm({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-        {KNOBS.map((k) => numeric(k))}
+        {KNOBS.filter((k) => (value.dry_multiplier ?? 0) > 0 || !DRY_DETAIL_KEYS.includes(k.key)).map((k) => numeric(k))}
+        <Field label={t("deploy.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
+          <Input
+            type="text"
+            inputMode="numeric"
+            name="seed"
+            aria-label={t("deploy.knob.seed")}
+            disabled={disabled}
+            value={value.seed ?? DEFAULT_SAMPLER_SEED}
+            onChange={(event) => onChange({ ...value, seed: seedText(event.target.value) })}
+            onBlur={() => {
+              if (!value.seed) onChange({ ...value, seed: DEFAULT_SAMPLER_SEED });
+            }}
+          />
+        </Field>
       </div>
 
       <div className="border-t border-line pt-4">
@@ -388,26 +401,6 @@ export function RuntimeParamsForm({
           hint={withLlamaCppName(t("deploy.mtpHint"), "mtp_enabled")}
         />
       </div>
-
-      {pomDesenv && (
-        <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-          {DEV_SAMPLING_KNOBS.map((k) => numeric(k))}
-          <Field label={t("deploy.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
-            <Input
-              type="text"
-              inputMode="numeric"
-              name="seed"
-              aria-label={t("deploy.knob.seed")}
-              disabled={disabled}
-              value={value.seed ?? DEFAULT_SAMPLER_SEED}
-              onChange={(event) => onChange({ ...value, seed: seedText(event.target.value) })}
-              onBlur={() => {
-                if (!value.seed) onChange({ ...value, seed: DEFAULT_SAMPLER_SEED });
-              }}
-            />
-          </Field>
-        </div>
-      )}
 
       {(value.speculative_decoding_enabled ?? false) &&
         capabilities?.speculative_decoding?.state !== "unsupported" && (

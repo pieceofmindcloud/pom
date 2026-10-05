@@ -141,3 +141,34 @@ describe("DeploymentInspector idle policy", () => {
     expect(screen.queryByRole("checkbox", { name: "Enable vision" })).toBeNull();
   });
 });
+
+describe("DeploymentInspector default settings", () => {
+  it("shows the full sampler, the seed and where MTP runs without POM_DESENV", () => {
+    mount({ ...params, mtp_enabled: true, dry_multiplier: 0.8 }, vi.fn(), undefined, false);
+
+    const labels = [
+      ...["Temperature", "Top-p", "Top-k", "Min-p", "Penalty", "Frequency", "DRY base"]
+        .map((name) => screen.getByRole("spinbutton", { name })),
+      screen.getByRole("textbox", { name: "Seed" }),
+    ];
+    // Sampling keeps llama.cpp's order: candidate cuts, repetition penalties, DRY, then the seed.
+    for (let index = 1; index < labels.length; index += 1) {
+      expect(labels[index - 1].compareDocumentPosition(labels[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    const mtpProbability = screen.getByRole("spinbutton", { name: "MTP minimum probability" });
+    const placement = screen.getByRole("combobox", { name: "Where MTP runs" });
+    expect(mtpProbability.compareDocumentPosition(placement) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Unload if idle" })).toBeNull();
+  });
+});
+
+describe("DeploymentInspector DRY", () => {
+  it("shows the DRY base, allowed length and window only while the multiplier turns DRY on", () => {
+    mount({ ...params, dry_multiplier: 0 });
+    expect(screen.getByRole("spinbutton", { name: "DRY multiplier" })).toBeTruthy();
+    expect(screen.queryByRole("spinbutton", { name: "DRY base" })).toBeNull();
+    cleanup();
+    mount({ ...params, dry_multiplier: 0.8 });
+    expect(screen.getByRole("spinbutton", { name: "DRY base" })).toBeTruthy();
+  });
+});

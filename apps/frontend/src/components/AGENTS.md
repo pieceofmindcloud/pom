@@ -556,11 +556,15 @@ Key logic carriers:
   o usa com `readOnly` para mostrar com que parâmetros uma versão subiu. Em
   somente leitura não há `<input>` desabilitado: há o valor escrito. Três
   categorias, e a fronteira entre elas é de quem é o parâmetro - *Configurações
-  padrões* (o que o llama.cpp já tem, incluindo os combos de cache KV da
-  instalação), *Configurações POM* (desativar embeddings, ajuste de memória,
+  padrões* (o que o llama.cpp já tem: contexto e lote; a amostragem na ordem
+  do llama.cpp - temperatura, top-p, top-k, min-p, penalidades de repetição,
+  presença e frequência, DRY - seguida da semente; base, tamanho permitido e
+  janela do DRY só aparecem com o multiplicador acima de 0, que é o que liga o
+  DRY; os combos de cache KV da
+  instalação; e os interruptores, com onde o MTP fica logo depois dos números
+  do MTP), *Configurações POM* (desativar embeddings, ajuste de memória,
   chunks em voo, fusão de fatias, precisão do estado oculto) e *Configurações
-  POM (DESENV)* (motor de inferência, detector de ciclo, recuo do MTP para a
-  RAM e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
+  POM (DESENV)* (motor de inferência e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto
@@ -599,8 +603,10 @@ Key logic carriers:
   explícitas com perda. f32/f16 não exigem capability; os formatos com perda
   ficam desabilitados até todos os peers selecionados anunciarem suporte, e a
   dica mostra o motivo da capability correspondente ao formato escolhido.
-  `RuntimeParamsForm` recebe a mesma flag e oculta os controles de ciclo e
-  recuo MTP quando ela está desligada.
+  `RuntimeParamsForm` não depende do `POM_DESENV`: a amostragem completa e a
+  semente ficam na grade de números, na mesma ordem do inspetor e com a mesma
+  regra do DRY, e onde o MTP
+  fica aparece junto dos números do MTP.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `PeerDetailCard.ContextReservationNotice` (PeerDetailCard.tsx) - when the

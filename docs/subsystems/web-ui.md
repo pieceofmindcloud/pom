@@ -398,9 +398,11 @@ documentation, manage its own API key and ask to join the network's processing.
 Any of the three can activate and install plugins on its own machine.
 `GET /api/ui/node` is the source the browser uses and the toolbar shows the
 label through i18n. The same snapshot carries `pom_desenv`, true only when the
-process was started with exactly `POM_DESENV=1`. `DeployModel`, History and the
-redeploy box completely hide `Configurações POM (DESENV)` ("POM settings
-(DEV)") when the flag is false. On the `/implantar` screen, Tensor, the
+process was started with exactly `POM_DESENV=1`. `DeployModel` and History
+completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", the
+inference engine and idle unloading) when the flag is false; the whole sampler
+(min-p, frequency, DRY), the seed and where MTP runs are default settings
+shown to everyone, in the deploy inspector and in the redeploy box. On the `/implantar` screen, Tensor, the
 Simple/Complete strategies and the "Back to the node's plan" button are also
 hidden when `pom_desenv` is false. This is only local visibility: the UI and the
 backend keep the deployment values received over the network, even when the

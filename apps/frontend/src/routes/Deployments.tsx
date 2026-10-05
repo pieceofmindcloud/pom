@@ -79,12 +79,10 @@ function RedeployDialog({
   row,
   open,
   onClose,
-  pomDesenv,
 }: {
   row: DeploymentRow;
   open: boolean;
   onClose: () => void;
-  pomDesenv: boolean;
 }) {
   const { t } = useI18n();
   const toast = useToast();
@@ -177,7 +175,6 @@ function RedeployDialog({
           onChange={setParams}
           disabled={busy}
           isTp={isTp}
-          pomDesenv={pomDesenv}
         />
 
         <div className="space-y-2 border-t border-line pt-4">
@@ -346,12 +343,10 @@ function Row({
   row,
   inspected,
   onInspect,
-  pomDesenv,
 }: {
   row: DeploymentRow;
   inspected: Inspected | null;
   onInspect: (next: Inspected | null) => void;
-  pomDesenv: boolean;
 }) {
   const { locale, t } = useI18n();
   const toast = useToast();
@@ -473,7 +468,6 @@ function Row({
                 row={row}
                 open
                 onClose={() => setRedeploying(false)}
-                pomDesenv={pomDesenv}
               />
             )}
           </div>
@@ -566,7 +560,6 @@ export function Deployments() {
                       row={r}
                       inspected={inspected}
                       onInspect={setInspected}
-                      pomDesenv={pomDesenv}
                     />
                   ))}
                 </tbody>

@@ -506,7 +506,7 @@ profile policy remains the effective authorization boundary.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf`. Manifestos v1 são mesclados por `pom_id` no peer receptor,
+  require `.gguf` or no extension. Manifestos v1 são mesclados por `pom_id` no peer receptor,
   preservando `parts` e `tp_parts` locais. **O veredito volta para quem
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
@@ -1047,7 +1047,8 @@ faz o download autenticado do blob persistido.
   (`servable_path` canonicalizes and checks `starts_with`), while
   `local_send_path` lets the *operator's own* screen offer any readable GGUF
   via an opaque `grant` id (`TransferState::grants`) so a path never travels.
-  `ensure_gguf` (magic + extension, conjunction) gates every exit. **An offer
+  `ensure_gguf` (magic + GGUF file name, conjunction: `.gguf` or no extension,
+  never an Ollama `sha256-` blob) gates every exit. **An offer
   carries no digest**: `send_to_peer` posts only a `stat` (name + real
   `size_bytes`, `md5` empty - the field still travels because an older peer
   requires it); hashing the whole file is what used to hold the bell on the

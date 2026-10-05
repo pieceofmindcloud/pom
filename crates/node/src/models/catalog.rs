@@ -569,8 +569,36 @@ fn child_dirs(base: &Path) -> Vec<PathBuf> {
 
 // ── Filesystem walking ───────────────────────────────────────────────────────
 
-/// Collect `.gguf` files under `root`, bounded in depth and skipping the extra
-/// parts of multi-part models (only `-00001-of-*` is kept).
+/// Whether a file name has no extension, so only its content can say it is a
+/// GGUF. Hugging Face repositories publish such files (an MTP draft called
+/// just `MTP`), and a name like `Qwen3.8-27B-MTP` has a version dot, not an
+/// extension - what follows a real extension dot is alphanumeric only.
+///
+/// Hidden files are temporaries of this process and `sha256-...` is a blob of
+/// the Ollama store, which the catalog reads through its manifests; neither
+/// is a file the operator named.
+pub(crate) fn is_extensionless_name(name: &str) -> bool {
+    if name.is_empty() || name.starts_with('.') || name.starts_with("sha256-") {
+        return false;
+    }
+    match name.rsplit_once('.') {
+        None => true,
+        Some((_, tail)) => !tail.bytes().all(|byte| byte.is_ascii_alphanumeric()),
+    }
+}
+
+/// The `GGUF` signature in the first four bytes.
+fn has_gguf_magic(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok_and(|()| &head == b"GGUF")
+}
+
+/// Collect GGUF files under `root`, bounded in depth and skipping the extra
+/// parts of multi-part models (only `-00001-of-*` is kept). A file is taken by
+/// its `.gguf` extension or, when it has no extension, by its signature.
 fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > MAX_WALK_DEPTH {
         return;
@@ -617,7 +645,9 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
                 continue;
             }
             find_gguf(&path, depth + 1, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
+        } else if path.extension().and_then(|e| e.to_str()) == Some("gguf")
+            || (is_extensionless_name(&entry.file_name().to_string_lossy()) && has_gguf_magic(&path))
+        {
             if is_secondary_part(&path) {
                 continue;
             }
@@ -2097,6 +2127,15 @@ pub(crate) mod tests {
         // No `mtp-` prefix: only the header says what it is.
         std::fs::write(other_quant.join("draft.gguf"), mtp_draft_fixture("llama", 3072, 34)).unwrap();
         std::fs::write(other_quant.join("mmproj-other.gguf"), projector_fixture("Other", 1024)).unwrap();
+        // As Hugging Face publishes it: no extension, so only the content
+        // says it is a GGUF. The same content under names that are not the
+        // operator's files stays out.
+        std::fs::write(library.join("MTP"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
+        std::fs::write(library.join("Model3.8-MTP"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
+        std::fs::write(library.join("notes"), b"not a model").unwrap();
+        std::fs::write(library.join("draft.part"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
+        std::fs::write(library.join(".draft"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
+        std::fs::write(library.join("sha256-abc123"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
 
         let catalog = discover(&[library.clone()], &root.join("shards"));
 
@@ -2115,6 +2154,8 @@ pub(crate) mod tests {
         assert_eq!(
             kinds,
             vec![
+                ("MTP", SidecarKind::Mtp, Some(3072)),
+                ("Model3.8-MTP", SidecarKind::Mtp, Some(3072)),
                 ("draft.gguf", SidecarKind::Mtp, Some(3072)),
                 ("mmproj-Model-BF16.gguf", SidecarKind::Mmproj, Some(3072)),
                 ("mmproj-other.gguf", SidecarKind::Mmproj, Some(1024)),

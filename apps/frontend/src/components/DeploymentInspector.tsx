@@ -20,9 +20,15 @@
  *   fica logo abaixo dos números do MTP.
  * * *Configurações POM* - o que existe porque a inferência é distribuída:
  *   desativar embeddings, ajuste de memória, chunks de prefill em voo, fusão
- *   de fatias e a precisão do estado oculto entre peers.
+ *   de fatias e a precisão do estado oculto entre peers. Dentro dela, o grupo
+ *   *Beta* reúne o que funciona mas ainda está sendo medido: experts do MoE na
+ *   RAM, cache de experts na GPU e pedaço de prefill automático.
  * * *Configurações POM (DESENV)* - o motor de inferência e o descarregamento
  *   ocioso, que ainda estão sendo medidos.
+ *
+ * Cada categoria (e o grupo Beta) tem um botão de ajuda que abre, numa janela,
+ * o guia dela na Documentação (`guides/deploySettings.ts`): o que cada
+ * propriedade faz e como mudá-la.
  *
  * **O ícone de informação vem antes do nome**, e não depois: os nomes têm
  * larguras diferentes, e um `[i]` colado ao fim de cada um deixava a coluna de
@@ -32,6 +38,8 @@
 import { useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
+import { GuideDialog, GuideHelpButton } from "./GuideDialog";
+import { DEPLOY_SETTINGS_GUIDES } from "../guides/deploySettings";
 import { speculationModeOf, speculationPatch, type SpeculationMode } from "../lib/speculation";
 import { SidecarPicker, type SidecarPick } from "./SidecarPicker";
 import {
@@ -218,12 +226,17 @@ export interface VisionControl {
 function Section({
   title,
   tone,
+  guide,
   children,
 }: {
   title: string;
   tone: "iris" | "aqua" | "amber";
+  /** The `?guia=` id the help button opens in a dialog. */
+  guide?: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
+  const [helpOpen, setHelpOpen] = useState(false);
   const head = {
     iris: "border-iris/20 bg-iris/10 text-iris",
     aqua: "border-aqua/20 bg-aqua/10 text-aqua",
@@ -236,13 +249,50 @@ function Section({
   }[tone];
   return (
     <section className={`border-b ${body}`}>
-      <p
-        className={`border-b px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] ${head}`}
-      >
-        {title}
-      </p>
+      <div className={`flex items-center justify-between gap-2 border-b px-2 py-1 ${head}`}>
+        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
+        {guide && (
+          <GuideHelpButton
+            label={t("inspector.guideHelp", { section: title })}
+            onClick={() => setHelpOpen(true)}
+          />
+        )}
+      </div>
       <div className="space-y-1 px-2 py-2">{children}</div>
+      {guide && <GuideDialog guideId={guide} open={helpOpen} onClose={() => setHelpOpen(false)} />}
     </section>
+  );
+}
+
+/**
+ * A group inside a category, for settings that work but are still being
+ * measured. It carries its own short explanation and a help button, because
+ * these are the settings that only pay off in combination.
+ */
+function BetaGroup({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
+  const [helpOpen, setHelpOpen] = useState(false);
+  const title = t("inspector.sectionBeta");
+  return (
+    <div className="mt-2 rounded-md border border-amber/25 bg-amber/[0.05]">
+      <div className="flex items-center justify-between gap-2 border-b border-amber/20 px-2 py-1 text-amber">
+        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
+        <GuideHelpButton
+          label={t("inspector.guideHelp", { section: title })}
+          onClick={() => setHelpOpen(true)}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={() => setHelpOpen(true)}
+        className="block w-full px-2 pt-1.5 text-left text-[0.6rem] leading-relaxed text-muted hover:text-fg"
+      >
+        {t("inspector.betaInfo")}{" "}
+        <span className="text-amber underline-offset-2 hover:underline">{t("inspector.betaInfoLink")}</span>
+      </button>
+      <div className="space-y-1 px-2 py-2">{children}</div>
+      <GuideDialog guideId={DEPLOY_SETTINGS_GUIDES.beta} open={helpOpen} onClose={() => setHelpOpen(false)} />
+    </div>
   );
 }
 
@@ -481,7 +531,7 @@ export function DeploymentInspector({
 
   return (
     <>
-      <Section title={t("inspector.sectionDefaults")} tone="iris">
+      <Section title={t("inspector.sectionDefaults")} tone="iris" guide={DEPLOY_SETTINGS_GUIDES.defaults}>
         {DEFAULT_NUMERIC_KNOBS.filter((key) => dryOn || !DRY_DETAIL_KNOBS.includes(key)).map((key) => numeric(key))}
         <InspectorRow label={t("inspector.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
           {readOnly ? (
@@ -685,7 +735,7 @@ export function DeploymentInspector({
         </Section>
       )}
 
-      <Section title={t("inspector.sectionPom")} tone="aqua">
+      <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
         {toggle({
           key: "no_embeddings",
           label: t("inspector.noEmbeddings"),
@@ -755,6 +805,25 @@ export function DeploymentInspector({
             )}
           </>
         )}
+        <BetaGroup>
+          {toggle({
+            key: "moe_experts_in_ram",
+            label: t("inspector.moeExpertsInRam"),
+            alwaysVisible: true,
+            checked: value.moe_experts_in_ram ?? false,
+            onToggle: (next) => set({ moe_experts_in_ram: next }),
+            tip: t("deploy.moeExpertsInRamHint"),
+          })}
+          {numeric("moe_cache_mib")}
+          {toggle({
+            key: "adaptive_prefill_chunks",
+            label: t("inspector.adaptivePrefillChunks"),
+            alwaysVisible: true,
+            checked: value.adaptive_prefill_chunks ?? true,
+            onToggle: (next) => set({ adaptive_prefill_chunks: next }),
+            tip: t("deploy.adaptivePrefillChunksHint"),
+          })}
+        </BetaGroup>
       </Section>
 
       {pomDesenv && <Section title={t("inspector.sectionPomDev")} tone="amber">
@@ -784,23 +853,6 @@ export function DeploymentInspector({
             )}
           </InspectorRow>
         )}
-        {toggle({
-          key: "moe_experts_in_ram",
-          label: t("inspector.moeExpertsInRam"),
-          alwaysVisible: true,
-          checked: value.moe_experts_in_ram ?? false,
-          onToggle: (next) => set({ moe_experts_in_ram: next }),
-          tip: t("deploy.moeExpertsInRamHint"),
-        })}
-        {numeric("moe_cache_mib")}
-        {toggle({
-          key: "adaptive_prefill_chunks",
-          label: t("inspector.adaptivePrefillChunks"),
-          alwaysVisible: true,
-          checked: value.adaptive_prefill_chunks ?? true,
-          onToggle: (next) => set({ adaptive_prefill_chunks: next }),
-          tip: t("deploy.adaptivePrefillChunksHint"),
-        })}
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

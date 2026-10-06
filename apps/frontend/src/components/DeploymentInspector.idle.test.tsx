@@ -173,17 +173,45 @@ describe("DeploymentInspector DRY", () => {
   });
 });
 
-describe("DeploymentInspector MoE experts in RAM", () => {
-  it("offers the experts in RAM and the GPU expert cache only under POM_DESENV", () => {
-    const onChange = mount({ ...params }, vi.fn(), undefined, true);
+describe("DeploymentInspector Beta group", () => {
+  it("offers the experts in RAM, the GPU expert cache and the automatic prefill chunk under POM settings, without POM_DESENV", () => {
+    const onChange = mount({ ...params }, vi.fn(), undefined, false);
+    const beta = screen.getByText("Beta").closest("div")!.parentElement!;
     fireEvent.click(screen.getByRole("checkbox", { name: "MoE experts in RAM" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ moe_experts_in_ram: true }));
     fireEvent.change(screen.getByRole("spinbutton", { name: "Expert cache on GPU (MiB)" }), { target: { value: "8000" } });
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ moe_cache_mib: 8000 }));
-    cleanup();
+    expect(beta.contains(screen.getByRole("checkbox", { name: "Automatic prefill chunk" }))).toBe(true);
+    // The development section keeps only the engine and the idle unload.
+    expect(screen.queryByRole("checkbox", { name: "Unload if idle" })).toBeNull();
+  });
+});
 
+describe("DeploymentInspector help", () => {
+  it("opens each category's guide in a dialog from the help button next to its title", () => {
     mount({ ...params }, vi.fn(), undefined, false);
-    expect(screen.queryByRole("checkbox", { name: "MoE experts in RAM" })).toBeNull();
-    expect(screen.queryByRole("spinbutton", { name: "Expert cache on GPU (MiB)" })).toBeNull();
+    for (const [section, title] of [
+      ["Default settings", "Default deployment settings"],
+      ["POM settings", "POM settings"],
+      ["Beta", "Beta settings"],
+    ]) {
+      fireEvent.click(screen.getByRole("button", { name: `Learn more about ${section}` }));
+      const dialog = screen.getByRole("dialog", { name: title });
+      expect(dialog.textContent).toContain(title);
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    }
+  });
+
+  it("opens a reference link inside the dialog, with a way back, without leaving the screen", async () => {
+    const before = window.location.href;
+    mount({ ...params }, vi.fn(), undefined, false);
+    fireEvent.click(screen.getByRole("button", { name: "Learn more about Beta" }));
+    fireEvent.click(screen.getByRole("button", { name: /MoE experts in RAM and the GPU expert cache/ }));
+    expect(screen.getByRole("dialog", { name: "Beta settings" })).toBeTruthy();
+    await screen.findByRole("button", { name: "Back to the guide" });
+    expect(window.location.href).toBe(before);
+    fireEvent.click(screen.getByRole("button", { name: "Back to the guide" }));
+    expect(screen.getByRole("dialog").textContent).toContain("Combining them");
   });
 });

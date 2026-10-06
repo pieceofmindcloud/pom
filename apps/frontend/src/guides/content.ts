@@ -18,6 +18,7 @@
  * (which tracks the code) wins and this file is corrected.
  */
 import type { Locale } from "../i18n/locales";
+import { deploySettingsEn, deploySettingsPtBR } from "./deploySettings";
 
 export type Block =
   /** Opening sentence, set larger than the body. One per guide. */
@@ -991,7 +992,12 @@ const en: Guide[] = [
   },
 ];
 
-const GUIDES: Record<Locale, Guide[]> = { en, "pt-BR": ptBR };
+// The inspector category guides close the list; each one also opens in a
+// dialog from its category in the deployment inspector.
+const GUIDES: Record<Locale, Guide[]> = {
+  en: [...en, ...deploySettingsEn],
+  "pt-BR": [...ptBR, ...deploySettingsPtBR],
+};
 
 export function guidesFor(locale: Locale): Guide[] {
   return GUIDES[locale] ?? en;

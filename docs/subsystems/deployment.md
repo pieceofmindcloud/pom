@@ -379,7 +379,7 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   other than `99` is explicit and turns this layer fit off. In
   `tensor_parallel`, the planner normalizes `fit_memory` to off because the
   native fit does not support `split-mode tensor`.
-- **MoE experts in RAM and the GPU expert cache** (POM settings (DEV)):
+- **MoE experts in RAM and the GPU expert cache** (POM settings, Beta group):
   `RuntimeParams.moe_experts_in_ram` keeps every routed expert in host memory,
   computed by the CPU (llama.cpp's `--cpu-moe`, as a `tensor_buft_overrides`
   entry); it turns the layer fit off, because `common_fit_params` refuses
@@ -391,14 +391,17 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   experts in host memory (`fit_plan`): a node whose experts all fit in VRAM
   would otherwise lose expert layers and the MTP draft's room to the cache. When
   the cache stays, the fit counts it and keeps fewer whole expert layers on the
-  GPU. The
+  GPU. When a context fails to fit with the cache, the engine retries with half
+  the cache, and turns it off once half is under 512 MiB
+  (`moe_cache_retry_mib`). Without routed experts in host memory the cache has
+  nothing to hold and changes nothing. The
   size is per GPU: on a node with two GPUs (an RTX over CUDA and a Radeon over
   Vulkan, say) both cards keep their share of the layers in VRAM and each one
   caches the experts of its own layers (one cache per device in the fork).
   While the cache is on, the gateway's adaptive prefill chunk never goes below
   64 tokens (`MOE_CACHE_MIN_CHUNK`): a 32-token chunk is a generation batch for
   the cache and thrashed it. `RuntimeParams.adaptive_prefill_chunks` (POM
-  settings (DEV), on by default) turns the adaptive chunk off, so every prompt
+  settings, Beta group, on by default) turns the adaptive chunk off, so every prompt
   goes in chunks of exactly `prefill_chunk_tokens`. Measured on a whole
   Qwen3.8-Flash-Next UD-IQ3_XXS (78 GB) with one 16 GB GPU: generation 14.95 ->
   19.26 tok/s with all experts in RAM and an 8000 MiB cache.

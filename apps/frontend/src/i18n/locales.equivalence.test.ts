@@ -23,6 +23,9 @@ const copyUpdates: Record<string, string> = {
     "Controls bytes sent between inference peers. f16 remains the default; f32 preserves the in-memory activation values but doubles payload size. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.",
   "pt-BR:deploy.knob.hidden_state_dtypeHint":
     "Controla os bytes enviados entre peers de inferência. f16 continua como padrão; f32 preserva os valores das ativações em memória, mas dobra o tamanho do payload. f8 e int4 por grupo são formatos com perda opcionais e exigem suporte anunciado por todos os peers selecionados.",
+  "pt-BR:deploymentLogs.consoleTitle": "Console do cluster",
+  "pt-BR:deploymentLogs.subtitle":
+    "O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.",
   "en:network.logsHowItWorks":
     "The admin only tells the network to collect: every node sends a copy to each admin over a separate libp2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.",
   "pt-BR:network.logsHowItWorks":

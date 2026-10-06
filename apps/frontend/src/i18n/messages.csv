@@ -711,7 +711,7 @@ deploymentLogs.allDeployments,All deployments,Todas as implantações
 deploymentLogs.autoScrollOff,Auto-scroll: off,Rolagem automática: desligada
 deploymentLogs.autoScrollOn,Auto-scroll: on,Rolagem automática: ligada
 deploymentLogs.consoleSubtitle,Node names and source timestamps are informational; arrival order is authoritative.,Nomes dos nós e horários de origem são informativos; a ordem de chegada é a que vale.
-deploymentLogs.consoleTitle,Cluster console,Consola do cluster
+deploymentLogs.consoleTitle,Cluster console,Console do cluster
 deploymentLogs.copyFailed,Could not copy logs.,Não foi possível copiar os logs.
 deploymentLogs.copyLogs,Copy logs,Copiar logs
 deploymentLogs.disableAutoScroll,Disable automatic scrolling,Desligar rolagem automática
@@ -725,7 +725,7 @@ deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
 deploymentLogs.pluginRequiredHint,"The cluster process logs are kept by the Logs plugin. Activate it on this admin machine, then turn collection on in Administrative preferences.","Os logs de processo do cluster ficam no plugin de Logs. Ative-o nesta máquina administradora e depois ligue a coleta nas Preferências administrativas."
 deploymentLogs.pluginRequiredTitle,The Logs plugin is not active here,O plugin de Logs não está ativo aqui
-deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,A consola do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
+deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
 deploymentLogs.title,Deployment logs,Logs da implantação
 deployments.actions,Actions,Ações
 deployments.activateFailed,Could not make it the default,Não deu para tornar padrão

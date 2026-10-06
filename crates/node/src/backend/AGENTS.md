@@ -229,9 +229,9 @@ profile policy remains the effective authorization boundary.
   que node veja o inspetor somente leitura, enquanto mutações e ações de
   implantação continuam sob a política administrativa existente.
   superfície de autoridade expõe o contrato de apresentação em
-  `/api/ui/network/admin-authority`; pedidos infer-to-node e descida
-  node-to-infer usam `/api/ui/network/request-node` e
-  `/api/ui/network/relinquish-node`. Ofertas de autoridade compartilham o feed
+  `/api/ui/network/admin-authority`. There is no route that changes a
+  node's role in place (infer-to-node and node-to-infer were removed): a role
+  is set at admission. Ofertas de autoridade compartilham o feed
   de ofertas para que o sino do browser não escolha o mecanismo de concessão ou
   assinatura.
   **A raiz de confiança é anterior a tudo isso** e vive em `webui/trust.rs`:
@@ -1210,8 +1210,7 @@ faz o download autenticado do blob persistido.
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
   `POST /admin/authority/resign`, `POST
-  /admin/authority/secondaries/:id/demote`, and the profile transition routes
-  `/api/ui/network/request-node` and `/api/ui/network/relinquish-node`.
+  /admin/authority/secondaries/:id/demote`.
   Internal profile mutations carry signed authority commands; a promotion
   delivers and validates the complete trust document at the target.
 - `webui/network.rs` - `GET /api/ui/network/info` entrega o bloco `network`

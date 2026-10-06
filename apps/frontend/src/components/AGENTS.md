@@ -228,8 +228,7 @@ Per-file list:
   "Join now" when approved. All state is read back from
   the node, so a reload in the middle of a transfer shows the same bar.
   It also renders principal-transfer offers from the same `useOffers()`
-  response (an infer-to-node offer is filtered out: that upgrade is no longer
-  offered anywhere in the interface), and the pending plugin confirmations
+  response, and the pending plugin confirmations
   (`usePendingPluginConfirms`, `lib/pluginInbox.ts`) with Aceitar e
   Recusar; answering resolves the plugin's `notification.confirm`. Plugin
   notices (`usePluginNotices`) are message-only rows that count as unread

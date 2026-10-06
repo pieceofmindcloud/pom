@@ -43,8 +43,10 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 - O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente
   leitura de admins secundários e nós: roster, cadeia de promoções, sucessor,
   recusas concretas, confirmações e resultado das ações. O grupo
-  `notifications.*` também nomeia ofertas de sucessão e de promoção
-  infer-to-node, além do aviso sem botões de descida para infer.
+  `notifications.*` também nomeia ofertas de sucessão. The keys of the
+  removed in-place role changes (`notifications.nodePromotion*`,
+  `notifications.nodeRelinquish*`, `network.requestNode*`,
+  `network.relinquishNode*`) are still in the table and unused.
 - The `plugins.*` group covers loading, errors and empty-catalog states,
   missing metadata, available releases, prices, active or unnecessary licenses,
   per-plugin activation usage and limits, public-store purchase links, the

@@ -445,8 +445,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   confiança muda por gesto do operador, e a tela refaz a leitura ao instalar.
 - `useAdminAuthority()` reads the authority presentation contract every 8s;
   `useOffers()` normalizes legacy slice offers and also carries principal
-  transfer, infer-to-node approval and node-to-infer notice states for the
-  activity bell.
+  transfer states for the activity bell.
 - `invalidateAfterAction(qc)` / `useInvalidate()` - after a mutation, refetch node, cluster, jobs, admin-nodes and models at once.
 
 ### chatStore.ts

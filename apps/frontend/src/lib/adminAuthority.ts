@@ -18,8 +18,6 @@ export const adminAuthorityPaths = {
    * aí que o operador precisa desta tela. Ver `webui/trust.rs`.
    */
   trustAnchor: "/api/ui/network/trust-anchor",
-  requestNode: "/api/ui/network/request-node",
-  relinquishNode: "/api/ui/network/relinquish-node",
   resign: "/admin/authority/resign",
   demote: (nodeId: string) =>
     `/admin/authority/secondaries/${encodeURIComponent(nodeId)}/demote`,
@@ -53,11 +51,5 @@ export const adminAuthorityApi = {
   },
   demoteSecondary(nodeId: string) {
     return api.post(adminAuthorityPaths.demote(nodeId));
-  },
-  requestNodePromotion() {
-    return api.post(adminAuthorityPaths.requestNode);
-  },
-  relinquishNode() {
-    return api.post(adminAuthorityPaths.relinquishNode);
   },
 };

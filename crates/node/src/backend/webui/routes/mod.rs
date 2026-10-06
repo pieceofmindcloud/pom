@@ -228,16 +228,6 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
-        prefix: "/api/ui/network/request-node",
-        method: None,
-        scope: RouteScope::InferNodeAdmin,
-    },
-    RouteRule {
-        prefix: "/api/ui/network/relinquish-node",
-        method: None,
-        scope: RouteScope::NodeAdmin,
-    },
-    RouteRule {
         prefix: "/api/ui/infer/heads",
         method: None,
         scope: RouteScope::InferNodeAdmin,
@@ -698,13 +688,15 @@ mod policy_tests {
             route_scope(&Method::POST, "/api/ui/deployments"),
             RouteScope::AdminOnly
         );
+        // Changing a role in place is not a route any more: with no rule,
+        // the old paths fall to the closed default.
         assert_eq!(
             scope_of("/api/ui/network/request-node"),
-            RouteScope::InferNodeAdmin
+            RouteScope::AdminOnly
         );
         assert_eq!(
             scope_of("/api/ui/network/relinquish-node"),
-            RouteScope::NodeAdmin
+            RouteScope::AdminOnly
         );
         assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::InferNodeAdmin);
         assert!(profile_can_access(
@@ -872,10 +864,7 @@ mod policy_tests {
             route_scope(&Method::POST, "/admin/regenerate-key")
         ));
 
-        assert!(profile_can_access(
-            Infer,
-            scope_of("/api/ui/network/request-node")
-        ));
+        assert!(profile_can_access(Infer, scope_of("/api/ui/infer/heads")));
         assert!(!profile_can_access(Infer, scope_of("/api/ui/models")));
     }
 }

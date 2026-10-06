@@ -249,29 +249,6 @@ pub(crate) struct AdminTransferAcceptance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct NodePromotionCommand {
-    pub(crate) version: u32,
-    pub(crate) command_id: String,
-    pub(crate) cluster_id: String,
-    pub(crate) issuer: AuthorityPrincipal,
-    pub(crate) subject: AuthorityPrincipal,
-    pub(crate) authority_epoch: u64,
-    pub(crate) nonce: String,
-    pub(crate) signature: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct NodePromotionRequest {
-    pub(crate) version: u32,
-    pub(crate) command_id: String,
-    pub(crate) cluster_id: String,
-    pub(crate) subject: AuthorityPrincipal,
-    pub(crate) authority_epoch: u64,
-    pub(crate) nonce: String,
-    pub(crate) signature: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct CompletedTransfer {
     offer: AdminTransferOffer,
     acceptance: AdminTransferAcceptance,
@@ -942,113 +919,6 @@ impl AdminTrust {
         Ok(demotion)
     }
 
-    pub(crate) fn node_promotion_request(
-        &self,
-        signing_key: &SigningKey,
-        subject: AuthorityPrincipal,
-    ) -> Result<NodePromotionRequest> {
-        let document = self.document();
-        validate_document(&document)?;
-        if subject.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
-            bail!("o pedido precisa ser assinado pelo nó que o solicita");
-        }
-        let mut request = NodePromotionRequest {
-            version: TRUST_VERSION,
-            command_id: Uuid::new_v4().simple().to_string(),
-            cluster_id: document.anchor.cluster_id,
-            subject,
-            authority_epoch: document.authority_epoch,
-            nonce: random_nonce(),
-            signature: String::new(),
-        };
-        request.signature = sign_bytes(signing_key, &node_promotion_request_message(&request));
-        Ok(request)
-    }
-
-    pub(crate) fn authorize_node_promotion_request(
-        &self,
-        signing_key: &SigningKey,
-        request: NodePromotionRequest,
-    ) -> Result<NodePromotionCommand> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
-        if request.cluster_id != document.anchor.cluster_id
-            || request.authority_epoch != document.authority_epoch
-        {
-            bail!("pedido de entrada fora da época vigente");
-        }
-        verify_node_promotion_request_signature(&request)?;
-        let issuer = document
-            .primary_history
-            .iter()
-            .find(|principal| {
-                principal.pubkey == hex::encode(signing_key.verifying_key().as_bytes())
-                    && (document.primary == **principal
-                        || document.grants.iter().any(|grant| {
-                            grant.subject == **principal
-                                && grant.level == AdminLevel::Secondary
-                                && !document.demotions.iter().any(|demotion| {
-                                    demotion.target_grant_hash
-                                        == grant_hash(grant).unwrap_or_default()
-                                })
-                        }))
-            })
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("a chave emissora não é de um admin vigente"))?;
-        if document.pending_transfer.is_some() {
-            bail!("não é possível autorizar nó durante transferência aberta");
-        }
-        self.consume_admin_replay(&request.nonce, &request.command_id, None)?;
-        let mut command = NodePromotionCommand {
-            version: TRUST_VERSION,
-            command_id: Uuid::new_v4().simple().to_string(),
-            cluster_id: document.anchor.cluster_id.clone(),
-            issuer,
-            subject: request.subject,
-            authority_epoch: document.authority_epoch,
-            nonce: random_nonce(),
-            signature: String::new(),
-        };
-        command.signature = sign_bytes(signing_key, &node_promotion_message(&command));
-        self.consume_admin_replay(&command.nonce, &command.command_id, None)?;
-        persist_document(&document, self.path.as_deref())?;
-        Ok(command)
-    }
-
-    pub(crate) fn apply_node_promotion(
-        &self,
-        command: NodePromotionCommand,
-        local_subject: &AuthorityPrincipal,
-        target_profile: NodeProfile,
-    ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
-        if target_profile != NodeProfile::Infer {
-            bail!("somente um nó infer pode pedir entrada no processamento");
-        }
-        if command.subject != *local_subject
-            || command.cluster_id != document.anchor.cluster_id
-            || command.authority_epoch != document.authority_epoch
-        {
-            bail!("o pedido de entrada não corresponde a este nó e época");
-        }
-        let issuer_is_current = command.issuer == document.primary
-            || document.grants.iter().any(|grant| {
-                grant.subject == command.issuer
-                    && grant.level == AdminLevel::Secondary
-                    && !document.demotions.iter().any(|demotion| {
-                        demotion.target_grant_hash == grant_hash(grant).unwrap_or_default()
-                    })
-            });
-        if !issuer_is_current {
-            bail!("o pedido não foi autorizado por um admin vigente");
-        }
-        verify_node_promotion_signature(&command)?;
-        self.consume_admin_replay(&command.nonce, &command.command_id, None)?;
-        persist_document(&document, self.path.as_deref())?;
-        Ok(())
-    }
-
     pub(crate) fn reconcile(&self, incoming: AdminTrustDocument) -> Result<()> {
         validate_document(&incoming)?;
         let mut document = self.state.lock().expect("admin trust lock poisoned");
@@ -1610,27 +1480,6 @@ struct DemotionMessage<'a> {
     nonce: &'a str,
 }
 
-#[derive(Serialize)]
-struct NodePromotionMessage<'a> {
-    version: u32,
-    command_id: &'a str,
-    cluster_id: &'a str,
-    issuer: &'a AuthorityPrincipal,
-    subject: &'a AuthorityPrincipal,
-    authority_epoch: u64,
-    nonce: &'a str,
-}
-
-#[derive(Serialize)]
-struct NodePromotionRequestMessage<'a> {
-    version: u32,
-    command_id: &'a str,
-    cluster_id: &'a str,
-    subject: &'a AuthorityPrincipal,
-    authority_epoch: u64,
-    nonce: &'a str,
-}
-
 fn acceptance_message(acceptance: &AdminTransferAcceptance) -> Vec<u8> {
     serde_json::to_vec(&AcceptanceMessage {
         version: acceptance.version,
@@ -1658,31 +1507,6 @@ fn demotion_message(demotion: &AdminDemotion) -> Vec<u8> {
         nonce: &demotion.nonce,
     })
     .expect("canonical demotion JSON")
-}
-
-fn node_promotion_message(command: &NodePromotionCommand) -> Vec<u8> {
-    serde_json::to_vec(&NodePromotionMessage {
-        version: command.version,
-        command_id: &command.command_id,
-        cluster_id: &command.cluster_id,
-        issuer: &command.issuer,
-        subject: &command.subject,
-        authority_epoch: command.authority_epoch,
-        nonce: &command.nonce,
-    })
-    .expect("canonical node promotion JSON")
-}
-
-fn node_promotion_request_message(request: &NodePromotionRequest) -> Vec<u8> {
-    serde_json::to_vec(&NodePromotionRequestMessage {
-        version: request.version,
-        command_id: &request.command_id,
-        cluster_id: &request.cluster_id,
-        subject: &request.subject,
-        authority_epoch: request.authority_epoch,
-        nonce: &request.nonce,
-    })
-    .expect("canonical node promotion request JSON")
 }
 
 fn verify_grant_signature(grant: &AdminGrant) -> Result<()> {
@@ -1714,22 +1538,6 @@ fn verify_demotion_signature(demotion: &AdminDemotion) -> Result<()> {
         &demotion.issuer.pubkey,
         &demotion_message(demotion),
         &demotion.signature,
-    )
-}
-
-fn verify_node_promotion_signature(command: &NodePromotionCommand) -> Result<()> {
-    verify_bytes(
-        &command.issuer.pubkey,
-        &node_promotion_message(command),
-        &command.signature,
-    )
-}
-
-fn verify_node_promotion_request_signature(request: &NodePromotionRequest) -> Result<()> {
-    verify_bytes(
-        &request.subject.pubkey,
-        &node_promotion_request_message(request),
-        &request.signature,
     )
 }
 

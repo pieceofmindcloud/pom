@@ -537,27 +537,17 @@ also enforces `infer`'s local view: `/api/ui/cluster` and
 `/api/ui/cluster/models` do not fan out to peers, `/admin/nodes` answers 403 and
 another machine's details answer 403. There is no profile switch in the UI.
 
-On the `/config/rede` screen, an `infer` sees its own machine's data. The
-interface no longer offers upgrading it to a `node` in place: the role is
-decided when the network admits the machine, so the card only explains that
-serving models takes leaving and asking for admission again as a network
-node, and the bell hides any `node_promotion` offer. The node route
-`POST /api/ui/network/request-node` and its approval still exist; nothing in
-the interface calls them. A `node` is likewise no longer offered stepping
-down to `infer` (`POST /api/ui/network/relinquish-node` remains, unused):
-roles are set at admission, and changing one means leaving and rejoining. The principal
+On the `/config/rede` screen, an `infer` sees its own machine's data. Nothing
+changes a role in place, in the interface or on the node: the role is decided
+when the network admits the machine, so the card only explains that serving
+models takes leaving and asking for admission again as a network node. A
+`node` likewise has no way to step down to `infer` without rejoining. The principal
 administrator can promote a node with `POST /admin/nodes/{id}/promote-admin`;
 the gateway requires effective principal authority, and the target validates
 the Ed25519 grant in the chain of trust. The `connection_key` stays only the
 transport credential between nodes.
 
-On the same screen, a `node` can ask to step down itself with
-`POST /api/ui/network/relinquish-node`. The confirmation warns that new
-inferences are diverted first, that inferences in progress drain without being
-cut and that only then does the profile change and the slice get released. If
-there is no replacement able to serve the same range, the UI warns that the
-range will be uncovered and the generations that need it will fail clearly. The
-admin only gets a notice without buttons in the bell.
+
 
 `/config/administracao` shows the principal, the secondary admins, the
 promotion chain and the successor's eligibility. Only the principal can promote

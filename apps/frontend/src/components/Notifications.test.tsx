@@ -164,28 +164,6 @@ describe("Notifications network offers", () => {
     );
   });
 
-  it("shows a node relinquish notice without approval controls", () => {
-    renderNotifications([
-      {
-        kind: "node_relinquish_notice",
-        id: "notice-1",
-        from_node_id: "node-1",
-        from_host: "salem",
-        target_node_id: "node-1",
-        target_host: "salem",
-        status: "notice",
-        issued_at: "2026-09-07T00:00:00Z",
-        active_model: "qwen",
-      },
-    ]);
-
-    fireEvent.click(screen.getByRole("button", { name: /atividade/i }));
-    expect(screen.getByText("Nó deixando o papel de node")).toBeTruthy();
-    expect(screen.getByText(/inferência nova vai para outro lugar/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Aceitar" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Recusar" })).toBeNull();
-  });
-
   it("shows a rejected principal transfer as a terminal outcome", () => {
     renderNotifications([{ ...principalTransfer, status: "rejected" }]);
 

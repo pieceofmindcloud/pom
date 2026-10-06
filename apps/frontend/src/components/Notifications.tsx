@@ -47,8 +47,6 @@ import { transferHash, transferTitle } from "../lib/transferLabel";
 import type {
   AdminTransferOffer,
   NetworkOffer,
-  NodePromotionOffer,
-  NodeRelinquishNotice,
   TransferJob,
   TransferOffer,
 } from "../lib/types";
@@ -150,12 +148,10 @@ function Row({
   );
 }
 
-type AuthorityOffer = AdminTransferOffer | NodePromotionOffer | NodeRelinquishNotice;
+type AuthorityOffer = AdminTransferOffer;
 
 function isAuthorityOffer(offer: NetworkOffer): offer is AuthorityOffer {
-  return offer.kind === "principal_transfer"
-    || offer.kind === "node_promotion"
-    || offer.kind === "node_relinquish_notice";
+  return offer.kind === "principal_transfer";
 }
 
 function isSliceOffer(offer: NetworkOffer): offer is TransferOffer {
@@ -231,12 +227,7 @@ export function Notifications() {
   const moving = (transfers.data?.jobs ?? []).filter((transfer) => isWorthNotifying(transfer));
   const waiting = offers.data?.offers ?? [];
   const sliceOffers = waiting.filter(isSliceOffer);
-  // A request to turn an inference node into a network node is not offered
-  // any more (the role is decided at admission), so one still in the node's
-  // queue is not shown either.
-  const authorityOffers: AuthorityOffer[] = waiting
-    .filter(isAuthorityOffer)
-    .filter((offer): boolean => offer.kind !== "node_promotion");
+  const authorityOffers = waiting.filter(isAuthorityOffer);
   // Perguntas de plugins (`notification.confirm`): esperam aqui como uma
   // oferta, e a resposta volta à janela do plugin que perguntou.
   const pluginConfirms = usePendingPluginConfirms();
@@ -307,14 +298,10 @@ export function Notifications() {
         accept
           ? kind === "principal_transfer"
             ? t("notifications.principalTransferAccepted")
-            : kind === "node_promotion"
-              ? t("notifications.nodePromotionAccepted")
-              : t("notifications.transferStarted")
+            : t("notifications.transferStarted")
           : kind === "principal_transfer"
             ? t("notifications.principalTransferRejected")
-            : kind === "node_promotion"
-              ? t("notifications.nodePromotionRejected")
-              : t("notifications.offerRejected"),
+            : t("notifications.offerRejected"),
       );
       void offers.refetch();
       void transfers.refetch();
@@ -623,51 +610,27 @@ export function Notifications() {
 
               {authorityOffers.map((offer) => {
                 const pending = isPendingOffer(offer);
-                const isTransfer = offer.kind === "principal_transfer";
-                const isPromotion = offer.kind === "node_promotion";
                 return (
                   <Row
                     key={offer.id}
-                    icon={
-                      offer.kind === "node_relinquish_notice" ? (
-                        <Info className="h-3.5 w-3.5 text-amber" />
-                      ) : (
-                        <Inbox className="h-3.5 w-3.5" />
-                      )
-                    }
+                    icon={<Inbox className="h-3.5 w-3.5" />}
                     title={
-                      isTransfer
-                        ? pending
-                          ? t("notifications.principalTransferTitle")
-                          : offer.status === "accepted"
-                            ? t("notifications.principalTransferAccepted")
-                            : t("notifications.principalTransferRejected")
-                        : isPromotion
-                          ? pending
-                            ? t("notifications.nodePromotionTitle")
-                            : offer.status === "accepted"
-                              ? t("notifications.nodePromotionAccepted")
-                              : t("notifications.nodePromotionRejected")
-                          : t("notifications.nodeRelinquishTitle")
+                      pending
+                        ? t("notifications.principalTransferTitle")
+                        : offer.status === "accepted"
+                          ? t("notifications.principalTransferAccepted")
+                          : t("notifications.principalTransferRejected")
                     }
                     detail={
-                      isTransfer
-                        ? pending
-                          ? t("notifications.principalTransferDetail", { host: offer.from_host })
-                          : offer.status === "accepted"
-                            ? t("notifications.principalTransferAcceptedDetail", { host: offer.from_host })
-                            : t("notifications.principalTransferRejectedDetail", { host: offer.from_host })
-                        : isPromotion
-                          ? pending
-                            ? t("notifications.nodePromotionDetail", { host: offer.from_host })
-                            : offer.status === "accepted"
-                              ? t("notifications.nodePromotionAcceptedDetail", { host: offer.from_host })
-                              : t("notifications.nodePromotionRejectedDetail", { host: offer.from_host })
-                          : t("notifications.nodeRelinquishDetail", { host: offer.from_host })
+                      pending
+                        ? t("notifications.principalTransferDetail", { host: offer.from_host })
+                        : offer.status === "accepted"
+                          ? t("notifications.principalTransferAcceptedDetail", { host: offer.from_host })
+                          : t("notifications.principalTransferRejectedDetail", { host: offer.from_host })
                     }
-                    tone={offer.kind === "node_relinquish_notice" ? "amber" : "iris"}
+                    tone="iris"
                     footer={
-                      pending && (isTransfer || isPromotion) ? (
+                      pending ? (
                         <>
                           <Button
                             size="sm"

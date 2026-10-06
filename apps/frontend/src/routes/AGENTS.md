@@ -613,11 +613,8 @@ Per-file list:
   própria máquina. The screen no longer offers turning an `infer` into a
   `node`: the role is what the network admitted the machine as, and changing
   it means leaving and asking for admission again. The card says so and has
-  no action; `POST /api/ui/network/request-node` still exists on the node but
-  nothing in the interface calls it. The opposite direction is gone from
-  the screen as well: a `node` is no longer offered stepping down to `infer`
-  (`POST /api/ui/network/relinquish-node` also still exists, unused). Roles
-  are set at admission and changing one means rejoining. O
+  no action. A `node` has no step down to `infer` either. Both node routes
+  are gone: roles are set at admission and changing one means rejoining. O
   administrador principal pode promover um nó via
   `POST /admin/nodes/:id/promote-admin`.
 - `AdminAuthority.tsx` - Admin authority screen backed by

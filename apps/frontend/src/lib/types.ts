@@ -410,8 +410,6 @@ export interface NodeInfo {
   effective_address: string;
   /** Se o cluster fala TLS entre peers agora. `webui.rs` - `NodeInfo`. */
   tls_required: boolean;
-  /** Estado do pedido deste nó infer para participar como node. */
-  node_promotion_request?: "none" | "pending" | "rejected";
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
   /** Se o cluster prefere HTTP/3 sobre QUIC nos novos hops. */
@@ -1506,37 +1504,10 @@ export interface AdminTransferOffer {
   issued_at: string;
 }
 
-/** Pedido de um nó infer para entrar no processamento da rede. */
-export interface NodePromotionOffer {
-  kind: "node_promotion";
-  id: string;
-  from_node_id: string;
-  from_host: string;
-  target_node_id: string;
-  target_host: string;
-  status: "pending" | "accepted" | "rejected";
-  issued_at: string;
-}
-
-/** Aviso informativo emitido quando outro nó desce para infer. */
-export interface NodeRelinquishNotice {
-  kind: "node_relinquish_notice";
-  id: string;
-  from_node_id: string;
-  from_host: string;
-  target_node_id: string;
-  target_host: string;
-  status: "notice";
-  issued_at: string;
-  active_model?: string | null;
-}
-
 /** Todos os pedidos que podem aparecer no sino de atividade. */
 export type NetworkOffer =
   | TransferOffer
-  | AdminTransferOffer
-  | NodePromotionOffer
-  | NodeRelinquishNotice;
+  | AdminTransferOffer;
 
 /** `crate::pom::PomManifest`, na parte que a tela usa. */
 export interface OfferManifest {

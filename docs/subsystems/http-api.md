@@ -266,9 +266,9 @@ presentation contract of the principal, secondary admins, the promotion chain
 and succession eligibility. The screen's isolated mutations are
 `POST /admin/nodes/:id/promote-admin`, `POST /admin/authority/resign` and
 `POST /admin/authority/secondaries/:id/demote`; the principal is the only
-origin allowed to promote, resign and demote. The infer to node request is
-`POST /api/ui/network/request-node` and the voluntary step down from node to
-infer is `POST /api/ui/network/relinquish-node`. The authority offer states
+origin allowed to promote, resign and demote. There is no route that changes a node's role in place: a role is
+set when the network admits the machine, and changing it means leaving and
+asking for admission again. The authority offer states
 share `GET /api/transfer/offers` and its answers
 `POST /api/transfer/offers/{id}/accept|reject`, so the UI uses the same bell as
 slice offers. For a succession offer, `accept` requires the successor's signed

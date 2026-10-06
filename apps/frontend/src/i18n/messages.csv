@@ -2320,6 +2320,7 @@ topbar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
 topbar.leaveTitle,Remove this node from the network?,Tirar este nó da rede?
 topbar.left,Node left the network,Nó fora da rede
 topbar.leftDetail,It stopped announcing and forgot its peers. Rejoin from the Network screen.,Parou de anunciar e esqueceu os peers. Reconecte pela aba Rede.
+topbar.network,Network: {name},Rede: {name}
 topbar.noModel,No model is loaded on this node.,Nenhum modelo carregado neste nó.
 topbar.nodeCount,"{count}{count, plural, =1 { node} other { nodes}}","{count}{count, plural, =1 { nó} other { nós}}"
 topbar.nodeUnreachable,Cannot reach this node,Sem contato com o nó

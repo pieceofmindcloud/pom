@@ -201,8 +201,9 @@ Per-file list:
   secondary admins and promotion chain. It exposes promotion, demotion and
   succession controls only when the presentation contract says this viewer is
   the principal; refusal states remain explicit.
-- `Topbar.tsx` - Sticky header: `NodeChip` (hostname, short_id, peer count,
-  coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
+- `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
+  from `NodeInfo.network_name` and linking to `/config/rede`; then hostname,
+  short_id, peer count, coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
   maior e o sino (`Notifications`). O botão `Este nó` não é renderizado.
   Mobile drawer renders `SidebarContent` inside an animated
   panel whose fixed backdrop unmounts synchronously when navigation closes it,

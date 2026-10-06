@@ -87,6 +87,22 @@ describe("TlsChip", () => {
 describe("perfil na toolbar", () => {
   afterEach(cleanup);
 
+  it("shows the network this machine is in, linking to its settings", () => {
+    nodeData = { ...fakeNode(), network_name: "POM-SALEM" };
+    mountTopbar("node");
+
+    const network = screen.getByTestId("topbar-network");
+    expect(network.textContent).toBe("POM-SALEM");
+    expect(network.getAttribute("aria-label")).toBe("Rede: POM-SALEM");
+    expect(network.getAttribute("href")).toBe("/config/rede");
+  });
+
+  it("shows no network chip while the node reports no network name", () => {
+    nodeData = { ...fakeNode(), network_name: "" };
+    mountTopbar("admin");
+    expect(screen.queryByTestId("topbar-network")).toBeNull();
+  });
+
   it("oculta o botão Este nó e mantém o perfil oficial na toolbar", () => {
     nodeData = fakeNode({ profile: "infer" });
     mountTopbar("infer");

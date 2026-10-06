@@ -1168,6 +1168,12 @@ faz o download autenticado do blob persistido.
   and `spawn_key_reclaimer` (member: claims the current key when the
   principal is no longer among its admitted peers). The settings read
   `network_settings_policy` no longer carries the connection key.
+  `auth.rs` holds the two-key transition of a rotation
+  (`begin_key_transition`, `outbound_connection_key`,
+  `connection_key_accepted`): every check of the connection key - the
+  inference ports, the admin surface's node-to-node path and `/handshake` in
+  `session.rs` - accepts the key being replaced while its grace lasts, and
+  every sender goes through `internal_node_token`.
   `webui/setup.rs::bootstrap_local_network` is what a node without a network
   runs at startup instead of the wizard (`main.rs`, unless `--setup`).
   The same file has `lobby_info` / `setup_lobby_info` (another network's

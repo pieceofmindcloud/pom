@@ -1508,6 +1508,20 @@ the key it held along with the rest of that network's config, and coming
 back takes a new admission request. A node that leaves while the principal
 is unreachable keeps a key that still works until the next rotation.
 
+**A rotation cuts nothing off.** The new key travels with the Unix second
+from which it takes effect, 30 s ahead (`key_effective_at` in the settings
+envelope, `auth::KEY_TRANSITION_LEAD_SECS`). Until that instant every node,
+the principal included, keeps **sending** the old key; from it on, the new
+one. Each node **accepts** both from the moment it holds the new key until
+30 s past the switch (`KEY_TRANSITION_GRACE_SECS`), which covers clocks that
+disagree. So two nodes that received the push never refuse each other: an
+inference in flight, the `/handshake` admission probe and the node-to-node
+calls all go on, and the members do not drop one another. The key a departed
+node still holds stops working about a minute after the rotation. The
+transition is kept in memory (`auth::begin_key_transition`); a node that
+restarts in the middle of one simply uses the new key, which its peers
+already accept. A member that never got the push is the case below.
+
 **The member list, and claiming a rotated key.** The principal's approved
 admission records are the network's member list: the node identities that
 may be handed the connection key. `spawn_member_list_keeper` adds every peer

@@ -3403,7 +3403,10 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return true;
         };
-        let connection_key = admission.auth.read().await.connection_key.clone();
+        // The key this node presents now: during a rotation that is still
+        // the old one until every member switches together.
+        let connection_key =
+            crate::auth::outbound_connection_key(&*admission.auth.read().await);
         let cache_key = self.admission_cache_key(peer, &connection_key);
         let probe = self.private_peer_is_admitted(peer, &connection_key).await;
         let Ok(mut cache) = self.admission_cache.write() else {
@@ -3619,7 +3622,7 @@ impl Network {
         let (connection_key, open_admission, access_policy) = {
             let config = admission.auth.read().await;
             (
-                config.connection_key.clone(),
+                crate::auth::outbound_connection_key(&config),
                 config.network.open_admission(),
                 config.network.access_policy,
             )

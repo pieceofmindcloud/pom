@@ -26,6 +26,11 @@ pub(crate) struct NetworkSettingsEnvelope {
     /// envelope. A public node keeps a local admin credential in its config,
     /// but that credential is never sent to peers or shown in this card.
     pub connection_key: String,
+    /// When `connection_key` replaces another: the Unix second from which
+    /// every node sends the new key (`auth::begin_key_transition`). Absent
+    /// when the key is not being rotated.
+    #[serde(default)]
+    pub key_effective_at: Option<i64>,
 }
 
 /// Read-only for node and infer, with the same response used by the admin
@@ -60,6 +65,7 @@ pub(crate) async fn network_settings_policy(
     Json(NetworkSettingsEnvelope {
         network,
         connection_key,
+        key_effective_at: None,
     })
     .into_response()
 }
@@ -98,7 +104,7 @@ pub(crate) async fn save_network_settings(
         );
     }
 
-    match apply_network_settings_with_key(&state, settings, true, None).await {
+    match apply_network_settings_with_key(&state, settings, true, None, None).await {
         Ok(synced_peers) => {
             let view = network_info_view(&state).await;
             Json(json!({
@@ -117,6 +123,7 @@ async fn apply_network_settings_with_key(
     mut settings: NetworkSettings,
     fanout: bool,
     incoming_connection_key: Option<&str>,
+    key_effective_at: Option<i64>,
 ) -> Result<usize, String> {
     settings.public_name = settings.public_name.trim().to_string();
     settings.organization = settings.organization.trim().to_string();
@@ -144,8 +151,14 @@ async fn apply_network_settings_with_key(
         let mut cfg = state.auth.write().await;
         cfg.network = settings.clone();
         if let Some(incoming) = incoming_connection_key {
-            if !incoming.trim().is_empty() {
-                cfg.connection_key = incoming.trim().to_string();
+            let incoming = incoming.trim();
+            if !incoming.is_empty() && incoming != cfg.connection_key {
+                // A rotation: keep the old key in use until the instant the
+                // principal named, so nothing in flight is refused.
+                if let Some(effective_at) = key_effective_at {
+                    crate::auth::begin_key_transition(&cfg.connection_key, incoming, effective_at);
+                }
+                cfg.connection_key = incoming.to_string();
             }
         }
         if cfg.connection_key.trim().is_empty() {
@@ -181,7 +194,7 @@ async fn apply_network_settings_with_key(
     if !fanout {
         return Ok(0);
     }
-    Ok(fanout_network_settings(state, &settings, &connection_key, None).await)
+    Ok(fanout_network_settings(state, &settings, &connection_key, None, None).await)
 }
 
 async fn fanout_network_settings(
@@ -189,6 +202,7 @@ async fn fanout_network_settings(
     settings: &NetworkSettings,
     connection_key: &str,
     exclude: Option<&str>,
+    key_effective_at: Option<i64>,
 ) -> usize {
     let mut synced = 0;
     for peer in state.all_peers().await {
@@ -214,6 +228,7 @@ async fn fanout_network_settings(
                         } else {
                             String::new()
                         },
+                        key_effective_at,
                     },
                 )
                 .await
@@ -338,12 +353,20 @@ async fn rotate_connection_key(
     state: &GatewayState,
     departed: &str,
 ) -> Result<Option<usize>, String> {
+    let effective_at = chrono::Utc::now().timestamp() + crate::auth::KEY_TRANSITION_LEAD_SECS;
     let (settings, connection_key) = {
         let mut config = state.auth.write().await;
         if config.network.open_admission() {
             return Ok(None);
         }
-        config.connection_key = crate::webui::fresh_connection_key();
+        let previous = std::mem::replace(
+            &mut config.connection_key,
+            crate::webui::fresh_connection_key(),
+        );
+        // Everyone, this node included, keeps sending the old key until
+        // `effective_at` and accepts both a while longer: the rotation cuts
+        // nothing that is running.
+        crate::auth::begin_key_transition(&previous, &config.connection_key, effective_at);
         config
             .save()
             .map_err(|error| format!("salvar a nova chave de conexão: {error:#}"))?;
@@ -356,7 +379,14 @@ async fn rotate_connection_key(
         .flatten()
         .unwrap_or(settings);
     Ok(Some(
-        fanout_network_settings(state, &settings, &connection_key, Some(departed)).await,
+        fanout_network_settings(
+            state,
+            &settings,
+            &connection_key,
+            Some(departed),
+            Some(effective_at),
+        )
+        .await,
     ))
 }
 
@@ -473,6 +503,7 @@ pub(crate) async fn internal_network_settings(
         envelope.network,
         false,
         Some(&envelope.connection_key),
+        envelope.key_effective_at,
     )
     .await
     {
@@ -586,6 +617,7 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
                 envelope.network,
                 false,
                 Some(&envelope.connection_key),
+                envelope.key_effective_at,
             )
             .await
             {
@@ -761,7 +793,7 @@ mod tests {
             visibility: NetworkVisibility::Private,
             ..NetworkSettings::default()
         };
-        apply_network_settings_with_key(&state, private.clone(), false, None)
+        apply_network_settings_with_key(&state, private.clone(), false, None, None)
             .await
             .expect("rede privada inicial");
         assert_eq!(state.auth.read().await.connection_key, "chave");
@@ -773,7 +805,7 @@ mod tests {
             visibility: NetworkVisibility::Public,
             ..private.clone()
         };
-        apply_network_settings_with_key(&state, public, false, None)
+        apply_network_settings_with_key(&state, public, false, None, None)
             .await
             .expect("transição para rede pública");
         let public_config = state.auth.read().await;
@@ -784,7 +816,7 @@ mod tests {
         );
         drop(public_config);
 
-        apply_network_settings_with_key(&state, private, false, None)
+        apply_network_settings_with_key(&state, private, false, None, None)
             .await
             .expect("retorno para rede privada");
         let private_config = state.auth.read().await;

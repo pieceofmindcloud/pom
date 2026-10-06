@@ -7,7 +7,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use subtle::ConstantTimeEq;
 
 const HANDSHAKE_NONCE_BYTES: usize = 32;
 const HANDSHAKE_CHALLENGE_TTL: Duration = Duration::from_secs(30);
@@ -168,14 +167,10 @@ pub async fn handle_handshake(
     let verifier_id = std::sync::Arc::as_ptr(&config) as usize;
     let cfg = config.read().await;
 
+    // The current key, or the one being replaced while a rotation's grace
+    // lasts (`auth::connection_key_accepted`).
     if cfg.connection_key.is_empty()
-        || req.connection_key.is_empty()
-        || cfg
-            .connection_key
-            .as_bytes()
-            .ct_eq(req.connection_key.as_bytes())
-            .unwrap_u8()
-            != 1
+        || !crate::auth::connection_key_accepted(&cfg, &req.connection_key)
     {
         return (
             StatusCode::FORBIDDEN,

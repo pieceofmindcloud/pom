@@ -161,12 +161,101 @@ pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 /// escada HTTP/HTTPS/QUIC. QUIC e HTTPS continuam podendo validar pelo
 /// transporte seguro na rede pública, sem depender desse cabeçalho.
 pub fn internal_node_token(config: &Config) -> Option<String> {
-    (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+    let key = outbound_connection_key(config);
+    (!key.is_empty()).then_some(key)
 }
 
 /// Confere a credencial compartilhada de um peer na porta de inferência.
 pub fn is_valid_internal_node_token(config: &Config, token: &str) -> bool {
-    !token.is_empty() && constant_time_token_eq(&config.connection_key, token)
+    connection_key_accepted(config, token)
+}
+
+// ── Changing the connection key without cutting anything off ────────────────
+
+/// How long after the principal decides a rotation every node keeps
+/// **sending** the old key. It is the time the new key has to reach the
+/// members; a request in flight keeps being accepted meanwhile.
+pub const KEY_TRANSITION_LEAD_SECS: i64 = 30;
+/// How long past the switch the old key is still **accepted**. It covers the
+/// clocks of two nodes not agreeing on when the switch is.
+pub const KEY_TRANSITION_GRACE_SECS: i64 = 30;
+
+/// A connection key being replaced. Until `effective_at` (Unix seconds, set
+/// by the principal and carried with the new key) the node sends `old`; from
+/// then on it sends the new one. It accepts both from the moment it has the
+/// new key until `effective_at + KEY_TRANSITION_GRACE_SECS`. So no two nodes
+/// that received the push ever refuse each other, and what a departed node
+/// still holds stops working about a minute after the rotation.
+#[derive(Clone)]
+struct KeyTransition {
+    old: String,
+    /// The key this transition leads to. A transition only applies to a
+    /// config holding it, so one node's rotation is nobody else's.
+    new: String,
+    effective_at: i64,
+}
+
+fn key_transition() -> &'static std::sync::Mutex<Option<KeyTransition>> {
+    static TRANSITION: std::sync::OnceLock<std::sync::Mutex<Option<KeyTransition>>> =
+        std::sync::OnceLock::new();
+    TRANSITION.get_or_init(Default::default)
+}
+
+/// Starts replacing `old` by `new`, which the caller has already stored as
+/// the config's connection key. A change that is not one (same key, or no
+/// previous key) starts nothing.
+pub fn begin_key_transition(old: &str, new: &str, effective_at: i64) {
+    if old.is_empty() || new.is_empty() || old == new {
+        return;
+    }
+    *key_transition().lock().expect("key transition lock") = Some(KeyTransition {
+        old: old.to_string(),
+        new: new.to_string(),
+        effective_at,
+    });
+}
+
+fn transition_for(current: &str, now: i64) -> Option<KeyTransition> {
+    let mut slot = key_transition().lock().expect("key transition lock");
+    let transition = slot.as_ref()?;
+    if transition.new != current {
+        return None;
+    }
+    if now >= transition.effective_at + KEY_TRANSITION_GRACE_SECS {
+        *slot = None;
+        return None;
+    }
+    Some(transition.clone())
+}
+
+fn outbound_connection_key_at(config: &Config, now: i64) -> String {
+    match transition_for(&config.connection_key, now) {
+        Some(transition) if now < transition.effective_at => transition.old,
+        _ => config.connection_key.clone(),
+    }
+}
+
+fn connection_key_accepted_at(config: &Config, token: &str, now: i64) -> bool {
+    key_accepted_at(&config.connection_key, token, now)
+}
+
+fn key_accepted_at(current: &str, token: &str, now: i64) -> bool {
+    if constant_time_token_eq(current, token) {
+        return true;
+    }
+    transition_for(current, now)
+        .is_some_and(|transition| constant_time_token_eq(&transition.old, token))
+}
+
+/// The connection key this node presents to a peer right now.
+pub fn outbound_connection_key(config: &Config) -> String {
+    outbound_connection_key_at(config, chrono::Utc::now().timestamp())
+}
+
+/// Whether `token` is a connection key this node accepts right now: the
+/// current one, or the one being replaced while its grace lasts.
+pub fn connection_key_accepted(config: &Config, token: &str) -> bool {
+    connection_key_accepted_at(config, token, chrono::Utc::now().timestamp())
 }
 
 /// Valida uma API key apresentada pela superfície de inferência do cliente.
@@ -579,7 +668,9 @@ fn is_authenticated_internal_node_request(headers: &HeaderMap, connection_key: &
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(authorization_token)
-        .is_some_and(|supplied| constant_time_token_eq(connection_key, supplied))
+        .is_some_and(|supplied| {
+            key_accepted_at(connection_key, supplied, chrono::Utc::now().timestamp())
+        })
 }
 
 #[async_trait]
@@ -1357,5 +1448,39 @@ mod tests {
             .await,
             Err(AuthRejection::InvalidKey)
         ));
+    }
+
+    #[test]
+    fn a_rotated_connection_key_overlaps_the_old_one_instead_of_cutting_it() {
+        let config = |key: &str| -> Config {
+            serde_json::from_value(serde_json::json!({ "profile": "node", "connection_key": key }))
+                .unwrap()
+        };
+        let rotated = config("transition-new-key");
+        begin_key_transition("transition-old-key", "transition-new-key", 1_000);
+
+        // Before the switch: still sending the old key, accepting both.
+        assert_eq!(outbound_connection_key_at(&rotated, 990), "transition-old-key");
+        assert!(connection_key_accepted_at(&rotated, "transition-old-key", 990));
+        assert!(connection_key_accepted_at(&rotated, "transition-new-key", 990));
+        // From the switch: sending the new key, the old one still accepted.
+        assert_eq!(outbound_connection_key_at(&rotated, 1_000), "transition-new-key");
+        assert!(connection_key_accepted_at(&rotated, "transition-old-key", 1_010));
+        // A node whose clock is behind still sends the old key at that time.
+        assert!(connection_key_accepted_at(
+            &rotated,
+            "transition-old-key",
+            1_000 + KEY_TRANSITION_GRACE_SECS - 1
+        ));
+        // A config holding another key is not part of this rotation.
+        let other = config("some-other-network-key");
+        assert_eq!(outbound_connection_key_at(&other, 990), "some-other-network-key");
+        assert!(!connection_key_accepted_at(&other, "transition-old-key", 990));
+        // After the grace the old key opens nothing, here or ever again.
+        let after = 1_000 + KEY_TRANSITION_GRACE_SECS;
+        assert!(!connection_key_accepted_at(&rotated, "transition-old-key", after));
+        assert!(connection_key_accepted_at(&rotated, "transition-new-key", after));
+        assert!(!connection_key_accepted_at(&rotated, "transition-old-key", 990));
+        assert!(!connection_key_accepted_at(&rotated, "", after));
     }
 }

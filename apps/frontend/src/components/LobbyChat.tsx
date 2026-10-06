@@ -215,10 +215,19 @@ export function LobbyChat({ network, endpoint, onClose }: {
               ))}
               {admission?.status === "pending" && <p className="text-xs leading-relaxed text-amber">{t("lobby.admissionPending", { role: t(`network.enrollment.${admission.role}`) })}</p>}
               {admission?.status === "rejected" && <p className="text-xs leading-relaxed text-rose">{t("lobby.admissionRejected")}</p>}
-              {admission?.status === "approved" && (
+              {admission?.status === "approved" && !admission.standing && (
                 <div className="space-y-2">
                   <p className="text-xs leading-relaxed text-lime">{t("lobby.admissionApproved", { role: t(`network.enrollment.${admission.role}`) })}</p>
                   <Button size="sm" variant="primary" onClick={() => setJoinConfirm(true)}>{t("lobby.joinNow")}</Button>
+                </div>
+              )}
+              {/* Admitted before: there is nothing to wait for or to be told
+                  later, and the button switches at once. */}
+              {admission?.status === "approved" && admission.standing && (
+                <div className="space-y-2">
+                  <p className="text-xs leading-relaxed text-lime">{t("lobby.admissionStanding", { role: t(`network.enrollment.${admission.role}`) })}</p>
+                  <Button size="sm" variant="primary" loading={joining} onClick={() => void join()}>{t("lobby.switchNow")}</Button>
+                  <p className="text-[0.68rem] leading-relaxed text-faint">{t("lobby.joinDetail")}</p>
                 </div>
               )}
             </div>

@@ -22,6 +22,12 @@ export interface AdmissionRequest {
   name: string;
   role: EnrollmentRole;
   status: AdmissionStatus;
+  /**
+   * An approval this node did not just ask for: it was admitted to that
+   * network before and the approval still stands. Not an answer to anything,
+   * so it is not announced.
+   */
+  standing?: boolean;
 }
 
 /** Requests waiting for this network's admin. Admin-only on the node. */

@@ -234,6 +234,8 @@ describe("Notifications network offers", () => {
     admissionMocks.requests.data = [
       { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "approved" },
       { key: "pk:waiting", name: "Rede Espera", role: "node", status: "pending" },
+      // Admitted before and never asked again: not an answer, so not news.
+      { key: "pk:antiga", name: "Rede Antiga", role: "node", status: "approved", standing: true },
     ];
     admissionMocks.api.join.mockResolvedValue({ joined: true });
     renderNotifications([]);
@@ -241,6 +243,8 @@ describe("Notifications network offers", () => {
 
     expect(screen.getByText("Rede Curitiba aprovou esta máquina")).toBeTruthy();
     expect(screen.queryByTestId("admission-answer-pk:waiting")).toBeNull();
+    expect(screen.queryByTestId("admission-answer-pk:antiga")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Entrar agora" }).length).toBe(1);
     expect(admissionMocks.api.join).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Entrar agora" }));
     await waitFor(() => expect(admissionMocks.api.join).toHaveBeenCalledWith("pk:curitiba"));

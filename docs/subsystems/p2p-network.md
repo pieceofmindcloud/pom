@@ -1474,7 +1474,11 @@ sends nothing, the candidate collects the grant on its next poll.
 On the candidate, `webui::spawn_admission_poller` fetches every pending
 request each 30 s so an approval that comes hours later is noticed with no
 window open. The grant stays in memory there, never reaches the browser and
-is not written to the database. Joining is the operator's explicit act
+is not written to the database. The node also records whether it **asked**
+for the admission it sees. An approval it did not ask for is a machine that
+was admitted before, left, and finds the network still holding its approval:
+that is reported as `standing`, raises no notification, and the lobby offers
+to switch in one click instead of announcing an answer. Joining is the operator's explicit act
 (`POST /api/ui/network/join`): the node checks the granted trust document
 belongs to the key it asked, replaces its trust root, rewrites its config as
 a member with the granted key and settings, and restarts. It leaves the

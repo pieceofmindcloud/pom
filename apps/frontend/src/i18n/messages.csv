@@ -1089,6 +1089,7 @@ lobby.admissionAskDetail,An admin of the network decides. You can close this win
 lobby.admissionPending,Admission as {role} requested. Waiting for an admin.,Admissão como {role} pedida. Aguardando um administrador.
 lobby.admissionRejected,An admin declined this request. You can ask again later.,Um administrador recusou este pedido. Você pode pedir de novo mais tarde.
 lobby.admissionRole,Join as,Entrar como
+lobby.admissionStanding,This machine was already admitted to this network as {role} and still holds its credentials. You can switch to it now.,Esta máquina já foi admitida nesta rede como {role} e ainda tem as credenciais. Você pode trocar para ela agora.
 lobby.candidate,candidate,candidato
 lobby.candidates,{count} in the lobby,{count} no lobby
 lobby.cardNote,This card goes with every message so the network can judge whether your machine fits.,Este cartão acompanha cada mensagem para a rede avaliar se a sua máquina serve.
@@ -1127,6 +1128,7 @@ lobby.ramTotal,{value} RAM,{value} de RAM
 lobby.roomLobby,Lobby,Lobby
 lobby.roomNetwork,Network,Rede
 lobby.rooms,Rooms,Salas
+lobby.switchNow,Switch to this network,Trocar para esta rede
 lobby.title,Lobby of {name},Lobby de {name}
 lobby.unifiedMemory,unified memory,memória unificada
 lobby.unknown,Not informed,Não informado

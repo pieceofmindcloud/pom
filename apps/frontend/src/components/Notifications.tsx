@@ -195,7 +195,9 @@ export function Notifications() {
   const admissions = useAdmissions(profile === "admin");
   const admissionRequests = useAdmissionRequests();
   const pendingAdmissions = (admissions.data ?? []).filter((record) => record.status === "pending");
-  const answeredRequests = (admissionRequests.data ?? []).filter((request) => request.status !== "pending");
+  // An answer to something this machine asked. A standing approval (it was
+  // admitted before) answers nothing and is shown in the lobby instead.
+  const answeredRequests = (admissionRequests.data ?? []).filter((request) => request.status !== "pending" && !request.standing);
   const [joinKey, setJoinKey] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<string | null>(null);
 

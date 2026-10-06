@@ -59,15 +59,27 @@ struct CandidateRequest {
     role: crate::config::EnrollmentRole,
     status: network_lobby::AdmissionStatus,
     grant: Option<network_lobby::AdmissionGrant>,
+    /// Whether this node asked for the admission it now sees. `false` is a
+    /// machine that was admitted before, left, and finds the network still
+    /// holding its approval: nothing is waiting for an answer, so there is
+    /// no notification, and the lobby offers to switch at once.
+    asked: bool,
 }
 
 impl CandidateRequest {
+    /// An approval this node did not just ask for: credentials it already had.
+    fn standing(&self) -> bool {
+        self.status == network_lobby::AdmissionStatus::Approved && !self.asked
+    }
+
     fn public_json(&self) -> serde_json::Value {
         json!({
             "key": self.key,
             "name": self.name,
             "role": self.role,
             "status": self.status,
+            "asked": self.asked,
+            "standing": self.standing(),
         })
     }
 }
@@ -105,6 +117,8 @@ fn sync_requests(database: &crate::db::PomDb, changed: bool) {
                 role,
                 status,
                 grant: None,
+                // A request kept before this field existed was asked for.
+                asked: value["asked"].as_bool().unwrap_or(true),
             });
         }
     }
@@ -151,6 +165,7 @@ async fn exchange(
         .get(key)
         .copied();
     let identity = client.proof();
+    let asking = matches!(ask, Ask::Admission { .. });
     let request = match ask {
         Ask::Post { message_id, text } => LobbyRequest::Post {
             identity,
@@ -187,8 +202,12 @@ async fn exchange(
                                     role: view.role,
                                     status: view.status,
                                     grant: None,
+                                    asked: asking,
                                 }
                             });
+                            if asking {
+                                entry.asked = true;
+                            }
                             if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
                                 entry.name = name.trim().to_string();
                             }
@@ -770,6 +789,25 @@ pub async fn setup_public_networks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_approval_this_node_did_not_ask_for_is_standing_not_news() {
+        let request = |status, asked| CandidateRequest {
+            key: "pk:x".into(),
+            name: "Rede".into(),
+            role: crate::config::EnrollmentRole::Node,
+            status,
+            grant: None,
+            asked,
+        };
+        use network_lobby::AdmissionStatus::{Approved, Pending, Rejected};
+        // Admitted before, left, came back: the approval is still there.
+        assert_eq!(request(Approved, false).public_json()["standing"], true);
+        // Asked and then approved: that is an answer, and it is announced.
+        assert_eq!(request(Approved, true).public_json()["standing"], false);
+        assert_eq!(request(Pending, true).public_json()["standing"], false);
+        assert_eq!(request(Rejected, false).public_json()["standing"], false);
+    }
 
     #[test]
     fn published_stats_match_what_the_local_row_shows() {

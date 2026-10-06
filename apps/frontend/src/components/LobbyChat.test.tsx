@@ -83,4 +83,35 @@ describe("LobbyChat", () => {
     expect(await screen.findByText("Esta rede não está aceitando conversa no lobby no momento.")).toBeTruthy();
     expect((screen.getByLabelText("Escreva para o lobby desta rede…") as HTMLInputElement).disabled).toBe(true);
   });
+
+  it("offers to switch at once to a network that already admitted this machine", async () => {
+    mocks.get.mockResolvedValue({
+      ...exchange,
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "approved", standing: true },
+    });
+    mocks.post.mockResolvedValue({ joined: true });
+    mount();
+
+    expect(await screen.findByText(/já foi admitida nesta rede como Nós da rede/)).toBeTruthy();
+    // No request to make and nothing to wait for.
+    expect(screen.queryByRole("button", { name: "Pedir admissão" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Entrar agora" })).toBeNull();
+
+    // One click: no second confirmation in between.
+    fireEvent.click(screen.getByRole("button", { name: "Trocar para esta rede" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/join", { key: "pk:curitiba" }));
+    expect(screen.queryByRole("dialog", { name: /Entrar em/ })).toBeNull();
+  });
+
+  it("asks for confirmation when the approval answers a request just made", async () => {
+    mocks.get.mockResolvedValue({
+      ...exchange,
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "approved", standing: false },
+    });
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Entrar agora" }));
+    expect(await screen.findByRole("dialog", { name: "Entrar em Rede Curitiba?" })).toBeTruthy();
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
 });

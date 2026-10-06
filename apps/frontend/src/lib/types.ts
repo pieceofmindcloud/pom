@@ -595,7 +595,14 @@ export interface LobbyExchange {
   card: LobbyCard;
   messages: LobbyMessage[];
   /** This machine's admission request on that network, when it made one. */
-  admission?: { key: string; name: string; role: EnrollmentRole; status: "pending" | "approved" | "rejected" } | null;
+  admission?: {
+    key: string;
+    name: string;
+    role: EnrollmentRole;
+    status: "pending" | "approved" | "rejected";
+    /** Approved without having asked now: this machine was admitted before. */
+    standing?: boolean;
+  } | null;
 }
 
 export type NetworkChatRoom = "network" | "lobby";

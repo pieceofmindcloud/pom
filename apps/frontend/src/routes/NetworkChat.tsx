@@ -1,5 +1,6 @@
 import { Download, FileUp, Send, Users, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LobbyHardwareCard } from "../components/LobbyHardwareCard";
 import { Button, Empty, Input, PageHeader } from "../components/ui";
 import { downloadNetworkChatFile, postNetworkChat } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
@@ -9,12 +10,13 @@ import { markNetworkChatRead } from "../lib/networkChatUnread";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type {
+  LobbyGuest,
   NetworkChatEvent,
   NetworkChatParticipant,
   NetworkChatRequest,
+  NetworkChatRoom,
 } from "../lib/types";
 
-const ROOM_ID = "network";
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 function id(): string {
@@ -29,12 +31,12 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function textAction(senderNodeId: string, text: string): NetworkChatRequest {
+function textAction(room: NetworkChatRoom, senderNodeId: string, text: string): NetworkChatRequest {
   return {
     action: {
       kind: "text",
       message_id: id(),
-      room_id: ROOM_ID,
+      room_id: room,
       sender_node_id: senderNodeId,
       recipient_node_id: null,
       text,
@@ -48,7 +50,7 @@ function typingAction(senderNodeId: string, isTyping: boolean): NetworkChatReque
     action: {
       kind: "typing",
       message_id: id(),
-      room_id: ROOM_ID,
+      room_id: "network",
       sender_node_id: senderNodeId,
       recipient_node_id: null,
       is_typing: isTyping,
@@ -62,7 +64,7 @@ function fileAction(senderNodeId: string, file: File, data: number[]): NetworkCh
     action: {
       kind: "file",
       message_id: id(),
-      room_id: ROOM_ID,
+      room_id: "network",
       sender_node_id: senderNodeId,
       recipient_node_id: null,
       file_name: file.name,
@@ -127,14 +129,35 @@ function ParticipantList({ participants, nodeName }: { participants: NetworkChat
   );
 }
 
+/** Candidates in the lobby, each with the hardware it declared. */
+function LobbyGuestList({ guests }: { guests: LobbyGuest[] }) {
+  const { t } = useI18n();
+  return (
+    <aside className="border-b border-line px-4 py-4 lg:border-b-0 lg:border-l lg:py-5">
+      <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+        <Users className="h-3.5 w-3.5 text-aqua" />
+        {t("lobby.candidates", { count: guests.length })}
+      </div>
+      <div className="space-y-3">
+        {guests.map((guest) => <LobbyHardwareCard key={guest.nodeId} nodeId={guest.nodeId} card={guest.card} />)}
+        {!guests.length && <p className="text-sm text-faint">{t("lobby.noCandidates")}</p>}
+      </div>
+      <p className="mt-3 text-[0.68rem] leading-relaxed text-faint">{t("lobby.declaredNote")}</p>
+    </aside>
+  );
+}
+
 export function NetworkChat() {
   const { t } = useI18n();
   const node = useNode();
   const cluster = useCluster();
   const toast = useToast();
-  const networkChat = useNetworkChat();
+  const [room, setRoom] = useState<NetworkChatRoom>("network");
+  const networkChat = useNetworkChat(room);
   const localNodeId = node.data?.node_id ?? "";
   const snapshot = networkChat.data ?? null;
+  const inLobby = room === "lobby";
+  const lobbyGuests = snapshot?.lobbyGuests ?? [];
   const nodeName = useMemo(() => {
     const names = new Map<string, string>();
     for (const peer of cluster.data?.peers ?? []) {
@@ -146,8 +169,12 @@ export function NetworkChat() {
         names.set(participant.nodeId, participant.hostname);
       }
     }
+    // A candidate is not a peer: its name only exists in the card it sent.
+    for (const guest of snapshot?.lobbyGuests ?? []) {
+      if (guest.card.hostname && !names.has(guest.nodeId)) names.set(guest.nodeId, guest.card.hostname);
+    }
     return (id: string) => names.get(id) || shortNodeId(id);
-  }, [cluster.data?.peers, localNodeId, node.data?.hostname, snapshot?.participants]);
+  }, [cluster.data?.peers, localNodeId, node.data?.hostname, snapshot?.lobbyGuests, snapshot?.participants]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
@@ -166,8 +193,13 @@ export function NetworkChat() {
   }, [networkChat.refetch]);
 
   useEffect(() => {
-    if (snapshot?.messages.length) markNetworkChatRead(snapshot.messages);
-  }, [snapshot?.messages]);
+    if (!inLobby && snapshot?.messages.length) markNetworkChatRead(snapshot.messages);
+  }, [inLobby, snapshot?.messages]);
+
+  // The principal closed the lobby while this tab was on it.
+  useEffect(() => {
+    if (inLobby && snapshot && snapshot.lobbyEnabled === false) setRoom("network");
+  }, [inLobby, snapshot]);
 
   useEffect(() => () => {
     if (typingTimer.current !== undefined) window.clearTimeout(typingTimer.current);
@@ -186,7 +218,8 @@ export function NetworkChat() {
   }, [refresh, t, toast]);
 
   const notifyTyping = useCallback((isTyping: boolean) => {
-    if (!localNodeId) return;
+    // Typing is a signal of the members' room; the lobby does not carry it.
+    if (!localNodeId || inLobby) return;
     if (typingTimer.current !== undefined) window.clearTimeout(typingTimer.current);
     if (isTyping && typingActive.current) {
       typingTimer.current = window.setTimeout(() => {
@@ -206,14 +239,14 @@ export function NetworkChat() {
         void postNetworkChat(typingAction(localNodeId, false));
       }, 1800);
     }
-  }, [localNodeId, t, toast]);
+  }, [inLobby, localNodeId, t, toast]);
 
   async function submit() {
     const text = draft.trim();
     if (!text || !localNodeId) return;
     setDraft("");
     notifyTyping(false);
-    await send(textAction(localNodeId, text));
+    await send(textAction(room, localNodeId, text));
   }
 
   async function onFile(file: File | undefined) {
@@ -242,8 +275,8 @@ export function NetworkChat() {
   }
 
   const typing = useMemo(
-    () => snapshot?.typing.filter((event) => event.senderNodeId !== localNodeId) ?? [],
-    [localNodeId, snapshot?.typing],
+    () => inLobby ? [] : snapshot?.typing.filter((event) => event.senderNodeId !== localNodeId) ?? [],
+    [inLobby, localNodeId, snapshot?.typing],
   );
   const messages = snapshot?.messages ?? [];
   const latestMessageId = messages[messages.length - 1]?.messageId;
@@ -309,7 +342,24 @@ export function NetworkChat() {
         )}
         className="!mb-0 shrink-0 border-b border-line bg-surface/75 px-3 py-3 sm:px-4"
       />
-      <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_15rem]">
+      {snapshot?.lobbyEnabled && (
+        <div role="tablist" aria-label={t("lobby.rooms")} className="flex shrink-0 gap-1 border-b border-line bg-surface/50 px-3 py-2 sm:px-4">
+          {(["network", "lobby"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="tab"
+              aria-selected={room === option}
+              onClick={() => setRoom(option)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${room === option ? "bg-iris/15 text-fg" : "text-muted hover:bg-line/40 hover:text-fg"}`}
+            >
+              {t(option === "lobby" ? "lobby.roomLobby" : "lobby.roomNetwork")}
+              {option === "lobby" && lobbyGuests.length > 0 && <span className="ml-1.5 rounded-full bg-aqua/20 px-1.5 py-0.5 text-[0.62rem] text-aqua">{lobbyGuests.length}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className={`grid min-h-0 flex-1 ${inLobby ? "lg:grid-cols-[minmax(0,1fr)_18rem]" : "lg:grid-cols-[minmax(0,1fr)_15rem]"}`}>
         <div className="flex min-h-0 flex-col">
           <div
             ref={messagesRef}
@@ -319,18 +369,20 @@ export function NetworkChat() {
             }}
             className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
           >
-            {messages.length ? messages.map((message) => <MessageRow key={message.messageId} message={message} localNodeId={localNodeId} nodeName={nodeName} onDownload={(fileMessage) => { void download(fileMessage); }} />) : <Empty title={t("networkChat.emptyTitle")}>{t("networkChat.emptyDetail")}</Empty>}
+            {messages.length ? messages.map((message) => <MessageRow key={message.messageId} message={message} localNodeId={localNodeId} nodeName={nodeName} onDownload={(fileMessage) => { void download(fileMessage); }} />) : <Empty title={t("networkChat.emptyTitle")}>{t(inLobby ? "lobby.emptyMember" : "networkChat.emptyDetail")}</Empty>}
             {typing.length > 0 && <p className="text-xs italic text-muted">{t("networkChat.typing", { node: nodeName(typing[0].senderNodeId) })}</p>}
           </div>
           <div className="border-t border-line bg-ink/40 p-3 sm:p-4">
             <div className="flex items-end gap-2">
-              <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line bg-raised text-muted transition-colors hover:border-line-strong hover:text-fg" onClick={() => fileInput.current?.click()} aria-label={t("networkChat.attach")}>
-                <FileUp className="h-4 w-4" />
-              </button>
+              {!inLobby && (
+                <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line bg-raised text-muted transition-colors hover:border-line-strong hover:text-fg" onClick={() => fileInput.current?.click()} aria-label={t("networkChat.attach")}>
+                  <FileUp className="h-4 w-4" />
+                </button>
+              )}
               <input ref={fileInput} type="file" className="hidden" onChange={(event) => { void onFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
               <Input
                 value={draft}
-                placeholder={t("networkChat.placeholder")}
+                placeholder={t(inLobby ? "lobby.placeholderMember" : "networkChat.placeholder")}
                 onChange={(event) => { setDraft(event.target.value); notifyTyping(event.target.value.trim().length > 0); }}
                 onBlur={() => notifyTyping(false)}
                 onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }}
@@ -340,11 +392,11 @@ export function NetworkChat() {
                 <Send className="h-4 w-4" />
               </Button>
             </div>
-            <p className="mt-2 text-[0.68rem] text-faint">{t("networkChat.hint")}</p>
+            <p className="mt-2 text-[0.68rem] text-faint">{t(inLobby ? "lobby.hintMember" : "networkChat.hint")}</p>
           </div>
         </div>
         <div className={showParticipants ? "block lg:block" : "hidden lg:block"}>
-          <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />
+          {inLobby ? <LobbyGuestList guests={lobbyGuests} /> : <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />}
         </div>
       </div>
     </div>

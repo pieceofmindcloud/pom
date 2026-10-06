@@ -11,15 +11,18 @@
  */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, Check, ChevronDown, Copy, Cpu, Database, Download, HardDrive, Landmark, Monitor, Radar, RefreshCw, Server, Sparkles, Upload } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, Cpu, Database, Download, Globe2, HardDrive, Landmark, MessageCircle, Monitor, Radar, RefreshCw, Server, Sparkles, Upload } from "lucide-react";
 import clsx from "clsx";
 import type { WizardStage, WizardStep } from "./setupWizardTypes";
 import { setupNextStage, setupPreviousStage, setupStepsFor, type SetupProfile } from "./setupWizardFlow";
 import { api } from "../lib/api";
+import { usePublicStats } from "../lib/publicStats";
+import type { EnrollmentRole } from "../lib/types";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Field, Input, Select } from "../components/ui";
 import { BrandLanguageSwitch } from "../components/BrandLanguageSwitch";
+import { LobbyChat } from "../components/LobbyChat";
 import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 import pomMark from "../assets/pom-mark-dark.png";
 
@@ -80,6 +83,7 @@ interface PublicJoinPayload {
   cluster_id?: string;
   trust_document?: string;
   access_policy?: AccessPolicy;
+  accepted_enrollments?: EnrollmentRole[];
   directory_replicas?: string[];
 }
 
@@ -141,6 +145,12 @@ interface AutoDiscoveryStatus {
 
 export interface SetupState {
   profile: SetupProfile | null;
+  /**
+   * Roles the public network picked in the directory advertises as open, or
+   * `null` when the wizard was not opened from there. Only narrows the role
+   * choice on the first screen; it is not sent to the node.
+   */
+  joinAccepts: EnrollmentRole[] | null;
   publicDirectory: string;
   connectionKey: string;
   advertiseAddr: string;
@@ -216,6 +226,7 @@ function gigabytes(mb: number | null | undefined): string | null {
 
 const INITIAL: SetupState = {
   profile: null,
+  joinAccepts: null,
   publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
@@ -304,6 +315,7 @@ export function Setup() {
       const network = JSON.parse(raw) as PublicJoinPayload;
       setSetup((current) => ({
         ...current,
+        joinAccepts: network.accepted_enrollments ?? null,
         publicDirectory: network.directory_replicas?.join(", ") ?? current.publicDirectory,
         trustDocument: network.trust_document ?? "",
         trustFingerprint: "",
@@ -338,7 +350,7 @@ export function Setup() {
           cluster_id: clusterId,
           visibility: setup.network.visibility,
           network: setup.network,
-          public_directory: splitList(setup.publicDirectory),
+          public_directory: directoryReplicas(setup.publicDirectory),
         },
         { auth: false },
       );
@@ -361,7 +373,7 @@ export function Setup() {
     try {
       await api.post("/api/setup/save", {
         profile: setup.profile,
-        public_directory: splitList(setup.publicDirectory),
+        public_directory: directoryReplicas(setup.publicDirectory),
         connection_key: setup.connectionKey.trim(),
         advertise_addr: setup.advertiseAddr.trim(),
         cluster_id: clusterIdFromDocument(setup.trustDocument) || setup.network.public_name.trim(),
@@ -427,6 +439,15 @@ export function Setup() {
 
 function splitList(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+/**
+ * The directory field also takes relay keys (`pk:...`) to ask for the public
+ * networks. Those are not directory replicas: the node only stores addresses
+ * there, and refuses the save otherwise.
+ */
+export function directoryReplicas(value: string): string[] {
+  return splitList(value).filter((item) => !item.startsWith("pk:"));
 }
 
 /** Casca do wizard com a identidade do site: painel escuro flutuante, marca e trilha de passos. */
@@ -526,17 +547,21 @@ export function StartScreen({ setup, hardware, update, t }: { setup: SetupState;
       <div className="grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label={t("firstRun.startTitle")}>
         {roles.map((role, index) => {
           const selected = setup.profile === role.id;
+          // `admin` founds a network of its own, so the joined one never closes it.
+          const notAccepted = role.id !== "admin" && setup.joinAccepts !== null && !setup.joinAccepts.includes(role.id);
           return (
             <motion.button
               key={role.id}
               type="button"
               role="radio"
               aria-checked={selected}
+              disabled={notAccepted}
+              title={notAccepted ? t("firstRun.roleNotAccepted") : undefined}
               onClick={() => update({ profile: role.id })}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.08 * index, duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-              className={clsx("pom-setup-choice", selected && "is-selected")}
+              className={clsx("pom-setup-choice", selected && "is-selected", notAccepted && "cursor-not-allowed opacity-45")}
             >
               <span className="pom-setup-choice-icon">{role.icon}</span>
               <span className="mt-3 block font-display text-[0.95rem] font-semibold text-fg">{role.title}</span>
@@ -827,6 +852,114 @@ export function DiscoveredMachineCard({ peer, t }: { peer: AutoDiscoveryPeer; t:
   );
 }
 
+/** A public network as the federated directory lists it to the wizard. */
+interface DirectoryNetwork {
+  cluster_id: string;
+  name: string;
+  fingerprint: string;
+  publisher_key: string;
+  trust_document: string;
+  organization: string;
+  country_name: string;
+  country_code: string;
+  city: string;
+  access_policy?: AccessPolicy;
+  accepted_enrollments?: EnrollmentRole[];
+  lobby_chat?: boolean;
+  public_stats?: boolean;
+  directory_replicas?: string[];
+}
+
+/** What a listed network publishes about itself, asked from its principal. */
+function DirectoryNetworkStats({ network, t }: { network: DirectoryNetwork; t: Translate }) {
+  const stats = usePublicStats("/api/setup/lobby/info", network.publisher_key, Boolean(network.public_stats));
+  if (!stats) return null;
+  const parts = [
+    t("firstRun.publicDirectoryNodes", { count: stats.nodeCount }),
+    stats.vramTotalMb != null ? t("firstRun.publicDirectoryVram", { value: (stats.vramTotalMb / 1024).toFixed(1) }) : null,
+    stats.models.length ? stats.models.join(", ") : null,
+  ].filter(Boolean);
+  return <p className="truncate text-xs text-faint" data-testid={`directory-stats-${network.cluster_id}`}>{parts.join(" - ")}</p>;
+}
+
+/**
+ * Public networks, inside the wizard. A machine that has joined nothing has
+ * no cluster to discover networks through, so this is the federated directory
+ * alone (`GET /api/setup/public-networks`). Each network can be talked to
+ * before joining - that is the point of listing it here - and "Join" fills the
+ * same trust fields the manual block does.
+ */
+export function PublicDirectoryPanel({ setup, onUse, onAddress, t }: { setup: SetupState; onUse: (network: DirectoryNetwork) => void; onAddress?: (value: string) => void; t: Translate }) {
+  const [networks, setNetworks] = useState<DirectoryNetwork[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [chatTarget, setChatTarget] = useState<DirectoryNetwork | null>(null);
+  const replicas = setup.publicDirectory.trim();
+
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+    void api.get<DirectoryNetwork[]>(`/api/setup/public-networks?replicas=${encodeURIComponent(replicas)}`, { auth: false })
+      .then((listed) => { if (!cancelled) setNetworks(Array.isArray(listed) ? listed : []); })
+      .catch(() => { if (!cancelled) { setNetworks([]); setFailed(true); } });
+    return () => { cancelled = true; };
+    // `replicas` is read when the list is asked for, not on every keystroke.
+  }, [attempt]);
+
+  const role = setup.profile === "node" || setup.profile === "infer" ? setup.profile : null;
+  return (
+    <details className="pom-setup-details mt-5" data-testid="setup-public-directory">
+      <summary>
+        <span className="flex items-center gap-2"><Globe2 className="h-4 w-4" />{t("firstRun.publicDirectory")}</span>
+        <ChevronDown className="h-4 w-4" />
+      </summary>
+      <div className="space-y-2 pt-3">
+        <p className="text-xs leading-relaxed text-muted">{t("firstRun.publicDirectoryDetail")}</p>
+        {/* A machine that joined nothing has nobody to ask: the list comes
+            from the node or directory named here. */}
+        <Field label={t("firstRun.publicDirectoryAddress")} hint={t("firstRun.publicDirectoryAddressHint")}>
+          <Input
+            value={setup.publicDirectory}
+            placeholder="pk:... / http://host:8080"
+            onChange={(event) => onAddress?.(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setAttempt((value) => value + 1); } }}
+          />
+        </Field>
+        {networks === null && <p className="text-xs text-faint">{t("firstRun.publicDirectoryLoading")}</p>}
+        {networks?.length === 0 && <p className="text-xs text-faint">{t(failed ? "firstRun.publicDirectoryFailed" : "firstRun.publicDirectoryEmpty")}</p>}
+        {(networks ?? []).map((network) => {
+          const accepted = network.accepted_enrollments;
+          const closed = accepted !== undefined && (accepted.length === 0 || (role !== null && !accepted.includes(role)));
+          const selected = setup.trustDocument === network.trust_document;
+          return (
+            <div key={`${network.cluster_id}:${network.fingerprint}`} className={clsx("flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2.5", selected ? "border-aqua/50 bg-aqua/5" : "border-white/10")}>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-fg">{network.name || network.cluster_id}</p>
+                <p className="truncate text-xs text-muted">{[network.organization, [network.country_name || network.country_code, network.city].filter(Boolean).join(" / ")].filter(Boolean).join(" - ")}</p>
+                <DirectoryNetworkStats network={network} t={t} />
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {network.lobby_chat && (
+                  <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setChatTarget(network)}>
+                    <MessageCircle className="h-3.5 w-3.5" />{t("publicNetworks.chat")}
+                  </button>
+                )}
+                <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" disabled={closed} title={closed ? t("firstRun.roleNotAccepted") : undefined} onClick={() => onUse(network)}>
+                  {t(closed ? "publicNetworks.closed" : selected ? "firstRun.publicDirectorySelected" : "firstRun.publicDirectoryUse")}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setAttempt((value) => value + 1)}>
+          <RefreshCw className="h-3.5 w-3.5" />{t("publicNetworks.refresh")}
+        </button>
+      </div>
+      <LobbyChat network={chatTarget && { name: chatTarget.name || chatTarget.cluster_id, publisher_key: chatTarget.publisher_key }} endpoint="/api/setup/lobby" onClose={() => setChatTarget(null)} />
+    </details>
+  );
+}
+
 export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: Translate }) {
   const [manualOpen, setManualOpen] = useState(false);
   const networkName = trustNetworkMetadata(setup.trustDocument)?.public_name ?? clusterIdFromDocument(setup.trustDocument);
@@ -871,6 +1004,23 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
           </motion.div>
         )}
       </AnimatePresence>
+      <PublicDirectoryPanel
+        setup={setup}
+        t={t}
+        onAddress={(publicDirectory) => update({ publicDirectory })}
+        onUse={(network) => {
+          applyTrust(network.trust_document);
+          updateNetwork({ public_name: network.name || network.cluster_id, visibility: "public", access_policy: network.access_policy ?? "anyone_with_anchor" });
+          update({
+            joinAccepts: network.accepted_enrollments ?? null,
+            // A public network needs no shared secret; one left over from the
+            // local discovery would be sent to a network it does not belong to.
+            connectionKey: "",
+            ...(network.directory_replicas?.length ? { publicDirectory: network.directory_replicas.join(", ") } : {}),
+          });
+          void fingerprintFromTrustDocument(network.trust_document).then((fingerprint) => update({ trustFingerprint: fingerprint ?? "" }));
+        }}
+      />
       <details className="pom-setup-details mt-5" open={manualOpen} onToggle={(event) => setManualOpen((event.target as HTMLDetailsElement).open)}>
         <summary>
           <span>{t("firstRun.manualJoin")}</span>

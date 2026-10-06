@@ -363,6 +363,10 @@ export interface NodeInfo {
   hostname: string;
   profile: Profile;
   network_name: string;
+  /** This node is the principal of the network it is in: its own network. */
+  own_network?: boolean;
+  /** This node's own network, kept aside while it is a member elsewhere. */
+  standby_network?: string | null;
   /**
    * A chave de conexão do cluster, que esta interface mostra em "Chave de
    * Conexão" e guarda para autenticar as chamadas que a exigem.
@@ -428,6 +432,10 @@ export interface NodeInfo {
 export type NetworkVisibility = "local" | "private" | "public";
 export type NetworkAccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
 
+/** A role a new machine can enroll with; `admin` is never an enrollment. */
+export type EnrollmentRole = "node" | "infer";
+export const ENROLLMENT_ROLES: EnrollmentRole[] = ["node", "infer"];
+
 export interface NetworkLocation {
   latitude: number;
   longitude: number;
@@ -446,6 +454,12 @@ export interface NetworkSettings {
   geo_label: string;
   visibility: NetworkVisibility;
   access_policy: NetworkAccessPolicy;
+  /** Roles the network advertises as open to new members; empty means closed. */
+  accepted_enrollments: EnrollmentRole[];
+  /** Opens the lobby room of the network Chat to machines that are not members. */
+  lobby_chat: boolean;
+  /** Publishes served models, node count and total VRAM to non-members. */
+  public_stats: boolean;
   location: NetworkLocation | null;
 }
 
@@ -547,8 +561,66 @@ export interface NetworkChatParticipant {
   profile: string;
 }
 
+/** Hardware a lobby candidate declares about itself. Not verified by anyone. */
+export interface LobbyCard {
+  hostname: string;
+  os: string;
+  arch: string;
+  cpu_count: number;
+  ram_total_mb: number;
+  gpus: { name: string; vram_total_mb: number | null }[];
+  /** Round trip to the network's principal, as the candidate measured it. */
+  rtt_ms?: number | null;
+  /** The principal sees this candidate through a relay circuit. */
+  relayed?: boolean | null;
+}
+
+/** A machine in the lobby that is not a member of the network. */
+export interface LobbyGuest {
+  nodeId: string;
+  card: LobbyCard;
+}
+
+/** One lobby message as the network's principal hands it to a candidate. */
+export interface LobbyMessage {
+  message_id: string;
+  sender_node_id: string;
+  sender_name: string;
+  /** The sender is a member of the network, not another candidate. */
+  member: boolean;
+  text: string;
+  sent_at: string;
+}
+
+/** What this node got back from another network's lobby. */
+export interface LobbyExchange {
+  accepted: boolean;
+  error: string | null;
+  /** This machine's `node_id`, as the principal derived it. */
+  node_id: string;
+  card: LobbyCard;
+  messages: LobbyMessage[];
+  /** This machine's admission request on that network, when it made one. */
+  admission?: {
+    key: string;
+    name: string;
+    role: EnrollmentRole;
+    status: "pending" | "approved" | "rejected";
+    /** Approved without having asked now: this machine was admitted before. */
+    standing?: boolean;
+  } | null;
+}
+
+export type NetworkChatRoom = "network" | "lobby";
+
 export interface NetworkChatSnapshot {
   enabled: boolean;
+  /** The room `messages` belongs to. */
+  room?: NetworkChatRoom;
+  /** The network accepts lobby chat from non-members right now. */
+  lobbyEnabled?: boolean;
+  /** Candidates present in the lobby, with their declared hardware. */
+  lobbyGuests?: LobbyGuest[];
   messages: NetworkChatEvent[];
   participants: NetworkChatParticipant[];
   typing: NetworkChatEvent[];

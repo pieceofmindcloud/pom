@@ -84,6 +84,17 @@ pub enum ChatAction {
         level: String,
         sent_at: DateTime<Utc>,
     },
+    /// A candidate is present in the lobby (`network_lobby.rs`). Only the
+    /// principal originates it, from a lobby request it authenticated by the
+    /// transport; `sender_node_id` is the candidate. Kept in memory only.
+    LobbyPresence {
+        message_id: String,
+        room_id: String,
+        sender_node_id: String,
+        recipient_node_id: Option<String>,
+        card: crate::network_lobby::LobbyCard,
+        sent_at: DateTime<Utc>,
+    },
 }
 
 impl ChatAction {
@@ -107,7 +118,8 @@ impl ChatAction {
             Self::Text { sender_node_id, .. }
             | Self::File { sender_node_id, .. }
             | Self::Typing { sender_node_id, .. }
-            | Self::PluginNotice { sender_node_id, .. } => sender_node_id,
+            | Self::PluginNotice { sender_node_id, .. }
+            | Self::LobbyPresence { sender_node_id, .. } => sender_node_id,
         }
     }
 
@@ -116,7 +128,8 @@ impl ChatAction {
             Self::Text { room_id, .. }
             | Self::File { room_id, .. }
             | Self::Typing { room_id, .. }
-            | Self::PluginNotice { room_id, .. } => room_id,
+            | Self::PluginNotice { room_id, .. }
+            | Self::LobbyPresence { room_id, .. } => room_id,
         }
     }
 
@@ -125,7 +138,8 @@ impl ChatAction {
             Self::Text { message_id, .. }
             | Self::File { message_id, .. }
             | Self::Typing { message_id, .. }
-            | Self::PluginNotice { message_id, .. } => message_id,
+            | Self::PluginNotice { message_id, .. }
+            | Self::LobbyPresence { message_id, .. } => message_id,
         }
     }
 
@@ -142,6 +156,9 @@ impl ChatAction {
             }
             | Self::PluginNotice {
                 recipient_node_id, ..
+            }
+            | Self::LobbyPresence {
+                recipient_node_id, ..
             } => recipient_node_id.as_deref(),
         }
     }
@@ -152,6 +169,7 @@ impl ChatAction {
             Self::File { .. } => "file",
             Self::Typing { .. } => "typing",
             Self::PluginNotice { .. } => "plugin_notice",
+            Self::LobbyPresence { .. } => "lobby_presence",
         }
     }
 
@@ -159,7 +177,7 @@ impl ChatAction {
         match self {
             Self::Text { text, .. } => Some(text),
             Self::PluginNotice { body, .. } => Some(body),
-            Self::File { .. } | Self::Typing { .. } => None,
+            Self::File { .. } | Self::Typing { .. } | Self::LobbyPresence { .. } => None,
         }
     }
 
@@ -225,7 +243,15 @@ impl ChatAction {
                     Ok(())
                 }
             }
-            Self::Text { .. } | Self::File { .. } | Self::Typing { .. } => Ok(()),
+            Self::LobbyPresence { room_id, .. }
+                if room_id != crate::network_lobby::LOBBY_ROOM =>
+            {
+                Err("lobby_room_invalid")
+            }
+            Self::Text { .. }
+            | Self::File { .. }
+            | Self::Typing { .. }
+            | Self::LobbyPresence { .. } => Ok(()),
         }
     }
 }
@@ -393,6 +419,28 @@ impl ChatEvent {
                 title: Some(title.clone()),
                 level: Some(level.clone()),
             },
+            ChatAction::LobbyPresence {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                sent_at,
+                ..
+            } => Self {
+                message_id: message_id.clone(),
+                room_id: room_id.clone(),
+                sender_node_id: sender_node_id.clone(),
+                recipient_node_id: recipient_node_id.clone(),
+                kind: "lobby_presence".into(),
+                text: None,
+                file_name: None,
+                mime_type: None,
+                file_data: Vec::new(),
+                sent_at: sent_at.to_rfc3339(),
+                plugin_code: None,
+                title: None,
+                level: None,
+            },
         }
     }
 }
@@ -443,6 +491,24 @@ pub struct NetworkChat {
     rate: Mutex<HashMap<String, RateWindow>>,
     typing: Mutex<HashMap<String, (ChatEvent, Instant)>>,
     notices: Mutex<std::collections::VecDeque<(ChatEvent, Instant)>>,
+    /// Candidates present in the lobby: fed by lobby requests on the
+    /// principal and by relayed `LobbyPresence` frames on every other member.
+    lobby_guests: crate::network_lobby::LobbyGuests,
+    /// What this network publishes about itself to non-members, on the
+    /// principal (`network_lobby::PublicStats`).
+    public_stats: crate::network_lobby::PublicStats,
+    /// What this node answers about public networks to whoever asks by key
+    /// (`network_lobby::DirectoryBoard`).
+    directory_board: crate::network_lobby::DirectoryBoard,
+    /// Admission requests this node holds as principal. Loaded from the
+    /// database and written back on every change.
+    admissions: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
+    /// Nodes that left recently, kept off the member list for a while.
+    departed: Mutex<HashMap<String, Instant>>,
+    /// Departures heard on the lobby connection, waiting for the gateway to
+    /// rotate the connection key (the swarm loop cannot push it itself).
+    rotations: Mutex<Vec<String>>,
+    rotation_wanted: tokio::sync::Notify,
 }
 
 impl NetworkChat {
@@ -477,6 +543,13 @@ impl NetworkChat {
                 rate: Mutex::new(HashMap::new()),
                 typing: Mutex::new(HashMap::new()),
                 notices: Mutex::new(std::collections::VecDeque::new()),
+                lobby_guests: Default::default(),
+                public_stats: Default::default(),
+                directory_board: Default::default(),
+                admissions: Mutex::new(Vec::new()),
+                departed: Mutex::new(HashMap::new()),
+                rotations: Mutex::new(Vec::new()),
+                rotation_wanted: tokio::sync::Notify::new(),
             }),
             receiver,
         )
@@ -501,6 +574,207 @@ impl NetworkChat {
 
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn lobby_guests(&self) -> &crate::network_lobby::LobbyGuests {
+        &self.lobby_guests
+    }
+
+    /// Whether the network currently accepts new members with `role`.
+    pub async fn accepts_role(&self, role: crate::config::EnrollmentRole) -> bool {
+        self.auth
+            .read()
+            .await
+            .network
+            .accepted_enrollments
+            .0
+            .contains(&role)
+    }
+
+    /// The connection key, relay keys and current settings that go into an
+    /// admission grant.
+    pub async fn grant_secrets(&self) -> (String, Vec<String>, crate::config::NetworkSettings) {
+        let config = self.auth.read().await;
+        let network = self
+            .database
+            .network_settings()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| config.network.clone());
+        (
+            config.connection_key.clone(),
+            config.relay_peers.clone(),
+            network,
+        )
+    }
+
+    /// Reads the persisted admission requests. Called once at startup.
+    pub fn load_admissions(&self) {
+        if let Ok(records) = self.database.lobby_admissions() {
+            *self.admissions.lock().expect("admissions lock") = records;
+        }
+    }
+
+    fn store_admissions(&self, records: &[crate::network_lobby::AdmissionRecord]) {
+        if let Err(error) = self.database.save_lobby_admissions(records) {
+            eprintln!("lobby admissions persistence failed: {error:#}");
+        }
+    }
+
+    pub fn admissions(&self) -> Vec<crate::network_lobby::AdmissionRecord> {
+        self.admissions.lock().expect("admissions lock").clone()
+    }
+
+    pub fn admission_of(&self, node_id: &str) -> Option<crate::network_lobby::AdmissionRecord> {
+        self.admissions
+            .lock()
+            .expect("admissions lock")
+            .iter()
+            .find(|record| record.node_id == node_id)
+            .cloned()
+    }
+
+    /// Records a candidate's request (`network_lobby::apply_admission_request`).
+    pub fn request_admission(
+        &self,
+        node_id: &str,
+        card: crate::network_lobby::LobbyCard,
+        role: crate::config::EnrollmentRole,
+    ) -> std::result::Result<crate::network_lobby::AdmissionStatus, &'static str> {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        let status = crate::network_lobby::apply_admission_request(
+            &mut records,
+            node_id,
+            card,
+            role,
+            chrono::Utc::now(),
+        )?;
+        self.store_admissions(&records);
+        Ok(status)
+    }
+
+    /// Puts an admitted peer on the member list, when it is not there yet.
+    /// The approved admission records are the list of nodes that may claim
+    /// the network's key after a rotation; a member that joined before
+    /// admission requests existed has no record, and without one it could
+    /// not get back in. A node that just left is not put back.
+    pub fn record_member(
+        &self,
+        node_id: &str,
+        hostname: &str,
+        role: crate::config::EnrollmentRole,
+    ) -> bool {
+        {
+            let mut departed = self.departed.lock().expect("departed lock");
+            departed.retain(|_, at| at.elapsed() < crate::network_lobby::DEPARTED_HOLD);
+            if departed.contains_key(node_id) {
+                return false;
+            }
+        }
+        let mut records = self.admissions.lock().expect("admissions lock");
+        if records.iter().any(|record| record.node_id == node_id) {
+            return false;
+        }
+        if records.len() >= crate::network_lobby::ADMISSION_RECORDS {
+            return false;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        records.push(crate::network_lobby::AdmissionRecord {
+            node_id: node_id.to_string(),
+            card: crate::network_lobby::LobbyCard {
+                hostname: hostname.to_string(),
+                ..Default::default()
+            }
+            .sanitized(),
+            role,
+            status: crate::network_lobby::AdmissionStatus::Approved,
+            requested_at: now.clone(),
+            decided_at: Some(now),
+        });
+        self.store_admissions(&records);
+        true
+    }
+
+    /// A member left: off the member list, and not put back by the upkeep
+    /// while it is still fading out of the peer table.
+    pub fn member_departed(&self, node_id: &str) {
+        self.departed
+            .lock()
+            .expect("departed lock")
+            .insert(node_id.to_string(), Instant::now());
+        self.decide_admission(node_id, None);
+    }
+
+    /// Asks the gateway to rotate the connection key because `node_id` left.
+    pub fn request_rotation(&self, node_id: &str) {
+        self.rotations
+            .lock()
+            .expect("rotations lock")
+            .push(node_id.to_string());
+        self.rotation_wanted.notify_one();
+    }
+
+    /// Waits for departures that need a rotation and hands them over.
+    pub async fn rotations_wanted(&self) -> Vec<String> {
+        loop {
+            let pending = std::mem::take(&mut *self.rotations.lock().expect("rotations lock"));
+            if !pending.is_empty() {
+                return pending;
+            }
+            self.rotation_wanted.notified().await;
+        }
+    }
+
+    /// An admin's decision. `None` forgets the request altogether. Returns
+    /// whether a request of `node_id` existed.
+    pub fn decide_admission(
+        &self,
+        node_id: &str,
+        decision: Option<crate::network_lobby::AdmissionStatus>,
+    ) -> bool {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        let Some(index) = records.iter().position(|record| record.node_id == node_id) else {
+            return false;
+        };
+        match decision {
+            Some(status) => {
+                records[index].status = status;
+                records[index].decided_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            None => {
+                records.remove(index);
+            }
+        }
+        self.store_admissions(&records);
+        true
+    }
+
+    pub fn directory_board(&self) -> &crate::network_lobby::DirectoryBoard {
+        &self.directory_board
+    }
+
+    pub fn public_stats(&self) -> &crate::network_lobby::PublicStats {
+        &self.public_stats
+    }
+
+    /// Whether this network publishes its models, node count and VRAM to
+    /// non-members: a public network with the operator's switch set. It does
+    /// not depend on the network Chat being on.
+    pub async fn public_stats_enabled(&self) -> bool {
+        let config = self.auth.read().await;
+        config.network.public_stats
+            && config.network.visibility == crate::config::NetworkVisibility::Public
+    }
+
+    /// Whether this network opened a lobby to non-members: a public network
+    /// with the network Chat on and the operator's lobby switch set.
+    pub async fn lobby_enabled(&self) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let config = self.auth.read().await;
+        config.network.lobby_chat
+            && config.network.visibility == crate::config::NetworkVisibility::Public
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ChatEvent> {
@@ -558,6 +832,11 @@ impl NetworkChat {
             anyhow::bail!("network_chat_disabled")
         }
         action.validate().map_err(|error| anyhow::anyhow!(error))?;
+        // Presence is the principal's statement about a transport it
+        // authenticated; a member's API key never vouches for one.
+        if matches!(action, ChatAction::LobbyPresence { .. }) {
+            anyhow::bail!("lobby_presence_not_allowed")
+        }
         if api_key.is_empty() {
             anyhow::bail!("api_key_missing")
         }
@@ -609,6 +888,16 @@ impl NetworkChat {
                 typing.remove(action.sender_node_id());
             }
             let _ = self.live.send(event);
+            return Ok(true);
+        }
+        if let ChatAction::LobbyPresence {
+            sender_node_id,
+            card,
+            ..
+        } = &action
+        {
+            self.lobby_guests
+                .remember(sender_node_id, card.clone().sanitized());
             return Ok(true);
         }
         if matches!(action, ChatAction::PluginNotice { .. }) {

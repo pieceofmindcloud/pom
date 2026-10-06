@@ -26,6 +26,11 @@ pub(crate) struct NetworkSettingsEnvelope {
     /// envelope. A public node keeps a local admin credential in its config,
     /// but that credential is never sent to peers or shown in this card.
     pub connection_key: String,
+    /// When `connection_key` replaces another: the Unix second from which
+    /// every node sends the new key (`auth::begin_key_transition`). Absent
+    /// when the key is not being rotated.
+    #[serde(default)]
+    pub key_effective_at: Option<i64>,
 }
 
 /// Read-only for node and infer, with the same response used by the admin
@@ -45,22 +50,22 @@ pub(crate) async fn network_settings_policy(
     _auth: InternalNodeAuth,
     State(state): State<GatewayState>,
 ) -> Response {
-    let (configured_network, connection_key) = {
-        let config = state.auth.read().await;
-        (config.network.clone(), config.connection_key.clone())
-    };
+    let configured_network = state.auth.read().await.network.clone();
     let network = state
         .database
         .network_settings()
         .ok()
         .flatten()
         .unwrap_or(configured_network);
-    let connection_key = (network.visibility != NetworkVisibility::Public)
-        .then_some(connection_key)
-        .unwrap_or_default();
+    // The key never leaves through this read: it is answered to any
+    // well-formed signed envelope, and signing one only takes the trust
+    // document. A member that needs the current key claims it from the
+    // principal, which checks the member list (`network_lobby::ClaimKey`).
+    let connection_key = String::new();
     Json(NetworkSettingsEnvelope {
         network,
         connection_key,
+        key_effective_at: None,
     })
     .into_response()
 }
@@ -99,7 +104,7 @@ pub(crate) async fn save_network_settings(
         );
     }
 
-    match apply_network_settings_with_key(&state, settings, true, None).await {
+    match apply_network_settings_with_key(&state, settings, true, None, None).await {
         Ok(synced_peers) => {
             let view = network_info_view(&state).await;
             Json(json!({
@@ -118,6 +123,7 @@ async fn apply_network_settings_with_key(
     mut settings: NetworkSettings,
     fanout: bool,
     incoming_connection_key: Option<&str>,
+    key_effective_at: Option<i64>,
 ) -> Result<usize, String> {
     settings.public_name = settings.public_name.trim().to_string();
     settings.organization = settings.organization.trim().to_string();
@@ -127,6 +133,9 @@ async fn apply_network_settings_with_key(
     settings.country_code = settings.country_code.trim().to_ascii_uppercase();
     settings.country_name = settings.country_name.trim().to_string();
     settings.city = settings.city.trim().to_string();
+    settings.accepted_enrollments = settings.accepted_enrollments.normalized();
+    let discovery_before = state.auth.read().await.network.visibility != NetworkVisibility::Local;
+    let discovery_after = settings.visibility != NetworkVisibility::Local;
     if settings.visibility == NetworkVisibility::Public {
         settings.geo_label = config::geo_network_label(
             &settings.country_code,
@@ -142,8 +151,14 @@ async fn apply_network_settings_with_key(
         let mut cfg = state.auth.write().await;
         cfg.network = settings.clone();
         if let Some(incoming) = incoming_connection_key {
-            if !incoming.trim().is_empty() {
-                cfg.connection_key = incoming.trim().to_string();
+            let incoming = incoming.trim();
+            if !incoming.is_empty() && incoming != cfg.connection_key {
+                // A rotation: keep the old key in use until the instant the
+                // principal named, so nothing in flight is refused.
+                if let Some(effective_at) = key_effective_at {
+                    crate::auth::begin_key_transition(&cfg.connection_key, incoming, effective_at);
+                }
+                cfg.connection_key = incoming.to_string();
             }
         }
         if cfg.connection_key.trim().is_empty() {
@@ -158,6 +173,18 @@ async fn apply_network_settings_with_key(
         .save_network_settings(&settings)
         .map_err(|error| format!("salvar detalhes da rede: {error:#}"))?;
 
+    // Discovery is the difference between `local` and the other two: off, the
+    // node announces nothing and no key lookup finds it; on, it goes looking
+    // for the network again.
+    if discovery_before && !discovery_after {
+        state.network.detach().await;
+    } else if !discovery_before && discovery_after {
+        let assignment = state.local_assignment.read().await.clone();
+        if let Err(error) = state.network.rejoin(assignment.as_ref()).await {
+            warn!("não foi possível voltar a anunciar a rede: {error:#}");
+        }
+    }
+
     if let Some(publisher) = &state.pkarr_publisher {
         if let Err(error) = publisher.set_geo_label(&settings.geo_label).await {
             warn!("não foi possível republicar o rótulo geo no pkarr: {error:#}");
@@ -167,17 +194,19 @@ async fn apply_network_settings_with_key(
     if !fanout {
         return Ok(0);
     }
-    Ok(fanout_network_settings(state, &settings, &connection_key).await)
+    Ok(fanout_network_settings(state, &settings, &connection_key, None, None).await)
 }
 
 async fn fanout_network_settings(
     state: &GatewayState,
     settings: &NetworkSettings,
     connection_key: &str,
+    exclude: Option<&str>,
+    key_effective_at: Option<i64>,
 ) -> usize {
     let mut synced = 0;
     for peer in state.all_peers().await {
-        if peer.node_id == state.network.node_id {
+        if peer.node_id == state.network.node_id || Some(peer.node_id.as_str()) == exclude {
             continue;
         }
         let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
@@ -194,11 +223,12 @@ async fn fanout_network_settings(
                     NETWORK_SETTINGS_PATH,
                     &NetworkSettingsEnvelope {
                         network: settings.clone(),
-                        connection_key: if settings.visibility != NetworkVisibility::Public {
+                        connection_key: if !settings.open_admission() {
                             connection_key.to_string()
                         } else {
                             String::new()
                         },
+                        key_effective_at,
                     },
                 )
                 .await
@@ -227,6 +257,277 @@ async fn fanout_network_settings(
     synced
 }
 
+pub(crate) const MEMBER_LEFT_PATH: &str = "/api/cluster/member-left";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct MemberLeft {
+    pub node_id: String,
+}
+
+/// Tells the principal of the network this node is in that it is leaving.
+/// Signed with this node's own key, so a node only ever announces its own
+/// departure. Best effort, with a short deadline.
+pub(crate) async fn notify_principal_of_departure(state: &GatewayState) {
+    let primary = state.admin_trust.current_primary();
+    if primary.pubkey == state.authority_principal.pubkey {
+        return;
+    }
+    // The cluster's own control channel first, when this node sees the
+    // principal as a peer.
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == primary.node_id && peer.pubkey == primary.pubkey);
+    if let Some(peer) = peer {
+        let body = MemberLeft {
+            node_id: state.network.node_id.clone(),
+        };
+        match state
+            .control_post_json(&peer, MEMBER_LEFT_PATH, &body, Duration::from_secs(5))
+            .await
+        {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response) => warn!(
+                "saída da rede: o principal respondeu {} ao aviso",
+                response.status()
+            ),
+            Err(error) => warn!("saída da rede: o principal não recebeu o aviso: {error:#}"),
+        }
+    }
+    // Otherwise by the principal's key, over the lobby connection. That one
+    // needs neither side to have admitted the other, which is exactly the
+    // case of a node that joined and was never seen as a peer: without it
+    // the principal kept the approval and the node could walk back in.
+    let Some(key) = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey) else {
+        return;
+    };
+    let Ok(client) = crate::network_lobby::client().await else {
+        return;
+    };
+    let request = crate::network_lobby::LobbyRequest::Leave {
+        identity: client.proof(),
+    };
+    match tokio::time::timeout(Duration::from_secs(10), client.request(&key, request)).await {
+        Ok(Ok(response)) if response.accepted => {}
+        Ok(Ok(response)) => warn!(
+            "saída da rede: o principal recusou o aviso: {:?}",
+            response.error
+        ),
+        Ok(Err(error)) => warn!("saída da rede: o principal está inalcançável: {error:#}"),
+        Err(_) => warn!("saída da rede: o aviso ao principal passou do prazo"),
+    }
+}
+
+/// Rotates the connection key for departures the swarm loop heard on the
+/// lobby connection (`LobbyRequest::Leave`): it can record them, but pushing
+/// a new key is the gateway's work.
+pub(crate) fn spawn_departure_worker(state: GatewayState) {
+    tokio::spawn(async move {
+        loop {
+            for node_id in state.network_chat.rotations_wanted().await {
+                match rotate_connection_key(&state, &node_id).await {
+                    Ok(Some(synced)) => {
+                        info!(node = %node_id, synced, "membro saiu: chave de conexão renovada")
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!("não foi possível renovar a chave de conexão: {error}"),
+                }
+            }
+        }
+    });
+}
+
+/// `POST /api/cluster/member-left` - a member says it is leaving. Only the
+/// principal acts on it, and only for the member that signed the request:
+/// the issuer must be the node named in the body and a peer this node
+/// currently admits. Its admission is forgotten and, unless the network is in
+/// the open mode, the connection key is replaced and pushed to everyone
+/// else, so the departed machine has to ask to be admitted again.
+pub(crate) async fn member_left(
+    auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Json(body): Json<MemberLeft>,
+) -> Response {
+    if state.admin_trust.current_primary().pubkey != state.authority_principal.pubkey {
+        return network_error(
+            StatusCode::CONFLICT,
+            "not_principal",
+            "only the principal handles a departure",
+        );
+    }
+    let Some(issuer) = auth.principal() else {
+        return network_error(
+            StatusCode::FORBIDDEN,
+            "signature_required",
+            "a departure must be signed by the node that is leaving",
+        );
+    };
+    // The issuer's `node_id` has to be the one its key gives, or the member
+    // list (keyed by `node_id`) could be matched under a borrowed name.
+    let named_by_key = crate::session::node_id_matches_pubkey(&issuer.node_id, &issuer.pubkey);
+    let is_member = state.network_chat.admission_of(&body.node_id).is_some()
+        || state
+            .network
+            .alive_peers()
+            .await
+            .iter()
+            .any(|peer| peer.node_id == body.node_id && peer.pubkey == issuer.pubkey);
+    if issuer.node_id != body.node_id || !named_by_key || !is_member {
+        return network_error(
+            StatusCode::FORBIDDEN,
+            "not_the_member",
+            "a node can only announce its own departure from a network it is in",
+        );
+    }
+    state.network_chat.member_departed(&body.node_id);
+    match rotate_connection_key(&state, &body.node_id).await {
+        Ok(Some(synced)) => {
+            info!(node = %body.node_id, synced, "membro saiu: chave de conexão renovada");
+            Json(json!({ "rotated": true, "synced_peers": synced })).into_response()
+        }
+        Ok(None) => Json(json!({ "rotated": false })).into_response(),
+        Err(error) => network_error(StatusCode::INTERNAL_SERVER_ERROR, "rotation_failed", &error),
+    }
+}
+
+/// Replaces the network's connection key and pushes it, in the admin-signed
+/// settings envelope, to every admitted peer except `departed`. `None` when
+/// the network admits without a key and there is nothing to rotate.
+async fn rotate_connection_key(
+    state: &GatewayState,
+    departed: &str,
+) -> Result<Option<usize>, String> {
+    let effective_at = chrono::Utc::now().timestamp() + crate::auth::KEY_TRANSITION_LEAD_SECS;
+    let (settings, connection_key) = {
+        let mut config = state.auth.write().await;
+        if config.network.open_admission() {
+            return Ok(None);
+        }
+        let previous = std::mem::replace(
+            &mut config.connection_key,
+            crate::webui::fresh_connection_key(),
+        );
+        // Everyone, this node included, keeps sending the old key until
+        // `effective_at` and accepts both a while longer: the rotation cuts
+        // nothing that is running.
+        crate::auth::begin_key_transition(&previous, &config.connection_key, effective_at);
+        config
+            .save()
+            .map_err(|error| format!("salvar a nova chave de conexão: {error:#}"))?;
+        (config.network.clone(), config.connection_key.clone())
+    };
+    let settings = state
+        .database
+        .network_settings()
+        .ok()
+        .flatten()
+        .unwrap_or(settings);
+    Ok(Some(
+        fanout_network_settings(
+            state,
+            &settings,
+            &connection_key,
+            Some(departed),
+            Some(effective_at),
+        )
+        .await,
+    ))
+}
+
+/// Keeps the principal's member list complete: every peer it currently
+/// admits has an approved record, so it can claim the key after a rotation.
+/// This is what puts members that joined before admission requests on the
+/// list. Only the principal of a key-gated network keeps one.
+pub(crate) fn spawn_member_list_keeper(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            if state.admin_trust.current_primary().pubkey != state.authority_principal.pubkey
+                || state.auth.read().await.network.open_admission()
+            {
+                continue;
+            }
+            for peer in state.network.alive_peers().await {
+                let role = if peer.profile == crate::profile::NodeProfile::Infer {
+                    crate::config::EnrollmentRole::Infer
+                } else {
+                    crate::config::EnrollmentRole::Node
+                };
+                if state
+                    .network_chat
+                    .record_member(&peer.node_id, &peer.hostname, role)
+                {
+                    info!(node = %peer.node_id, "membro registrado na lista da rede");
+                }
+            }
+        }
+    });
+}
+
+/// On a member: when the principal is not among the admitted peers - the
+/// usual sign that this node's connection key is no longer the network's -
+/// asks the principal for the current key and adopts it. A member that was
+/// offline during a rotation gets back in by itself this way; one that was
+/// removed is answered without a grant and stays out.
+pub(crate) fn spawn_key_reclaimer(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            let primary = state.admin_trust.current_primary();
+            if primary.pubkey == state.authority_principal.pubkey {
+                continue;
+            }
+            if state
+                .network
+                .alive_peers()
+                .await
+                .iter()
+                .any(|peer| peer.node_id == primary.node_id)
+            {
+                continue;
+            }
+            let Some(key) =
+                crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey)
+            else {
+                continue;
+            };
+            let Ok(client) = crate::network_lobby::client().await else {
+                continue;
+            };
+            let request = crate::network_lobby::LobbyRequest::ClaimKey {
+                identity: client.proof(),
+            };
+            let granted = match client.request(&key, request).await {
+                Ok(response) => response.admission.and_then(|view| view.grant),
+                Err(error) => {
+                    tracing::debug!("chave da rede: o principal não respondeu: {error:#}");
+                    continue;
+                }
+            };
+            let Some(grant) = granted else {
+                tracing::debug!("chave da rede: esta máquina não está na lista de membros");
+                continue;
+            };
+            let new_key = grant.connection_key.trim();
+            let mut config = state.auth.write().await;
+            if new_key.is_empty() || config.connection_key == new_key {
+                continue;
+            }
+            config.connection_key = new_key.to_string();
+            match config.save() {
+                Ok(()) => info!("chave de conexão da rede renovada a partir do principal"),
+                Err(error) => warn!("não foi possível salvar a nova chave de conexão: {error:#}"),
+            }
+        }
+    });
+}
+
 pub(crate) async fn internal_network_settings(
     auth: InternalNodeAuth,
     State(state): State<GatewayState>,
@@ -247,6 +548,7 @@ pub(crate) async fn internal_network_settings(
         envelope.network,
         false,
         Some(&envelope.connection_key),
+        envelope.key_effective_at,
     )
     .await
     {
@@ -360,6 +662,7 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
                 envelope.network,
                 false,
                 Some(&envelope.connection_key),
+                envelope.key_effective_at,
             )
             .await
             {
@@ -457,6 +760,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_departure_is_only_accepted_from_the_member_that_is_leaving() {
+        let state = state_with("admin", vec![]).await;
+        let key_before = state.auth.read().await.connection_key.clone();
+        let leaving = || {
+            Json(MemberLeft {
+                node_id: "quem-sai".into(),
+            })
+        };
+
+        // Not signed: the shared key alone cannot say who is leaving.
+        let unsigned = member_left(
+            InternalNodeAuth { principal: None },
+            State(state.clone()),
+            leaving(),
+        )
+        .await;
+        assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
+
+        // Signed by someone else, about a node that is not a member here.
+        let stranger = member_left(
+            InternalNodeAuth {
+                principal: Some(state.authority_principal.clone()),
+            },
+            State(state.clone()),
+            leaving(),
+        )
+        .await;
+        assert_eq!(stranger.status(), StatusCode::FORBIDDEN);
+        // Neither attempt cost the network its key.
+        assert_eq!(state.auth.read().await.connection_key, key_before);
+    }
+
+    #[tokio::test]
     async fn saving_a_public_network_requires_the_geo_fields() {
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
@@ -502,7 +838,7 @@ mod tests {
             visibility: NetworkVisibility::Private,
             ..NetworkSettings::default()
         };
-        apply_network_settings_with_key(&state, private.clone(), false, None)
+        apply_network_settings_with_key(&state, private.clone(), false, None, None)
             .await
             .expect("rede privada inicial");
         assert_eq!(state.auth.read().await.connection_key, "chave");
@@ -514,7 +850,7 @@ mod tests {
             visibility: NetworkVisibility::Public,
             ..private.clone()
         };
-        apply_network_settings_with_key(&state, public, false, None)
+        apply_network_settings_with_key(&state, public, false, None, None)
             .await
             .expect("transição para rede pública");
         let public_config = state.auth.read().await;
@@ -525,7 +861,7 @@ mod tests {
         );
         drop(public_config);
 
-        apply_network_settings_with_key(&state, private, false, None)
+        apply_network_settings_with_key(&state, private, false, None, None)
             .await
             .expect("retorno para rede privada");
         let private_config = state.auth.read().await;

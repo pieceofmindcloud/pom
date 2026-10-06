@@ -1402,6 +1402,264 @@ notifications"). With the network Chat off, the notice is refused like any other
 action. An older peer does not know the variant and refuses the frame (first
 version policy).
 
+### 6.1 Lobby: talking to a network before joining it
+
+A public network can open the `lobby` room of its Chat to machines that are
+**not** members, so an admin can talk to a candidate before admitting it. The
+code is `network/network_lobby.rs`; the switch is `network.lobby_chat`, off by
+default, and it only takes effect on a public network with the network Chat on
+(`NetworkChat::lobby_enabled`). The public directory record and
+`PublicNetworkView` carry `lobby_chat` so the directory only offers the chat
+where it will be answered.
+
+A candidate has no API key, no announce and no admission, so the star's
+credential does not apply. Its own request/response protocol is
+`/pom/network-lobby/1.0.0`, and it is **pull only**:
+
+- `Post { card, message_id, text }` says something; `Fetch { card }` reads.
+  Both are answered with the last 50 text messages of the lobby room, each
+  flagged `member` or not. The principal never opens a stream to a candidate
+  and keeps no session, only a presence entry that expires 90 s after the last
+  request - the candidate's poll is what keeps it listed.
+- The lobby connection runs under a **transport key derived from the node
+  key** (`transport_keypair`), never the node key itself, and `Post`/`Fetch`
+  carry `LobbyIdentity`: the node's public key and its signature over the
+  transport `PeerId`. The principal names the candidate by the key that signed
+  for the transport it actually sees (`LobbyIdentity::verified_node_id`), so a
+  proof replayed from another connection is worthless; without a valid one the
+  request answers `identity_invalid`. The public reads (`Info`, `Describe`,
+  `Directory`) carry no identity and are rate limited by the transport peer.
+  The separate key is not cosmetic: the cluster swarm already runs under the
+  node key, and a peer holding two connections to one `PeerId` picks the
+  connection by request id, so a lobby connection under the node key would
+  swallow about half of that peer's inference tunnel, chat, log and audit
+  requests meant for the cluster swarm.
+- A candidate's text becomes an ordinary `ChatAction::Text` in room `lobby`,
+  stamped with the principal's clock and with a `message_id` namespaced by the
+  sender, persisted and relayed to the members by the existing star. Members
+  answer through the normal authenticated path with `room_id: "lobby"`.
+- `card` is the candidate's self-declared hardware (hostname, OS, CPU count,
+  RAM, GPUs with VRAM), clamped on both ends. The principal relays it to the
+  members as `ChatAction::LobbyPresence` when the candidate appears, when the
+  card changes and every 45 s while present; it is kept in memory only, and a
+  member's API key can never originate one (`lobby_presence_not_allowed`).
+
+Because the frame is accepted before any credential, the bounds are tight and
+separate from the Chat's: 64 KiB per frame, 2 KiB of text, text only, 4
+requests per second and 6 texts per 30 s per candidate, and at most 64
+candidates tracked. A blocked `node_id` and a current member are refused
+(`node_blocked`, `already_member`); with the lobby off every request answers
+`lobby_disabled`. What a candidate reads is the lobby room only - the
+`network` room, files and direct messages never leave the members.
+
+**Admission.** A machine joins a network by asking, and an admin decides
+later. `Admission { identity, card, role }` on the lobby protocol records the
+request on the principal (`NetworkChat::request_admission`, persisted in
+`local_settings` as `lobby_admissions`, at most 128); `role` must be one the
+network currently accepts. Every answer to that machine's `Post`, `Fetch` and
+`Admission` then carries `admission: { status, role, grant }`. The grant - the
+trust document, the **connection key**, the relay keys and the network's
+current settings - is present only once an admin approved, and it leaves the
+principal only there: in an answer to the node whose signature over the
+transport was just verified, on that Noise connection. A rejected machine may
+ask again after an hour; an approval is never undone by asking again.
+
+The principal fills two things an admin weighs: `card.relayed`, from the
+connection it actually sees (`Network::libp2p_links`), overwriting whatever
+the candidate sent, and it keeps `card.rtt_ms`, the round trip the candidate
+measured on its previous exchange (self-declared, like the hardware). The
+admin lists and decides in `GET|POST /api/ui/network/admissions`; approving
+sends nothing, the candidate collects the grant on its next poll.
+
+On the candidate, `webui::spawn_admission_poller` fetches every pending
+request each 30 s so an approval that comes hours later is noticed with no
+window open. The grant stays in memory there, never reaches the browser and
+is not written to the database. The node also records whether it **asked**
+for the admission it sees. An approval it did not ask for is a machine that
+was admitted before, left, and finds the network still holding its approval:
+that is reported as `standing`, raises no notification, and the lobby offers
+to switch in one click instead of announcing an answer. Joining is the operator's explicit act
+(`POST /api/ui/network/join`): the node checks the granted trust document
+belongs to the key it asked, replaces its trust root, rewrites its config as
+a member with the granted key and settings, and restarts. It leaves the
+network it was in - usually its own local one.
+
+**A node's own network is never dropped.** The network a node created at
+first launch is inherent to it. `join_network` first writes it to a standby
+file (`webui/standby.rs`: the trust root plus the network block of the
+config - profile, connection key, settings, relays, blocked nodes and the
+cluster policies - in `.<slug>-primary-network.json`, owner-only because it
+holds a key). Only the network the node is the principal of is saved, and
+only when nothing is in standby, so moving between two foreign networks
+keeps the original. `leave_network_and_reset` restores it exactly and removes
+the file once the config is saved; it refuses (`409 own_network`) on the
+node's own network, which cannot be left. A node that never had one - set up
+as a member by the wizard - still falls back to a fresh local network.
+
+**Leaving costs the key.** Before going silent the leaving node tells the
+principal: `POST /api/cluster/member-left`, signed with its own key and sent
+over HTTP or the libp2p tunnel (`notify_principal_of_departure`, 5 s, best
+effort). The principal acts only when the signer is the node named in the
+body and a peer it currently admits. It forgets that node's admission record
+and, unless the network is in the open mode, generates a new connection key
+and pushes it in the admin-signed settings envelope to every admitted peer
+except the one that left (`rotate_connection_key`). The departed node drops
+the key it held along with the rest of that network's config, and coming
+back takes a new admission request. When the control channel is not there -
+the node does not see the principal as a peer, or the principal never
+admitted it, which happens when one side could not probe the other - the
+notice goes by the principal's key over the lobby connection instead
+(`LobbyRequest::Leave`), and the gateway rotates from the queue the swarm
+loop fills (`spawn_departure_worker`). Either way the principal honours it
+for a node on its member list, not only for a live peer: an approval that
+outlives a departure is a machine that can walk back in. An admin revoking
+an admitted machine (`POST /api/ui/network/admissions` with `forget`) is
+treated the same. A node that leaves while the principal cannot be reached
+at all keeps a key that still works until the next rotation.
+
+**A rotation cuts nothing off.** The new key travels with the Unix second
+from which it takes effect, 30 s ahead (`key_effective_at` in the settings
+envelope, `auth::KEY_TRANSITION_LEAD_SECS`). Until that instant every node,
+the principal included, keeps **sending** the old key; from it on, the new
+one. Each node **accepts** both from the moment it holds the new key until
+30 s past the switch (`KEY_TRANSITION_GRACE_SECS`), which covers clocks that
+disagree. So two nodes that received the push never refuse each other: an
+inference in flight, the `/handshake` admission probe and the node-to-node
+calls all go on, and the members do not drop one another. The key a departed
+node still holds stops working about a minute after the rotation. The
+transition is kept in memory (`auth::begin_key_transition`); a node that
+restarts in the middle of one simply uses the new key, which its peers
+already accept. A member that never got the push is the case below.
+
+**The member list, and claiming a rotated key.** The principal's approved
+admission records are the network's member list: the node identities that
+may be handed the connection key. `spawn_member_list_keeper` adds every peer
+the principal currently admits that has no record, which is what covers
+members that joined before admission requests existed; a node that just left
+is held off the list for 10 minutes (`DEPARTED_HOLD`) so its last seconds in
+the peer table do not put it back. The list lives on the principal only, so
+there is nothing to distribute or to keep consistent.
+
+A member whose key stopped being accepted - it was offline during a rotation
+- gets back in by itself. `spawn_key_reclaimer` runs on every member: when
+the principal is not among its admitted peers, it sends `ClaimKey { identity
+}` to the principal's key over the lobby connection. The principal answers
+with the grant only to a node on the list whose signature over the transport
+verifies, and the member adopts the key without restarting. It works with
+the lobby closed and on unlisted networks. A node that was removed is
+answered without a grant. Both the rotation and the claim need the principal
+online, and a claim is tried once a minute.
+
+**What gates membership.** `NetworkSettings::open_admission` is true only for
+a public network left on `anyone_with_anchor`, the mode networks created
+before admission requests use: there the trust anchor alone admits
+(`Network::public_peer_is_admitted`). Every other network, listed or not, is
+gated by the connection key (`admission_without_probe` falls through to the
+`/handshake` probe), and the interface no longer offers the open mode. The key
+leaves the principal in three ways only: an approved admission grant, a
+`ClaimKey` answered to a node on the member list, and the admin-signed
+settings push to admitted peers. `network_settings_policy`, which answers
+any well-formed signed envelope, never carries it.
+
+**Other networks are not probed.** Every network shares one announce topic,
+so a node hears the announces of all of them. A peer that announces another
+`cluster_id` than the one this node is anchored to is refused outright
+(`admission_without_probe`), with no `/handshake` probe: the probe falls back
+to a relay circuit for a peer behind NAT, and those circuits - which could
+never succeed - were what exhausted the relay. The relay itself now allows
+1024 circuits, 32 per peer, instead of libp2p's 16 and 4; with day-long
+circuits the defaults filled within minutes and every later dial through the
+relay was refused with "resource limit exceeded".
+
+**Discovery off.** A network with `visibility: local` announces nothing: the
+node starts detached (`Network::detach`), publishes no pkarr record
+(`PkarrPublishHandle::publish_if_changed`) and no directory record. It also
+ignores the announces the shared gossip topic still delivers through its
+relays (`discovery.rs`, the gossip arm of `handle_event`); before that, a
+detached node dialed every announcing peer through relay circuits. It is what
+a first launch creates. Saving another visibility in Network settings rejoins;
+saving `local` again detaches. Such a node still lists other networks, because
+`GET /api/public/networks` also asks its relays (`directory_relay_keys`:
+built-in, environment and configured relays, never itself) for their
+`Directory`, and it still reaches lobbies, since the lobby client is a swarm
+of its own.
+
+**Published stats.** The same protocol carries a third request, `Info`, that
+is not part of the conversation: no card, no presence, and its own switch,
+`network.public_stats` (off by default, public networks only), independent of
+the lobby chat and of the network Chat. The answer is `NetworkInfo { models,
+node_count, vram_total_mb }` - the three facts the Public networks screen
+shows for the local network, computed the same way from the cluster view
+(`webui::network_info_from_cluster`). The swarm loop never computes them,
+because the cluster view reads every peer over HTTP: it answers from
+`PublicStats` and, when the slot is missing or older than 30 s, wakes
+`webui::spawn_public_stats_publisher`. So the first request after a quiet
+period answers `info: null` and the next one has the numbers, nothing is
+computed while nobody asks, and stats older than 5 minutes are not served.
+`Info` is limited to 6 requests per 10 s per machine; with the switch off it
+answers `stats_disabled`. Latency is deliberately absent: nobody measures a
+route to a network that was not joined.
+
+**Asking a node about public networks.** Two more requests carry public
+data only and are answered by **any** node, principal or not:
+
+- `Describe` answers the public network the node belongs to (zero or one
+  entry) - what its unauthenticated `GET /api/public/network` answers, over
+  the keyed connection, so it also reaches a node behind NAT. The public
+  networks listing uses it as the fallback for a gossip candidate whose
+  gateway does not answer over HTTP (`gateway::describe_by_key`); admitted
+  peers are never asked, since they can only describe this node's own
+  network.
+- `Directory` answers the public networks the node knows. It is answered by
+  nodes that gather them: a node in a public network and, whatever its own
+  network, a node that serves as a relay (`gateway::gathers_public_networks`).
+  Every cluster that uses a relay meets on it - all clusters share the one
+  announce topic - so a relay is who a machine that has joined nothing can
+  ask. Any other node answers `directory_disabled`.
+
+- `Publish { identity, network }` is how a relay learns a network without
+  having to reach it: the network's **principal** dials the relay directly
+  and hands over its own description every 90 s
+  (`gateway::spawn_directory_publisher`). The relay keeps it for 5 minutes,
+  and only when the node key that signed for the connection is the primary of
+  the trust document published (`gateway::validated_publication`); what a
+  principal published is listed ahead of anything the relay gathered. This is
+  the path that works when every node of a network is behind NAT - gathering
+  needs the relay to open a circuit through itself to a node it only knows by
+  announce, and that fails. A network that turns discovery off simply stops
+  publishing and falls out of the list within the 5 minutes.
+
+Both are served from `DirectoryBoard`, filled by
+`gateway::spawn_directory_board_publisher`: once at startup and then on
+demand, at most once per 30 s. What principals published is answered at once
+and never waits for the gathered part, which comes from a scan of every
+announcing node that is bounded at 25 s and keeps the previous result when it
+runs out; `pending: true` only happens before the first fill. An answer carries at most 64 networks and
+2 MiB (`LobbyLimits::RESPONSE_BYTES`; requests are bounded at 768 KiB, sized
+for `Publish`), and the
+rate is the `Info` one. **An answer is a claim, not a fact**: the asker keeps
+an entry only when its trust document matches its fingerprint and
+`cluster_id`, and derives the publisher key from that document
+(`gateway::validated_listed_network`). A relay can omit a network; it cannot
+forge one or point it at another key. The descriptive fields (name, city,
+`lobby_chat`, `public_stats`) are as the answering node reports them.
+
+Which relays a fresh installation asks: `DEFAULT_DIRECTORY_RELAYS`
+(`network_lobby.rs`, one relay key today), the `POM_DIRECTORY_RELAYS` environment
+variable (comma separated `pk:` keys), the `relay_peers` already in the
+config, and the keys typed in the wizard. They are keys, resolved through
+pkarr at dial time, never addresses.
+
+The candidate's side is `LobbyClient`: a small swarm of its own under the
+derived transport key, dial only (TCP, QUIC, relay client, DCuTR), that resolves the publisher's
+`pk:` key through pkarr at dial time. It is separate from the cluster swarm on
+purpose, so it also runs in setup mode, where the node has no cluster yet. It
+is started on first use (`network_lobby::client`). End to end coverage of the
+transport, the codec and the identity derivation is
+`network_lobby::tests::a_candidate_reaches_a_principal_and_is_named_by_its_transport_key`;
+the principal's handler (`discovery.rs::answer_lobby_request`) has no test
+with a live cluster swarm.
+
 ## 7. Defects noted
 
 - **DEFECT NOTED: bitswap is an orphan protocol** - `bitswap_behaviour` is in

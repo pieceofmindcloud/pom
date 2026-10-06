@@ -1132,6 +1132,55 @@ faz o download autenticado do blob persistido.
   `GET /api/public/network(s)` exposes public network metadata, including the
   signed trust document, Markdown description/rules/channels, the publisher
   `pk:` key and `relay_hints` for the no-secret join flow - never an address.
+  The view also carries `accepted_enrollments` (roles open to new members;
+  empty = closed), which the directory screen uses to disable joining. It is
+  advisory: no route refuses a join because of it. `lobby_chat` says the
+  network answers lobby chat from non-members right now.
+  `webui/lobby.rs` is the candidate's side of the lobby over HTTP
+  (`/api/ui/network-chat/lobby` behind the operator session, `/api/setup/lobby`
+  on the setup router) and `setup_public_networks`, the directory-only listing
+  for the wizard, built on `gateway::directory_public_networks` plus
+  `gateway::listed_public_networks` (what the node at a given address lists,
+  filtered by `validated_listed_network`) - in practice the second is what
+  fills the list, since networks are found through cluster discovery and pkarr
+  and no directory replica is configured by default. `pk:` entries are relay
+  keys, asked through `relay_directory` (lobby `Directory` request).
+  `gateway::spawn_directory_publisher` sends the principal's own network to
+  its relays every 90 s and `validated_publication` is the relay's check.
+  `gateway::collect_public_networks` is the listing behind
+  `GET /api/public/networks` and behind the node's `DirectoryBoard`; it gathers
+  gossip candidates when the node is in a public network or serves as a relay
+  (`gathers_public_networks`) and falls back to `describe_by_key` when a
+  candidate's gateway does not answer. The local
+  hardware card is sampled once a minute, not per poll. `network_chat_snapshot`
+  takes `?room=lobby` and always reports `lobbyEnabled` and `lobbyGuests`.
+  It also holds admission: the candidate's requests (`lobby_admission`,
+  `lobby_requests`, `spawn_admission_poller`, with the grant kept in memory
+  only), `join_network` (replace the trust root, rewrite the config as a
+  member, restart) and the principal's `admissions` / `decide_admission`.
+  `webui/standby.rs` keeps the node's own network aside while it is a member
+  elsewhere (`save_primary` on join, `restore_primary` + `discard` on leave).
+  `webui/network.rs` has the departure: `notify_principal_of_departure` on
+  the leaving node, `member_left` and `rotate_connection_key` on the
+  principal (`fanout_network_settings` takes the peer to leave out),
+  `spawn_departure_worker` (rotates for departures heard as
+  `LobbyRequest::Leave` and for revocations),
+  `spawn_member_list_keeper` (principal: every admitted peer gets a record)
+  and `spawn_key_reclaimer` (member: claims the current key when the
+  principal is no longer among its admitted peers). The settings read
+  `network_settings_policy` no longer carries the connection key.
+  `auth.rs` holds the two-key transition of a rotation
+  (`begin_key_transition`, `outbound_connection_key`,
+  `connection_key_accepted`): every check of the connection key - the
+  inference ports, the admin surface's node-to-node path and `/handshake` in
+  `session.rs` - accepts the key being replaced while its grace lasts, and
+  every sender goes through `internal_node_token`.
+  `webui/setup.rs::bootstrap_local_network` is what a node without a network
+  runs at startup instead of the wizard (`main.rs`, unless `--setup`).
+  The same file has `lobby_info` / `setup_lobby_info` (another network's
+  published stats), `network_info_from_cluster` and
+  `spawn_public_stats_publisher`, the on-demand task that fills the principal's
+  `PublicStats` from the cluster view (started in `spawn_gateway_companions`).
   `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
   through pkarr on the node and answers only `direct|relayed|unresolved` plus a
   relay count (30 s cache; keys the node does not list get 404). `GET/POST

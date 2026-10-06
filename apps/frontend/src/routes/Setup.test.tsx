@@ -9,17 +9,21 @@ import {
   addressHost,
   canContinue,
   createRandomNetworkName,
+  directoryReplicas,
   formatAdvertiseAddress,
   isReadyToSave,
   JoinScreen,
   LocalDiscoveryPanel,
   NetworkScreen,
+  PublicDirectoryPanel,
+  StartScreen,
   TrustFields,
   type SetupState,
 } from "./Setup";
 
 const base: SetupState = {
   profile: "infer",
+  joinAccepts: null,
   publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
@@ -116,6 +120,21 @@ describe("what the wizard requires", () => {
   });
 });
 
+describe("StartScreen", () => {
+  it("only offers the roles the public network being joined accepts", () => {
+    render(
+      <LocaleProvider initialLocale="en">
+        <StartScreen setup={{ ...base, profile: null, joinAccepts: ["infer"] }} hardware={null} update={() => undefined} t={(key) => key} />
+      </LocaleProvider>,
+    );
+    const role = (name: string) => screen.getByRole("radio", { name: new RegExp(name) }) as HTMLButtonElement;
+    expect(role("setupWizard.node").disabled).toBe(true);
+    expect(role("setupWizard.infer").disabled).toBe(false);
+    // Founding a network of one's own is never closed by the one being joined.
+    expect(role("setupWizard.admin").disabled).toBe(false);
+  });
+});
+
 describe("NetworkScreen", () => {
   function Harness() {
     const [setup, setSetup] = useState<SetupState>({ ...base, profile: "admin", advertiseAddr: "[2804::1]:42777", network: { ...base.network, public_name: "POM-1" } });
@@ -138,6 +157,58 @@ describe("NetworkScreen", () => {
     expect(screen.queryByText("setupWizard.country")).toBeNull();
     fireEvent.click(screen.getByText("firstRun.public"));
     await waitFor(() => expect(screen.getByText("setupWizard.country")).toBeTruthy());
+  });
+});
+
+describe("directoryReplicas", () => {
+  it("keeps relay keys out of what is saved as directory replicas", () => {
+    expect(directoryReplicas("pk:abc, https://dir.example ,pk:def,http://10.0.0.1:8080")).toEqual([
+      "https://dir.example",
+      "http://10.0.0.1:8080",
+    ]);
+    expect(directoryReplicas("pk:abc")).toEqual([]);
+  });
+});
+
+describe("PublicDirectoryPanel", () => {
+  const listed = {
+    cluster_id: "curitiba",
+    name: "Rede Curitiba",
+    fingerprint: "fp",
+    publisher_key: "pk:curitiba",
+    trust_document: "{}",
+    organization: "Equipe Sul",
+    country_name: "Brasil",
+    country_code: "BR",
+    city: "Curitiba",
+  };
+
+  it("lists the directory in the wizard, with chat only where a lobby is open", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue([
+      { ...listed, lobby_chat: true },
+      { ...listed, cluster_id: "lisboa", name: "Rede Lisboa", fingerprint: "fp2", accepted_enrollments: [] },
+    ] as never);
+    const onUse = vi.fn();
+    const onAddress = vi.fn();
+    wrap(<PublicDirectoryPanel setup={{ ...base, profile: "node", publicDirectory: "https://dir.example" }} onUse={onUse} onAddress={onAddress} t={t} />);
+
+    const open = (await screen.findByText("Rede Curitiba")).closest("div.flex")!;
+    // The setup router has no session, and the typed replicas ride along.
+    expect(get).toHaveBeenCalledWith("/api/setup/public-networks?replicas=https%3A%2F%2Fdir.example", { auth: false });
+    expect(open.querySelectorAll("button").length).toBe(2);
+    fireEvent.click(screen.getByRole("button", { name: "firstRun.publicDirectoryUse" }));
+    expect(onUse).toHaveBeenCalledWith(expect.objectContaining({ cluster_id: "curitiba" }));
+
+    const closed = screen.getByRole("button", { name: "publicNetworks.closed" }) as HTMLButtonElement;
+    expect(closed.disabled).toBe(true);
+    expect(screen.getAllByRole("button", { name: /publicNetworks.chat/ }).length).toBe(1);
+
+    // The address of a node to ask is typed here, and Enter asks again.
+    const address = screen.getByPlaceholderText("pk:... / http://host:8080");
+    fireEvent.change(address, { target: { value: "http://192.0.2.10:8080" } });
+    expect(onAddress).toHaveBeenCalledWith("http://192.0.2.10:8080");
+    fireEvent.keyDown(address, { key: "Enter" });
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
   });
 });
 

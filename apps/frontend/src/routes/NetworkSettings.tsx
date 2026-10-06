@@ -44,8 +44,10 @@ import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useWindowsFirewall } from "../lib/queries";
 import { useGeoReference } from "../lib/queries";
 import { networkStats } from "../lib/networkStats";
+import { admissionsApi, useAdmissions } from "../lib/admissions";
 import { useToast } from "../lib/toast";
-import type { AdminNode, ClusterView, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
+import { ENROLLMENT_ROLES } from "../lib/types";
+import type { AdminNode, ClusterView, EnrollmentRole, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings({ participantsOnly = false }: { participantsOnly?: boolean }) {
@@ -189,7 +191,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     try {
       await api.post("/api/ui/network/leave");
       toast.success(t("network.forgetNetworkStarted"), t("network.forgetNetworkStartedDetail"));
-      window.setTimeout(() => window.location.assign("/setup"), 1500);
+      window.setTimeout(() => window.location.assign("/admin-ui/"), 1500);
     } catch (e) {
       toast.fromError(t("network.forgetNetworkFailed"), e);
     } finally {
@@ -225,10 +227,14 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
             forgetting={forgettingNetwork}
             onChange={setNetworkDraft}
             onSave={() => void saveNetworkInfo()}
-            onForgetNetwork={() => setForgetNetworkConfirm(true)}
+            // A machine's own network is inherent to it and cannot be left;
+            // leaving is for a network it joined, and returns to its own.
+            onForgetNetwork={node.data?.own_network && !node.data?.standby_network ? undefined : () => setForgetNetworkConfirm(true)}
             t={t}
           />
         )}
+
+        {isAdmin && <AdmittedMachines t={t} />}
 
         <NetworkMetricsPanel metrics={metrics} t={t} />
 
@@ -498,7 +504,7 @@ function NetworkInfoPanel({
   geo: GeoReferenceResponse | undefined;
   onChange: (next: NetworkSettingsData) => void;
   onSave: () => void;
-  onForgetNetwork: () => void;
+  onForgetNetwork?: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const update = (patch: Partial<NetworkSettingsData>) => onChange({ ...draft, ...patch });
@@ -514,14 +520,16 @@ function NetworkInfoPanel({
         subtitle={editable ? t("network.networkInfoEditSubtitle") : t("network.networkInfoReadOnlySubtitle")}
         actions={
           <>
-            <Button
-              variant="danger"
-              icon={<Trash2 className="h-3.5 w-3.5" />}
-              loading={forgetting}
-              onClick={onForgetNetwork}
-            >
-              {t("network.forgetNetwork")}
-            </Button>
+            {onForgetNetwork && (
+              <Button
+                variant="danger"
+                icon={<Trash2 className="h-3.5 w-3.5" />}
+                loading={forgetting}
+                onClick={onForgetNetwork}
+              >
+                {t("network.forgetNetwork")}
+              </Button>
+            )}
             {editable ? <Button variant="primary" icon={<Save className="h-3.5 w-3.5" />} loading={saving} onClick={onSave}>{t("network.infoSave")}</Button> : <Badge tone="neutral">{t("network.readOnly")}</Badge>}
           </>
         }
@@ -546,16 +554,58 @@ function NetworkInfoPanel({
           <Field label={t("network.visibility")}>
             <Select value={draft.visibility} onChange={(event) => update({ visibility: event.target.value as NetworkSettingsData["visibility"] })}>
               <option value="local">{t("network.visibilityLocal")}</option>
-              <option value="private">{t("network.visibilityPrivate")}</option>
+              {/* Discovery is on or off. "On, not listed" announces the
+                  network but no relay lists it, so nobody can find it to ask
+                  for admission; it stays selectable only where already set. */}
+              {draft.visibility === "private" && <option value="private">{t("network.visibilityPrivate")}</option>}
               <option value="public">{t("network.visibilityPublic")}</option>
             </Select>
           </Field>
           <Field label={t("network.accessPolicy")}>
             <Select value={draft.access_policy} onChange={(event) => update({ access_policy: event.target.value as NetworkSettingsData["access_policy"] })}>
               <option value="authorized">{t("network.accessAuthorized")}</option>
-              <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>
+              {/* The open mode is no longer offered. A network already on it
+                  keeps showing it, so saving another field does not silently
+                  close the network to its current members. */}
+              {draft.access_policy === "anyone_with_anchor" && <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>}
               <option value="local_only">{t("network.accessLocalOnly")}</option>
             </Select>
+          </Field>
+          <Field label={t("network.acceptedEnrollments")} hint={t("network.acceptedEnrollmentsHint")} className="md:col-span-2">
+            <div className="flex flex-wrap gap-x-5 gap-y-2">
+              {ENROLLMENT_ROLES.map((role) => (
+                <label key={role} className="flex items-center gap-2 text-sm text-fg">
+                  <input
+                    type="checkbox"
+                    checked={draft.accepted_enrollments.includes(role)}
+                    onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })}
+                  />
+                  {t(`network.enrollment.${role}`)}
+                </label>
+              ))}
+            </div>
+          </Field>
+          <Field label={t("network.lobbyChat")} hint={t("network.lobbyChatHint")} className="md:col-span-2">
+            <label className="flex items-center gap-2 text-sm text-fg">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.lobby_chat)}
+                disabled={!publicNetwork}
+                onChange={(event) => update({ lobby_chat: event.target.checked })}
+              />
+              {t("network.lobbyChatEnable")}
+            </label>
+          </Field>
+          <Field label={t("network.publicStats")} hint={t("network.publicStatsHint")} className="md:col-span-2">
+            <label className="flex items-center gap-2 text-sm text-fg">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.public_stats)}
+                disabled={!publicNetwork}
+                onChange={(event) => update({ public_stats: event.target.checked })}
+              />
+              {t("network.publicStatsEnable")}
+            </label>
           </Field>
           <Field label={t("network.country")} hint={publicNetwork ? t("network.countryRequired") : undefined}>
             <Select required={publicNetwork} value={draft.country_code} onChange={(event) => {
@@ -592,6 +642,9 @@ function NetworkInfoPanel({
           <KeyValue label={t("network.channels")}>{draft.channels ? <Markdown>{draft.channels}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
           <KeyValue label={t("network.visibility")}><span>{visibilityLabel(draft.visibility, t)}</span></KeyValue>
           <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>
+          <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>
+          <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats && publicNetwork ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>
+          <KeyValue label={t("network.lobbyChat")}><span>{t(draft.lobby_chat && publicNetwork ? "network.lobbyChatOn" : "network.lobbyChatOff")}</span></KeyValue>
           <KeyValue label={t("network.country")}><span>{draft.country_name || t("network.notProvided")}</span></KeyValue>
           <KeyValue label={t("network.city")}><span>{draft.city || t("network.notProvided")}</span></KeyValue>
           {draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
@@ -602,8 +655,73 @@ function NetworkInfoPanel({
   );
 }
 
+/**
+ * The machines this network admitted: its member list, kept by the principal.
+ * Revoking one takes it off the list and gives the other members a new
+ * connection key, so it has to ask to be admitted again.
+ */
+export function AdmittedMachines({ t }: { t: (key: string, values?: Record<string, string | number>) => string }) {
+  const admissions = useAdmissions(true);
+  const toast = useToast();
+  const [revoking, setRevoking] = useState<string | null>(null);
+  const [target, setTarget] = useState<{ node_id: string; name: string } | null>(null);
+  const admitted = (admissions.data ?? []).filter((record) => record.status === "approved");
+  if (admitted.length === 0) return null;
+
+  async function revoke(nodeId: string) {
+    setRevoking(nodeId);
+    try {
+      await admissionsApi.decide(nodeId, "forget");
+      toast.success(t("network.admittedRevoked"));
+      await admissions.refetch();
+    } catch (e) {
+      toast.fromError(t("network.admittedRevokeFailed"), e);
+    } finally {
+      setRevoking(null);
+      setTarget(null);
+    }
+  }
+
+  return (
+    <Panel>
+      <PanelHeader eyebrow={t("network.networkInfoEyebrow")} title={t("network.admittedTitle")} subtitle={t("network.admittedSubtitle")} />
+      <ul className="divide-y divide-line" data-testid="admitted-machines">
+        {admitted.map((record) => {
+          const name = record.card.hostname || record.node_id.slice(0, 12);
+          return (
+            <li key={record.node_id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm text-fg">{name}</p>
+                <p className="truncate font-mono text-[0.68rem] text-faint">{record.node_id.slice(0, 12)} · {t(`network.enrollment.${record.role}`)}</p>
+              </div>
+              <Button size="sm" variant="danger" loading={revoking === record.node_id} onClick={() => setTarget({ node_id: record.node_id, name })}>
+                {t("network.admittedRevoke")}
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+      <Confirm
+        open={target !== null}
+        title={t("network.admittedRevokeTitle", { name: target?.name ?? "" })}
+        description={t("network.admittedRevokeDetail")}
+        confirmLabel={t("network.admittedRevoke")}
+        tone="danger"
+        busy={revoking !== null}
+        onConfirm={() => target && void revoke(target.node_id)}
+        onCancel={() => revoking === null && setTarget(null)}
+      />
+    </Panel>
+  );
+}
+
 function visibilityLabel(value: NetworkSettingsData["visibility"], t: (key: string, values?: Record<string, string | number>) => string) {
   return t(`network.visibility${value[0].toUpperCase()}${value.slice(1)}`);
+}
+
+/** "Not accepting new members" for an empty list, the role names otherwise. */
+export function acceptedEnrollmentsLabel(roles: EnrollmentRole[], t: (key: string) => string) {
+  return roles.length === 0 ? t("network.enrollmentClosed") : roles.map((role) => t(`network.enrollment.${role}`)).join(", ");
 }
 
 function accessLabel(value: NetworkSettingsData["access_policy"], t: (key: string, values?: Record<string, string | number>) => string) {

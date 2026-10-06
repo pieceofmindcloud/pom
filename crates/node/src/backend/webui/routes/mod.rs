@@ -93,6 +93,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/cluster/member-left",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/api/cluster/network-settings",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -297,6 +302,19 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/network/leave",
         method: Some(Method::POST),
         scope: RouteScope::InferNodeAdmin,
+    },
+    // Joining replaces the network this machine is in; like leaving, it is
+    // the operator's own machine and no profile needs a licence for it.
+    RouteRule {
+        prefix: "/api/ui/network/join",
+        method: Some(Method::POST),
+        scope: RouteScope::InferNodeAdmin,
+    },
+    // Who gets into the network is an administrator's decision.
+    RouteRule {
+        prefix: "/api/ui/network/admissions",
+        method: None,
+        scope: RouteScope::AdminOnly,
     },
     RouteRule {
         prefix: "/api/ui/plan",

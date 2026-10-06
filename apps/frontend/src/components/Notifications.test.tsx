@@ -16,12 +16,23 @@ const queryMocks = vi.hoisted(() => ({
   offers: { data: { offers: [] as NetworkOffer[] }, refetch: vi.fn() },
 }));
 
+const admissionMocks = vi.hoisted(() => ({
+  admissions: { data: [] as unknown[], refetch: vi.fn() },
+  requests: { data: [] as unknown[], refetch: vi.fn() },
+  api: { decide: vi.fn(), join: vi.fn(), forget: vi.fn() },
+}));
+
 vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
 vi.mock("../lib/queries", () => ({
   useAdminAccess: () => queryMocks.access,
   useJobs: () => queryMocks.jobs,
   useTransfers: () => queryMocks.transfers,
   useOffers: () => queryMocks.offers,
+}));
+vi.mock("../lib/admissions", () => ({
+  useAdmissions: () => admissionMocks.admissions,
+  useAdmissionRequests: () => admissionMocks.requests,
+  admissionsApi: admissionMocks.api,
 }));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
@@ -183,5 +194,60 @@ describe("Notifications network offers", () => {
     expect(screen.getByText(/o papel de principal não mudou/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Aceitar" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Recusar" })).toBeNull();
+  });
+
+  it("shows an admission request with what the admin needs to decide, and approves it", async () => {
+    admissionMocks.admissions.data = [{
+      node_id: "candidate-node-id-0001",
+      role: "node",
+      status: "pending",
+      requested_at: "2026-10-05T12:00:00Z",
+      card: {
+        hostname: "forasteiro", os: "linux", arch: "x86_64", cpu_count: 16, ram_total_mb: 65536,
+        gpus: [{ name: "RTX 5060 Ti", vram_total_mb: 16384 }], rtt_ms: 42, relayed: true,
+      },
+    }, {
+      node_id: "already-decided", role: "infer", status: "approved", requested_at: "2026-10-05T11:00:00Z",
+      card: { hostname: "antigo", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] },
+    }];
+    admissionMocks.api.decide.mockResolvedValue([]);
+    renderNotifications([]);
+    fireEvent.click(screen.getByRole("button", { name: /atividade/i }));
+
+    const item = screen.getByTestId("admission-candidate-node-id-0001");
+    expect(item.textContent).toContain("forasteiro pede para entrar nesta rede");
+    // Role, how it connects, latency and hardware, in one line.
+    expect(item.textContent).toContain("Nós da rede");
+    expect(item.textContent).toContain("por um relé");
+    expect(item.textContent).toContain("42 ms");
+    expect(item.textContent).toContain("64 GB de RAM");
+    expect(item.textContent).toContain("RTX 5060 Ti (16 GB VRAM)");
+    // A request that was already decided is not asked again.
+    expect(screen.queryByTestId("admission-already-decided")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Aprovar" }));
+    await waitFor(() => expect(admissionMocks.api.decide).toHaveBeenCalledWith("candidate-node-id-0001", "approve"));
+    admissionMocks.admissions.data = [];
+  });
+
+  it("tells the candidate it was approved and joins only when asked to", async () => {
+    admissionMocks.requests.data = [
+      { key: "pk:curitiba", name: "Rede Curitiba", role: "node", status: "approved" },
+      { key: "pk:waiting", name: "Rede Espera", role: "node", status: "pending" },
+      // Admitted before and never asked again: not an answer, so not news.
+      { key: "pk:antiga", name: "Rede Antiga", role: "node", status: "approved", standing: true },
+    ];
+    admissionMocks.api.join.mockResolvedValue({ joined: true });
+    renderNotifications([]);
+    fireEvent.click(screen.getByRole("button", { name: /atividade/i }));
+
+    expect(screen.getByText("Rede Curitiba aprovou esta máquina")).toBeTruthy();
+    expect(screen.queryByTestId("admission-answer-pk:waiting")).toBeNull();
+    expect(screen.queryByTestId("admission-answer-pk:antiga")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Entrar agora" }).length).toBe(1);
+    expect(admissionMocks.api.join).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Entrar agora" }));
+    await waitFor(() => expect(admissionMocks.api.join).toHaveBeenCalledWith("pk:curitiba"));
+    admissionMocks.requests.data = [];
   });
 });

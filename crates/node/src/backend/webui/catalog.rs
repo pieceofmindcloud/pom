@@ -18,6 +18,12 @@ pub struct NodeInfo {
     pub profile: crate::profile::NodeProfile,
     /// Human-facing network name shown by the leave action in the main menu.
     pub network_name: String,
+    /// This node is the principal of the network it is in: its own network,
+    /// which is inherent to the machine and cannot be left.
+    pub own_network: bool,
+    /// Name of this node's own network while it is in standby, i.e. while
+    /// the node is a member of someone else's. Leaving returns to it.
+    pub standby_network: Option<String>,
     /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
     /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
     /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
@@ -170,6 +176,9 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         pom_desenv: crate::pom_desenv_enabled(),
         profile,
         network_name,
+        own_network: state.admin_trust.document().primary.pubkey
+            == state.authority_principal.pubkey,
+        standby_network: super::standby::standby_name(),
         connection_key,
         authority_level,
         authority_fingerprint,
@@ -2581,14 +2590,23 @@ pub(super) async fn chat_history(
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct NetworkChatQuery {
+    /// `network` (default) or `lobby`. Any other value reads the main room.
+    #[serde(default)]
+    room: Option<String>,
+}
+
 pub(super) async fn network_chat_snapshot(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
+    Query(query): Query<NetworkChatQuery>,
 ) -> Response {
-    let mut messages = match state
-        .network_chat
-        .history(crate::network_chat::NETWORK_CHAT_ROOM, 100)
-    {
+    let room = match query.room.as_deref() {
+        Some(crate::network_lobby::LOBBY_ROOM) => crate::network_lobby::LOBBY_ROOM,
+        _ => crate::network_chat::NETWORK_CHAT_ROOM,
+    };
+    let mut messages = match state.network_chat.history(room, 100) {
         Ok(messages) => messages,
         Err(error) => {
             tracing::error!("não foi possível ler o Chat da rede: {error:#}");
@@ -2633,6 +2651,16 @@ pub(super) async fn network_chat_snapshot(
         "typing": state.network_chat.typing_snapshot(),
         "notices": state.network_chat.notice_snapshot(),
         "dropped": state.network_chat.dropped(),
+        "room": room,
+        "lobbyEnabled": state.network_chat.lobby_enabled().await,
+        // Candidates talking in the lobby, with the hardware they declared.
+        "lobbyGuests": state
+            .network_chat
+            .lobby_guests()
+            .snapshot()
+            .into_iter()
+            .map(|(node_id, card)| json!({ "nodeId": node_id, "card": card }))
+            .collect::<Vec<_>>(),
     }))
     .into_response()
 }

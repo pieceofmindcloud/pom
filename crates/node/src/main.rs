@@ -129,6 +129,8 @@ mod network;
 mod network_chat;
 #[path = "network/network_chat_policy.rs"]
 mod network_chat_policy;
+#[path = "network/network_lobby.rs"]
+mod network_lobby;
 #[cfg(test)]
 #[path = "network/network_chat_tests.rs"]
 mod network_chat_tests;
@@ -726,6 +728,33 @@ async fn async_main(
     if let Some(config) = existing_config.as_mut() {
         apply_env_overrides(config, &args);
     }
+    // A machine without a network makes a local one and goes straight to the
+    // interface: admin, named after the host, discovery off. Joining someone
+    // else's network comes later, from the Networks screen. The wizard is only
+    // reached when asked for explicitly.
+    if existing_config
+        .as_ref()
+        .is_none_or(|config| config.setup_pending)
+        && !WIZARD_FORCED.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        let base = existing_config
+            .take()
+            .unwrap_or_else(|| blank_config(args.gateway_port, args.port));
+        match webui::bootstrap_local_network(base.clone(), &database).await {
+            Ok(mut created) => {
+                info!(
+                    "No network configured - created the local network \"{}\"",
+                    created.network.public_name
+                );
+                apply_env_overrides(&mut created, &args);
+                existing_config = Some(created);
+            }
+            Err(error) => {
+                warn!("could not create a local network, falling back to setup: {error:#}");
+                existing_config = base.setup_pending.then_some(base);
+            }
+        }
+    }
     if existing_config
         .as_ref()
         .is_none_or(|config| config.setup_pending)
@@ -886,6 +915,7 @@ fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
 /// Guarda a configuração atual e deixa o nó sem ela, para subir no wizard.
 /// Roda antes de abrir o banco.
 fn force_setup_mode() -> anyhow::Result<()> {
+    WIZARD_FORCED.store(true, std::sync::atomic::Ordering::Relaxed);
     let database = config::database_path();
     let with_suffix = |suffix: &str| {
         let mut name = database.clone().into_os_string();
@@ -928,6 +958,61 @@ fn force_setup_mode() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The configuration of a machine that has none yet: what the setup wizard
+/// starts from, and what a first launch turns into a local network.
+fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
+    use crate::config::Config;
+    Config {
+    profile: crate::profile::NodeProfile::Admin,
+    setup_pending: true,
+    local_auto_discovery: false,
+    tls_required: false,
+    quic_enabled: false,
+    cluster_logs_enabled: false,
+    network_chat_enabled: false,
+    cluster_logs_min_level: Default::default(),
+    // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
+    // depois que a `pom.json` existir.
+    gpus: None,
+    thermal: Default::default(),
+    cache_type_k: config::KvCacheType::F16,
+    cache_type_v: config::KvCacheType::F16,
+    connection_key: String::new(),
+    gateway_port,
+    admin_exposure: config::AdminExposure::Localhost,
+    admin_access_token: None,
+    admin_password_default: false,
+    p2p_port,
+    inference_port: None,
+    bootstrap_nodes: vec![],
+    relay_peers: vec![],
+    advertise_addr: None,
+    network: Default::default(),
+    api_keys: vec![],
+    blocked_nodes: vec![],
+    // Um nó recém-configurado sobe com as bibliotecas detectadas; a tela de
+    // Modelos é onde essa lista deixa de ser um palpite.
+    model_dirs: None,
+    shard_dir: None,
+    workspace_root: None,
+    shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+    resources: Default::default(),
+    setup_model: None,
+    node_name: None,
+    huggingface_token: None,
+    slot_save_path: None,
+    slot_persist_prefix_cache: true,
+    slot_auto_max_bytes: None,
+    slot_auto_ttl_secs: None,
+    cache_ram_mib: None,
+}
+}
+
+/// Set when `--setup` (or its environment token) asked for the wizard in this
+/// process. It is the only way into the wizard: a machine without a network
+/// otherwise creates a local one by itself (`webui::bootstrap_local_network`).
+static WIZARD_FORCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 async fn start_setup_mode(
     bind_ip: std::net::IpAddr,
     gateway_port: u16,
@@ -936,7 +1021,6 @@ async fn start_setup_mode(
     database: Arc<db::PomDb>,
     gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
-    use crate::config::Config;
     use crate::webui;
     use axum::{routing::get, Router};
     use std::net::SocketAddr;
@@ -945,50 +1029,9 @@ async fn start_setup_mode(
     let setup_p2p_port = preserved
         .as_ref()
         .map_or(p2p_port, |config| config.p2p_port);
-    let config = Arc::new(RwLock::new(preserved.unwrap_or_else(|| Config {
-        profile: crate::profile::NodeProfile::Admin,
-        setup_pending: true,
-        local_auto_discovery: false,
-        tls_required: false,
-        quic_enabled: false,
-        cluster_logs_enabled: false,
-        network_chat_enabled: false,
-        cluster_logs_min_level: Default::default(),
-        // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
-        // depois que a `pom.json` existir.
-        gpus: None,
-        thermal: Default::default(),
-        cache_type_k: config::KvCacheType::F16,
-        cache_type_v: config::KvCacheType::F16,
-        connection_key: String::new(),
-        gateway_port,
-        admin_exposure: config::AdminExposure::Localhost,
-        admin_access_token: None,
-        admin_password_default: false,
-        p2p_port: setup_p2p_port,
-        inference_port: None,
-        bootstrap_nodes: vec![],
-        relay_peers: vec![],
-        advertise_addr: None,
-        network: Default::default(),
-        api_keys: vec![],
-        blocked_nodes: vec![],
-        // Um nó recém-configurado sobe com as bibliotecas detectadas; a tela de
-        // Modelos é onde essa lista deixa de ser um palpite.
-        model_dirs: None,
-        shard_dir: None,
-        workspace_root: None,
-        shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
-        resources: Default::default(),
-        setup_model: None,
-        node_name: None,
-        huggingface_token: None,
-        slot_save_path: None,
-        slot_persist_prefix_cache: true,
-        slot_auto_max_bytes: None,
-        slot_auto_ttl_secs: None,
-        cache_ram_mib: None,
-    })));
+    let config = Arc::new(RwLock::new(
+        preserved.unwrap_or_else(|| blank_config(gateway_port, setup_p2p_port)),
+    ));
 
     let setup_p2p_port = config.read().await.p2p_port;
     let setup_socket =
@@ -1044,6 +1087,15 @@ async fn start_setup_mode(
             axum::routing::post(webui::search_setup_auto_discovery),
         )
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
+        .route(
+            "/api/setup/public-networks",
+            get(webui::setup_public_networks),
+        )
+        .route(
+            "/api/setup/lobby",
+            get(webui::setup_lobby_fetch).post(webui::setup_lobby_post),
+        )
+        .route("/api/setup/lobby/info", get(webui::setup_lobby_info))
         .merge(crate::webapp::routes())
         .with_state(webui::SetupState {
             config,
@@ -1337,6 +1389,12 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
     net.set_network_chat_enabled(args.network_chat_enabled);
+    // Discovery off: the node announces nothing and listens to nobody. It is
+    // the same state as a machine taken off the network by its operator, and
+    // turning discovery on in Network settings brings it back.
+    if args.auth.read().await.network.visibility == config::NetworkVisibility::Local {
+        net.detach().await;
+    }
     if args.local_auto_discovery {
         if let Err(error) = net.set_local_auto_discovery(true).await {
             warn!("descoberta local não pôde ser habilitada na inicialização: {error:#}");
@@ -1358,6 +1416,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         args.auth.clone(),
         args.network_chat_enabled,
     );
+    network_chat.load_admissions();
     let (audit_tx, audit_rx) = mpsc::channel(reqlog::AUDIT_TRANSPORT_QUEUE_CAPACITY);
     audit.start_replication(net.clone(), audit_tx);
 
@@ -1486,6 +1545,13 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::plugins::spawn_host_context(gw_state.clone());
     crate::plugins::spawn_serving_watcher(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+    crate::webui::spawn_public_stats_publisher(gw_state.clone());
+    crate::gateway::spawn_directory_board_publisher(gw_state.clone());
+    crate::gateway::spawn_directory_publisher(gw_state.clone());
+    crate::webui::spawn_admission_poller(gw_state.clone());
+    crate::webui::spawn_member_list_keeper(gw_state.clone());
+    crate::webui::spawn_key_reclaimer(gw_state.clone());
+    crate::webui::spawn_departure_worker(gw_state.clone());
 }
 
 /// Sobe o nó configurado: rede, gateway com todas as rotas e, se houver, a

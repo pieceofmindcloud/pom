@@ -44,6 +44,10 @@ pub(crate) async fn start_gateway_with_ready(
             crate::webui::NETWORK_SETTINGS_POLICY_PATH,
             get(crate::webui::network_settings_policy),
         )
+        .route(
+            crate::webui::MEMBER_LEFT_PATH,
+            post(crate::webui::member_left),
+        )
         .route("/handshake", post(session::handle_handshake))
         // Onde a cauda de um pipeline entrega o resultado. A rota é interna ao
         // pipeline: o Ticket é a credencial por quadro.
@@ -139,7 +143,7 @@ pub(super) async fn network_chat_policy(
     }))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PublicNetworkView {
     pub cluster_id: String,
     pub name: String,
@@ -163,6 +167,18 @@ pub(crate) struct PublicNetworkView {
     pub city: String,
     pub geo_label: String,
     pub access_policy: crate::config::NetworkAccessPolicy,
+    /// Enrollment roles the network advertises as open; empty means it is not
+    /// accepting new members and the directory disables its join button.
+    #[serde(default)]
+    pub accepted_enrollments: crate::config::AcceptedEnrollments,
+    /// The network answers lobby chat from non-members right now (the
+    /// operator's switch and the network Chat are both on).
+    #[serde(default)]
+    pub lobby_chat: bool,
+    /// The network publishes models, node count and VRAM to non-members,
+    /// asked live from its principal.
+    #[serde(default)]
+    pub public_stats: bool,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
     #[serde(default)]
@@ -227,6 +243,9 @@ fn directory_network_from_view(
         city: view.city.clone(),
         geo_label: view.geo_label.clone(),
         access_policy: view.access_policy,
+        accepted_enrollments: view.accepted_enrollments.clone(),
+        lobby_chat: view.lobby_chat,
+        public_stats: view.public_stats,
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
         directory_replicas: view.directory_replicas.clone(),
@@ -256,6 +275,9 @@ fn view_from_directory_record(
         city: network.city,
         geo_label: network.geo_label,
         access_policy: network.access_policy,
+        accepted_enrollments: network.accepted_enrollments,
+        lobby_chat: network.lobby_chat,
+        public_stats: network.public_stats,
         location: network.location,
         discovered_via: "directory".to_string(),
         directory_replicas: network.directory_replicas,
@@ -298,9 +320,118 @@ fn validate_public_directory_semantics(
 async fn read_directory_records(
     state: &GatewayState,
 ) -> Vec<crate::public_directory::SignedPublicDirectoryRecord> {
-    let settings = directory_settings(state);
-    let client = state.peer_http.plain();
-    let responses = futures::future::join_all(settings.replicas.into_iter().map(|base| {
+    let (records, learned) = merge_directory_replicas(
+        &state.database,
+        &state.peer_http.plain(),
+        directory_settings(state).replicas,
+    )
+    .await;
+    replicate_directory_records(state, learned).await;
+    records
+}
+
+/// The public networks a node can list from the federated directory alone:
+/// the local cache merged with what `replicas` answer now. It needs no
+/// cluster, which is what lets the setup wizard show the directory.
+pub(crate) async fn directory_public_networks(
+    database: &crate::db::PomDb,
+    client: &reqwest::Client,
+    replicas: Vec<String>,
+) -> Vec<PublicNetworkView> {
+    let (records, _) = merge_directory_replicas(database, client, replicas).await;
+    let mut networks: Vec<PublicNetworkView> = Vec::new();
+    for record in records {
+        let network = view_from_directory_record(record);
+        if !networks
+            .iter()
+            .any(|known| known.fingerprint == network.fingerprint)
+        {
+            networks.push(network);
+        }
+    }
+    networks
+}
+
+/// Entries accepted from one node's listing.
+const LISTED_NETWORKS_MAX: usize = 256;
+
+/// Accepts a network another node listed only if it certifies itself: the
+/// trust document must be the one the fingerprint and the `cluster_id` name.
+/// The publisher key is derived from that document, never taken from the
+/// listing, so a node cannot point someone else's network at its own key.
+/// The descriptive fields stay as listed; they are not signed on this path.
+pub(crate) fn validated_listed_network(mut view: PublicNetworkView) -> Option<PublicNetworkView> {
+    let document = crate::admin_trust::parse_transported(&view.trust_document).ok()?;
+    if document.anchor.cluster_id != view.cluster_id
+        || crate::admin_trust::anchor_fingerprint(&document) != view.fingerprint
+    {
+        return None;
+    }
+    view.publisher_key =
+        crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&document.primary.pubkey)?;
+    view.discovered_via = "node".to_string();
+    Some(view)
+}
+
+/// Accepts a network published to this relay only from its own principal:
+/// on top of certifying itself, the trust document's primary key must be
+/// `publisher_pubkey`, the node key that signed for the connection.
+pub(crate) fn validated_publication(
+    view: PublicNetworkView,
+    publisher_pubkey: &str,
+) -> Option<PublicNetworkView> {
+    let document = crate::admin_trust::parse_transported(&view.trust_document).ok()?;
+    if document.primary.pubkey != publisher_pubkey {
+        return None;
+    }
+    let mut view = validated_listed_network(view)?;
+    view.discovered_via = "published".to_string();
+    Some(view)
+}
+
+/// The public networks the nodes at `bases` list right now
+/// (`GET <base>/api/public/networks`). A configured node learns networks from
+/// its cluster and pkarr; a node in setup mode has neither, so it asks one
+/// that does.
+pub(crate) async fn listed_public_networks(
+    client: &reqwest::Client,
+    bases: Vec<String>,
+) -> Vec<PublicNetworkView> {
+    let answers = futures::future::join_all(bases.into_iter().map(|base| {
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(format!("{}/api/public/networks", base.trim_end_matches('/')))
+                .timeout(Duration::from_secs(8))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response.json::<Vec<PublicNetworkView>>().await.ok()
+        }
+    }))
+    .await;
+    answers
+        .into_iter()
+        .flatten()
+        .flat_map(|listed| listed.into_iter().take(LISTED_NETWORKS_MAX))
+        .filter_map(validated_listed_network)
+        .collect()
+}
+
+/// Fetches the replicas, validates and merges into the cached records, and
+/// returns the cache plus the records learned in this pass.
+async fn merge_directory_replicas(
+    database: &crate::db::PomDb,
+    client: &reqwest::Client,
+    replicas: Vec<String>,
+) -> (
+    Vec<crate::public_directory::SignedPublicDirectoryRecord>,
+    Vec<crate::public_directory::SignedPublicDirectoryRecord>,
+) {
+    let responses = futures::future::join_all(replicas.into_iter().map(|base| {
         let client = client.clone();
         async move {
             let response = client
@@ -326,10 +457,7 @@ async fn read_directory_records(
 
     let now = crate::public_directory::current_time_secs()
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
-    let mut records = state
-        .database
-        .public_directory_records()
-        .unwrap_or_default();
+    let mut records = database.public_directory_records().unwrap_or_default();
     let mut changed = false;
     let mut learned = Vec::new();
     for incoming in responses.into_iter().flatten().flatten() {
@@ -360,12 +488,11 @@ async fn read_directory_records(
     });
     changed |= before != records.len();
     if changed {
-        if let Err(error) = state.database.save_public_directory_records(&records) {
+        if let Err(error) = database.save_public_directory_records(&records) {
             warn!("não foi possível salvar o cache do diretório federado: {error:#}");
         }
     }
-    replicate_directory_records(state, learned).await;
-    records
+    (records, learned)
 }
 
 async fn replicate_directory_records(
@@ -576,6 +703,9 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         city: network.city.clone(),
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
+        accepted_enrollments: network.accepted_enrollments.clone(),
+        lobby_chat: network.lobby_chat && state.network_chat.enabled(),
+        public_stats: network.public_stats,
         location: network
             .location
             .clone()
@@ -737,6 +867,113 @@ pub(super) async fn public_networks(
     State(state): State<GatewayState>,
     Query(query): Query<PublicNetworksQuery>,
 ) -> impl IntoResponse {
+    // What this node sees for itself and what its relays know, asked at the
+    // same time. The relays matter most for a node with discovery off, which
+    // hears no announce at all. A relay's own board does not go through here
+    // (`spawn_directory_board_publisher` calls the collector), so relays never
+    // chain questions to each other.
+    let relay_keys = directory_relay_keys(&state).await;
+    let (mut networks, from_relays) = tokio::join!(
+        collect_public_networks(&state, &query),
+        futures::future::join_all(relay_keys.iter().map(|key| relay_directory(key))),
+    );
+    for network in from_relays.into_iter().flatten() {
+        if matches_geo_label(&network.geo_label, &query)
+            && !networks
+                .iter()
+                .any(|known| known.fingerprint == network.fingerprint)
+        {
+            networks.push(network);
+        }
+    }
+    Json(networks)
+}
+
+/// The public networks the relay under `key` knows, each checked against its
+/// own trust document. A relay that is still filling its board is asked once
+/// more; one that does not answer contributes nothing.
+pub(crate) async fn relay_directory(key: &str) -> Vec<PublicNetworkView> {
+    let Ok(client) = crate::network_lobby::client().await else {
+        return Vec::new();
+    };
+    let mut response = match client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+        Ok(response) => response,
+        Err(error) => {
+            debug!("lobby: relé {key} não respondeu ao diretório: {error:#}");
+            return Vec::new();
+        }
+    };
+    if response.accepted && response.pending {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Ok(again) = client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+            response = again;
+        }
+    }
+    response
+        .networks
+        .into_iter()
+        .take(crate::network_lobby::LobbyLimits::DIRECTORY_NETWORKS)
+        .filter_map(validated_listed_network)
+        .collect()
+}
+
+/// The relay keys this node asks for the networks they know: the built-in and
+/// environment list plus the relays in its config, never its own key.
+async fn directory_relay_keys(state: &GatewayState) -> Vec<String> {
+    let own = state
+        .pkarr_publisher
+        .as_ref()
+        .map(|publisher| publisher.node().public_key_uri());
+    let mut keys = crate::network_lobby::default_directory_relays();
+    keys.extend(state.auth.read().await.relay_peers.iter().cloned());
+    keys.retain(|key| Some(key) != own.as_ref());
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// Whether this node gathers the announces of other clusters into a list of
+/// public networks. A node in a public network does, and so does a relay
+/// whatever its own network: every cluster that uses it meets there, and that
+/// is what makes it able to answer a machine that has joined nothing.
+async fn gathers_public_networks(state: &GatewayState) -> bool {
+    allow_public_p2p_discovery(state.auth.read().await.network.visibility)
+        || state
+            .pkarr_publisher
+            .as_ref()
+            .is_some_and(|publisher| publisher.desired_record().is_relay)
+}
+
+/// Asks a candidate for its network over the keyed lobby connection. The
+/// fallback for a candidate whose gateway cannot be reached over HTTP, which
+/// is every node behind NAT.
+async fn describe_by_key(pubkey_hex: &str) -> Option<PublicNetworkView> {
+    let key = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(pubkey_hex)?;
+    let client = crate::network_lobby::client().await.ok()?;
+    let ask = || client.request(&key, crate::network_lobby::LobbyRequest::Describe);
+    let mut response = tokio::time::timeout(Duration::from_secs(6), ask())
+        .await
+        .ok()?
+        .ok()?;
+    if response.accepted && response.pending {
+        // The other node fills its board on demand: one short second chance.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        response = tokio::time::timeout(Duration::from_secs(6), ask())
+            .await
+            .ok()?
+            .ok()?;
+    }
+    response
+        .networks
+        .into_iter()
+        .next()
+        .and_then(validated_listed_network)
+}
+
+async fn collect_public_networks(
+    state: &GatewayState,
+    query: &PublicNetworksQuery,
+) -> Vec<PublicNetworkView> {
     let mut networks = Vec::new();
     let has_geo_filter = query
         .geo_prefix
@@ -746,19 +983,19 @@ pub(super) async fn public_networks(
             .geo_suffix
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
-    if let Some(local) = local_public_network(&state).await {
-        if !has_geo_filter || matches_geo_label(&local.geo_label, &query) {
+    if let Some(local) = local_public_network(state).await {
+        if !has_geo_filter || matches_geo_label(&local.geo_label, query) {
             networks.push(local);
         }
     }
 
-    if let Err(error) = publish_local_directory_record(&state).await {
+    if let Err(error) = publish_local_directory_record(state).await {
         warn!("não foi possível atualizar o registro local do diretório federado: {error:#}");
     }
-    let directory_records = read_directory_records(&state).await;
+    let directory_records = read_directory_records(state).await;
     for record in directory_records {
         let network = view_from_directory_record(record);
-        if has_geo_filter && !matches_geo_label(&network.geo_label, &query) {
+        if has_geo_filter && !matches_geo_label(&network.geo_label, query) {
             continue;
         }
         if !networks
@@ -773,13 +1010,19 @@ pub(super) async fn public_networks(
         .database
         .public_network_geo_cache()
         .unwrap_or_default();
-    let visibility = state.auth.read().await.network.visibility;
-    let mut candidates = if allow_public_p2p_discovery(visibility) {
+    let gathers = gathers_public_networks(state).await;
+    let mut candidates = if gathers {
         state.network.alive_peers().await
     } else {
         Vec::new()
     };
-    if allow_public_p2p_discovery(visibility) {
+    // Admitted peers are this node's own cluster: asking one of them by key
+    // can only describe the network this node is already in.
+    let members: std::collections::HashSet<String> = candidates
+        .iter()
+        .map(|peer| peer.node_id.clone())
+        .collect();
+    if gathers {
         for peer in state.network.public_discovered_peers().await {
             if !candidates.iter().any(|known| known.node_id == peer.node_id) {
                 candidates.push(peer);
@@ -813,7 +1056,7 @@ pub(super) async fn public_networks(
             && !pkarr_record
                 .geo_label
                 .as_deref()
-                .is_some_and(|label| matches_geo_label(label, &query))
+                .is_some_and(|label| matches_geo_label(label, query))
         {
             continue;
         }
@@ -837,6 +1080,7 @@ pub(super) async fn public_networks(
             }
         }
         bases.extend(peer.gateway_candidates_with_tls(state.peer_http.tls_enabled()));
+        let mut listed = false;
         for base in bases {
             let response = client
                 .get(format!("{base}/api/public/network"))
@@ -852,7 +1096,7 @@ pub(super) async fn public_networks(
             let Ok(network) = response.json::<PublicNetworkView>().await else {
                 continue;
             };
-            if has_geo_filter && !matches_geo_label(&network.geo_label, &query) {
+            if has_geo_filter && !matches_geo_label(&network.geo_label, query) {
                 continue;
             }
             geo_cache.retain(|entry| entry.node_id != peer.node_id);
@@ -868,7 +1112,26 @@ pub(super) async fn public_networks(
             {
                 networks.push(network);
             }
+            listed = true;
             break;
+        }
+        // No gateway answered. A network already listed needs no second
+        // answer from another of its members; otherwise ask by key.
+        let known_cluster = peer.cluster_id.as_deref().is_some_and(|cluster| {
+            networks
+                .iter()
+                .any(|known: &PublicNetworkView| known.cluster_id == cluster)
+        });
+        if !listed && !known_cluster && !members.contains(&peer.node_id) {
+            if let Some(network) = describe_by_key(&peer.pubkey).await {
+                if (!has_geo_filter || matches_geo_label(&network.geo_label, query))
+                    && !networks
+                        .iter()
+                        .any(|known: &PublicNetworkView| known.fingerprint == network.fingerprint)
+                {
+                    networks.push(network);
+                }
+            }
         }
     }
 
@@ -876,7 +1139,95 @@ pub(super) async fn public_networks(
         warn!("não foi possível atualizar o índice geo de redes públicas: {error:#}");
     }
 
-    Json(networks).into_response()
+    networks
+}
+
+/// Tells this node's relays about its network, while it is the principal of a
+/// listed one. The relay is dialed directly, so the network is listed even
+/// when none of its nodes can be reached from outside - the relay never has
+/// to come back for it. Sent every `PUBLICATION_INTERVAL`; a relay drops a
+/// network it has not heard for `PUBLICATION_TTL`, which is also how turning
+/// discovery off takes a network out of the list.
+pub(crate) fn spawn_directory_publisher(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(crate::network_lobby::PUBLICATION_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            let Some(network) = local_public_network(&state).await else {
+                continue;
+            };
+            // Only the principal publishes: a relay accepts nobody else.
+            let own = state
+                .pkarr_publisher
+                .as_ref()
+                .map(|publisher| publisher.node().public_key_uri());
+            if own.as_deref() != Some(network.publisher_key.as_str()) {
+                continue;
+            }
+            let Ok(client) = crate::network_lobby::client().await else {
+                continue;
+            };
+            for key in directory_relay_keys(&state).await {
+                let request = crate::network_lobby::LobbyRequest::Publish {
+                    identity: client.proof(),
+                    network: network.clone(),
+                };
+                match client.request(&key, request).await {
+                    Ok(response) if response.accepted => {}
+                    Ok(response) => debug!(
+                        "lobby: relé {key} não listou a rede: {:?}",
+                        response.error
+                    ),
+                    Err(error) => debug!("lobby: relé {key} inalcançável para publicar: {error:#}"),
+                }
+            }
+        }
+    });
+}
+
+/// Fills `DirectoryBoard` on demand: this node's own public network and, when
+/// it gathers them, the public networks it knows. The swarm loop answers
+/// `Describe` and `Directory` from the board and wakes this task when it is
+/// stale; one listing per `network_lobby::INFO_REFRESH` at most, none while
+/// nobody asks.
+pub(crate) fn spawn_directory_board_publisher(state: GatewayState) {
+    /// The scan of announcing nodes asks each one in turn and can take
+    /// minutes on a relay that hears many; an answer must not wait for it.
+    const GATHER_TIMEOUT: Duration = Duration::from_secs(25);
+    tokio::spawn(async move {
+        let board = state.network_chat.directory_board();
+        let mut gathered: Vec<PublicNetworkView> = Vec::new();
+        // Once at startup, without being asked: a relay must be able to take
+        // a principal's publication, and answer with it, from the first
+        // minute.
+        let mut first = true;
+        loop {
+            if !std::mem::take(&mut first) {
+                board.wanted().await;
+            }
+            let own: Vec<PublicNetworkView> =
+                local_public_network(&state).await.into_iter().collect();
+            let gathers = gathers_public_networks(&state).await;
+            // Put the cheap part up first, with whatever was gathered last
+            // time, so requests are answered while the scan runs.
+            board.publish(own.clone(), gathers.then(|| gathered.clone()));
+            if gathers {
+                let query = PublicNetworksQuery::default();
+                let scan = collect_public_networks(&state, &query);
+                match tokio::time::timeout(GATHER_TIMEOUT, scan).await {
+                    Ok(found) => {
+                        gathered = found;
+                        board.publish(own, Some(gathered.clone()));
+                    }
+                    Err(_) => debug!("lobby: a varredura de redes públicas passou do prazo"),
+                }
+            }
+            tokio::time::sleep(crate::network_lobby::INFO_REFRESH).await;
+        }
+    });
 }
 
 /// Probe the same IPv6 dual-stack bind used by the gateway before any model

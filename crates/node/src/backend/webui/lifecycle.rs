@@ -313,6 +313,26 @@ pub(super) async fn leave_network_and_reset(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
 ) -> Response {
+    // A node's own network is inherent to it and is never dropped. Leaving
+    // only means something for a network the node joined.
+    let own_network =
+        state.admin_trust.document().primary.pubkey == state.authority_principal.pubkey;
+    if own_network && !super::standby::in_standby() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "reason": "own_network",
+                "error": "this is this machine's own network; it cannot be left",
+            })),
+        )
+            .into_response();
+    }
+    // Before going silent, tell the network's principal. It forgets this
+    // machine's admission and gives the remaining members a new connection
+    // key, so the one this node holds stops being worth anything. Best
+    // effort: a principal that cannot be reached is not a reason to stay.
+    super::notify_principal_of_departure(&state).await;
+
     state.runtime.stop().await;
     state.network.detach().await;
 
@@ -336,7 +356,25 @@ pub(super) async fn leave_network_and_reset(
             )
                 .into_response(),
         };
+    // The connection key of the network being left goes with it: after the
+    // principal rotates it, it opens nothing. Then this machine's own
+    // network comes back from standby as it was; only a node that never had
+    // one (it was set up as a member by the wizard) falls to a fresh start.
     config.prepare_for_setup();
+    let restored = match super::standby::restore_primary(&mut config) {
+        Ok(restored) => restored,
+        Err(error) => {
+            warn!("não foi possível restaurar a rede própria; criando uma nova: {error:#}");
+            false
+        }
+    };
+    if restored {
+        // Reaching this machine's interface is the operator's choice, not a
+        // property of either network.
+        let current = state.auth.read().await;
+        config.admin_exposure = current.admin_exposure;
+        config.admin_access_token = current.admin_access_token.clone();
+    }
     if let Err(error) = config.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -345,6 +383,9 @@ pub(super) async fn leave_network_and_reset(
             ),
         )
             .into_response();
+    }
+    if restored {
+        super::standby::discard();
     }
     if let Err(error) = state.database.save_network_settings(&config.network) {
         warn!("não foi possível limpar os detalhes da rede no banco: {error:#}");
@@ -362,7 +403,7 @@ pub(super) async fn leave_network_and_reset(
         let error = crate::respawn::respawn_self();
         tracing::error!("respawn após saída da rede falhou, o nó segue no ar: {error}");
     });
-    Json(json!({ "left": true, "setup_pending": true, "restart": true })).into_response()
+    Json(json!({ "left": true, "restored_own_network": restored, "restart": true })).into_response()
 }
 
 /// Autoridade administrativa efetiva deste nó. `profile: admin` sozinho não

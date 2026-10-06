@@ -920,7 +920,19 @@ firstRun.private,Private,Privada
 firstRun.privateDetail,Only machines with the connection key and the trust.json join. Nothing is published.,Só entra quem tiver a chave de conexão e o trust.json. Nada é publicado.
 firstRun.public,Public,Pública
 firstRun.publicDetail,Listed in the public directory; anyone with the trust.json can join.,Aparece no diretório público; qualquer um com o trust.json pode entrar.
+firstRun.publicDirectory,Public networks,Redes públicas
+firstRun.publicDirectoryAddress,Relay key or node address,Chave de relé ou endereço de nó
+firstRun.publicDirectoryAddressHint,"A machine that has joined nothing has nobody to ask yet. Enter the key of a relay (pk:...) or the address of any POM node you can reach to list the public networks it knows, then press Enter. Separate several with commas.",Uma máquina que não entrou em nada ainda não tem a quem perguntar. Informe a chave de um relé (pk:...) ou o endereço de qualquer nó POM alcançável para listar as redes públicas que ele conhece e pressione Enter. Separe vários com vírgulas.
+firstRun.publicDirectoryDetail,Public networks known to the relays of this installation and to the relay or node below. You can talk to one before joining it.,Redes públicas conhecidas pelos relés desta instalação e pelo relé ou nó abaixo. Você pode conversar com uma delas antes de entrar.
+firstRun.publicDirectoryEmpty,No public network listed. Enter a relay key or a node address above.,Nenhuma rede pública listada. Informe acima a chave de um relé ou o endereço de um nó.
+firstRun.publicDirectoryFailed,Could not read the public directory.,Não foi possível ler o diretório público.
+firstRun.publicDirectoryLoading,Looking up the directory...,Consultando o diretório...
+firstRun.publicDirectoryNodes,{count} nodes,{count} nós
+firstRun.publicDirectorySelected,Selected,Selecionada
+firstRun.publicDirectoryUse,Join,Entrar
+firstRun.publicDirectoryVram,{value} GB VRAM,{value} GB de VRAM
 firstRun.publicLocationDetail,"Public networks publish their location in the directory, so people can find the closest one.","Redes públicas publicam a localização no diretório, para quem procura achar a mais próxima."
+firstRun.roleNotAccepted,This network is not accepting new members with this role right now.,Esta rede não está aceitando novos membros com este papel no momento.
 firstRun.savedDetail,POM is restarting. The panel password is admin - POM will ask you to change it.,O POM está reiniciando. A senha do painel é admin - o POM vai pedir para você trocá-la.
 firstRun.searchAgain,Search again,Procurar de novo
 firstRun.startDetail,"How will this machine take part? Everything else can be adjusted later, inside POM.","Como esta máquina vai participar? O resto você ajusta depois, dentro do POM."
@@ -1079,6 +1091,58 @@ keys.tokensCoexist,Tokens coexist: creating one does not revoke earlier tokens.,
 keys.trackingId,Tracking ID,ID de rastreio
 keys.trackingIdHint,Identifies this token in the logs of every node. It is not a credential.,Identifica este token nos logs de todos os nós. Não é uma credencial.
 keys.unnamed,unnamed,sem nome
+lobby.admission,Admission,Admissão
+lobby.admissionApproved,An admin approved this machine as {role}. Joining is up to you.,Um administrador aprovou esta máquina como {role}. Entrar é decisão sua.
+lobby.admissionAsk,Request admission,Pedir admissão
+lobby.admissionAskDetail,An admin of the network decides. You can close this window: the answer arrives in the notifications.,Um administrador da rede decide. Você pode fechar esta janela: a resposta chega nas notificações.
+lobby.admissionPending,Admission as {role} requested. Waiting for an admin.,Admissão como {role} pedida. Aguardando um administrador.
+lobby.admissionRejected,An admin declined this request. You can ask again later.,Um administrador recusou este pedido. Você pode pedir de novo mais tarde.
+lobby.admissionRole,Join as,Entrar como
+lobby.admissionStanding,This machine was already admitted to this network as {role} and still holds its credentials. You can switch to it now.,Esta máquina já foi admitida nesta rede como {role} e ainda tem as credenciais. Você pode trocar para ela agora.
+lobby.candidate,candidate,candidato
+lobby.candidates,{count} in the lobby,{count} no lobby
+lobby.cardNote,This card goes with every message so the network can judge whether your machine fits.,Este cartão acompanha cada mensagem para a rede avaliar se a sua máquina serve.
+lobby.connecting,Reaching the network...,Conectando à rede...
+lobby.connection,Connection,Conexão
+lobby.connectionDirect,direct connection,conexão direta
+lobby.connectionRelayed,through a relay,por um relé
+lobby.cpu,CPU,CPU
+lobby.cpuCount,{count} CPU threads,{count} threads de CPU
+lobby.declaredNote,Hardware is declared by each candidate and is not verified.,O hardware é declarado por cada candidato e não é verificado.
+lobby.detail,You are talking to this network before joining it. Its members read what you write here and see the hardware card beside it.,Você está conversando com esta rede antes de entrar. Os membros leem o que você escreve aqui e veem o cartão de hardware ao lado.
+lobby.empty,No messages yet. Introduce yourself to the network.,Nenhuma mensagem ainda. Apresente-se à rede.
+lobby.emptyMember,Machines that have not joined yet write here before asking to be admitted.,Máquinas que ainda não entraram escrevem aqui antes de pedir admissão.
+lobby.errorBlocked,This network blocked this machine.,Esta rede bloqueou esta máquina.
+lobby.errorDisabled,This network is not accepting lobby chat right now.,Esta rede não está aceitando conversa no lobby no momento.
+lobby.errorFull,The lobby is full. Try again later.,O lobby está cheio. Tente novamente mais tarde.
+lobby.errorMember,This machine is already a member of this network. Use the network chat.,Esta máquina já é membro desta rede. Use o chat da rede.
+lobby.errorRate,Too many messages. Wait a moment and try again.,Mensagens demais. Aguarde um instante e tente de novo.
+lobby.errorRejected,This network declined this machine recently. Try again later.,Esta rede recusou esta máquina recentemente. Tente mais tarde.
+lobby.errorRole,This network is not accepting that role right now.,Esta rede não está aceitando esse papel no momento.
+lobby.errorText,The message is empty or too long (2 KB at most).,A mensagem está vazia ou longa demais (no máximo 2 KB).
+lobby.errorUnreachable,Could not reach the admin of this network. It may be offline or unreachable from here.,Não foi possível alcançar o administrador desta rede. Ele pode estar offline ou inalcançável daqui.
+lobby.hintMember,"Enter sends. Everyone in the lobby reads this, including machines that are not members.","Enter envia. Todos no lobby leem isto, inclusive máquinas que não são membros."
+lobby.joinDetail,"Joining replaces the network this machine is in now: its current network and deployments stop, and the node restarts as a member of the new one.","Entrar substitui a rede em que esta máquina está agora: a rede atual e as implantações param, e o nó reinicia como membro da nova."
+lobby.joinFailed,Could not join the network,Não foi possível entrar na rede
+lobby.joinNow,Join now,Entrar agora
+lobby.joinTitle,Join {name}?,Entrar em {name}?
+lobby.latency,{value} ms,{value} ms
+lobby.member,member,membro
+lobby.noCandidates,Nobody is in the lobby right now.,Ninguém está no lobby agora.
+lobby.noGpu,No GPU reported,Nenhuma GPU informada
+lobby.placeholder,Write to the lobby of this network…,Escreva para o lobby desta rede…
+lobby.placeholderMember,Write to the lobby…,Escreva para o lobby…
+lobby.ram,Memory,Memória
+lobby.ramTotal,{value} RAM,{value} de RAM
+lobby.roomLobby,Lobby,Lobby
+lobby.roomNetwork,Network,Rede
+lobby.rooms,Rooms,Salas
+lobby.switchNow,Switch to this network,Trocar para esta rede
+lobby.title,Lobby of {name},Lobby de {name}
+lobby.unifiedMemory,unified memory,memória unificada
+lobby.unknown,Not informed,Não informado
+lobby.you,(you),(você)
+lobby.yourCard,What the network sees,O que a rede vê
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas
 models.columnActions,Actions,Ações
@@ -1138,7 +1202,7 @@ nav.networkInfo,Network information,Informações da rede
 nav.networkParticipants,Network participants,Participantes da rede
 nav.plugins,Plugins,Plugins
 nav.preferences,Preferences,Preferências
-nav.publicNetworks,Public networks,Redes públicas
+nav.publicNetworks,Networks,Redes
 nav.remoteModels,Find HF models,Encontrar Modelos HF
 nav.requestLogs,Request logs,Logs de requisições
 nav.sendFile,Send a file,Enviar um arquivo
@@ -1153,10 +1217,12 @@ nav.storage,Storage,Armazenamento
 nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
-network.accessAnyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
-network.accessAuthorized,Authorized people,Pessoas autorizadas
+network.acceptedEnrollments,Accepting new members,Aceitando novos membros
+network.acceptedEnrollmentsHint,"Advertised in the public directory. With none selected the network shows as closed and nobody can start joining it from there. Current members are not affected.","Anunciado no diretório público. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue iniciar a entrada por lá. Os membros atuais não são afetados."
+network.accessAnyoneWithAnchor,Anyone with the trust root (legacy),Qualquer pessoa com a raiz de confiança (legado)
+network.accessAuthorized,Approved by an admin,Aprovados por um administrador
 network.accessLocalOnly,This machine only,Apenas esta máquina
-network.accessPolicy,Who can access,Quem pode acessar
+network.accessPolicy,Who can join,Quem pode entrar
 network.addrEffective,Currently advertising,Anunciando agora
 network.addrHint,"Leave empty to auto-detect (a peer-observed public address, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado via libp2p, senão o endereço de rede local desta máquina)."
 network.addrLabel,Pinned address,Endereço fixado
@@ -1166,6 +1232,13 @@ network.addrSave,Save,Salvar
 network.addrSaveFailed,Could not save the address,Não foi possível salvar o endereço
 network.addrSaved,Address updated,Endereço atualizado
 network.addrSavedDetail,Takes effect immediately — no restart needed.,Vale imediatamente — sem reinício.
+network.admittedRevoke,Revoke,Revogar
+network.admittedRevokeDetail,"The machine comes off the member list and the other members get a new connection key, so it has to ask to be admitted again. Running work is not interrupted.","A máquina sai da lista de membros e os outros membros recebem uma nova chave de conexão, então ela precisa pedir admissão de novo. O que está rodando não é interrompido."
+network.admittedRevokeFailed,Could not revoke the machine,Não foi possível revogar a máquina
+network.admittedRevokeTitle,Revoke {name}?,Revogar {name}?
+network.admittedRevoked,Machine revoked. The connection key is being replaced.,Máquina revogada. A chave de conexão está sendo trocada.
+network.admittedSubtitle,Machines allowed in this network. Each one can rejoin on its own until revoked.,Máquinas autorizadas nesta rede. Cada uma pode voltar por conta própria até ser revogada.
+network.admittedTitle,Admitted machines,Máquinas admitidas
 network.advertiseSubtitle,"An optional address or DNS name peers try first. Leave it empty and the node finds its own addresses; it is a hint, never the node''s identity.","Endereço ou nome DNS opcional que os peers tentam primeiro. Vazio, o nó descobre os próprios endereços; é uma dica, nunca a identidade do nó."
 network.advertiseTitle,Advertised address,Endereço anunciado
 network.authority,Authority,Autoridade
@@ -1209,6 +1282,10 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
+network.enrollment.infer,Inference nodes,Nós de inferência
+network.enrollment.node,Network nodes,Nós da rede
+network.enrollmentClosed,Not accepting new members,Não aceita novos membros
+network.enrollmentOpen,Any role,Qualquer papel
 network.firewallEyebrow,Windows Firewall,Firewall do Windows
 network.firewallLastError,Windows did not confirm the requested firewall rules. You can try again or continue without QUIC.,O Windows não confirmou as regras de firewall solicitadas. Você pode tentar de novo ou continuar sem QUIC.
 network.firewallNeeded,Some POM ports are not allowed yet.,Algumas portas do POM ainda não estão liberadas.
@@ -1220,12 +1297,12 @@ network.firewallRetrying,Firewall permission request finished.,O pedido de permi
 network.firewallSubtitle,The first attempt asks Windows for administrator permission. Refusing it does not stop this node.,A primeira tentativa pede permissão de administrador ao Windows. Recusar não interrompe este nó.
 network.firewallTitle,Allow POM network traffic,Libere o tráfego de rede do POM
 network.firewallUacDetail,"Approve the Windows prompt once to allow discovery, QUIC and libp2p traffic.","Aprove o pedido do Windows uma vez para liberar descoberta, QUIC e tráfego libp2p."
-network.forgetNetwork,Forget network,Esquecer rede
-network.forgetNetworkDescription,"This permanently removes this node's local network configuration and trust root, then restarts the node and opens setup again. It does not remove another machine from the cluster.","Esta ação irreversível apaga a configuração local e a raiz de confiança deste nó, reinicia o nó e abre o setup novamente. Ela não tira outra máquina do cluster."
-network.forgetNetworkFailed,Could not forget the local network configuration,Não foi possível esquecer a configuração local da rede
-network.forgetNetworkStarted,Local network reset started,Limpeza local da rede iniciada
-network.forgetNetworkStartedDetail,The node is restarting and will open setup again.,O nó está reiniciando e abrirá o setup novamente.
-network.forgetNetworkTitle,Forget the local network configuration?,Esquecer a configuração local?
+network.forgetNetwork,Return to my own network,Voltar para a minha rede
+network.forgetNetworkDescription,"This machine leaves this network and goes back to its own, as it was. The admin of the network gives the other members a new connection key, so coming back takes a new admission request. It does not remove another machine from the cluster.","Esta máquina sai desta rede e volta para a rede própria, como estava. O administrador da rede dá uma nova chave de conexão aos outros membros, então voltar exige um novo pedido de admissão. Ela não tira outra máquina do cluster."
+network.forgetNetworkFailed,Could not leave the network,Não foi possível sair da rede
+network.forgetNetworkStarted,Leaving the network,Saindo da rede
+network.forgetNetworkStartedDetail,The node is restarting on its own network.,O nó está reiniciando na rede própria.
+network.forgetNetworkTitle,Leave this network?,Sair desta rede?
 network.geoLabel,Discovery label,Rótulo de descoberta
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."
@@ -1239,6 +1316,11 @@ network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
+network.lobbyChat,Lobby chat,Chat de lobby
+network.lobbyChatEnable,Accept messages from machines that are not members,Aceitar mensagens de máquinas que não são membros
+network.lobbyChatHint,Lets a machine that has not joined talk to this network before being admitted. Members see its messages and declared hardware in the Lobby room of the network chat. Needs a public network with the network chat on.,Permite que uma máquina que ainda não entrou converse com esta rede antes de ser admitida. Os membros veem as mensagens e o hardware declarado na sala Lobby do chat da rede. Exige rede pública com o chat da rede ligado.
+network.lobbyChatOff,Closed,Fechado
+network.lobbyChatOn,Open,Aberto
 network.location,Location,Localização
 network.locationCoordinates,"{latitude}, {longitude}","{latitude}, {longitude}"
 network.logsDisable,Turn logs off,Desligar logs
@@ -1307,6 +1389,11 @@ network.publicInfoPropagation,Changing these details updates the public director
 network.publicName,Public name,Nome público
 network.publicNameRequired,Required for a public network,Obrigatório para uma rede pública
 network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
+network.publicStats,Published stats,Dados publicados
+network.publicStatsEnable,"Publish served models, node count and total VRAM","Publicar modelos servidos, número de nós e VRAM total"
+network.publicStatsHint,"Shown in the public directory to machines that have not joined. They are asked live from this node, so they are only available while it is online. Needs a public network.","Aparecem no diretório público para máquinas que ainda não entraram. São consultados ao vivo neste nó, então só ficam disponíveis enquanto ele está online. Exige rede pública."
+network.publicStatsOff,Not published,Não publicados
+network.publicStatsOn,Published,Publicados
 network.quicDisable,Turn QUIC off,Desligar QUIC
 network.quicDisabled,QUIC turned off,QUIC desligado
 network.quicEnable,Turn QUIC on,Ligar QUIC
@@ -1395,10 +1482,10 @@ network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado
 network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
-network.visibility,Visibility,Visibilidade
-network.visibilityLocal,Local only,Apenas local
-network.visibilityPrivate,Private network,Rede privada
-network.visibilityPublic,Public network,Rede pública
+network.visibility,Discovery,Descoberta
+network.visibilityLocal,Off - this machine only,Desligada - só esta máquina
+network.visibilityPrivate,Hidden - announced but not listed (nobody can find it),Oculta - anunciada mas não listada (ninguém a encontra)
+network.visibilityPublic,On - other machines can find it and ask to join,Ligada - outras máquinas a encontram e pedem para entrar
 networkChat.attach,Attach a file,Anexar arquivo
 networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
 networkChat.disabledTitle,Network chat is disabled,Chat da rede está desligado
@@ -1429,6 +1516,12 @@ notFound.detail,The address does not match any screen in this app.,O endereço d
 notFound.title,This page does not exist,Esta tela não existe
 notifications.accept,Accept,Aceitar
 notifications.activityAria,"{count, plural, =0 {No activity} other {{count}{count, plural, =1 { activity} other { activities}}}}","{count, plural, =0 {Nenhuma atividade} other {{count}{count, plural, =1 { atividade} other { atividades}}}}"
+notifications.admissionApprove,Approve,Aprovar
+notifications.admissionApproved,Admission approved. The machine joins when its operator confirms.,Admissão aprovada. A máquina entra quando o operador dela confirmar.
+notifications.admissionReject,Decline,Recusar
+notifications.admissionRejected,Admission declined,Admissão recusada
+notifications.admissionTalk,Open lobby,Abrir lobby
+notifications.admissionTitle,{name} asks to join this network,{name} pede para entrar nesta rede
 notifications.allTransfers,View all transfers,Ver todas as transferências
 notifications.defaultPasswordTitle,Default administrative password,Senha administrativa padrão
 notifications.downloadProgress,"{done} of {total} · {rate}{__truthy_remaining, select, false {} other { · {remaining} remaining}}","{done} de {total} · {rate}{__truthy_remaining, select, false {} other { · faltam {remaining}}}"
@@ -1457,6 +1550,8 @@ notifications.principalTransferRejected,Principal transfer rejected,Transferênc
 notifications.principalTransferRejectedDetail,{host} rejected the principal role offer. The principal role did not change.,{host} recusou a oferta do papel de principal. O papel de principal não mudou.
 notifications.principalTransferTitle,Principal role offered,Papel de principal oferecido
 notifications.reject,Reject,Recusar
+notifications.requestApproved,{name} approved this machine,{name} aprovou esta máquina
+notifications.requestRejected,{name} declined this machine,{name} recusou esta máquina
 notifications.started,started,começou
 notifications.state.cancelled,cancelled,cancelada
 notifications.state.done,completed · {size},concluída · {size}
@@ -1717,8 +1812,11 @@ profile.node,node,node
 publicNetworks.action,Action,Ação
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
+publicNetworks.chat,Chat,Conversar
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
+publicNetworks.closed,Closed,Fechada
+publicNetworks.closedDetail,This network is not accepting new members right now.,Esta rede não está aceitando novos membros no momento.
 publicNetworks.country,Country,País
 publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
 publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório
@@ -1726,12 +1824,12 @@ publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is con
 publicNetworks.discoveredTitle,Networks found,Redes encontradas
 publicNetworks.discoveredVia,Discovered via,Descoberta via
 publicNetworks.distance,{value} km away,{value} km de distância
-publicNetworks.emptyDetail,Keep POM open on a network or try again in a moment. Public networks announce themselves through the existing discovery layer.,Deixe o POM aberto em uma rede ou tente novamente em instantes. Redes públicas se anunciam pela camada de descoberta existente.
-publicNetworks.emptyTitle,No public networks found,Não encontramos redes públicas
-publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
+publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
+publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
+publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
-publicNetworks.join,Open joining,Entrar na rede
+publicNetworks.join,Talk and ask to join,Conversar e pedir para entrar
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
 publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
@@ -1741,6 +1839,8 @@ publicNetworks.location,Country / city,País / cidade
 publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
 publicNetworks.models,Served models,Modelos servidos
 publicNetworks.name,Public name,Nome público
+publicNetworks.noLobby,No lobby,Sem lobby
+publicNetworks.noLobbyDetail,"This network has not opened its lobby, so it cannot be asked for admission from here.","Esta rede não abriu o lobby, então não é possível pedir admissão por aqui."
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
 publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
 publicNetworks.nodes,Nodes,Nós
@@ -1755,8 +1855,8 @@ publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
 publicNetworks.relayHints,Dedicated relays,Relés dedicados
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
-publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
-publicNetworks.title,Public networks,Redes públicas
+publicNetworks.subtitle,Networks you can talk to and ask to join. The list comes from the relays this node knows.,Redes com as quais você pode conversar e pedir para entrar. A lista vem dos relés que este nó conhece.
+publicNetworks.title,Networks,Redes
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
@@ -2238,6 +2338,7 @@ topbar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
 topbar.leaveTitle,Remove this node from the network?,Tirar este nó da rede?
 topbar.left,Node left the network,Nó fora da rede
 topbar.leftDetail,It stopped announcing and forgot its peers. Rejoin from the Network screen.,Parou de anunciar e esqueceu os peers. Reconecte pela aba Rede.
+topbar.network,Network: {name},Rede: {name}
 topbar.noModel,No model is loaded on this node.,Nenhum modelo carregado neste nó.
 topbar.nodeCount,"{count}{count, plural, =1 { node} other { nodes}}","{count}{count, plural, =1 { nó} other { nós}}"
 topbar.nodeUnreachable,Cannot reach this node,Sem contato com o nó

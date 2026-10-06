@@ -32,6 +32,11 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/release", post(release_slice))
         .route("/api/ui/release/candidate", get(release_candidate))
         .route("/api/ui/network/leave", post(leave_network_and_reset))
+        .route("/api/ui/network/join", post(join_network))
+        .route(
+            "/api/ui/network/admissions",
+            get(admissions).post(decide_admission),
+        )
         .route("/api/ui/leave", post(leave_network))
         .route("/api/ui/rejoin", post(rejoin_network))
         .route("/api/ui/requests", get(crate::reqlog::list_requests))

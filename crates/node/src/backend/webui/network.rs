@@ -187,17 +187,18 @@ async fn apply_network_settings_with_key(
     if !fanout {
         return Ok(0);
     }
-    Ok(fanout_network_settings(state, &settings, &connection_key).await)
+    Ok(fanout_network_settings(state, &settings, &connection_key, None).await)
 }
 
 async fn fanout_network_settings(
     state: &GatewayState,
     settings: &NetworkSettings,
     connection_key: &str,
+    exclude: Option<&str>,
 ) -> usize {
     let mut synced = 0;
     for peer in state.all_peers().await {
-        if peer.node_id == state.network.node_id {
+        if peer.node_id == state.network.node_id || Some(peer.node_id.as_str()) == exclude {
             continue;
         }
         let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
@@ -245,6 +246,124 @@ async fn fanout_network_settings(
         }
     }
     synced
+}
+
+pub(crate) const MEMBER_LEFT_PATH: &str = "/api/cluster/member-left";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct MemberLeft {
+    pub node_id: String,
+}
+
+/// Tells the principal of the network this node is in that it is leaving.
+/// Signed with this node's own key, so a node only ever announces its own
+/// departure. Best effort, with a short deadline.
+pub(crate) async fn notify_principal_of_departure(state: &GatewayState) {
+    let primary = state.admin_trust.current_primary();
+    if primary.pubkey == state.authority_principal.pubkey {
+        return;
+    }
+    let Some(peer) = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == primary.node_id && peer.pubkey == primary.pubkey)
+    else {
+        warn!("saída da rede: o principal não está à vista para ser avisado");
+        return;
+    };
+    let body = MemberLeft {
+        node_id: state.network.node_id.clone(),
+    };
+    match state
+        .control_post_json(&peer, MEMBER_LEFT_PATH, &body, Duration::from_secs(5))
+        .await
+    {
+        Ok(response) if response.status().is_success() => {}
+        Ok(response) => warn!(
+            "saída da rede: o principal respondeu {} ao aviso",
+            response.status()
+        ),
+        Err(error) => warn!("saída da rede: o principal não recebeu o aviso: {error:#}"),
+    }
+}
+
+/// `POST /api/cluster/member-left` - a member says it is leaving. Only the
+/// principal acts on it, and only for the member that signed the request:
+/// the issuer must be the node named in the body and a peer this node
+/// currently admits. Its admission is forgotten and, unless the network is in
+/// the open mode, the connection key is replaced and pushed to everyone
+/// else, so the departed machine has to ask to be admitted again.
+pub(crate) async fn member_left(
+    auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Json(body): Json<MemberLeft>,
+) -> Response {
+    if state.admin_trust.current_primary().pubkey != state.authority_principal.pubkey {
+        return network_error(
+            StatusCode::CONFLICT,
+            "not_principal",
+            "only the principal handles a departure",
+        );
+    }
+    let Some(issuer) = auth.principal() else {
+        return network_error(
+            StatusCode::FORBIDDEN,
+            "signature_required",
+            "a departure must be signed by the node that is leaving",
+        );
+    };
+    let is_member = state
+        .network
+        .alive_peers()
+        .await
+        .iter()
+        .any(|peer| peer.node_id == body.node_id && peer.pubkey == issuer.pubkey);
+    if issuer.node_id != body.node_id || !is_member {
+        return network_error(
+            StatusCode::FORBIDDEN,
+            "not_the_member",
+            "a node can only announce its own departure from a network it is in",
+        );
+    }
+    state.network_chat.decide_admission(&body.node_id, None);
+    match rotate_connection_key(&state, &body.node_id).await {
+        Ok(Some(synced)) => {
+            info!(node = %body.node_id, synced, "membro saiu: chave de conexão renovada");
+            Json(json!({ "rotated": true, "synced_peers": synced })).into_response()
+        }
+        Ok(None) => Json(json!({ "rotated": false })).into_response(),
+        Err(error) => network_error(StatusCode::INTERNAL_SERVER_ERROR, "rotation_failed", &error),
+    }
+}
+
+/// Replaces the network's connection key and pushes it, in the admin-signed
+/// settings envelope, to every admitted peer except `departed`. `None` when
+/// the network admits without a key and there is nothing to rotate.
+async fn rotate_connection_key(
+    state: &GatewayState,
+    departed: &str,
+) -> Result<Option<usize>, String> {
+    let (settings, connection_key) = {
+        let mut config = state.auth.write().await;
+        if config.network.open_admission() {
+            return Ok(None);
+        }
+        config.connection_key = crate::webui::fresh_connection_key();
+        config
+            .save()
+            .map_err(|error| format!("salvar a nova chave de conexão: {error:#}"))?;
+        (config.network.clone(), config.connection_key.clone())
+    };
+    let settings = state
+        .database
+        .network_settings()
+        .ok()
+        .flatten()
+        .unwrap_or(settings);
+    Ok(Some(
+        fanout_network_settings(state, &settings, &connection_key, Some(departed)).await,
+    ))
 }
 
 pub(crate) async fn internal_network_settings(
@@ -474,6 +593,39 @@ mod tests {
         assert_eq!(body["network"]["country_name"], "Brasil");
         assert_eq!(body["network"]["city"], "Curitiba");
         assert_eq!(body["connection_key"], "");
+    }
+
+    #[tokio::test]
+    async fn a_departure_is_only_accepted_from_the_member_that_is_leaving() {
+        let state = state_with("admin", vec![]).await;
+        let key_before = state.auth.read().await.connection_key.clone();
+        let leaving = || {
+            Json(MemberLeft {
+                node_id: "quem-sai".into(),
+            })
+        };
+
+        // Not signed: the shared key alone cannot say who is leaving.
+        let unsigned = member_left(
+            InternalNodeAuth { principal: None },
+            State(state.clone()),
+            leaving(),
+        )
+        .await;
+        assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
+
+        // Signed by someone else, about a node that is not a member here.
+        let stranger = member_left(
+            InternalNodeAuth {
+                principal: Some(state.authority_principal.clone()),
+            },
+            State(state.clone()),
+            leaving(),
+        )
+        .await;
+        assert_eq!(stranger.status(), StatusCode::FORBIDDEN);
+        // Neither attempt cost the network its key.
+        assert_eq!(state.auth.read().await.connection_key, key_before);
     }
 
     #[tokio::test]

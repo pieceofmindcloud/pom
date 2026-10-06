@@ -459,6 +459,22 @@ pub(super) async fn join_network(
         );
     }
 
+    // The node's own network is never dropped: it goes to standby and comes
+    // back, as it was, when the node leaves the network it is joining now.
+    {
+        let current = state.auth.read().await.clone();
+        if let Err(error) = super::standby::save_primary(
+            &current,
+            &state.admin_trust.document(),
+            &state.authority_principal.pubkey,
+        ) {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standby_not_saved",
+                format!("could not keep this machine's own network aside: {error:#}"),
+            );
+        }
+    }
     state.runtime.stop().await;
     state.network.detach().await;
     let trust_path = crate::config::admin_trust_path();

@@ -1159,6 +1159,11 @@ faz o download autenticado do blob persistido.
   `lobby_requests`, `spawn_admission_poller`, with the grant kept in memory
   only), `join_network` (replace the trust root, rewrite the config as a
   member, restart) and the principal's `admissions` / `decide_admission`.
+  `webui/standby.rs` keeps the node's own network aside while it is a member
+  elsewhere (`save_primary` on join, `restore_primary` + `discard` on leave).
+  `webui/network.rs` has the departure: `notify_principal_of_departure` on
+  the leaving node, `member_left` and `rotate_connection_key` on the
+  principal (`fanout_network_settings` takes the peer to leave out).
   `webui/setup.rs::bootstrap_local_network` is what a node without a network
   runs at startup instead of the wizard (`main.rs`, unless `--setup`).
   The same file has `lobby_info` / `setup_lobby_info` (another network's

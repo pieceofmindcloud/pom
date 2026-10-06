@@ -114,6 +114,15 @@ last):
   declared hardware, measured latency and whether it connects through a relay,
   and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
   `reject` or `forget`) decides one.
+- **Leaving and the own network** (`p2p-network.md` 6.1). `POST
+  /api/ui/network/leave` leaves a network this node joined and restores its
+  own from standby (`restored_own_network` in the answer); on the node's own
+  network it answers `409` with `reason: "own_network"`. `GET /api/ui/node`
+  carries `own_network` (this node is the principal of the network it is in)
+  and `standby_network` (the name of its own network while it is a member
+  elsewhere). `POST /api/cluster/member-left` (`{node_id}`) is node-to-node:
+  the leaving member, signed, to the principal, which forgets its admission
+  and replaces the connection key; `403` unless the signer is that member.
 - **Lobby, member side**: `GET /api/ui/network-chat?room=lobby` reads the lobby
   room instead of the main one. Every snapshot also carries `room`,
   `lobbyEnabled` and `lobbyGuests` (`[{nodeId, card}]`, the candidates present

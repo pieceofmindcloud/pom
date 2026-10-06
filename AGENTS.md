@@ -191,7 +191,9 @@ quebra o produto inteiro.
   off (`webui::bootstrap_local_network`). The setup wizard is only reached
   with `--setup`. Joining another network is asked from the Networks screen
   and approved by that network's admin, who is the only one that hands over
-  its connection key. O perfil
+  its connection key. **That own network is never dropped**: joining puts it
+  in standby and leaving brings it back as it was (`webui/standby.rs`), and
+  a member that leaves makes the principal replace the connection key. O perfil
   persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
   continua sendo o mecanismo de autenticação. → `http-api.md`, `web-ui.md`
 - **Plugins são independentes entre si e são uma fronteira de processo.** O

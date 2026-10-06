@@ -81,6 +81,9 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/cluster/logs"
             | "/api/cluster/network-chat"
             | "/api/cluster/network-settings"
+            // A member telling the principal it is leaving; a member behind
+            // NAT reaches the principal only this way.
+            | "/api/cluster/member-left"
             // A volta da resposta direta. O gateway manda seus endereços no
             // `reply_to` e a cauda entrega ali; atrás de NAT nenhum deles é
             // alcançável a partir da outra ponta, e sem este caminho o quadro

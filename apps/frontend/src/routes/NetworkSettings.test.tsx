@@ -233,6 +233,18 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 
+  it("offers no way out of the machine's own network", () => {
+    const before = queryMocks.node.data;
+    queryMocks.node.data = { ...before, own_network: true, standby_network: null } as typeof before;
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Voltar para a minha rede" })).toBeNull();
+    queryMocks.node.data = before;
+  });
+
   it("separa esquecer a configuração local (continua aqui) de sair do cluster (agora em Minha Máquina)", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
@@ -246,14 +258,14 @@ describe("NetworkSettings", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Sair da rede" })).toBeNull();
-    const esquecer = screen.getByRole("button", { name: "Esquecer rede" });
+    const esquecer = screen.getByRole("button", { name: "Voltar para a minha rede" });
     fireEvent.click(esquecer);
 
-    const dialog = screen.getByRole("dialog", { name: "Esquecer a configuração local?" });
-    expect(dialog.textContent).toMatch(/apaga a configuração de rede.*reinicia com uma nova rede local/i);
+    const dialog = screen.getByRole("dialog", { name: "Sair desta rede?" });
+    expect(dialog.textContent).toMatch(/volta para a rede própria.*nova chave de conexão.*novo pedido de admissão/i);
     expect(vi.mocked(api.post)).not.toHaveBeenCalled();
 
-    const confirma = screen.getAllByRole("button", { name: "Esquecer rede" });
+    const confirma = screen.getAllByRole("button", { name: "Voltar para a minha rede" });
     fireEvent.click(confirma[confirma.length - 1]);
 
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/leave"));

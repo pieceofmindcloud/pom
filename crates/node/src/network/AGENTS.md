@@ -107,7 +107,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   waits an hour); the principal's store is `NetworkChat::{request_admission,
   admission_of, admissions, decide_admission}`. `network.rs` gates membership
   by the connection key unless `NetworkSettings::open_admission`, and starts
-  detached when the network's visibility is `local`.
+  detached when the network's visibility is `local`. `infer_tunnel.rs` lets
+  `/api/cluster/member-left` through the tunnel, the only way a member behind
+  NAT reaches its principal to say it is leaving.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
   response próprio, limites de texto/arquivo, fila limitada, rate limit e
   writer de persistência fora do loop do swarm. A ação original leva a API key;

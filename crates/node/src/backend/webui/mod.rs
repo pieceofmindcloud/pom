@@ -154,6 +154,7 @@ mod setup;
 mod sidecars;
 pub(crate) use sidecars::load_links as load_sidecar_links;
 mod slicing;
+pub(crate) mod standby;
 mod trust;
 
 pub use auto_discovery::*;

@@ -226,7 +226,9 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
             forgetting={forgettingNetwork}
             onChange={setNetworkDraft}
             onSave={() => void saveNetworkInfo()}
-            onForgetNetwork={() => setForgetNetworkConfirm(true)}
+            // A machine's own network is inherent to it and cannot be left;
+            // leaving is for a network it joined, and returns to its own.
+            onForgetNetwork={node.data?.own_network && !node.data?.standby_network ? undefined : () => setForgetNetworkConfirm(true)}
             t={t}
           />
         )}
@@ -499,7 +501,7 @@ function NetworkInfoPanel({
   geo: GeoReferenceResponse | undefined;
   onChange: (next: NetworkSettingsData) => void;
   onSave: () => void;
-  onForgetNetwork: () => void;
+  onForgetNetwork?: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const update = (patch: Partial<NetworkSettingsData>) => onChange({ ...draft, ...patch });
@@ -515,14 +517,16 @@ function NetworkInfoPanel({
         subtitle={editable ? t("network.networkInfoEditSubtitle") : t("network.networkInfoReadOnlySubtitle")}
         actions={
           <>
-            <Button
-              variant="danger"
-              icon={<Trash2 className="h-3.5 w-3.5" />}
-              loading={forgetting}
-              onClick={onForgetNetwork}
-            >
-              {t("network.forgetNetwork")}
-            </Button>
+            {onForgetNetwork && (
+              <Button
+                variant="danger"
+                icon={<Trash2 className="h-3.5 w-3.5" />}
+                loading={forgetting}
+                onClick={onForgetNetwork}
+              >
+                {t("network.forgetNetwork")}
+              </Button>
+            )}
             {editable ? <Button variant="primary" icon={<Save className="h-3.5 w-3.5" />} loading={saving} onClick={onSave}>{t("network.infoSave")}</Button> : <Badge tone="neutral">{t("network.readOnly")}</Badge>}
           </>
         }

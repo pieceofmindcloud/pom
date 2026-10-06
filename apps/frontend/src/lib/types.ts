@@ -361,6 +361,10 @@ export interface NodeInfo {
   hostname: string;
   profile: Profile;
   network_name: string;
+  /** This node is the principal of the network it is in: its own network. */
+  own_network?: boolean;
+  /** This node's own network, kept aside while it is a member elsewhere. */
+  standby_network?: string | null;
   /**
    * A chave de conexão do cluster, que esta interface mostra em "Chave de
    * Conexão" e guarda para autenticar as chamadas que a exigem.

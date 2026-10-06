@@ -1484,6 +1484,32 @@ belongs to the key it asked, replaces its trust root, rewrites its config as
 a member with the granted key and settings, and restarts. It leaves the
 network it was in - usually its own local one.
 
+**A node's own network is never dropped.** The network a node created at
+first launch is inherent to it. `join_network` first writes it to a standby
+file (`webui/standby.rs`: the trust root plus the network block of the
+config - profile, connection key, settings, relays, blocked nodes and the
+cluster policies - in `.<slug>-primary-network.json`, owner-only because it
+holds a key). Only the network the node is the principal of is saved, and
+only when nothing is in standby, so moving between two foreign networks
+keeps the original. `leave_network_and_reset` restores it exactly and removes
+the file once the config is saved; it refuses (`409 own_network`) on the
+node's own network, which cannot be left. A node that never had one - set up
+as a member by the wizard - still falls back to a fresh local network.
+
+**Leaving costs the key.** Before going silent the leaving node tells the
+principal: `POST /api/cluster/member-left`, signed with its own key and sent
+over HTTP or the libp2p tunnel (`notify_principal_of_departure`, 5 s, best
+effort). The principal acts only when the signer is the node named in the
+body and a peer it currently admits. It forgets that node's admission record
+and, unless the network is in the open mode, generates a new connection key
+and pushes it in the admin-signed settings envelope to every admitted peer
+except the one that left (`rotate_connection_key`). The departed node drops
+the key it held along with the rest of that network's config, and coming
+back takes a new admission request. Two limits follow from how the key
+travels: a member that is offline at that moment misses the new key and is
+out until it is admitted again, and a node that leaves while the principal
+is unreachable keeps a key that still works until the next rotation.
+
 **What gates membership.** `NetworkSettings::open_admission` is true only for
 a public network left on `anyone_with_anchor`, the mode networks created
 before admission requests use: there the trust anchor alone admits

@@ -18,6 +18,12 @@ pub struct NodeInfo {
     pub profile: crate::profile::NodeProfile,
     /// Human-facing network name shown by the leave action in the main menu.
     pub network_name: String,
+    /// This node is the principal of the network it is in: its own network,
+    /// which is inherent to the machine and cannot be left.
+    pub own_network: bool,
+    /// Name of this node's own network while it is in standby, i.e. while
+    /// the node is a member of someone else's. Leaving returns to it.
+    pub standby_network: Option<String>,
     /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
     /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
     /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
@@ -170,6 +176,9 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         pom_desenv: crate::pom_desenv_enabled(),
         profile,
         network_name,
+        own_network: state.admin_trust.document().primary.pubkey
+            == state.authority_principal.pubkey,
+        standby_network: super::standby::standby_name(),
         connection_key,
         authority_level,
         authority_fingerprint,

@@ -1281,12 +1281,12 @@ network.firewallRetrying,Firewall permission request finished.,O pedido de permi
 network.firewallSubtitle,The first attempt asks Windows for administrator permission. Refusing it does not stop this node.,A primeira tentativa pede permissão de administrador ao Windows. Recusar não interrompe este nó.
 network.firewallTitle,Allow POM network traffic,Libere o tráfego de rede do POM
 network.firewallUacDetail,"Approve the Windows prompt once to allow discovery, QUIC and libp2p traffic.","Aprove o pedido do Windows uma vez para liberar descoberta, QUIC e tráfego libp2p."
-network.forgetNetwork,Forget network,Esquecer rede
-network.forgetNetworkDescription,"This permanently removes this node's network configuration and trust root, then restarts the node with a new local network of its own. It does not remove another machine from the cluster.",Esta ação irreversível apaga a configuração de rede e a raiz de confiança deste nó e o reinicia com uma nova rede local própria. Ela não tira outra máquina do cluster.
-network.forgetNetworkFailed,Could not forget the local network configuration,Não foi possível esquecer a configuração local da rede
-network.forgetNetworkStarted,Local network reset started,Limpeza local da rede iniciada
-network.forgetNetworkStartedDetail,The node is restarting with a new local network.,O nó está reiniciando com uma nova rede local.
-network.forgetNetworkTitle,Forget the local network configuration?,Esquecer a configuração local?
+network.forgetNetwork,Return to my own network,Voltar para a minha rede
+network.forgetNetworkDescription,"This machine leaves this network and goes back to its own, as it was. The admin of the network gives the other members a new connection key, so coming back takes a new admission request. It does not remove another machine from the cluster.","Esta máquina sai desta rede e volta para a rede própria, como estava. O administrador da rede dá uma nova chave de conexão aos outros membros, então voltar exige um novo pedido de admissão. Ela não tira outra máquina do cluster."
+network.forgetNetworkFailed,Could not leave the network,Não foi possível sair da rede
+network.forgetNetworkStarted,Leaving the network,Saindo da rede
+network.forgetNetworkStartedDetail,The node is restarting on its own network.,O nó está reiniciando na rede própria.
+network.forgetNetworkTitle,Leave this network?,Sair desta rede?
 network.geoLabel,Discovery label,Rótulo de descoberta
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."

@@ -72,7 +72,7 @@ fn pubkey_bytes(pubkey_hex: &str) -> Option<[u8; 32]> {
     Some(bytes)
 }
 
-fn node_id_matches_pubkey(node_id: &str, pubkey_hex: &str) -> bool {
+pub(crate) fn node_id_matches_pubkey(node_id: &str, pubkey_hex: &str) -> bool {
     let Some(bytes) = pubkey_bytes(pubkey_hex) else {
         return false;
     };

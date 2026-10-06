@@ -1164,6 +1164,8 @@ faz o download autenticado do blob persistido.
   `webui/network.rs` has the departure: `notify_principal_of_departure` on
   the leaving node, `member_left` and `rotate_connection_key` on the
   principal (`fanout_network_settings` takes the peer to leave out),
+  `spawn_departure_worker` (rotates for departures heard as
+  `LobbyRequest::Leave` and for revocations),
   `spawn_member_list_keeper` (principal: every admitted peer gets a record)
   and `spawn_key_reclaimer` (member: claims the current key when the
   principal is no longer among its admitted peers). The settings read

@@ -1223,6 +1223,13 @@ network.addrSave,Save,Salvar
 network.addrSaveFailed,Could not save the address,Não foi possível salvar o endereço
 network.addrSaved,Address updated,Endereço atualizado
 network.addrSavedDetail,Takes effect immediately — no restart needed.,Vale imediatamente — sem reinício.
+network.admittedRevoke,Revoke,Revogar
+network.admittedRevokeDetail,"The machine comes off the member list and the other members get a new connection key, so it has to ask to be admitted again. Running work is not interrupted.","A máquina sai da lista de membros e os outros membros recebem uma nova chave de conexão, então ela precisa pedir admissão de novo. O que está rodando não é interrompido."
+network.admittedRevokeFailed,Could not revoke the machine,Não foi possível revogar a máquina
+network.admittedRevokeTitle,Revoke {name}?,Revogar {name}?
+network.admittedRevoked,Machine revoked. The connection key is being replaced.,Máquina revogada. A chave de conexão está sendo trocada.
+network.admittedSubtitle,Machines allowed in this network. Each one can rejoin on its own until revoked.,Máquinas autorizadas nesta rede. Cada uma pode voltar por conta própria até ser revogada.
+network.admittedTitle,Admitted machines,Máquinas admitidas
 network.advertiseSubtitle,"An optional address or DNS name peers try first. Leave it empty and the node finds its own addresses; it is a hint, never the node''s identity.","Endereço ou nome DNS opcional que os peers tentam primeiro. Vazio, o nó descobre os próprios endereços; é uma dica, nunca a identidade do nó."
 network.advertiseTitle,Advertised address,Endereço anunciado
 network.authority,Authority,Autoridade

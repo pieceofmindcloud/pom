@@ -272,29 +272,70 @@ pub(crate) async fn notify_principal_of_departure(state: &GatewayState) {
     if primary.pubkey == state.authority_principal.pubkey {
         return;
     }
-    let Some(peer) = state
+    // The cluster's own control channel first, when this node sees the
+    // principal as a peer.
+    let peer = state
         .all_peers()
         .await
         .into_iter()
-        .find(|peer| peer.node_id == primary.node_id && peer.pubkey == primary.pubkey)
-    else {
-        warn!("saída da rede: o principal não está à vista para ser avisado");
+        .find(|peer| peer.node_id == primary.node_id && peer.pubkey == primary.pubkey);
+    if let Some(peer) = peer {
+        let body = MemberLeft {
+            node_id: state.network.node_id.clone(),
+        };
+        match state
+            .control_post_json(&peer, MEMBER_LEFT_PATH, &body, Duration::from_secs(5))
+            .await
+        {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response) => warn!(
+                "saída da rede: o principal respondeu {} ao aviso",
+                response.status()
+            ),
+            Err(error) => warn!("saída da rede: o principal não recebeu o aviso: {error:#}"),
+        }
+    }
+    // Otherwise by the principal's key, over the lobby connection. That one
+    // needs neither side to have admitted the other, which is exactly the
+    // case of a node that joined and was never seen as a peer: without it
+    // the principal kept the approval and the node could walk back in.
+    let Some(key) = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey) else {
         return;
     };
-    let body = MemberLeft {
-        node_id: state.network.node_id.clone(),
+    let Ok(client) = crate::network_lobby::client().await else {
+        return;
     };
-    match state
-        .control_post_json(&peer, MEMBER_LEFT_PATH, &body, Duration::from_secs(5))
-        .await
-    {
-        Ok(response) if response.status().is_success() => {}
-        Ok(response) => warn!(
-            "saída da rede: o principal respondeu {} ao aviso",
-            response.status()
+    let request = crate::network_lobby::LobbyRequest::Leave {
+        identity: client.proof(),
+    };
+    match tokio::time::timeout(Duration::from_secs(10), client.request(&key, request)).await {
+        Ok(Ok(response)) if response.accepted => {}
+        Ok(Ok(response)) => warn!(
+            "saída da rede: o principal recusou o aviso: {:?}",
+            response.error
         ),
-        Err(error) => warn!("saída da rede: o principal não recebeu o aviso: {error:#}"),
+        Ok(Err(error)) => warn!("saída da rede: o principal está inalcançável: {error:#}"),
+        Err(_) => warn!("saída da rede: o aviso ao principal passou do prazo"),
     }
+}
+
+/// Rotates the connection key for departures the swarm loop heard on the
+/// lobby connection (`LobbyRequest::Leave`): it can record them, but pushing
+/// a new key is the gateway's work.
+pub(crate) fn spawn_departure_worker(state: GatewayState) {
+    tokio::spawn(async move {
+        loop {
+            for node_id in state.network_chat.rotations_wanted().await {
+                match rotate_connection_key(&state, &node_id).await {
+                    Ok(Some(synced)) => {
+                        info!(node = %node_id, synced, "membro saiu: chave de conexão renovada")
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!("não foi possível renovar a chave de conexão: {error}"),
+                }
+            }
+        }
+    });
 }
 
 /// `POST /api/cluster/member-left` - a member says it is leaving. Only the
@@ -322,13 +363,17 @@ pub(crate) async fn member_left(
             "a departure must be signed by the node that is leaving",
         );
     };
-    let is_member = state
-        .network
-        .alive_peers()
-        .await
-        .iter()
-        .any(|peer| peer.node_id == body.node_id && peer.pubkey == issuer.pubkey);
-    if issuer.node_id != body.node_id || !is_member {
+    // The issuer's `node_id` has to be the one its key gives, or the member
+    // list (keyed by `node_id`) could be matched under a borrowed name.
+    let named_by_key = crate::session::node_id_matches_pubkey(&issuer.node_id, &issuer.pubkey);
+    let is_member = state.network_chat.admission_of(&body.node_id).is_some()
+        || state
+            .network
+            .alive_peers()
+            .await
+            .iter()
+            .any(|peer| peer.node_id == body.node_id && peer.pubkey == issuer.pubkey);
+    if issuer.node_id != body.node_id || !named_by_key || !is_member {
         return network_error(
             StatusCode::FORBIDDEN,
             "not_the_member",

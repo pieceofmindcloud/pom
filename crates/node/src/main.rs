@@ -1550,6 +1550,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::webui::spawn_admission_poller(gw_state.clone());
     crate::webui::spawn_member_list_keeper(gw_state.clone());
     crate::webui::spawn_key_reclaimer(gw_state.clone());
+    crate::webui::spawn_departure_worker(gw_state.clone());
 }
 
 /// Sobe o nó configurado: rede, gateway com todas as rotas e, se houver, a

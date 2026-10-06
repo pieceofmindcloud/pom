@@ -97,7 +97,9 @@ Per-file list:
   network; the checkbox is disabled unless the network is public. The leave
   action ("Return to my own network", `POST /api/ui/network/leave`) is not
   drawn on the machine's own network (`NodeInfo.own_network` with no
-  `standby_network`): that network is inherent to the machine. "Published
+  `standby_network`): that network is inherent to the machine. An admin also
+  sees `AdmittedMachines`, the approved admission records, with "Revoke"
+  behind a confirmation (`admissionsApi.decide(id, "forget")`). "Published
   stats" (`public_stats`) follows the same rule. País e cidade usam a referência de geografia
   do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
   `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e

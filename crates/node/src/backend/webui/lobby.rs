@@ -587,10 +587,18 @@ pub(super) async fn decide_admission(
                 .into_response()
         }
     };
-    if !state
-        .network_chat
-        .decide_admission(decision.node_id.trim(), status)
-    {
+    let node_id = decision.node_id.trim();
+    // Forgetting a machine that was approved takes its membership away, and
+    // it still holds the connection key: same treatment as a departure.
+    let revoked = status.is_none()
+        && state
+            .network_chat
+            .admission_of(node_id)
+            .is_some_and(|record| record.status == network_lobby::AdmissionStatus::Approved);
+    if revoked {
+        state.network_chat.member_departed(node_id);
+        state.network_chat.request_rotation(node_id);
+    } else if !state.network_chat.decide_admission(node_id, status) {
         return StatusCode::NOT_FOUND.into_response();
     }
     Json(state.network_chat.admissions()).into_response()

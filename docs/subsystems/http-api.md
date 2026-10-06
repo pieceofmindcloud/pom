@@ -122,7 +122,10 @@ last):
   and `standby_network` (the name of its own network while it is a member
   elsewhere). `POST /api/cluster/member-left` (`{node_id}`) is node-to-node:
   the leaving member, signed, to the principal, which forgets its admission
-  and replaces the connection key; `403` unless the signer is that member.
+  and replaces the connection key; `403` unless the signer is that member
+  (a live peer or a node on the member list). Forgetting an **approved**
+  record through `POST /api/ui/network/admissions` revokes that machine and
+  rotates the key as well.
 - **Lobby, member side**: `GET /api/ui/network-chat?room=lobby` reads the lobby
   room instead of the main one. Every snapshot also carries `room`,
   `lobbyEnabled` and `lobbyGuests` (`[{nodeId, card}]`, the candidates present

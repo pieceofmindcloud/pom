@@ -1887,6 +1887,36 @@ async fn answer_lobby_request(
             LobbyResponse::rejected("directory_disabled")
         };
     }
+    // A node saying it is leaving, over the lobby connection. Acted on only
+    // for the node whose signature over this transport verifies, and only
+    // when the principal knows it: on the member list, or currently admitted.
+    if let LobbyRequest::Leave { identity } = &request {
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        if network.profile() != crate::profile::NodeProfile::Admin {
+            return LobbyResponse::rejected("not_principal");
+        }
+        let Some(node_id) = identity.verified_node_id(&peer) else {
+            return LobbyResponse::rejected("identity_invalid");
+        };
+        let known = chat.admission_of(&node_id).is_some()
+            || network
+                .alive_peers()
+                .await
+                .iter()
+                .any(|member| member.node_id == node_id);
+        if !known {
+            return LobbyResponse::rejected("not_a_member");
+        }
+        chat.member_departed(&node_id);
+        chat.request_rotation(&node_id);
+        return LobbyResponse {
+            accepted: true,
+            node_id,
+            ..LobbyResponse::default()
+        };
+    }
     // A member that missed a key rotation asks for the current key. The
     // answer is the same grant an approval carries, and it goes only to a
     // node on the member list whose signature over this transport verifies.
@@ -1964,6 +1994,7 @@ async fn answer_lobby_request(
         | LobbyRequest::Describe
         | LobbyRequest::Directory
         | LobbyRequest::ClaimKey { .. }
+        | LobbyRequest::Leave { .. }
         | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")
         }
@@ -1987,6 +2018,7 @@ async fn answer_lobby_request(
         | LobbyRequest::Describe
         | LobbyRequest::Directory
         | LobbyRequest::ClaimKey { .. }
+        | LobbyRequest::Leave { .. }
         | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")
         }

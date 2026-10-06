@@ -505,6 +505,10 @@ pub struct NetworkChat {
     admissions: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
     /// Nodes that left recently, kept off the member list for a while.
     departed: Mutex<HashMap<String, Instant>>,
+    /// Departures heard on the lobby connection, waiting for the gateway to
+    /// rotate the connection key (the swarm loop cannot push it itself).
+    rotations: Mutex<Vec<String>>,
+    rotation_wanted: tokio::sync::Notify,
 }
 
 impl NetworkChat {
@@ -544,6 +548,8 @@ impl NetworkChat {
                 directory_board: Default::default(),
                 admissions: Mutex::new(Vec::new()),
                 departed: Mutex::new(HashMap::new()),
+                rotations: Mutex::new(Vec::new()),
+                rotation_wanted: tokio::sync::Notify::new(),
             }),
             receiver,
         )
@@ -697,6 +703,26 @@ impl NetworkChat {
             .expect("departed lock")
             .insert(node_id.to_string(), Instant::now());
         self.decide_admission(node_id, None);
+    }
+
+    /// Asks the gateway to rotate the connection key because `node_id` left.
+    pub fn request_rotation(&self, node_id: &str) {
+        self.rotations
+            .lock()
+            .expect("rotations lock")
+            .push(node_id.to_string());
+        self.rotation_wanted.notify_one();
+    }
+
+    /// Waits for departures that need a rotation and hands them over.
+    pub async fn rotations_wanted(&self) -> Vec<String> {
+        loop {
+            let pending = std::mem::take(&mut *self.rotations.lock().expect("rotations lock"));
+            if !pending.is_empty() {
+                return pending;
+            }
+            self.rotation_wanted.notified().await;
+        }
     }
 
     /// An admin's decision. `None` forgets the request altogether. Returns

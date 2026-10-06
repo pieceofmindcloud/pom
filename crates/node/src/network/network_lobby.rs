@@ -192,6 +192,12 @@ pub enum LobbyRequest {
     /// member list (an approved admission record). It does not depend on the
     /// lobby being open, and works for unlisted networks too.
     ClaimKey { identity: LobbyIdentity },
+    /// A node says it is leaving the network. It is the same notice a member
+    /// sends its principal over the cluster's control channel, for when that
+    /// channel is not there: the principal never came to admit this node, or
+    /// cannot be reached that way. The principal forgets the node's
+    /// admission and rotates the connection key.
+    Leave { identity: LobbyIdentity },
     /// Ask what the network publishes about itself (`NetworkInfo`). It is not
     /// part of the conversation: no card, no presence, and it is answered
     /// under its own switch, with the lobby chat on or off.
@@ -1332,6 +1338,7 @@ mod tests {
                         LobbyRequest::Fetch { .. }
                         | LobbyRequest::Admission { .. }
                         | LobbyRequest::ClaimKey { .. }
+                        | LobbyRequest::Leave { .. }
                         | LobbyRequest::Publish { .. }
                         | LobbyRequest::Info
                         | LobbyRequest::Describe

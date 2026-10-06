@@ -44,6 +44,7 @@ import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useWindowsFirewall } from "../lib/queries";
 import { useGeoReference } from "../lib/queries";
 import { networkStats } from "../lib/networkStats";
+import { admissionsApi, useAdmissions } from "../lib/admissions";
 import { useToast } from "../lib/toast";
 import { ENROLLMENT_ROLES } from "../lib/types";
 import type { AdminNode, ClusterView, EnrollmentRole, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
@@ -232,6 +233,8 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
             t={t}
           />
         )}
+
+        {isAdmin && <AdmittedMachines t={t} />}
 
         <NetworkMetricsPanel metrics={metrics} t={t} />
 
@@ -648,6 +651,66 @@ function NetworkInfoPanel({
         </dl>
       )}
       {info?.network.visibility === "public" && <Footnote className="border-t border-line px-5 py-3" icon={<Radio className="h-3.5 w-3.5" />}>{t("network.publicInfoPropagation")}</Footnote>}
+    </Panel>
+  );
+}
+
+/**
+ * The machines this network admitted: its member list, kept by the principal.
+ * Revoking one takes it off the list and gives the other members a new
+ * connection key, so it has to ask to be admitted again.
+ */
+export function AdmittedMachines({ t }: { t: (key: string, values?: Record<string, string | number>) => string }) {
+  const admissions = useAdmissions(true);
+  const toast = useToast();
+  const [revoking, setRevoking] = useState<string | null>(null);
+  const [target, setTarget] = useState<{ node_id: string; name: string } | null>(null);
+  const admitted = (admissions.data ?? []).filter((record) => record.status === "approved");
+  if (admitted.length === 0) return null;
+
+  async function revoke(nodeId: string) {
+    setRevoking(nodeId);
+    try {
+      await admissionsApi.decide(nodeId, "forget");
+      toast.success(t("network.admittedRevoked"));
+      await admissions.refetch();
+    } catch (e) {
+      toast.fromError(t("network.admittedRevokeFailed"), e);
+    } finally {
+      setRevoking(null);
+      setTarget(null);
+    }
+  }
+
+  return (
+    <Panel>
+      <PanelHeader eyebrow={t("network.networkInfoEyebrow")} title={t("network.admittedTitle")} subtitle={t("network.admittedSubtitle")} />
+      <ul className="divide-y divide-line" data-testid="admitted-machines">
+        {admitted.map((record) => {
+          const name = record.card.hostname || record.node_id.slice(0, 12);
+          return (
+            <li key={record.node_id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm text-fg">{name}</p>
+                <p className="truncate font-mono text-[0.68rem] text-faint">{record.node_id.slice(0, 12)} · {t(`network.enrollment.${record.role}`)}</p>
+              </div>
+              <Button size="sm" variant="danger" loading={revoking === record.node_id} onClick={() => setTarget({ node_id: record.node_id, name })}>
+                {t("network.admittedRevoke")}
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+      <Confirm
+        open={target !== null}
+        title={t("network.admittedRevokeTitle", { name: target?.name ?? "" })}
+        description={t("network.admittedRevokeDetail")}
+        confirmLabel={t("network.admittedRevoke")}
+        tone="danger"
+        busy={revoking !== null}
+        onConfirm={() => target && void revoke(target.node_id)}
+        onCancel={() => revoking === null && setTarget(null)}
+      />
     </Panel>
   );
 }

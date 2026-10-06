@@ -1505,8 +1505,17 @@ and, unless the network is in the open mode, generates a new connection key
 and pushes it in the admin-signed settings envelope to every admitted peer
 except the one that left (`rotate_connection_key`). The departed node drops
 the key it held along with the rest of that network's config, and coming
-back takes a new admission request. A node that leaves while the principal
-is unreachable keeps a key that still works until the next rotation.
+back takes a new admission request. When the control channel is not there -
+the node does not see the principal as a peer, or the principal never
+admitted it, which happens when one side could not probe the other - the
+notice goes by the principal's key over the lobby connection instead
+(`LobbyRequest::Leave`), and the gateway rotates from the queue the swarm
+loop fills (`spawn_departure_worker`). Either way the principal honours it
+for a node on its member list, not only for a live peer: an approval that
+outlives a departure is a machine that can walk back in. An admin revoking
+an admitted machine (`POST /api/ui/network/admissions` with `forget`) is
+treated the same. A node that leaves while the principal cannot be reached
+at all keeps a key that still works until the next rotation.
 
 **A rotation cuts nothing off.** The new key travels with the Unix second
 from which it takes effect, 30 s ahead (`key_effective_at` in the settings

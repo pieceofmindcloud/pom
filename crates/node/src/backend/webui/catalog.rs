@@ -247,7 +247,15 @@ pub(super) async fn cluster_logs(
         .list(query.deploy_id.as_deref(), query.limit)
         .await
     {
-        Ok(logs) => Json(logs).into_response(),
+        Ok(Some(logs)) => Json(logs).into_response(),
+        Ok(None) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "logs_plugin_required",
+                "error": "os logs de processo do cluster ficam no plugin de logs, que não está ativo neste nó.",
+            })),
+        )
+            .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("não deu para ler os logs: {error}") })),
@@ -1455,6 +1463,24 @@ pub(super) async fn save_cluster_logs(
         )
             .into_response();
     }
+    // The admin only tells the network to collect; keeping the lines is the
+    // logs plugin's, so collection is not turned on where nobody keeps them.
+    if req.logs_enabled
+        && !state
+            .plugins
+            .status(crate::plugins::LOGS_PLUGIN_CODE)
+            .await
+            .is_some_and(|status| status.active)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "logs_plugin_required",
+                "error": "ative o plugin de logs neste nó para ligar os logs de processo do cluster.",
+            })),
+        )
+            .into_response();
+    }
 
     {
         let mut cfg = state.auth.write().await;
@@ -1707,24 +1733,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn secondary_admin_reads_its_local_cluster_log_replica() {
+    async fn the_process_log_console_needs_the_logs_plugin() {
         let state = crate::gateway::testkit::secondary_admin_state("secondary").await;
-        state
-            .database
-            .append_cluster_logs(
-                &[crate::cluster_logs::LogEntry {
-                    node_id: "worker".into(),
-                    node_name: "worker-1".into(),
-                    deploy_id: "deploy-1".into(),
-                    origin_at: "2026-09-11T12:00:00Z".into(),
-                    level: "INFO".into(),
-                    target: "worker::test".into(),
-                    message: "replica local".into(),
-                }],
-                0,
-            )
-            .expect("gravar réplica local");
-
         let response = cluster_logs(
             ConnectionAuth,
             State(state),
@@ -1734,12 +1744,12 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
-            .expect("corpo da réplica");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON da réplica");
-        assert_eq!(body["entries"][0]["message"], "replica local");
+            .expect("corpo da recusa");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON da recusa");
+        assert_eq!(body["code"], "logs_plugin_required");
     }
 }
 

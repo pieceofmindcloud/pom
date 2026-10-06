@@ -2345,8 +2345,9 @@ mod replicated_admin_logs_tests {
             .audit
             .try_ingest_remote(crate::reqlog::AuditEvent::Begin(request)));
 
-        state.cluster_logs.flush();
         state.audit.flush();
+        // The secondary accepts the process log, and keeping it is the logs
+        // plugin's: without the plugin there is nothing to read back.
         let logs = state
             .cluster_logs
             .list(Some("deploy-1"), Some(10))
@@ -2358,8 +2359,7 @@ mod replicated_admin_logs_tests {
             .await
             .expect("auditoria local");
 
-        assert_eq!(logs.entries.len(), 1);
-        assert_eq!(logs.entries[0].message, "processo iniciou");
+        assert!(logs.is_none());
         assert_eq!(requests.entries.len(), 1);
         assert_eq!(requests.entries[0].id, "request-1");
         assert_eq!(requests.entries[0].status, "ok");
@@ -2375,8 +2375,10 @@ mod replicated_admin_logs_tests {
                 state,
                 require_admin_for_surface,
             ));
+        // Both pass the admin surface; without the logs plugin each one
+        // answers its own refusal, not the surface's.
         for (path, expected) in [
-            ("/api/ui/cluster-logs", StatusCode::OK),
+            ("/api/ui/cluster-logs", StatusCode::FORBIDDEN),
             ("/api/ui/requests", StatusCode::FORBIDDEN),
         ] {
             let mut request = Request::get(path)
@@ -2728,8 +2730,7 @@ pub(crate) mod testkit {
         let database = Arc::new(crate::db::PomDb::open(&database_path).expect("banco de teste"));
         let (capture, receiver) =
             crate::cluster_logs::LogCapture::new(crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
-        let cluster_logs =
-            crate::cluster_logs::ClusterLogs::new(capture, receiver, database.clone());
+        let cluster_logs = crate::cluster_logs::ClusterLogs::new(capture, receiver);
         let authority_signing_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             node_id,

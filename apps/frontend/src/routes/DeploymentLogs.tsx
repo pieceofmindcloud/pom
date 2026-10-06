@@ -17,7 +17,7 @@ import {
 } from "../components/ui";
 import { isNearBottom } from "../lib/chatScroll";
 import { clock } from "../lib/format";
-import { useClusterLogs, useDeployments } from "../lib/queries";
+import { useClusterLogs, useDeployments, useEnterpriseStatus } from "../lib/queries";
 import { useI18n } from "../i18n/provider";
 
 function logLineText(entry: {
@@ -34,7 +34,10 @@ export function DeploymentLogs() {
   const { t } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedDeployId = searchParams.get("deploy_id") || undefined;
-  const logs = useClusterLogs(selectedDeployId);
+  // The lines are kept by the logs plugin; without it here there is nothing to read.
+  const logsPlugin = useEnterpriseStatus();
+  const pluginActive = logsPlugin.data.active;
+  const logs = useClusterLogs(selectedDeployId, pluginActive);
   const deployments = useDeployments();
   const entries = logs.data?.entries ?? [];
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -123,8 +126,8 @@ export function DeploymentLogs() {
           }
           subtitle={t("deploymentLogs.consoleSubtitle")}
           actions={
-            <Badge tone={logs.isError ? "rose" : "aqua"}>
-              {logs.isError ? t("deploymentLogs.offline") : t("deploymentLogs.live")}
+            <Badge tone={logs.isError || !pluginActive ? "rose" : "aqua"}>
+              {logs.isError || !pluginActive ? t("deploymentLogs.offline") : t("deploymentLogs.live")}
             </Badge>
           }
         />
@@ -191,16 +194,16 @@ export function DeploymentLogs() {
             aria-live="polite"
           >
             {logs.isLoading && <Skeleton className="h-24 bg-white/10" />}
-            {!logs.isLoading && !logs.isError && entries.length === 0 && (
+            {!logs.isLoading && !logs.isError && entries.length === 0 && !logsPlugin.isLoading && (
               <div className="flex flex-col items-center justify-center px-6 py-14 text-center text-slate-200">
                 <div className="mb-3.5 flex h-11 w-11 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-slate-400">
                   <Terminal className="h-5 w-5" aria-hidden="true" />
                 </div>
                 <p className="font-display text-[0.95rem] font-semibold text-slate-100">
-                  {t("deploymentLogs.emptyTitle")}
+                  {t(pluginActive ? "deploymentLogs.emptyTitle" : "deploymentLogs.pluginRequiredTitle")}
                 </p>
                 <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-slate-400">
-                  {t("deploymentLogs.emptyHint")}
+                  {t(pluginActive ? "deploymentLogs.emptyHint" : "deploymentLogs.pluginRequiredHint")}
                 </p>
               </div>
             )}

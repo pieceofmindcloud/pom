@@ -617,7 +617,8 @@ export function useDeployments() {
 }
 
 /** Logs de processo em ordem de chegada à réplica local. */
-export function useClusterLogs(deployId?: string) {
+/** The cluster's process log, kept by the logs plugin; idle while it is not active here. */
+export function useClusterLogs(deployId?: string, enabled = true) {
   const query = new URLSearchParams();
   if (deployId) query.set("deploy_id", deployId);
   const suffix = query.toString();
@@ -625,7 +626,8 @@ export function useClusterLogs(deployId?: string) {
     queryKey: keys.clusterLogs(deployId),
     queryFn: () =>
       api.get<ClusterLogResponse>(`/api/ui/cluster-logs${suffix ? `?${suffix}` : ""}`),
-    refetchInterval: 1000,
+    enabled,
+    refetchInterval: enabled ? 1000 : false,
   });
 }
 

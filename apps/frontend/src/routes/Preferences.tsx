@@ -18,7 +18,7 @@ import {
   Select,
 } from "../components/ui";
 import { api, clearAdminAccessToken, setAdminAccessToken } from "../lib/api";
-import { useAdminAccessInfo, useInvalidate, useNode } from "../lib/queries";
+import { useAdminAccessInfo, useEnterpriseStatus, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { AdminAccessInfo, AdminExposure, ThermalPolicy } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -530,6 +530,9 @@ export function ThermalPanel({
 export function Preferences({ administrative = false }: { administrative?: boolean }) {
   const { t } = useI18n();
   const node = useNode();
+  // Process-log collection is kept by the logs plugin: the switch exists only
+  // on an admin whose machine runs it.
+  const logsPlugin = useEnterpriseStatus();
   const toast = useToast();
   const invalidate = useInvalidate();
   const [thermalSaving, setThermalSaving] = useState(false);
@@ -674,7 +677,7 @@ export function Preferences({ administrative = false }: { administrative?: boole
         {administrative ? <>
           {!quicEnabled && <TlsPanel tlsRequired={tlsRequired} authority={node.data?.tls_authority ?? false} busy={tlsSaving} onToggle={(next) => void toggleTls(next)} />}
           {!tlsRequired && <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />}
-          <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />
+          {logsPlugin.data.active && <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />}
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
           {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.tls_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>

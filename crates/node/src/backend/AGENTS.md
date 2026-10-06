@@ -147,13 +147,9 @@ profile policy remains the effective authorization boundary.
 - `db.rs` - único armazenamento SQLite local, interno ao crate: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas e linhas do log de processo por `deploy_id`. Cada admin efetivo
-  mantém sua própria réplica dos logs e da auditoria. Os logs preservam a
-  ordem de chegada nesta réplica, guardam o timestamp de origem só como dado
-  informativo e acumulam descartes da fila limitada. `try_prune_cluster_logs`
-  apaga somente `cluster_logs`, em transações `BEGIN IMMEDIATE` de até 256
-  linhas numa conexão com timeout zero; contenda encerra a rodada e o WAL é
-  truncado depois de uma exclusão. O histórico identifica
+  conversas. Cada admin efetivo mantém sua própria réplica da auditoria. The
+  cluster process log is not here: the logs plugin keeps it in its own
+  database, and the schema drops the old `cluster_logs` tables. O histórico identifica
   modelos inteiros pelo caminho local, sem
   hashear os pesos durante o registro do catálogo; hashes de conteúdo ficam
   nas fronteiras explícitas de implantação, fatiamento e transferência.
@@ -189,7 +185,10 @@ profile policy remains the effective authorization boundary.
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
-  logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
+  logs (`GET /api/ui/cluster-logs` answered by the logs plugin, 403
+  `logs_plugin_required` without it; `POST /api/ui/network/logs`, primary
+  only, refuses turning collection on unless the logs plugin is active on that
+  node, while turning it off always works), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
   `GET /api/ui/plugins` (all profiles) lists local state for independent
   plugins restored or seen by the runtime (`crate::plugins`), each with its

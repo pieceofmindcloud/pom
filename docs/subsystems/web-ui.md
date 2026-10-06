@@ -883,10 +883,15 @@ time; the lines come from the admin's local replica in arrival order and the
 screen polls for new batches every second. The deployment selector sends
 `deploy_id`, allowing the same logs to be opened from a deployment in History.
 
-`Preferences.tsx` shows the "Cluster logs" panel next to TLS. The switch is
-disabled outside the principal and the backend also rejects the operation on
-those nodes. Reading the logs is available to any effective admin because the
-copy is local. State and authority come from `GET /api/ui/node`; the change
+The lines are kept by the logs plugin (`pom-plugin-logs`) on each admin; the
+POM only captures, carries them to the admins and holds the collection policy.
+Without the plugin active on this node the console says so instead of
+polling, and the Dashboard does not show the dock.
+
+`Preferences.tsx` shows the "Process logs between nodes" panel only when the
+logs plugin is active on this machine. The switch is disabled outside the
+principal, and the backend rejects turning collection on unless the plugin is
+active there; turning it off always works. Only the admins need the plugin. State and authority come from `GET /api/ui/node`; the change
 uses `POST /api/ui/network/logs` and needs no restart. The counter of entries
 dropped by the bounded queue shows above the terminal, so the screen does not
 present an incomplete view as if it were the full stream.
@@ -1198,8 +1203,13 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   context, sessions, max tokens, batch, prefill chunk, sampling, the
   installation's K/V cache, disabling thinking/embeddings and the speculation
   choice), *POM settings* (fit to memory, chunks in flight, merging neighboring
-  slices and hidden-state precision) and *POM settings (DEV)* (inference engine,
-  MoE experts in RAM, the GPU expert cache and per-peer idle unloading). That section only
+  slices and hidden-state precision, plus a *Beta* group inside it with MoE
+  experts in RAM, the GPU expert cache and the automatic prefill chunk, shown
+  to everyone) and *POM settings (DEV)* (inference engine and per-peer idle
+  unloading). Default settings, POM settings and the Beta group each carry a
+  help button by their title that opens their guide from Documentation in a
+  dialog (`components/GuideDialog.tsx`, guides `config-padrao`, `config-pom`
+  and `config-beta` in `guides/deploySettings.ts`). The DEV section only
   shows up when `NodeInfo.pom_desenv` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:
   with names of different widths, icons to the right of the text came out

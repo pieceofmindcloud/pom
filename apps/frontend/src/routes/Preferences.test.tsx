@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   fromError: vi.fn(),
   setAdminAccessToken: vi.fn(),
   clearAdminAccessToken: vi.fn(),
+  logsPluginActive: true,
   node: {
     thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
     tls_required: false,
@@ -33,6 +34,7 @@ vi.mock("../lib/api", () => ({
 }));
 
 vi.mock("../lib/queries", () => ({
+  useEnterpriseStatus: () => ({ data: { active: mocks.logsPluginActive }, isLoading: false }),
   useAdminAccessInfo: () => ({
     data: { admin_exposure: "localhost", gateway_port: 8080, password_configured: false },
     refetch: mocks.invalidate,
@@ -128,6 +130,17 @@ describe("Preferences", () => {
     await waitFor(() => {
       expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/auto-discovery", { enabled: true });
     });
+  });
+
+  it("mostra os logs de processo entre nós só com o plugin de Logs ativo nesta máquina", () => {
+    mount(<Preferences administrative />);
+    expect(screen.getByText("Logs de processo entre nós")).toBeTruthy();
+
+    cleanup();
+    mocks.logsPluginActive = false;
+    mount(<Preferences administrative />);
+    expect(screen.queryByText("Logs de processo entre nós")).toBeNull();
+    mocks.logsPluginActive = true;
   });
 
   it("esconde a política incompatível com o transporte ativo", () => {

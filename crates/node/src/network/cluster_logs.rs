@@ -4,7 +4,6 @@
 //! de `tracing` só usa `try_send` numa fila limitada; o escritor e o envio por
 //! libp2p vivem em tasks próprias e podem perder linhas quando estão ocupados.
 
-use crate::db::ClusterLogsPruneResult;
 use crate::network::Network;
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -24,18 +23,10 @@ pub const LOG_CAPTURE_QUEUE_CAPACITY: usize = 1024;
 pub const LOG_TRANSPORT_QUEUE_CAPACITY: usize = 32;
 pub const LOG_BATCH_MAX_ENTRIES: usize = 64;
 pub const LOG_BATCH_INTERVAL: Duration = Duration::from_millis(100);
-/// Retention keeps the last seven days, capped at 500,000 rows. A burst of
-/// logs therefore cannot grow the database beyond the lower of the time and
-/// count windows.
-pub const LOG_RETENTION_MAX_ROWS: u64 = 500_000;
-pub const LOG_RETENTION_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-const LOG_RETENTION_BATCH_SIZE: usize = 256;
-const LOG_RETENTION_MAX_BATCHES_PER_CYCLE: usize = 128;
-const LOG_RETENTION_PAUSE: Duration = Duration::from_millis(50);
-const LOG_RETENTION_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const MAX_LOG_PAYLOAD_BYTES: usize = 256 * 1024;
-const LOG_QUERY_DEFAULT_LIMIT: usize = 500;
-const LOG_QUERY_MAX_LIMIT: usize = 1000;
+/// Batches waiting for the logs plugin on an admin. Past it, a batch is
+/// dropped and counted instead of holding the transport up.
+const LOG_PLUGIN_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -411,18 +402,19 @@ pub fn cluster_logs_behaviour() -> request_response::Behaviour<ClusterLogsCodec>
     )
 }
 
-enum PersistCommand {
-    Batch(LogBatch),
-    #[cfg(test)]
-    Flush(std::sync::mpsc::Sender<()>),
-}
-
-/// Cluster log state. Its writer queue is independent from the capture queue
-/// and from the libp2p swarm queue.
+/// Cluster log state.
+///
+/// Every node captures its own lines and, while the admin's policy has
+/// collection on, sends them to every admin. What an admin does with them is
+/// the logs plugin's: it hands each batch to the plugin (`cluster_logs`
+/// event), which stores, orders and prunes them, and answers the console's
+/// reads (`cluster_logs.list`). An admin without the plugin drops the
+/// batches, so only the admins need the plugin installed.
 pub struct ClusterLogs {
     capture: Arc<LogCapture>,
-    database: Arc<crate::db::PomDb>,
-    writer: std::sync::mpsc::SyncSender<PersistCommand>,
+    to_plugin: mpsc::Sender<LogBatch>,
+    plugin_queue: Mutex<Option<mpsc::Receiver<LogBatch>>>,
+    plugins: std::sync::OnceLock<Arc<crate::plugins::PluginManager>>,
     dropped: AtomicU64,
     admin_receiver: AtomicBool,
     started: AtomicBool,
@@ -431,44 +423,49 @@ pub struct ClusterLogs {
 }
 
 impl ClusterLogs {
-    pub fn new(
-        capture: Arc<LogCapture>,
-        local_receiver: mpsc::Receiver<LogEntry>,
-        database: Arc<crate::db::PomDb>,
-    ) -> Arc<Self> {
-        let (writer, receiver) = std::sync::mpsc::sync_channel(256);
-        let writer_database = database.clone();
-        std::thread::Builder::new()
-            .name("pom-cluster-log-writer".into())
-            .spawn(move || {
-                while let Ok(command) = receiver.recv() {
-                    match command {
-                        PersistCommand::Batch(batch) => {
-                            if let Err(error) =
-                                writer_database.append_cluster_logs(&batch.entries, batch.dropped)
-                            {
-                                eprintln!("cluster log persistence failed: {error:#}");
-                            }
-                        }
-                        #[cfg(test)]
-                        PersistCommand::Flush(done) => {
-                            let _ = done.send(());
-                        }
-                    }
-                }
-            })
-            .ok();
+    pub fn new(capture: Arc<LogCapture>, local_receiver: mpsc::Receiver<LogEntry>) -> Arc<Self> {
+        let (to_plugin, plugin_queue) = mpsc::channel(LOG_PLUGIN_QUEUE_CAPACITY);
         let (live, _) = broadcast::channel(256);
         Arc::new(Self {
             capture,
-            database,
-            writer,
+            to_plugin,
+            plugin_queue: Mutex::new(Some(plugin_queue)),
+            plugins: std::sync::OnceLock::new(),
             dropped: AtomicU64::new(0),
             admin_receiver: AtomicBool::new(false),
             started: AtomicBool::new(false),
             local_receiver: Mutex::new(Some(local_receiver)),
             live,
         })
+    }
+
+    /// Connects the admin side to the logs plugin: the batches this node
+    /// accepts go to it, in order, from one task.
+    pub(crate) fn attach_plugins(self: &Arc<Self>, plugins: Arc<crate::plugins::PluginManager>) {
+        if self.plugins.set(plugins.clone()).is_err() {
+            return;
+        }
+        let Some(mut queue) = self.plugin_queue.lock().ok().and_then(|mut slot| slot.take()) else {
+            return;
+        };
+        let service = self.clone();
+        tokio::spawn(async move {
+            while let Some(batch) = queue.recv().await {
+                let lost = batch.entries.len() as u64 + batch.dropped;
+                let event = serde_json::json!({
+                    "type": "cluster_logs",
+                    "source_node_id": batch.source_node_id,
+                    "entries": batch.entries,
+                    "dropped": batch.dropped,
+                });
+                if !plugins
+                    .ingest_event(crate::plugins::LOGS_PLUGIN_CODE, event)
+                    .await
+                {
+                    service.dropped.fetch_add(lost, Ordering::Relaxed);
+                }
+            }
+        });
     }
 
     pub fn capture(&self) -> Arc<LogCapture> {
@@ -518,7 +515,7 @@ impl ClusterLogs {
                 message: entry.message.clone(),
             });
         }
-        match self.writer.try_send(PersistCommand::Batch(batch.clone())) {
+        match self.to_plugin.try_send(batch.clone()) {
             Ok(()) => true,
             Err(_) => {
                 self.dropped.fetch_add(
@@ -582,101 +579,44 @@ impl ClusterLogs {
             }
         });
 
-        if self.admin_receiver.load(Ordering::Acquire) {
-            let service = self.clone();
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(LOG_RETENTION_INTERVAL);
-                loop {
-                    ticker.tick().await;
-                    let cutoff = (chrono::Utc::now()
-                        - chrono::Duration::from_std(LOG_RETENTION_AGE).unwrap_or_default())
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                    if let Err(error) = run_retention_cycle(
-                        service.database.clone(),
-                        &cutoff,
-                        LOG_RETENTION_MAX_ROWS,
-                        LOG_RETENTION_BATCH_SIZE,
-                        LOG_RETENTION_MAX_BATCHES_PER_CYCLE,
-                        LOG_RETENTION_PAUSE,
-                    )
-                    .await
-                    {
-                        tracing::warn!("poda dos logs do cluster falhou: {error:#}");
-                    }
-                }
-            });
-        }
     }
 
     pub fn try_send_dropped(&self, count: u64) {
         self.dropped.fetch_add(count, Ordering::Relaxed);
     }
 
-    pub async fn list(&self, deploy_id: Option<&str>, limit: Option<usize>) -> Result<LogList> {
-        let database = self.database.clone();
-        let deploy_id = deploy_id.map(str::to_owned);
-        let limit = limit
-            .unwrap_or(LOG_QUERY_DEFAULT_LIMIT)
-            .clamp(1, LOG_QUERY_MAX_LIMIT);
-        let entries =
-            tokio::task::spawn_blocking(move || database.cluster_logs(deploy_id.as_deref(), limit))
-                .await??;
-        let dropped = self
-            .database
-            .cluster_log_dropped()?
+    /// The console's read, answered by the logs plugin. `None` when the
+    /// plugin is not active on this node.
+    pub async fn list(
+        &self,
+        deploy_id: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Option<LogList>> {
+        let Some(plugins) = self.plugins.get() else {
+            return Ok(None);
+        };
+        let Some(answer) = plugins
+            .query_audit(
+                crate::plugins::LOGS_PLUGIN_CODE,
+                "cluster_logs.list",
+                serde_json::json!({ "deploy_id": deploy_id, "limit": limit }),
+            )
+            .await
+        else {
+            return Ok(None);
+        };
+        let mut logs: LogList = serde_json::from_value(answer)?;
+        logs.dropped = logs
+            .dropped
             .saturating_add(self.dropped.load(Ordering::Relaxed))
             .saturating_add(self.capture.queue.dropped());
-        Ok(LogList { entries, dropped })
+        Ok(Some(logs))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<StoredLogEntry> {
         self.live.subscribe()
     }
 
-    #[cfg(test)]
-    pub(crate) fn flush(&self) {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        self.writer
-            .send(PersistCommand::Flush(sender))
-            .expect("enfileirar barreira dos logs de processo");
-        receiver
-            .recv_timeout(Duration::from_secs(5))
-            .expect("aguardar escritor dos logs de processo");
-    }
-}
-
-async fn run_retention_cycle(
-    database: Arc<crate::db::PomDb>,
-    older_than: &str,
-    max_rows: u64,
-    batch_size: usize,
-    max_batches: usize,
-    pause: Duration,
-) -> Result<usize> {
-    let mut deleted_total = 0;
-    for batch_index in 0..max_batches {
-        let database = database.clone();
-        let older_than = older_than.to_owned();
-        let result = tokio::task::spawn_blocking(move || {
-            database.try_prune_cluster_logs(&older_than, max_rows, batch_size)
-        })
-        .await??;
-        let ClusterLogsPruneResult::Deleted {
-            count,
-            space_reclaimed,
-        } = result
-        else {
-            break;
-        };
-        deleted_total += count;
-        if !space_reclaimed {
-            break;
-        }
-        if batch_index + 1 < max_batches && !pause.is_zero() {
-            tokio::time::sleep(pause).await;
-        }
-    }
-    Ok(deleted_total)
 }
 
 async fn flush_local(
@@ -873,101 +813,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ciclo_de_retencao_consumes_apenas_lotes_do_seu_orcamento() {
-        let path = std::env::temp_dir().join(format!(
-            "pom-cluster-logs-cycle-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4().simple()
-        ));
-        let database = Arc::new(crate::db::PomDb::open(&path).expect("abrir banco"));
-        for index in 0..7 {
-            database
-                .with_write("preparar log do ciclo", |connection| {
-                    connection.execute(
-                        "INSERT INTO cluster_logs (
-                            node_id, node_name, deploy_id, origin_at, received_at,
-                            level, target, message
-                         ) VALUES ('node-a', 'test', 'deploy-1', ?, ?, 'INFO', 'test', ?)",
-                        rusqlite::params![
-                            "2099-01-01T00:00:00Z",
-                            "2099-01-01T00:00:00Z",
-                            format!("mensagem-{index}")
-                        ],
-                    )?;
-                    Ok(())
-                })
-                .expect("preparar log");
-        }
-
-        let deleted = run_retention_cycle(
-            database.clone(),
-            "2026-09-03T00:00:00Z",
-            3,
-            2,
-            2,
-            Duration::ZERO,
-        )
-        .await
-        .expect("executar ciclo");
-
-        assert_eq!(deleted, 4);
-        assert_eq!(database.cluster_logs(None, 100).unwrap().len(), 3);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
-        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
-    }
-
-    #[tokio::test]
-    async fn ciclo_de_retencao_poda_linhas_aceitas_pelo_writer_do_principal() {
-        let path = std::env::temp_dir().join(format!(
-            "pom-cluster-logs-writer-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4().simple()
-        ));
-        let database = Arc::new(crate::db::PomDb::open(&path).expect("abrir banco"));
+    async fn um_admin_entrega_os_lotes_aceitos_ao_plugin_na_ordem() {
         let (capture, receiver) = LogCapture::new(8);
-        let service = ClusterLogs::new(capture, receiver, database.clone());
+        let service = ClusterLogs::new(capture, receiver);
         service.set_admin_receiver(true);
         assert!(service.try_ingest_remote(LogBatch {
             source_node_id: "node-a".into(),
-            entries: vec![entry("aceito pelo writer")],
+            entries: vec![entry("primeiro")],
+            dropped: 2,
+        }));
+        assert!(service.try_ingest_remote(LogBatch {
+            source_node_id: "node-a".into(),
+            entries: vec![entry("segundo")],
             dropped: 0,
         }));
+        let mut queue = service.plugin_queue.lock().unwrap().take().expect("fila do plugin");
+        assert_eq!(queue.recv().await.unwrap().entries[0].message, "primeiro");
+        assert_eq!(queue.recv().await.unwrap().entries[0].message, "segundo");
+    }
 
-        for _ in 0..20 {
-            if database.cluster_logs(None, 100).unwrap().len() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        assert_eq!(database.cluster_logs(None, 100).unwrap().len(), 1);
-        database
-            .with_write("envelhecer log do teste", |connection| {
-                connection.execute(
-                    "UPDATE cluster_logs SET received_at = '2026-01-01T00:00:00Z'",
-                    [],
-                )?;
-                Ok(())
-            })
-            .expect("envelhecer log");
+    #[tokio::test]
+    async fn quem_nao_e_admin_recusa_e_conta_o_lote() {
+        let (capture, receiver) = LogCapture::new(8);
+        let service = ClusterLogs::new(capture, receiver);
+        assert!(!service.try_ingest_remote(LogBatch {
+            source_node_id: "node-a".into(),
+            entries: vec![entry("recusado")],
+            dropped: 1,
+        }));
+        assert_eq!(service.dropped.load(Ordering::Relaxed), 2);
+    }
 
-        let deleted = run_retention_cycle(
-            database.clone(),
-            "2026-09-03T00:00:00Z",
-            500_000,
-            256,
-            1,
-            Duration::ZERO,
-        )
-        .await
-        .expect("executar poda");
-
-        assert_eq!(deleted, 1);
-        assert!(database.cluster_logs(None, 100).unwrap().is_empty());
-        drop(service);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
-        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    #[tokio::test]
+    async fn sem_o_plugin_a_leitura_responde_que_nao_ha_coleta() {
+        let (capture, receiver) = LogCapture::new(8);
+        let service = ClusterLogs::new(capture, receiver);
+        assert!(service.list(None, None).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -991,14 +872,8 @@ mod tests {
             .await
             .insert(admin.node_id.clone(), admin);
 
-        let path = std::env::temp_dir().join(format!(
-            "pom-cluster-log-replication-{}-{}.db",
-            std::process::id(),
-            uuid::Uuid::new_v4().simple()
-        ));
-        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco de teste"));
         let (capture, receiver) = LogCapture::new(LOG_CAPTURE_QUEUE_CAPACITY);
-        let logs = ClusterLogs::new(capture, receiver, database);
+        let logs = ClusterLogs::new(capture, receiver);
         let (outbound, mut received) = mpsc::channel(4);
         let mut pending = vec![entry("replicar")];
         flush_local(&logs, &network, &mut pending, &outbound).await;
@@ -1006,8 +881,5 @@ mod tests {
         let message = received.recv().await.expect("lote para admin secundário");
         assert_eq!(message.request.entries[0].message, "replicar");
         assert_eq!(message.request.source_node_id, "worker");
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
-        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }

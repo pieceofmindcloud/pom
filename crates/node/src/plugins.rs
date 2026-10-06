@@ -1925,6 +1925,24 @@ impl PluginRuntime {
         true
     }
 
+    /// Hands the plugin one event of its own kind (`{"type": ...}`). `false`
+    /// when the plugin is not active here or refused the event.
+    pub(crate) async fn ingest_event(&self, event: serde_json::Value) -> bool {
+        if !self.status().await.active {
+            return false;
+        }
+        let Some(host) = self.host.lock().await.clone() else {
+            return false;
+        };
+        match host.ingest(event).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(plugin_code = %self.code, error = %error, "evento não entrou no plugin");
+                false
+            }
+        }
+    }
+
     pub(crate) async fn query_audit(
         &self,
         operation: &str,
@@ -3420,6 +3438,13 @@ impl PluginManager {
     ) -> bool {
         match self.runtime_for(code) {
             Some(runtime) => runtime.ingest_audit_event(event).await,
+            None => false,
+        }
+    }
+
+    pub(crate) async fn ingest_event(&self, code: &str, event: serde_json::Value) -> bool {
+        match self.runtime_for(code) {
+            Some(runtime) => runtime.ingest_event(event).await,
             None => false,
         }
     }

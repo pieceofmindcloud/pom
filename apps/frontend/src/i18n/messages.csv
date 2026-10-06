@@ -723,6 +723,8 @@ deploymentLogs.filterLabel,Filter by deployment,Filtrar por implantação
 deploymentLogs.live,Live,Ao vivo
 deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
+deploymentLogs.pluginRequiredHint,"The cluster process logs are kept by the Logs plugin. Activate it on this admin machine, then turn collection on in Administrative preferences.","Os logs de processo do cluster ficam no plugin de Logs. Ative-o nesta máquina administradora e depois ligue a coleta nas Preferências administrativas."
+deploymentLogs.pluginRequiredTitle,The Logs plugin is not active here,O plugin de Logs não está ativo aqui
 deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,A consola do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
 deploymentLogs.title,Deployment logs,Logs da implantação
 deployments.actions,Actions,Ações
@@ -943,6 +945,8 @@ huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-onl
 huggingFace.tokenLabel,Access token,Token de acesso
 huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
 inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
+inspector.betaInfo,"Settings that work but are still being measured, for MoE models larger than VRAM. They pay off in combination:","Configurações que funcionam mas ainda estão sendo medidas, para modelos MoE maiores que a VRAM. Elas rendem em combinação:"
+inspector.betaInfoLink,see how to combine them,veja como combinar
 inspector.cacheHint,"KV cache type llama.cpp allocates on this installation. It applies to every context this node loads next, not only to this deployment.","Tipo do cache KV que o llama.cpp aloca nesta instalação. Vale para todo contexto que este nó carregar em seguida, não só para esta implantação."
 inspector.cacheK,K cache,Cache K
 inspector.cacheV,V cache,Cache V
@@ -954,6 +958,8 @@ inspector.engine.auto,Automatic,Automático
 inspector.engine.dense,llama.cpp,llama.cpp
 inspector.engine.moe,MoE,MoE
 inspector.fitMemory,Fit to memory,Ajustar à memória
+inspector.guideBack,Back to the guide,Voltar ao guia
+inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}
 inspector.inferenceMode,Inference engine,Motor de inferência
 inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
 inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
@@ -987,6 +993,7 @@ inspector.moeExpertsInRam,MoE experts in RAM,Experts do MoE na RAM
 inspector.noEmbeddings,Disable embeddings,Desativar embeddings
 inspector.noThinking,Disable thinking,Desativar thinking
 inspector.readOnly,Read only,Somente leitura
+inspector.sectionBeta,Beta,Beta
 inspector.sectionDefaults,Default settings,Configurações padrões
 inspector.sectionPom,POM settings,Configurações POM
 inspector.sectionPomDev,POM settings (DEV),Configurações POM (DESENV)
@@ -1239,7 +1246,7 @@ network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
-network.logsHowItWorks,Every node sends a copy to each admin over a separate libp2p protocol. Each admin stores arrival order and deployment id in its local SQLite.,Cada nó envia uma cópia para cada admin por um protocolo libp2p separado. Cada admin grava a ordem de chegada e o deploy_id no próprio SQLite local.
+network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate libp2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo libp2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
 network.logsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando

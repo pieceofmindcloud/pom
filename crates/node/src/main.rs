@@ -758,7 +758,7 @@ async fn async_main(
         info!("Generated a local admin credential for the configured node");
     }
     log_capture.set_min_level(app_config.cluster_logs_min_level);
-    let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
+    let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver);
     let audit = reqlog::AuditLog::new(database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
@@ -1248,6 +1248,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let cluster_logs = args.cluster_logs.clone();
     let primary_authority_pubkey = args.primary_authority_pubkey.clone();
     let plugins = args.plugins.clone();
+    cluster_logs.attach_plugins(plugins.clone());
     cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
     // Keep the startup behavior of the existing process-log receiver until
     // the authenticated trust document is loaded below; the final receiver

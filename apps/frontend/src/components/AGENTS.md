@@ -554,6 +554,11 @@ Key logic carriers:
   the file, copies it from another machine, or why it cannot. `sidecarOptions`
   builds the options from the cluster catalog with the backend's
   compatibility rule.
+- `GuideDialog.tsx` - a Documentation guide (`?guia=`) opened in a `Modal`
+  (`size="xl"`) next to the fields it explains. Nothing in it navigates away:
+  a reference link (`deep`) opens that document inside the dialog (loaded on
+  demand from `src/docs/`), with "Back to the guide". `GuideHelpButton` is the
+  round "?" button a section heading uses.
 - `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
   (Shards) or in a window (Models) and saved on the principal through
   `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
@@ -570,9 +575,12 @@ Key logic carriers:
   **Especulação**, uma escolha só - Nenhuma, MTP ou lookup -, porque o gateway
   nunca roda as duas na mesma rodada (`lib/speculation.ts`); os números do MTP
   e onde ele fica só aparecem com o MTP escolhido, e os do lookup só com ele), *Configurações POM* (desativar embeddings, ajuste de memória,
-  chunks em voo, fusão de fatias, precisão do estado oculto) e *Configurações
-  POM (DESENV)* (motor de inferência, experts do MoE na RAM, cache de experts
-  na GPU e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
+  chunks em voo, fusão de fatias, precisão do estado oculto, and a *Beta*
+  group inside it, shown to everyone: MoE experts in RAM, the GPU expert cache
+  and the automatic prefill chunk) e *Configurações POM (DESENV)* (motor de
+  inferência e descarregamento ocioso por peer). Default settings, POM
+  settings and the Beta group each have a help button by the title that opens
+  their guide in a `GuideDialog`. O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto

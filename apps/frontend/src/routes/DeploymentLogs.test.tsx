@@ -40,9 +40,11 @@ const queryMocks = vi.hoisted(() => ({
     refetch: vi.fn(),
   },
   deployments: { data: { deployments: [] } },
+  logsPlugin: { data: { active: true }, isLoading: false },
 }));
 
 vi.mock("../lib/queries", () => ({
+  useEnterpriseStatus: () => queryMocks.logsPlugin,
   useClusterLogs: () => queryMocks.logs,
   useDeployments: () => queryMocks.deployments,
 }));
@@ -112,6 +114,21 @@ describe("DeploymentLogs", () => {
     expect(screen.getByText("Nenhum log de processo ainda")).toBeTruthy();
     expect(screen.getAllByText(/réplica local/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/nó principal/i)).toBeNull();
+  });
+
+  it("sem o plugin de Logs ativo explica onde os logs de processo ficam", () => {
+    queryMocks.logs.data = { entries: [], dropped: 0 };
+    queryMocks.logsPlugin.data.active = false;
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <DeploymentLogs />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("O plugin de Logs não está ativo aqui")).toBeTruthy();
+    queryMocks.logsPlugin.data.active = true;
   });
 
   it("segue linhas novas no fim enquanto a rolagem automática está ligada", async () => {

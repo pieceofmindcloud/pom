@@ -59,12 +59,15 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   mesmo túnel Noise.
 - `cluster_logs.rs` - captura limitada do `tracing` e transporte request/response
   separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão, e cada
-  lote é persistido localmente por todo admin efetivo e enviado por fanout aos
-  demais peers anunciados como admin. `CaptureLayer` usa `INFO` como nível
-  mínimo por padrão, configurável por `Config.cluster_logs_min_level`, sem
-  alterar o filtro do console. Cada admin efetivo roda a poda em segundo plano:
-  mantém sete dias e no máximo 500.000 linhas, em lotes de 256 com pausa e
-  tentativa não bloqueante.
+  lote vai por fanout a todo peer anunciado como admin. `CaptureLayer` usa
+  `INFO` como nível mínimo por padrão, configurável por
+  `Config.cluster_logs_min_level`, sem alterar o filtro do console. Storing
+  the lines is the logs plugin's (`pom-plugin-logs`): an effective admin hands
+  each accepted batch to it (`cluster_logs` ingest event, one task, bounded
+  queue) and the console reads through `cluster_logs.list`; storage, order of
+  arrival and retention (seven days, 500,000 lines) live in the plugin. An
+  admin without the plugin active drops the batches, so only the admins need
+  it. `ClusterLogs::list` returns `None` without the plugin.
 - `reqlog.rs` - protocolo request/response da auditoria de requisições
   (`/pom/request-audit/1.0.0`); o POM replica `begin` e `complete` para todo
   admin conhecido tanto quando o plugin grava localmente quanto no fallback.

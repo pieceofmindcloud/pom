@@ -157,8 +157,8 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
      e `application_log_filter` oculta somente esse aviso esperado.
    - `ClusterLogs` inicia a captura limitada e as tasks best-effort; o
      histórico usa `INFO` como nível mínimo por padrão, aceita
-     `cluster_logs_min_level` no `pom.json`, e o principal poda sete dias ou
-     500.000 linhas em lotes com contenção não bloqueante. O `Discovery`
+     `cluster_logs_min_level` no `pom.json`; `attach_plugins` hands the batches
+     an admin accepts to the logs plugin, which stores and prunes them. O `Discovery`
      mantém o behaviour request/response de logs separado do túnel de
      inferência e só envia lotes ao principal.
    - Monitor térmico do `NodeRuntime`, depois `GatewayState` +

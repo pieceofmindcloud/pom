@@ -1134,25 +1134,36 @@ pub(crate) async fn ready_for_pipeline(
             if health.quarantined(&peer.node_id).await {
                 return None;
             }
+            // Every address at once, the first good answer wins. One after
+            // the other, each dead address (an unreachable IPv6, a stale LAN
+            // IP) cost the whole timeout, and the request paid ~700 ms of
+            // `orchestration` before its prefill started.
+            let probes = bases.iter().map(|base| {
+                let cliente = &cliente;
+                let peer_id = peer.node_id.as_str();
+                Box::pin(async move {
+                    let url = format!("{base}/health");
+                    let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
+                    else {
+                        return Err(());
+                    };
+                    if !response.status().is_success()
+                        || crate::peer_client::answered_by_other_node(response.headers(), peer_id)
+                            .is_some()
+                    {
+                        return Err(());
+                    }
+                    match tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await {
+                        Ok(Ok(value)) => Ok((base, value)),
+                        _ => Err(()),
+                    }
+                })
+            });
             let mut body = None;
-            for base in &bases {
-                let url = format!("{base}/health");
-                let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
-                else {
-                    continue;
-                };
-                if !response.status().is_success()
-                    || crate::peer_client::answered_by_other_node(response.headers(), &peer.node_id)
-                        .is_some()
-                {
-                    continue;
-                }
-                if let Ok(Ok(value)) =
-                    tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
-                {
+            if !bases.is_empty() {
+                if let Ok(((base, value), _)) = futures::future::select_ok(probes).await {
                     network.routes.mark_success(&peer.node_id, base);
                     body = Some(value);
-                    break;
                 }
             }
             // Nenhum endereço respondeu: o túnel libp2p, que a inferência

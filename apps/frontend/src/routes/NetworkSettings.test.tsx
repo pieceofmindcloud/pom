@@ -171,12 +171,12 @@ describe("NetworkSettings", () => {
     );
 
     expect(screen.getAllByText("infer").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /pedir para virar node/i })).toBeTruthy();
+    // The role is decided at admission: there is no upgrade in place.
+    expect(screen.queryByRole("button", { name: /pedir para virar node/i })).toBeNull();
+    expect(screen.getByText(/pedir admissão de novo como nó da rede/)).toBeTruthy();
     expect(screen.queryByText("Nós conhecidos")).toBeNull();
     expect(screen.queryByText("salem")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /pedir para virar node/i }));
-    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/request-node"));
+    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/request-node");
   });
 
   it("mostra as informações da rede para um infer sem oferecer edição", () => {

@@ -231,7 +231,12 @@ export function Notifications() {
   const moving = (transfers.data?.jobs ?? []).filter((transfer) => isWorthNotifying(transfer));
   const waiting = offers.data?.offers ?? [];
   const sliceOffers = waiting.filter(isSliceOffer);
-  const authorityOffers = waiting.filter(isAuthorityOffer);
+  // A request to turn an inference node into a network node is not offered
+  // any more (the role is decided at admission), so one still in the node's
+  // queue is not shown either.
+  const authorityOffers: AuthorityOffer[] = waiting
+    .filter(isAuthorityOffer)
+    .filter((offer): boolean => offer.kind !== "node_promotion");
   // Perguntas de plugins (`notification.confirm`): esperam aqui como uma
   // oferta, e a resposta volta à janela do plugin que perguntou.
   const pluginConfirms = usePendingPluginConfirms();

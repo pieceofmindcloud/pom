@@ -91,8 +91,8 @@ entitlement.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
 documentação, API key, Plugins (catálogo, instalação e builds locais de
-desenvolvimento nesta máquina) e a tela de rede local para pedir entrada no
-processamento. Plugins e os menus dos plugins instalados ficam na lista abaixo
+desenvolvimento nesta máquina) e a tela de rede local (somente leitura: o papel
+é decidido na admissão, e a interface não oferece virar `node` no lugar). Plugins e os menus dos plugins instalados ficam na lista abaixo
 das conversas.
 It never sees request logs, deployment logs or statistics (denied in
 `lib/access.ts` even where a plugin claims the route), and its preferences hide

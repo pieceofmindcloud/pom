@@ -610,8 +610,11 @@ Per-file list:
   by the effective authority: the old `NodeInfo.role` left `/api/ui/node` with
   the trust model and was rendering an empty cell.
   O perfil `infer` também abre `/config/rede`, mas o backend devolve somente a
-  própria máquina e oferece `POST /api/ui/network/request-node`; o pedido
-  aparece no sino para aprovação de qualquer admin. Um `node` pode descer para
+  própria máquina. The screen no longer offers turning an `infer` into a
+  `node`: the role is what the network admitted the machine as, and changing
+  it means leaving and asking for admission again. The card says so and has
+  no action; `POST /api/ui/network/request-node` still exists on the node but
+  nothing in the interface calls it. Um `node` pode descer para
   infer por `POST /api/ui/network/relinquish-node`: novas inferências saem do
   encaminhamento, as atuais drenam e só então a fatia é liberada. O
   administrador principal pode promover um nó via
@@ -619,8 +622,8 @@ Per-file list:
 - `AdminAuthority.tsx` - Admin authority screen backed by
   `GET /api/ui/network/admin-authority`. It shows the principal, secondary
   administrators, promotion chain and resignation eligibility. Its mutations
-  are isolated in `lib/adminAuthority.ts`; pending principal-transfer and
-  infer-to-node offers are answered by `Notifications`.
+  are isolated in `lib/adminAuthority.ts`; pending principal-transfer offers
+  are answered by `Notifications`.
 - `TrustAnchor.tsx` - a raiz de confiança da máquina e os dois lados de ancorar
   a autoridade, atrás de `GET/POST /api/ui/network/trust-anchor`. Mostra a
   impressão digital da âncora em grupos de oito com botão de cópia, e o estado

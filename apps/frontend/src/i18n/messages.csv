@@ -1308,7 +1308,7 @@ network.geoLabel,Discovery label,Rótulo de descoberta
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."
 network.inferPromotionDetail,This node sees only itself on the network. Promote it when you want it to share its hardware.,Este nó enxerga somente a si mesmo na rede. Promova-o quando quiser que ele compartilhe o hardware.
-network.inferRequestDetail,This node can request access to the network. A principal or secondary administrator must approve the request from the notification bell.,Este nó pode pedir acesso à rede. O principal ou um admin secundário precisa aprovar o pedido pelo sino de notificações.
+network.inferRequestDetail,"This machine was admitted to run inference only. To also serve models it has to leave this network and ask to be admitted again as a network node.","Esta máquina foi admitida apenas para rodar inferência. Para também servir modelos, ela precisa sair desta rede e pedir admissão de novo como nó da rede."
 network.infoSave,Save network details,Salvar detalhes da rede
 network.infoSaveFailed,Could not save network details,Não foi possível salvar os detalhes da rede
 network.infoSaved,Network details saved,Detalhes da rede salvos

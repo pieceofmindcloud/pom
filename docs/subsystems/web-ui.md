@@ -537,10 +537,13 @@ also enforces `infer`'s local view: `/api/ui/cluster` and
 `/api/ui/cluster/models` do not fan out to peers, `/admin/nodes` answers 403 and
 another machine's details answer 403. There is no profile switch in the UI.
 
-On the `/config/rede` screen, an `infer` sees its own machine's data and sends
-`POST /api/ui/network/request-node`. The request shows up in the admins'
-notification bell, and any principal or secondary admin can approve or refuse
-it. The node only changes profile after the server's approval. The principal
+On the `/config/rede` screen, an `infer` sees its own machine's data. The
+interface no longer offers upgrading it to a `node` in place: the role is
+decided when the network admits the machine, so the card only explains that
+serving models takes leaving and asking for admission again as a network
+node, and the bell hides any `node_promotion` offer. The node route
+`POST /api/ui/network/request-node` and its approval still exist; nothing in
+the interface calls them. The principal
 administrator can promote a node with `POST /admin/nodes/{id}/promote-admin`;
 the gateway requires effective principal authority, and the target validates
 the Ed25519 grant in the chain of trust. The `connection_key` stays only the

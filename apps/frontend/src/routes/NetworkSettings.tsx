@@ -4,7 +4,6 @@
  */
 import {
   ArrowDownToLine,
-  ArrowUp,
   Ban,
   Network,
   Radio,
@@ -72,9 +71,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [nodeRequestBusy, setNodeRequestBusy] = useState(false);
-  const [nodeRequestState, setNodeRequestState] = useState<"none" | "pending" | "rejected">("none");
-  const [nodeRequestLoaded, setNodeRequestLoaded] = useState(false);
   const [relinquishConfirm, setRelinquishConfirm] = useState(false);
   const [relinquishing, setRelinquishing] = useState(false);
   const [forgetNetworkConfirm, setForgetNetworkConfirm] = useState(false);
@@ -88,12 +84,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     if (!networkInfo.data || (networkDraft && networkEditable)) return;
     setNetworkDraft(networkInfo.data.network);
   }, [networkDraft, networkEditable, networkInfo.data]);
-
-  useEffect(() => {
-    if (nodeRequestLoaded || !node.data) return;
-    setNodeRequestState(node.data.node_promotion_request ?? "none");
-    setNodeRequestLoaded(true);
-  }, [node.data, nodeRequestLoaded]);
 
   async function saveNetworkInfo() {
     if (!networkDraft) return;
@@ -155,20 +145,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     } finally {
       setBusy(false);
       setPending(null);
-    }
-  }
-
-  async function requestNodePromotion() {
-    setNodeRequestBusy(true);
-    try {
-      await adminAuthorityApi.requestNodePromotion();
-      setNodeRequestState("pending");
-      toast.success(t("network.requestNodeSent"), t("network.requestNodePending"));
-      invalidate();
-    } catch (e) {
-      toast.fromError(t("network.requestNodeFailed"), e);
-    } finally {
-      setNodeRequestBusy(false);
     }
   }
 
@@ -240,32 +216,16 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
 
         {cluster.data?.traversal && <TraversalPanel traversal={cluster.data.traversal} t={t} />}
 
+        {/* An inference node does not become a network node in place: the
+            role is what the network admitted it as, so changing it means
+            leaving and asking to be admitted again with the other role. */}
         {isInfer && (
           <Panel>
             <PanelHeader
               eyebrow={t("network.profile")}
               title={t("profile.infer")}
               subtitle={t("network.inferRequestDetail")}
-              actions={
-                nodeRequestState === "pending" ? (
-                  <Badge tone="amber">{t("network.requestNodePending")}</Badge>
-                ) : (
-                  <Button
-                    variant="primary"
-                    loading={nodeRequestBusy}
-                    icon={<ArrowUp className="h-3.5 w-3.5" />}
-                    onClick={() => void requestNodePromotion()}
-                  >
-                    {t("network.requestNode")}
-                  </Button>
-                )
-              }
             />
-            {nodeRequestState === "rejected" && (
-              <p className="border-t border-line px-5 py-3 text-sm text-rose">
-                {t("network.requestNodeRejected")}
-              </p>
-            )}
           </Panel>
         )}
 

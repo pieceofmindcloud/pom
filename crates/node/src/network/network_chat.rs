@@ -503,6 +503,8 @@ pub struct NetworkChat {
     /// Admission requests this node holds as principal. Loaded from the
     /// database and written back on every change.
     admissions: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
+    /// Nodes that left recently, kept off the member list for a while.
+    departed: Mutex<HashMap<String, Instant>>,
 }
 
 impl NetworkChat {
@@ -541,6 +543,7 @@ impl NetworkChat {
                 public_stats: Default::default(),
                 directory_board: Default::default(),
                 admissions: Mutex::new(Vec::new()),
+                departed: Mutex::new(HashMap::new()),
             }),
             receiver,
         )
@@ -642,6 +645,58 @@ impl NetworkChat {
         )?;
         self.store_admissions(&records);
         Ok(status)
+    }
+
+    /// Puts an admitted peer on the member list, when it is not there yet.
+    /// The approved admission records are the list of nodes that may claim
+    /// the network's key after a rotation; a member that joined before
+    /// admission requests existed has no record, and without one it could
+    /// not get back in. A node that just left is not put back.
+    pub fn record_member(
+        &self,
+        node_id: &str,
+        hostname: &str,
+        role: crate::config::EnrollmentRole,
+    ) -> bool {
+        {
+            let mut departed = self.departed.lock().expect("departed lock");
+            departed.retain(|_, at| at.elapsed() < crate::network_lobby::DEPARTED_HOLD);
+            if departed.contains_key(node_id) {
+                return false;
+            }
+        }
+        let mut records = self.admissions.lock().expect("admissions lock");
+        if records.iter().any(|record| record.node_id == node_id) {
+            return false;
+        }
+        if records.len() >= crate::network_lobby::ADMISSION_RECORDS {
+            return false;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        records.push(crate::network_lobby::AdmissionRecord {
+            node_id: node_id.to_string(),
+            card: crate::network_lobby::LobbyCard {
+                hostname: hostname.to_string(),
+                ..Default::default()
+            }
+            .sanitized(),
+            role,
+            status: crate::network_lobby::AdmissionStatus::Approved,
+            requested_at: now.clone(),
+            decided_at: Some(now),
+        });
+        self.store_admissions(&records);
+        true
+    }
+
+    /// A member left: off the member list, and not put back by the upkeep
+    /// while it is still fading out of the peer table.
+    pub fn member_departed(&self, node_id: &str) {
+        self.departed
+            .lock()
+            .expect("departed lock")
+            .insert(node_id.to_string(), Instant::now());
+        self.decide_admission(node_id, None);
     }
 
     /// An admin's decision. `None` forgets the request altogether. Returns

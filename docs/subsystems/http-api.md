@@ -1401,12 +1401,6 @@ production equivalent is `--no-discovery`.
 
 ## 6. Defects noted
 
-- **DEFECT NOTED: the settings read can hand a private network's connection
-  key to whoever holds its trust document.** `GET` of the network settings
-  policy (`webui/network.rs::network_settings_policy`) accepts any well-formed
-  signed control envelope - `verify_control_envelope_metadata` checks the
-  signature against the issuer's own key and the cluster id and epoch, not
-  that the issuer is a member - and answers with `connection_key` whenever
-  the network is not public. On a private network the trust document is not
-  published, so this needs someone who already obtained it; the key is not
-  returned for public networks.
+None open in this file. (The `/admin/transfer-offers` stub now returns the real
+offers, and the `/api/ui` read GETs are behind the administrative surface
+boundary.)

@@ -262,3 +262,56 @@ async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() 
     assert!(!chat.lobby_enabled().await);
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn the_member_list_takes_admitted_peers_and_keeps_out_one_that_just_left() {
+    let path = std::env::temp_dir().join(format!(
+        "pom-network-chat-members-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let database = std::sync::Arc::new(crate::db::PomDb::open(&path).unwrap());
+    let config: crate::config::Config = serde_json::from_value(serde_json::json!({
+        "profile": "admin",
+        "connection_key": "cluster-key",
+    }))
+    .unwrap();
+    let auth = std::sync::Arc::new(tokio::sync::RwLock::new(config));
+    let (chat, _receiver) = super::network_chat::NetworkChat::new(database.clone(), auth, true);
+    use crate::config::EnrollmentRole::{Infer, Node};
+    use crate::network_lobby::AdmissionStatus;
+
+    // A member that joined before admission requests existed has no record.
+    assert!(chat.admission_of("old-member").is_none());
+    assert!(chat.record_member("old-member", "antigo", Node));
+    let record = chat.admission_of("old-member").unwrap();
+    assert_eq!(record.status, AdmissionStatus::Approved);
+    assert_eq!(record.card.hostname, "antigo");
+    // Recording again changes nothing, and never overrides a decision.
+    assert!(!chat.record_member("old-member", "outro-nome", Infer));
+    assert_eq!(chat.admission_of("old-member").unwrap().role, Node);
+    chat.request_admission("candidate", Default::default(), Infer).unwrap();
+    assert!(!chat.record_member("candidate", "x", Node));
+    assert_eq!(
+        chat.admission_of("candidate").unwrap().status,
+        AdmissionStatus::Pending
+    );
+
+    // Leaving takes the node off the list, and the peer table still showing
+    // it for a few seconds does not put it back.
+    chat.member_departed("old-member");
+    assert!(chat.admission_of("old-member").is_none());
+    assert!(!chat.record_member("old-member", "antigo", Node));
+    assert!(chat.admission_of("old-member").is_none());
+
+    // The list survives a restart.
+    let (reloaded, _receiver) = super::network_chat::NetworkChat::new(
+        database,
+        std::sync::Arc::new(tokio::sync::RwLock::new(
+            serde_json::from_value(serde_json::json!({ "profile": "admin" })).unwrap(),
+        )),
+        true,
+    );
+    reloaded.load_admissions();
+    assert!(reloaded.admission_of("candidate").is_some());
+    let _ = std::fs::remove_file(path);
+}

@@ -1163,7 +1163,11 @@ faz o download autenticado do blob persistido.
   elsewhere (`save_primary` on join, `restore_primary` + `discard` on leave).
   `webui/network.rs` has the departure: `notify_principal_of_departure` on
   the leaving node, `member_left` and `rotate_connection_key` on the
-  principal (`fanout_network_settings` takes the peer to leave out).
+  principal (`fanout_network_settings` takes the peer to leave out),
+  `spawn_member_list_keeper` (principal: every admitted peer gets a record)
+  and `spawn_key_reclaimer` (member: claims the current key when the
+  principal is no longer among its admitted peers). The settings read
+  `network_settings_policy` no longer carries the connection key.
   `webui/setup.rs::bootstrap_local_network` is what a node without a network
   runs at startup instead of the wizard (`main.rs`, unless `--setup`).
   The same file has `lobby_info` / `setup_lobby_info` (another network's

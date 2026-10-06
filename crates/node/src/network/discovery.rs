@@ -1805,6 +1805,41 @@ async fn accept_original_chat(
     }
 }
 
+/// A node's admission record as it is answered to that node, with the grant
+/// when it is approved.
+async fn lobby_admission_view(
+    network: &Network,
+    chat: &Arc<NetworkChat>,
+    node_id: &str,
+) -> Option<crate::network_lobby::AdmissionView> {
+    // The caller's own request, and the grant once an admin approved it. The
+    // grant leaves only here: to the node whose signature was just verified,
+    // on the connection it was verified on.
+    match chat.admission_of(node_id) {
+        Some(record) => {
+            let grant = if record.status == crate::network_lobby::AdmissionStatus::Approved {
+                let (connection_key, relay_peers, settings) = chat.grant_secrets().await;
+                network
+                    .trust_document_json()
+                    .map(|trust_document| crate::network_lobby::AdmissionGrant {
+                        trust_document,
+                        connection_key,
+                        relay_peers,
+                        network: Some(settings),
+                    })
+            } else {
+                None
+            };
+            Some(crate::network_lobby::AdmissionView {
+                status: record.status,
+                role: record.role,
+                grant,
+            })
+        }
+        None => None,
+    }
+}
+
 /// Answers one lobby request from a machine that is not a member.
 ///
 /// Nothing in the frame identifies the sender: `node_id` comes from the
@@ -1850,6 +1885,30 @@ async fn answer_lobby_request(
             }
         } else {
             LobbyResponse::rejected("directory_disabled")
+        };
+    }
+    // A member that missed a key rotation asks for the current key. The
+    // answer is the same grant an approval carries, and it goes only to a
+    // node on the member list whose signature over this transport verifies.
+    if let LobbyRequest::ClaimKey { identity } = &request {
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        if network.profile() != crate::profile::NodeProfile::Admin {
+            return LobbyResponse::rejected("not_principal");
+        }
+        let Some(node_id) = identity.verified_node_id(&peer) else {
+            return LobbyResponse::rejected("identity_invalid");
+        };
+        if chat.node_is_blocked(&node_id).await {
+            return LobbyResponse::rejected("node_blocked");
+        }
+        let admission = lobby_admission_view(network, chat, &node_id).await;
+        return LobbyResponse {
+            accepted: true,
+            node_id,
+            admission,
+            ..LobbyResponse::default()
         };
     }
     if matches!(request, LobbyRequest::Describe | LobbyRequest::Directory) {
@@ -1904,6 +1963,7 @@ async fn answer_lobby_request(
         LobbyRequest::Info
         | LobbyRequest::Describe
         | LobbyRequest::Directory
+        | LobbyRequest::ClaimKey { .. }
         | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")
         }
@@ -1926,6 +1986,7 @@ async fn answer_lobby_request(
         LobbyRequest::Info
         | LobbyRequest::Describe
         | LobbyRequest::Directory
+        | LobbyRequest::ClaimKey { .. }
         | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")
         }
@@ -1961,32 +2022,7 @@ async fn answer_lobby_request(
             return LobbyResponse::rejected(error);
         }
     }
-    // The caller's own request, and the grant once an admin approved it. The
-    // grant leaves only here: to the node whose signature was just verified,
-    // on the connection it was verified on.
-    let admission = match chat.admission_of(&node_id) {
-        Some(record) => {
-            let grant = if record.status == crate::network_lobby::AdmissionStatus::Approved {
-                let (connection_key, relay_peers, settings) = chat.grant_secrets().await;
-                network
-                    .trust_document_json()
-                    .map(|trust_document| crate::network_lobby::AdmissionGrant {
-                        trust_document,
-                        connection_key,
-                        relay_peers,
-                        network: Some(settings),
-                    })
-            } else {
-                None
-            };
-            Some(crate::network_lobby::AdmissionView {
-                status: record.status,
-                role: record.role,
-                grant,
-            })
-        }
-        None => None,
-    };
+    let admission = lobby_admission_view(network, chat, &node_id).await;
     if let LobbyRequest::Post {
         message_id, text, ..
     } = request

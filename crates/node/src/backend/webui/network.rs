@@ -45,24 +45,18 @@ pub(crate) async fn network_settings_policy(
     _auth: InternalNodeAuth,
     State(state): State<GatewayState>,
 ) -> Response {
-    let (configured_network, connection_key) = {
-        let config = state.auth.read().await;
-        (config.network.clone(), config.connection_key.clone())
-    };
+    let configured_network = state.auth.read().await.network.clone();
     let network = state
         .database
         .network_settings()
         .ok()
         .flatten()
         .unwrap_or(configured_network);
-    // Deliberately still "not public", not `!open_admission()`: this read is
-    // answered to any well-formed signed envelope, and on a listed network
-    // the trust document needed to sign one is public. A listed network's key
-    // only leaves through an approved admission grant and the admin-signed
-    // push to admitted peers (`fanout_network_settings`).
-    let connection_key = (network.visibility != NetworkVisibility::Public)
-        .then_some(connection_key)
-        .unwrap_or_default();
+    // The key never leaves through this read: it is answered to any
+    // well-formed signed envelope, and signing one only takes the trust
+    // document. A member that needs the current key claims it from the
+    // principal, which checks the member list (`network_lobby::ClaimKey`).
+    let connection_key = String::new();
     Json(NetworkSettingsEnvelope {
         network,
         connection_key,
@@ -326,7 +320,7 @@ pub(crate) async fn member_left(
             "a node can only announce its own departure from a network it is in",
         );
     }
-    state.network_chat.decide_admission(&body.node_id, None);
+    state.network_chat.member_departed(&body.node_id);
     match rotate_connection_key(&state, &body.node_id).await {
         Ok(Some(synced)) => {
             info!(node = %body.node_id, synced, "membro saiu: chave de conexão renovada");
@@ -364,6 +358,99 @@ async fn rotate_connection_key(
     Ok(Some(
         fanout_network_settings(state, &settings, &connection_key, Some(departed)).await,
     ))
+}
+
+/// Keeps the principal's member list complete: every peer it currently
+/// admits has an approved record, so it can claim the key after a rotation.
+/// This is what puts members that joined before admission requests on the
+/// list. Only the principal of a key-gated network keeps one.
+pub(crate) fn spawn_member_list_keeper(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            if state.admin_trust.current_primary().pubkey != state.authority_principal.pubkey
+                || state.auth.read().await.network.open_admission()
+            {
+                continue;
+            }
+            for peer in state.network.alive_peers().await {
+                let role = if peer.profile == crate::profile::NodeProfile::Infer {
+                    crate::config::EnrollmentRole::Infer
+                } else {
+                    crate::config::EnrollmentRole::Node
+                };
+                if state
+                    .network_chat
+                    .record_member(&peer.node_id, &peer.hostname, role)
+                {
+                    info!(node = %peer.node_id, "membro registrado na lista da rede");
+                }
+            }
+        }
+    });
+}
+
+/// On a member: when the principal is not among the admitted peers - the
+/// usual sign that this node's connection key is no longer the network's -
+/// asks the principal for the current key and adopts it. A member that was
+/// offline during a rotation gets back in by itself this way; one that was
+/// removed is answered without a grant and stays out.
+pub(crate) fn spawn_key_reclaimer(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            let primary = state.admin_trust.current_primary();
+            if primary.pubkey == state.authority_principal.pubkey {
+                continue;
+            }
+            if state
+                .network
+                .alive_peers()
+                .await
+                .iter()
+                .any(|peer| peer.node_id == primary.node_id)
+            {
+                continue;
+            }
+            let Some(key) =
+                crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey)
+            else {
+                continue;
+            };
+            let Ok(client) = crate::network_lobby::client().await else {
+                continue;
+            };
+            let request = crate::network_lobby::LobbyRequest::ClaimKey {
+                identity: client.proof(),
+            };
+            let granted = match client.request(&key, request).await {
+                Ok(response) => response.admission.and_then(|view| view.grant),
+                Err(error) => {
+                    tracing::debug!("chave da rede: o principal não respondeu: {error:#}");
+                    continue;
+                }
+            };
+            let Some(grant) = granted else {
+                tracing::debug!("chave da rede: esta máquina não está na lista de membros");
+                continue;
+            };
+            let new_key = grant.connection_key.trim();
+            let mut config = state.auth.write().await;
+            if new_key.is_empty() || config.connection_key == new_key {
+                continue;
+            }
+            config.connection_key = new_key.to_string();
+            match config.save() {
+                Ok(()) => info!("chave de conexão da rede renovada a partir do principal"),
+                Err(error) => warn!("não foi possível salvar a nova chave de conexão: {error:#}"),
+            }
+        }
+    });
 }
 
 pub(crate) async fn internal_network_settings(

@@ -186,6 +186,12 @@ pub enum LobbyRequest {
         card: LobbyCard,
         role: crate::config::EnrollmentRole,
     },
+    /// A member asks the principal for the network's current connection key,
+    /// because the one it holds stopped being accepted - it missed a
+    /// rotation. Answered with the grant only to a node on the principal's
+    /// member list (an approved admission record). It does not depend on the
+    /// lobby being open, and works for unlisted networks too.
+    ClaimKey { identity: LobbyIdentity },
     /// Ask what the network publishes about itself (`NetworkInfo`). It is not
     /// part of the conversation: no card, no presence, and it is answered
     /// under its own switch, with the lobby chat on or off.
@@ -298,8 +304,13 @@ pub struct AdmissionRecord {
     pub decided_at: Option<String>,
 }
 
-/// Admission requests kept at once; the oldest decided ones go first.
-pub const ADMISSION_RECORDS: usize = 128;
+/// Admission records kept at once; the oldest decided ones go first. The
+/// approved ones are the network's member list, so this also bounds how many
+/// members can reclaim a rotated key.
+pub const ADMISSION_RECORDS: usize = 512;
+/// How long a node that just left is kept off the member list, so the last
+/// seconds it is still seen as a peer do not put it back.
+pub const DEPARTED_HOLD: Duration = Duration::from_secs(10 * 60);
 /// How long a rejected machine waits before it may ask again.
 pub const ADMISSION_RETRY_AFTER_SECS: i64 = 60 * 60;
 
@@ -1320,6 +1331,7 @@ mod tests {
                         LobbyRequest::Post { text, .. } => text.clone(),
                         LobbyRequest::Fetch { .. }
                         | LobbyRequest::Admission { .. }
+                        | LobbyRequest::ClaimKey { .. }
                         | LobbyRequest::Publish { .. }
                         | LobbyRequest::Info
                         | LobbyRequest::Describe

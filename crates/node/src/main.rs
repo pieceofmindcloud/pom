@@ -1021,7 +1021,6 @@ async fn start_setup_mode(
     database: Arc<db::PomDb>,
     gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
-    use crate::config::Config;
     use crate::webui;
     use axum::{routing::get, Router};
     use std::net::SocketAddr;
@@ -1549,6 +1548,8 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::gateway::spawn_directory_board_publisher(gw_state.clone());
     crate::gateway::spawn_directory_publisher(gw_state.clone());
     crate::webui::spawn_admission_poller(gw_state.clone());
+    crate::webui::spawn_member_list_keeper(gw_state.clone());
+    crate::webui::spawn_key_reclaimer(gw_state.clone());
 }
 
 /// Sobe o nó configurado: rede, gateway com todas as rotas e, se houver, a

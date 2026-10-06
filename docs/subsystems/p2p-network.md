@@ -1505,10 +1505,27 @@ and, unless the network is in the open mode, generates a new connection key
 and pushes it in the admin-signed settings envelope to every admitted peer
 except the one that left (`rotate_connection_key`). The departed node drops
 the key it held along with the rest of that network's config, and coming
-back takes a new admission request. Two limits follow from how the key
-travels: a member that is offline at that moment misses the new key and is
-out until it is admitted again, and a node that leaves while the principal
+back takes a new admission request. A node that leaves while the principal
 is unreachable keeps a key that still works until the next rotation.
+
+**The member list, and claiming a rotated key.** The principal's approved
+admission records are the network's member list: the node identities that
+may be handed the connection key. `spawn_member_list_keeper` adds every peer
+the principal currently admits that has no record, which is what covers
+members that joined before admission requests existed; a node that just left
+is held off the list for 10 minutes (`DEPARTED_HOLD`) so its last seconds in
+the peer table do not put it back. The list lives on the principal only, so
+there is nothing to distribute or to keep consistent.
+
+A member whose key stopped being accepted - it was offline during a rotation
+- gets back in by itself. `spawn_key_reclaimer` runs on every member: when
+the principal is not among its admitted peers, it sends `ClaimKey { identity
+}` to the principal's key over the lobby connection. The principal answers
+with the grant only to a node on the list whose signature over the transport
+verifies, and the member adopts the key without restarting. It works with
+the lobby closed and on unlisted networks. A node that was removed is
+answered without a grant. Both the rotation and the claim need the principal
+online, and a claim is tried once a minute.
 
 **What gates membership.** `NetworkSettings::open_admission` is true only for
 a public network left on `anyone_with_anchor`, the mode networks created
@@ -1516,10 +1533,10 @@ before admission requests use: there the trust anchor alone admits
 (`Network::public_peer_is_admitted`). Every other network, listed or not, is
 gated by the connection key (`admission_without_probe` falls through to the
 `/handshake` probe), and the interface no longer offers the open mode. The key
-of a listed network leaves the principal through an approved grant and
-through the admin-signed settings push to admitted peers only -
-`network_settings_policy`, which answers any well-formed signed envelope,
-still withholds it from public networks for that reason.
+leaves the principal in three ways only: an approved admission grant, a
+`ClaimKey` answered to a node on the member list, and the admin-signed
+settings push to admitted peers. `network_settings_policy`, which answers
+any well-formed signed envelope, never carries it.
 
 **Other networks are not probed.** Every network shares one announce topic,
 so a node hears the announces of all of them. A peer that announces another

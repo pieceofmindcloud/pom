@@ -1925,22 +1925,17 @@ impl PluginRuntime {
         true
     }
 
-    /// Hands the plugin one event of its own kind (`{"type": ...}`). `false`
-    /// when the plugin is not active here or refused the event.
-    pub(crate) async fn ingest_event(&self, event: serde_json::Value) -> bool {
+    /// Hands the plugin one event of its own kind (`{"type": ...}`). The
+    /// caller decides how loudly to report a refusal: a stream of events
+    /// would otherwise log one warning per event.
+    pub(crate) async fn ingest_event(&self, event: serde_json::Value) -> Result<(), String> {
         if !self.status().await.active {
-            return false;
+            return Err("plugin inativo neste nó".into());
         }
         let Some(host) = self.host.lock().await.clone() else {
-            return false;
+            return Err("host do plugin não está rodando".into());
         };
-        match host.ingest(event).await {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(plugin_code = %self.code, error = %error, "evento não entrou no plugin");
-                false
-            }
-        }
+        host.ingest(event).await.map_err(|error| error.to_string())
     }
 
     pub(crate) async fn query_audit(
@@ -3442,10 +3437,14 @@ impl PluginManager {
         }
     }
 
-    pub(crate) async fn ingest_event(&self, code: &str, event: serde_json::Value) -> bool {
+    pub(crate) async fn ingest_event(
+        &self,
+        code: &str,
+        event: serde_json::Value,
+    ) -> Result<(), String> {
         match self.runtime_for(code) {
             Some(runtime) => runtime.ingest_event(event).await,
-            None => false,
+            None => Err("plugin desconhecido neste nó".into()),
         }
     }
 

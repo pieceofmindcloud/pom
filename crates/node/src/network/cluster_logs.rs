@@ -19,6 +19,9 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 
 pub const CLUSTER_LOGS_PROTOCOL: &str = "/pom/cluster-logs/1.0.0";
+/// Target of the process-log path's own messages. The capture skips it: a
+/// line about delivering the log must never become a line to deliver.
+const CLUSTER_LOGS_QUIET_TARGET: &str = "pom::cluster_logs";
 pub const LOG_CAPTURE_QUEUE_CAPACITY: usize = 1024;
 pub const LOG_TRANSPORT_QUEUE_CAPACITY: usize = 32;
 pub const LOG_BATCH_MAX_ENTRIES: usize = 64;
@@ -222,7 +225,10 @@ impl LogCapture {
     }
 
     fn record(&self, event: &Event<'_>) {
-        if !self.enabled() || !self.min_level().allows(event.metadata().level()) {
+        if !self.enabled()
+            || !self.min_level().allows(event.metadata().level())
+            || event.metadata().target() == CLUSTER_LOGS_QUIET_TARGET
+        {
             return;
         }
         let context = self.context.load();
@@ -450,6 +456,11 @@ impl ClusterLogs {
         };
         let service = self.clone();
         tokio::spawn(async move {
+            // One warning per failing stretch, not per batch: the warning is
+            // itself a process-log line, and a plugin refusing every batch
+            // (an older one without `cluster_logs`) fed its own refusal back
+            // through the capture ten times a second.
+            let mut failing = false;
             while let Some(batch) = queue.recv().await {
                 let lost = batch.entries.len() as u64 + batch.dropped;
                 let event = serde_json::json!({
@@ -458,11 +469,27 @@ impl ClusterLogs {
                     "entries": batch.entries,
                     "dropped": batch.dropped,
                 });
-                if !plugins
+                match plugins
                     .ingest_event(crate::plugins::LOGS_PLUGIN_CODE, event)
                     .await
                 {
-                    service.dropped.fetch_add(lost, Ordering::Relaxed);
+                    Ok(()) => {
+                        if failing {
+                            tracing::info!(target: CLUSTER_LOGS_QUIET_TARGET, "o plugin de logs voltou a aceitar os logs de processo do cluster");
+                        }
+                        failing = false;
+                    }
+                    Err(error) => {
+                        service.dropped.fetch_add(lost, Ordering::Relaxed);
+                        if !failing {
+                            tracing::warn!(
+                                target: CLUSTER_LOGS_QUIET_TARGET,
+                                %error,
+                                "o plugin de logs recusou os logs de processo do cluster; as linhas são descartadas até ele aceitar (um plugin anterior a esta versão não conhece o evento cluster_logs: atualize o plugin)"
+                            );
+                        }
+                        failing = true;
+                    }
                 }
             }
         });
@@ -830,6 +857,22 @@ mod tests {
         let mut queue = service.plugin_queue.lock().unwrap().take().expect("fila do plugin");
         assert_eq!(queue.recv().await.unwrap().entries[0].message, "primeiro");
         assert_eq!(queue.recv().await.unwrap().entries[0].message, "segundo");
+    }
+
+    #[test]
+    fn as_mensagens_do_proprio_caminho_de_logs_nao_sao_capturadas() {
+        use tracing_subscriber::prelude::*;
+
+        let (capture, mut receiver) = LogCapture::new(8);
+        capture.set_enabled(true);
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer::new(capture.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(target: CLUSTER_LOGS_QUIET_TARGET, "o plugin recusou o lote");
+            tracing::warn!(target: "cluster_logs_test", "linha comum");
+        });
+
+        assert_eq!(receiver.try_recv().unwrap().message, "linha comum");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]

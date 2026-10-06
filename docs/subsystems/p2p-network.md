@@ -1559,10 +1559,12 @@ data only and are answered by **any** node, principal or not:
   announce, and that fails. A network that turns discovery off simply stops
   publishing and falls out of the list within the 5 minutes.
 
-Both are served from `DirectoryBoard`, filled on demand by
-`gateway::spawn_directory_board_publisher` exactly like `PublicStats`: the
-first request answers `pending: true`, the next one has the list, and the
-listing runs at most once per 30 s. An answer carries at most 64 networks and
+Both are served from `DirectoryBoard`, filled by
+`gateway::spawn_directory_board_publisher`: once at startup and then on
+demand, at most once per 30 s. What principals published is answered at once
+and never waits for the gathered part, which comes from a scan of every
+announcing node that is bounded at 25 s and keeps the previous result when it
+runs out; `pending: true` only happens before the first fill. An answer carries at most 64 networks and
 2 MiB (`LobbyLimits::RESPONSE_BYTES`; requests are bounded at 768 KiB, sized
 for `Publish`), and the
 rate is the `Info` one. **An answer is a claim, not a fact**: the asker keeps

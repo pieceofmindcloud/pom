@@ -223,10 +223,14 @@ pub const DEFAULT_DIRECTORY_RELAYS: &[&str] =
 /// Keys from [`DEFAULT_DIRECTORY_RELAYS`] and the `DIRECTORY_RELAYS`
 /// environment variable (comma separated), without repeats.
 pub fn default_directory_relays() -> Vec<String> {
-    let mut keys: Vec<String> = DEFAULT_DIRECTORY_RELAYS
-        .iter()
-        .map(|key| key.to_string())
-        .collect();
+    // Never in tests: a route test that lists networks would dial the real
+    // relay and assert on whatever is published there that day.
+    let built_in: &[&str] = if cfg!(test) {
+        &[]
+    } else {
+        DEFAULT_DIRECTORY_RELAYS
+    };
+    let mut keys: Vec<String> = built_in.iter().map(|key| key.to_string()).collect();
     if let Ok(value) = crate::brand::env("DIRECTORY_RELAYS") {
         keys.extend(
             value
@@ -804,10 +808,16 @@ impl DirectoryBoard {
             self.wanted.notify_one();
         }
         match slot {
-            Some((at, Some(mut listed))) if at.elapsed() < INFO_MAX_AGE => {
+            Some((at, Some(mut listed))) => {
                 // What principals published here comes first: it is the
-                // principal's own word, and newer than anything gathered.
+                // principal's own word, and newer than anything gathered. It
+                // is served whatever the age of the gathered part, which
+                // comes from a slow scan and is dropped once too old; an
+                // answer never waits for that scan.
                 let mut merged = self.publications();
+                if at.elapsed() >= INFO_MAX_AGE {
+                    listed.clear();
+                }
                 listed.retain(|gathered| {
                     !merged
                         .iter()
@@ -816,8 +826,8 @@ impl DirectoryBoard {
                 merged.append(&mut listed);
                 BoardAnswer::Ready(fit_directory_answer(merged))
             }
-            Some((at, None)) if at.elapsed() < INFO_MAX_AGE => BoardAnswer::Disabled,
-            _ => BoardAnswer::Pending,
+            Some((_, None)) => BoardAnswer::Disabled,
+            None => BoardAnswer::Pending,
         }
     }
 
@@ -1556,6 +1566,17 @@ mod tests {
         let names: Vec<_> = answer.iter().map(|network| network.name.as_str()).collect();
         assert_eq!(names, ["both", "only-published", "only-gathered"]);
         assert_eq!(answer[0].description, "published again");
+
+        // When the gathered part is too old to serve, what principals
+        // published is still answered: the relay never goes back to
+        // "pending" while a new scan runs.
+        board.known.lock().unwrap().as_mut().unwrap().0 =
+            Instant::now() - INFO_MAX_AGE - Duration::from_secs(1);
+        let BoardAnswer::Ready(answer) = board.known() else {
+            panic!("publications are served without the gathered part");
+        };
+        let names: Vec<_> = answer.iter().map(|network| network.name.as_str()).collect();
+        assert_eq!(names, ["both", "only-published"]);
     }
 
     /// A key that does not parse is never dialed, and nothing would say so.

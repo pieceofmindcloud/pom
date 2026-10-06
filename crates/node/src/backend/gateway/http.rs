@@ -1190,17 +1190,37 @@ pub(crate) fn spawn_directory_publisher(state: GatewayState) {
 /// stale; one listing per `network_lobby::INFO_REFRESH` at most, none while
 /// nobody asks.
 pub(crate) fn spawn_directory_board_publisher(state: GatewayState) {
+    /// The scan of announcing nodes asks each one in turn and can take
+    /// minutes on a relay that hears many; an answer must not wait for it.
+    const GATHER_TIMEOUT: Duration = Duration::from_secs(25);
     tokio::spawn(async move {
+        let board = state.network_chat.directory_board();
+        let mut gathered: Vec<PublicNetworkView> = Vec::new();
+        // Once at startup, without being asked: a relay must be able to take
+        // a principal's publication, and answer with it, from the first
+        // minute.
+        let mut first = true;
         loop {
-            state.network_chat.directory_board().wanted().await;
+            if !std::mem::take(&mut first) {
+                board.wanted().await;
+            }
             let own: Vec<PublicNetworkView> =
                 local_public_network(&state).await.into_iter().collect();
-            let known = if gathers_public_networks(&state).await {
-                Some(collect_public_networks(&state, &PublicNetworksQuery::default()).await)
-            } else {
-                None
-            };
-            state.network_chat.directory_board().publish(own, known);
+            let gathers = gathers_public_networks(&state).await;
+            // Put the cheap part up first, with whatever was gathered last
+            // time, so requests are answered while the scan runs.
+            board.publish(own.clone(), gathers.then(|| gathered.clone()));
+            if gathers {
+                let query = PublicNetworksQuery::default();
+                let scan = collect_public_networks(&state, &query);
+                match tokio::time::timeout(GATHER_TIMEOUT, scan).await {
+                    Ok(found) => {
+                        gathered = found;
+                        board.publish(own, Some(gathered.clone()));
+                    }
+                    Err(_) => debug!("lobby: a varredura de redes públicas passou do prazo"),
+                }
+            }
             tokio::time::sleep(crate::network_lobby::INFO_REFRESH).await;
         }
     });

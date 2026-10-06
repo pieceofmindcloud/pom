@@ -42,13 +42,17 @@ pub const LOBBY_ROOM: &str = "lobby";
 pub struct LobbyLimits;
 
 impl LobbyLimits {
-    pub const FRAME_BYTES: usize = 64 * 1024;
+    /// Bound of a request. Sized for `Publish`, which carries a network's
+    /// trust document; a chat text is bounded separately by `TEXT_BYTES`.
+    pub const FRAME_BYTES: usize = 768 * 1024;
     /// Bound of an answer. Larger than a request's because a directory answer
     /// carries whole network descriptions, trust document included; it is
     /// read by the side that asked, from a peer it chose to dial.
     pub const RESPONSE_BYTES: usize = 2 * 1024 * 1024;
     /// Networks in one directory answer.
     pub const DIRECTORY_NETWORKS: usize = 64;
+    /// Networks a relay keeps from their principals' publications.
+    pub const PUBLICATIONS: usize = 256;
     pub const TEXT_BYTES: usize = 2 * 1024;
     pub const MESSAGE_ID_BYTES: usize = 64;
     pub const CARD_TEXT_BYTES: usize = 96;
@@ -160,7 +164,7 @@ impl LobbyCard {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LobbyRequest {
     /// Say something in the lobby.
@@ -195,7 +199,20 @@ pub enum LobbyRequest {
     /// announces of every cluster that meets on them, which is what a machine
     /// that has joined nothing lacks (`DirectoryBoard`).
     Directory,
+    /// A network's principal tells a relay about its network, so the relay
+    /// can list it. Sent over a direct dial to the relay, which is what makes
+    /// listing work for a network whose every node is behind NAT: the relay
+    /// has no need to reach back. `identity` must be the principal's.
+    Publish {
+        identity: LobbyIdentity,
+        network: crate::gateway::PublicNetworkView,
+    },
 }
+
+/// How long a relay lists a published network without hearing again.
+pub const PUBLICATION_TTL: Duration = Duration::from_secs(5 * 60);
+/// How often a principal publishes its network to its relays.
+pub const PUBLICATION_INTERVAL: Duration = Duration::from_secs(90);
 
 /// Relay keys (`pk:...`) every installation asks for the public networks, in
 /// addition to `POM_DIRECTORY_RELAYS` and to the relays already configured.
@@ -694,6 +711,8 @@ pub struct DirectoryBoard {
     known: Mutex<Option<(Instant, Option<Listed>)>>,
     callers: Mutex<HashMap<String, (Instant, u32)>>,
     wanted: tokio::sync::Notify,
+    /// Networks their principals published here, by fingerprint.
+    published: Mutex<HashMap<String, (Instant, crate::gateway::PublicNetworkView)>>,
 }
 
 /// What the board has for one request.
@@ -745,13 +764,58 @@ impl DirectoryBoard {
         }
     }
 
+    /// Keeps a network its principal published (already validated). Refused
+    /// by a node that does not answer directory queries, or when full.
+    pub fn accept_publication(&self, network: crate::gateway::PublicNetworkView) -> bool {
+        let gathers = matches!(
+            self.known.lock().expect("directory board known lock").as_ref(),
+            Some((_, Some(_)))
+        );
+        if !gathers {
+            // Not known yet, or disabled: have the board filled so the next
+            // publication (90 s later) has an answer.
+            self.wanted.notify_one();
+            return false;
+        }
+        let now = Instant::now();
+        let mut published = self.published.lock().expect("directory board published lock");
+        published.retain(|_, (at, _)| now.duration_since(*at) < PUBLICATION_TTL);
+        if !published.contains_key(&network.fingerprint)
+            && published.len() >= LobbyLimits::PUBLICATIONS
+        {
+            return false;
+        }
+        published.insert(network.fingerprint.clone(), (now, network));
+        true
+    }
+
+    fn publications(&self) -> Listed {
+        let now = Instant::now();
+        let mut published = self.published.lock().expect("directory board published lock");
+        published.retain(|_, (at, _)| now.duration_since(*at) < PUBLICATION_TTL);
+        let mut listed: Listed = published.values().map(|(_, view)| view.clone()).collect();
+        listed.sort_by(|left, right| left.fingerprint.cmp(&right.fingerprint));
+        listed
+    }
+
     pub fn known(&self) -> BoardAnswer {
         let slot = self.known.lock().expect("directory board known lock").clone();
         if Self::stale(slot.as_ref().map(|(at, _)| *at)) {
             self.wanted.notify_one();
         }
         match slot {
-            Some((at, Some(listed))) if at.elapsed() < INFO_MAX_AGE => BoardAnswer::Ready(listed),
+            Some((at, Some(mut listed))) if at.elapsed() < INFO_MAX_AGE => {
+                // What principals published here comes first: it is the
+                // principal's own word, and newer than anything gathered.
+                let mut merged = self.publications();
+                listed.retain(|gathered| {
+                    !merged
+                        .iter()
+                        .any(|published| published.fingerprint == gathered.fingerprint)
+                });
+                merged.append(&mut listed);
+                BoardAnswer::Ready(fit_directory_answer(merged))
+            }
             Some((at, None)) if at.elapsed() < INFO_MAX_AGE => BoardAnswer::Disabled,
             _ => BoardAnswer::Pending,
         }
@@ -1246,6 +1310,7 @@ mod tests {
                         LobbyRequest::Post { text, .. } => text.clone(),
                         LobbyRequest::Fetch { .. }
                         | LobbyRequest::Admission { .. }
+                        | LobbyRequest::Publish { .. }
                         | LobbyRequest::Info
                         | LobbyRequest::Describe
                         | LobbyRequest::Directory => String::new(),
@@ -1466,6 +1531,31 @@ mod tests {
             assert!(board.allow("asker"));
         }
         assert!(!board.allow("asker"));
+    }
+
+    #[test]
+    fn a_relay_lists_what_principals_published_ahead_of_what_it_gathered() {
+        let board = DirectoryBoard::default();
+        // Before the board is filled, and on a node that does not answer
+        // directory queries, a publication is not kept.
+        assert!(!board.accept_publication(listed("early", String::new())));
+        board.publish(Vec::new(), None);
+        assert!(!board.accept_publication(listed("nobody", String::new())));
+
+        let mut gathered = listed("both", "gathered".into());
+        gathered.fingerprint = "fp-both".into();
+        board.publish(Vec::new(), Some(vec![gathered, listed("only-gathered", String::new())]));
+        assert!(board.accept_publication(listed("both", "published".into())));
+        assert!(board.accept_publication(listed("only-published", String::new())));
+        // Publishing again replaces, it does not duplicate.
+        assert!(board.accept_publication(listed("both", "published again".into())));
+
+        let BoardAnswer::Ready(answer) = board.known() else {
+            panic!("the board has an answer");
+        };
+        let names: Vec<_> = answer.iter().map(|network| network.name.as_str()).collect();
+        assert_eq!(names, ["both", "only-published", "only-gathered"]);
+        assert_eq!(answer[0].description, "published again");
     }
 
     /// A key that does not parse is never dialed, and nothing would say so.

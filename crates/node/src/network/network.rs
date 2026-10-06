@@ -3624,6 +3624,17 @@ impl Network {
                 config.network.access_policy,
             )
         };
+        // A peer that announces another network is not a member, and there is
+        // nothing to probe. All networks share one announce topic, so without
+        // this every announce of every other network cost a `/handshake`
+        // probe, which falls back to a relay circuit for a peer behind NAT -
+        // and it was those circuits, never going to be useful, that used up
+        // the relay. A peer that announces no network is still probed.
+        if let Some(theirs) = peer.cluster_id.as_deref().filter(|id| !id.trim().is_empty()) {
+            if admission.trust.is_anchored() && !admission.trust.anchors_cluster(theirs) {
+                return Some(false);
+            }
+        }
         // Only a public network left in the open mode admits by the trust
         // anchor alone. Every other network, listed or not, asks for the
         // connection key, which reaches a new machine through an admin's

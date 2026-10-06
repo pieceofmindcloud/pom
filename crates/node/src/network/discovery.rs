@@ -740,6 +740,14 @@ impl Discovery {
                         // reserva continua renovando a cada hora.
                         max_circuit_duration: Duration::from_secs(24 * 60 * 60),
                         max_circuit_bytes: 0,
+                        // libp2p's defaults are 16 circuits in total and 4 per
+                        // peer. Circuits here live for a day, so a handful of
+                        // nodes behind NAT filled them and every later dial
+                        // through the relay - a member reaching a member, a
+                        // candidate reaching a lobby - was refused with
+                        // "resource limit exceeded".
+                        max_circuits: 1024,
+                        max_circuits_per_peer: 32,
                         ..relay::Config::default()
                     }
                 } else {
@@ -1063,6 +1071,15 @@ async fn handle_event(
             message,
             ..
         })) => {
+            // Off the network (discovery off, or taken off by its operator):
+            // nothing a peer says is heard. Without this the swarm, which is
+            // still connected to its relays, took every announce on the shared
+            // topic and dialed its sender - through relay circuits, over and
+            // over - so a node that was supposed to be silent kept knocking
+            // on every cluster's door and loading the relay.
+            if network.is_detached() {
+                return;
+            }
             let Some(source) = message.source else {
                 warn!("libp2p: descartei Announce sem peer de origem assinado");
                 return;
@@ -1811,6 +1828,30 @@ async fn answer_lobby_request(
     // What a node tells about public networks is public data and has nothing
     // to do with the lobby or with being the principal: any node answers,
     // from the board the gateway keeps.
+    // A principal telling a relay about its own network. The relay keeps it
+    // only when the node key that signed for this transport is the primary
+    // of the trust document being published.
+    if let LobbyRequest::Publish { identity, network: listed } = &request {
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        if identity.verified_node_id(&peer).is_none() {
+            return LobbyResponse::rejected("identity_invalid");
+        }
+        let Some(listed) =
+            crate::gateway::validated_publication(listed.clone(), &identity.pubkey)
+        else {
+            return LobbyResponse::rejected("publication_invalid");
+        };
+        return if chat.directory_board().accept_publication(listed) {
+            LobbyResponse {
+                accepted: true,
+                ..LobbyResponse::default()
+            }
+        } else {
+            LobbyResponse::rejected("directory_disabled")
+        };
+    }
     if matches!(request, LobbyRequest::Describe | LobbyRequest::Directory) {
         use crate::network_lobby::BoardAnswer;
         if !chat.directory_board().allow(&caller) {
@@ -1860,7 +1901,10 @@ async fn answer_lobby_request(
         LobbyRequest::Post { identity, .. }
         | LobbyRequest::Fetch { identity, .. }
         | LobbyRequest::Admission { identity, .. } => identity,
-        LobbyRequest::Info | LobbyRequest::Describe | LobbyRequest::Directory => {
+        LobbyRequest::Info
+        | LobbyRequest::Describe
+        | LobbyRequest::Directory
+        | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")
         }
     };
@@ -1879,7 +1923,10 @@ async fn answer_lobby_request(
         LobbyRequest::Post { card, .. }
         | LobbyRequest::Fetch { card, .. }
         | LobbyRequest::Admission { card, .. } => card.clone().sanitized(),
-        LobbyRequest::Info | LobbyRequest::Describe | LobbyRequest::Directory => {
+        LobbyRequest::Info
+        | LobbyRequest::Describe
+        | LobbyRequest::Directory
+        | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")
         }
     };

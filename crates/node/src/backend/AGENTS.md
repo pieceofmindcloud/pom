@@ -1146,6 +1146,8 @@ faz o download autenticado do blob persistido.
   fills the list, since networks are found through cluster discovery and pkarr
   and no directory replica is configured by default. `pk:` entries are relay
   keys, asked through `relay_directory` (lobby `Directory` request).
+  `gateway::spawn_directory_publisher` sends the principal's own network to
+  its relays every 90 s and `validated_publication` is the relay's check.
   `gateway::collect_public_networks` is the listing behind
   `GET /api/public/networks` and behind the node's `DirectoryBoard`; it gathers
   gossip candidates when the node is in a public network or serves as a relay

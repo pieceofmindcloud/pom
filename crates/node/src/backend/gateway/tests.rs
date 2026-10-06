@@ -2524,6 +2524,17 @@ mod replicated_admin_logs_tests {
         assert!(accepted.lobby_chat);
 
         assert!(super::validated_listed_network(view("not-the-fingerprint".into(), "")).is_none());
+        // A relay keeps a publication only from the network's own principal.
+        let published = super::validated_publication(
+            view(fingerprint.clone(), ""),
+            &document.primary.pubkey,
+        )
+        .unwrap();
+        assert_eq!(published.discovered_via, "published");
+        assert_eq!(published.publisher_key, expected_key);
+        let stranger = crate::identity::Identity::generate().public_key_hex();
+        assert!(super::validated_publication(view(fingerprint.clone(), ""), &stranger).is_none());
+
         let mut broken = view(fingerprint, "");
         broken.trust_document = "{}".into();
         assert!(super::validated_listed_network(broken).is_none());

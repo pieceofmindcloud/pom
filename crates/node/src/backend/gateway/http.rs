@@ -369,6 +369,22 @@ pub(crate) fn validated_listed_network(mut view: PublicNetworkView) -> Option<Pu
     Some(view)
 }
 
+/// Accepts a network published to this relay only from its own principal:
+/// on top of certifying itself, the trust document's primary key must be
+/// `publisher_pubkey`, the node key that signed for the connection.
+pub(crate) fn validated_publication(
+    view: PublicNetworkView,
+    publisher_pubkey: &str,
+) -> Option<PublicNetworkView> {
+    let document = crate::admin_trust::parse_transported(&view.trust_document).ok()?;
+    if document.primary.pubkey != publisher_pubkey {
+        return None;
+    }
+    let mut view = validated_listed_network(view)?;
+    view.discovered_via = "published".to_string();
+    Some(view)
+}
+
 /// The public networks the nodes at `bases` list right now
 /// (`GET <base>/api/public/networks`). A configured node learns networks from
 /// its cluster and pkarr; a node in setup mode has neither, so it asks one
@@ -1120,6 +1136,52 @@ async fn collect_public_networks(
     }
 
     networks
+}
+
+/// Tells this node's relays about its network, while it is the principal of a
+/// listed one. The relay is dialed directly, so the network is listed even
+/// when none of its nodes can be reached from outside - the relay never has
+/// to come back for it. Sent every `PUBLICATION_INTERVAL`; a relay drops a
+/// network it has not heard for `PUBLICATION_TTL`, which is also how turning
+/// discovery off takes a network out of the list.
+pub(crate) fn spawn_directory_publisher(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(crate::network_lobby::PUBLICATION_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            let Some(network) = local_public_network(&state).await else {
+                continue;
+            };
+            // Only the principal publishes: a relay accepts nobody else.
+            let own = state
+                .pkarr_publisher
+                .as_ref()
+                .map(|publisher| publisher.node().public_key_uri());
+            if own.as_deref() != Some(network.publisher_key.as_str()) {
+                continue;
+            }
+            let Ok(client) = crate::network_lobby::client().await else {
+                continue;
+            };
+            for key in directory_relay_keys(&state).await {
+                let request = crate::network_lobby::LobbyRequest::Publish {
+                    identity: client.proof(),
+                    network: network.clone(),
+                };
+                match client.request(&key, request).await {
+                    Ok(response) if response.accepted => {}
+                    Ok(response) => debug!(
+                        "lobby: relé {key} não listou a rede: {:?}",
+                        response.error
+                    ),
+                    Err(error) => debug!("lobby: relé {key} inalcançável para publicar: {error:#}"),
+                }
+            }
+        }
+    });
 }
 
 /// Fills `DirectoryBoard` on demand: this node's own public network and, when

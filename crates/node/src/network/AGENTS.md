@@ -97,7 +97,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   `Describe` and `Directory` are answered by any node from `DirectoryBoard`
   (own public network; known public networks when the node is a relay or in a
   public network), filled by `gateway::spawn_directory_board_publisher`.
-  `default_directory_relays` is the list of relay keys a fresh installation
+  `Publish` lets a network's principal hand its description to a relay over a
+  direct dial (`DirectoryBoard::accept_publication`), the listing path that
+  needs no circuit. `default_directory_relays` is the list of relay keys a fresh installation
   asks (`DEFAULT_DIRECTORY_RELAYS` plus `POM_DIRECTORY_RELAYS`).
   Admission requests live here too: `LobbyRequest::Admission`,
   `AdmissionRecord` / `AdmissionView` / `AdmissionGrant` and

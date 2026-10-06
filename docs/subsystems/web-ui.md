@@ -302,8 +302,9 @@ does not get past that clip. The minimized choice is persisted in the browser.
   approved. The bell lists machines asking to join this network, with role,
   direct or relayed connection, latency and hardware, and Approve / Decline;
   on the candidate it lists the answer, with "Join now" when approved.
-  Network settings calls visibility "Discovery" (off, on and not listed, on
-  and listed) and no longer offers the open admission mode.
+  Network settings calls visibility "Discovery" and offers off or on (listed);
+  the announced-but-not-listed value stays selectable only where already set.
+  It no longer offers the open admission mode.
 - `/setup` -> `Setup`, the real first access wizard, **full screen** and with
   the access gate's identity (see "First access wizard" below). It is out of
   the normal path: a node without a network creates a local one and opens the

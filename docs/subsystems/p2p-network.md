@@ -1491,9 +1491,22 @@ through the admin-signed settings push to admitted peers only -
 `network_settings_policy`, which answers any well-formed signed envelope,
 still withholds it from public networks for that reason.
 
+**Other networks are not probed.** Every network shares one announce topic,
+so a node hears the announces of all of them. A peer that announces another
+`cluster_id` than the one this node is anchored to is refused outright
+(`admission_without_probe`), with no `/handshake` probe: the probe falls back
+to a relay circuit for a peer behind NAT, and those circuits - which could
+never succeed - were what exhausted the relay. The relay itself now allows
+1024 circuits, 32 per peer, instead of libp2p's 16 and 4; with day-long
+circuits the defaults filled within minutes and every later dial through the
+relay was refused with "resource limit exceeded".
+
 **Discovery off.** A network with `visibility: local` announces nothing: the
 node starts detached (`Network::detach`), publishes no pkarr record
-(`PkarrPublishHandle::publish_if_changed`) and no directory record. It is what
+(`PkarrPublishHandle::publish_if_changed`) and no directory record. It also
+ignores the announces the shared gossip topic still delivers through its
+relays (`discovery.rs`, the gossip arm of `handle_event`); before that, a
+detached node dialed every announcing peer through relay circuits. It is what
 a first launch creates. Saving another visibility in Network settings rejoins;
 saving `local` again detaches. Such a node still lists other networks, because
 `GET /api/public/networks` also asks its relays (`directory_relay_keys`:
@@ -1534,11 +1547,24 @@ data only and are answered by **any** node, principal or not:
   announce topic - so a relay is who a machine that has joined nothing can
   ask. Any other node answers `directory_disabled`.
 
+- `Publish { identity, network }` is how a relay learns a network without
+  having to reach it: the network's **principal** dials the relay directly
+  and hands over its own description every 90 s
+  (`gateway::spawn_directory_publisher`). The relay keeps it for 5 minutes,
+  and only when the node key that signed for the connection is the primary of
+  the trust document published (`gateway::validated_publication`); what a
+  principal published is listed ahead of anything the relay gathered. This is
+  the path that works when every node of a network is behind NAT - gathering
+  needs the relay to open a circuit through itself to a node it only knows by
+  announce, and that fails. A network that turns discovery off simply stops
+  publishing and falls out of the list within the 5 minutes.
+
 Both are served from `DirectoryBoard`, filled on demand by
 `gateway::spawn_directory_board_publisher` exactly like `PublicStats`: the
 first request answers `pending: true`, the next one has the list, and the
 listing runs at most once per 30 s. An answer carries at most 64 networks and
-2 MiB (`LobbyLimits::RESPONSE_BYTES`; requests keep the 64 KiB bound), and the
+2 MiB (`LobbyLimits::RESPONSE_BYTES`; requests are bounded at 768 KiB, sized
+for `Publish`), and the
 rate is the `Info` one. **An answer is a claim, not a fact**: the asker keeps
 an entry only when its trust document matches its fingerprint and
 `cluster_id`, and derives the publisher key from that document

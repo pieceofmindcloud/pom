@@ -1547,6 +1547,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     crate::webui::spawn_public_stats_publisher(gw_state.clone());
     crate::gateway::spawn_directory_board_publisher(gw_state.clone());
+    crate::gateway::spawn_directory_publisher(gw_state.clone());
     crate::webui::spawn_admission_poller(gw_state.clone());
 }
 

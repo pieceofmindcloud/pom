@@ -547,7 +547,10 @@ function NetworkInfoPanel({
           <Field label={t("network.visibility")}>
             <Select value={draft.visibility} onChange={(event) => update({ visibility: event.target.value as NetworkSettingsData["visibility"] })}>
               <option value="local">{t("network.visibilityLocal")}</option>
-              <option value="private">{t("network.visibilityPrivate")}</option>
+              {/* Discovery is on or off. "On, not listed" announces the
+                  network but no relay lists it, so nobody can find it to ask
+                  for admission; it stays selectable only where already set. */}
+              {draft.visibility === "private" && <option value="private">{t("network.visibilityPrivate")}</option>}
               <option value="public">{t("network.visibilityPublic")}</option>
             </Select>
           </Field>

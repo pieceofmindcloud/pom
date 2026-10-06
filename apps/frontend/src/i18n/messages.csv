@@ -1466,8 +1466,8 @@ network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
 network.visibility,Discovery,Descoberta
 network.visibilityLocal,Off - this machine only,Desligada - só esta máquina
-network.visibilityPrivate,On - not listed,Ligada - não listada
-network.visibilityPublic,On - listed in Networks,Ligada - listada em Redes
+network.visibilityPrivate,Hidden - announced but not listed (nobody can find it),Oculta - anunciada mas não listada (ninguém a encontra)
+network.visibilityPublic,On - other machines can find it and ask to join,Ligada - outras máquinas a encontram e pedem para entrar
 networkChat.attach,Attach a file,Anexar arquivo
 networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
 networkChat.disabledTitle,Network chat is disabled,Chat da rede está desligado

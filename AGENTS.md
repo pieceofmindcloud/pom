@@ -186,8 +186,12 @@ quebra o produto inteiro.
   `HttpOnly`; a senha humana só fica na memória da aba e nunca vai para storage
   nem URL. O nó persiste apenas seu hash Argon2id. Em modo local, a
   mesma fronteira cobre os ficheiros estáticos, mas nunca as rotas da pipeline.
-  Sem `pom.json` o nó sobe em **modo setup**, que escolhe o perfil inicial
-  `admin`, `node` ou `infer` e gera a chave de conexão quando necessário. O perfil
+  Without `pom.json` the node creates a **local network of its own** and goes
+  straight to the interface: profile `admin`, named after the host, discovery
+  off (`webui::bootstrap_local_network`). The setup wizard is only reached
+  with `--setup`. Joining another network is asked from the Networks screen
+  and approved by that network's admin, who is the only one that hands over
+  its connection key. O perfil
   persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
   continua sendo o mecanismo de autenticação. → `http-api.md`, `web-ui.md`
 - **Plugins são independentes entre si e são uma fronteira de processo.** O

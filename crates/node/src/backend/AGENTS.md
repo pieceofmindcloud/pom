@@ -1153,6 +1153,12 @@ faz o download autenticado do blob persistido.
   candidate's gateway does not answer. The local
   hardware card is sampled once a minute, not per poll. `network_chat_snapshot`
   takes `?room=lobby` and always reports `lobbyEnabled` and `lobbyGuests`.
+  It also holds admission: the candidate's requests (`lobby_admission`,
+  `lobby_requests`, `spawn_admission_poller`, with the grant kept in memory
+  only), `join_network` (replace the trust root, rewrite the config as a
+  member, restart) and the principal's `admissions` / `decide_admission`.
+  `webui/setup.rs::bootstrap_local_network` is what a node without a network
+  runs at startup instead of the wizard (`main.rs`, unless `--setup`).
   The same file has `lobby_info` / `setup_lobby_info` (another network's
   published stats), `network_info_from_cluster` and
   `spawn_public_stats_publisher`, the on-demand task that fills the principal's

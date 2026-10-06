@@ -295,9 +295,19 @@ does not get past that clip. The minimized choice is persisted in the browser.
   nodes, VRAM and models columns of a row this node is not a member of
   (`lib/publicStats.ts`, asked from that network's principal through this
   node); latency stays unavailable there. The switch is "Published stats" in
-  Network settings.
+  Network settings. The menu entry and the screen are now called "Networks".
+  Joining is asked, not taken: the row's main button opens the lobby window,
+  whose side panel has "Request admission" with the role to join as, shows the
+  request's state, and offers "Join now" (behind a confirmation) once an admin
+  approved. The bell lists machines asking to join this network, with role,
+  direct or relayed connection, latency and hardware, and Approve / Decline;
+  on the candidate it lists the answer, with "Join now" when approved.
+  Network settings calls visibility "Discovery" (off, on and not listed, on
+  and listed) and no longer offers the open admission mode.
 - `/setup` -> `Setup`, the real first access wizard, **full screen** and with
-  the access gate's identity (see "First access wizard" below).
+  the access gate's identity (see "First access wizard" below). It is out of
+  the normal path: a node without a network creates a local one and opens the
+  panel, and the wizard only appears when the node was started with `--setup`.
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the
   participant list for `admin` and `node`; `/config/preferencias` ->
   Preferences; `/config/preferencias/admin` -> administrative preferences;

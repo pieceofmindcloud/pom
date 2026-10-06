@@ -91,12 +91,28 @@ last):
   validation. With no relay and no address the list is empty.
   `GET /api/public/networks` on a node that serves as a relay now lists the
   networks it hears through gossip even when its own network is not public.
+  On every node that route also merges what its relays answer to `Directory`,
+  which is the only source for a node with discovery off.
 - **Published stats of another network**: `GET
   /api/ui/network-chat/lobby/info?key=pk:...` (and `GET /api/setup/lobby/info`
   in setup mode) asks that network's principal for `{models, node_count,
   vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with
   `accepted: true` means the principal is still computing; ask again in a few
   seconds. Only meaningful for networks whose view has `public_stats: true`.
+- **Admission** (`webui/lobby.rs`, `p2p-network.md` 6.1). On the candidate:
+  `POST /api/ui/network-chat/lobby/admission` (`{key, role, name}`) asks the
+  network under `key` to admit this machine; `GET
+  /api/ui/network-chat/lobby/requests` lists this node's requests as `{key,
+  name, role, status}` and `POST .../requests/forget` drops one locally; every
+  lobby answer carries `admission` with the same shape. None of them ever
+  returns the grant. `POST /api/ui/network/join` (`{key}`) joins a network that
+  approved this machine, replacing the one it is in, and restarts the node
+  (`409 not_approved` without a grant, `502 grant_invalid` when the granted
+  trust document is not that key's). On the network's principal, AdminOnly:
+  `GET /api/ui/network/admissions` lists the requests with each candidate's
+  declared hardware, measured latency and whether it connects through a relay,
+  and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
+  `reject` or `forget`) decides one.
 - **Lobby, member side**: `GET /api/ui/network-chat?room=lobby` reads the lobby
   room instead of the main one. Every snapshot also carries `room`,
   `lobbyEnabled` and `lobbyGuests` (`[{nodeId, card}]`, the candidates present
@@ -1375,6 +1391,12 @@ production equivalent is `--no-discovery`.
 
 ## 6. Defects noted
 
-None open in this file. (The `/admin/transfer-offers` stub now returns the real
-offers, and the `/api/ui` read GETs are behind the administrative surface
-boundary.)
+- **DEFECT NOTED: the settings read can hand a private network's connection
+  key to whoever holds its trust document.** `GET` of the network settings
+  policy (`webui/network.rs::network_settings_policy`) accepts any well-formed
+  signed control envelope - `verify_control_envelope_metadata` checks the
+  signature against the issuer's own key and the cluster id and epoch, not
+  that the issuer is a member - and answers with `connection_key` whenever
+  the network is not public. On a private network the trust document is not
+  published, so this needs someone who already obtained it; the key is not
+  returned for public networks.

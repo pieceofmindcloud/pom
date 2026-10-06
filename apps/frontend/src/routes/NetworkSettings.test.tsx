@@ -250,7 +250,7 @@ describe("NetworkSettings", () => {
     fireEvent.click(esquecer);
 
     const dialog = screen.getByRole("dialog", { name: "Esquecer a configuração local?" });
-    expect(dialog.textContent).toMatch(/apaga a configuração local.*reinicia o nó/i);
+    expect(dialog.textContent).toMatch(/apaga a configuração de rede.*reinicia com uma nova rede local/i);
     expect(vi.mocked(api.post)).not.toHaveBeenCalled();
 
     const confirma = screen.getAllByRole("button", { name: "Esquecer rede" });

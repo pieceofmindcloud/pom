@@ -57,9 +57,11 @@ field.
 ```bash
 # machine A (will be the administrator):
 ./target/release/pom
-# open http://<machine-a>:8080/ - with no pom.json the node is in setup mode;
-# pick the "admin" profile, name the network and keep the invitation
-# (connection key and trust.json).
+# open http://<machine-a>:8080/ - with no pom.json the node creates a local
+# network of its own (admin, named after the host, discovery off) and opens the
+# panel. Rename it and turn discovery on in Network settings; other machines
+# then ask to join from their Networks screen and an admin approves them.
+# The old wizard (profile, invitation, trust.json) only opens with --setup.
 
 # machine B (node):
 ./target/release/pom
@@ -183,8 +185,8 @@ same key and announce the same `node_id` - and the cluster indexes peers by
 B=/path/pom-b
 mkdir -p $B && cd $B
 for f in models apps; do ln -s ../pom/$f $f; done
-# the config is not inherited: without it the node starts in setup mode and
-# loads no model. Copy peer A's, changing gateway_port, p2p_port,
+# the config is not inherited: without it the node creates a local network of
+# its own and loads no model. Copy peer A's, changing gateway_port, p2p_port,
 # inference_port and bootstrap_nodes; each peer's slice comes from the
 # deployment in the UI.
 POM_HOME=$B ../pom/target/release/pom \

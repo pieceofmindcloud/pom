@@ -99,6 +99,13 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   public network), filled by `gateway::spawn_directory_board_publisher`.
   `default_directory_relays` is the list of relay keys a fresh installation
   asks (`DEFAULT_DIRECTORY_RELAYS` plus `POM_DIRECTORY_RELAYS`).
+  Admission requests live here too: `LobbyRequest::Admission`,
+  `AdmissionRecord` / `AdmissionView` / `AdmissionGrant` and
+  `apply_admission_request` (pending is refreshed, approved is kept, rejected
+  waits an hour); the principal's store is `NetworkChat::{request_admission,
+  admission_of, admissions, decide_admission}`. `network.rs` gates membership
+  by the connection key unless `NetworkSettings::open_admission`, and starts
+  detached when the network's visibility is `local`.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
   response próprio, limites de texto/arquivo, fila limitada, rate limit e
   writer de persistência fora do loop do swarm. A ação original leva a API key;

@@ -100,6 +100,15 @@ pub struct LobbyCard {
     pub ram_total_mb: u64,
     #[serde(default)]
     pub gpus: Vec<LobbyGpu>,
+    /// Round trip of the candidate's last request to the principal, as the
+    /// candidate measured it. Self-declared, like the hardware.
+    #[serde(default)]
+    pub rtt_ms: Option<u32>,
+    /// Whether the candidate reaches the principal through a relay circuit.
+    /// Set by the principal from the connection it sees; whatever the
+    /// candidate sent here is discarded.
+    #[serde(default)]
+    pub relayed: Option<bool>,
 }
 
 fn bounded(text: &str) -> String {
@@ -131,6 +140,8 @@ impl LobbyCard {
                     vram_total_mb: gpu.vram_total_mb.map(|mb| mb.max(0.0) as u64),
                 })
                 .collect(),
+            rtt_ms: None,
+            relayed: None,
         }
         .sanitized()
     }
@@ -163,6 +174,13 @@ pub enum LobbyRequest {
     Fetch {
         identity: LobbyIdentity,
         card: LobbyCard,
+    },
+    /// Ask to be admitted with `role`. The request waits for an admin; the
+    /// answer to it, and to every later `Fetch`, carries its state.
+    Admission {
+        identity: LobbyIdentity,
+        card: LobbyCard,
+        role: crate::config::EnrollmentRole,
     },
     /// Ask what the network publishes about itself (`NetworkInfo`). It is not
     /// part of the conversation: no card, no presence, and it is answered
@@ -204,6 +222,120 @@ pub fn default_directory_relays() -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     keys.retain(|key| seen.insert(key.clone()));
     keys
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+/// What an approved candidate needs to join: the network's trust document and
+/// its connection key. It only ever travels in an answer to the candidate
+/// whose signed identity an admin approved, over the Noise connection that
+/// identity was proven on.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub struct AdmissionGrant {
+    pub trust_document: String,
+    pub connection_key: String,
+    #[serde(default)]
+    pub relay_peers: Vec<String>,
+    /// The network's settings as they are now. The copy inside the trust
+    /// document is the one signed when the network was created - a network
+    /// that started local would be joined with discovery off.
+    #[serde(default)]
+    pub network: Option<crate::config::NetworkSettings>,
+}
+
+impl std::fmt::Debug for AdmissionGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AdmissionGrant(..)")
+    }
+}
+
+/// The state of the caller's own admission request, in an answer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AdmissionView {
+    pub status: AdmissionStatus,
+    pub role: crate::config::EnrollmentRole,
+    /// Present only when approved.
+    #[serde(default)]
+    pub grant: Option<AdmissionGrant>,
+}
+
+/// One admission request as the principal keeps it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdmissionRecord {
+    pub node_id: String,
+    pub card: LobbyCard,
+    pub role: crate::config::EnrollmentRole,
+    pub status: AdmissionStatus,
+    pub requested_at: String,
+    #[serde(default)]
+    pub decided_at: Option<String>,
+}
+
+/// Admission requests kept at once; the oldest decided ones go first.
+pub const ADMISSION_RECORDS: usize = 128;
+/// How long a rejected machine waits before it may ask again.
+pub const ADMISSION_RETRY_AFTER_SECS: i64 = 60 * 60;
+
+/// Applies one request to the list. A pending or approved request is only
+/// refreshed (card, role while pending); a rejected one may be asked again
+/// after [`ADMISSION_RETRY_AFTER_SECS`]. Returns the resulting status.
+pub fn apply_admission_request(
+    records: &mut Vec<AdmissionRecord>,
+    node_id: &str,
+    card: LobbyCard,
+    role: crate::config::EnrollmentRole,
+    now: chrono::DateTime<chrono::Utc>,
+) -> std::result::Result<AdmissionStatus, &'static str> {
+    if let Some(record) = records.iter_mut().find(|record| record.node_id == node_id) {
+        match record.status {
+            AdmissionStatus::Approved => {}
+            AdmissionStatus::Pending => {
+                record.card = card;
+                record.role = role;
+            }
+            AdmissionStatus::Rejected => {
+                let decided = record
+                    .decided_at
+                    .as_deref()
+                    .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                    .map(|at| at.with_timezone(&chrono::Utc));
+                if decided.is_some_and(|at| (now - at).num_seconds() < ADMISSION_RETRY_AFTER_SECS) {
+                    return Err("admission_rejected");
+                }
+                record.card = card;
+                record.role = role;
+                record.status = AdmissionStatus::Pending;
+                record.requested_at = now.to_rfc3339();
+                record.decided_at = None;
+            }
+        }
+        return Ok(record.status);
+    }
+    if records.len() >= ADMISSION_RECORDS {
+        // Make room by dropping the oldest request that was already decided.
+        let Some(oldest) = records
+            .iter()
+            .position(|record| record.status != AdmissionStatus::Pending)
+        else {
+            return Err("admissions_full");
+        };
+        records.remove(oldest);
+    }
+    records.push(AdmissionRecord {
+        node_id: node_id.to_string(),
+        card,
+        role,
+        status: AdmissionStatus::Pending,
+        requested_at: now.to_rfc3339(),
+        decided_at: None,
+    });
+    Ok(AdmissionStatus::Pending)
 }
 
 /// What a public network chose to publish about itself: the same three facts
@@ -253,6 +385,10 @@ pub struct LobbyResponse {
     /// `true` means it is being filled and asking again shortly gets it.
     #[serde(default)]
     pub pending: bool,
+    /// The caller's own admission request, when it has one. Only in answers
+    /// to `Post`, `Fetch` and `Admission`.
+    #[serde(default)]
+    pub admission: Option<AdmissionView>,
 }
 
 impl LobbyResponse {
@@ -992,6 +1128,8 @@ mod tests {
                 name: "RTX 5060 Ti".into(),
                 vram_total_mb: Some(16_000),
             }],
+            rtt_ms: None,
+            relayed: None,
         }
     }
 
@@ -1107,12 +1245,15 @@ mod tests {
                     let text = match &request {
                         LobbyRequest::Post { text, .. } => text.clone(),
                         LobbyRequest::Fetch { .. }
+                        | LobbyRequest::Admission { .. }
                         | LobbyRequest::Info
                         | LobbyRequest::Describe
                         | LobbyRequest::Directory => String::new(),
                     };
                     let node_id = match &request {
-                        LobbyRequest::Post { identity, .. } | LobbyRequest::Fetch { identity, .. } => {
+                        LobbyRequest::Post { identity, .. }
+                        | LobbyRequest::Fetch { identity, .. }
+                        | LobbyRequest::Admission { identity, .. } => {
                             identity.verified_node_id(&peer).unwrap_or_default()
                         }
                         _ => String::new(),
@@ -1126,6 +1267,7 @@ mod tests {
                             info: None,
                             networks: Vec::new(),
                             pending: false,
+                            admission: None,
                             messages: vec![LobbyMessage {
                                 message_id: "m1".into(),
                                 sender_node_id: node_id,
@@ -1335,6 +1477,59 @@ mod tests {
                 "{key} is not a pkarr key"
             );
         }
+    }
+
+    #[test]
+    fn an_admission_request_waits_is_refreshed_and_respects_a_rejection() {
+        use crate::config::EnrollmentRole;
+        let now = chrono::Utc::now();
+        let mut records = Vec::new();
+        assert_eq!(
+            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, now),
+            Ok(AdmissionStatus::Pending)
+        );
+        // Asking again while pending only refreshes what the admin will read.
+        assert_eq!(
+            apply_admission_request(&mut records, "a", card("renamed"), EnrollmentRole::Infer, now),
+            Ok(AdmissionStatus::Pending)
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].card.hostname, "renamed");
+        assert_eq!(records[0].role, EnrollmentRole::Infer);
+
+        // A rejection holds for a while, then the machine may ask again.
+        records[0].status = AdmissionStatus::Rejected;
+        records[0].decided_at = Some(now.to_rfc3339());
+        assert_eq!(
+            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, now),
+            Err("admission_rejected")
+        );
+        let later = now + chrono::Duration::seconds(ADMISSION_RETRY_AFTER_SECS + 1);
+        assert_eq!(
+            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, later),
+            Ok(AdmissionStatus::Pending)
+        );
+
+        // An approval is never undone by the candidate asking again.
+        records[0].status = AdmissionStatus::Approved;
+        assert_eq!(
+            apply_admission_request(&mut records, "a", card("x"), EnrollmentRole::Infer, later),
+            Ok(AdmissionStatus::Approved)
+        );
+        assert_eq!(records[0].role, EnrollmentRole::Node);
+
+        // Full of pending requests, a new one is refused rather than evicting.
+        let mut full: Vec<AdmissionRecord> = Vec::new();
+        for index in 0..ADMISSION_RECORDS {
+            apply_admission_request(&mut full, &format!("n{index}"), card("x"), EnrollmentRole::Node, now).unwrap();
+        }
+        assert_eq!(
+            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now),
+            Err("admissions_full")
+        );
+        full[3].status = AdmissionStatus::Rejected;
+        assert!(apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now).is_ok());
+        assert!(full.iter().all(|record| record.node_id != "n3"));
     }
 
     #[test]

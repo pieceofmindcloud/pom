@@ -1857,7 +1857,9 @@ async fn answer_lobby_request(
         return LobbyResponse::rejected("lobby_disabled");
     }
     let proof = match &request {
-        LobbyRequest::Post { identity, .. } | LobbyRequest::Fetch { identity, .. } => identity,
+        LobbyRequest::Post { identity, .. }
+        | LobbyRequest::Fetch { identity, .. }
+        | LobbyRequest::Admission { identity, .. } => identity,
         LobbyRequest::Info | LobbyRequest::Describe | LobbyRequest::Directory => {
             unreachable!("answered above")
         }
@@ -1873,15 +1875,22 @@ async fn answer_lobby_request(
     if node_id == network.node_id || peers.iter().any(|member| member.node_id == node_id) {
         return LobbyResponse::rejected("already_member");
     }
-    let card = match &request {
-        LobbyRequest::Post { card, .. } | LobbyRequest::Fetch { card, .. } => {
-            card.clone().sanitized()
-        }
+    let mut card = match &request {
+        LobbyRequest::Post { card, .. }
+        | LobbyRequest::Fetch { card, .. }
+        | LobbyRequest::Admission { card, .. } => card.clone().sanitized(),
         LobbyRequest::Info | LobbyRequest::Describe | LobbyRequest::Directory => {
             unreachable!("answered above")
         }
     };
-    let is_post = matches!(request, LobbyRequest::Post { .. });
+    // How the candidate reaches this node is what this node sees, never what
+    // the candidate says: an admin weighs it when deciding on admission.
+    let links = network.libp2p_links(&peer.to_string());
+    card.relayed = (!links.is_empty()).then(|| links.iter().all(|link| link.relayed));
+    let is_post = matches!(
+        request,
+        LobbyRequest::Post { .. } | LobbyRequest::Admission { .. }
+    );
     let seen = match chat.lobby_guests().admit(&node_id, &card, is_post) {
         Ok(seen) => seen,
         Err(error) => return LobbyResponse::rejected(error),
@@ -1892,11 +1901,45 @@ async fn answer_lobby_request(
             room_id: LOBBY_ROOM.to_string(),
             sender_node_id: node_id.clone(),
             recipient_node_id: None,
-            card,
+            card: card.clone(),
             sent_at: chrono::Utc::now(),
         };
         relay_chat(swarm, network, chat, presence, None).await;
     }
+    if let LobbyRequest::Admission { role, .. } = &request {
+        if !chat.accepts_role(*role).await {
+            return LobbyResponse::rejected("role_not_accepted");
+        }
+        if let Err(error) = chat.request_admission(&node_id, card.clone(), *role) {
+            return LobbyResponse::rejected(error);
+        }
+    }
+    // The caller's own request, and the grant once an admin approved it. The
+    // grant leaves only here: to the node whose signature was just verified,
+    // on the connection it was verified on.
+    let admission = match chat.admission_of(&node_id) {
+        Some(record) => {
+            let grant = if record.status == crate::network_lobby::AdmissionStatus::Approved {
+                let (connection_key, relay_peers, settings) = chat.grant_secrets().await;
+                network
+                    .trust_document_json()
+                    .map(|trust_document| crate::network_lobby::AdmissionGrant {
+                        trust_document,
+                        connection_key,
+                        relay_peers,
+                        network: Some(settings),
+                    })
+            } else {
+                None
+            };
+            Some(crate::network_lobby::AdmissionView {
+                status: record.status,
+                role: record.role,
+                grant,
+            })
+        }
+        None => None,
+    };
     if let LobbyRequest::Post {
         message_id, text, ..
     } = request
@@ -1963,6 +2006,7 @@ async fn answer_lobby_request(
         error: None,
         node_id,
         messages,
+        admission,
         ..LobbyResponse::default()
     }
 }

@@ -55,6 +55,11 @@ pub(crate) async fn network_settings_policy(
         .ok()
         .flatten()
         .unwrap_or(configured_network);
+    // Deliberately still "not public", not `!open_admission()`: this read is
+    // answered to any well-formed signed envelope, and on a listed network
+    // the trust document needed to sign one is public. A listed network's key
+    // only leaves through an approved admission grant and the admin-signed
+    // push to admitted peers (`fanout_network_settings`).
     let connection_key = (network.visibility != NetworkVisibility::Public)
         .then_some(connection_key)
         .unwrap_or_default();
@@ -128,6 +133,8 @@ async fn apply_network_settings_with_key(
     settings.country_name = settings.country_name.trim().to_string();
     settings.city = settings.city.trim().to_string();
     settings.accepted_enrollments = settings.accepted_enrollments.normalized();
+    let discovery_before = state.auth.read().await.network.visibility != NetworkVisibility::Local;
+    let discovery_after = settings.visibility != NetworkVisibility::Local;
     if settings.visibility == NetworkVisibility::Public {
         settings.geo_label = config::geo_network_label(
             &settings.country_code,
@@ -158,6 +165,18 @@ async fn apply_network_settings_with_key(
         .database
         .save_network_settings(&settings)
         .map_err(|error| format!("salvar detalhes da rede: {error:#}"))?;
+
+    // Discovery is the difference between `local` and the other two: off, the
+    // node announces nothing and no key lookup finds it; on, it goes looking
+    // for the network again.
+    if discovery_before && !discovery_after {
+        state.network.detach().await;
+    } else if !discovery_before && discovery_after {
+        let assignment = state.local_assignment.read().await.clone();
+        if let Err(error) = state.network.rejoin(assignment.as_ref()).await {
+            warn!("não foi possível voltar a anunciar a rede: {error:#}");
+        }
+    }
 
     if let Some(publisher) = &state.pkarr_publisher {
         if let Err(error) = publisher.set_geo_label(&settings.geo_label).await {
@@ -195,7 +214,7 @@ async fn fanout_network_settings(
                     NETWORK_SETTINGS_PATH,
                     &NetworkSettingsEnvelope {
                         network: settings.clone(),
-                        connection_key: if settings.visibility != NetworkVisibility::Public {
+                        connection_key: if !settings.open_admission() {
                             connection_key.to_string()
                         } else {
                             String::new()

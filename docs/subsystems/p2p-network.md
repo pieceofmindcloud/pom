@@ -1452,6 +1452,55 @@ candidates tracked. A blocked `node_id` and a current member are refused
 `lobby_disabled`. What a candidate reads is the lobby room only - the
 `network` room, files and direct messages never leave the members.
 
+**Admission.** A machine joins a network by asking, and an admin decides
+later. `Admission { identity, card, role }` on the lobby protocol records the
+request on the principal (`NetworkChat::request_admission`, persisted in
+`local_settings` as `lobby_admissions`, at most 128); `role` must be one the
+network currently accepts. Every answer to that machine's `Post`, `Fetch` and
+`Admission` then carries `admission: { status, role, grant }`. The grant - the
+trust document, the **connection key**, the relay keys and the network's
+current settings - is present only once an admin approved, and it leaves the
+principal only there: in an answer to the node whose signature over the
+transport was just verified, on that Noise connection. A rejected machine may
+ask again after an hour; an approval is never undone by asking again.
+
+The principal fills two things an admin weighs: `card.relayed`, from the
+connection it actually sees (`Network::libp2p_links`), overwriting whatever
+the candidate sent, and it keeps `card.rtt_ms`, the round trip the candidate
+measured on its previous exchange (self-declared, like the hardware). The
+admin lists and decides in `GET|POST /api/ui/network/admissions`; approving
+sends nothing, the candidate collects the grant on its next poll.
+
+On the candidate, `webui::spawn_admission_poller` fetches every pending
+request each 30 s so an approval that comes hours later is noticed with no
+window open. The grant stays in memory there, never reaches the browser and
+is not written to the database. Joining is the operator's explicit act
+(`POST /api/ui/network/join`): the node checks the granted trust document
+belongs to the key it asked, replaces its trust root, rewrites its config as
+a member with the granted key and settings, and restarts. It leaves the
+network it was in - usually its own local one.
+
+**What gates membership.** `NetworkSettings::open_admission` is true only for
+a public network left on `anyone_with_anchor`, the mode networks created
+before admission requests use: there the trust anchor alone admits
+(`Network::public_peer_is_admitted`). Every other network, listed or not, is
+gated by the connection key (`admission_without_probe` falls through to the
+`/handshake` probe), and the interface no longer offers the open mode. The key
+of a listed network leaves the principal through an approved grant and
+through the admin-signed settings push to admitted peers only -
+`network_settings_policy`, which answers any well-formed signed envelope,
+still withholds it from public networks for that reason.
+
+**Discovery off.** A network with `visibility: local` announces nothing: the
+node starts detached (`Network::detach`), publishes no pkarr record
+(`PkarrPublishHandle::publish_if_changed`) and no directory record. It is what
+a first launch creates. Saving another visibility in Network settings rejoins;
+saving `local` again detaches. Such a node still lists other networks, because
+`GET /api/public/networks` also asks its relays (`directory_relay_keys`:
+built-in, environment and configured relays, never itself) for their
+`Directory`, and it still reaches lobbies, since the lobby client is a swarm
+of its own.
+
 **Published stats.** The same protocol carries a third request, `Info`, that
 is not part of the conversation: no card, no presence, and its own switch,
 `network.public_stats` (off by default, public networks only), independent of

@@ -843,6 +843,43 @@ impl PomDb {
         })
     }
 
+    /// Admission requests this node holds as a network's principal.
+    pub fn lobby_admissions(&self) -> Result<Vec<crate::network_lobby::AdmissionRecord>> {
+        self.read_setting("lobby_admissions")
+    }
+
+    pub fn save_lobby_admissions(
+        &self,
+        records: &[crate::network_lobby::AdmissionRecord],
+    ) -> Result<()> {
+        self.save_setting("lobby_admissions", &records.to_vec())
+    }
+
+    /// Admission requests this node made to other networks, without grants.
+    pub fn lobby_requests(&self) -> Result<Vec<serde_json::Value>> {
+        self.read_setting("lobby_requests")
+    }
+
+    pub fn save_lobby_requests(&self, requests: &[serde_json::Value]) -> Result<()> {
+        self.save_setting("lobby_requests", &requests.to_vec())
+    }
+
+    /// A JSON list kept in `local_settings`; missing or unreadable is empty.
+    fn read_setting<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Vec<T>> {
+        self.with_read("ler configuração local", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = ?",
+                    params![key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            Ok(value
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default())
+        })
+    }
+
     pub fn save_public_network_geo_cache(
         &self,
         entries: &[PublicNetworkGeoCacheEntry],

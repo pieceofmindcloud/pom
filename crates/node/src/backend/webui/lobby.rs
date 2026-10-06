@@ -40,7 +40,94 @@ async fn local_card() -> LobbyCard {
     card
 }
 
-async fn exchange(key: &str, post: Option<(String, String)>) -> Response {
+/// What this node asks of a lobby in one exchange.
+enum Ask {
+    Fetch,
+    Post { message_id: String, text: String },
+    Admission {
+        role: crate::config::EnrollmentRole,
+    },
+}
+
+/// An admission request this node made to another network. `grant` is what an
+/// approval brought; it stays in memory, never goes to the browser and is not
+/// written to the database - the next poll brings it again.
+#[derive(Clone)]
+struct CandidateRequest {
+    key: String,
+    name: String,
+    role: crate::config::EnrollmentRole,
+    status: network_lobby::AdmissionStatus,
+    grant: Option<network_lobby::AdmissionGrant>,
+}
+
+impl CandidateRequest {
+    fn public_json(&self) -> serde_json::Value {
+        json!({
+            "key": self.key,
+            "name": self.name,
+            "role": self.role,
+            "status": self.status,
+        })
+    }
+}
+
+#[derive(Default)]
+struct CandidateState {
+    requests: HashMap<String, CandidateRequest>,
+    /// Round trip of the last exchange with each network, in milliseconds.
+    rtt_ms: HashMap<String, u32>,
+    /// Names typed or listed for each network, to label a request.
+    loaded: bool,
+}
+
+fn candidate_state() -> &'static std::sync::Mutex<CandidateState> {
+    static STATE: OnceLock<std::sync::Mutex<CandidateState>> = OnceLock::new();
+    STATE.get_or_init(Default::default)
+}
+
+/// Loads the persisted requests once, and writes them back after a change.
+fn sync_requests(database: &crate::db::PomDb, changed: bool) {
+    let mut state = candidate_state().lock().expect("candidate state lock");
+    if !state.loaded {
+        state.loaded = true;
+        for value in database.lobby_requests().unwrap_or_default() {
+            let (Some(key), Ok(role), Ok(status)) = (
+                value["key"].as_str(),
+                serde_json::from_value(value["role"].clone()),
+                serde_json::from_value(value["status"].clone()),
+            ) else {
+                continue;
+            };
+            state.requests.entry(key.to_string()).or_insert(CandidateRequest {
+                key: key.to_string(),
+                name: value["name"].as_str().unwrap_or_default().to_string(),
+                role,
+                status,
+                grant: None,
+            });
+        }
+    }
+    if changed {
+        let listed: Vec<serde_json::Value> = state
+            .requests
+            .values()
+            .map(CandidateRequest::public_json)
+            .collect();
+        if let Err(error) = database.save_lobby_requests(&listed) {
+            warn!("lobby: não foi possível salvar os pedidos de admissão: {error:#}");
+        }
+    }
+}
+
+/// Runs one exchange with the lobby of the network under `key`. `database` is
+/// absent in setup mode, where nothing about admission is kept.
+async fn exchange(
+    key: &str,
+    ask: Ask,
+    name: Option<&str>,
+    database: Option<&crate::db::PomDb>,
+) -> Response {
     let key = key.trim();
     let client = match network_lobby::client().await {
         Ok(client) => client,
@@ -53,34 +140,89 @@ async fn exchange(key: &str, post: Option<(String, String)>) -> Response {
                 .into_response();
         }
     };
-    let card = local_card().await;
-    let request = match post {
-        Some((message_id, text)) => LobbyRequest::Post {
-            identity: client.proof(),
-            card,
+    if let Some(database) = database {
+        sync_requests(database, false);
+    }
+    let mut card = local_card().await;
+    card.rtt_ms = candidate_state()
+        .lock()
+        .expect("candidate state lock")
+        .rtt_ms
+        .get(key)
+        .copied();
+    let identity = client.proof();
+    let request = match ask {
+        Ask::Post { message_id, text } => LobbyRequest::Post {
+            identity,
+            card: card.clone(),
             message_id,
             text,
         },
-        None => LobbyRequest::Fetch {
-            identity: client.proof(),
-            card,
+        Ask::Fetch => LobbyRequest::Fetch {
+            identity,
+            card: card.clone(),
+        },
+        Ask::Admission { role } => LobbyRequest::Admission {
+            identity,
+            card: card.clone(),
+            role,
         },
     };
+    let started = Instant::now();
     match client.request(key, request).await {
         // A refusal by the principal (`accepted: false`) is an answer, not a
         // transport failure: the screen reads `error` and says why.
-        Ok(response) => Json(json!({
-            "accepted": response.accepted,
-            "error": response.error,
-            "node_id": if response.node_id.is_empty() {
-                client.node_id().to_string()
-            } else {
-                response.node_id
-            },
-            "card": local_card().await,
-            "messages": response.messages,
-        }))
-        .into_response(),
+        Ok(response) => {
+            let elapsed = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+            let admission = {
+                let mut state = candidate_state().lock().expect("candidate state lock");
+                state.rtt_ms.insert(key.to_string(), elapsed);
+                if response.accepted {
+                    match &response.admission {
+                        Some(view) => {
+                            let entry = state.requests.entry(key.to_string()).or_insert_with(|| {
+                                CandidateRequest {
+                                    key: key.to_string(),
+                                    name: String::new(),
+                                    role: view.role,
+                                    status: view.status,
+                                    grant: None,
+                                }
+                            });
+                            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+                                entry.name = name.trim().to_string();
+                            }
+                            entry.role = view.role;
+                            entry.status = view.status;
+                            entry.grant = view.grant.clone();
+                        }
+                        // The principal no longer has the request.
+                        None => {
+                            state.requests.remove(key);
+                        }
+                    }
+                }
+                state.requests.get(key).map(CandidateRequest::public_json)
+            };
+            if let Some(database) = database {
+                sync_requests(database, response.accepted);
+            }
+            card.rtt_ms = Some(elapsed);
+            Json(json!({
+                "accepted": response.accepted,
+                "error": response.error,
+                "node_id": if response.node_id.is_empty() {
+                    client.node_id().to_string()
+                } else {
+                    response.node_id
+                },
+                "card": card,
+                "messages": response.messages,
+                // Status and role only: the grant never reaches the browser.
+                "admission": admission,
+            }))
+            .into_response()
+        }
         Err(error) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": error.to_string() })),
@@ -90,24 +232,352 @@ async fn exchange(key: &str, post: Option<(String, String)>) -> Response {
 }
 
 /// `GET /api/ui/network-chat/lobby?key=pk:...` - recent lobby history of the
-/// network published under `key`, as its principal answers it now.
-pub(super) async fn lobby_fetch(_auth: ConnectionAuth, Query(query): Query<LobbyQuery>) -> Response {
-    exchange(&query.key, None).await
+/// network published under `key`, as its principal answers it now, plus the
+/// state of this node's admission request there.
+pub(super) async fn lobby_fetch(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(query): Query<LobbyQuery>,
+) -> Response {
+    exchange(&query.key, Ask::Fetch, None, Some(&state.database)).await
 }
 
 /// `POST /api/ui/network-chat/lobby` - say something in that lobby.
-pub(super) async fn lobby_post(_auth: ConnectionAuth, Json(post): Json<LobbyPost>) -> Response {
-    exchange(&post.key, Some((post.message_id, post.text))).await
+pub(super) async fn lobby_post(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(post): Json<LobbyPost>,
+) -> Response {
+    exchange(
+        &post.key,
+        Ask::Post {
+            message_id: post.message_id,
+            text: post.text,
+        },
+        None,
+        Some(&state.database),
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdmissionAsk {
+    pub key: String,
+    pub role: crate::config::EnrollmentRole,
+    /// The network's name as the screen lists it, to label the request.
+    #[serde(default)]
+    pub name: String,
+}
+
+/// `POST /api/ui/network-chat/lobby/admission` - ask the network under `key`
+/// to admit this machine as `role`. The answer is the request's state; an
+/// admin there decides later.
+pub(super) async fn lobby_admission(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(ask): Json<AdmissionAsk>,
+) -> Response {
+    exchange(
+        &ask.key,
+        Ask::Admission { role: ask.role },
+        Some(&ask.name),
+        Some(&state.database),
+    )
+    .await
+}
+
+/// `GET /api/ui/network-chat/lobby/requests` - the admission requests this
+/// node made, with their last known state. Never the grant.
+pub(super) async fn lobby_requests(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    sync_requests(&state.database, false);
+    let mut listed: Vec<serde_json::Value> = candidate_state()
+        .lock()
+        .expect("candidate state lock")
+        .requests
+        .values()
+        .map(CandidateRequest::public_json)
+        .collect();
+    listed.sort_by(|left, right| left["key"].as_str().cmp(&right["key"].as_str()));
+    Json(listed).into_response()
+}
+
+/// `POST /api/ui/network-chat/lobby/requests/forget` - drop a request from
+/// this node's list. It does not withdraw it on the other network.
+pub(super) async fn lobby_request_forget(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(query): Json<LobbyQuery>,
+) -> Response {
+    sync_requests(&state.database, false);
+    candidate_state()
+        .lock()
+        .expect("candidate state lock")
+        .requests
+        .remove(query.key.trim());
+    sync_requests(&state.database, true);
+    Json(json!({ "forgotten": true })).into_response()
+}
+
+/// Keeps this node's pending admission requests current while no chat window
+/// is open: an approval may come hours after the request. One `Fetch` per
+/// pending request every 30 s, which also keeps the machine listed there.
+pub(crate) fn spawn_admission_poller(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            sync_requests(&state.database, false);
+            let pending: Vec<String> = candidate_state()
+                .lock()
+                .expect("candidate state lock")
+                .requests
+                .values()
+                .filter(|request| {
+                    request.status == network_lobby::AdmissionStatus::Pending
+                        || (request.status == network_lobby::AdmissionStatus::Approved
+                            && request.grant.is_none())
+                })
+                .map(|request| request.key.clone())
+                .collect();
+            for key in pending {
+                let _ = exchange(&key, Ask::Fetch, None, Some(&state.database)).await;
+            }
+        }
+    });
+}
+
+/// `POST /api/ui/network/join` - join the network under `key`, whose admin
+/// approved this machine. It replaces the network this node is in: the local
+/// trust root is revoked, the granted one installed, the config rewritten as a
+/// member with the granted connection key, and the node restarts. The
+/// operator confirms this in the interface; nothing calls it unattended.
+pub(super) async fn join_network(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(query): Json<LobbyQuery>,
+) -> Response {
+    let key = query.key.trim().to_string();
+    let refuse = |status: StatusCode, reason: &str, error: String| {
+        (status, Json(json!({ "reason": reason, "error": error }))).into_response()
+    };
+    // The grant is only kept in memory; after a restart, ask for it again.
+    let mut request = candidate_state()
+        .lock()
+        .expect("candidate state lock")
+        .requests
+        .get(&key)
+        .cloned();
+    if request.as_ref().is_some_and(|request| request.grant.is_none()) || request.is_none() {
+        let _ = exchange(&key, Ask::Fetch, None, Some(&state.database)).await;
+        request = candidate_state()
+            .lock()
+            .expect("candidate state lock")
+            .requests
+            .get(&key)
+            .cloned();
+    }
+    let Some(request) = request else {
+        return refuse(
+            StatusCode::CONFLICT,
+            "no_request",
+            "this node has no admission request for that network".into(),
+        );
+    };
+    let Some(grant) = request.grant.clone() else {
+        return refuse(
+            StatusCode::CONFLICT,
+            "not_approved",
+            "the network has not approved this machine".into(),
+        );
+    };
+    let document = match crate::admin_trust::parse_transported(&grant.trust_document) {
+        Ok(document) => document,
+        Err(error) => {
+            return refuse(
+                StatusCode::BAD_GATEWAY,
+                "grant_invalid",
+                format!("the granted trust document is invalid: {error:#}"),
+            )
+        }
+    };
+    // The grant must be for the network that was asked: the one whose
+    // principal key is `key`.
+    let granted_key =
+        crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&document.primary.pubkey);
+    if granted_key.as_deref() != Some(key.as_str()) {
+        return refuse(
+            StatusCode::BAD_GATEWAY,
+            "grant_invalid",
+            "the granted trust document belongs to another network".into(),
+        );
+    }
+    let metadata = document.setup.clone();
+    // The settings in the grant are the network's current ones; the copy in
+    // the trust document dates from when the network was created.
+    let Some(mut network) = grant
+        .network
+        .clone()
+        .or_else(|| metadata.as_ref().map(super::setup::network_from_trust_metadata))
+    else {
+        return refuse(
+            StatusCode::BAD_GATEWAY,
+            "grant_invalid",
+            "the grant carries no network settings".into(),
+        );
+    };
+    // A member of a network is never off the network, whatever was granted.
+    if network.visibility == crate::config::NetworkVisibility::Local {
+        network.visibility = crate::config::NetworkVisibility::Private;
+    }
+    if grant.connection_key.trim().is_empty() {
+        return refuse(
+            StatusCode::BAD_GATEWAY,
+            "grant_invalid",
+            "the grant carries no connection key".into(),
+        );
+    }
+
+    state.runtime.stop().await;
+    state.network.detach().await;
+    let trust_path = crate::config::admin_trust_path();
+    if let Err(error) = std::fs::remove_file(&trust_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "trust_not_replaced",
+                format!("could not remove the current trust root: {error}"),
+            );
+        }
+    }
+    if let Err(error) = crate::admin_trust::AdminTrust::install_document(trust_path, document) {
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "trust_not_replaced",
+            format!("could not install the granted trust root: {error:#}"),
+        );
+    }
+    let mut config = match crate::config::Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "config_unreadable",
+                format!("{error:#}"),
+            )
+        }
+    };
+    // How this machine's own interface is reached is the operator's choice
+    // and has nothing to do with which network it is in.
+    let exposure = config.admin_exposure;
+    let access_token = config.admin_access_token.clone();
+    config.prepare_for_setup();
+    config.admin_exposure = exposure;
+    config.admin_access_token = access_token;
+    config.setup_pending = false;
+    config.profile = match request.role {
+        crate::config::EnrollmentRole::Node => crate::profile::NodeProfile::Node,
+        crate::config::EnrollmentRole::Infer => crate::profile::NodeProfile::Infer,
+    };
+    config.connection_key = grant.connection_key.trim().to_string();
+    config.network = network;
+    let relay_hints = metadata.map(|metadata| metadata.relay_hints).unwrap_or_default();
+    for relay in relay_hints.iter().chain(grant.relay_peers.iter()) {
+        if !config.relay_peers.contains(relay) {
+            config.relay_peers.push(relay.clone());
+        }
+    }
+    if let Err(error) = config.save() {
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "config_not_saved",
+            format!("{error:#}"),
+        );
+    }
+    if let Err(error) = state.database.save_network_settings(&config.network) {
+        warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+    }
+    if let Err(error) = state.database.clear_api_keys() {
+        warn!("não foi possível limpar as chaves de API locais: {error:#}");
+    }
+    candidate_state()
+        .lock()
+        .expect("candidate state lock")
+        .requests
+        .remove(&key);
+    sync_requests(&state.database, true);
+    info!(network = %config.network.public_name, "admitted: joining the network and restarting");
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        let error = crate::respawn::respawn_self();
+        tracing::error!("respawn após entrar na rede falhou, o nó segue no ar: {error}");
+    });
+    Json(json!({ "joined": true, "restart": true })).into_response()
+}
+
+/// `GET /api/ui/network/admissions` - the admission requests this network
+/// received, for its admin to decide. Each carries the candidate's declared
+/// hardware, the latency it measured and whether it reaches the principal
+/// directly or through a relay.
+pub(super) async fn admissions(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    Json(state.network_chat.admissions()).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdmissionDecision {
+    pub node_id: String,
+    /// `approve`, `reject` or `forget`.
+    pub decision: String,
+}
+
+/// `POST /api/ui/network/admissions` - an admin's decision on one request.
+/// Approving does not send anything: the candidate collects the grant on its
+/// next poll.
+pub(super) async fn decide_admission(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(decision): Json<AdmissionDecision>,
+) -> Response {
+    let status = match decision.decision.as_str() {
+        "approve" => Some(network_lobby::AdmissionStatus::Approved),
+        "reject" => Some(network_lobby::AdmissionStatus::Rejected),
+        "forget" => None,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "decision must be approve, reject or forget" })),
+            )
+                .into_response()
+        }
+    };
+    if !state
+        .network_chat
+        .decide_admission(decision.node_id.trim(), status)
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Json(state.network_chat.admissions()).into_response()
 }
 
 /// `GET /api/setup/lobby?key=pk:...` - the same, from the setup wizard.
 pub async fn setup_lobby_fetch(Query(query): Query<LobbyQuery>) -> Response {
-    exchange(&query.key, None).await
+    exchange(&query.key, Ask::Fetch, None, None).await
 }
 
 /// `POST /api/setup/lobby`.
 pub async fn setup_lobby_post(Json(post): Json<LobbyPost>) -> Response {
-    exchange(&post.key, Some((post.message_id, post.text))).await
+    exchange(
+        &post.key,
+        Ask::Post {
+            message_id: post.message_id,
+            text: post.text,
+        },
+        None,
+        None,
+    )
+    .await
 }
 
 async fn info_exchange(key: &str) -> Response {
@@ -285,7 +755,7 @@ pub async fn setup_public_networks(
         }
     }
     let from_relays =
-        futures::future::join_all(relay_keys.iter().map(|key| relay_directory(key))).await;
+        futures::future::join_all(relay_keys.iter().map(|key| crate::gateway::relay_directory(key))).await;
     for network in from_relays.into_iter().flatten() {
         if !networks
             .iter()
@@ -295,34 +765,6 @@ pub async fn setup_public_networks(
         }
     }
     Json(networks).into_response()
-}
-
-/// The public networks the relay under `key` knows, each checked against its
-/// own trust document. A relay that is still filling its board is asked once
-/// more; one that does not answer contributes nothing.
-async fn relay_directory(key: &str) -> Vec<crate::gateway::PublicNetworkView> {
-    let Ok(client) = network_lobby::client().await else {
-        return Vec::new();
-    };
-    let mut response = match client.request(key, LobbyRequest::Directory).await {
-        Ok(response) => response,
-        Err(error) => {
-            tracing::debug!("lobby: relé {key} não respondeu ao diretório: {error:#}");
-            return Vec::new();
-        }
-    };
-    if response.accepted && response.pending {
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        if let Ok(again) = client.request(key, LobbyRequest::Directory).await {
-            response = again;
-        }
-    }
-    response
-        .networks
-        .into_iter()
-        .take(network_lobby::LobbyLimits::DIRECTORY_NETWORKS)
-        .filter_map(crate::gateway::validated_listed_network)
-        .collect()
 }
 
 #[cfg(test)]

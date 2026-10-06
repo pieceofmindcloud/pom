@@ -1,4 +1,4 @@
-import { Cpu, MemoryStick, Monitor } from "lucide-react";
+import { Cpu, MemoryStick, Monitor, Waypoints } from "lucide-react";
 import { useI18n } from "../i18n/provider";
 import type { LobbyCard } from "../lib/types";
 
@@ -42,6 +42,18 @@ export function LobbyHardwareCard({ nodeId, card, self = false }: { nodeId: stri
           <dt className="sr-only">{t("lobby.ram")}</dt>
           <dd>{gigabytes(card.ram_total_mb) ? t("lobby.ramTotal", { value: gigabytes(card.ram_total_mb) ?? "" }) : unknown}</dd>
         </div>
+        {(card.relayed != null || card.rtt_ms != null) && (
+          <div className="flex items-center gap-2 text-muted" data-testid={`lobby-link-${nodeId}`}>
+            <Waypoints className="h-3.5 w-3.5 shrink-0 text-faint" />
+            <dt className="sr-only">{t("lobby.connection")}</dt>
+            <dd>
+              {[
+                card.relayed == null ? null : t(card.relayed ? "lobby.connectionRelayed" : "lobby.connectionDirect"),
+                card.rtt_ms == null ? null : t("lobby.latency", { value: card.rtt_ms }),
+              ].filter(Boolean).join(" - ")}
+            </dd>
+          </div>
+        )}
         {card.gpus.length === 0 ? (
           <p className="text-faint">{t("lobby.noGpu")}</p>
         ) : card.gpus.map((gpu, index) => (

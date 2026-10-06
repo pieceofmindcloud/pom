@@ -190,7 +190,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     try {
       await api.post("/api/ui/network/leave");
       toast.success(t("network.forgetNetworkStarted"), t("network.forgetNetworkStartedDetail"));
-      window.setTimeout(() => window.location.assign("/admin-ui/setup"), 1500);
+      window.setTimeout(() => window.location.assign("/admin-ui/"), 1500);
     } catch (e) {
       toast.fromError(t("network.forgetNetworkFailed"), e);
     } finally {
@@ -554,7 +554,10 @@ function NetworkInfoPanel({
           <Field label={t("network.accessPolicy")}>
             <Select value={draft.access_policy} onChange={(event) => update({ access_policy: event.target.value as NetworkSettingsData["access_policy"] })}>
               <option value="authorized">{t("network.accessAuthorized")}</option>
-              <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>
+              {/* The open mode is no longer offered. A network already on it
+                  keeps showing it, so saving another field does not silently
+                  close the network to its current members. */}
+              {draft.access_policy === "anyone_with_anchor" && <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>}
               <option value="local_only">{t("network.accessLocalOnly")}</option>
             </Select>
           </Field>

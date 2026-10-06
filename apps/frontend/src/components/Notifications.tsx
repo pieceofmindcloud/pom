@@ -26,6 +26,7 @@ import {
   Scissors,
   ShieldAlert,
   Upload,
+  UserPlus,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -38,6 +39,8 @@ import {
   markDefaultPasswordNoticeRead,
   useDefaultPasswordNoticeState,
 } from "../lib/defaultPasswordNotice";
+import { admissionsApi, useAdmissionRequests, useAdmissions, type AdmissionRecord } from "../lib/admissions";
+import { useProfile } from "../lib/profile";
 import { useToast } from "../lib/toast";
 import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
@@ -61,6 +64,23 @@ import {
 import { pluginDisplayName } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
+
+/** What an admin needs to decide on a candidate, in one line. */
+function admissionDetail(record: AdmissionRecord, t: (key: string, values?: Record<string, string | number>) => string): string {
+  const { card } = record;
+  const gigabytes = (mb: number) => `${(mb / 1024).toFixed(mb >= 10 * 1024 ? 0 : 1)} GB`;
+  const vram = card.gpus.reduce((sum, gpu) => sum + (gpu.vram_total_mb ?? 0), 0);
+  return [
+    t(`network.enrollment.${record.role}`),
+    card.relayed == null ? null : t(card.relayed ? "lobby.connectionRelayed" : "lobby.connectionDirect"),
+    card.rtt_ms == null ? null : t("lobby.latency", { value: card.rtt_ms }),
+    card.cpu_count > 0 ? t("lobby.cpuCount", { count: card.cpu_count }) : null,
+    card.ram_total_mb > 0 ? t("lobby.ramTotal", { value: gigabytes(card.ram_total_mb) }) : null,
+    card.gpus.length === 0
+      ? t("lobby.noGpu")
+      : `${card.gpus.map((gpu) => gpu.name).join(", ")}${vram > 0 ? ` (${gigabytes(vram)} VRAM)` : ""}`,
+  ].filter(Boolean).join(" · ");
+}
 
 /** Ícone, tom e chave de estado de uma transferência, num lugar só. */
 function transferLook(job: TransferJob) {
@@ -169,6 +189,39 @@ export function Notifications() {
   const jobs = useJobs();
   const transfers = useTransfers();
   const offers = useOffers();
+  // Machines asking to join this network (for its admin), and the answers to
+  // what this machine asked of other networks.
+  const { profile } = useProfile();
+  const admissions = useAdmissions(profile === "admin");
+  const admissionRequests = useAdmissionRequests();
+  const pendingAdmissions = (admissions.data ?? []).filter((record) => record.status === "pending");
+  const answeredRequests = (admissionRequests.data ?? []).filter((request) => request.status !== "pending");
+  const [joinKey, setJoinKey] = useState<string | null>(null);
+  const [deciding, setDeciding] = useState<string | null>(null);
+
+  async function decideAdmission(record: AdmissionRecord, decision: "approve" | "reject") {
+    setDeciding(record.node_id);
+    try {
+      await admissionsApi.decide(record.node_id, decision);
+      toast.success(t(decision === "approve" ? "notifications.admissionApproved" : "notifications.admissionRejected"));
+      void admissions.refetch();
+    } catch (e) {
+      toast.fromError(t("notifications.offerFailed"), e);
+    } finally {
+      setDeciding(null);
+    }
+  }
+
+  async function joinApproved(key: string) {
+    setJoinKey(key);
+    try {
+      await admissionsApi.join(key);
+      window.setTimeout(() => window.location.assign("/admin-ui/"), 1500);
+    } catch (e) {
+      toast.fromError(t("lobby.joinFailed"), e);
+      setJoinKey(null);
+    }
+  }
 
   const running = (jobs.data?.jobs ?? []).filter((j) => j.state === "running");
   // O que anda **e** o que acabou de terminar: o desfecho é a metade da
@@ -196,9 +249,11 @@ export function Notifications() {
   const passwordNoticeUnread = passwordNotice && passwordNoticeState === "unread";
   const [passwordNoticeFresh, setPasswordNoticeFresh] = useState(false);
   const count = running.length + moving.length + waiting.length + pluginConfirms.length + unreadNotices
+    + pendingAdmissions.length + answeredRequests.length
     + (passwordNoticeUnread ? 1 : 0);
   const hasItems = passwordNotice
-    || running.length + moving.length + waiting.length + pluginConfirms.length + pluginNotices.length > 0;
+    || running.length + moving.length + waiting.length + pluginConfirms.length + pluginNotices.length
+      + pendingAdmissions.length + answeredRequests.length > 0;
 
   useEffect(() => {
     if (!open) {
@@ -340,6 +395,52 @@ export function Notifications() {
                   />
                 </div>
               )}
+
+              {pendingAdmissions.map((record) => (
+                <div key={record.node_id} data-testid={`admission-${record.node_id}`}>
+                  <Row
+                    icon={<UserPlus className="h-3.5 w-3.5 text-aqua" />}
+                    title={t("notifications.admissionTitle", { name: record.card.hostname || record.node_id.slice(0, 12) })}
+                    aside={record.node_id.slice(0, 12)}
+                    detail={admissionDetail(record, t)}
+                    footer={
+                      <>
+                        <Button size="sm" variant="primary" loading={deciding === record.node_id} onClick={() => void decideAdmission(record, "approve")}>
+                          {t("notifications.admissionApprove")}
+                        </Button>
+                        <Button size="sm" variant="ghost" disabled={deciding === record.node_id} onClick={() => void decideAdmission(record, "reject")}>
+                          {t("notifications.admissionReject")}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => { setOpen(false); navigate("/network-chat"); }}>
+                          {t("notifications.admissionTalk")}
+                        </Button>
+                      </>
+                    }
+                  />
+                </div>
+              ))}
+
+              {answeredRequests.map((request) => (
+                <div key={request.key} data-testid={`admission-answer-${request.key}`}>
+                  <Row
+                    icon={<UserPlus className={clsx("h-3.5 w-3.5", request.status === "approved" ? "text-lime" : "text-rose")} />}
+                    title={t(request.status === "approved" ? "notifications.requestApproved" : "notifications.requestRejected", { name: request.name || request.key })}
+                    detail={request.status === "approved" ? t("lobby.joinDetail") : undefined}
+                    footer={
+                      <>
+                        {request.status === "approved" && (
+                          <Button size="sm" variant="primary" loading={joinKey === request.key} onClick={() => void joinApproved(request.key)}>
+                            {t("lobby.joinNow")}
+                          </Button>
+                        )}
+                        <Button size="sm" variant="ghost" onClick={() => void admissionsApi.forget(request.key).then(() => admissionRequests.refetch())}>
+                          {t("notifications.pluginNoticeDismiss")}
+                        </Button>
+                      </>
+                    }
+                  />
+                </div>
+              ))}
 
               {pluginNotices.map((notice) => (
                 <Row

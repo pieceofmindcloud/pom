@@ -207,6 +207,11 @@ impl PkarrPublishHandle {
     /// Publishes when the record changed or expired. Returns whether it
     /// published.
     pub(crate) async fn publish_if_changed(&self) -> anyhow::Result<bool> {
+        // A node off the network (discovery off, or taken off by its
+        // operator) must not be findable by key either.
+        if self.network.is_detached() {
+            return Ok(false);
+        }
         let desired = self.desired_record();
         let mut last = self.last.lock().await;
         if last

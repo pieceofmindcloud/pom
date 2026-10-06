@@ -1,13 +1,15 @@
 import { Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Modal } from "./Confirm";
+import { Confirm, Modal } from "./Confirm";
 import { LobbyHardwareCard } from "./LobbyHardwareCard";
-import { Button, Input } from "./ui";
+import { Button, Input, Select } from "./ui";
 import { api } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
 import { useI18n } from "../i18n/provider";
-import type { LobbyExchange } from "../lib/types";
+import { admissionsApi } from "../lib/admissions";
+import { ENROLLMENT_ROLES } from "../lib/types";
+import type { EnrollmentRole, LobbyExchange } from "../lib/types";
 
 const POLL_MS = 3000;
 const MAX_TEXT_BYTES = 2 * 1024;
@@ -25,6 +27,9 @@ const ERROR_KEYS: Record<string, string> = {
   node_blocked: "lobby.errorBlocked",
   already_member: "lobby.errorMember",
   rate_limited: "lobby.errorRate",
+  role_not_accepted: "lobby.errorRole",
+  admission_rejected: "lobby.errorRejected",
+  admissions_full: "lobby.errorFull",
   lobby_full: "lobby.errorFull",
   text_invalid: "lobby.errorText",
 };
@@ -41,12 +46,20 @@ function errorKey(code: string | null | undefined): string {
  * again every few seconds while the window is open, and that same request is
  * what keeps this machine listed in the lobby.
  */
-export function LobbyChat({ network, endpoint, onClose }: { network: { name: string; publisher_key: string } | null; endpoint: LobbyEndpoint; onClose: () => void }) {
+export function LobbyChat({ network, endpoint, onClose }: {
+  network: { name: string; publisher_key: string; accepted_enrollments?: EnrollmentRole[] } | null;
+  endpoint: LobbyEndpoint;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
   const [exchange, setExchange] = useState<LobbyExchange | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [role, setRole] = useState<EnrollmentRole>("node");
+  const [asking, setAsking] = useState(false);
+  const [joinConfirm, setJoinConfirm] = useState(false);
+  const [joining, setJoining] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const key = network?.publisher_key ?? "";
@@ -108,6 +121,37 @@ export function LobbyChat({ network, endpoint, onClose }: { network: { name: str
     }
   }
 
+  // Asking to be admitted is for a configured node: the wizard has no
+  // network to leave and nothing to keep a request in.
+  const canAsk = endpoint === "/api/ui/network-chat/lobby";
+  const acceptedRoles = ENROLLMENT_ROLES.filter((option) => !network?.accepted_enrollments || network.accepted_enrollments.includes(option));
+  const askRole = acceptedRoles.includes(role) ? role : acceptedRoles[0];
+  const admission = exchange?.admission ?? null;
+
+  async function requestAdmission() {
+    if (!key || !askRole || asking) return;
+    setAsking(true);
+    try {
+      adopt(await api.post<LobbyExchange>(`${endpoint}/admission`, { key, role: askRole, name: network?.name ?? "" }));
+    } catch {
+      setFailure("lobby.errorUnreachable");
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  async function join() {
+    setJoining(true);
+    try {
+      await admissionsApi.join(key);
+      window.setTimeout(() => window.location.assign("/admin-ui/"), 1500);
+    } catch {
+      setFailure("lobby.joinFailed");
+      setJoining(false);
+      setJoinConfirm(false);
+    }
+  }
+
   if (!network) return null;
   return (
     <Modal open size="lg" title={t("lobby.title", { name: network.name })} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
@@ -155,8 +199,33 @@ export function LobbyChat({ network, endpoint, onClose }: { network: { name: str
           <p className="eyebrow mb-2">{t("lobby.yourCard")}</p>
           {exchange ? <LobbyHardwareCard nodeId={exchange.node_id} card={exchange.card} self /> : <p className="text-xs text-faint">{t("lobby.connecting")}</p>}
           <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t("lobby.cardNote")}</p>
+          {canAsk && exchange && (
+            <div className="mt-4 border-t border-line pt-3" data-testid="lobby-admission">
+              <p className="eyebrow mb-2">{t("lobby.admission")}</p>
+              {!admission && (acceptedRoles.length === 0 ? (
+                <p className="text-xs text-faint">{t("publicNetworks.closedDetail")}</p>
+              ) : (
+                <div className="space-y-2">
+                  <Select compact aria-label={t("lobby.admissionRole")} value={askRole} onChange={(event) => setRole(event.target.value as EnrollmentRole)}>
+                    {acceptedRoles.map((option) => <option key={option} value={option}>{t(`network.enrollment.${option}`)}</option>)}
+                  </Select>
+                  <Button size="sm" variant="primary" loading={asking} onClick={() => void requestAdmission()}>{t("lobby.admissionAsk")}</Button>
+                  <p className="text-[0.68rem] leading-relaxed text-faint">{t("lobby.admissionAskDetail")}</p>
+                </div>
+              ))}
+              {admission?.status === "pending" && <p className="text-xs leading-relaxed text-amber">{t("lobby.admissionPending", { role: t(`network.enrollment.${admission.role}`) })}</p>}
+              {admission?.status === "rejected" && <p className="text-xs leading-relaxed text-rose">{t("lobby.admissionRejected")}</p>}
+              {admission?.status === "approved" && (
+                <div className="space-y-2">
+                  <p className="text-xs leading-relaxed text-lime">{t("lobby.admissionApproved", { role: t(`network.enrollment.${admission.role}`) })}</p>
+                  <Button size="sm" variant="primary" onClick={() => setJoinConfirm(true)}>{t("lobby.joinNow")}</Button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+      <Confirm open={joinConfirm} title={t("lobby.joinTitle", { name: network.name })} description={t("lobby.joinDetail")} confirmLabel={t("lobby.joinNow")} tone="danger" busy={joining} onConfirm={() => void join()} onCancel={() => !joining && setJoinConfirm(false)} />
     </Modal>
   );
 }

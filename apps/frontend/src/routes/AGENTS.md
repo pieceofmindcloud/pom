@@ -69,8 +69,12 @@ Per-file list:
   Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
   confirmation as Forget network in `NetworkSettings.tsx`); the principal
   (`authority_level === "primary"` from `useNode`) gets no action there.
-  A network advertising an empty `accepted_enrollments` gets a disabled
-  "Closed" button instead of Join; the list (or "Any role" when the record has
+  The screen is titled "Networks". For a network this node is not in, the one
+  action opens the lobby window (`LobbyChat`), where admission is requested;
+  without `lobby_chat` the button is disabled ("No lobby"). The old path that
+  left the network and opened the wizard is gone.
+  A network advertising an empty `accepted_enrollments` can still be talked to
+  but offers no admission request; the list (or "Any role" when the record has
   none) is shown in the details modal and travels to the wizard in the
   `sessionStorage` handoff. A network with `lobby_chat` also gets "Chat", which
   opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`. A

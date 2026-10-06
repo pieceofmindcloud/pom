@@ -174,6 +174,20 @@ pub struct NetworkSettings {
     pub location: Option<NetworkLocation>,
 }
 
+impl NetworkSettings {
+    /// Whether membership is open to anyone holding the trust document, with
+    /// no connection key: a public network left on `anyone_with_anchor`.
+    ///
+    /// Every other network is gated by the connection key, which an admin
+    /// hands over by approving an admission request (`network_lobby.rs`). The
+    /// open mode is what networks created before admission requests use; the
+    /// interface no longer offers it.
+    pub fn open_admission(&self) -> bool {
+        self.visibility == NetworkVisibility::Public
+            && self.access_policy == NetworkAccessPolicy::AnyoneWithAnchor
+    }
+}
+
 /// Validate the network block wherever it is edited, not only during setup.
 /// Public networks need the coarse geographic key because discovery groups by
 /// country and city before measuring peer latency.

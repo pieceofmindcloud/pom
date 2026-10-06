@@ -563,6 +563,10 @@ export interface LobbyCard {
   cpu_count: number;
   ram_total_mb: number;
   gpus: { name: string; vram_total_mb: number | null }[];
+  /** Round trip to the network's principal, as the candidate measured it. */
+  rtt_ms?: number | null;
+  /** The principal sees this candidate through a relay circuit. */
+  relayed?: boolean | null;
 }
 
 /** A machine in the lobby that is not a member of the network. */
@@ -590,6 +594,8 @@ export interface LobbyExchange {
   node_id: string;
   card: LobbyCard;
   messages: LobbyMessage[];
+  /** This machine's admission request on that network, when it made one. */
+  admission?: { key: string; name: string; role: EnrollmentRole; status: "pending" | "approved" | "rejected" } | null;
 }
 
 export type NetworkChatRoom = "network" | "lobby";

@@ -65,6 +65,12 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(lobby_fetch).post(lobby_post),
         )
         .route("/api/ui/network-chat/lobby/info", get(lobby_info))
+        .route("/api/ui/network-chat/lobby/admission", post(lobby_admission))
+        .route("/api/ui/network-chat/lobby/requests", get(lobby_requests))
+        .route(
+            "/api/ui/network-chat/lobby/requests/forget",
+            post(lobby_request_forget),
+        )
         // Ancorar a confiança de admin é o único trabalho que precisa de tela
         // **antes** de existir autoridade: ver o cabeçalho de `webui/trust.rs`.
         .route(

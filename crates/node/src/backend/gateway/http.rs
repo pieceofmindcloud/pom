@@ -847,7 +847,69 @@ pub(super) async fn public_networks(
     State(state): State<GatewayState>,
     Query(query): Query<PublicNetworksQuery>,
 ) -> impl IntoResponse {
-    Json(collect_public_networks(&state, &query).await)
+    // What this node sees for itself and what its relays know, asked at the
+    // same time. The relays matter most for a node with discovery off, which
+    // hears no announce at all. A relay's own board does not go through here
+    // (`spawn_directory_board_publisher` calls the collector), so relays never
+    // chain questions to each other.
+    let relay_keys = directory_relay_keys(&state).await;
+    let (mut networks, from_relays) = tokio::join!(
+        collect_public_networks(&state, &query),
+        futures::future::join_all(relay_keys.iter().map(|key| relay_directory(key))),
+    );
+    for network in from_relays.into_iter().flatten() {
+        if matches_geo_label(&network.geo_label, &query)
+            && !networks
+                .iter()
+                .any(|known| known.fingerprint == network.fingerprint)
+        {
+            networks.push(network);
+        }
+    }
+    Json(networks)
+}
+
+/// The public networks the relay under `key` knows, each checked against its
+/// own trust document. A relay that is still filling its board is asked once
+/// more; one that does not answer contributes nothing.
+pub(crate) async fn relay_directory(key: &str) -> Vec<PublicNetworkView> {
+    let Ok(client) = crate::network_lobby::client().await else {
+        return Vec::new();
+    };
+    let mut response = match client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+        Ok(response) => response,
+        Err(error) => {
+            debug!("lobby: relé {key} não respondeu ao diretório: {error:#}");
+            return Vec::new();
+        }
+    };
+    if response.accepted && response.pending {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Ok(again) = client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+            response = again;
+        }
+    }
+    response
+        .networks
+        .into_iter()
+        .take(crate::network_lobby::LobbyLimits::DIRECTORY_NETWORKS)
+        .filter_map(validated_listed_network)
+        .collect()
+}
+
+/// The relay keys this node asks for the networks they know: the built-in and
+/// environment list plus the relays in its config, never its own key.
+async fn directory_relay_keys(state: &GatewayState) -> Vec<String> {
+    let own = state
+        .pkarr_publisher
+        .as_ref()
+        .map(|publisher| publisher.node().public_key_uri());
+    let mut keys = crate::network_lobby::default_directory_relays();
+    keys.extend(state.auth.read().await.relay_peers.iter().cloned());
+    keys.retain(|key| Some(key) != own.as_ref());
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 /// Whether this node gathers the announces of other clusters into a list of

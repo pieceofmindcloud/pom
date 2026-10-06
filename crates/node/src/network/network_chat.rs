@@ -500,6 +500,9 @@ pub struct NetworkChat {
     /// What this node answers about public networks to whoever asks by key
     /// (`network_lobby::DirectoryBoard`).
     directory_board: crate::network_lobby::DirectoryBoard,
+    /// Admission requests this node holds as principal. Loaded from the
+    /// database and written back on every change.
+    admissions: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
 }
 
 impl NetworkChat {
@@ -537,6 +540,7 @@ impl NetworkChat {
                 lobby_guests: Default::default(),
                 public_stats: Default::default(),
                 directory_board: Default::default(),
+                admissions: Mutex::new(Vec::new()),
             }),
             receiver,
         )
@@ -565,6 +569,103 @@ impl NetworkChat {
 
     pub fn lobby_guests(&self) -> &crate::network_lobby::LobbyGuests {
         &self.lobby_guests
+    }
+
+    /// Whether the network currently accepts new members with `role`.
+    pub async fn accepts_role(&self, role: crate::config::EnrollmentRole) -> bool {
+        self.auth
+            .read()
+            .await
+            .network
+            .accepted_enrollments
+            .0
+            .contains(&role)
+    }
+
+    /// The connection key, relay keys and current settings that go into an
+    /// admission grant.
+    pub async fn grant_secrets(&self) -> (String, Vec<String>, crate::config::NetworkSettings) {
+        let config = self.auth.read().await;
+        let network = self
+            .database
+            .network_settings()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| config.network.clone());
+        (
+            config.connection_key.clone(),
+            config.relay_peers.clone(),
+            network,
+        )
+    }
+
+    /// Reads the persisted admission requests. Called once at startup.
+    pub fn load_admissions(&self) {
+        if let Ok(records) = self.database.lobby_admissions() {
+            *self.admissions.lock().expect("admissions lock") = records;
+        }
+    }
+
+    fn store_admissions(&self, records: &[crate::network_lobby::AdmissionRecord]) {
+        if let Err(error) = self.database.save_lobby_admissions(records) {
+            eprintln!("lobby admissions persistence failed: {error:#}");
+        }
+    }
+
+    pub fn admissions(&self) -> Vec<crate::network_lobby::AdmissionRecord> {
+        self.admissions.lock().expect("admissions lock").clone()
+    }
+
+    pub fn admission_of(&self, node_id: &str) -> Option<crate::network_lobby::AdmissionRecord> {
+        self.admissions
+            .lock()
+            .expect("admissions lock")
+            .iter()
+            .find(|record| record.node_id == node_id)
+            .cloned()
+    }
+
+    /// Records a candidate's request (`network_lobby::apply_admission_request`).
+    pub fn request_admission(
+        &self,
+        node_id: &str,
+        card: crate::network_lobby::LobbyCard,
+        role: crate::config::EnrollmentRole,
+    ) -> std::result::Result<crate::network_lobby::AdmissionStatus, &'static str> {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        let status = crate::network_lobby::apply_admission_request(
+            &mut records,
+            node_id,
+            card,
+            role,
+            chrono::Utc::now(),
+        )?;
+        self.store_admissions(&records);
+        Ok(status)
+    }
+
+    /// An admin's decision. `None` forgets the request altogether. Returns
+    /// whether a request of `node_id` existed.
+    pub fn decide_admission(
+        &self,
+        node_id: &str,
+        decision: Option<crate::network_lobby::AdmissionStatus>,
+    ) -> bool {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        let Some(index) = records.iter().position(|record| record.node_id == node_id) else {
+            return false;
+        };
+        match decision {
+            Some(status) => {
+                records[index].status = status;
+                records[index].decided_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            None => {
+                records.remove(index);
+            }
+        }
+        self.store_admissions(&records);
+        true
     }
 
     pub fn directory_board(&self) -> &crate::network_lobby::DirectoryBoard {

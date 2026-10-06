@@ -95,6 +95,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `peerSpeed.ts` - `rateSpeed`: tom de decode/prefill de uma fatia pela razão
   para a mais rápida do mesmo modelo; com uma só medida, `solo`.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
+- `admissions.ts` - admission requests on both sides: `useAdmissions` (what
+  this network received, admin only), `useAdmissionRequests` (what this node
+  asked of other networks) and `admissionsApi` (`decide`, `join`, `forget`).
+  The grant never reaches the browser, so there is no type for it.
 - `publicStats.ts` - `usePublicStats(endpoint, key, enabled, refreshKey)`:
   models, node count and VRAM of a network this machine is not in, asked from
   that network's principal through the node. 30 s cache, one retry after 3 s

@@ -217,7 +217,11 @@ Per-file list:
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
   inside the popover. Offers can be accepted/rejected right there
-  (`POST /api/transfer/offers/:id/accept|reject`). All state is read back from
+  (`POST /api/transfer/offers/:id/accept|reject`). It also lists admission
+  (`lib/admissions.ts`): for the network's admin, each machine asking to join
+  with its role, direct or relayed connection, latency and hardware, and
+  Approve / Decline; for a candidate, the answer to its own requests, with
+  "Join now" when approved. All state is read back from
   the node, so a reload in the middle of a transfer shows the same bar.
   It also renders principal-transfer and infer-to-node offers from the same
   `useOffers()` response, and the pending plugin confirmations
@@ -414,7 +418,11 @@ Per-file list:
   `/api/ui/network-chat/lobby` on a configured node and `/api/setup/lobby` in
   the wizard, where requests go without a session. Shows each message as
   member or candidate, the principal's refusal codes as sentences, and the
-  hardware card the network sees. Test: `LobbyChat.test.tsx`.
+  hardware card the network sees. On a configured node its side panel also
+  requests admission (`POST <endpoint>/admission` with the role, limited to
+  the network's `accepted_enrollments`), shows the request's state and, once
+  approved, joins behind a confirmation (`admissionsApi.join`).
+  Test: `LobbyChat.test.tsx`.
 - `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
   OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens
   with, without live usage, because nobody measures a non-member. Used by

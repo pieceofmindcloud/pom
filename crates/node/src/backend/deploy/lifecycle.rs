@@ -894,6 +894,11 @@ pub(super) async fn run_redeploy(
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                         .map(str::to_string),
+                    mtp_draft_path: config
+                        .and_then(|c| c.get("mtp_draft_path"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
                     model_label: config
                         .and_then(|c| c.get("model_label"))
                         .and_then(|v| v.as_str())
@@ -997,6 +1002,7 @@ pub(super) async fn run_redeploy(
                 .and_then(|s| s.model_path.clone())
                 .or_else(|| no.source_model_path.clone()),
             mmproj_path: snap.and_then(|s| s.mmproj_path.clone()),
+            mtp_draft_path: snap.and_then(|s| s.mtp_draft_path.clone()),
             part_sha256: no.part_sha256.clone(),
             model_label: snap
                 .and_then(|s| s.model_label.clone())
@@ -1047,6 +1053,10 @@ pub(super) async fn run_redeploy(
 pub(super) struct NodeIdentitySnapshot {
     pub(super) model_path: Option<String>,
     pub(super) mmproj_path: Option<String>,
+    /// The external MTP draft the tail had loaded. It comes from the model's
+    /// sidecar link and rarely sits next to the slice, so the slice's own
+    /// folder cannot find it again.
+    pub(super) mtp_draft_path: Option<String>,
     pub(super) model_label: Option<String>,
     pub(super) deployment_name: String,
     pub(super) single_peer: bool,

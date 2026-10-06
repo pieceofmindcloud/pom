@@ -75,6 +75,9 @@ pub struct ReconfigureSlice {
     pub model_path: Option<String>,
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// The external MTP draft the node had loaded before the unload.
+    #[serde(default)]
+    pub mtp_draft_path: Option<String>,
     #[serde(default)]
     pub part_sha256: Option<String>,
     pub model_label: String,
@@ -195,12 +198,18 @@ pub(crate) async fn reconfigure_local(
                 "este nó não anuncia porta de inferência; não dá para reconfigurar a fatia"
                     .to_string()
             })?;
-            // Redescoberto a cada reconfigure, não carregado do snapshot: o
-            // arquivo de rascunho MTP é opcional e pode ter sido adicionado,
-            // removido ou renomeado no disco entre implantações, ao contrário
-            // da identidade da fatia em si. Ver `run_apply` (`jobs_apply.rs`).
-            let mtp_draft_path =
-                crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path));
+            // Primeiro o rascunho MTP que o nó tinha carregado, se o arquivo
+            // ainda existe: a implantação o resolve pelo vínculo de sidecar do
+            // modelo, fora da pasta da fatia, e só a busca por vizinho o perdia
+            // em todo redeploy. Sem ele, a busca ao lado do arquivo ainda vale
+            // para um rascunho adicionado depois. Ver `run_apply`.
+            let mtp_draft_path = slice
+                .mtp_draft_path
+                .clone()
+                .filter(|path| std::path::Path::new(path).is_file())
+                .or_else(|| {
+                    crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path))
+                });
             NodeConfig {
                 deploy_id: slice.deploy_id,
                 deployment_name: slice.deployment_name,

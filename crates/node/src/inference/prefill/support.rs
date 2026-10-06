@@ -2044,6 +2044,10 @@ pub struct RequestTrace {
     pub mtp_acceptance_rate: Option<f64>,
     #[serde(skip)]
     expected_decode_spans: u64,
+    /// `/v1/step` rounds the gateway sent and got back. Every hop reports one
+    /// decode span per round, so this is the exact expectation.
+    #[serde(skip)]
+    decode_rounds: u64,
     #[serde(skip)]
     pending_direct_receipts: Vec<PendingDirectReceipt>,
     #[serde(skip)]
@@ -2337,6 +2341,7 @@ impl RequestTrace {
             mtp_draft_tokens_rejected: 0,
             mtp_acceptance_rate: None,
             expected_decode_spans: 0,
+            decode_rounds: 0,
             pending_direct_receipts: Vec::new(),
             direct_transport_receipt_ids: HashSet::new(),
             remote_stream_frame_ids: HashSet::new(),
@@ -3022,6 +3027,11 @@ impl RequestTrace {
         true
     }
 
+    /// One `/v1/step` round came back from every hop.
+    pub fn note_decode_round(&mut self) {
+        self.decode_rounds = self.decode_rounds.saturating_add(1);
+    }
+
     pub fn refresh_telemetry(&mut self, wall_clock_ms: u64) {
         let expected_peers = self.hops.len() as u32;
         let decode_tracking = self.expected_decode_spans > 0
@@ -3062,8 +3072,16 @@ impl RequestTrace {
         // A typed decision is prefill-only: the last peer scores the labels
         // from the prompt's logits and no `/v1/step` round runs, even though
         // the answer counts as one output token.
+        // Estimating the rounds from the tokens is off by one either way: the
+        // first token comes from the prefill, and an end-of-generation token
+        // accepted as a draft counts as accepted but is never emitted. It
+        // reported 98.9% of a trace in which every hop answered every round.
+        // The rounds the gateway counted are exact; the estimate is only for
+        // a path that does not count them.
         let decode_rounds = if self.probe.is_some() || self.jev.is_some() {
             0
+        } else if self.decode_rounds > 0 {
+            self.decode_rounds
         } else {
             (self.output_tokens as u64).saturating_sub(self.mtp_draft_tokens_accepted)
         };
@@ -3365,6 +3383,8 @@ impl RequestTrace {
             self.expected_decode_spans = self
                 .expected_decode_spans
                 .saturating_add(other.expected_decode_spans);
+            self.decode_rounds = self.decode_rounds.saturating_add(other.decode_rounds);
+
             self.telemetry
                 .remote_stream
                 .merge(&other.telemetry.remote_stream);

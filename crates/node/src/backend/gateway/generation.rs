@@ -1724,6 +1724,9 @@ pub(super) async fn generate_stream_inner(
                     }
                 }
                 trace.merge(&step.trace);
+                if !remote_stream_mode {
+                    trace.note_decode_round();
+                }
 
                 // A round can confirm more tokens than remain in the budget —
                 // stream only what fits, and note it so `step.done` (which
@@ -1880,6 +1883,9 @@ pub(super) async fn generate_stream_inner(
             match res {
                 Ok(step) => {
                     trace.merge(&step.trace);
+                    if remote_stream.is_none() {
+                        trace.note_decode_round();
+                    }
                     if step.accepted.is_empty() {
                         let _ = tx
                             .send(GenEvent::Failed(

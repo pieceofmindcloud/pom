@@ -367,6 +367,18 @@ pub(super) async fn add_node_endpoint(
             .into_response();
     }
 
+    if state
+        .all_peers()
+        .await
+        .iter()
+        .any(|peer| peer.node_id == req.target_node_id && crate::gateway::peer_is_infer(&state, peer))
+    {
+        return bad(json!({
+            "reason": "infer_target",
+            "error": "this machine was admitted for inference only and cannot serve a model",
+        }));
+    }
+
     if req.start_layer > req.end_layer {
         return bad(json!({ "error": "faixa de camadas invertida" }));
     }

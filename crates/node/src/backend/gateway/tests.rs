@@ -307,8 +307,11 @@ mod tests {
         }
     }
 
+    /// The connection key says "a member", not which one: every member holds
+    /// it, inference nodes included. An administrative route asked by another
+    /// node takes a request signed by an admin of the trust chain.
     #[tokio::test]
-    async fn authenticated_node_to_node_admin_routes_ignore_receiver_profile() {
+    async fn node_to_node_admin_routes_need_an_admin_signature_not_just_the_key() {
         let state = testkit::state_with("connection-secret", vec![]).await;
         {
             let mut auth = state.auth.write().await;
@@ -317,48 +320,158 @@ mod tests {
             auth.admin_exposure = crate::config::AdminExposure::Network;
         }
         let app = Router::new()
-            .route("/api/ui/deployments", get(|| async { StatusCode::OK }))
             .route("/api/ui/stop-inference", get(|| async { StatusCode::OK }))
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
-                state,
+                state.clone(),
                 require_admin_for_surface,
             ));
-
-        // A leitura de deployments é NodeAdmin; a ação abaixo continua
-        // AdminOnly e é o caso que verifica a separação de autoridade.
-        for path in ["/api/ui/stop-inference"] {
-            let mut browser_request = Request::get(path)
-                .header("authorization", "Bearer connection-secret")
-                .body(axum::body::Body::empty())
-                .unwrap();
-            browser_request
+        let path = "/api/ui/stop-inference";
+        let from_peer = |mut request: Request<axum::body::Body>| {
+            request
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
-            assert_eq!(
-                app.clone().oneshot(browser_request).await.unwrap().status(),
-                StatusCode::FORBIDDEN,
-                "browser request must not inherit node authority for {path}"
-            );
+            request
+        };
 
-            let mut internal_request = Request::get(path)
+        let browser = from_peer(
+            Request::get(path)
+                .header("authorization", "Bearer connection-secret")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        );
+        assert_eq!(
+            app.clone().oneshot(browser).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "a browser request does not inherit node authority"
+        );
+
+        // The key and the node-to-node marker, with no signature: any member
+        // could send this.
+        let key_only = from_peer(
+            Request::get(path)
                 .header("authorization", "Bearer connection-secret")
                 .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
                 .body(axum::body::Body::empty())
-                .unwrap();
-            internal_request
-                .extensions_mut()
-                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+                .unwrap(),
+        );
+        let refused = app.clone().oneshot(key_only).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(refused).await["reason"], "signature_required");
+
+        // Signed by the principal of the trust chain.
+        let mut signed = Request::get(path);
+        for (name, value) in state.signed_control_headers("GET", path, b"").unwrap().iter() {
+            signed = signed.header(name, value);
+        }
+        let signed = from_peer(signed.body(axum::body::Body::empty()).unwrap());
+        assert_eq!(app.oneshot(signed).await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn what_a_node_may_ask_of_another_depends_on_who_it_is() {
+        use crate::webui::RouteScope::{AdminOnly, CommonOrInternal, InferNodeAdmin, NodeAdmin};
+        let mut worker = testkit::peer("worker", "worker", 8090);
+        worker.profile = crate::profile::NodeProfile::Node;
+        let mut infer = testkit::peer("infer", "infer", 8091);
+        infer.profile = crate::profile::NodeProfile::Infer;
+        let state = testkit::state_with("principal", vec![worker, infer]).await;
+        let principal_of = |node_id: &str| crate::admin_trust::AuthorityPrincipal {
+            node_id: node_id.into(),
+            peer_id: String::new(),
+            pubkey: format!("pubkey-of-{node_id}"),
+        };
+        let admin = state.authority_principal.clone();
+
+        // Administrative routes: an admin's signature, nothing less.
+        assert_eq!(caller_may_ask(&state, AdminOnly, None).await, Err("signature_required"));
+        assert_eq!(caller_may_ask(&state, AdminOnly, Some(&admin)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, Some(&principal_of("worker"))).await,
+            Err("admin_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, Some(&principal_of("infer"))).await,
+            Err("admin_required")
+        );
+
+        // Routes of a serving node: a peer that is not an inference node.
+        assert_eq!(caller_may_ask(&state, NodeAdmin, None).await, Err("signature_required"));
+        assert_eq!(caller_may_ask(&state, NodeAdmin, Some(&admin)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("infer"))).await,
+            Err("infer_caller")
+        );
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("stranger"))).await,
+            Err("unknown_caller")
+        );
+
+        // A machine admitted as an inference node stays one for the principal
+        // whatever it announces: the role is granted at admission.
+        state
+            .network_chat
+            .request_admission("worker", Default::default(), crate::config::EnrollmentRole::Infer)
+            .unwrap();
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
+            Err("infer_caller")
+        );
+
+        // Inference and the common routes are open to every member.
+        for scope in [InferNodeAdmin, CommonOrInternal] {
+            assert_eq!(caller_may_ask(&state, scope, None).await, Ok(()));
             assert_eq!(
-                app.clone()
-                    .oneshot(internal_request)
-                    .await
-                    .unwrap()
-                    .status(),
-                StatusCode::OK,
-                "authenticated node request must reach {path}"
+                caller_may_ask(&state, scope, Some(&principal_of("infer"))).await,
+                Ok(())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_inference_node_refuses_a_model_even_from_an_admin() {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Infer;
+        }
+        let app = Router::new()
+            .route("/api/ui/apply", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/api/transfer/offer", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/api/ui/unload", axum::routing::post(|| async { StatusCode::OK }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+        let signed_post = |path: &'static str| {
+            let mut request = Request::post(path);
+            for (name, value) in state.signed_control_headers("POST", path, b"").unwrap().iter() {
+                request = request.header(name, value);
+            }
+            let mut request = request.body(axum::body::Body::empty()).unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            request
+        };
+        // Signed by the principal itself, and still refused: this machine was
+        // admitted for inference only.
+        for path in ["/api/ui/apply", "/api/transfer/offer"] {
+            let refused = app.clone().oneshot(signed_post(path)).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{path}");
+            assert_eq!(testkit::body_of(refused).await["reason"], "infer_profile", "{path}");
+        }
+        // Nothing to hold means nothing to refuse about letting go.
+        assert_eq!(
+            app.oneshot(signed_post("/api/ui/unload")).await.unwrap().status(),
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]

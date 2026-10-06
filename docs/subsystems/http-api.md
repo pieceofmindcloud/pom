@@ -114,6 +114,26 @@ last):
   declared hardware, measured latency and whether it connects through a relay,
   and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
   `reject` or `forget`) decides one.
+- **Roles between nodes** (`gateway/state.rs::require_admin_for_surface`).
+  The profile table in `webui/routes/mod.rs` gates what a **browser** may
+  reach on a node. A node-to-node request passes that table, and is checked
+  for two other things instead:
+  - **The receiver is an inference node.** It answers `403` with `reason:
+    "infer_profile"` to every route in `INFER_NODE_REFUSES` - `/api/ui/apply`,
+    `/api/ui/launch`, `/api/ui/deploy`, `/api/ui/reconfigure`,
+    `/api/ui/slice`, `/api/transfer` - before anything else, so an admin's
+    signed request is refused too.
+  - **Who the caller is** (`caller_may_ask`). An `AdminOnly` route needs the
+    control envelope signed by an admin of the trust chain (`reason:
+    "signature_required"` for the key alone, `"admin_required"` otherwise). A
+    `NodeAdmin` route needs it signed by an admin or by an admitted peer that
+    is not an inference node (`"infer_caller"`, `"unknown_caller"`). Routes of
+    the other scopes - `/v1`, `/api/generate`, the node's own description, the
+    `/api/internal` and `/api/cluster` sync routes - are unchanged.
+  `gateway::peer_is_infer` is the one definition of "inference node": a peer
+  that announces the profile, or, on the principal, one whose admission record
+  says so. The deploy survey leaves such peers out, and `launch` and add-node
+  refuse them as targets (`reason: "infer_target"`).
 - **Leaving and the own network** (`p2p-network.md` 6.1). `POST
   /api/ui/network/leave` leaves a network this node joined and restores its
   own from standby (`restored_own_network` in the answer); on the node's own

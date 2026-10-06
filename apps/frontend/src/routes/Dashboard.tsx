@@ -354,7 +354,9 @@ export function Dashboard() {
         open={adding}
         group={group}
         deployId={activeDeployId}
-        peers={c.peers.map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
+        // An inference node holds and serves no model, so it is not a machine
+        // to add; the node refuses the request as well.
+        peers={c.peers.filter((p) => p.node?.profile !== "infer").map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
         slices={[]}
         existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
         onClose={() => setAdding(false)}

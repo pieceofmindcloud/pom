@@ -953,6 +953,26 @@ pub(crate) async fn launch(
     let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
     let peer_count = req.targets.len() as u32;
+    // Refused here too, before anything is stopped: a target list built by
+    // hand must not get as far as unloading the other machines.
+    if let Some(infer) = req.targets.iter().find_map(|target| {
+        peers
+            .iter()
+            .find(|peer| peer.node_id == target.node_id)
+            .filter(|peer| crate::gateway::peer_is_infer(&state, peer))
+    }) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "reason": "infer_target",
+                "error": format!(
+                    "{} was admitted for inference only and cannot serve a model",
+                    infer.hostname
+                ),
+            })),
+        )
+            .into_response();
+    }
 
     // Phase 1: stop inference on every target peer so no stale endpoint
     // receives inference requests mid-transition, and to free ports before

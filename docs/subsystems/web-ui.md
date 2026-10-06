@@ -543,7 +543,9 @@ decided when the network admits the machine, so the card only explains that
 serving models takes leaving and asking for admission again as a network
 node, and the bell hides any `node_promotion` offer. The node route
 `POST /api/ui/network/request-node` and its approval still exist; nothing in
-the interface calls them. The principal
+the interface calls them. A `node` is likewise no longer offered stepping
+down to `infer` (`POST /api/ui/network/relinquish-node` remains, unused):
+roles are set at admission, and changing one means leaving and rejoining. The principal
 administrator can promote a node with `POST /admin/nodes/{id}/promote-admin`;
 the gateway requires effective principal authority, and the target validates
 the Ed25519 grant in the chain of trust. The `connection_key` stays only the

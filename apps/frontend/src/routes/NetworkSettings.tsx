@@ -3,7 +3,6 @@
  * and whether this machine is even taking part.
  */
 import {
-  ArrowDownToLine,
   Ban,
   Network,
   Radio,
@@ -38,7 +37,6 @@ import {
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { adminAuthorityApi } from "../lib/adminAuthority";
 import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useWindowsFirewall } from "../lib/queries";
 import { useGeoReference } from "../lib/queries";
@@ -71,8 +69,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [relinquishConfirm, setRelinquishConfirm] = useState(false);
-  const [relinquishing, setRelinquishing] = useState(false);
   const [forgetNetworkConfirm, setForgetNetworkConfirm] = useState(false);
   const [forgettingNetwork, setForgettingNetwork] = useState(false);
 
@@ -148,20 +144,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     }
   }
 
-  async function relinquishNode() {
-    setRelinquishing(true);
-    try {
-      await adminAuthorityApi.relinquishNode();
-      toast.success(t("network.relinquishNodeStarted"));
-      invalidate();
-    } catch (e) {
-      toast.fromError(t("network.relinquishNodeFailed"), e);
-    } finally {
-      setRelinquishing(false);
-      setRelinquishConfirm(false);
-    }
-  }
-
   async function forgetNetwork() {
     setForgettingNetwork(true);
     try {
@@ -229,25 +211,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
           </Panel>
         )}
 
-        {node.data?.profile === "node" && (
-          <Panel>
-            <PanelHeader
-              eyebrow={t("network.profile")}
-              title={t("network.relinquishNode")}
-              subtitle={t("network.relinquishNodeDescription")}
-              actions={
-                <Button
-                  variant="danger"
-                  loading={relinquishing}
-                  icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
-                  onClick={() => setRelinquishConfirm(true)}
-                >
-                  {t("network.relinquishNode")}
-                </Button>
-              }
-            />
-          </Panel>
-        )}
 
       </div>
 
@@ -260,16 +223,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
         busy={busy}
         onConfirm={() => pending && void setBlocked(pending.id, true)}
         onCancel={() => setPending(null)}
-      />
-      <Confirm
-        open={relinquishConfirm}
-        title={t("network.relinquishNodeTitle")}
-        description={t("network.relinquishNodeDescription")}
-        confirmLabel={t("network.relinquishNode")}
-        tone="danger"
-        busy={relinquishing}
-        onConfirm={() => void relinquishNode()}
-        onCancel={() => setRelinquishConfirm(false)}
       />
       <Confirm
         open={forgetNetworkConfirm}

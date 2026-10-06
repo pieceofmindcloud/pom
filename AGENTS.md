@@ -196,6 +196,15 @@ quebra o produto inteiro.
   a member that leaves makes the principal replace the connection key. O perfil
   persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
   continua sendo o mecanismo de autenticação. → `http-api.md`, `web-ui.md`
+- **A node's role is enforced by the nodes, not by the screens.** An
+  inference node refuses everything that would make it hold or serve a model
+  (transfers, slicing, `apply`, being a deploy target), whoever asks, an admin
+  included. What one node may ask of another depends on who signed the
+  request: administrative routes take an admin of the trust chain, routes of
+  a serving node take a peer that is not an inference node, and the
+  connection key alone opens neither - every member holds it. The role is
+  granted at admission; on the principal a machine admitted as an inference
+  node stays one whatever it announces. → `http-api.md`
 - **Plugins são independentes entre si e são uma fronteira de processo.** O
   POM não tem mais uma única "licença Enterprise" de produto: `PluginManager`
   (`crates/node/src/plugins.rs`) mantém um estado de ativação, lease,

@@ -472,7 +472,14 @@ pub(super) async fn survey(
             .map(|slice| (slice.start_layer, slice.end_layer))
             .collect::<Vec<_>>()
     });
-    let peers: Vec<PeerInfo> = state.all_peers().await;
+    // An inference node is never a deployment target: it is not surveyed, so
+    // no plan can place a range on it and no screen offers it.
+    let peers: Vec<PeerInfo> = state
+        .all_peers()
+        .await
+        .into_iter()
+        .filter(|peer| !crate::gateway::peer_is_infer(state, peer))
+        .collect();
     let self_id = state.network.node_id.clone();
     let mut route_rtt: std::collections::HashMap<String, f64> = state
         .network

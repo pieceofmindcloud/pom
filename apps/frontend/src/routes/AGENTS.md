@@ -614,9 +614,10 @@ Per-file list:
   `node`: the role is what the network admitted the machine as, and changing
   it means leaving and asking for admission again. The card says so and has
   no action; `POST /api/ui/network/request-node` still exists on the node but
-  nothing in the interface calls it. Um `node` pode descer para
-  infer por `POST /api/ui/network/relinquish-node`: novas inferências saem do
-  encaminhamento, as atuais drenam e só então a fatia é liberada. O
+  nothing in the interface calls it. The opposite direction is gone from
+  the screen as well: a `node` is no longer offered stepping down to `infer`
+  (`POST /api/ui/network/relinquish-node` also still exists, unused). Roles
+  are set at admission and changing one means rejoining. O
   administrador principal pode promover um nó via
   `POST /admin/nodes/:id/promote-admin`.
 - `AdminAuthority.tsx` - Admin authority screen backed by

@@ -534,6 +534,26 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
         })
 }
 
+/// Routes an inference node refuses whoever asks, an admin included: they
+/// are how a machine comes to hold and serve a model - receiving files,
+/// slicing, loading a slice, being a deployment target. The role is what the
+/// network admitted the machine as, and no request changes that.
+const INFER_NODE_REFUSES: &[&str] = &[
+    "/api/ui/apply",
+    "/api/ui/launch",
+    "/api/ui/deploy",
+    "/api/ui/reconfigure",
+    "/api/ui/slice",
+    "/api/ui/slice-ranges",
+    "/api/transfer",
+];
+
+pub(crate) fn infer_node_refuses(path: &str) -> bool {
+    INFER_NODE_REFUSES
+        .iter()
+        .any(|prefix| is_under(path, prefix))
+}
+
 pub(crate) const fn profile_can_access(
     profile: crate::profile::NodeProfile,
     scope: RouteScope,
@@ -804,6 +824,33 @@ mod policy_tests {
             for profile in [Infer, Node, Admin] {
                 assert!(profile_can_access(profile, scope), "{profile} em {path}");
             }
+        }
+    }
+
+    #[test]
+    fn an_inference_node_refuses_everything_that_would_make_it_serve_a_model() {
+        for path in [
+            "/api/ui/apply",
+            "/api/ui/launch",
+            "/api/ui/deploy",
+            "/api/ui/deploy/node",
+            "/api/ui/slice",
+            "/api/transfer/offer",
+            "/api/transfer/download",
+        ] {
+            assert!(infer_node_refuses(path), "{path} should be refused");
+        }
+        // Running inference, reading its own state and leaving stay open.
+        for path in [
+            "/v1/chat/completions",
+            "/api/generate",
+            "/api/ui/node",
+            "/api/ui/unload",
+            "/api/ui/leave",
+            "/api/ui/applying",
+            "/api/transferred",
+        ] {
+            assert!(!infer_node_refuses(path), "{path} should stay open");
         }
     }
 

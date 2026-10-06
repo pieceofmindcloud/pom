@@ -1158,6 +1158,12 @@ faz o download autenticado do blob persistido.
   `lobby_requests`, `spawn_admission_poller`, with the grant kept in memory
   only), `join_network` (replace the trust root, rewrite the config as a
   member, restart) and the principal's `admissions` / `decide_admission`.
+  `gateway/state.rs::require_admin_for_surface` enforces roles between
+  nodes: an inference node refuses the model-bearing routes
+  (`routes::infer_node_refuses`) whoever asks, and `caller_may_ask` decides
+  what a node-to-node caller may reach from who signed the request.
+  `peer_is_infer` is shared with the deploy survey, `launch` and add-node,
+  which never target an inference node.
   `webui/standby.rs` keeps the node's own network aside while it is a member
   elsewhere (`save_primary` on join, `restore_primary` + `discard` on leave).
   `webui/network.rs` has the departure: `notify_principal_of_departure` on

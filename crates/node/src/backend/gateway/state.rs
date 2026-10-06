@@ -808,6 +808,56 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
             && path != "/handshake")
 }
 
+/// Whether `peer` is an inference node. On the principal the member list
+/// decides for a machine admitted as one: it stays an inference node whatever
+/// it announces, because the role is granted at admission and an announce is
+/// only what a node says about itself. Everywhere, a node that announces
+/// itself as an inference node is one.
+pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
+    peer.profile == crate::profile::NodeProfile::Infer
+        || state
+            .network_chat
+            .admission_of(&peer.node_id)
+            .is_some_and(|record| record.role == crate::config::EnrollmentRole::Infer)
+}
+
+/// What a node-to-node request may reach, by the caller's identity.
+///
+/// - An administrative route (deploy, load, unload, stop, `/admin`) takes a
+///   request **signed by an admin of the trust chain**. The connection key
+///   alone is refused: every member holds it.
+/// - A route of a serving node (catalog, planning, transfers) takes a signed
+///   request from an admin or from a peer that is not an inference node.
+/// - Everything else - inference, the node's own description, the internal
+///   sync routes - stays as it was.
+pub(crate) async fn caller_may_ask(
+    state: &GatewayState,
+    scope: crate::webui::RouteScope,
+    issuer: Option<&crate::admin_trust::AuthorityPrincipal>,
+) -> Result<(), &'static str> {
+    use crate::webui::RouteScope;
+    if !matches!(scope, RouteScope::AdminOnly | RouteScope::NodeAdmin) {
+        return Ok(());
+    }
+    let Some(issuer) = issuer else {
+        return Err("signature_required");
+    };
+    if issuer == &state.authority_principal
+        || crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer)
+    {
+        return Ok(());
+    }
+    if scope == RouteScope::AdminOnly {
+        return Err("admin_required");
+    }
+    let peers = state.network.alive_peers().await;
+    match peers.iter().find(|peer| peer.node_id == issuer.node_id) {
+        Some(peer) if !peer_is_infer(state, peer) => Ok(()),
+        Some(_) => Err("infer_caller"),
+        None => Err("unknown_caller"),
+    }
+}
+
 pub(crate) async fn require_admin_for_surface(
     State(state): State<GatewayState>,
     request: Request,
@@ -816,13 +866,43 @@ pub(crate) async fn require_admin_for_surface(
     let path = request.uri().path().to_owned();
     let method = request.method().clone();
     let (mut parts, body) = request.into_parts();
-    let internal_node_request =
-        crate::auth::InternalNodeAuth::from_request_parts(&mut parts, &state)
-            .await
-            .is_ok();
+    let internal_node = crate::auth::InternalNodeAuth::from_request_parts(&mut parts, &state)
+        .await
+        .ok();
+    let internal_node_request = internal_node.is_some();
     let request = Request::from_parts(parts, body);
     let profile = state.auth.read().await.profile;
     let scope = crate::webui::route_scope(&method, &path);
+    // An inference node holds and serves no model, whoever asks. This comes
+    // before everything else on purpose: the profile gate below lets a
+    // node-to-node request through, and an admin's request is one.
+    if profile == crate::profile::NodeProfile::Infer && crate::webui::infer_node_refuses(&path) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "this machine was admitted for inference only and does not hold or serve models",
+                "reason": "infer_profile",
+                "path": path,
+            })),
+        )
+            .into_response();
+    }
+    // What another node may ask of this one depends on who it is. The shared
+    // connection key says "a member"; it does not say which, and every member
+    // holds it, inference nodes included.
+    if let Some(auth) = &internal_node {
+        if let Err(reason) = caller_may_ask(&state, scope, auth.principal()).await {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "the calling node is not allowed to ask this",
+                    "reason": reason,
+                    "path": path,
+                })),
+            )
+                .into_response();
+        }
+    }
     let local_admin_authority = state
         .admin_trust
         .effective_authority(&state.authority_principal, profile)

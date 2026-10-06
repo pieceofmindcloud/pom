@@ -267,6 +267,19 @@ describe("NetworkSettings", () => {
     admissionMocks.admissions.data = [];
   });
 
+  it("offers no role change in place: a node cannot step down to inference here", () => {
+    const before = queryMocks.node.data;
+    queryMocks.node.data = { ...before, profile: "node", authority_level: null } as typeof before;
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+    expect(screen.queryByRole("button", { name: /virar um nó infer/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /pedir para virar node/i })).toBeNull();
+    queryMocks.node.data = before;
+  });
+
   it("offers no way out of the machine's own network", () => {
     const before = queryMocks.node.data;
     queryMocks.node.data = { ...before, own_network: true, standby_network: null } as typeof before;

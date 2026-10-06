@@ -170,6 +170,8 @@ export interface NodeConfig {
   moe_experts_in_ram?: boolean;
   /** GPU cache, in MiB, for the experts kept in RAM; 0 turns it off. */
   moe_cache_mib?: number;
+  /** The gateway picks each prefill chunk; off, it uses `prefill_chunk_tokens` as is. */
+  adaptive_prefill_chunks?: boolean;
 }
 
 /** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
@@ -2011,6 +2013,8 @@ export interface RuntimeParams {
   moe_experts_in_ram?: boolean;
   /** GPU cache, in MiB, for the experts kept in RAM; 0 turns it off. */
   moe_cache_mib?: number;
+  /** The gateway picks each prefill chunk; off, it uses `prefill_chunk_tokens` as is. */
+  adaptive_prefill_chunks?: boolean;
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */

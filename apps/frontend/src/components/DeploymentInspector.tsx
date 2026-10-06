@@ -794,6 +794,14 @@ export function DeploymentInspector({
         })}
         {numeric("moe_cache_mib")}
         {toggle({
+          key: "adaptive_prefill_chunks",
+          label: t("inspector.adaptivePrefillChunks"),
+          alwaysVisible: true,
+          checked: value.adaptive_prefill_chunks ?? true,
+          onToggle: (next) => set({ adaptive_prefill_chunks: next }),
+          tip: t("deploy.adaptivePrefillChunksHint"),
+        })}
+        {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),
           alwaysVisible: true,

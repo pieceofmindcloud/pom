@@ -1121,12 +1121,21 @@ pub(super) async fn generate_stream_inner(
             // cru do knob.
             cfg.as_ref()
                 .map(|config| {
+                    if !config.adaptive_prefill_chunks {
+                        // The operator fixed the chunk: use it as it is.
+                        return prompt_chunk_tokens(config);
+                    }
                     state.adaptive_chunk_tuner.choose(
                         &adaptive_chunk_route,
                         prompt_chunk_tokens(config),
                         config.n_batch,
                         estimated_new_prompt_tokens,
                         config.prefill_max_inflight_chunks as usize,
+                        if config.moe_cache_mib > 0 {
+                            super::budget::MOE_CACHE_MIN_CHUNK
+                        } else {
+                            super::budget::MIN_CHUNK
+                        },
                     )
                 })
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),

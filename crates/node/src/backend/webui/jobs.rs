@@ -157,6 +157,11 @@ pub struct RuntimeParams {
     /// o cache e deixa menos camadas de experts inteiras na GPU.
     #[serde(default)]
     pub moe_cache_mib: u32,
+    /// The gateway picks each request's prefill chunk (between 32 tokens and
+    /// `prefill_chunk_tokens`) from a model of the route it learns. Off, every
+    /// prompt goes in chunks of exactly `prefill_chunk_tokens`.
+    #[serde(default = "d_adaptive_prefill_chunks")]
+    pub adaptive_prefill_chunks: bool,
     /// Descarrega os pesos depois de um período sem requisições neste peer.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -253,6 +258,9 @@ pub(super) fn d_reasoning_budget() -> i32 {
 pub(super) fn d_mtp_cpu_fallback_enabled() -> bool {
     true
 }
+pub(super) fn d_adaptive_prefill_chunks() -> bool {
+    true
+}
 pub(super) fn d_idle_minutes() -> u32 {
     60
 }
@@ -304,6 +312,7 @@ impl Default for RuntimeParams {
             mtp_placement: Default::default(),
             moe_experts_in_ram: false,
             moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: d_idle_minutes(),
         }
@@ -362,6 +371,7 @@ impl From<&NodeConfig> for RuntimeParams {
             mtp_placement: c.mtp_placement,
             moe_experts_in_ram: c.moe_experts_in_ram,
             moe_cache_mib: c.moe_cache_mib,
+            adaptive_prefill_chunks: c.adaptive_prefill_chunks,
             unload_if_idle: c.unload_if_idle,
             idle_minutes: c.idle_minutes,
         }

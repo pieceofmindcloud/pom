@@ -542,6 +542,7 @@ mod tests {
             mtp_placement: Default::default(),
             moe_experts_in_ram: false,
             moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

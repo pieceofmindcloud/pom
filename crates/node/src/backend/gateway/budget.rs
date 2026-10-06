@@ -114,7 +114,13 @@ pub(crate) struct AdaptiveChunkTuner {
     profiles: StdMutex<HashMap<String, AdaptivePrefillProfile>>,
 }
 
-const MIN_CHUNK: u32 = 32;
+pub(crate) const MIN_CHUNK: u32 = 32;
+/// The smallest chunk while the MoE expert cache is on. The cache serves
+/// batches of up to 32 tokens as generation, uploading the experts they miss:
+/// a 32-token prefill chunk went through it, crossed PCIe for the experts of
+/// every chunk and evicted the ones generation keeps hot. Above that, prefill
+/// takes the regular offload.
+pub(crate) const MOE_CACHE_MIN_CHUNK: u32 = 64;
 const CHUNK_STEP: u32 = 16;
 /// Weight kept by older observations each time a trace is added.
 const FIT_DECAY: f64 = 0.8;
@@ -132,6 +138,7 @@ impl AdaptiveChunkTuner {
         n_batch: u32,
         prompt_tokens: u32,
         max_inflight: usize,
+        min_chunk: u32,
     ) -> u32 {
         let ceiling = prompt_chunk_of(configured_max, n_batch);
         let profile = self
@@ -141,7 +148,7 @@ impl AdaptiveChunkTuner {
             .get(route)
             .cloned();
         profile.map_or(ceiling, |profile| {
-            choose_from_profile(ceiling, &profile, prompt_tokens, max_inflight)
+            choose_from_profile(ceiling, &profile, prompt_tokens, max_inflight, min_chunk)
         })
     }
 
@@ -240,8 +247,9 @@ fn choose_from_profile(
     profile: &AdaptivePrefillProfile,
     prompt_tokens: u32,
     max_inflight: usize,
+    min_chunk: u32,
 ) -> u32 {
-    if ceiling <= MIN_CHUNK || prompt_tokens == 0 {
+    if ceiling <= min_chunk || prompt_tokens == 0 {
         return ceiling;
     }
     let Some(stages) = profile
@@ -252,7 +260,7 @@ fn choose_from_profile(
     else {
         return ceiling;
     };
-    let mut candidates: Vec<u32> = (MIN_CHUNK..ceiling).step_by(CHUNK_STEP as usize).collect();
+    let mut candidates: Vec<u32> = (min_chunk..ceiling).step_by(CHUNK_STEP as usize).collect();
     candidates.push(ceiling);
     if prompt_tokens < ceiling {
         // One chunk holding the whole prompt.
@@ -314,6 +322,22 @@ pub(super) fn mtp_enabled_for_plan(
 mod adaptive_chunk_tests {
     use super::*;
 
+    /// With the MoE expert cache on, a prefill chunk never falls to the
+    /// cache's generation batch (32 tokens or fewer).
+    #[test]
+    fn with_the_moe_cache_no_chunk_is_a_generation_batch() {
+        let mut profile = AdaptivePrefillProfile::default();
+        // Two hops with a tiny fixed cost and a large per-token cost: the
+        // simulation alone would pick the smallest chunk.
+        profile.stages = vec![StageFit::default(); 4];
+        for stage in &mut profile.stages {
+            stage.add(32.0, 3.2);
+            stage.add(512.0, 51.2);
+        }
+        assert_eq!(choose_from_profile(512, &profile, 4000, 8, MIN_CHUNK), MIN_CHUNK);
+        assert!(choose_from_profile(512, &profile, 4000, 8, MOE_CACHE_MIN_CHUNK) >= MOE_CACHE_MIN_CHUNK);
+    }
+
     fn fitted(points: &[(f64, f64)]) -> StageFit {
         let mut fit = StageFit::default();
         for (tokens, ms) in points {
@@ -361,7 +385,7 @@ mod adaptive_chunk_tests {
             48,
             8,
         );
-        let chosen = choose_from_profile(512, &jev, 199, 8);
+        let chosen = choose_from_profile(512, &jev, 199, 8, MIN_CHUNK);
         let best = simulate_pipeline(
             &jev.stages
                 .iter()
@@ -380,7 +404,7 @@ mod adaptive_chunk_tests {
         // Small fixed cost, real per-token cost on two balanced hops and a
         // slow link: several chunks in flight beat one big call.
         let route = profile(&[(1.0, 0.0), (2.0, 1.0), (2.0, 0.5), (2.0, 1.0)]);
-        let chosen = choose_from_profile(512, &route, 4000, 8);
+        let chosen = choose_from_profile(512, &route, 4000, 8, MIN_CHUNK);
         assert!(chosen < 512, "{chosen}");
         assert!(chosen >= MIN_CHUNK);
     }
@@ -397,7 +421,7 @@ mod adaptive_chunk_tests {
     #[test]
     fn unmeasured_route_uses_configured_limit_without_waiting() {
         let tuner = AdaptiveChunkTuner::default_arc();
-        assert_eq!(tuner.choose("model|head|tail", 512, 256, 1000, 8), 256);
+        assert_eq!(tuner.choose("model|head|tail", 512, 256, 1000, 8, MIN_CHUNK), 256);
     }
 }
 

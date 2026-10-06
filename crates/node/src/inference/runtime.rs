@@ -341,6 +341,11 @@ pub struct NodeConfig {
     /// o cache e deixa menos camadas de experts inteiras na GPU.
     #[serde(default)]
     pub moe_cache_mib: u32,
+    /// The gateway picks each request's prefill chunk (between 32 tokens and
+    /// `prefill_chunk_tokens`) from a model of the route it learns. Off, every
+    /// prompt goes in chunks of exactly `prefill_chunk_tokens`.
+    #[serde(default = "default_adaptive_prefill_chunks")]
+    pub adaptive_prefill_chunks: bool,
     /// Descarrega os pesos quando este peer fica ocioso.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -428,6 +433,7 @@ impl NodeConfig {
             mtp_placement: p.mtp_placement,
             moe_experts_in_ram: p.moe_experts_in_ram,
             moe_cache_mib: p.moe_cache_mib,
+            adaptive_prefill_chunks: p.adaptive_prefill_chunks,
             unload_if_idle: p.unload_if_idle,
             idle_minutes: p.idle_minutes,
         }
@@ -534,6 +540,10 @@ fn default_n_ubatch() -> u32 {
 fn default_reasoning_budget() -> i32 {
     -1
 }
+fn default_adaptive_prefill_chunks() -> bool {
+    true
+}
+
 fn default_mtp_cpu_fallback_enabled() -> bool {
     true
 }
@@ -2341,6 +2351,7 @@ mod tests {
             mtp_placement: Default::default(),
             moe_experts_in_ram: false,
             moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

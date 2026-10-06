@@ -47,6 +47,14 @@ const CATALOG_TTL: Duration = Duration::from_secs(20);
 const CLUSTER_CACHE_TTL: Duration = Duration::from_secs(2);
 /// Timeout for one peer-to-peer control call.
 pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Deadline of a call that stops a peer's inference server (`/api/ui/unload`,
+/// `/api/ui/stop-inference`). The handler answers only after the server is
+/// down: up to 3 s draining connections, then the supervisor and the native
+/// release of the model. `PEER_TIMEOUT` expired in the middle of that on a
+/// machine with a large model, and the call was then repeated by another
+/// address and refused as a replay ("HTTP 409 Conflict").
+pub(crate) const PEER_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Number of capacity previews this process may inspect at the same time.
 ///
 /// The route only reads GGUF metadata and system memory, but it still uses

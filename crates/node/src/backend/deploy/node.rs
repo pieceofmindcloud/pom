@@ -640,7 +640,7 @@ pub(super) async fn remove_node_endpoint(
             return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
         };
         match state
-            .control_post_empty(&peer, "/api/ui/unload", PEER_TIMEOUT)
+            .control_post_empty(&peer, "/api/ui/unload", crate::webui::PEER_STOP_TIMEOUT)
             .await
         {
             Ok(r) if r.status().is_success() => {}
@@ -943,7 +943,7 @@ pub(super) async fn release_one(
         return Ok(());
     }
     match state
-        .control_post_empty(peer, "/api/ui/unload", PEER_TIMEOUT)
+        .control_post_empty(peer, "/api/ui/unload", crate::webui::PEER_STOP_TIMEOUT)
         .await
     {
         Ok(r) if r.status().is_success() => Ok(()),

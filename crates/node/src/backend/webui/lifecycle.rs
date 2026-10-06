@@ -383,7 +383,7 @@ pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Respon
     };
     let body = json!({});
     match state
-        .control_post_json(&peer, "/api/ui/leave", &body, PEER_TIMEOUT)
+        .control_post_json(&peer, "/api/ui/leave", &body, PEER_STOP_TIMEOUT)
         .await
     {
         Ok(r) if r.status().is_success() => {
@@ -917,7 +917,7 @@ pub(crate) async fn launch(
             continue;
         };
         match state
-            .control_post_empty(peer, "/api/ui/stop-inference", PEER_TIMEOUT)
+            .control_post_empty(peer, "/api/ui/stop-inference", PEER_STOP_TIMEOUT)
             .await
         {
             Ok(r) if r.status().is_success() => {

@@ -618,7 +618,7 @@ profile policy remains the effective authorization boundary.
   uma vez, tenta cada endereço anunciado - na ordem de `gateway_bases`, o host
   que já respondeu primeiro - e cai no túnel libp2p
   (`peer_client::send_to_gateway_over`), que é o caminho para um peer atrás de
-  NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
+  NAT simétrico. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` é o último recurso de quem já
   percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
   `/api/ui/cluster`). `admin.rs` sync with the principal (`sync_json`,
   `post_internal_json`, `validate_api_key_remote_parts`) uses the same

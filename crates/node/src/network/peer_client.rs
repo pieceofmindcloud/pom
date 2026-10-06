@@ -138,9 +138,30 @@ pub(crate) fn answered_by_other_node(
     (actual != expected).then(|| actual.to_string())
 }
 
+/// The header of a signed control command (`auth::CONTROL_SIGNATURE_HEADER`).
+const CONTROL_SIGNATURE_HEADER: &str = "x-pom-control-signature";
+
+/// Whether sending this same request again could be refused as a replay: a
+/// signed command that changes state. The peer consumes the envelope's nonce
+/// when it accepts the command, so a second copy of it gets `409 Conflict`.
+fn consumes_a_control_nonce(request: &reqwest::Request) -> bool {
+    request.headers().contains_key(CONTROL_SIGNATURE_HEADER)
+        && !matches!(
+            *request.method(),
+            reqwest::Method::GET | reqwest::Method::HEAD | reqwest::Method::OPTIONS
+        )
+}
+
 /// Envia uma chamada de controle usando a lista de endereços definida pelo
 /// chamador, que pode ser vazia para tentar somente o túnel. Útil quando quem
 /// chama já ordenou os endpoints pela memória de falha do `RouteTable`.
+///
+/// A signed command that may have reached the peer is not sent again by
+/// another address. The same envelope goes in every attempt, so after a
+/// timeout on a connection that was established - the peer got the command and
+/// is still executing it - the next address answered `409 Conflict` (replay),
+/// and the caller reported that the machine refused a command it was in fact
+/// carrying out. Only an attempt that never connected moves on.
 pub(crate) async fn send_to_gateway_over<F>(
     peer: &crate::network::PeerInfo,
     bases: &[String],
@@ -151,7 +172,10 @@ where
 {
     let mut failures = Vec::new();
     for base in bases {
-        match build(base).send().await {
+        let (client, request) = build(base).build_split();
+        let request = request?;
+        let single_use = consumes_a_control_nonce(&request);
+        match client.execute(request).await {
             Ok(response) => match answered_by_other_node(response.headers(), &peer.node_id) {
                 None => return Ok(response),
                 Some(actual) => failures.push(format!(
@@ -160,6 +184,12 @@ where
                     crate::network::short(&peer.node_id)
                 )),
             },
+            Err(error) if single_use && !error.is_connect() => {
+                anyhow::bail!(
+                    "o gateway de {} recebeu o comando por {base} e não respondeu a tempo ({error}); o comando pode estar em execução e não foi reenviado",
+                    crate::network::short(&peer.node_id)
+                );
+            }
             Err(error) => failures.push(format!("{base}: {error}")),
         }
     }
@@ -981,6 +1011,63 @@ mod tests {
             only_impostor.to_string().contains("respondeu o nó"),
             "{only_impostor}"
         );
+    }
+
+    /// A signed command that reached the peer and timed out is not sent again
+    /// by the next address: the copy would be refused as a replay (409) while
+    /// the peer is still carrying out the first one.
+    #[tokio::test]
+    async fn a_signed_command_that_timed_out_is_not_replayed_on_another_address() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        async fn serve(delay: Duration, calls: std::sync::Arc<AtomicUsize>) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handler = move || {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(delay).await;
+                    "ok"
+                }
+            };
+            let app = axum::Router::new().route(
+                "/api/ui/unload",
+                axum::routing::post(handler.clone()).get(handler),
+            );
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            format!("http://127.0.0.1:{port}")
+        }
+        let slow_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let fast_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let slow = serve(Duration::from_secs(5), slow_calls.clone()).await;
+        let fast = serve(Duration::ZERO, fast_calls.clone()).await;
+        let peer = crate::gateway::testkit::peer("alvo", "alvo", 8081);
+        let client = reqwest::Client::new();
+        let bases = [slow, fast];
+
+        let error = send_to_gateway_over(&peer, &bases, |base| {
+            client
+                .post(format!("{base}/api/ui/unload"))
+                .timeout(Duration::from_millis(150))
+                .header(CONTROL_SIGNATURE_HEADER, "{}")
+        })
+        .await
+        .expect_err("o comando chegou e não respondeu a tempo");
+        assert!(error.to_string().contains("não foi reenviado"), "{error}");
+        assert_eq!(slow_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fast_calls.load(Ordering::SeqCst), 0, "a cópia seria um replay");
+
+        // A read consumes no nonce and still falls through to the next address.
+        let response = send_to_gateway_over(&peer, &bases, |base| {
+            client
+                .get(format!("{base}/api/ui/unload"))
+                .timeout(Duration::from_millis(150))
+                .header(CONTROL_SIGNATURE_HEADER, "{}")
+        })
+        .await
+        .expect("a leitura segue para o próximo endereço");
+        assert_eq!(response.text().await.unwrap(), "ok");
+        assert_eq!(fast_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

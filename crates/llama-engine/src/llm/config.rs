@@ -364,9 +364,14 @@ pub(super) fn choose_mtp_fit_mode(
     }
 }
 
-pub(super) fn mtp_mode_without_gpu_fit(requested: MtpFitMode) -> MtpFitMode {
+/// The MTP mode when no GPU fit ran (experts kept in RAM, explicit GPU layers,
+/// or a fit that found nothing). Without a plan to protect, MTP goes to host
+/// memory - unless the deployment placed it in VRAM, which is then honored: the
+/// load still falls back to RAM if the VRAM context really fails.
+pub(super) fn mtp_mode_without_gpu_fit(requested: MtpFitMode, placement: crate::MtpPlacement) -> MtpFitMode {
     match requested {
         MtpFitMode::Disabled => MtpFitMode::Disabled,
+        MtpFitMode::Vram if placement == crate::MtpPlacement::Vram => MtpFitMode::Vram,
         MtpFitMode::Vram | MtpFitMode::Ram => MtpFitMode::Ram,
     }
 }
@@ -1066,6 +1071,16 @@ mod fit_memory_margin_tests {
         assert!(!plan_keeps_experts_in_host(&plan));
     }
 
+    /// Without a GPU fit (experts kept in RAM), MTP placed in VRAM stays there.
+    #[test]
+    fn mtp_placed_in_vram_is_honored_without_a_gpu_fit() {
+        use crate::MtpPlacement;
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Vram, MtpPlacement::Vram), MtpFitMode::Vram);
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Vram, MtpPlacement::Auto), MtpFitMode::Ram);
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Ram, MtpPlacement::Ram), MtpFitMode::Ram);
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Disabled, MtpPlacement::Vram), MtpFitMode::Disabled);
+    }
+
     /// A cache that does not fit is halved until it does, then turned off.
     #[test]
     fn the_moe_cache_halves_then_turns_off() {
@@ -1462,7 +1477,7 @@ fn fit_plan_with_cache(
         }
         return Ok(empty_fit_plan_with_mtp_mode_and_reason(
             cfg,
-            mtp_mode_without_gpu_fit(mtp_mode),
+            mtp_mode_without_gpu_fit(mtp_mode, cfg.mtp_placement),
             mtp_unavailable_reason,
         ));
     }
@@ -1647,10 +1662,10 @@ fn fit_plan_with_cache(
         params.embeddings = cfg.need_embeddings;
         params.n_rs_seq = cfg.rs_seq_window;
         // The fit has to count the expert cache, or it fills the VRAM the
-        // cache is allocated from at context creation.
-        if !mtp {
-            params.moe_cache_size = moe_cache_bytes(cfg);
-        }
+        // cache is allocated from at context creation. `mtp` here is the main
+        // context sized for MTP's batch (the joint fit), not the draft's own
+        // context, so it carries the cache too.
+        params.moe_cache_size = moe_cache_bytes(cfg);
         params
     };
 
@@ -1685,7 +1700,7 @@ fn fit_plan_with_cache(
         );
         return Ok(empty_fit_plan_with_mtp_mode_and_reason(
             cfg,
-            mtp_mode_without_gpu_fit(mtp_mode),
+            mtp_mode_without_gpu_fit(mtp_mode, cfg.mtp_placement),
             mtp_unavailable_reason,
         ));
     }

@@ -246,7 +246,7 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         "routes": routes,
         "runtime": state.runtime.status().await,
         "config": state.runtime.config().await,
-        "active_model": state.active_model().await,
+        "active_model": state.displayed_model().await,
         "detached": state.network.is_detached(),
         // Sem isto o retrato da travessia congelaria no cache: nem o estado do
         // AutoNAT nem uma reserva nova mexem em `peers`.
@@ -577,7 +577,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         .collect();
 
     // Preserve the legacy active-model fields for existing UI consumers.
-    let active = state.active_model().await;
+    let active = state.displayed_model().await;
     let active_mmproj_path = views.iter().find_map(|view| {
         let node = view.node.as_ref()?;
         let config = node.get("config")?;

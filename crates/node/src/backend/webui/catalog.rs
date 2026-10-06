@@ -2436,7 +2436,7 @@ pub(super) async fn chat_telemetry(
     let mut peer_perf = HashMap::new();
     let pipeline_routes = if request.execution_id.is_none() {
         let peers = state.all_peers().await;
-        let active_selector = state.active_model().await;
+        let active_selector = state.displayed_model().await;
         let (model, deploy_id) = crate::deployment::split_selector(&active_selector);
         let total_layers = crate::pipeline::model_pipeline_candidates(&peers, model, deploy_id)
             .iter()

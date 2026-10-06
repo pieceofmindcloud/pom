@@ -1200,6 +1200,18 @@ impl GatewayState {
         self.runtime.model_label(&self.default_model).await
     }
 
+    /// The model the panel shows: the one this node serves, or, on a node
+    /// that serves nothing (an admin that only coordinates), the model the
+    /// network serves. Without it, the Dashboard of such a node had no active
+    /// model, so no routes, RTT or measured speeds.
+    pub async fn displayed_model(&self) -> String {
+        let own = self.active_model().await;
+        if !own.is_empty() {
+            return own;
+        }
+        network_model(&self.all_peers().await)
+    }
+
     /// Where this node writes slices, keeps received files, and the only
     /// directory a peer may pull from. Read from the live configuration, so a
     /// change on the screen takes effect without a restart.
@@ -1544,5 +1556,48 @@ mod pkarr_record_tests {
             ]
         );
         assert_eq!(relays, vec![relay.to_uri_string()]);
+    }
+}
+
+/// The model most live serving peers run (ties by name), or empty.
+pub(crate) fn network_model(peers: &[crate::network::PeerInfo]) -> String {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for peer in peers {
+        if peer.is_alive()
+            && !peer.model.is_empty()
+            && (peer.runtime_capacity.is_some() || peer.idle)
+        {
+            *counts.entry(peer.model.as_str()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+        .map(|(model, _)| model.to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod network_model_tests {
+    use super::network_model;
+
+    #[test]
+    fn a_node_serving_nothing_shows_the_model_the_network_serves() {
+        let serving = |id: &str, model: &str| {
+            let mut peer = crate::gateway::testkit::peer(id, id, 8080);
+            peer.model = model.to_string();
+            peer.idle = true;
+            peer
+        };
+        let mut idle_other = crate::gateway::testkit::peer("x", "x", 8080);
+        idle_other.model.clear();
+        let peers = vec![
+            serving("a", "Ornith"),
+            serving("b", "Ornith"),
+            serving("c", "Qwen"),
+            idle_other,
+        ];
+        assert_eq!(network_model(&peers), "Ornith");
+        assert_eq!(network_model(&[]), "");
     }
 }

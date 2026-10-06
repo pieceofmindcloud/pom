@@ -52,7 +52,8 @@ import {
   ServerCog,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNode } from "../lib/queries";
+import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNode, useSidecarLinks } from "../lib/queries";
+import type { SidecarPick } from "../components/SidecarPicker";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
 import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
@@ -334,6 +335,11 @@ export function DeployModel() {
   const [savingCacheTypes, setSavingCacheTypes] = useState(false);
   const [useVision, setUseVision] = useState(false);
   const [selectedMmprojPath, setSelectedMmprojPath] = useState<string | null>(null);
+  // Vision projector and MTP draft: "link" leaves the model's saved link (or
+  // the catalog's own sibling) in charge; anything else is sent as a choice.
+  const [visionPick, setVisionPick] = useState<SidecarPick>({ mode: "link" });
+  const [mtpPick, setMtpPick] = useState<SidecarPick>({ mode: "link" });
+  const sidecarLinks = useSidecarLinks();
   const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
   const invalidate = useInvalidate();
@@ -501,10 +507,12 @@ export function DeployModel() {
       merge == null ? "merge-padrão" : `merge-${merge}`,
       strategy,
       JSON.stringify(preferredNodeIds),
-      selectedMmprojPath ?? "sem-mmproj-selecionado",
       // TP: o plano revalida quando o primary/workers mudam — a checagem de
       // shardabilidade roda no nó, então a troca precisa re-disparar a query.
       isTp ? JSON.stringify(tpPayload()) : "sem-tp",
+      // The plan answers where the projector and the MTP draft come from, so a
+      // new choice (or vision turned on) asks again.
+      JSON.stringify([useVision, visionPick, mtpPick]),
     ],
     queryFn: () =>
       api.post<DeployPlan>("/api/ui/deploy/plan", {
@@ -514,11 +522,12 @@ export function DeployModel() {
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
-        ...(selectedMmprojPath ? { mmproj_path: selectedMmprojPath } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
         // the operator was never shown.
         ...(merge != null && !isWhole ? { merge } : {}),
+        vision: useVision,
+        ...sidecarChoices(),
       }),
     enabled: chosen.length > 0,
     staleTime: 10_000,
@@ -534,13 +543,21 @@ export function DeployModel() {
   const catalogMmprojCandidates = wholeModel?.mmproj_candidates
     ?? slicedGroup?.mmprojCandidates
     ?? [];
+  // Once the plan answers, the options are only the projectors of the
+  // machine that runs layer 0: that is the copy that gets loaded, and its
+  // paths are its own. The catalog mixes every machine's paths (the admin's
+  // `/data/models/...` next to a peer's `/models/...`), so it only fills the
+  // list while the first plan is loading.
   const mmprojCandidates = useMemo(() => {
-    const candidates = [
-      ...(currentPlan?.mmproj_candidates ?? []),
-      ...catalogMmprojCandidates,
-      ...(currentPlan?.mmproj_path ? [currentPlan.mmproj_path] : []),
-      ...(catalogMmprojPath ? [catalogMmprojPath] : []),
-    ];
+    const candidates = currentPlan
+      ? [
+        ...(currentPlan.mmproj_candidates ?? []),
+        ...(currentPlan.mmproj_path ? [currentPlan.mmproj_path] : []),
+      ]
+      : [
+        ...catalogMmprojCandidates,
+        ...(catalogMmprojPath ? [catalogMmprojPath] : []),
+      ];
     return [...new Set(candidates)];
   }, [catalogMmprojCandidates, catalogMmprojPath, currentPlan]);
   const preferredMmprojPath = currentPlan?.mmproj_path ?? catalogMmprojPath;
@@ -549,9 +566,23 @@ export function DeployModel() {
     ?? wholeModel?.mmproj_reason
     ?? slicedGroup?.mmprojReason
     ?? null;
-  const visionAvailable = mmprojCandidates.length > 0 || Boolean(mmprojPath);
+  const planSidecars = currentPlan?.sidecars;
+  const visionAvailable = mmprojCandidates.length > 0
+    || Boolean(mmprojPath)
+    || Boolean(planSidecars?.options.some((option) => option.kind === "mmproj"));
+  const linkFor = (kind: "mmproj" | "mtp") => sidecarLinks.data?.links.find(
+    (link) => link.model_key === planSidecars?.model_key && link.kind === kind,
+  );
+  const linkLabel = (kind: "mmproj" | "mtp"): string | null => {
+    const link = linkFor(kind);
+    if (!link) return null;
+    if (link.mode === "file") return link.file_name ?? null;
+    return link.mode === "embedded" ? t("sidecars.embedded") : kind === "mmproj" ? t("sidecars.noVision") : t("sidecars.noMtp");
+  };
   useEffect(() => {
     setSelectedMmprojPath(null);
+    setVisionPick({ mode: "link" });
+    setMtpPick({ mode: "link" });
   }, [chosen, kind]);
   useEffect(() => {
     if (mmprojCandidates.length === 0) {
@@ -955,6 +986,16 @@ export function DeployModel() {
     );
   }
 
+  /** The screen's picks as the request wants them; "link" sends nothing. */
+  function sidecarChoices() {
+    const choice = (pick: SidecarPick) =>
+      pick.mode === "link" ? undefined : { mode: pick.mode, file: pick.mode === "file" ? pick.file ?? null : null };
+    return {
+      ...(choice(visionPick) ? { vision_choice: choice(visionPick) } : {}),
+      ...(choice(mtpPick) ? { mtp_choice: choice(mtpPick) } : {}),
+    };
+  }
+
   async function deploy() {
     setRunning(true);
     setAsked(false);
@@ -971,7 +1012,13 @@ export function DeployModel() {
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         vision: useVision,
-        ...(selectedMmprojPath ? { mmproj_path: selectedMmprojPath } : {}),
+        // The projector only matters with vision on; without it, a path the
+        // screen still holds must not reach (or refuse) the deployment. A
+        // projector picked among the network's sidecars replaces the path.
+        ...(useVision && selectedMmprojPath && visionPick.mode === "link" && !planSidecars?.options.some((option) => option.kind === "mmproj")
+          ? { mmproj_path: selectedMmprojPath }
+          : {}),
+        ...sidecarChoices(),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -1395,6 +1442,22 @@ export function DeployModel() {
                 onChange: setUseVision,
                 onPathChange: setSelectedMmprojPath,
               }}
+              sidecars={planSidecars ? {
+                options: planSidecars.options,
+                vision: {
+                  value: visionPick,
+                  onChange: setVisionPick,
+                  slot: planSidecars.vision,
+                  linkLabel: linkLabel("mmproj"),
+                },
+                mtp: {
+                  value: mtpPick,
+                  onChange: setMtpPick,
+                  slot: planSidecars.mtp,
+                  linkLabel: linkLabel("mtp"),
+                  allowEmbedded: planSidecars.embedded_mtp,
+                },
+              } : undefined}
             />
             {isMoePlan && !inferenceModeSupported && (
               <p role="alert" className="border-b border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">

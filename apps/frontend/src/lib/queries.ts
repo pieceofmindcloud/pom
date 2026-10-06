@@ -32,9 +32,10 @@ import {
 export const DEFAULT_ADMIN_PASSWORD = "admin";
 import { modelDownloadJobs } from "./modelProvider";
 import { getTrendingModels } from "./publicModelDiscovery";
-import { fetchPublicPluginCatalog } from "./pluginCatalog";
+import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
+  SidecarLink,
   ChatCapabilities,
   AdminNode,
   AdminAccessInfo,
@@ -90,6 +91,7 @@ export const keys = {
   chatCapabilities: ["chat-capabilities"] as const,
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
+  sidecarLinks: ["model-sidecar-links"] as const,
   paths: ["paths"] as const,
   cacheTypes: ["cache-types"] as const,
   jobs: ["jobs"] as const,
@@ -281,14 +283,29 @@ export function useDevelopmentPluginSources(enabled: boolean) {
   });
 }
 
-/** Public store metadata is fetched directly without node credentials or cookies. */
-export function usePublicPluginCatalog() {
+/**
+ * Public store metadata is fetched directly without node credentials or cookies.
+ * Without a query it is the whole catalog; with one, the license server searches
+ * and pages it, and the previous page stays on screen while the next one loads.
+ */
+export function usePublicPluginCatalog(query?: PublicPluginCatalogQuery) {
   return useQuery({
-    queryKey: keys.publicPluginCatalog,
-    queryFn: ({ signal }) => fetchPublicPluginCatalog(signal),
+    queryKey: query ? [...keys.publicPluginCatalog, query] : keys.publicPluginCatalog,
+    queryFn: ({ signal }) => fetchPublicPluginCatalog(signal, query),
     retry: false,
     staleTime: 60_000,
     refetchInterval: 60_000,
+    placeholderData: query ? (previous) => previous : undefined,
+  });
+}
+
+/** One public store entry by plugin code (null when the store does not list it). */
+export function usePublicPlugin(code: string) {
+  return useQuery({
+    queryKey: [...keys.publicPluginCatalog, "entry", code],
+    queryFn: ({ signal }) => fetchPublicPlugin(code, signal),
+    retry: false,
+    staleTime: 60_000,
   });
 }
 
@@ -307,13 +324,13 @@ export function usePluginUi() {
 }
 
 /**
- * The `"enterprise"` plugin's status specifically (Request Logs/Statistics).
+ * The `"logs"` plugin's status specifically (Request Logs/Statistics).
  * Built on `usePlugins()` so callers gating those two screens do not need to
  * know about the rest of the catalog.
  */
 export function useEnterpriseStatus() {
   const query = usePlugins();
-  const status = query.data?.find((plugin) => plugin.code === "enterprise") ?? inactivePlugin("enterprise");
+  const status = query.data?.find((plugin) => plugin.code === "logs") ?? inactivePlugin("logs");
 
   return { ...query, data: status };
 }
@@ -397,6 +414,7 @@ const unavailableChatCapabilities: ChatCapabilities = {
   vision: "unavailable",
   coverage: "unavailable",
   thinking: "unavailable",
+  rag: "unavailable",
 };
 
 /**
@@ -520,6 +538,17 @@ export function useLocalCatalog() {
   });
 }
 
+/** Which projector and MTP draft belong to each model (kept on the principal). */
+export function useSidecarLinks(enabled = true) {
+  return useQuery({
+    queryKey: keys.sidecarLinks,
+    queryFn: () =>
+      api.get<{ links: SidecarLink[]; stale: boolean }>("/api/ui/model-sidecar-links"),
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
 export function useClusterCatalog(enabled = true) {
   return useQuery({
     queryKey: keys.clusterModels,
@@ -588,7 +617,8 @@ export function useDeployments() {
 }
 
 /** Logs de processo em ordem de chegada à réplica local. */
-export function useClusterLogs(deployId?: string) {
+/** The cluster's process log, kept by the logs plugin; idle while it is not active here. */
+export function useClusterLogs(deployId?: string, enabled = true) {
   const query = new URLSearchParams();
   if (deployId) query.set("deploy_id", deployId);
   const suffix = query.toString();
@@ -596,7 +626,8 @@ export function useClusterLogs(deployId?: string) {
     queryKey: keys.clusterLogs(deployId),
     queryFn: () =>
       api.get<ClusterLogResponse>(`/api/ui/cluster-logs${suffix ? `?${suffix}` : ""}`),
-    refetchInterval: 1000,
+    enabled,
+    refetchInterval: enabled ? 1000 : false,
   });
 }
 

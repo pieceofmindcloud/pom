@@ -693,6 +693,7 @@ async fn blocking_response(params: RespostaParams) -> Response {
         "/v1/messages",
         caller,
         GenerationInput {
+            probe: None,
             trace_id: Some(id.clone()),
             state,
             inference_token,
@@ -800,6 +801,7 @@ fn stream_response(params: RespostaParams) -> Response {
         "/v1/messages",
         caller,
         GenerationInput {
+            probe: None,
             trace_id: Some(id.clone()),
             state,
             inference_token,

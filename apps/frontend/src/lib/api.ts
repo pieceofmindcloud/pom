@@ -25,7 +25,7 @@ import type {
   RuntimeParams,
   KvCacheType,
 } from "./types";
-import type { NetworkChatRequest } from "./types";
+import type { KvCacheCleared, NetworkChatRequest } from "./types";
 
 const KEY_STORAGE = storageKey("connectionKey");
 
@@ -574,6 +574,18 @@ export function activateDeployment(deployId: string) {
 export function leaveNetwork(nodeId?: string) {
   return api.post<{ detached: boolean }>(
     "/api/ui/leave",
+    nodeId ? { node_id: nodeId } : {},
+  );
+}
+
+/**
+ * Esvazia o cache de KV de **uma** máquina: os snapshots em disco e o que o
+ * servidor de inferência dela guarda em RAM. Como em `leaveNetwork`, o pedido
+ * vai ao nó local, que repassa ao dono do disco.
+ */
+export function clearKvCache(nodeId?: string) {
+  return api.post<KvCacheCleared>(
+    "/api/ui/kv-cache/clear",
     nodeId ? { node_id: nodeId } : {},
   );
 }

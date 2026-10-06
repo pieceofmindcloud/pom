@@ -86,12 +86,16 @@ pub(crate) fn engine_config_from_node(
         fit_memory: cfg.fit_memory && cfg.tp.is_none(),
         fit_memory_margin_mb: cfg.fit_memory_margin_mb,
         n_batch: cfg.n_batch,
+        n_ubatch: cfg.n_ubatch,
         n_gpu_layers: cfg.n_gpu_layers as i32,
         n_threads: 0,
         max_sessions: cfg.max_sessions.max(1),
         need_embeddings,
         mtp: cfg.mtp_effective(),
         mtp_cpu_fallback_enabled: cfg.mtp_cpu_fallback_enabled,
+        mtp_placement: cfg.mtp_placement,
+        moe_experts_in_ram: cfg.moe_experts_in_ram,
+        moe_cache_mib: cfg.moe_cache_mib,
         rs_seq_window,
         moe_external_executor,
         moe_external_executor_layers,
@@ -199,6 +203,13 @@ pub struct NodeConfig {
     /// mudar o diretório não invalida os pesos carregados.
     #[serde(default)]
     pub slot_save_path: Option<String>,
+    /// Host-memory KV cache setting in MiB (`Config::cache_ram_mib`, the
+    /// `--cache-ram` of llama-server), injected from the installation like
+    /// `slot_save_path`: `0` is off, a positive value is a ceiling, absent or
+    /// negative lets the cache use what the user reserve allows. See
+    /// `infer_server/ram_cache.rs`.
+    #[serde(default)]
+    pub cache_ram_mib: Option<i64>,
     /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
@@ -206,6 +217,10 @@ pub struct NodeConfig {
     #[serde(default = "default_fit_memory_margin_mb")]
     pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
+    /// Microlote físico (`n_ubatch` do llama.cpp) enquanto o fit de memória
+    /// está ligado; nunca maior que `n_batch`.
+    #[serde(default = "default_n_ubatch")]
+    pub n_ubatch: u32,
     /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
@@ -239,16 +254,37 @@ pub struct NodeConfig {
     pub top_k: u32,
     pub repeat_penalty: f32,
     pub repeat_last_n: u32,
-    /// Detecta três janelas consecutivas que repetem a mesma estrutura e
-    /// encerra a resposta com `finish_reason: cycle`.
-    #[serde(default = "default_cycle_detection_enabled")]
-    pub cycle_detection_enabled: bool,
-    #[serde(default = "default_cycle_detection_min_window_tokens")]
-    pub cycle_detection_min_window_tokens: u32,
-    #[serde(default = "default_cycle_detection_max_window_tokens")]
-    pub cycle_detection_max_window_tokens: u32,
-    #[serde(default = "default_cycle_detection_repetitions")]
-    pub cycle_detection_repetitions: u32,
+    /// Penalidades do sampler do llama.cpp, subtraídas do logit dos tokens
+    /// vistos na janela: uma vez por token (`presence`) e por ocorrência
+    /// (`frequency`). 0 desliga.
+    #[serde(default)]
+    pub presence_penalty: f32,
+    #[serde(default)]
+    pub frequency_penalty: f32,
+    /// Corta candidatos abaixo desta fração do mais provável. 0 desliga.
+    #[serde(default)]
+    pub min_p: f32,
+    /// Semente do gerador do sampler, aplicada quando a implantação carrega.
+    /// O padrão é o valor fixo que o POM sempre usou.
+    #[serde(
+        with = "llama_engine::llm::seed_text",
+        default = "llama_engine::llm::seed_text::default_seed"
+    )]
+    pub seed: u64,
+    /// Sampler DRY do llama.cpp: penaliza o token que estenderia uma sequência
+    /// já vista. `dry_multiplier` 0 desliga.
+    #[serde(default)]
+    pub dry_multiplier: f32,
+    #[serde(default = "default_dry_base")]
+    pub dry_base: f32,
+    #[serde(default = "default_dry_allowed_length")]
+    pub dry_allowed_length: u32,
+    #[serde(default = "default_dry_penalty_last_n")]
+    pub dry_penalty_last_n: u32,
+    /// Limite de tokens de um bloco de raciocínio (`--reasoning-budget` do
+    /// llama.cpp): ao atingi-lo, a tag de fim é forçada. -1 não limita.
+    #[serde(default = "default_reasoning_budget")]
+    pub reasoning_budget: i32,
     pub no_thinking: bool,
     pub single_peer: bool,
     /// Disable embedding extraction in llama.cpp. Set on the last (sampling)
@@ -291,6 +327,25 @@ pub struct NodeConfig {
     /// o operador pode desligar o recuo se a medição local não compensar.
     #[serde(default = "default_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
+    /// Onde o bloco MTP fica: automático, sempre na VRAM ou sempre na RAM.
+    #[serde(default)]
+    pub mtp_placement: llama_engine::MtpPlacement,
+    /// Todos os experts roteados de um MoE ficam na RAM e a CPU os calcula
+    /// (o `--cpu-moe` do llama.cpp); a VRAM fica com o resto do modelo. Pula o
+    /// ajuste de memória, que recusa overrides definidos antes dele.
+    #[serde(default)]
+    pub moe_experts_in_ram: bool,
+    /// Cache na GPU, em MiB, dos experts que ficaram na RAM: os usados há
+    /// pouco são servidos da VRAM, só as faltas sobem pelo PCIe (lotes de até
+    /// 32 tokens). `0` desliga. Com o ajuste de memória ligado, o ajuste conta
+    /// o cache e deixa menos camadas de experts inteiras na GPU.
+    #[serde(default)]
+    pub moe_cache_mib: u32,
+    /// The gateway picks each request's prefill chunk (between 32 tokens and
+    /// `prefill_chunk_tokens`) from a model of the route it learns. Off, every
+    /// prompt goes in chunks of exactly `prefill_chunk_tokens`.
+    #[serde(default = "default_adaptive_prefill_chunks")]
+    pub adaptive_prefill_chunks: bool,
     /// Descarrega os pesos quando este peer fica ocioso.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -339,9 +394,11 @@ impl NodeConfig {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: p.fit_memory && allow_fit_memory,
             fit_memory_margin_mb: p.fit_memory_margin_mb,
             n_batch: p.n_batch,
+            n_ubatch: p.n_ubatch,
             max_new_tokens: p.max_new_tokens,
             max_sessions: p.max_sessions,
             batching_enabled: p.batching_enabled,
@@ -356,10 +413,15 @@ impl NodeConfig {
             top_k: p.top_k,
             repeat_penalty: p.repeat_penalty,
             repeat_last_n: p.repeat_last_n,
-            cycle_detection_enabled: p.cycle_detection_enabled,
-            cycle_detection_min_window_tokens: p.cycle_detection_min_window_tokens,
-            cycle_detection_max_window_tokens: p.cycle_detection_max_window_tokens,
-            cycle_detection_repetitions: p.cycle_detection_repetitions,
+            presence_penalty: p.presence_penalty,
+            frequency_penalty: p.frequency_penalty,
+            min_p: p.min_p,
+            seed: p.seed,
+            dry_multiplier: p.dry_multiplier,
+            dry_base: p.dry_base,
+            dry_allowed_length: p.dry_allowed_length,
+            dry_penalty_last_n: p.dry_penalty_last_n,
+            reasoning_budget: p.reasoning_budget,
             no_thinking: p.no_thinking,
             speculative_decoding_enabled: p.speculative_decoding_enabled,
             speculative_k: p.speculative_k,
@@ -368,6 +430,10 @@ impl NodeConfig {
             mtp_draft_tokens: p.mtp_draft_tokens,
             mtp_min_probability: p.mtp_min_probability,
             mtp_cpu_fallback_enabled: p.mtp_cpu_fallback_enabled,
+            mtp_placement: p.mtp_placement,
+            moe_experts_in_ram: p.moe_experts_in_ram,
+            moe_cache_mib: p.moe_cache_mib,
+            adaptive_prefill_chunks: p.adaptive_prefill_chunks,
             unload_if_idle: p.unload_if_idle,
             idle_minutes: p.idle_minutes,
         }
@@ -438,19 +504,6 @@ fn default_offload_kqv() -> bool {
     true
 }
 
-fn default_cycle_detection_enabled() -> bool {
-    false
-}
-fn default_cycle_detection_min_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
-}
-fn default_cycle_detection_max_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
-}
-fn default_cycle_detection_repetitions() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_REPETITIONS
-}
-
 fn default_fit_memory() -> bool {
     true
 }
@@ -472,6 +525,25 @@ fn default_mtp_draft_tokens() -> u32 {
 fn default_mtp_min_probability() -> f32 {
     0.0
 }
+fn default_dry_base() -> f32 {
+    1.75
+}
+fn default_dry_allowed_length() -> u32 {
+    2
+}
+fn default_dry_penalty_last_n() -> u32 {
+    1024
+}
+fn default_n_ubatch() -> u32 {
+    llama_engine::DEFAULT_N_UBATCH
+}
+fn default_reasoning_budget() -> i32 {
+    -1
+}
+fn default_adaptive_prefill_chunks() -> bool {
+    true
+}
+
 fn default_mtp_cpu_fallback_enabled() -> bool {
     true
 }
@@ -638,6 +710,17 @@ pub enum ServerState {
     Failed,
     /// Model was unloaded because a GPU exceeded the thermal limit.
     Thermal,
+}
+
+/// What `NodeRuntime::wake_from_idle` found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// The model is loaded.
+    Ready,
+    /// A load was already running.
+    Loading,
+    /// This call started the load.
+    Started,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -846,32 +929,57 @@ impl NodeRuntime {
         }
     }
 
+    /// Start loading an idle deployment and return at once, without waiting
+    /// for the model. Idempotent: a peer already loading or ready is left
+    /// alone, and the operation lock keeps concurrent wake-ups from starting
+    /// two loads.
+    ///
+    /// This is what a remote gateway calls. Holding one HTTP call open for the
+    /// whole load made the wake depend on a connection surviving minutes of
+    /// silence, on every transport; the gateway asks again instead until the
+    /// answer is `Ready`.
+    pub async fn wake_from_idle(&self) -> Result<Wake> {
+        let _operation = self.operation.lock().await;
+        let state = self.status.read().await.state;
+        match state {
+            ServerState::Idle => {
+                let Some(cfg) = self.config.read().await.clone() else {
+                    bail!("deployment idle sem configuração");
+                };
+                self.note_request();
+                info!(
+                    "⏰ acordando a implantação ociosa: {} camadas {}-{}",
+                    cfg.model_label, cfg.start_layer, cfg.end_layer
+                );
+                // Keep the operation lock while transitioning Idle ->
+                // Starting so concurrent requests cannot duplicate a load.
+                self.apply_locked(cfg, true, true).await?;
+                Ok(Wake::Started)
+            }
+            ServerState::Ready => Ok(Wake::Ready),
+            ServerState::Starting => {
+                // A request is waiting for this load: it must not look idle
+                // again to the evaluator the moment it becomes ready.
+                self.note_request();
+                Ok(Wake::Loading)
+            }
+            ServerState::Failed => bail!(
+                "o modelo não conseguiu recarregar: {}",
+                self.status.read().await.detail
+            ),
+            ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
+            ServerState::Disabled => bail!("o deployment não está configurado"),
+        }
+    }
+
     /// Ensure this peer is ready for a planned request. Idle peers are loaded;
     /// peers already starting are awaited; ready peers return immediately.
-    /// The caller may invoke this on all planned peers concurrently, and the
-    /// operation lock keeps duplicate wake-ups idempotent.
+    /// Returns whether this call started the load. Used for the local node,
+    /// where waiting costs no connection (`wait_until_ready` is a `Notify`).
     pub async fn reload_from_idle(&self) -> Result<bool> {
-        let reloaded = {
-            let _operation = self.operation.lock().await;
-            match self.status.read().await.state {
-                ServerState::Idle => {
-                    let Some(cfg) = self.config.read().await.clone() else {
-                        bail!("deployment idle sem configuração");
-                    };
-                    self.note_request();
-                    // Keep the operation lock while transitioning Idle ->
-                    // Starting so concurrent requests cannot duplicate a load.
-                    self.apply_locked(cfg, true).await?;
-                    true
-                }
-                ServerState::Ready | ServerState::Starting => false,
-                ServerState::Failed => bail!("o modelo não conseguiu recarregar"),
-                ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
-                ServerState::Disabled => bail!("o deployment não está configurado"),
-            }
-        };
+        let wake = self.wake_from_idle().await?;
         self.wait_until_ready().await?;
-        Ok(reloaded)
+        Ok(wake == Wake::Started)
     }
 
     /// Evaluate the per-peer policy from the existing monitor. This method is
@@ -921,6 +1029,10 @@ impl NodeRuntime {
             ),
         );
         self.status_changed.notify_waiters();
+        info!(
+            "💤 modelo descarregado após {} min sem requisições; a próxima requisição o recarrega",
+            cfg.idle_minutes
+        );
         if let Err(error) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Idle) {
             warn!("não deu para anotar a fatia ociosa: {error}");
         }
@@ -1070,7 +1182,7 @@ impl NodeRuntime {
     /// server, re-announce the new layer range, start the new server.
     pub async fn apply(&self, cfg: NodeConfig) -> Result<()> {
         let _operation = self.operation.lock().await;
-        self.apply_locked(cfg, true).await
+        self.apply_locked(cfg, true, false).await
     }
 
     /// Retoma uma fatia que o journal marcou como pendente depois de um crash.
@@ -1078,22 +1190,39 @@ impl NodeRuntime {
     /// resetá-la para 1 antes de iniciar o servidor nativo.
     pub async fn apply_after_restart(&self, cfg: NodeConfig) -> Result<()> {
         let _operation = self.operation.lock().await;
-        self.apply_locked(cfg, false).await
+        self.apply_locked(cfg, false, false).await
     }
 
-    async fn apply_locked(&self, mut cfg: NodeConfig, persist_attempt: bool) -> Result<()> {
+    /// Stops the current generation and starts the server for `cfg`.
+    ///
+    /// `waking` is the reload of an idle deployment: the node keeps announcing
+    /// `idle` while the model loads, so a gateway that plans in the meantime
+    /// waits for it (`reload_model`) instead of probing a server that is not
+    /// up yet and dropping the peer from the plan. The health watcher clears
+    /// the flag when the model answers.
+    async fn apply_locked(
+        &self,
+        mut cfg: NodeConfig,
+        persist_attempt: bool,
+        waking: bool,
+    ) -> Result<()> {
         if let Some(auth) = &self.auth {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
             cfg.cache_type_v = installation.cache_type_v;
-            // Precedência: o que já veio no `cfg` vence; senão
-            // `POM_SLOT_SAVE_PATH` e depois o campo do `pom.json`
-            // (`slot_save_path_effective`). Uma implantação pela UI chega aqui
-            // com `None` e adota o valor da instalação.
+            // Precedence: what already came in `cfg` wins; otherwise
+            // `POM_SLOT_SAVE_PATH`, then the `pom.json` field, then the
+            // `~/.pom/kv-slots` default (`slot_save_path_effective`). A
+            // deployment from the UI arrives here with `None` and adopts the
+            // installation's value.
             cfg.slot_save_path = cfg
                 .slot_save_path
                 .take()
                 .or_else(|| installation.slot_save_path_effective());
+            cfg.cache_ram_mib = cfg
+                .cache_ram_mib
+                .take()
+                .or_else(|| installation.cache_ram_mib_effective());
         }
         cfg.validate()?;
 
@@ -1169,7 +1298,7 @@ impl NodeRuntime {
             RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
         self.status_changed.notify_waiters();
         self.request_activity.mark_now();
-        self.net.set_idle(false);
+        self.net.set_idle(waking);
         // A configuração nova só vira capacidade efetiva depois que o
         // `/health` do processo novo responder `model_loaded`.
         self.net.set_runtime_generation(generation);
@@ -1281,7 +1410,7 @@ impl NodeRuntime {
                 policy.cooldown_secs
             ),
         );
-        self.apply_locked(cfg, true).await
+        self.apply_locked(cfg, true, false).await
     }
 
     async fn clear_active_for_thermal(
@@ -2180,6 +2309,7 @@ mod tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: true,
             fit_memory_margin_mb: DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,
@@ -2192,16 +2322,22 @@ mod tests {
             prefill_max_inflight_chunks:
                 crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             n_batch: 512,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             max_new_tokens: 256,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
-            cycle_detection_enabled: true,
-            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -2212,6 +2348,10 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

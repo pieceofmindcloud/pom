@@ -20,7 +20,7 @@ import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../compone
 import { canSeePeerDetails } from "../lib/access";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
-import { useCluster, useDeployments, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
 import type { PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -143,6 +143,8 @@ export function Dashboard() {
   const invalidateAll = useInvalidate();
   const { profile } = useProfile();
   const isAdmin = profile === "admin";
+  // The process log is kept by the logs plugin; without it there is no dock.
+  const logsPluginActive = useEnterpriseStatus().data.active;
   // Sem os Detalhes sobra o Fluxo, e uma vista só não é uma escolha: o seletor
   // sai da tela junto com a aba que ele abria.
   const detailed = canSeePeerDetails(profile);
@@ -341,7 +343,7 @@ export function Dashboard() {
         {/* Keep the former execution-order rail available for a later surface; the
             graph above is now the primary operational view. */}
         <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
-        {isAdmin && <DeploymentLogDock />}
+        {isAdmin && logsPluginActive && <DeploymentLogDock />}
       </div>
 
       {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div><DeploymentInspector value={activeVersion.params} readOnly showInferenceMode pomDesenv={node.data?.pom_desenv === true} showHiddenStateDtype={activeVersion.params.hidden_state_dtype != null} /></aside>}

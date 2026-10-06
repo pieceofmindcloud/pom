@@ -95,7 +95,7 @@ impl std::fmt::Display for PrefillResumable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "prefill retomável do pedaço {} (posição {})",
+            "{RESUMABLE_TEXT_PREFIX}{} (posição {})",
             self.from_chunk, self.start_pos
         )
     }
@@ -113,11 +113,34 @@ pub struct PartialPrefillTrace {
 
 impl std::fmt::Display for PartialPrefillTrace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("telemetria parcial do prefill")
+        f.write_str(PARTIAL_TRACE_TEXT)
     }
 }
 
 impl std::error::Error for PartialPrefillTrace {}
+
+const PARTIAL_TRACE_TEXT: &str = "telemetria parcial do prefill";
+const RESUMABLE_TEXT_PREFIX: &str = "prefill retomável do pedaço ";
+
+/// The prefill error as a person reads it: the context chain without the
+/// wrappers that only carry telemetry or a resume point. Printing just the
+/// outermost context showed "telemetria parcial do prefill" and hid the cause.
+pub fn failure_cause(error: &anyhow::Error) -> String {
+    // Both wrappers are attached with `context`, which hides their type from
+    // `chain()`; their fixed text is what identifies them.
+    let parts: Vec<String> = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .filter(|text| {
+            text != PARTIAL_TRACE_TEXT && !text.starts_with(RESUMABLE_TEXT_PREFIX)
+        })
+        .collect();
+    if parts.is_empty() {
+        error.to_string()
+    } else {
+        parts.join(": ")
+    }
+}
 
 /// Partial trace retained by a failed prefill, whether or not it can resume.
 pub fn partial_trace(error: &anyhow::Error) -> Option<RequestTrace> {
@@ -275,6 +298,9 @@ impl PrefillOverlapWindow {
 #[derive(Debug, Clone)]
 pub struct PrefillOutcome {
     pub token_id: u32,
+    /// `probe_result` do último peer quando o prefill levou rótulos de uma
+    /// decisão tipada: `{labels, probabilities, mass}`.
+    pub probe: Option<serde_json::Value>,
     pub text: String,
     pub done: bool,
     /// Prompt length as counted by the peer that tokenised it.
@@ -1894,6 +1920,13 @@ pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
     pub trace_id: String,
+    /// Probabilidade de cada rótulo quando o pedido era uma decisão tipada
+    /// (`/v1/systemone`): `{labels, probabilities, mass}` do último peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe: Option<serde_json::Value>,
+    /// Typed decision summary (`/v1/systemone`), see `DecisionProbe::trace_summary`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jev: Option<serde_json::Value>,
     pub profile: crate::telemetry::Profile,
     pub request_state: RequestState,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2011,6 +2044,10 @@ pub struct RequestTrace {
     pub mtp_acceptance_rate: Option<f64>,
     #[serde(skip)]
     expected_decode_spans: u64,
+    /// `/v1/step` rounds the gateway sent and got back. Every hop reports one
+    /// decode span per round, so this is the exact expectation.
+    #[serde(skip)]
+    decode_rounds: u64,
     #[serde(skip)]
     pending_direct_receipts: Vec<PendingDirectReceipt>,
     #[serde(skip)]
@@ -2254,6 +2291,8 @@ impl RequestTrace {
     ) -> Self {
         Self {
             trace_id: trace_id.into(),
+            probe: None,
+            jev: None,
             profile: crate::telemetry::Profile::current(),
             request_state: RequestState::Unknown,
             spans: Vec::new(),
@@ -2302,6 +2341,7 @@ impl RequestTrace {
             mtp_draft_tokens_rejected: 0,
             mtp_acceptance_rate: None,
             expected_decode_spans: 0,
+            decode_rounds: 0,
             pending_direct_receipts: Vec::new(),
             direct_transport_receipt_ids: HashSet::new(),
             remote_stream_frame_ids: HashSet::new(),
@@ -2987,6 +3027,11 @@ impl RequestTrace {
         true
     }
 
+    /// One `/v1/step` round came back from every hop.
+    pub fn note_decode_round(&mut self) {
+        self.decode_rounds = self.decode_rounds.saturating_add(1);
+    }
+
     pub fn refresh_telemetry(&mut self, wall_clock_ms: u64) {
         let expected_peers = self.hops.len() as u32;
         let decode_tracking = self.expected_decode_spans > 0
@@ -3024,8 +3069,22 @@ impl RequestTrace {
         // round, and a round yields one token plus the MTP drafts it
         // accepted. Counting output tokens alone expected ~3.8x the spans of a
         // speculative run and reported 26% coverage on a complete trace.
-        let decode_rounds =
-            (self.output_tokens as u64).saturating_sub(self.mtp_draft_tokens_accepted);
+        // A typed decision is prefill-only: the last peer scores the labels
+        // from the prompt's logits and no `/v1/step` round runs, even though
+        // the answer counts as one output token.
+        // Estimating the rounds from the tokens is off by one either way: the
+        // first token comes from the prefill, and an end-of-generation token
+        // accepted as a draft counts as accepted but is never emitted. It
+        // reported 98.9% of a trace in which every hop answered every round.
+        // The rounds the gateway counted are exact; the estimate is only for
+        // a path that does not count them.
+        let decode_rounds = if self.probe.is_some() || self.jev.is_some() {
+            0
+        } else if self.decode_rounds > 0 {
+            self.decode_rounds
+        } else {
+            (self.output_tokens as u64).saturating_sub(self.mtp_draft_tokens_accepted)
+        };
         let expected_decode_spans = self
             .expected_decode_spans
             .max(decode_rounds.saturating_mul(self.hops.len() as u64));
@@ -3324,6 +3383,8 @@ impl RequestTrace {
             self.expected_decode_spans = self
                 .expected_decode_spans
                 .saturating_add(other.expected_decode_spans);
+            self.decode_rounds = self.decode_rounds.saturating_add(other.decode_rounds);
+
             self.telemetry
                 .remote_stream
                 .merge(&other.telemetry.remote_stream);
@@ -3416,6 +3477,114 @@ pub(super) fn head_prefill_meta(
     });
     if let Some(trace_id) = trace_id {
         meta["trace_id"] = json!(trace_id);
+    }
+    meta
+}
+
+/// A typed decision (`/v1/systemone`): the answer labels the last peer scores
+/// and, for the head, where the reusable part of the prompt ends.
+///
+/// With no labels the probe scores nothing and only carries the retain
+/// boundary: that is how a chat request with retrieved context appended
+/// (`crate::rag`) keeps the conversation, and not the context, in the KV.
+///
+/// `retain_prefix_bytes` is a byte offset into the prompt text sent to the
+/// head. Everything before it is the same for every request with this
+/// question (instructions and answer format); the state and the options come
+/// after it. The head keeps only that part in the retained KV sequence, so the
+/// next decision with the same question reuses it instead of prefilling it
+/// again. `question`, `question_type` and `options` never leave the gateway:
+/// they only label the `jev` trace.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DecisionProbe {
+    pub labels: Vec<String>,
+    pub retain_prefix_bytes: Option<usize>,
+    pub question: Option<String>,
+    pub question_type: Option<String>,
+    pub options: Vec<String>,
+}
+
+impl DecisionProbe {
+    /// The `jev` object of the request trace, from the last peer's
+    /// `probe_result` and the prefill measurements.
+    pub fn trace_summary(
+        &self,
+        probe_result: &serde_json::Value,
+        prefill_ms: u64,
+        cached_tokens: u32,
+    ) -> serde_json::Value {
+        let raw: Vec<f64> = probe_result["probabilities"]
+            .as_array()
+            .map(|values| values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
+            .unwrap_or_default();
+        let total: f64 = raw.iter().sum();
+        let normalized: Vec<f64> = raw
+            .iter()
+            .map(|p| if total > 0.0 { p / total } else { 0.0 })
+            .collect();
+        let best = normalized.iter().enumerate().fold(
+            None,
+            |best: Option<(usize, f64)>, (i, p)| match best {
+                Some((_, top)) if top >= *p => best,
+                _ => Some((i, *p)),
+            },
+        );
+        let round = |value: f64| (value * 1e6).round() / 1e6;
+        let probabilities: serde_json::Map<String, serde_json::Value> = self
+            .labels
+            .iter()
+            .zip(&normalized)
+            .map(|(label, p)| (label.clone(), json!(round(*p))))
+            .collect();
+        let mut summary = json!({
+            "enabled": true,
+            "candidates": self.labels.len(),
+            "labels": self.labels,
+            "probabilities": probabilities,
+            "mass": round(probe_result["mass"].as_f64().unwrap_or(0.0)),
+            "probe_tokens": 1,
+            "prefill_ms": prefill_ms,
+            "cache_hit_tokens": cached_tokens,
+        });
+        if let Some(ms) = probe_result["probe_ms"].as_f64() {
+            summary["probe_ms"] = json!(round(ms));
+        }
+        if let Some((index, p)) = best {
+            summary["selected"] = json!(self.labels.get(index));
+            summary["confidence"] = json!(round(p));
+            if let Some(option) = self.options.get(index) {
+                summary["selected_option"] = json!(option);
+            }
+        }
+        if let Some(question) = &self.question {
+            summary["question"] = json!(question);
+        }
+        if let Some(kind) = &self.question_type {
+            summary["question_type"] = json!(kind);
+        }
+        if !self.options.is_empty() {
+            summary["options"] = json!(self.options);
+        }
+        summary
+    }
+}
+
+/// Leva os rótulos de uma decisão tipada até o último peer, que responde com
+/// a probabilidade de cada um em `probe_result`, e diz à cabeça até onde o
+/// prompt é reaproveitável (`retain_prefix_bytes`).
+pub(super) fn add_probe_to_head_meta(
+    mut meta: serde_json::Value,
+    probe: Option<&DecisionProbe>,
+) -> serde_json::Value {
+    if let Some(probe) = probe {
+        if !probe.labels.is_empty() {
+            meta["probe"] = json!(probe.labels);
+        }
+        // The retain boundary stands on its own: a request whose prompt ends
+        // with retrieved context (`crate::rag`) carries it without labels.
+        if let Some(bytes) = probe.retain_prefix_bytes {
+            meta["retain_prefix_bytes"] = json!(bytes);
+        }
     }
     meta
 }

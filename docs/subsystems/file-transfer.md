@@ -40,12 +40,16 @@ What may leave a machine depends on **who chose the file**:
   present in the local catalog and sends the basename in `filename`. The
   backend rescans the configured folders, requires a single match and only then
   resolves the real path. Absolute paths, `..`, duplicate names, missing files
-  and extensions other than `.gguf` are refused. The peer never sees that path:
+  and extensions other than `.gguf` are refused; a file with no extension is
+  accepted. The peer never sees that path:
   it only gets an opaque id (see grant below) and fetches with `?grant=<id>`.
 
 Both directions go through `ensure_gguf`, which requires the `GGUF` signature in
-the first 4 bytes **and** the `.gguf` extension. Extension-less blobs from the
-Ollama store cannot be transferred through this screen.
+the first 4 bytes **and** a GGUF file name: the `.gguf` extension or no
+extension at all, which is how Hugging Face publishes some files (an MTP draft
+named just `MTP`). The catalog lists such a file by the same rule
+(`catalog::is_extensionless_name`). Any other extension is refused, and so are
+the `sha256-...` blobs of the Ollama store.
 
 ## 2. The grant
 
@@ -295,3 +299,13 @@ an invented `grant` are refused.
   `transfer.rs`) - a `grant` created by `send_to_peer` lives until the process
   dies, even after the download finishes or the offer is refused. The error
   message talks about an "expired grant", but there is no deadline.
+
+## Sidecars outside the shard folder
+
+A pull by path is confined to the shard folder (`safe_model_path`), with one
+exception: a path that is in the serving node's own sidecar inventory
+(`catalog::discover_sidecars` over its shard folder and GGUF libraries) is
+served too. That is how a deployment copies a vision projector or an MTP draft
+from a models folder to the head or the tail. Any other path keeps being
+refused. A completed download invalidates the receiver's catalog, so the new
+file shows up on the next read.

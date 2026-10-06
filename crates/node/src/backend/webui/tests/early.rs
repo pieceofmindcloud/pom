@@ -345,10 +345,13 @@ mod cluster_logs_settings_tests {
     }
 
     #[tokio::test]
-    async fn principal_liga_e_desliga_logs_sem_reinicio() {
+    async fn principal_sem_o_plugin_de_logs_nao_liga_a_coleta_mas_desliga() {
         let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        state.network.set_cluster_logs_enabled(true);
+        state.cluster_logs.set_enabled(true);
+        state.auth.write().await.cluster_logs_enabled = true;
 
         let response = save_cluster_logs(
             ConnectionAuth,
@@ -356,11 +359,8 @@ mod cluster_logs_settings_tests {
             Json(SaveClusterLogsRequest { logs_enabled: true }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_of(response).await["logs_enabled"], true);
-        assert!(state.cluster_logs.enabled());
-        assert!(state.network.cluster_logs_enabled());
-        assert!(state.auth.read().await.cluster_logs_enabled);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(body_of(response).await["code"], "logs_plugin_required");
 
         let response = save_cluster_logs(
             ConnectionAuth,
@@ -423,7 +423,7 @@ mod network_chat_settings_tests {
         let primary_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let mut primary = peer("primary", "primary", port);
         primary.libp2p_peer_id = Some("peer-primary".into());
-        primary.authority_pubkey =
+        primary.pubkey =
             hex::encode(primary_key.verifying_key().as_bytes());
         let state = state_with_secondary_admin("secondary", vec![primary]).await;
 

@@ -684,7 +684,7 @@ pub fn has_nextn_tensors(path: &Path) -> Result<bool> {
 /// This table and `_GGML_TYPE_INFO` in `split_model.py` must agree; the two
 /// live in different languages, so `split_model_type_table_matches` below reads
 /// the Python one and fails the build when they drift.
-fn ggml_type_info(t: u32) -> Option<(u64, u64)> {
+pub(crate) fn ggml_type_info(t: u32) -> Option<(u64, u64)> {
     Some(match t {
         0 => (4, 1),      // F32
         1 => (2, 1),      // F16

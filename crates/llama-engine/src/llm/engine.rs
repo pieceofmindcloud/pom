@@ -36,6 +36,89 @@ fn write_mrope_position(
     Ok(())
 }
 
+/// The four M-RoPE sections of `n_tokens` text positions starting at `start`,
+/// laid out as llama.cpp reads an embedding batch.
+fn text_mrope_positions(n_tokens: usize, start: u32) -> Result<Vec<sys::llama_pos>> {
+    let mut storage = vec![0 as sys::llama_pos; n_tokens.saturating_mul(4)];
+    for row in 0..n_tokens {
+        let position = start + row as u32;
+        write_mrope_position(
+            &mut storage,
+            n_tokens,
+            row,
+            [position, position, position, 0],
+        )?;
+    }
+    Ok(storage)
+}
+
+#[cfg(test)]
+mod mrope_text_tests {
+    use super::*;
+
+    #[test]
+    fn text_positions_fill_all_four_sections_for_every_row() {
+        let storage = text_mrope_positions(3, 10).unwrap();
+        // Section-major: [s0 rows][s1 rows][s2 rows][s3 rows].
+        assert_eq!(storage, vec![10, 11, 12, 10, 11, 12, 10, 11, 12, 0, 0, 0]);
+        assert_eq!(
+            storage.len(),
+            3 * 4,
+            "llama.cpp reads n_tokens * 4 positions"
+        );
+    }
+}
+
+/// How many copies of a projector embedding a fresh embedding batch needs.
+///
+/// A hyper-connection model (`qwen4exp`) reads a batch without token ids as
+/// its wide residual, `n_embd_out = hc * n_embd` per row, because that is what
+/// one pipeline hop forwards to the next. Its token path starts that residual
+/// as `hc` identical copies of the embedding, so an image embedding, which the
+/// projector emits at `n_embd_inp`, has to enter the same way. Every other
+/// model returns 1 and keeps the stock mtmd evaluation.
+fn image_embedding_copies(n_embd_inp: usize, n_embd_out: usize) -> usize {
+    if n_embd_inp > 0 && n_embd_out > n_embd_inp && n_embd_out % n_embd_inp == 0 {
+        n_embd_out / n_embd_inp
+    } else {
+        1
+    }
+}
+
+/// Repeats every `width`-wide row `copies` times, contiguously.
+fn widen_embedding_rows(rows: &[f32], width: usize, copies: usize) -> Vec<f32> {
+    let mut wide = Vec::with_capacity(rows.len() * copies);
+    for row in rows.chunks_exact(width) {
+        for _ in 0..copies {
+            wide.extend_from_slice(row);
+        }
+    }
+    wide
+}
+
+#[cfg(test)]
+mod wide_image_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_wide_residual_model_widens_the_image() {
+        assert_eq!(image_embedding_copies(2560, 10240), 4);
+        assert_eq!(image_embedding_copies(4096, 4096), 1);
+        // Deepstack vision: the projector is wider than the hidden state.
+        assert_eq!(image_embedding_copies(4096 * 4, 4096), 1);
+        assert_eq!(image_embedding_copies(3000, 10240), 1);
+    }
+
+    #[test]
+    fn each_row_becomes_contiguous_copies_of_itself() {
+        let wide = widen_embedding_rows(&[1.0, 2.0, 3.0, 4.0], 2, 3);
+        assert_eq!(
+            wide,
+            vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]
+        );
+    }
+}
+
 /// O que um decode de estado oculto faz com a cabeça `nextn` depois do alvo.
 #[derive(Clone, Copy)]
 enum MtpObserve<'a> {
@@ -43,6 +126,17 @@ enum MtpObserve<'a> {
     Tokens(Option<&'a [i32]>),
     /// Rodada sem especulação: não roda o `observe` e esquece a sequência.
     Skip,
+}
+
+/// The MTP mode a load asks the fit for: none, VRAM (which the fit may still
+/// turn into host memory), or host memory from the start when the deployment
+/// placed MTP there.
+fn requested_mtp_fit_mode(cfg: &EngineConfig) -> MtpFitMode {
+    match (cfg.mtp, cfg.mtp_placement) {
+        (false, _) => MtpFitMode::Disabled,
+        (true, crate::MtpPlacement::Ram) => MtpFitMode::Ram,
+        (true, _) => MtpFitMode::Vram,
+    }
 }
 
 impl LlmEngine {
@@ -111,15 +205,7 @@ impl LlmEngine {
             }
         }
 
-        let vram_plan = fit_plan(
-            model_path,
-            cfg,
-            if cfg.mtp {
-                MtpFitMode::Vram
-            } else {
-                MtpFitMode::Disabled
-            },
-        )?;
+        let vram_plan = fit_plan(model_path, cfg, requested_mtp_fit_mode(cfg))?;
         let vram_loaded = LoadedModel::load(model_path, &vram_plan)?;
         let mut loaded = Some(vram_loaded.clone());
         let mut engine = Self::from_loaded(
@@ -263,8 +349,21 @@ impl LlmEngine {
                 // proativo aqui quando o fit já decidiu Ram, e reativo logo
                 // abaixo (`.or_else`) quando o fit achou que cabia mas a VRAM
                 // mudou entre o fit e esta carga.
+                // A shared draft (no `token_embd`/`output` of its own) is
+                // completed against this target first; a complete draft
+                // comes back unchanged. See `crate::mtp_draft`.
+                let (draft_path, draft_prepare_error) = match crate::mtp_draft::ready_draft_path(
+                    std::path::Path::new(&draft_path),
+                    std::path::Path::new(model_path),
+                ) {
+                    Ok(ready) => (ready.to_string_lossy().into_owned(), None),
+                    Err(error) => (draft_path, Some(error)),
+                };
                 let draft_wants_ram = vram_plan.mtp_mode == MtpFitMode::Ram;
-                let draft_loaded_result = if draft_wants_ram {
+                let draft_unprepared = draft_prepare_error.is_some();
+                let draft_loaded_result = if let Some(error) = draft_prepare_error {
+                    Err(error)
+                } else if draft_wants_ram {
                     LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)
                 } else {
                     LoadedModel::load_mtp_draft(&draft_path, cfg)
@@ -272,7 +371,7 @@ impl LlmEngine {
                 let draft_loaded_result = draft_loaded_result
                     .map(|draft_loaded| (draft_loaded, draft_wants_ram))
                     .or_else(|vram_error| {
-                        if draft_wants_ram || !cfg.mtp_cpu_fallback_enabled {
+                        if draft_wants_ram || draft_unprepared || !cfg.mtp_cpu_fallback_enabled {
                             return Err(vram_error);
                         }
                         warn!(
@@ -316,12 +415,38 @@ impl LlmEngine {
                             "contexto do rascunho MTP externo falhou na VRAM ({vram_error}); \
                                  tentando de novo com execução no host (offload_kqv=false)"
                         );
-                        return Self::from_loaded_with_mtp_offload(
+                        let host_kv = Self::from_loaded_with_mtp_offload(
                             target_loaded.clone(),
                             cfg,
                             fit_memory_applied,
                             effective_n_gpu_layers,
                             Some(draft_loaded),
+                            false,
+                        );
+                        if host_kv.as_ref().is_ok_and(|engine| engine.mtp_ready()) {
+                            return host_kv;
+                        }
+                        // The weights fit in VRAM but the context does not,
+                        // even with its KV in host memory: the compute
+                        // buffers follow the weights. The GPU copy was
+                        // released with the attempt above; a draft loaded in
+                        // host memory needs nothing from the card.
+                        let reason = match &host_kv {
+                            Ok(engine) => engine.mtp_initial_context_error.clone().unwrap_or_default(),
+                            Err(error) => format!("{error:#}"),
+                        };
+                        warn!(
+                            "contexto do rascunho MTP externo não coube na placa nem com o KV no host \
+                             ({reason}); carregando o rascunho na RAM"
+                        );
+                        drop(host_kv);
+                        let draft_cpu = LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)?;
+                        return Self::from_loaded_with_mtp_offload(
+                            target_loaded.clone(),
+                            cfg,
+                            fit_memory_applied,
+                            effective_n_gpu_layers,
+                            Some(draft_cpu),
                             false,
                         );
                     }
@@ -401,12 +526,31 @@ impl LlmEngine {
         mtp_loaded: Option<Arc<LoadedModel>>,
         mtp_offload_kqv: bool,
     ) -> Result<Self> {
-        match Self::with_model_and_mtp_offload(
-            loaded.clone(),
-            cfg,
-            mtp_loaded.clone(),
-            mtp_offload_kqv,
-        ) {
+        // The MoE expert cache is per GPU and the memory fit does not run when
+        // the experts stay in RAM: a cache too big for what the layers, the KV
+        // and the compute buffers leave free fails the context. Halve it until
+        // it fits, then turn it off, instead of failing the whole load.
+        let mut cache_cfg = cfg.clone();
+        let first = loop {
+            match Self::with_model_and_mtp_offload(
+                loaded.clone(),
+                &cache_cfg,
+                mtp_loaded.clone(),
+                mtp_offload_kqv,
+            ) {
+                Err(error) if cache_cfg.moe_cache_mib > 0 => {
+                    let next = moe_cache_retry_mib(cache_cfg.moe_cache_mib);
+                    warn!(
+                        "llama context failed with a {} MiB MoE expert cache per GPU: {error}; retrying with {} MiB",
+                        cache_cfg.moe_cache_mib, next
+                    );
+                    cache_cfg.moe_cache_mib = next;
+                }
+                result => break result,
+            }
+        };
+        let cfg = &cache_cfg;
+        match first {
             Ok(mut engine) => {
                 engine.fit_memory_applied = fit_memory_applied;
                 engine.effective_n_gpu_layers = effective_n_gpu_layers;
@@ -466,15 +610,7 @@ impl LlmEngine {
     #[allow(dead_code)]
     pub fn pool(model_path: &str, cfg: &EngineConfig, n: usize) -> Result<Vec<Self>> {
         let n = n.max(1);
-        let plan = fit_plan(
-            model_path,
-            cfg,
-            if cfg.mtp {
-                MtpFitMode::Vram
-            } else {
-                MtpFitMode::Disabled
-            },
-        )?;
+        let plan = fit_plan(model_path, cfg, requested_mtp_fit_mode(cfg))?;
         let loaded = LoadedModel::load(model_path, &plan)?;
         let mtp_unavailable_reason = plan.mtp_unavailable_reason.clone();
         let mtp_loaded =
@@ -547,10 +683,8 @@ impl LlmEngine {
         apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
         cparams.embeddings = generic_embeddings_compatible(cfg.need_embeddings, n_embd, n_embd_out);
         cparams.n_rs_seq = cfg.rs_seq_window;
-        if cfg.n_threads > 0 {
-            cparams.n_threads = cfg.n_threads;
-            cparams.n_threads_batch = cfg.n_threads;
-        }
+        cparams.moe_cache_size = moe_cache_bytes(cfg);
+        apply_thread_params(&mut cparams, cfg);
 
         // ── Residual capture callback ────────────────────────────────────────
         let capture: Box<Mutex<CaptureSlot>> = Box::new(Mutex::new(CaptureSlot {
@@ -894,20 +1028,35 @@ impl LlmEngine {
         self.reset_capture_slot_with_physical_chunks(n_tokens, true);
         let backend_call_started = Instant::now();
         self.begin_moe_callback();
-        let rc = unsafe {
-            sys::mtmd_helper_eval_chunks(
+        let copies = image_embedding_copies(self.n_embd_inp, self.n_embd_out);
+        if copies > 1 {
+            // The caller asks for outputs (`!is_last`) exactly when this hop
+            // forwards the residual, so every cell becomes an output row.
+            new_n_past = self.eval_chunks_with_wide_images(
                 vision_ctx,
-                self.ctx,
                 chunks.0,
-                n_past as sys::llama_pos,
-                seq_id as sys::llama_seq_id,
-                self.n_batch() as i32,
+                n_past,
+                seq_id,
                 logits_last,
-                &mut new_n_past,
-            )
-        };
-        if rc != 0 {
-            bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
+                copies,
+                mrope_positions.as_deref(),
+            )?;
+        } else {
+            let rc = unsafe {
+                sys::mtmd_helper_eval_chunks(
+                    vision_ctx,
+                    self.ctx,
+                    chunks.0,
+                    n_past as sys::llama_pos,
+                    seq_id as sys::llama_seq_id,
+                    self.n_batch() as i32,
+                    logits_last,
+                    &mut new_n_past,
+                )
+            };
+            if rc != 0 {
+                bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
+            }
         }
         let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         let mut timings = DecodeTimings {
@@ -931,12 +1080,169 @@ impl LlmEngine {
         })
     }
 
+    /// `mtmd_helper_eval_chunks` for a model whose embedding batch is wider
+    /// than the projector output (see [`image_embedding_copies`]). Each image
+    /// is encoded by mtmd and decoded here with its rows repeated `copies`
+    /// times and the same positions and attention mode the helper would use.
+    ///
+    /// Such a model runs without `cparams.embeddings` (its hidden width is not
+    /// `n_embd`), so its last layer keeps only the rows marked as outputs. A
+    /// hop that forwards the residual (`all_rows`) needs every cell, which the
+    /// helper never marks; text is therefore decoded here too. Otherwise only
+    /// the final row is an output, for the logits. Returns the next logical
+    /// position.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_chunks_with_wide_images(
+        &mut self,
+        vision_ctx: *mut sys::mtmd_context,
+        chunks: *const sys::mtmd_input_chunks,
+        n_past: u32,
+        seq_id: u32,
+        all_rows: bool,
+        copies: usize,
+        mrope_positions: Option<&[[u32; 4]]>,
+    ) -> Result<sys::llama_pos> {
+        let n_batch = self.n_batch().max(1) as usize;
+        let width = self.n_embd_inp;
+        let wide_width = width * copies;
+        let mut n_past = n_past as sys::llama_pos;
+        let mut cell = 0usize;
+        let chunk_count = unsafe { sys::mtmd_input_chunks_size(chunks) };
+        for index in 0..chunk_count {
+            let chunk = unsafe { sys::mtmd_input_chunks_get(chunks, index) };
+            if chunk.is_null() {
+                bail!("mtmd retornou um chunk multimodal nulo");
+            }
+            let last_chunk = index + 1 == chunk_count;
+            let n_tokens = unsafe { sys::mtmd_input_chunk_get_n_tokens(chunk) };
+            let kind = unsafe { sys::mtmd_input_chunk_get_type(chunk) };
+            if kind == sys::MTMD_INPUT_CHUNK_TYPE_TEXT {
+                let mut n_text = 0usize;
+                let tokens = unsafe { sys::mtmd_input_chunk_get_tokens_text(chunk, &mut n_text) };
+                let tokens = if n_text == 0 {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(tokens, n_text) }
+                };
+                for start in (0..n_text).step_by(n_batch) {
+                    let end = (start + n_batch).min(n_text);
+                    let rows = end - start;
+                    let mut batch = unsafe { sys::llama_batch_init(rows as i32, 0, 1) };
+                    batch.n_tokens = rows as i32;
+                    unsafe {
+                        for i in 0..rows {
+                            *batch.token.add(i) = tokens[start + i];
+                            *batch.pos.add(i) = n_past + (start + i) as sys::llama_pos;
+                            *batch.n_seq_id.add(i) = 1;
+                            *(*batch.seq_id.add(i)).add(0) = seq_id as sys::llama_seq_id;
+                            *batch.logits.add(i) =
+                                (all_rows || (last_chunk && start + i + 1 == n_text)) as i8;
+                        }
+                    }
+                    let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+                    unsafe { sys::llama_batch_free(batch) };
+                    if rc != 0 {
+                        bail!("llama_decode falhou no texto da mensagem multimodal (rc={rc})");
+                    }
+                }
+                n_past += n_text as sys::llama_pos;
+                cell += n_tokens;
+                continue;
+            }
+            if kind != sys::MTMD_INPUT_CHUNK_TYPE_IMAGE {
+                bail!("este modelo só aceita imagem como entrada multimodal");
+            }
+
+            let rc = unsafe { sys::mtmd_encode_chunk(vision_ctx, chunk) };
+            if rc != 0 {
+                bail!("mtmd falhou ao codificar a imagem (rc={rc})");
+            }
+            let embd = unsafe { sys::mtmd_get_output_embd(vision_ctx) };
+            if embd.is_null() {
+                bail!("mtmd não devolveu os embeddings da imagem");
+            }
+            let rows = unsafe { std::slice::from_raw_parts(embd, n_tokens * width) };
+            let wide = widen_embedding_rows(rows, width, copies);
+            let positions = match mrope_positions {
+                Some(positions) => Some(positions.get(cell..cell + n_tokens).ok_or_else(|| {
+                    anyhow::anyhow!("a tabela M-RoPE não cobre as células da imagem")
+                })?),
+                None => None,
+            };
+
+            let non_causal = unsafe { sys::mtmd_decode_use_non_causal(vision_ctx, chunk) };
+            if non_causal {
+                unsafe { sys::llama_set_causal_attn(self.ctx, false) };
+            }
+            let decoded = (|| -> Result<()> {
+                for start in (0..n_tokens).step_by(n_batch) {
+                    let end = (start + n_batch).min(n_tokens);
+                    let rows = end - start;
+                    let mut storage = match positions {
+                        Some(positions) => {
+                            let mut storage = vec![0 as sys::llama_pos; rows * 4];
+                            for (row, position) in positions[start..end].iter().enumerate() {
+                                write_mrope_position(&mut storage, rows, row, *position)?;
+                            }
+                            Some(storage)
+                        }
+                        None => None,
+                    };
+                    let mut batch =
+                        unsafe { sys::llama_batch_init(rows as i32, wide_width as i32, 1) };
+                    batch.n_tokens = rows as i32;
+                    batch.token = ptr::null_mut();
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            wide[start * wide_width..end * wide_width].as_ptr(),
+                            batch.embd,
+                            rows * wide_width,
+                        );
+                        for i in 0..rows {
+                            *batch.pos.add(i) = n_past + (start + i) as sys::llama_pos;
+                            *batch.n_seq_id.add(i) = 1;
+                            *(*batch.seq_id.add(i)).add(0) = seq_id as sys::llama_seq_id;
+                            *batch.logits.add(i) =
+                                (all_rows || (last_chunk && start + i + 1 == n_tokens)) as i8;
+                        }
+                    }
+                    let scalar_positions = batch.pos;
+                    if let Some(storage) = storage.as_mut() {
+                        batch.pos = storage.as_mut_ptr();
+                    }
+                    let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+                    batch.pos = scalar_positions;
+                    unsafe { sys::llama_batch_free(batch) };
+                    if rc != 0 {
+                        bail!("llama_decode falhou na imagem (rc={rc})");
+                    }
+                }
+                Ok(())
+            })();
+            if non_causal {
+                unsafe { sys::llama_set_causal_attn(self.ctx, true) };
+            }
+            decoded?;
+            n_past += unsafe { sys::mtmd_input_chunk_get_n_pos(chunk) } as sys::llama_pos;
+            cell += n_tokens;
+        }
+        Ok(n_past)
+    }
+
     /// Converte os chunks do mtmd para a representação que atravessa o POM.
     ///
     /// `mtmd_helper_get_n_tokens` conta células que serão escritas no KV,
     /// enquanto `mtmd_input_chunk_get_n_pos` conta posições lógicas. Em
     /// M-RoPE uma imagem tem várias células por posição temporal, por isso o
     /// POM não pode reconstruir os eixos apenas a partir de `n_tokens`.
+    /// The model rotates with M-RoPE: llama.cpp then reads **four** positions
+    /// per row of an embedding batch (`n_pos_per_embd`), one per section, and
+    /// never just the scalar one. A hidden-state batch must carry all four.
+    fn uses_mrope(&self) -> bool {
+        let rope_type = unsafe { sys::llama_model_rope_type(self.loaded.model) };
+        rope_type == sys::LLAMA_ROPE_TYPE_MROPE || rope_type == sys::LLAMA_ROPE_TYPE_IMROPE
+    }
+
     fn multimodal_mrope_positions(
         &self,
         chunks: *const sys::mtmd_input_chunks,
@@ -1503,7 +1809,11 @@ impl LlmEngine {
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
         let has_mrope_positions = entries.iter().any(|entry| entry.mrope_positions.is_some());
         self.reset_capture_slot_with_physical_chunks(layout.total_tokens(), has_mrope_positions);
-        let mut flattened_positions = has_mrope_positions
+        // With M-RoPE every embedding batch needs the four sections, text or
+        // image: llama.cpp reads `pos[j * n_tokens + i]` for all four, and a
+        // scalar array made it read past the end - garbage rotations on every
+        // peer after the head, and a crash once the read crossed a page.
+        let mut flattened_positions = (has_mrope_positions || self.uses_mrope())
             .then(|| vec![0 as sys::llama_pos; layout.total_tokens().saturating_mul(4)]);
         if let Some(storage) = flattened_positions.as_mut() {
             let mut row = 0usize;
@@ -1949,6 +2259,10 @@ impl LlmEngine {
                 write_mrope_position(&mut storage, n_tokens, row, position)?;
             }
             Some(storage)
+        } else if self.uses_mrope() {
+            // Text on an M-RoPE model: the same four sections a text token
+            // gets (see the batch path above), never a scalar array.
+            Some(text_mrope_positions(n_tokens, pos_offset)?)
         } else {
             None
         };
@@ -2159,6 +2473,49 @@ impl LlmEngine {
             return 0;
         }
         unsafe { sys::llama_state_seq_get_size(self.ctx, seq_id as i32) }
+    }
+
+    /// Copia o estado de uma sequência de KV para a memória do host
+    /// (`llama_state_seq_get_data`), o mesmo conteúdo que
+    /// `state_seq_save_file` grava, sem o cabeçalho de tokens. É a base do
+    /// cache em RAM (`--cache-ram` do llama-server): quem chama guarda os bytes
+    /// e os devolve com `state_seq_set_data` no mesmo contexto.
+    pub fn state_seq_get_data(&self, seq_id: u32) -> Result<Vec<u8>> {
+        if self.ctx.is_null() {
+            bail!("state_seq_get_data: contexto nulo");
+        }
+        let size = self.state_seq_size(seq_id);
+        if size == 0 {
+            bail!("state_seq_get_data: sequência {seq_id} sem estado");
+        }
+        let mut data = vec![0u8; size];
+        let written = unsafe {
+            sys::llama_state_seq_get_data(self.ctx, data.as_mut_ptr(), data.len(), seq_id as i32)
+        };
+        if written == 0 || written > data.len() {
+            bail!("llama_state_seq_get_data devolveu {written} para {size} bytes");
+        }
+        data.truncate(written);
+        Ok(data)
+    }
+
+    /// Restaura em `dest_seq_id` um estado copiado por `state_seq_get_data`
+    /// (`llama_state_seq_set_data`). Devolve os bytes lidos; zero é falha - o
+    /// estado não cabe ou não pertence à geometria de KV deste contexto.
+    pub fn state_seq_set_data(&self, data: &[u8], dest_seq_id: u32) -> Result<usize> {
+        if self.ctx.is_null() {
+            bail!("state_seq_set_data: contexto nulo");
+        }
+        let read = unsafe {
+            sys::llama_state_seq_set_data(self.ctx, data.as_ptr(), data.len(), dest_seq_id as i32)
+        };
+        if read == 0 {
+            bail!(
+                "llama_state_seq_set_data devolveu 0 para {} bytes",
+                data.len()
+            );
+        }
+        Ok(read)
     }
 
     /// Grava o KV de uma sequência em disco com um cabeçalho de tokens, como o

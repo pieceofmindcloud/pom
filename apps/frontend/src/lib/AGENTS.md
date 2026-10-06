@@ -47,6 +47,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
   persisted message patch settles.
+- `chatWaiting.ts` - which line the Chat shows before the first token: the
+  set (`wake`, `pieces`, `assemble`, `long`) from the `asleep` flag and the
+  elapsed time, and the rotation inside it. Texts are `chat.wait.<set>.<n>`;
+  `WAITING_SET_SIZE` has to match the catalog (a test checks it).
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; peer/client f32/f16 conversion, f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
@@ -66,13 +70,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   tokens times pipeline hops; with no output or callbacks it is not measured.
   An incomplete transport receipt remains visible independently of response
   completeness.
-- `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
-  backend cost and time outside the node; compara timings ponta a ponta com o
-  processamento medido no nó antes de nomear o gargalo. It refuses to label
-  a distributed gap as `outside-node` while telemetry is incomplete and keeps
-  the fixed/per-token regression as an analysis helper only. Derives the observed
-  execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer
-  counts from actual buffers.
+- `chatTelemetry.ts` - the data contract of the `chat.telemetry` plugin slot:
+  slot id, captured environment (cluster snapshot, network RTT, runtimes),
+  the question type a plugin hands back through `onAsk`, and the slot props.
+  The diagnosis and visual analysis of a trace live in the plugin that claims
+  the slot, not in the POM.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
@@ -86,8 +88,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   hardware de uma caixa com duas placas sumia da tela. Testes em `gpu.test.ts`.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - posições dos nós do canvas persistidas por impressão
-  digital da implantação; `CARD_HEIGHT` mantém a altura reduzida do card
-  compacto sincronizada com seus medidores agrupados.
+  digital da implantação (o gateway arrastado entra como `GATEWAY_LAYOUT_ID`);
+  `CARD_SIZE`/`COMPACT_CARD_SIZE`/`GATEWAY_SIZE` alimentam arestas, arranjo e
+  arrasto, e `readCardModes`/`writeCardModes` guardam quais cards do Fluxo
+  estão minimizados.
+- `peerSpeed.ts` - `rateSpeed`: tom de decode/prefill de uma fatia pela razão
+  para a mais rápida do mesmo modelo; com uma só medida, `solo`.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
 - `networkStats.ts` - agrega somente dados presentes no `ClusterView`: nós,
   RTT médio, VRAM conhecida e modelos servidos. Cada métrica permanece nula
@@ -193,19 +199,30 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   quando não há essa leitura.
   `PluginStatus` é o contrato local de UM plugin independente (ver
   `crates/node/src/plugins.rs`), consumido por `usePlugins`/`useEnterpriseStatus`
-  (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"enterprise"`
+  (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"logs"`
   especificamente). Quando inativo, `useEnterpriseStatus` remove caches de
   auditoria para não reexibir dados antigos. A atualização do binário `pom`
   em si é um contrato separado, `PomCoreUpdateStatus`/`usePomCoreUpdateStatus`
   - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
   e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
   explícita do operador.
+- `speculation.ts` - the single speculation choice (`none`/`mtp`/`lookup`) over
+  `mtp_enabled` + `speculative_decoding_enabled`, and `MTP_MIN_PROBABILITY`
+  (0.75, the node's default), written when MTP is chosen.
 - `pluginCatalog.ts` - reads the public plugin catalog directly from the
-  license server with `credentials: "omit"`; it does not use `api.ts` or send
+  license server with `credentials: "omit"`; `fetchPublicPluginCatalog` takes an
+  optional `{q, page, perPage}` (search and paging done by the server, `total`
+  is null from a server without paging), `fetchPublicPlugin(code)` reads one
+  entry, and `supportedPlatforms` lists the systems with builds; it does not use `api.ts` or send
   the connection key or administrative session. It validates required fields
   for each commercial release and discards plugins without a valid release.
-  GitHub repository metadata in the catalog is ignored because GitHub sources
-  are local. Missing optional fields remain unknown; images are accepted only
+  GitHub sources stay local: the catalog's `github_url` (a free plugin the
+  license server lists as installed from GitHub) is only a suggestion, accepted
+  solely as `https://github.com/<owner>/<repo>`, and the Plugins card registers
+  that repository only when the operator clicks "Install from GitHub", the same
+  as pasting it in the repository box. Nothing is registered or installed from
+  the catalog on its own; other repository fields stay ignored. `featured` and
+  `pom_team` are display badges. Missing optional fields remain unknown; images are accepted only
   from the expected public host and URLs may not embed credentials. Published
   `description_pt_br` values are validated too. License state, activation
   candidates and usage by `plugin_code` come from the node's authenticated API
@@ -530,15 +547,14 @@ SQLite de países e cidades para os selects da tela. A UI nunca guarda a chave
 de conexão no cache: os materiais de compartilhamento são buscados pelo admin
 somente em `/api/ui/network/trust-share`.
 
-### publicReachability.ts
+### publicLocator.ts
 
-`usePublicAddressReachability` consulta o `/health` do endereço publicado no
-navegador. O resultado usa `reachable` para resposta observada, `unreachable`
-para erro ou timeout de 1,8 s e `checking` durante a primeira consulta. O
-cache compartilhado dura 30 s e uma nova tentativa só é forçada pelo botão de
-atualização da tela de Redes públicas; trocar filtros não gera carga adicional.
-O `mode: no-cors` permite reconhecer resposta opaca cross-origin, sem tentar
-ler o corpo nem alterar o endereço publicado.
+`usePublicLocator(key)` asks the node (`GET /api/public/networks/locate`) how
+the network of a publisher `pk:` key can be reached: `direct` (pkarr record
+with a public address), `relayed` (relays only), `unresolved` (no record) or
+`checking`. The browser never probes or receives an IP: the node, which speaks
+pkarr/libp2p, does the resolving. 30 s cache per key; the refresh button on the
+Public networks screen forces a new query.
 
 ### networkPeers.ts
 The panel asks two questions, and the screen needs both: "who serves the
@@ -621,11 +637,16 @@ When updating this file, preserve this bar for all agents and keep entries conci
   entradas Markdown dos guias e da referência. `menu[].children` vira seção
   com submenus (`pluginMenuItems` devolve só os filhos visíveis ao perfil;
   o `roles` do filho é interseção com o do pai) e `pluginDisplayName` dá o
-  nome humano do plugin. Não conhece plugin algum.
+  nome humano do plugin. `slots` maps native extension slots to declared
+  screens; `pluginSlot(id)` returns the first active claimant. Não conhece
+  plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
   empacotar cópias próprias. Versão 2: `context()`, `events`, `protocol` e
-  `plugin(code)` (eventos e comandos com escopo do plugin).
+  `plugin(code)` (eventos e comandos com escopo do plugin). Version 3 adds
+  `components.TelemetryLine`; `components.ExecutionTelemetry` stays for
+  version-2 bundles and renders the same basic line. Version 4 adds
+  `plugin(code).rpc`.
 - `pluginEvents.ts` - o protocolo `pom-plugin-events/v1`: envelope, barramento
   (`publishPluginEvent`, `subscribePluginEvents`, replay do último evento
   global), entrega por `CustomEvent("pom:plugin-event")` e `postMessage` para
@@ -635,6 +656,11 @@ When updating this file, preserve this bar for all agents and keep entries conci
   `postMessage` da mesma origem. Quem executa é a `PluginBridge`.
   `forwardNodeEvent` repassa os envelopes do nó (`deployment.started`,
   `model.serving`, `model.stopped`, `preferences.changed`) preservando `id`.
+  `scopedPluginApi(code).rpc(op, params)` posts to the plugin's own API
+  (`/api/ui/plugins/<code>/rpc/<op>`).
+- `defaultPasswordNotice.ts` - the bell's default-password notice: read and
+  dismissed state in `localStorage` per `boot_id`, so it returns unread on
+  every start of the node and not on a page reload.
 - `pluginInbox.ts` - caixa de entrada dos plugins no sino: perguntas
   `notification.confirm` com Aceitar/Recusar (só nesta aba) e avisos
   `notification.notify` sem botões, não lidos até o sino abrir

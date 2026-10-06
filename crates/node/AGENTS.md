@@ -79,13 +79,16 @@ interface, e num reinício volta pelo journal da fatia (`lastslice`).
 
 **Flags (clap derive, `Args`):** `-p/--port` (42777), `-b/--bootstrap`,
 `--advertise-addr`, `--ollama-url`, `--gateway-port` (8080),
-`--setup-bind`, `--cycle-detection` (desligado por padrão), `--pkarr-peers`,
+`--setup-bind`, `--pkarr-peers`,
 `--public-addr`, `--relay-peers`, `--serve-relay`, `--no-default-relays`,
-`--no-discovery`. `--relay-peers` soma-se a `relay_peers` do `pom.json`
+`--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
+access).
+`--relay-peers` soma-se a `relay_peers` do `pom.json`
 (`merged_relay_peers`, config primeiro), como `--bootstrap` a
 `bootstrap_nodes`. Não há flag de modelo, memória, faixa de camadas, amostragem
 nem porta de inferência: isso vem da implantação (`runtime::NodeConfig`) e do
-`pom.json` (`inference_port`, padrão 8181; `slot_save_path`).
+`pom.json` (`inference_port`, padrão 8181; `slot_save_path`, default
+`~/.pom/kv-slots`).
 
 **Toda flag tem variável de ambiente** (`ARG_ENV`, nome por
 `brand::env_var`: `--gateway-port` → `POM_GATEWAY_PORT`), aplicada por
@@ -122,8 +125,9 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
 3. Com config: valida a porta da interface e faz o preflight de
    disponibilidade; portas P2P, HTTP e de inferência vêm da config.
 4. `start_node`, o único caminho de um nó configurado:
-   - Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`, ambas
-     resolvidas contra `config::project_root()`.
+   - Identity `Identity::load_or_create` (`.pom-node.key`, resolved against
+     `config::project_root()`): the node's only key, from which come
+     `node_id`, `PeerId`, the pkarr key and the authority key.
    - Bootstrap = config + `--bootstrap`, ambos passando por
      `config::normalize_peer_addr` em `merged_bootstrap_nodes`; relés =
      `relay_peers` + `--relay-peers`. `--advertise-addr` vence
@@ -140,16 +144,21 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
      `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
      a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
      UDP, com ou sem assignment).
-   - pkarr: publicação inicial com `r` igual a `--serve-relay` (é o caminho de
-     um relé dedicado, `examples/relay-node/`) e as chaves de `--pkarr-peers`
-     resolvidas e discadas em segundo plano. O Mainline DHT usado pelo pkarr
+   - pkarr: `PkarrPublishHandle::spawn_republisher` always publishes (with
+     `r` equal to `--serve-relay`, the path of a dedicated relay,
+     `examples/relay-node/`) and republishes when the swarm addresses change;
+     every 30 s `spawn_pkarr_bootstrap` resolves and dials by key
+     `--pkarr-peers`, the `relay_peers` relays and the trust chain principals
+     that are not alive yet. `--no-pkarr` skips all of it; without it, a failed
+     publication backs off from 15 s to 30 min and only warns at the 1st, 2nd,
+     4th... consecutive failure. O Mainline DHT usado pelo pkarr
      mantém um ator em thread própria; no Windows o timeout ocioso de leitura
      do socket aparece como WSAETIMEDOUT (10060) a cada 50 ms na dependência,
      e `application_log_filter` oculta somente esse aviso esperado.
    - `ClusterLogs` inicia a captura limitada e as tasks best-effort; o
      histórico usa `INFO` como nível mínimo por padrão, aceita
-     `cluster_logs_min_level` no `pom.json`, e o principal poda sete dias ou
-     500.000 linhas em lotes com contenção não bloqueante. O `Discovery`
+     `cluster_logs_min_level` no `pom.json`; `attach_plugins` hands the batches
+     an admin accepts to the logs plugin, which stores and prunes them. O `Discovery`
      mantém o behaviour request/response de logs separado do túnel de
      inferência e só envia lotes ao principal.
    - Monitor térmico do `NodeRuntime`, depois `GatewayState` +
@@ -227,7 +236,6 @@ automáticas de uma implantação problemática.
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
-  `cycle.rs` (detector de ciclo de saída, lido pelo gateway),
   `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16/f8/i4
   groupwise e batch validado), `relay.rs` (chain relay + agrupamento por próximo hop),
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
@@ -414,7 +422,29 @@ do plugin. A autorização é a da superfície administrativa (aberta a todo per
 falsificação entre sites é barrada por `same_origin`, e chamadas entre nós são
 recusadas.
 
-`src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
+`src/plugin_services.rs` covers what a plugin offers to the cluster: it
+validates the optional `host.services` answer of every running plugin into
+`NodeInfo.plugin_services` (5 s cache, drawn by the dashboard next to the
+machine) and serves `POST /api/internal/plugins/:code/peer/:op`, which forwards
+a signed call from a live peer to the plugin's `peer.<op>` operation together
+with the caller (`node_id`, `head`). A call without the signed envelope is
+refused. See `docs/subsystems/plugins-ui.md`, "Services a plugin offers to the
+cluster".
+
+`src/rag.rs` is transparent retrieval for `/v1/chat/completions`: it finds
+the ready `rag` service of the network (15 s cache, peers asked behind the
+request), calls that plugin's `peer.search` within `POM_RAG_TIMEOUT_MS`
+(300 ms) along the measured gateway route
+(`GatewayState::control_post_json_routed`), and appends the passages after the
+conversation. With `"rag": true` it may first run short generations of its own
+on the pipeline: a typed yes-or-no decision on whether documents are needed
+(reusing `decisions.rs`) and, for a long message, its search terms; both take a
+KV session per hop. The retain boundary at the end of the conversation travels as a
+label-less `DecisionProbe`, so the prefix cache keeps the conversation and
+never the passages. Any failure leaves the request untouched. See
+`docs/subsystems/plugins-ui.md`, "Transparent retrieval (RAG)".
+
+: a
 atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases
 público sem licença (outra tarefa). Até essa migração, `PomCoreUpdater`
 empresta o lease do plugin `enterprise` para autenticar o manifest genérico

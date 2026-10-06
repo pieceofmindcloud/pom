@@ -186,9 +186,9 @@ COPY apps/frontend/ apps/frontend/
 RUN cd apps/frontend && npm run build
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM nvidia/cuda:${CUDA_VERSION}-${CUDA_RUNTIME_FLAVOR}-ubuntu24.04 AS runtime-base
-
-ARG POM_LLAMA_CPP_MODE=release
+# The operating system of both images: nothing here depends on POM sources or
+# on the commit being built, so these layers are built once and reused.
+FROM nvidia/cuda:${CUDA_VERSION}-${CUDA_RUNTIME_FLAVOR}-ubuntu24.04 AS runtime-os
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LD_LIBRARY_PATH=/usr/local/lib/pom/common:/usr/local/cuda/lib64:/usr/local/cuda/compat:/usr/lib/x86_64-linux-gnu:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
@@ -226,6 +226,38 @@ RUN find /usr/share/vulkan/icd.d -type f ! -name 'radeon_icd*.json' -delete
 # terminais dos plugins. A dica continua; só o aviso some.
 RUN sed -i 's/\$(groups)/$(groups 2>\/dev\/null)/' /etc/bash.bashrc \
     && grep -q 'groups 2>/dev/null' /etc/bash.bashrc
+
+# ── Development base ──────────────────────────────────────────────────────────
+# The toolchain a plugin is built with inside a running node (Rust/Cargo, the
+# native compilers, Node). It sits on the operating system, before anything of
+# POM is copied in, so a POM build reuses these layers instead of installing
+# the toolchain again; only a change of RUST_TOOLCHAIN or of this list reruns
+# them. The distribution image never includes this stage.
+FROM runtime-os AS dev-os
+ARG RUST_TOOLCHAIN=stable
+ENV CARGO_HOME=/opt/cargo \
+    RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/cargo/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    clang \
+    cmake \
+    curl \
+    git \
+    libclang-dev \
+    libssl-dev \
+    nodejs \
+    npm \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path \
+    && chmod -R a+rX /opt/cargo /opt/rustup
+
+# ── Distribution image ────────────────────────────────────────────────────────
+FROM runtime-os AS runtime-base
+
+ARG POM_LLAMA_CPP_MODE=release
 
 # Host build metadata changes only the runtime-derived stages, never Cargo/npm.
 ARG POM_BUILD_COMMIT=""
@@ -282,25 +314,21 @@ RUN if [ "$POM_LLAMA_CPP_MODE" != release ]; then \
 # COPY without invalidating backend assembly or rerunning Cargo.
 COPY --from=frontend /build/apps/frontend/dist /app/apps/frontend/dist
 
-# Development-only image target for local plugin rebuilds. Release images still
-# target `runtime` and contain no compiler or package manager.
-FROM runtime AS dev-runtime
-ARG RUST_TOOLCHAIN=stable
-ENV CARGO_HOME=/opt/cargo \
-    RUSTUP_HOME=/opt/rustup \
-    PATH=/opt/cargo/bin:$PATH
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    clang \
-    cmake \
-    curl \
-    git \
-    libclang-dev \
-    libssl-dev \
-    nodejs \
-    npm \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path \
-    && chmod -R a+rX /opt/cargo /opt/rustup
+# ── Development image ─────────────────────────────────────────────────────────
+# The distribution image's files on top of the development base. Everything of
+# POM is copied from `runtime`, already assembled and checked there, so the two
+# images run the same executable and only these COPY layers change per build.
+FROM dev-os AS dev-runtime
+ARG POM_BUILD_COMMIT=""
+ENV POM_BUILD_COMMIT=${POM_BUILD_COMMIT}
+ENV POM_HOME=/app
+ENV POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host
+WORKDIR /app
+EXPOSE 42777/udp
+EXPOSE 8080/tcp
+EXPOSE 8181/tcp
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+COPY --from=runtime /usr/local/lib/pom/ /usr/local/lib/pom/
+COPY --from=runtime /usr/local/bin/pom-plugin-host /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
+RUN ln -s /usr/local/lib/pom/cuda-vulkan/pom /usr/local/bin/pom
+COPY --from=runtime /app/apps/frontend/dist /app/apps/frontend/dist

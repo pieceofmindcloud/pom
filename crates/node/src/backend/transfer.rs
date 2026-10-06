@@ -397,12 +397,26 @@ pub type Transfers = Arc<TransferState>;
 
 // ── Path safety ──────────────────────────────────────────────────────────────
 
+/// O nome que um GGUF pode ter: extensão `.gguf`, ou nenhuma - o Hugging Face
+/// publica arquivos assim, e aí só a assinatura diz o que ele é. Um blob do
+/// Ollama (`sha256-...`) não conta como arquivo sem extensão
+/// (`catalog::is_extensionless_name`).
+fn has_gguf_name(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(crate::catalog::is_extensionless_name)
+}
+
 /// Assinatura de um arquivo GGUF: os 4 primeiros bytes.
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 
 /// O único tipo de arquivo que pode sair desta máquina ou ser apagado por ela.
 ///
-/// O conteúdo e a extensão precisam confirmar que é um GGUF.
+/// O conteúdo e o nome precisam confirmar que é um GGUF: extensão `.gguf`, ou
+/// nenhuma extensão (`has_gguf_name`). Outra extensão continua recusada.
 pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
     use std::io::Read;
 
@@ -410,12 +424,9 @@ pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
         return Err(format!("não é um arquivo: {}", path.display()));
     }
 
-    if !path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
-    {
+    if !has_gguf_name(path) {
         return Err(format!(
-            "só arquivos com extensão .gguf podem ser transferidos: {}",
+            "só arquivos .gguf ou sem extensão podem ser transferidos: {}",
             path.display()
         ));
     }
@@ -444,11 +455,8 @@ fn valid_transfer_filename(raw: &str) -> Result<&str, String> {
     {
         return Err("a transferência aceita apenas o nome de um arquivo, sem caminho".to_string());
     }
-    if !path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
-    {
-        return Err("só arquivos com extensão .gguf podem ser transferidos".to_string());
+    if !has_gguf_name(path) {
+        return Err("só arquivos .gguf ou sem extensão podem ser transferidos".to_string());
     }
     Ok(filename)
 }
@@ -515,7 +523,14 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
             .path
             .as_deref()
             .ok_or_else(|| "informe ?grant=, ?sha= ou ?path=".to_string())?;
-        safe_model_path(&state.shard_dir().await, requested)?
+        match safe_model_path(&state.shard_dir().await, requested) {
+            Ok(path) => path,
+            // A projector or MTP draft a deployment copies to the head or the
+            // tail usually lives outside the slice folder. It is served only
+            // when it is in this machine's own sidecar inventory - a path
+            // anywhere else is refused as before.
+            Err(error) => listed_sidecar(state, requested).await.ok_or(error)?,
+        }
     };
     // Também no caminho da concessão: é por ali que sai um arquivo de fora de
     // `models/`, e era a única porta sem checagem de tipo.
@@ -526,6 +541,29 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
         ));
     }
     Ok(path)
+}
+
+/// `requested` when it is one of this machine's sidecars, compared resolved.
+async fn listed_sidecar(state: &GatewayState, requested: &str) -> Option<PathBuf> {
+    let roots = {
+        let config = state.auth.read().await;
+        let mut roots = vec![config.shard_dir_path()];
+        roots.extend(config.model_dir_paths());
+        roots
+    };
+    let wanted = std::fs::canonicalize(requested).ok()?;
+    tokio::task::spawn_blocking(move || {
+        crate::catalog::discover_sidecars(&roots)
+            .into_iter()
+            .find_map(|sidecar| {
+                std::fs::canonicalize(&sidecar.path)
+                    .ok()
+                    .filter(|path| *path == wanted)
+            })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Onde está a parte com este hash, se esta máquina a tem.
@@ -2442,6 +2480,9 @@ async fn run_download(
     tokio::fs::rename(part, dest)
         .await
         .map_err(|e| e.to_string())?;
+    // What just arrived has to show up in this machine's catalog now, not
+    // after the cache's next pass: a deployment reads it right away.
+    crate::webui::invalidate_catalog(state.database.clone()).await;
 
     {
         let mut jobs = state.transfers.jobs.write().await;
@@ -2674,7 +2715,8 @@ mod tests {
         assert!(transfers.is_cancelled("job-desconhecido").await);
     }
 
-    /// A regra é conjunção: assinatura no cabeçalho E extensão `.gguf`.
+    /// A regra é conjunção: assinatura no cabeçalho E nome de GGUF (extensão
+    /// `.gguf`, ou nenhuma).
     #[test]
     fn only_real_gguf_files_pass_the_gate() {
         let dir = std::env::temp_dir().join(format!("pom-gguf-{}", std::process::id()));
@@ -2684,10 +2726,18 @@ mod tests {
         std::fs::write(&ok, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&ok).is_ok());
 
-        // Blob sem extensão não é uma transferência permitida.
+        // Blob do Ollama não é uma transferência permitida.
         let blob = dir.join("sha256-abc123");
         std::fs::write(&blob, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&blob).is_err());
+
+        // Sem extensão, como o Hugging Face publica: a assinatura decide.
+        let bare = dir.join("MTP");
+        std::fs::write(&bare, b"GGUF\x03\x00\x00\x00").unwrap();
+        assert!(ensure_gguf(&bare).is_ok());
+        let bare_fake = dir.join("LICENSE");
+        std::fs::write(&bare_fake, b"NOTG____").unwrap();
+        assert!(ensure_gguf(&bare_fake).is_err());
 
         // O nome mente sobre o conteúdo.
         let fake = dir.join("mentira.gguf");
@@ -2766,6 +2816,8 @@ mod tests {
         assert!(valid_transfer_filename("../solto.gguf").is_err());
         assert!(valid_transfer_filename("solto.txt").is_err());
         assert_eq!(valid_transfer_filename("solto.gguf").unwrap(), "solto.gguf");
+        assert_eq!(valid_transfer_filename("MTP").unwrap(), "MTP");
+        assert!(valid_transfer_filename("sha256-abc123").is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }

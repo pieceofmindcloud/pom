@@ -75,6 +75,9 @@ pub struct ReconfigureSlice {
     pub model_path: Option<String>,
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// The external MTP draft the node had loaded before the unload.
+    #[serde(default)]
+    pub mtp_draft_path: Option<String>,
     #[serde(default)]
     pub part_sha256: Option<String>,
     pub model_label: String,
@@ -195,12 +198,18 @@ pub(crate) async fn reconfigure_local(
                 "este nó não anuncia porta de inferência; não dá para reconfigurar a fatia"
                     .to_string()
             })?;
-            // Redescoberto a cada reconfigure, não carregado do snapshot: o
-            // arquivo de rascunho MTP é opcional e pode ter sido adicionado,
-            // removido ou renomeado no disco entre implantações, ao contrário
-            // da identidade da fatia em si. Ver `run_apply` (`jobs_apply.rs`).
-            let mtp_draft_path =
-                crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path));
+            // Primeiro o rascunho MTP que o nó tinha carregado, se o arquivo
+            // ainda existe: a implantação o resolve pelo vínculo de sidecar do
+            // modelo, fora da pasta da fatia, e só a busca por vizinho o perdia
+            // em todo redeploy. Sem ele, a busca ao lado do arquivo ainda vale
+            // para um rascunho adicionado depois. Ver `run_apply`.
+            let mtp_draft_path = slice
+                .mtp_draft_path
+                .clone()
+                .filter(|path| std::path::Path::new(path).is_file())
+                .or_else(|| {
+                    crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path))
+                });
             NodeConfig {
                 deploy_id: slice.deploy_id,
                 deployment_name: slice.deployment_name,
@@ -383,7 +392,7 @@ pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Respon
     };
     let body = json!({});
     match state
-        .control_post_json(&peer, "/api/ui/leave", &body, PEER_TIMEOUT)
+        .control_post_json(&peer, "/api/ui/leave", &body, PEER_STOP_TIMEOUT)
         .await
     {
         Ok(r) if r.status().is_success() => {
@@ -615,6 +624,9 @@ pub(super) async fn release_slice(
         skip_split: true,
         use_mmproj: cfg.mmproj_path.is_some(),
         mmproj_path: cfg.mmproj_path.clone(),
+        mtp_draft_path: None,
+        mtp_draft_file: None,
+        mmproj_file: None,
         merge: None,
         params: RuntimeParams::from(&cfg),
     };
@@ -750,6 +762,18 @@ pub struct LaunchTarget {
     /// Projector path on the target peer, resolved from its shard metadata.
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// External MTP draft on the target peer (the pipeline tail), resolved by
+    /// the deployment from the model's sidecar link. `None` keeps the peer's
+    /// own lookup next to the loaded file.
+    #[serde(default)]
+    pub mtp_draft_path: Option<String>,
+    /// The same draft by name + size, for the target to find on its own disk
+    /// when the coordinator did not know the path (a file copied a moment ago).
+    #[serde(default)]
+    pub mtp_draft_file: Option<crate::catalog::SidecarFile>,
+    /// The projector by name + size, under the same rule, for the head.
+    #[serde(default)]
+    pub mmproj_file: Option<crate::catalog::SidecarFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -902,7 +926,7 @@ pub(crate) async fn launch(
             continue;
         };
         match state
-            .control_post_empty(peer, "/api/ui/stop-inference", PEER_TIMEOUT)
+            .control_post_empty(peer, "/api/ui/stop-inference", PEER_STOP_TIMEOUT)
             .await
         {
             Ok(r) if r.status().is_success() => {
@@ -950,6 +974,9 @@ pub(crate) async fn launch(
             merge: target.merge.clone(),
             use_mmproj: req.use_mmproj && target.use_mmproj,
             mmproj_path: target.mmproj_path.clone(),
+            mtp_draft_path: target.mtp_draft_path.clone(),
+            mtp_draft_file: target.mtp_draft_file.clone(),
+            mmproj_file: target.mmproj_file.clone(),
             params,
         };
 

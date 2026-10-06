@@ -71,6 +71,36 @@ impl VisionContext {
         params.use_gpu = cfg.n_gpu_layers != 0;
         params.batch_max_tokens = i32::try_from(cfg.n_batch)
             .map_err(|_| anyhow::anyhow!("n_batch excede o limite do mtmd"))?;
+        // The encoder's working memory grows with the image: cap it, so the
+        // warmup (which encodes the largest image the projector accepts) and
+        // every request fit in what was reserved below.
+        params.image_max_tokens = VISION_MAX_IMAGE_TOKENS;
+        if params.use_gpu {
+            let weights = std::fs::metadata(mmproj_path).map(|meta| meta.len()).unwrap_or(0);
+            let need = vision_reserve_bytes(weights);
+            let devices = gpu_devices_with_free_memory();
+            match choose_vision_device(&devices, need) {
+                Some(index) => {
+                    let (device, free, name) = &devices[index];
+                    params.device = *device;
+                    tracing::info!(
+                        "projetor de visão em {name}: {} MiB livres para {} MiB necessários",
+                        free / MIB,
+                        need / MIB
+                    );
+                }
+                None => {
+                    // Loading it on a full GPU is what crashed the node: the
+                    // allocation fails inside llama.cpp and it aborts or
+                    // dereferences null. The CPU is slow, but it answers.
+                    params.use_gpu = false;
+                    tracing::warn!(
+                        "nenhuma GPU tem {} MiB livres para o projetor de visão; ele roda na CPU",
+                        need / MIB
+                    );
+                }
+            }
+        }
         let ctx = unsafe { sys::mtmd_init_from_file(path.as_ptr(), model, params) };
         if ctx.is_null() {
             bail!("não foi possível carregar o mmproj: {mmproj_path}");
@@ -80,6 +110,79 @@ impl VisionContext {
             bail!("o mmproj não oferece entrada de imagem: {mmproj_path}");
         }
         Ok(Self { ctx })
+    }
+}
+
+const MIB: u64 = 1024 * 1024;
+
+/// Most image tokens one image may produce. The projector's own metadata
+/// allows images of millions of pixels, and the warmup encodes exactly that
+/// worst case; at this cap an image still describes well and the encoder's
+/// compute buffer stays near a gigabyte.
+const VISION_MAX_IMAGE_TOKENS: i32 = 1024;
+
+/// Working memory for the encoder on top of its weights, at
+/// `VISION_MAX_IMAGE_TOKENS`.
+const VISION_COMPUTE_RESERVE_BYTES: u64 = 1536 * MIB;
+
+fn vision_reserve_bytes(weights: u64) -> u64 {
+    weights.saturating_add(weights / 10).saturating_add(VISION_COMPUTE_RESERVE_BYTES)
+}
+
+/// The GPU with the most free memory that still fits `need`, measured after
+/// the model and its contexts are loaded. `None` means none fits and the
+/// projector goes to the CPU.
+fn choose_vision_device<D>(devices: &[(D, u64, String)], need: u64) -> Option<usize> {
+    devices
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, free, _))| *free >= need)
+        .max_by_key(|(_, (_, free, _))| *free)
+        .map(|(index, _)| index)
+}
+
+/// Every GPU-like device the backend registry offers, with its free memory now.
+fn gpu_devices_with_free_memory() -> Vec<(sys::ggml_backend_dev_t, u64, String)> {
+    let mut devices = vec![ptr::null_mut(); 32];
+    let count = unsafe { sys::llama_rs_get_devices(devices.as_mut_ptr(), devices.len()) };
+    devices.truncate(count.min(32));
+    devices
+        .into_iter()
+        .filter(|device| !device.is_null())
+        .filter(|&device| {
+            let kind = unsafe { sys::ggml_backend_dev_type(device) };
+            kind == sys::GGML_BACKEND_DEVICE_TYPE_GPU || kind == sys::GGML_BACKEND_DEVICE_TYPE_IGPU
+        })
+        .map(|device| {
+            let mut free = 0usize;
+            let mut total = 0usize;
+            unsafe { sys::ggml_backend_dev_memory(device, &mut free, &mut total) };
+            let name = unsafe { std::ffi::CStr::from_ptr(sys::ggml_backend_dev_name(device)) }
+                .to_string_lossy()
+                .into_owned();
+            (device, free as u64, name)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod vision_device_tests {
+    use super::*;
+
+    #[test]
+    fn the_projector_goes_to_the_gpu_with_room_or_to_the_cpu() {
+        let need = vision_reserve_bytes(900 * MIB);
+        assert_eq!(need, 900 * MIB + 90 * MIB + 1536 * MIB);
+        // A full first GPU and a second one with room: the second.
+        let devices = vec![((), 600 * MIB, "CUDA0".to_string()), ((), 6000 * MIB, "Vulkan0".to_string())];
+        assert_eq!(choose_vision_device(&devices, need), Some(1));
+        // Both with room: the one with more.
+        let devices = vec![((), 9000 * MIB, "CUDA0".to_string()), ((), 6000 * MIB, "CUDA1".to_string())];
+        assert_eq!(choose_vision_device(&devices, need), Some(0));
+        // None with room: the CPU.
+        let devices = vec![((), 600 * MIB, "CUDA0".to_string())];
+        assert_eq!(choose_vision_device(&devices, need), None);
+        assert_eq!(choose_vision_device::<()>(&[], need), None);
     }
 }
 
@@ -454,8 +557,27 @@ impl LoadedModel {
         if !plan.tensor_split.is_empty() {
             mparams.tensor_split = plan.tensor_split.as_ptr();
         }
+        // `--cpu-moe`: every routed expert to the CPU buffer. The fit is off in
+        // this mode (`fit_can_adjust_layers`), so the plan carries no overrides
+        // of its own; the vector lives until the load below consumes it.
+        let experts_in_ram = if plan.config.moe_experts_in_ram && plan.tensor_buft_overrides.is_empty() {
+            vec![
+                sys::llama_model_tensor_buft_override {
+                    pattern: MOE_EXPERTS_PATTERN.as_ptr(),
+                    buft: unsafe { sys::ggml_backend_cpu_buffer_type() },
+                },
+                sys::llama_model_tensor_buft_override {
+                    pattern: ptr::null(),
+                    buft: ptr::null_mut(),
+                },
+            ]
+        } else {
+            Vec::new()
+        };
         if !plan.tensor_buft_overrides.is_empty() {
             mparams.tensor_buft_overrides = plan.tensor_buft_overrides.as_ptr();
+        } else if !experts_in_ram.is_empty() {
+            mparams.tensor_buft_overrides = experts_in_ram.as_ptr();
         }
 
         let model = unsafe { sys::llama_model_load_from_file(path.as_ptr(), mparams) };
@@ -569,18 +691,52 @@ mod mtp_draft_tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 64,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: 0,
             n_threads: 1,
             max_sessions: 1,
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
             mtp_draft_path: Some(draft_path.to_string()),
         }
+    }
+
+    /// A real shared draft (`POM_MTP_SHARED_DRAFT`, without `token_embd` and
+    /// `output`) does not load on its own, and loads on the CPU once
+    /// `crate::mtp_draft` completes it from the slice that holds the output
+    /// head (`POM_MTP_TARGET_SLICE`). Point the slice through a symlink in a
+    /// scratch folder to keep the completed copy out of the model folder.
+    #[test]
+    #[ignore]
+    fn a_real_shared_draft_loads_once_completed_from_its_target() {
+        let (Ok(draft), Ok(target)) = (
+            std::env::var("POM_MTP_SHARED_DRAFT"),
+            std::env::var("POM_MTP_TARGET_SLICE"),
+        ) else {
+            return;
+        };
+        let cfg = draft_cfg(&draft);
+        let raw = LoadedModel::load_mtp_draft_cpu(&draft, &cfg);
+        assert!(raw.is_err(), "the shared draft alone should miss token_embd");
+
+        let ready = crate::mtp_draft::ready_draft_path(
+            std::path::Path::new(&draft),
+            std::path::Path::new(&target),
+        )
+        .unwrap();
+        assert_ne!(ready.to_string_lossy(), draft);
+        let ready = ready.to_string_lossy().into_owned();
+        let loaded = LoadedModel::load_mtp_draft_cpu(&ready, &draft_cfg(&ready))
+            .unwrap_or_else(|error| panic!("completed draft should load: {error:#}"));
+        assert!(loaded.has_nextn_weights());
     }
 
     /// Regressão para o porte do padrão `qwen35`/`deepseek4` em

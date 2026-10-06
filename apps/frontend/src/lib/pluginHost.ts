@@ -9,7 +9,10 @@
  * herda o visual sem copiar o design system. A superfície é versionada
  * (`version`): só cresce de forma compatível. A versão 2 acrescentou o
  * protocolo `pom-plugin-events/v1` (`events`, `notifications`, `plugin(code)`
- * e `context()`); ver `lib/pluginEvents.ts`.
+ * e `context()`); ver `lib/pluginEvents.ts`. Version 3 adds the basic
+ * `TelemetryLine` and the `chat.telemetry` slot contract (`lib/chatTelemetry.ts`);
+ * `ExecutionTelemetry` now renders that basic line. Version 4 adds
+ * `plugin(code).rpc(op, params)`, the plugin's own read/write API.
  */
 import * as React from "react";
 import * as ReactDOM from "react-dom";
@@ -18,7 +21,7 @@ import * as reactQuery from "@tanstack/react-query";
 import * as ui from "../components/ui";
 import * as format from "./format";
 import { Modal } from "../components/Confirm";
-import { ExecutionTelemetry } from "../components/ExecutionTelemetry";
+import { TelemetryLine, type TelemetryLineProps } from "../components/TelemetryLine";
 import { Markdown } from "../components/Markdown";
 import { api } from "./api";
 import { storageKey } from "./brand";
@@ -35,7 +38,16 @@ import {
   subscribePluginEvents,
 } from "./pluginEvents";
 
-export const PLUGIN_HOST_VERSION = 2;
+export const PLUGIN_HOST_VERSION = 4;
+
+/**
+ * Compatibility for plugins built against host version 2, which rendered the
+ * POM's detailed `ExecutionTelemetry`. That view moved into the plugin that
+ * owns it; older bundles now get the basic line instead of a crash.
+ */
+function ExecutionTelemetryCompat(props: TelemetryLineProps) {
+  return React.createElement(TelemetryLine, { trace: props.trace, timings: props.timings, source: props.source });
+}
 
 export function buildPluginHost() {
   return {
@@ -46,7 +58,7 @@ export function buildPluginHost() {
     reactQuery,
     ui,
     format,
-    components: { Modal, ExecutionTelemetry, Markdown },
+    components: { Modal, ExecutionTelemetry: ExecutionTelemetryCompat, TelemetryLine, Markdown },
     hooks: { useI18n, useTheme, useCluster },
     api: { get: api.get },
     storageKey,

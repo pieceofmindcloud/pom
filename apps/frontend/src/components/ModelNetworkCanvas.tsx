@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { LayoutGrid, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw } from "lucide-react";
+import { LayoutGrid, Maximize2, Minimize2, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { gpuDisplayName, machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
@@ -13,23 +13,37 @@ import { useI18n } from "../i18n/provider";
 import {
   autoLayout,
   CARD_HEIGHT,
+  CARD_SIZE,
   CARD_WIDTH,
   clearPositions,
+  COMPACT_CARD_HEIGHT,
+  COMPACT_CARD_SIZE,
+  COMPACT_CARD_WIDTH,
   deploymentLayoutKey,
   fallbackPosition,
+  GATEWAY_LAYOUT_ID,
+  GATEWAY_SIZE,
   gatewayRouteGeometry,
+  isCardCompact,
   pipelineGatewayPosition,
+  readCardModes,
   readPositions,
   routeGeometry,
+  writeCardModes,
   writePositions,
   type CanvasPosition,
+  type CardModes,
+  type CardSize,
 } from "../lib/networkLayout";
+import { rateSpeed } from "../lib/peerSpeed";
+import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
 import { sumVram } from "../lib/gpu";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
-import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
+import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, PluginService, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { PipelineGatewayNode, type PipelineCycleCost, type PipelineRouteCost } from "./PipelineGatewayNode";
+import { PluginServiceTether } from "./PluginServices";
 
 export type EdgeState = "principal" | "paralela" | "inativa";
 
@@ -124,7 +138,41 @@ export function isControlTarget(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest("button, a, input, select, textarea, [role='button']") != null;
 }
 
-function NetworkNode({ range, position, dragging, perf, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; perf?: ChatTelemetryPeerPerf; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen?: () => void }) {
+function CompactToggle({ compact, onToggle }: { compact: boolean; onToggle: () => void }) {
+  const { t } = useI18n();
+  const label = t(compact ? "canvas.cardExpand" : "canvas.cardMinimize");
+  return <button
+    type="button"
+    data-testid="machine-compact-toggle"
+    aria-label={label}
+    aria-pressed={compact}
+    title={label}
+    onClick={onToggle}
+    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-faint hover:bg-raised hover:text-fg"
+  >
+    {compact ? <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" /> : <Minimize2 className="h-3.5 w-3.5" aria-hidden="true" />}
+  </button>;
+}
+
+type NetworkNodeProps = {
+  range: GraphRange;
+  position: CanvasPosition;
+  dragging: boolean;
+  perf?: ChatTelemetryPeerPerf;
+  speed?: PeerSpeed;
+  compact?: boolean;
+  /** Serviços de plugin a pendurar sob o card expandido, que tem altura variável. */
+  services?: PluginService[];
+  onToggleCompact?: () => void;
+  onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+  onPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
+  onPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
+  onOpen?: () => void;
+};
+
+const UNRATED = { decode: { tone: "unknown", ratio: null }, prefill: { tone: "unknown", ratio: null } } as const satisfies PeerSpeed;
+
+function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, services, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen }: NetworkNodeProps) {
   const system = range.node?.system;
   /*
    * Uma máquina pode ter mais de uma placa, e o card em miniatura mostrava só
@@ -154,6 +202,48 @@ function NetworkNode({ range, position, dragging, perf, onPointerDown, onPointer
     hasGpu,
   );
   const { t } = useI18n();
+  const statusTone = rediscovering ? "amber" : unreachable ? "rose" : serverStateTone(range.node?.status.state);
+  const statusLabel = rediscovering ? t("pipeline.rediscovering") : unreachable ? "timeout" : serverStateLabel(range.node?.status.state);
+  const cardEvents = {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel: onPointerUp,
+    onDoubleClick: (event: React.MouseEvent) => { if (onOpen && !isControlTarget(event.target)) onOpen(); },
+  };
+  if (compact) {
+    /*
+     * O mínimo que responde "está tudo bem com esta máquina?": quem é, se
+     * serve, que camadas, quão rápida, e quanto da VRAM. O resto continua a um
+     * clique (expandir) ou a um duplo clique (detalhes).
+     */
+    const vramPercent = vramUsed != null && vramTotal != null && vramTotal > 0 ? Math.min(100, (vramUsed / vramTotal) * 100) : null;
+    const vramTone = vramPercent != null && vramPercent >= 90 ? "bg-rose" : vramPercent != null && vramPercent >= 70 ? "bg-amber" : "bg-aqua";
+    const vramLabel = vramPercent == null ? `VRAM: ${t("canvas.meterUnknown")}` : `VRAM: ${vramUsed!.toFixed(1)} / ${vramTotal!.toFixed(1)} GiB`;
+    return <article
+      {...cardEvents}
+      data-compact="true"
+      title={onOpen ? t("canvas.openDetails") : undefined}
+      className={clsx("absolute select-none overflow-hidden rounded-lg border bg-ink/95 px-2.5 pb-2 pt-2 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unread && "opacity-75")}
+      style={{ left: position.left, top: position.top, width: COMPACT_CARD_WIDTH, height: COMPACT_CARD_HEIGHT, touchAction: "none" }}
+    >
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-line bg-raised"><MachineIcon system={system} size="sm" /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-[13px] font-semibold leading-tight text-fg">{hostname}</h3>
+          <p className="flex items-center gap-1.5 text-[10px] leading-tight">
+            <span data-testid="machine-layers" className={clsx("font-mono font-semibold", placement && placement.cpu > 0 ? "text-amber" : "text-iris")} title={placement && placement.cpu > 0 ? t("canvas.layersOnCpu", { cpu: placement.cpu }) : undefined}>L{range.start_layer} - L{range.end_layer}</span>
+          </p>
+        </div>
+        <span data-testid="machine-status" title={statusLabel} aria-label={statusLabel} className="flex shrink-0 items-center"><Dot tone={statusTone} pulse={rediscovering || (serving && !unread)} /></span>
+        {onToggleCompact && <CompactToggle compact onToggle={onToggleCompact} />}
+      </div>
+      <div className="mt-1.5"><SpeedBadges perf={perf} rating={speed} compact /></div>
+      <div className="absolute inset-x-2.5 bottom-1.5 h-1 overflow-hidden rounded-full bg-line" role="img" aria-label={vramLabel} title={vramLabel}>
+        {vramPercent != null && <div className={clsx("h-full rounded-full", vramTone)} style={{ width: `${vramPercent}%` }} />}
+      </div>
+    </article>;
+  }
   return <article
     onPointerDown={onPointerDown}
     onPointerMove={onPointerMove}
@@ -172,9 +262,10 @@ function NetworkNode({ range, position, dragging, perf, onPointerDown, onPointer
         <div className="min-w-0"><h3 className="truncate text-sm font-semibold text-fg">{hostname}</h3><p className="truncate text-[10px] text-faint">{kind.label}</p></div>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5">
-        <span data-testid="machine-status" className="flex items-center gap-1.5 text-[11px] text-muted"><Dot tone={rediscovering ? "amber" : unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={rediscovering || (serving && !unread)} />{rediscovering ? t("pipeline.rediscovering") : unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
+        <span data-testid="machine-status" className="flex items-center gap-1.5 text-[11px] text-muted"><Dot tone={statusTone} pulse={rediscovering || (serving && !unread)} />{statusLabel}</span>
         <span data-testid="machine-layers" className="font-mono text-[9px] font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>
       </div>
+      {onToggleCompact && <div className="-mr-1.5 -mt-1"><CompactToggle compact={false} onToggle={onToggleCompact} /></div>}
     </div>
     <div data-testid="machine-meter-group" className="mt-2 space-y-1.5">
       <Meter label={gpus.length > 1 ? t("canvas.vramTotal", { count: gpus.length }) : "VRAM"} used={vramUsed} total={vramTotal} unknown={vramTotal == null} />
@@ -183,14 +274,7 @@ function NetworkNode({ range, position, dragging, perf, onPointerDown, onPointer
       <Meter label={t("canvas.load")} used={range.load} total={8} detail={range.load == null ? t("canvas.meterUnknown") : t("canvas.inFlight", { count: range.load })} />
     </div>
     {/* Velocidade medida da fatia: o que decide a rota, junto com o RTT. */}
-    <p data-testid="machine-tps" className="mt-1.5 font-mono text-[10px] tabular-nums text-muted">
-      {perf?.decode_tokens_per_sec != null || perf?.prefill_tokens_per_sec != null
-        ? t("canvas.machineTps", {
-          decode: perf?.decode_tokens_per_sec != null ? perf.decode_tokens_per_sec.toFixed(1) : "-",
-          prefill: perf?.prefill_tokens_per_sec != null ? perf.prefill_tokens_per_sec.toFixed(0) : "-",
-        })
-        : t("canvas.machineTpsUnknown")}
-    </p>
+    <div className="mt-2"><SpeedBadges perf={perf} rating={speed} /></div>
     {gpus.length > 0 ? (
       gpus.map((g) => (
         <GpuTemperature
@@ -210,6 +294,7 @@ function NetworkNode({ range, position, dragging, perf, onPointerDown, onPointer
         compact
       />
     )}
+    {services && <PluginServiceTether services={services} />}
   </article>;
 }
 
@@ -236,6 +321,7 @@ export function ModelNetworkCanvas({
   const [zoom, setZoom] = useState(1);
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
+  const [cardModes, setCardModes] = useState<CardModes>(readCardModes);
   // Guarda o `node_id`, e não o peer: a lista se renova a cada refresh do
   // cluster, e uma cópia guardada aqui congelaria os números da janela aberta.
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
@@ -272,14 +358,40 @@ export function ModelNetworkCanvas({
 
   useEffect(() => { setPositions(readPositions(layoutKey)); }, [layoutKey]);
 
+  const compactOf = (id: string) => isCardCompact(cardModes, id);
+  const sizeOf = (id: string): CardSize => (compactOf(id) ? COMPACT_CARD_SIZE : CARD_SIZE);
+  const changeCardModes = (next: CardModes) => { writeCardModes(next); setCardModes(next); };
+  const toggleCard = (id: string) => changeCardModes({ ...cardModes, overrides: { ...cardModes.overrides, [id]: !compactOf(id) } });
+  // Com tudo minimizado o botão expande; com qualquer card aberto, minimiza.
+  const allCompact = ranges.length > 0 && ranges.every((range) => compactOf(keyFor(range)));
+  const setAllCompact = (compact: boolean) => changeCardModes({ compact, overrides: {} });
+
+  /*
+   * Decode e prefill comparados entre as máquinas deste modelo: é a mesma
+   * pipeline, e a fatia que segura o token é a que precisa saltar aos olhos.
+   */
+  const decodes = ranges.map((range) => peerPerf?.[range.node_id]?.decode_tokens_per_sec);
+  const prefills = ranges.map((range) => peerPerf?.[range.node_id]?.prefill_tokens_per_sec);
+  const speedOf = (range: GraphRange) => ({
+    decode: rateSpeed(peerPerf?.[range.node_id]?.decode_tokens_per_sec, decodes),
+    prefill: rateSpeed(peerPerf?.[range.node_id]?.prefill_tokens_per_sec, prefills),
+  });
+  const nameOf = (nodeId: string) => {
+    const peer = cluster.peers.find((candidate) => candidate.node_id === nodeId);
+    return peer?.node?.hostname || peer?.short_id || nodeId.slice(0, 8);
+  };
+
   /**
    * O arranjo que a rede tem quando ninguém arrastou nada: uma coluna por faixa
    * de camadas, réplicas empilhadas. Recalculado quando a topologia muda, não a
    * cada poll - senão os cards andariam sozinhos enquanto o operador olha.
    */
   const arranjo = useMemo(
-    () => autoLayout(ranges.map((range) => ({ id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer }))),
-    [ranges],
+    () => autoLayout(
+      ranges.map((range) => ({ id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer })),
+      (id) => (isCardCompact(cardModes, id) ? COMPACT_CARD_SIZE : CARD_SIZE),
+    ),
+    [ranges, cardModes],
   );
 
   // A posição arrastada vence o arranjo, e o arranjo vence a grade. A grade só
@@ -297,9 +409,12 @@ export function ModelNetworkCanvas({
   const pipeline = pipelinePeers(cluster);
   const terminalEndLayer = ranges.length > 0 ? Math.max(...ranges.map((range) => range.end_layer)) : null;
   const terminalRanges = terminalEndLayer == null ? [] : ranges.filter((range) => range.end_layer === terminalEndLayer);
-  const gatewayPosition = pipelineGatewayPosition(
-    terminalRanges.map((range) => positionOf(range, ranges.indexOf(range))),
-  );
+  const gatewayPosition = terminalRanges.length === 0
+    ? null
+    : positions[GATEWAY_LAYOUT_ID] ?? pipelineGatewayPosition(
+      terminalRanges.map((range) => positionOf(range, ranges.indexOf(range))),
+      terminalRanges.map((range) => sizeOf(keyFor(range))),
+    );
   const forwardEdges = edges.filter((edge) => {
     const from = rangeForEdge(ranges, edge, "from");
     const to = rangeForEdge(ranges, edge, "to");
@@ -314,11 +429,12 @@ export function ModelNetworkCanvas({
    * entra para todo o resto. Para descartar as decisões existe `redefinir`.
    */
   const organizar = () => {
+    // Só o que foi arrastado é gravado: o resto segue o arranjo vivo, que
+    // se recompõe quando um card é minimizado ou expandido.
     setPositions((current) => {
-      const arrastados = Object.fromEntries(Object.entries(current).filter(([id]) => id in arranjo));
-      const proximo = { ...arranjo, ...arrastados };
-      writePositions(layoutKey, proximo);
-      return proximo;
+      const arrastados = Object.fromEntries(Object.entries(current).filter(([id]) => id in arranjo || id === GATEWAY_LAYOUT_ID));
+      writePositions(layoutKey, arrastados);
+      return arrastados;
     });
     setZoom(1);
   };
@@ -326,27 +442,36 @@ export function ModelNetworkCanvas({
   const redefinir = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
   const fit = () => setZoom(1);
 
-  function beginDrag(range: GraphRange, index: number, event: React.PointerEvent<HTMLElement>) {
+  /*
+   * Máquinas e gateway arrastam do mesmo jeito: o id é a chave no mapa de
+   * posições e o tamanho limita até onde o card vai. Um toque que começou num
+   * botão do card é do botão - capturar o ponteiro aqui roubaria o clique.
+   */
+  function beginDrag(id: string, current: CanvasPosition, event: React.PointerEvent<HTMLElement>) {
     const surface = canvas.current;
-    if (!surface) return;
+    if (!surface || isControlTarget(event.target)) return;
     const bounds = surface.getBoundingClientRect();
-    const current = positionOf(range, index);
     dragOffset.current = {
       x: (event.clientX - bounds.left) / zoom - current.left,
       y: (event.clientY - bounds.top) / zoom - current.top,
     };
-    setDragging(keyFor(range));
+    setDragging(id);
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function drag(range: GraphRange, event: React.PointerEvent<HTMLElement>) {
-    if (dragging !== keyFor(range) || !canvas.current) return;
+  function drag(id: string, size: CardSize, event: React.PointerEvent<HTMLElement>) {
+    if (dragging !== id || !canvas.current) return;
     const bounds = canvas.current.getBoundingClientRect();
-    const maxLeft = Math.max(16, bounds.width / zoom - CARD_WIDTH - 16);
-    const maxTop = Math.max(58, bounds.height / zoom - CARD_HEIGHT - 16);
+    const maxLeft = Math.max(16, bounds.width / zoom - size.width - 16);
+    const maxTop = Math.max(58, bounds.height / zoom - size.height - 16);
     const left = Math.max(16, Math.min(maxLeft, (event.clientX - bounds.left) / zoom - dragOffset.current.x));
     const top = Math.max(58, Math.min(maxTop, (event.clientY - bounds.top) / zoom - dragOffset.current.y));
-    updatePosition(keyFor(range), { left, top });
+    updatePosition(id, { left, top });
+  }
+
+  function endDrag(event: React.PointerEvent<HTMLElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setDragging(null);
   }
 
   return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
@@ -360,6 +485,16 @@ export function ModelNetworkCanvas({
       */}
       {showClusterCoverage && inventory && <span title={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : undefined} className={clsx("shrink-0 rounded-md px-2 py-1 font-mono text-[10px]", inventory.complete && coverageUnconfirmed === 0 ? "bg-aqua/15 text-aqua" : "bg-amber/15 text-amber")}>L{inventory.covered_layers}/{inventory.total_layers}{coverageUnconfirmed > 0 ? "?" : ""}</span>}
       <span className="h-5 w-px bg-line" />
+      {ranges.length > 0 && <Button
+        size="sm"
+        data-testid="cards-compact-all"
+        aria-pressed={allCompact}
+        aria-label={t(allCompact ? "canvas.cardsExpandAll" : "canvas.cardsMinimizeAll")}
+        title={t(allCompact ? "canvas.cardsExpandAll" : "canvas.cardsMinimizeAll")}
+        onClick={() => setAllCompact(!allCompact)}
+      >
+        {allCompact ? <Maximize2 className="h-4 w-4" /> : <Minimize2 className="h-4 w-4" />}
+      </Button>}
       <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.fit")} onClick={fit}>Fit</Button>
@@ -386,7 +521,7 @@ export function ModelNetworkCanvas({
           if (!from || !to) return null;
           const fromIndex = ranges.indexOf(from); const toIndex = ranges.indexOf(to);
           const a = positionOf(from, fromIndex); const b = positionOf(to, toIndex);
-          const geometry = routeGeometry(a, b);
+          const geometry = routeGeometry(a, b, sizeOf(keyFor(from)), sizeOf(keyFor(to)));
           const id = edgeKey(edge);
           // Uma aresta que está num `candidate_edges` é caminho pronto, não
           // tráfego hipotético: com réplicas, é por onde a rede serviria se a
@@ -398,7 +533,7 @@ export function ModelNetworkCanvas({
           return <path key={id} data-relayed={style === RELAY_EDGE_STYLE ? "true" : undefined} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
         })}
         {gatewayPosition && terminalRanges.map((range) => {
-          const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition);
+          const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition, sizeOf(keyFor(range)));
           const relayed = rttByPair.get(`${range.node_id}:gateway`)?.relayed === true;
           return <path key={`gateway-${range.node_id}`} data-relayed={relayed ? "true" : undefined} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={relayed ? RELAY_EDGE_STYLE.className : "fill-none stroke-aqua"} strokeWidth={relayed ? RELAY_EDGE_STYLE.strokeWidth : "3"} markerEnd={relayed ? RELAY_EDGE_STYLE.markerEnd : "url(#route-arrow)"} />;
         })}
@@ -406,17 +541,32 @@ export function ModelNetworkCanvas({
       {forwardEdges.map((edge, index) => {
         const from = rangeForEdge(ranges, edge, "from"); const to = rangeForEdge(ranges, edge, "to");
         if (!from || !to) return null;
-        const geometry = routeGeometry(positionOf(from, ranges.indexOf(from)), positionOf(to, ranges.indexOf(to)));
+        const geometry = routeGeometry(positionOf(from, ranges.indexOf(from)), positionOf(to, ranges.indexOf(to)), sizeOf(keyFor(from)), sizeOf(keyFor(to)));
         const measurement = rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`);
         return <RouteRttLabel key={`rtt-${edgeKey(edge)}-${index}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} relayed={measurement?.relayed === true} left={geometry.labelX} top={geometry.labelY} />;
       })}
       {gatewayPosition && terminalRanges.map((range) => {
-        const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition);
+        const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition, sizeOf(keyFor(range)));
         const measurement = rttByPair.get(`${range.node_id}:gateway`);
         return <RouteRttLabel key={`rtt-gateway-${range.node_id}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} relayed={measurement?.relayed === true} left={geometry.labelX} top={geometry.labelY} />;
       })}
-      {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} perf={peerPerf?.[range.node_id]} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />)}
-      {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} />}
+      {ranges.map((range, index) => {
+        const id = keyFor(range);
+        return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} services={ranges.findIndex((other) => other.node_id === range.node_id) === index ? range.node?.plugin_services : undefined} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />;
+      })}
+      {/* O que os plugins de cada máquina servem à rede (o Qdrant como banco
+          de RAG, por exemplo), ligado ao card dela. Uma máquina com várias
+          faixas ganha os selos só na primeira. */}
+      {ranges.map((range, index) => {
+        const services = range.node?.plugin_services ?? [];
+        if (services.length === 0 || ranges.findIndex((other) => other.node_id === range.node_id) !== index) return null;
+        const id = keyFor(range);
+        // O card expandido cresce com o conteúdo e pendura os próprios selos;
+        // o compacto tem altura fixa e corta o que sai dele, então ficam aqui.
+        if (!compactOf(id)) return null;
+        return <PluginServiceTether key={`services-${id}`} services={services} position={positionOf(range, index)} size={sizeOf(id)} />;
+      })}
+      {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} nameOf={nameOf} dragging={dragging === GATEWAY_LAYOUT_ID} onPointerDown={(event) => beginDrag(GATEWAY_LAYOUT_ID, gatewayPosition, event)} onPointerMove={(event) => drag(GATEWAY_LAYOUT_ID, GATEWAY_SIZE, event)} onPointerUp={endDrag} />}
     </div>}
     {/* A mesma visão que a aba Detalhes mostra, no mesmo componente. */}
     <PeerDetailDialog
@@ -424,6 +574,11 @@ export function ModelNetworkCanvas({
       group={cluster.active_model}
       otherRanges={pipeline.filter((peer) => peer.node_id !== detailNodeId && peer.total_layers > 0).map((peer) => [peer.start_layer, peer.end_layer] as [number, number])}
       onClose={() => setDetailNodeId(null)}
+      perf={detailNodeId ? peerPerf?.[detailNodeId] : undefined}
+      speed={detailNodeId ? {
+        decode: rateSpeed(peerPerf?.[detailNodeId]?.decode_tokens_per_sec, decodes),
+        prefill: rateSpeed(peerPerf?.[detailNodeId]?.prefill_tokens_per_sec, prefills),
+      } : undefined}
     />
     {ranges.length > 0 && <div className="absolute bottom-3 left-4 z-20 flex items-center gap-3 rounded-lg border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur"><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-aqua" />{t("canvas.legendPrimary")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-iris" />{t("canvas.legendParallel")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 border-t-2 border-dashed border-faint" />{t("canvas.legendInactive")}</span></div>}
   </section>;

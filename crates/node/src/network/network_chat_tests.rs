@@ -113,7 +113,8 @@ async fn principal_rejects_invalid_and_blocked_api_keys_before_relay() {
     database
         .insert_api_key(&crate::config::ApiKey {
             id: "key-a".into(),
-            key: "sk-node-a".into(),
+            key_hash: crate::auth::api_key_hash("sk-node-a"),
+            key_hint: String::new(),
             label: "node-a".into(),
             node_id: "node-a".into(),
             origin_node_id: "node-a".into(),

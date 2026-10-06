@@ -176,9 +176,12 @@ runtime é Rust (`crates/node/src/inference/infer_server.rs`,
 - `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
   runtime. Todas as máquinas do cluster compilam um executável `pom` com CPU, CUDA e Vulkan,
   mais `pom-plugin-host`; os builds usam cache mounts e o frontend é
-  independente. O target adicional `dev-runtime` instala Rust/Cargo e
-  ferramentas nativas só na imagem de desenvolvimento local; `runtime` não
-  inclui compilador. O commit do host vira `ENV
+  independente. Há duas imagens finais: `runtime`, a de distribuição, sem
+  compilador; e `dev-runtime`, a de desenvolvimento, com Rust/Cargo e
+  ferramentas nativas. O toolchain fica no estágio `dev-os`, sobre o sistema
+  operacional (`runtime-os`) e antes de qualquer arquivo do POM, e
+  `dev-runtime` copia os artefatos prontos de `runtime`: um build do POM
+  reaproveita as camadas do toolchain em vez de reinstalá-lo. O commit do host vira `ENV
   POM_BUILD_COMMIT` no runtime, sem invalidar as camadas Cargo/npm. O
   `docker-entrypoint.sh` faz `exec` do `pom` e exporta `POM_PLUGIN_HOST`; na
   ativacao, o `pom` inicia o host como filho com o plugin baixado e IPC por
@@ -241,12 +244,13 @@ montados pelo host em runtime.
 
 ## migrar-para-pom.sh
 
-Migra uma maquina do nome antigo do projeto para POM. O binario nao conhece
-mais o nome antigo - ele procura `pom.json`, `.pom-node.key` e `.pom.key` e le
-as variaveis `POM_*` -, entao quem carrega a compatibilidade e este script:
-renomeia config (inclusive variantes como `-cpu.json`), a anotacao
-`*.last-slice.json` e as duas chaves de identidade. Nao toca em modelo nem em
-fatia. Depois de rodado em todas as maquinas, pode ser apagado.
+Migrates a machine from the project's old name to POM. The binary no longer
+knows the old name - it looks for `pom.json` and `.pom-node.key` (the node's
+only key) and reads the `POM_*` variables - so this script carries the
+compatibility: it renames the config (including variants such as `-cpu.json`),
+the `*.last-slice.json` annotation and the identity key. The old separate pkarr
+key (`.rdma-p2p.key`) is no longer used and stays where it is. It does not touch
+models or slices. Once it has run on every machine, it can be deleted.
 
 Fatia cortada antes do rename perde o `original_block_count` (o metadado agora
 se chama `pom.original_block_count`) e volta a ser "total de camadas

@@ -28,7 +28,6 @@ pub struct SetupHardwareResponse {
     pub backend: String,
     pub p2p_discovery_available: bool,
     pub public_ipv6_available: bool,
-    pub suggested_advertise_addr: Option<String>,
     pub p2p_port: u16,
     pub default_model_dir: String,
     pub default_shard_dir: String,
@@ -83,9 +82,7 @@ pub struct SetupAnchorPreviewRequest {
     #[serde(default)]
     pub network: crate::config::NetworkSettings,
     #[serde(default)]
-    pub advertise_addr: String,
-    #[serde(default)]
-    pub bootstrap: String,
+    pub relay_peers: Vec<String>,
     #[serde(default)]
     pub public_directory: Vec<String>,
 }
@@ -150,17 +147,14 @@ fn connection_key_after_setup(existing: &str, supplied: &str) -> String {
     }
 }
 
+/// Signed metadata travelling in the trust document. No address goes in here:
+/// whoever receives the document finds the principal by its key through pkarr,
+/// and the relays by the keys in `relay_hints`.
 fn trust_metadata_from_network(
     network: &crate::config::NetworkSettings,
-    advertise_addr: &str,
-    bootstrap: &str,
+    relay_peers: &[String],
     public_directory: &[String],
 ) -> anyhow::Result<crate::admin_trust::TrustNetworkMetadata> {
-    let advertised_address = advertise_addr.trim();
-    anyhow::ensure!(
-        !advertised_address.is_empty(),
-        "o endereço anunciado da máquina é obrigatório"
-    );
     let directory =
         crate::public_directory::PublicDirectorySettings::from_urls(public_directory.iter())?
             .effective_with_env()?;
@@ -173,12 +167,7 @@ fn trust_metadata_from_network(
         country_name: network.country_name.trim().to_string(),
         city: network.city.trim().to_string(),
         geo_label: network.geo_label.trim().to_string(),
-        advertised_address: advertised_address.to_string(),
-        bootstrap_address: if bootstrap.trim().is_empty() {
-            advertised_address.to_string()
-        } else {
-            bootstrap.trim().to_string()
-        },
+        relay_hints: super::trust::relay_hint_keys(relay_peers),
         directory_replicas: directory.replicas,
     })
 }
@@ -244,13 +233,6 @@ async fn setup_hardware(config: AuthState, public_directory: Vec<String>) -> Set
         backend: backend.to_string(),
         p2p_discovery_available: std::net::UdpSocket::bind("0.0.0.0:0").is_ok(),
         public_ipv6_available: suggested_ip.as_deref().is_some_and(|ip| ip.contains(':')),
-        suggested_advertise_addr: suggested_ip.map(|ip| {
-            if ip.contains(':') {
-                format!("[{ip}]:{}", cfg.p2p_port)
-            } else {
-                format!("{ip}:{}", cfg.p2p_port)
-            }
-        }),
         p2p_port: cfg.p2p_port,
         default_model_dir: crate::config::default_model_dir()
             .to_string_lossy()
@@ -391,8 +373,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
     }
     let metadata = match trust_metadata_from_network(
         &network,
-        &request.advertise_addr,
-        &request.bootstrap,
+        &request.relay_peers,
         &request.public_directory,
     ) {
         Ok(metadata) => metadata,
@@ -654,13 +635,14 @@ pub async fn save_setup(
                 .into_response();
         }
     }
-    let (mut network, directory_inputs, advertise_addr, bootstrap) =
+    // `bootstrap` and `advertise_addr` are local hints typed by the operator
+    // (they may be DNS names), never read from the trust document.
+    let (mut network, directory_inputs, relay_hints) =
         if profile == crate::profile::NodeProfile::Admin {
             (
                 req.network.clone(),
                 req.public_directory.clone(),
-                req.advertise_addr.clone(),
-                req.bootstrap.clone(),
+                Vec::new(),
             )
         } else {
             let Some(metadata) = trust_document.setup.as_ref() else {
@@ -673,10 +655,11 @@ pub async fn save_setup(
             (
                 network_from_trust_metadata(metadata),
                 metadata.directory_replicas.clone(),
-                metadata.advertised_address.clone(),
-                metadata.bootstrap_address.clone(),
+                metadata.relay_hints.clone(),
             )
         };
+    let bootstrap = req.bootstrap.trim().to_string();
+    let advertise_addr = req.advertise_addr.clone();
     network.public_name = network.public_name.trim().to_string();
     network.country_code = network.country_code.trim().to_ascii_uppercase();
     network.country_name = network.country_name.trim().to_string();
@@ -781,6 +764,11 @@ pub async fn save_setup(
     // admin surface still needs a durable credential after setup.
     cfg.connection_key = connection_key_after_setup(&cfg.connection_key, supplied_connection_key);
 
+    for relay in relay_hints {
+        if !cfg.relay_peers.contains(&relay) {
+            cfg.relay_peers.push(relay);
+        }
+    }
     if profile != crate::profile::NodeProfile::Admin {
         if !bootstrap.is_empty() {
             cfg.bootstrap_nodes = bootstrap
@@ -1073,9 +1061,27 @@ mod tests {
         network.visibility = crate::config::NetworkVisibility::Public;
         network.access_policy = crate::config::NetworkAccessPolicy::AnyoneWithAnchor;
 
-        let metadata = trust_metadata_from_network(&network, "[2001:db8::10]:42777", "", &[])
+        let metadata = trust_metadata_from_network(&network, &[], &[])
             .expect("public setup may omit manual directory replicas");
 
         assert!(metadata.directory_replicas.is_empty());
+    }
+
+    /// The trust document names relays by key; a multiaddress (which carries
+    /// an IP) in `relay_peers` stays out.
+    #[test]
+    fn trust_metadata_carries_relay_keys_and_no_address() {
+        let mut network = crate::config::NetworkSettings::default();
+        network.public_name = "POM".into();
+        let relay = "pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".to_string();
+        let metadata = trust_metadata_from_network(
+            &network,
+            &[relay.clone(), "/ip4/198.51.100.1/tcp/52777".into()],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(metadata.relay_hints, vec![relay]);
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert!(!json.contains("198.51.100.1"), "{json}");
     }
 }

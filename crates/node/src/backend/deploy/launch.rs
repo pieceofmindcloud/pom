@@ -54,9 +54,31 @@ pub(super) async fn deploy_endpoint(
         &req.preferred_node_ids,
         &pairwise_rtt,
         layer_options,
-        req.mmproj_path.as_deref(),
+        // The projector only matters with vision on: without it, a path the
+        // screen still holds must not refuse the deployment.
+        req.mmproj_path.as_deref().filter(|_| req.vision),
     );
-    if req.vision && plan.mmproj_path.is_none() {
+    let (links, links_stale) = crate::webui::load_sidecar_links(&state).await;
+    attach_sidecars(
+        &mut plan,
+        &machines,
+        &survey.sidecars,
+        survey.model_shape.as_ref(),
+        &links,
+        links_stale,
+        req.vision,
+        req.vision_choice.as_ref(),
+        params.mtp_enabled,
+        req.mtp_choice.as_ref(),
+    );
+    // A projector still to be copied to the head has no path there yet; it is
+    // resolved on the post-copy survey in `lifecycle::run`.
+    let vision_arriving = plan
+        .sidecars
+        .vision
+        .as_ref()
+        .is_some_and(|slot| slot.needs_copy());
+    if req.vision && plan.mmproj_path.is_none() && !vision_arriving {
         return bad(json!({
             "error": plan.mmproj_reason.as_deref().unwrap_or("este modelo não tem visão: nenhum projetor compatível foi comprovado para o GGUF")
         }));
@@ -536,6 +558,9 @@ pub(super) fn launch_targets(
                 mmproj_path: (target.rank == 0)
                     .then(|| held.mmproj_path.clone())
                     .flatten(),
+                mtp_draft_path: None,
+                mtp_draft_file: None,
+                mmproj_file: None,
                 use_mmproj: false,
             });
         }
@@ -625,6 +650,9 @@ pub(super) fn launch_targets(
                 } else {
                     None
                 },
+                mtp_draft_path: None,
+                mtp_draft_file: None,
+                mmproj_file: None,
                 use_mmproj: false,
             });
             continue;
@@ -660,6 +688,9 @@ pub(super) fn launch_targets(
             mmproj_path: (step.start_layer == 0)
                 .then(|| held.mmproj_path.clone())
                 .flatten(),
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
             use_mmproj: false,
         });
     }
@@ -700,6 +731,9 @@ pub(super) fn launch_targets(
                 peer_count: None,
                 tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
                 mmproj_path: None,
+                mtp_draft_path: None,
+                mtp_draft_file: None,
+                mmproj_file: None,
                 use_mmproj: false,
             });
         }

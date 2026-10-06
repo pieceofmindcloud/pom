@@ -24,6 +24,7 @@ import {
   Inbox,
   Info,
   Scissors,
+  ShieldAlert,
   Upload,
   X,
 } from "lucide-react";
@@ -31,7 +32,12 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { bytes, duration, rate, since } from "../lib/format";
-import { useJobs, useOffers, useTransfers } from "../lib/queries";
+import { useAdminAccess, useJobs, useOffers, useTransfers } from "../lib/queries";
+import {
+  dismissDefaultPasswordNotice,
+  markDefaultPasswordNoticeRead,
+  useDefaultPasswordNoticeState,
+} from "../lib/defaultPasswordNotice";
 import { useToast } from "../lib/toast";
 import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
@@ -180,8 +186,29 @@ export function Notifications() {
   const pluginNotices = usePluginNotices();
   const unreadNotices = pluginNotices.filter((notice) => !notice.read).length;
   const [freshNotices, setFreshNotices] = useState<ReadonlySet<string>>(new Set());
-  const count = running.length + moving.length + waiting.length + pluginConfirms.length + unreadNotices;
-  const hasItems = running.length + moving.length + waiting.length + pluginConfirms.length + pluginNotices.length > 0;
+  // The default administrative password: one notice per start of the node
+  // (`boot_id`). Read when the bell opens, gone once dismissed; ignoring it is
+  // allowed, so it never blocks anything.
+  const access = useAdminAccess();
+  const bootId = access.data?.boot_id ?? "";
+  const passwordNoticeState = useDefaultPasswordNoticeState(bootId);
+  const passwordNotice = Boolean(access.data?.default_password) && passwordNoticeState !== "dismissed";
+  const passwordNoticeUnread = passwordNotice && passwordNoticeState === "unread";
+  const [passwordNoticeFresh, setPasswordNoticeFresh] = useState(false);
+  const count = running.length + moving.length + waiting.length + pluginConfirms.length + unreadNotices
+    + (passwordNoticeUnread ? 1 : 0);
+  const hasItems = passwordNotice
+    || running.length + moving.length + waiting.length + pluginConfirms.length + pluginNotices.length > 0;
+
+  useEffect(() => {
+    if (!open) {
+      setPasswordNoticeFresh(false);
+      return;
+    }
+    if (!passwordNoticeUnread) return;
+    setPasswordNoticeFresh(true);
+    markDefaultPasswordNoticeRead(bootId);
+  }, [open, passwordNoticeUnread, bootId]);
 
   useEffect(() => {
     if (!open || unreadNotices === 0) return;
@@ -278,6 +305,40 @@ export function Notifications() {
                 <Empty icon={<Inbox className="h-5 w-5" />} title={t("notifications.empty")}>
                   {t("notifications.emptyDetail")}
                 </Empty>
+              )}
+
+              {passwordNotice && (
+                <div data-testid="default-password-notice">
+                  <Row
+                    icon={<ShieldAlert className="h-3.5 w-3.5 text-amber" />}
+                    title={t("notifications.defaultPasswordTitle")}
+                    detail={t("firstRun.defaultPasswordNotice")}
+                    footer={
+                      <>
+                        {passwordNoticeFresh && <Badge tone="iris">{t("notifications.pluginNoticeNew")}</Badge>}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setOpen(false);
+                            navigate("/config/preferencias");
+                          }}
+                        >
+                          {t("firstRun.defaultPasswordChange")}
+                        </Button>
+                        <button
+                          type="button"
+                          onClick={() => dismissDefaultPasswordNotice(bootId)}
+                          aria-label={t("notifications.pluginNoticeDismiss")}
+                          title={t("notifications.pluginNoticeDismiss")}
+                          className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-faint hover:bg-line/40 hover:text-fg"
+                        >
+                          <X className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      </>
+                    }
+                  />
+                </div>
               )}
 
               {pluginNotices.map((notice) => (

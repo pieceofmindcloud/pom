@@ -25,8 +25,12 @@ pub struct Identity {
     pub node_id: NodeId,
 }
 
-/// Where the node's long-lived keypair lives, under the project root.
 /// Arquivo da identidade do nó, derivado da marca: `.pom-node.key`.
+///
+/// It is the node's **only** key: from it come the `node_id`
+/// (`SHA256(pubkey)`), the libp2p `PeerId`, the pkarr record key (`pk:`), the
+/// trust chain's authority signature and the TLS certificate. An IP address
+/// never identifies a node; it is only resolved at dial time.
 pub fn key_filename() -> String {
     format!(".{}-node.key", crate::brand::slug())
 }
@@ -41,27 +45,6 @@ pub fn key_path() -> std::path::PathBuf {
         return std::path::PathBuf::from(p);
     }
     crate::config::project_root().join(key_filename())
-}
-
-/// Where the pkarr keypair lives. Not the same key as [`key_filename`]: this
-/// one names the node on the pkarr DHT, the other names it in the cluster.
-/// Arquivo da chave pkarr, derivado da marca: `.pom.key`.
-pub fn pkarr_key_filename() -> String {
-    format!(".{}.key", crate::brand::slug())
-}
-
-/// Resolves the pkarr key file path, under the project root.
-///
-/// Era `Path::new(".pom.key")`, relativo ao cwd: lançar o binário de outro
-/// diretório (um `ssh host /caminho/pom` roda em `$HOME`) criava uma
-/// segunda identidade pkarr e o endereço publicado na DHT mudava. O project
-/// root é a regra do resto do projeto (`models/`, `pom.json`, a chave do
-/// nó) e vale aqui também.
-pub fn pkarr_key_path() -> std::path::PathBuf {
-    if let Ok(p) = crate::brand::env("PKARR_KEY") {
-        return std::path::PathBuf::from(p);
-    }
-    crate::config::project_root().join(pkarr_key_filename())
 }
 
 impl Identity {
@@ -120,47 +103,24 @@ impl Identity {
     pub fn public_key_hex(&self) -> String {
         hex::encode(self.signing_key.verifying_key().as_bytes())
     }
+
+    /// The same key as a libp2p identity. `ed25519_dalek` and libp2p use the
+    /// same 32-byte seed, so the conversion is direct.
+    pub fn libp2p_keypair(&self) -> libp2p::identity::Keypair {
+        let mut seed = self.signing_key.to_bytes();
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+            .expect("a 32-byte Ed25519 seed is always a valid libp2p key")
+    }
+
+    /// `PeerId` do libp2p derivado desta identidade.
+    pub fn peer_id(&self) -> String {
+        self.libp2p_keypair().public().to_peer_id().to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A chave pkarr é a identidade do nó na DHT: ela não pode depender do
-    /// diretório de onde alguém lançou o binário. Rodando de outro cwd, o
-    /// caminho continua saindo do project root.
-    #[test]
-    fn the_pkarr_key_lives_under_the_project_root_not_the_cwd() {
-        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cwd_antes = std::env::current_dir().unwrap();
-        let home_antes = std::env::var("POM_PKARR_KEY").ok();
-        std::env::remove_var("POM_PKARR_KEY");
-
-        let raiz = std::env::temp_dir().join(format!("pom-root-{}", std::process::id()));
-        let outro = std::env::temp_dir().join(format!("pom-cwd-{}", std::process::id()));
-        std::fs::create_dir_all(raiz.join("models")).unwrap();
-        std::fs::create_dir_all(&outro).unwrap();
-        std::env::set_var("POM_HOME", &raiz);
-        std::env::set_current_dir(&outro).unwrap();
-
-        let caminho = pkarr_key_path();
-
-        std::env::set_current_dir(&cwd_antes).unwrap();
-        std::env::remove_var("POM_HOME");
-        if let Some(v) = home_antes {
-            std::env::set_var("POM_PKARR_KEY", v);
-        }
-        std::fs::remove_dir_all(&raiz).ok();
-        std::fs::remove_dir_all(&outro).ok();
-
-        assert_eq!(caminho, raiz.join(pkarr_key_filename()));
-        assert!(
-            !caminho.starts_with(&outro),
-            "a chave pkarr não pode sair do cwd: {caminho:?}"
-        );
-    }
 
     #[test]
     fn identity_survives_a_restart() {
@@ -177,6 +137,29 @@ mod tests {
         );
         assert_eq!(first.public_key_hex(), second.public_key_hex());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A single key: the `node_id`, the `PeerId` and the pkarr key name the
+    /// same public key.
+    #[test]
+    fn node_id_peer_id_and_pkarr_key_come_from_one_key() {
+        let identity = Identity::generate();
+        let pubkey = identity.signing_key.verifying_key();
+        assert_eq!(identity.node_id.0, NodeId::from_pubkey(&pubkey).0);
+        let libp2p_public =
+            libp2p::identity::ed25519::PublicKey::try_from_bytes(pubkey.as_bytes()).unwrap();
+        assert_eq!(
+            identity.peer_id(),
+            libp2p::identity::PublicKey::from(libp2p_public)
+                .to_peer_id()
+                .to_string()
+        );
+        let pkarr = crate::pkarr_node::PkarrNode::from_signing_key(&identity.signing_key).unwrap();
+        assert_eq!(
+            pkarr.public_key_uri(),
+            crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&identity.public_key_hex())
+                .unwrap()
+        );
     }
 
     #[test]

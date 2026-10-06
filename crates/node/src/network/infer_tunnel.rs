@@ -115,6 +115,19 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/ui/network/rtt"
             | "/api/ui/network/chat"
             | "/api/internal/reload_model"
+            // Administrative sync with the principal (`admin.rs`): API keys,
+            // trust chain, succession and infer admission. A node that only
+            // reaches the principal through the relay had no other path. All
+            // of them require `InternalNodeAuth` (control signature or
+            // connection key), never the socket's origin.
+            | "/api/internal/api-keys/upsert"
+            | "/api/internal/api-keys/revoke"
+            | "/api/internal/api-keys/revoke-origin"
+            | "/api/internal/api-keys/validate"
+            | "/api/internal/admin-trust/reconcile"
+            | "/api/internal/admin-trust/complete-transfer"
+            | "/api/internal/profile/authorize-node"
+            | "/api/internal/profile/accept-node"
             // A oferta de um arquivo: pequena e assinada como as outras. O
             // download que ela provoca continua sendo HTTP direto.
             | "/api/transfer/offer"
@@ -546,6 +559,10 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
 ///
 /// Frames de inferência continuam sendo POSTs. A única exceção é o GET curto
 /// de `/health` usado pela medição direcional de RTT.
+/// The status `serve_loopback` answers when the peer's own server is not
+/// listening: the tunnel reached the peer, the destination did not exist.
+pub(crate) const NOTHING_LISTENING_STATUS: u16 = 502;
+
 pub async fn serve_loopback(
     http: &reqwest::Client,
     port: u16,
@@ -596,7 +613,7 @@ pub async fn serve_loopback(
         // from a successful-but-erroring response, without inventing a new
         // status code space just for the tunnel.
         Err(e) => TunnelResponse {
-            status: 502,
+            status: NOTHING_LISTENING_STATUS,
             body: e.to_string().into_bytes(),
         },
     }
@@ -626,6 +643,29 @@ mod tests {
         assert!(gateway_path_is_allowed("/api/ui/node"));
         assert!(gateway_path_is_allowed("/api/ui/apply"));
         assert!(gateway_path_is_allowed("/api/ui/deployments?local=true"));
+    }
+
+    /// Administrative sync with the principal passes: a node that only reaches
+    /// the principal through the relay must register the Chat key. The other
+    /// internal routes stay out.
+    #[test]
+    fn o_tunel_carrega_a_sincronizacao_com_o_principal() {
+        for path in [
+            "/api/internal/api-keys/upsert",
+            "/api/internal/api-keys/revoke",
+            "/api/internal/api-keys/revoke-origin",
+            "/api/internal/api-keys/validate",
+            "/api/internal/admin-trust/reconcile",
+            "/api/internal/admin-trust/complete-transfer",
+            "/api/internal/profile/authorize-node",
+            "/api/internal/profile/accept-node",
+        ] {
+            assert!(gateway_path_is_allowed(path), "{path}");
+        }
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/enterprise/fingerprint"
+        ));
+        assert!(!gateway_path_is_allowed("/api/internal/api-keys/upsert/x"));
     }
 
     /// A marca é um segredo do processo: constante enquanto ele vive e nunca

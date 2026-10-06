@@ -246,7 +246,7 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         "routes": routes,
         "runtime": state.runtime.status().await,
         "config": state.runtime.config().await,
-        "active_model": state.active_model().await,
+        "active_model": state.displayed_model().await,
         "detached": state.network.is_detached(),
         // Sem isto o retrato da travessia congelaria no cache: nem o estado do
         // AutoNAT nem uma reserva nova mexem em `peers`.
@@ -577,7 +577,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         .collect();
 
     // Preserve the legacy active-model fields for existing UI consumers.
-    let active = state.active_model().await;
+    let active = state.displayed_model().await;
     let active_mmproj_path = views.iter().find_map(|view| {
         let node = view.node.as_ref()?;
         let config = node.get("config")?;
@@ -872,11 +872,27 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
         "supported"
     };
 
+    let rag_state = if crate::rag::available(&state).await {
+        "supported"
+    } else {
+        "unavailable"
+    };
+    let rag_collections = crate::rag::collections(&state).await;
+    // A machine of the pipeline has its model unloaded (`unload_if_idle`) or
+    // is loading it again: the next answer waits for the reload, and the Chat
+    // says so instead of looking stuck.
+    let asleep = matching.iter().any(|peer| peer.idle);
+
     Json(json!({
         "active_model": active_model,
         "vision": vision_state,
         "coverage": coverage_state,
+        "asleep": asleep,
         "thinking": thinking_state,
+        // A plugin of some machine serves retrieval to this network.
+        "rag": rag_state,
+        // What a request may keep its retrieval to (`rag_collection`).
+        "rag_collections": rag_collections,
     }))
 }
 
@@ -1017,6 +1033,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         "is_self": true,
         "models": local.models,
         "shard_sets": local.shard_sets,
+        "sidecars": local.sidecars,
         "scanned": local.scanned,
         "metadata_complete": local.metadata_complete,
     })];
@@ -1029,6 +1046,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 "is_self": false,
                 "models": v.get("models").cloned().unwrap_or(json!([])),
                 "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
+                "sidecars": v.get("sidecars").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
                 "metadata_complete": v
                     .get("metadata_complete")
@@ -1050,6 +1068,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 "error": error,
                 "models": [],
                 "shard_sets": [],
+                "sidecars": [],
             })),
         }
     }

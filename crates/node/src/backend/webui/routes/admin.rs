@@ -27,6 +27,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/launch", post(launch))
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/unload", post(unload_model))
+        .route("/api/ui/kv-cache/clear", post(clear_kv_cache))
         .route("/api/ui/reconfigure", post(reconfigure))
         .route("/api/ui/release", post(release_slice))
         .route("/api/ui/release/candidate", get(release_candidate))

@@ -19,7 +19,15 @@ em `AGENTS.md - crates/routing-base/`.
   abrem sob demanda, `<details>`) e `deep`. Guias hoje, nesta ordem:
   `visao-geral`, `primeiros-passos`, `perfis`, `requisicao`,
   `fatiar-implantar`, `usar-api`, `rede-internet`, `plugins`, `operar`,
-  `acesso`. Os `id` são o endereço `?guia=` e não mudam com o idioma.
+  `acesso`, followed by the deployment inspector's category guides from
+  `deploySettings.ts`. Os `id` são o endereço `?guia=` e não mudam com o idioma.
+- `deploySettings.ts` - the guides behind the help button of each deployment
+  inspector category: `config-padrao` (Default settings), `config-pom` (POM
+  settings) and `config-beta` (the Beta group: MoE experts in RAM, the GPU
+  expert cache and the automatic prefill chunk, and how to combine them). Each
+  describes every property of its category and how to change it, from the
+  field hints and `docs/subsystems/deployment.md`. They open in
+  `components/GuideDialog.tsx` and also list in Documentation.
 - `Guide.tsx` - `GuideView`, o renderizador. Cada tipo de bloco tem **um** visual,
   decidido aqui e em nenhum outro lugar: é por isso que os guias são dados. Quem
   escreve uma página nova escolhe entre os blocos existentes e ganha espaçamento,

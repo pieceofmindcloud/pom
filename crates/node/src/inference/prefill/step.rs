@@ -397,6 +397,8 @@ impl RemoteDecodeStream {
             trace.record_remote_stream_token_delivery_interval(interval_ms);
         }
         if trace.record_remote_stream_batch(&meta) {
+            // One callback is one round through every hop.
+            trace.note_decode_round();
             let entry = json!({
             "round_trip_ms": 0,
             "processing_ms": meta.get("processing_ms").cloned().unwrap_or_else(|| json!(0)),

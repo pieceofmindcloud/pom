@@ -962,6 +962,7 @@ async fn conversa_com_hops_fault_kind(
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
             crate::gateway::GenerationInput {
+                probe: None,
                 state: state.clone(),
                 inference_token: "test-api-key".into(),
                 model: "lab".into(),

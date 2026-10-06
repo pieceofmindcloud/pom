@@ -15,6 +15,7 @@ vi.mock("./queries", () => ({
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: () => [],
+  usePluginUi: () => ({ data: { plugins: [] }, isLoading: false, isError: false }),
 }));
 
 vi.mock("./chatStore", async () => {

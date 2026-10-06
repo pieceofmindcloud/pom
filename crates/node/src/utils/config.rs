@@ -166,12 +166,32 @@ impl Default for ResourcePolicy {
 /// `crate::config::KvCacheType` continue valendo.
 pub use llama_engine::KvCacheType;
 
+/// Older `pom.json` files carried API keys with their secrets in plain text.
+/// The database owns the keys now, so whatever the file holds is read past and
+/// dropped instead of loaded (or refused for the missing `key_hash`).
+fn discard_legacy_api_keys<'de, D>(deserializer: D) -> Result<Vec<ApiKey>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(Vec::new())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
-    /// Stable public identity used by the audit trail. Never a credential.
+    /// Tracking id: the stable public identity the audit trail and the logs
+    /// plugin record for every request. Random (UUID v4), so it is unique
+    /// across every node of the network. Never a credential.
     #[serde(default)]
     pub id: String,
-    pub key: String,
+    /// SHA-256 (hex) of the secret. The secret itself is shown once, when the
+    /// key is minted, and is never stored or sent between nodes: inference
+    /// validates a presented token by hashing it (`auth::api_key_hash`).
+    pub key_hash: String,
+    /// The start and the end of the secret (`sk-pom-3f9a…c41e`), enough for a
+    /// person or another node to tell keys apart without being able to use one.
+    #[serde(default)]
+    pub key_hint: String,
     pub label: String,
     pub node_id: String,
     /// Node that minted this key. It remains stable when the key is
@@ -243,7 +263,13 @@ pub struct Config {
     /// Human-facing network settings captured during first access.
     #[serde(default)]
     pub network: NetworkSettings,
-    #[serde(default)]
+    /// In-memory snapshot of `pom.db`'s `api_keys`, which owns them. Never
+    /// written to `pom.json`: the file is versioned in the cluster config repo.
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "discard_legacy_api_keys"
+    )]
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
     pub blocked_nodes: Vec<String>,
@@ -334,22 +360,24 @@ pub struct Config {
     /// devolve pela API: a interface recebe apenas estado e máscara.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
-    /// Diretório onde os snapshots de KV cache são gravados e lidos, como o
-    /// `--slot-save-path` do llama-server. Propriedade da máquina, não da
-    /// implantação: cada peer grava a fatia dele aqui. A variável de ambiente
-    /// `POM_SLOT_SAVE_PATH` tem precedência sobre este campo - use
-    /// `slot_save_path_effective()`, nunca o campo cru.
-    /// Ausente/vazio em todas as fontes desliga o recurso e as rotas de
-    /// snapshot respondem "não configurado".
+    /// Directory where KV cache snapshots are written and read, like
+    /// llama-server's `--slot-save-path`. A machine property, not a
+    /// deployment one: each peer writes its own slice here. The
+    /// `POM_SLOT_SAVE_PATH` environment variable takes precedence over this
+    /// field - use `slot_save_path_effective()`, never the raw field.
+    /// Absent in every source means the default `~/.pom/kv-slots`
+    /// (`default_slot_save_dir`); an empty value turns the feature off and the
+    /// snapshot routes answer "not configured".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_save_path: Option<String>,
-    /// Liga a persistência automática do cache de prefixo: ao fim de cada turno
-    /// o gateway grava o KV retido em `slot_save_path` e, num miss após
-    /// reinício, restaura em vez de refazer o prefill a frio. Exige
-    /// `slot_save_path` em todos os hops. Desligado por padrão até ter prova de
-    /// campo; a env var `POM_SLOT_PERSIST_PREFIX_CACHE=1` também liga. Use
+    /// Turns on automatic persistence of the prefix cache: at the end of each
+    /// turn the gateway writes the retained KV to `slot_save_path` and, on a
+    /// miss after a restart, restores it instead of redoing a cold prefill.
+    /// Requires `slot_save_path` on every hop. On by default (a `pom.json`
+    /// without the field gets `true`); `false` here or
+    /// `POM_SLOT_PERSIST_PREFIX_CACHE=0` turns it off. Use
     /// `slot_persist_prefix_cache_enabled()`.
-    #[serde(default)]
+    #[serde(default = "default_slot_persist_prefix_cache")]
     pub slot_persist_prefix_cache: bool,
     /// Orçamento de disco para os snapshots automáticos de prefixo, somado
     /// entre as fatias. `None` usa `DEFAULT_SLOT_AUTO_MAX_BYTES` (2 GiB). Use
@@ -361,6 +389,15 @@ pub struct Config {
     /// vence o campo. Use `slot_auto_ttl_secs()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_auto_ttl_secs: Option<u64>,
+    /// Host-memory KV cache for retained sessions that lose their sequence to
+    /// another conversation - llama-server's `--cache-ram`, in MiB: a positive
+    /// ceiling, `0` for off, absent or `-1` for as much as the machine allows.
+    /// Whatever the value, half of the host RAM stays available to the user
+    /// and a host whose half is under 6 GiB caches nothing
+    /// (`infer_server/ram_cache.rs`). A machine property; the `POM_CACHE_RAM`
+    /// environment variable takes precedence. Use `cache_ram_mib_effective()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ram_mib: Option<i64>,
 }
 
 impl fmt::Debug for Config {
@@ -411,6 +448,7 @@ impl fmt::Debug for Config {
             .field("slot_persist_prefix_cache", &self.slot_persist_prefix_cache)
             .field("slot_auto_max_bytes", &self.slot_auto_max_bytes)
             .field("slot_auto_ttl_secs", &self.slot_auto_ttl_secs)
+            .field("cache_ram_mib", &self.cache_ram_mib)
             .finish()
     }
 }
@@ -631,12 +669,9 @@ impl Config {
             // These fields are now owned by pom.db. Preserve their old values
             // when another setting updates pom.json, so the legacy source stays
             // a usable safety copy until the operator explicitly migrates it.
-            for field in ["api_keys", "thermal", "huggingface_token"] {
-                // Leaving a network revokes every network API key. Never
-                // resurrect it while writing the setup-pending shell.
-                if self.setup_pending && field == "api_keys" {
-                    continue;
-                }
+            // `api_keys` is deliberately absent: older files carried the
+            // secrets in plain text, and rewriting the file drops them.
+            for field in ["thermal", "huggingface_token"] {
                 if let Some(old_value) = old.get(field) {
                     value[field] = old_value.clone();
                 }
@@ -684,9 +719,17 @@ impl Config {
         self.setup_model = None;
     }
 
-    /// Inference port this node should use, falling back to the default.
+    /// Inference port this node should use. Without one configured it follows
+    /// the gateway port (8080 -> 8181, as before): nodes that share a host
+    /// network, each with its own gateway port, then each bind their own
+    /// inference port instead of all taking 8181 - with two of them serving a
+    /// model, the second one could not start ("Address already in use").
     pub fn inference_port_or_default(&self) -> u16 {
-        self.inference_port.unwrap_or(DEFAULT_INFERENCE_PORT)
+        self.inference_port.unwrap_or_else(|| {
+            self.gateway_port
+                .checked_add(DEFAULT_INFERENCE_PORT - default_gateway_port())
+                .unwrap_or(DEFAULT_INFERENCE_PORT)
+        })
     }
 
     pub fn active_api_key(&self) -> Option<&ApiKey> {
@@ -756,18 +799,21 @@ impl Config {
         (self.shard_max_gb() * 1_073_741_824.0).round() as u64
     }
 
-    /// Diretório efetivo de snapshots de KV cache, ou `None` quando o recurso
-    /// está desligado. Precedência: a variável de ambiente `POM_SLOT_SAVE_PATH`
-    /// (derivada da marca, `brand::env("SLOT_SAVE_PATH")`) vence o campo do
-    /// `pom.json`. Vazio em qualquer uma conta como desligado, igual à regra de
-    /// `shard_dir`. Como a env var é por processo, ela **não** é persistida:
-    /// `save()` continua gravando só o campo do arquivo.
+    /// Effective KV cache snapshot directory, or `None` when the feature is
+    /// off. Precedence: the `POM_SLOT_SAVE_PATH` environment variable (derived
+    /// from the brand, `brand::env("SLOT_SAVE_PATH")`) beats the `pom.json`
+    /// field, and with neither set the default is `~/.pom/kv-slots`
+    /// (`default_slot_save_dir`). An empty value in the variable or the field
+    /// turns the feature off. Since the env var is per process, it is **not**
+    /// persisted: `save()` keeps writing only the file's field.
     pub fn slot_save_path_effective(&self) -> Option<String> {
-        crate::brand::env("SLOT_SAVE_PATH")
+        match crate::brand::env("SLOT_SAVE_PATH")
             .ok()
             .or_else(|| self.slot_save_path.clone())
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
+        {
+            Some(value) => Some(value.trim().to_string()).filter(|value| !value.is_empty()),
+            None => Some(default_slot_save_dir().to_string_lossy().into_owned()),
+        }
     }
 
     pub fn slot_save_dir(&self) -> Option<PathBuf> {
@@ -802,6 +848,15 @@ impl Config {
         self.slot_auto_max_bytes
             .filter(|n| *n > 0)
             .unwrap_or(crate::prefix_cache::DEFAULT_SLOT_AUTO_MAX_BYTES)
+    }
+
+    /// Host-memory KV cache setting in MiB (`--cache-ram`); `POM_CACHE_RAM`
+    /// beats the `pom.json` field. `None` means neither source set it.
+    pub fn cache_ram_mib_effective(&self) -> Option<i64> {
+        crate::brand::env("CACHE_RAM")
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .or(self.cache_ram_mib)
     }
 
     /// TTL efetivo dos snapshots automáticos de prefixo, em segundos.
@@ -864,6 +919,19 @@ pub fn default_workspace_root() -> PathBuf {
     crate::catalog::home_dir()
         .unwrap_or_else(project_root)
         .join("pom_workspace")
+}
+
+/// `~/.pom/kv-slots` is where KV cache snapshots (manual and the persistent
+/// prefix cache) go when `slot_save_path` is not configured.
+pub fn default_slot_save_dir() -> PathBuf {
+    crate::catalog::home_dir()
+        .unwrap_or_else(project_root)
+        .join(".pom")
+        .join("kv-slots")
+}
+
+fn default_slot_persist_prefix_cache() -> bool {
+    true
 }
 
 /// `~/.pom/models` is the first-access destination for whole models.
@@ -950,6 +1018,17 @@ fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_default_inference_port_follows_the_gateway_port() {
+        let mut config: Config =
+            serde_json::from_value(serde_json::json!({"profile": "admin", "connection_key": "k", "gateway_port": 8080})).unwrap();
+        assert_eq!(config.inference_port_or_default(), 8181, "the single-node default is unchanged");
+        config.gateway_port = 8082;
+        assert_eq!(config.inference_port_or_default(), 8183);
+        config.inference_port = Some(9000);
+        assert_eq!(config.inference_port_or_default(), 9000, "a configured port wins");
+    }
+
     /// A peer address with no port is what produces `invalid port value` — the
     /// resolver splits on the last colon and finds hex where a port belongs.
     /// Measured, not assumed: an unbracketed IPv6 *with* a port resolves fine.
@@ -1101,6 +1180,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -1207,6 +1287,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -1373,6 +1454,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
         cfg.admin_exposure = AdminExposure::Network;
         let admin_password_hash = crate::auth::hash_admin_password("admin_super_secret").unwrap();
@@ -1483,6 +1565,30 @@ mod tests {
         assert!(shard_dir.ends_with(Path::new(".pom").join("models_sliced")));
     }
 
+    /// KV snapshots and the persistent prefix cache are on by default, in
+    /// `~/.pom/kv-slots`; an empty `slot_save_path` or `false` turns them off.
+    #[test]
+    fn kv_slots_are_on_by_default_in_the_pom_home() {
+        if crate::brand::env("SLOT_SAVE_PATH").is_ok()
+            || crate::brand::env("SLOT_PERSIST_PREFIX_CACHE").is_ok()
+        {
+            return;
+        }
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert!(defaulted.slot_persist_prefix_cache_enabled());
+        assert!(defaulted
+            .slot_save_dir()
+            .unwrap()
+            .ends_with(Path::new(".pom").join("kv-slots")));
+
+        let off: Config = serde_json::from_str(
+            r#"{"profile":"node","slot_save_path":"","slot_persist_prefix_cache":false}"#,
+        )
+        .unwrap();
+        assert_eq!(off.slot_save_dir(), None);
+        assert!(!off.slot_persist_prefix_cache_enabled());
+    }
+
     #[test]
     fn test_active_api_key() {
         let cfg = Config {
@@ -1512,7 +1618,8 @@ mod tests {
             api_keys: vec![
                 ApiKey {
                     id: "old-id".into(),
-                    key: "sk-old".into(),
+                    key_hash: "hash-old".into(),
+                    key_hint: String::new(),
                     label: "old".into(),
                     node_id: "n1".into(),
                     origin_node_id: "n1".into(),
@@ -1521,7 +1628,8 @@ mod tests {
                 },
                 ApiKey {
                     id: "active-id".into(),
-                    key: "sk-active".into(),
+                    key_hash: "hash-active".into(),
+                    key_hint: String::new(),
                     label: "active".into(),
                     node_id: "n1".into(),
                     origin_node_id: "n1".into(),
@@ -1542,8 +1650,9 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
-        assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
+        assert_eq!(cfg.active_api_key().unwrap().id, "active-id");
     }
 
     #[test]

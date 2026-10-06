@@ -43,6 +43,11 @@ pub struct NodeInfo {
     pub config: Option<NodeConfig>,
     pub status: RuntimeStatus,
     pub system: SystemLoad,
+    /// What this machine's running plugins serve to the cluster
+    /// (`host.services`), for the dashboard to draw next to the machine.
+    pub plugin_services: Vec<crate::plugin_services::PluginService>,
+    /// Disk used by this machine's KV snapshot directory (`kv-slots`).
+    pub kv_cache: KvCacheDisk,
     pub peer_count: usize,
     pub load: u32,
     pub active_model: String,
@@ -147,6 +152,11 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .is_some_and(|hash| !hash.is_empty()),
         )
     };
+    let kv_cache = {
+        let dir = state.auth.read().await.slot_save_dir();
+        kv_cache_disk(dir.as_deref())
+    };
+    let plugin_services = crate::plugin_services::node_services(&state.plugins).await;
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
@@ -216,6 +226,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         network_chat_authority,
         thermal,
         system,
+        plugin_services,
+        kv_cache,
     })
 }
 
@@ -235,7 +247,15 @@ pub(super) async fn cluster_logs(
         .list(query.deploy_id.as_deref(), query.limit)
         .await
     {
-        Ok(logs) => Json(logs).into_response(),
+        Ok(Some(logs)) => Json(logs).into_response(),
+        Ok(None) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "logs_plugin_required",
+                "error": "os logs de processo do cluster ficam no plugin de logs, que não está ativo neste nó.",
+            })),
+        )
+            .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("não deu para ler os logs: {error}") })),
@@ -244,7 +264,7 @@ pub(super) async fn cluster_logs(
     }
 }
 
-async fn local_is_primary(state: &GatewayState) -> bool {
+pub(super) async fn local_is_primary(state: &GatewayState) -> bool {
     let profile = state.auth.read().await.profile;
     state
         .admin_trust
@@ -498,9 +518,51 @@ pub(super) fn pending_metadata(catalog: &Catalog) -> Catalog {
     pending
 }
 
+/// Files the enrichment read and discarded leave the current inventory too.
+///
+/// The fast scan only knows sidecars by name (`mmproj*`, `mtp-*`); one known
+/// only by its header (an MTP draft named `Ckpt_Q38`, or with no extension at
+/// all) enters as a pending model, and `catalog::enrich` drops it once the
+/// header shows what it is. Left in the inventory it stayed pending forever,
+/// and every finished enrichment started the next one at once - hundreds of
+/// passes per second. Returns the paths removed.
+pub(super) fn drop_discarded(
+    current: &mut Catalog,
+    input: &Catalog,
+    enriched: &Catalog,
+) -> Vec<String> {
+    let kept: std::collections::HashSet<&str> = enriched
+        .models
+        .iter()
+        .map(|model| model.path.as_str())
+        .collect();
+    let discarded: std::collections::HashSet<&str> = input
+        .models
+        .iter()
+        .map(|model| model.path.as_str())
+        .filter(|path| !kept.contains(path))
+        .collect();
+    if discarded.is_empty() {
+        return Vec::new();
+    }
+    let mut removed = Vec::new();
+    current.models.retain(|model| {
+        let drop = !catalog::metadata_is_current(model) && discarded.contains(model.path.as_str());
+        if drop {
+            removed.push(model.path.clone());
+        }
+        !drop
+    });
+    if !removed.is_empty() {
+        catalog::rebuild_shard_sets(current);
+    }
+    removed
+}
+
 /// Copy completed metadata into a newer inventory by filesystem identity.
 /// Inventory refreshes necessarily create a new `Arc`, so pointer equality is
-/// not a valid publication condition.
+/// not a valid publication condition. `sidecars` is left alone: the newer
+/// inventory read them itself (`scan_catalog`).
 pub(super) fn reconcile_enriched_catalog(current: &mut Catalog, enriched: &Catalog) -> usize {
     let mut applied = 0;
     for source in &enriched.models {
@@ -525,8 +587,17 @@ pub(super) fn reconcile_enriched_catalog(current: &mut Catalog, enriched: &Catal
 /// Inventory the directories without opening GGUF headers.
 pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
     let (dirs, shards) = (roots.0.clone(), roots.1.clone());
-    tokio::task::spawn_blocking(move || catalog::discover_fast(&dirs, &shards))
-        .await
+    tokio::task::spawn_blocking(move || {
+        let mut catalog = catalog::discover_fast(&dirs, &shards);
+        // Sidecars go with the inventory, not with the enrichment: the
+        // enrichment only runs while some model still lacks its headers, so a
+        // list filled only there vanished on the next refresh. Headers are
+        // cached by path, size and mtime, so after the first read this costs a
+        // `stat` per file.
+        catalog.sidecars = catalog::discover_sidecars(&catalog.sidecar_roots);
+        catalog
+    })
+    .await
         .unwrap_or_else(|e| {
             warn!("varredura de modelos falhou: {e}");
             Catalog {
@@ -534,6 +605,8 @@ pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
                 shard_sets: Vec::new(),
                 scanned: Vec::new(),
                 metadata_complete: false,
+                sidecars: Vec::new(),
+                sidecar_roots: Vec::new(),
             }
         })
 }
@@ -592,6 +665,17 @@ pub(super) fn spawn_enrichment(
 
             let applied =
                 reconcile_enriched_catalog(Arc::make_mut(&mut current.catalog), &enriched);
+            let discarded =
+                drop_discarded(Arc::make_mut(&mut current.catalog), &partial, &enriched);
+            if !discarded.is_empty() {
+                let catalog = Arc::make_mut(&mut current.catalog);
+                catalog.metadata_complete = catalog.models.iter().all(catalog::metadata_is_current);
+                info!(
+                    "catálogo: {} arquivo(s) não são modelos implantáveis (projetor ou rascunho MTP): {}",
+                    discarded.len(),
+                    discarded.join(", ")
+                );
+            }
             current.enriching = None;
             let pending = pending_metadata(&current.catalog);
             let failed = enriched
@@ -745,6 +829,8 @@ pub(super) async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
                     shard_sets: Vec::new(),
                     scanned: Vec::new(),
                     metadata_complete: false,
+                    sidecars: Vec::new(),
+                    sidecar_roots: Vec::new(),
                 });
                 let mut cached = CachedCatalog {
                     at: Instant::now(),
@@ -1377,6 +1463,24 @@ pub(super) async fn save_cluster_logs(
         )
             .into_response();
     }
+    // The admin only tells the network to collect; keeping the lines is the
+    // logs plugin's, so collection is not turned on where nobody keeps them.
+    if req.logs_enabled
+        && !state
+            .plugins
+            .status(crate::plugins::LOGS_PLUGIN_CODE)
+            .await
+            .is_some_and(|status| status.active)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "logs_plugin_required",
+                "error": "ative o plugin de logs neste nó para ligar os logs de processo do cluster.",
+            })),
+        )
+            .into_response();
+    }
 
     {
         let mut cfg = state.auth.write().await;
@@ -1418,7 +1522,7 @@ async fn forward_network_chat_to_primary(
     let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
         peer.node_id == primary.node_id
             && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
-            && peer.authority_pubkey == primary.pubkey
+            && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     }) else {
         return bad_request("o nó principal não está disponível para decidir o Chat da rede");
@@ -1492,6 +1596,7 @@ pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoRespon
         "node_id": state.network.node_id,
         "models": catalog.models,
         "shard_sets": catalog.shard_sets,
+        "sidecars": catalog.sidecars,
         "scanned": catalog.scanned,
         "metadata_complete": catalog.metadata_complete,
     }))
@@ -1628,24 +1733,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn secondary_admin_reads_its_local_cluster_log_replica() {
+    async fn the_process_log_console_needs_the_logs_plugin() {
         let state = crate::gateway::testkit::secondary_admin_state("secondary").await;
-        state
-            .database
-            .append_cluster_logs(
-                &[crate::cluster_logs::LogEntry {
-                    node_id: "worker".into(),
-                    node_name: "worker-1".into(),
-                    deploy_id: "deploy-1".into(),
-                    origin_at: "2026-09-11T12:00:00Z".into(),
-                    level: "INFO".into(),
-                    target: "worker::test".into(),
-                    message: "replica local".into(),
-                }],
-                0,
-            )
-            .expect("gravar réplica local");
-
         let response = cluster_logs(
             ConnectionAuth,
             State(state),
@@ -1655,12 +1744,12 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
-            .expect("corpo da réplica");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON da réplica");
-        assert_eq!(body["entries"][0]["message"], "replica local");
+            .expect("corpo da recusa");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON da recusa");
+        assert_eq!(body["code"], "logs_plugin_required");
     }
 }
 
@@ -2347,7 +2436,7 @@ pub(super) async fn chat_telemetry(
     let mut peer_perf = HashMap::new();
     let pipeline_routes = if request.execution_id.is_none() {
         let peers = state.all_peers().await;
-        let active_selector = state.active_model().await;
+        let active_selector = state.displayed_model().await;
         let (model, deploy_id) = crate::deployment::split_selector(&active_selector);
         let total_layers = crate::pipeline::model_pipeline_candidates(&peers, model, deploy_id)
             .iter()

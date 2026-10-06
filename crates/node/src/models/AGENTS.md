@@ -9,6 +9,20 @@ Modelos, leitura de GGUF, planejamento e arquivos de fatias. O módulo é usado
 por `main.rs` e pelos handlers de catálogo, fatiamento, implantação e
 transferência.
 
+- `catalog.rs` sidecars - `Catalog.sidecars` lists vision projectors and
+  external MTP drafts found under the shard folder and the GGUF libraries
+  (`discover_sidecars`, filled by `enrich`); `sidecar_kind` recognizes them
+  from the header (clip, or `nextn` with few tensors and no split), so they are
+  dropped from `models`. A file with the splitter's `pom.start_layer` /
+  `pom.end_layer` is a slice and never a draft: a short tail range of a model
+  with `nextn` has a draft's tensor count. `find_gguf` takes a file by its `.gguf` extension or,
+  when the name has no extension (`is_extensionless_name`, as Hugging Face
+  publishes some drafts), by its `GGUF` signature. The walk skips `.mtp-drafts/`, the engine's cache of
+  completed shared drafts (`llama_engine::mtp_draft`). `Sidecar::compatible_with` is the projector/draft to
+  model rule, `SidecarLink`/`SidecarMode` the link kept on the principal,
+  `SidecarFile` the name + size identity and `find_local_sidecar` the on-disk
+  lookup used at apply time. `DiscoveredModel.embedding_length` carries the
+  width a sidecar must match.
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
   `discover_fast` enumera arquivos e lê apenas `stat`/metadados do sistema,
   sem abrir o conteúdo GGUF; `enrich` lê os cabeçalhos depois e marca
@@ -199,10 +213,7 @@ mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 `cache_type_v`) e a margem de segurança do fit também são serializados no
 estado efetivo. Os tipos do cache continuam sendo repostos a partir do
 `pom.json` pelo `NodeRuntime` antes de carregar o modelo; a margem vem dos
-parâmetros da implantação. Os parâmetros do detector de ciclos
-(`cycle_detection_*`) também fazem parte do `NodeConfig` achatado, para que o
-gateway preserve a mesma política depois de um restart e a fatia anotada não
-volte a gerar com uma configuração diferente. `save_at` é crate-private para o
+parâmetros da implantação. `save_at` é crate-private para o
 watcher de `/health` gravar no caminho de configuração que capturou ao iniciar,
 sem seguir uma mudança posterior de `POM_CONFIG` no processo.
 

@@ -28,7 +28,12 @@ use tracing::{debug, info, warn};
 /// Validade de uma análise. Depois disso a aresta é medida de novo, mesmo
 /// sem falha: um caminho melhor pode ter surgido (hole punch novo, IPv6 que
 /// voltou).
-pub const PLAN_TTL: Duration = Duration::from_secs(300);
+pub const PLAN_TTL: Duration = Duration::from_secs(180);
+
+/// How long after the last frame an edge stays pinned. It covers the gap
+/// between legs of a generation and between turns of a conversation, without
+/// holding an idle peer's route forever.
+pub const PIN_GRACE: Duration = Duration::from_secs(60);
 
 /// Espera antes de medir de novo uma aresta cuja última análise não achou rota
 /// nenhuma (peer ainda sem modelo, porta ainda fechada). Não é espera de
@@ -170,6 +175,10 @@ struct EdgePlan {
     strikes: u32,
     measured_at: Instant,
     fingerprint: u64,
+    /// The last analysis found no route and this one was kept. The edge stays
+    /// due for analysis (`claim_measurement`), which repeats every
+    /// `EMPTY_RETRY` until something answers.
+    unanswered: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -179,6 +188,33 @@ struct Attempt {
 }
 
 type EdgeKey = (String, Plane);
+
+/// Use of an edge by frames: how many are in flight and when the last one
+/// finished. This is what pins the route while inference runs (see `pinned`).
+#[derive(Debug, Default, Clone, Copy)]
+struct EdgeUse {
+    in_flight: usize,
+    last: Option<Instant>,
+}
+
+/// Guard for a frame (or delivery) in flight over an edge. While it exists, and
+/// for `PIN_GRACE` afterwards, the planner neither re-measures nor swaps the
+/// edge's route; only the frame's own failure swaps it (`record_failure`).
+pub struct RouteUse<'a> {
+    book: &'a RouteBook,
+    key: EdgeKey,
+}
+
+impl Drop for RouteUse<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut usage) = self.book.usage.write() {
+            if let Some(entry) = usage.get_mut(&self.key) {
+                entry.in_flight = entry.in_flight.saturating_sub(1);
+                entry.last = Some(Instant::now());
+            }
+        }
+    }
+}
 
 /// As rotas fixadas deste processo.
 #[derive(Default)]
@@ -191,6 +227,8 @@ pub struct RouteBook {
     /// por um servidor intermediário a cada frame. Refeito a cada volta do
     /// planejador, porque o hole punch pode fechar depois da medição.
     relayed: RwLock<std::collections::BTreeSet<String>>,
+    /// Frames in flight per edge; see `RouteUse`.
+    usage: RwLock<HashMap<EdgeKey, EdgeUse>>,
 }
 
 /// O livro de rotas do processo. Global como o `tunnel_sender`: todo cliente
@@ -206,14 +244,49 @@ impl RouteBook {
         (node_id.to_string(), plane)
     }
 
-    /// A rota fixada desta aresta, se houver análise válida.
+    /// This edge's pinned route, if there is a valid analysis. An expired
+    /// analysis still holds while the edge is in use (`pinned`): a long
+    /// generation does not drop to the full ladder halfway just because it
+    /// outlived `PLAN_TTL`.
     pub fn active(&self, node_id: &str, plane: Plane) -> Option<PlannedRoute> {
+        let key = Self::key(node_id, plane);
         let edges = self.edges.read().ok()?;
-        let edge = edges.get(&Self::key(node_id, plane))?;
-        if edge.measured_at.elapsed() >= PLAN_TTL {
+        let edge = edges.get(&key)?;
+        if edge.measured_at.elapsed() >= PLAN_TTL && !self.pinned(&key) {
             return None;
         }
         edge.routes.get(edge.active).cloned()
+    }
+
+    /// Marks a frame in flight over the edge. The route stays pinned while the
+    /// guard lives and for `PIN_GRACE` after the last frame.
+    pub fn begin_use(&self, node_id: &str, plane: Plane) -> RouteUse<'_> {
+        let key = Self::key(node_id, plane);
+        if let Ok(mut usage) = self.usage.write() {
+            usage.entry(key.clone()).or_default().in_flight += 1;
+        }
+        RouteUse { book: self, key }
+    }
+
+    /// The edge has a frame in flight, or had one less than `PIN_GRACE` ago.
+    fn pinned(&self, key: &EdgeKey) -> bool {
+        self.usage.read().ok().is_some_and(|usage| {
+            usage.get(key).is_some_and(|entry| {
+                entry.in_flight > 0 || entry.last.is_some_and(|last| last.elapsed() < PIN_GRACE)
+            })
+        })
+    }
+
+    /// There is a pinned route to preserve: the edge is in use and has an
+    /// installed analysis. Without an analysis there is nothing to preserve,
+    /// and measurement proceeds as usual.
+    fn holds_route(&self, key: &EdgeKey) -> bool {
+        self.pinned(key)
+            && self
+                .edges
+                .read()
+                .ok()
+                .is_some_and(|edges| edges.contains_key(key))
     }
 
     /// Todas as rotas medidas da aresta, na ordem de preferência.
@@ -229,8 +302,10 @@ impl RouteBook {
             .unwrap_or_default()
     }
 
-    /// Grava o resultado de uma análise. Lista vazia apaga a aresta: a escada
-    /// completa volta a valer até a próxima análise.
+    /// Records an analysis result. An empty list keeps the existing route
+    /// (renewing its deadline, so `active` still returns it), which only a
+    /// real frame's failure erases, and leaves the edge due for analysis, so
+    /// it repeats after `EMPTY_RETRY` instead of `PLAN_TTL`.
     pub fn install(
         &self,
         node_id: &str,
@@ -239,20 +314,59 @@ impl RouteBook {
         fingerprint: u64,
     ) {
         let routes = rank(routes);
+        let key = Self::key(node_id, plane);
+        // An analysis that finished while the edge was in use does not swap the
+        // route mid-inference: the result is dropped and the edge is measured
+        // again once idle (the fingerprint or the deadline will still be
+        // stale).
+        if self.holds_route(&key) {
+            debug!(
+                "route {} to {}: analysis dropped, edge in use",
+                plane.as_str(),
+                short(node_id)
+            );
+            return;
+        }
         let Ok(mut edges) = self.edges.write() else {
             return;
         };
-        let key = Self::key(node_id, plane);
         let previous = edges
             .get(&key)
             .and_then(|edge| edge.routes.get(edge.active).cloned());
         let label = short(node_id);
         if routes.is_empty() {
-            if edges.remove(&key).is_some() {
-                warn!(
-                    "rota {} para {label}: nenhuma rota respondeu à análise; usando a escada completa",
-                    plane.as_str()
-                );
+            // An empty analysis does not erase a route that worked: the probe
+            // has a short deadline and a busy peer (engine lock held by
+            // another session's prefill chunk) did not answer in time - the
+            // tunnel route vanished and the session lifecycle went to
+            // unreachable direct addresses. The route stays until a real frame
+            // fails on it (`record_failure` exhausts and erases it).
+            //
+            // The renewed deadline keeps the route in use, but the edge stays
+            // due for analysis (`unanswered`): an analysis nobody answered
+            // says nothing about the edge, and treating it as fresh held a
+            // route measured while the peer was reloading for a whole
+            // `PLAN_TTL` after the peer came back.
+            if let Some(edge) = edges.get_mut(&key) {
+                edge.measured_at = Instant::now();
+                edge.fingerprint = fingerprint;
+                let kept = edge
+                    .routes
+                    .get(edge.active)
+                    .map(PlannedRoute::describe)
+                    .unwrap_or_default();
+                if edge.unanswered {
+                    debug!(
+                        "route {} to {label}: still no answer to the analysis; keeping {kept}",
+                        plane.as_str()
+                    );
+                } else {
+                    warn!(
+                        "route {} to {label}: no route answered the analysis; keeping {kept}",
+                        plane.as_str()
+                    );
+                }
+                edge.unanswered = true;
             }
             return;
         }
@@ -284,6 +398,7 @@ impl RouteBook {
                 strikes: 0,
                 measured_at: Instant::now(),
                 fingerprint,
+                unanswered: false,
             },
         );
     }
@@ -360,10 +475,17 @@ impl RouteBook {
     /// análise que não achou rota só se repete depois de `EMPTY_RETRY`.
     pub fn claim_measurement(&self, node_id: &str, plane: Plane, fingerprint: u64) -> bool {
         let key = Self::key(node_id, plane);
+        // An edge in use is not probed: the probe would compete for the link
+        // with the frames and the result would be dropped in `install` anyway.
+        if self.holds_route(&key) {
+            return false;
+        }
         let now = Instant::now();
         let fresh = self.edges.read().ok().is_some_and(|edges| {
             edges.get(&key).is_some_and(|edge| {
-                edge.fingerprint == fingerprint && now.duration_since(edge.measured_at) < PLAN_TTL
+                edge.fingerprint == fingerprint
+                    && !edge.unanswered
+                    && now.duration_since(edge.measured_at) < PLAN_TTL
             })
         });
         if fresh {
@@ -410,6 +532,9 @@ impl RouteBook {
         }
         if let Ok(mut attempts) = self.attempts.write() {
             attempts.retain(|key, _| keep(key));
+        }
+        if let Ok(mut usage) = self.usage.write() {
+            usage.retain(|key, entry| keep(key) || entry.in_flight > 0);
         }
     }
 
@@ -727,6 +852,16 @@ async fn probe_quic(
     best
 }
 
+/// Whether a tunnel reply proves a path to the peer's server. Any status the
+/// server itself gave does, as in the direct probes. The tunnel's own "nothing
+/// is listening" does not: the direct probes fail against that same closed
+/// port, so counting it made the tunnel the only route of every peer measured
+/// while its server was down - a deployment being loaded - and that route was
+/// then kept for `PLAN_TTL`.
+fn tunnel_reply_proves_route(status: u16) -> bool {
+    status != crate::infer_tunnel::NOTHING_LISTENING_STATUS
+}
+
 async fn probe_tunnel(target: &EdgeTarget) -> Option<PlannedRoute> {
     let tunnel = target.tunnel.as_ref()?;
     let sender = crate::infer_tunnel::tunnel_sender()?;
@@ -750,7 +885,7 @@ async fn probe_tunnel(target: &EdgeTarget) -> Option<PlannedRoute> {
             .await
             .ok()?;
         match tokio::time::timeout(TUNNEL_PROBE_TIMEOUT, response).await {
-            Ok(Ok(Ok(_))) => {
+            Ok(Ok(Ok(response))) if tunnel_reply_proves_route(response.status) => {
                 let rtt = started.elapsed();
                 best = Some(best.map_or(rtt, |b| b.min(rtt)));
             }
@@ -863,6 +998,167 @@ mod tests {
             route(RouteKind::Tunnel, "", 10),
         ]);
         assert_eq!(ranked[0].kind, RouteKind::Tunnel);
+    }
+
+    /// Moves the end of the edge's last use into the past, as if the grace
+    /// period had already elapsed.
+    fn age_use(book: &RouteBook, node_id: &str, plane: Plane, by: Duration) {
+        let mut usage = book.usage.write().unwrap();
+        let entry = usage.get_mut(&RouteBook::key(node_id, plane)).unwrap();
+        entry.last = Some(Instant::now() - by);
+    }
+
+    fn age_analysis(book: &RouteBook, node_id: &str, plane: Plane, by: Duration) {
+        let mut edges = book.edges.write().unwrap();
+        let edge = edges.get_mut(&RouteBook::key(node_id, plane)).unwrap();
+        edge.measured_at = Instant::now() - by;
+    }
+
+    /// With a frame in flight, the planner neither probes nor swaps the route;
+    /// it only does so again after the last frame's grace period.
+    #[test]
+    fn uma_aresta_em_uso_nao_e_remedida_nem_trocada() {
+        let book = RouteBook::default();
+        book.install(
+            "peer",
+            Plane::Inference,
+            vec![route(RouteKind::Http, "http://a", 5)],
+            1,
+        );
+
+        let frame = book.begin_use("peer", Plane::Inference);
+        assert!(
+            !book.claim_measurement("peer", Plane::Inference, 2),
+            "no probe while in use"
+        );
+        book.install(
+            "peer",
+            Plane::Inference,
+            vec![route(RouteKind::Tunnel, "", 1)],
+            2,
+        );
+        assert_eq!(
+            book.active("peer", Plane::Inference).unwrap().kind,
+            RouteKind::Http
+        );
+        // An empty analysis does not erase the route in use either.
+        book.install("peer", Plane::Inference, Vec::new(), 2);
+        assert!(book.active("peer", Plane::Inference).is_some());
+        drop(frame);
+
+        // Right after the last frame the route stays pinned.
+        assert!(!book.claim_measurement("peer", Plane::Inference, 2));
+        age_use(&book, "peer", Plane::Inference, PIN_GRACE);
+        assert!(book.claim_measurement("peer", Plane::Inference, 2));
+        book.install(
+            "peer",
+            Plane::Inference,
+            vec![route(RouteKind::Tunnel, "", 1)],
+            2,
+        );
+        assert_eq!(
+            book.active("peer", Plane::Inference).unwrap().kind,
+            RouteKind::Tunnel
+        );
+    }
+
+    /// A generation longer than `PLAN_TTL` does not drop to the full ladder
+    /// halfway: the expired analysis still holds while the edge is in use.
+    #[test]
+    fn a_analise_vencida_vale_enquanto_a_aresta_esta_em_uso() {
+        let book = RouteBook::default();
+        book.install(
+            "peer",
+            Plane::Gateway,
+            vec![route(RouteKind::Http, "http://a", 5)],
+            1,
+        );
+        age_analysis(&book, "peer", Plane::Gateway, PLAN_TTL);
+        assert!(
+            book.active("peer", Plane::Gateway).is_none(),
+            "idle, expired"
+        );
+
+        let delivery = book.begin_use("peer", Plane::Gateway);
+        assert_eq!(
+            book.active("peer", Plane::Gateway).unwrap().base_url,
+            "http://a"
+        );
+        drop(delivery);
+        age_use(&book, "peer", Plane::Gateway, PIN_GRACE);
+        assert!(book.active("peer", Plane::Gateway).is_none());
+    }
+
+    /// The frame's own failure still swaps the route on a pinned edge: the pin
+    /// only holds the planner back.
+    #[test]
+    fn a_falha_do_frame_troca_de_rota_mesmo_fixada() {
+        let book = RouteBook::default();
+        book.install(
+            "peer",
+            Plane::Inference,
+            vec![
+                route(RouteKind::Http, "http://a", 5),
+                route(RouteKind::Tunnel, "", 30),
+            ],
+            1,
+        );
+        let _frame = book.begin_use("peer", Plane::Inference);
+        assert_eq!(
+            book.record_failure("peer", Plane::Inference),
+            FailureOutcome::Retry
+        );
+        assert!(matches!(
+            book.record_failure("peer", Plane::Inference),
+            FailureOutcome::FailedOver(_)
+        ));
+        assert_eq!(
+            book.active("peer", Plane::Inference).unwrap().kind,
+            RouteKind::Tunnel
+        );
+    }
+
+    #[test]
+    fn the_tunnel_answering_for_a_closed_port_is_not_a_route() {
+        assert!(!tunnel_reply_proves_route(crate::infer_tunnel::NOTHING_LISTENING_STATUS));
+        // The server answered, even while loading: the path exists.
+        assert!(tunnel_reply_proves_route(200));
+        assert!(tunnel_reply_proves_route(503));
+    }
+
+    /// An empty analysis (a probe that did not answer in time on a busy peer)
+    /// does not erase a route that worked; only a real frame's failure does.
+    #[test]
+    fn an_empty_analysis_keeps_the_working_route() {
+        let book = RouteBook::default();
+        book.install(
+            "peer",
+            Plane::Inference,
+            vec![route(RouteKind::Tunnel, "", 12)],
+            1,
+        );
+        book.install("peer", Plane::Inference, Vec::new(), 2);
+        assert_eq!(
+            book.active("peer", Plane::Inference).unwrap().kind,
+            RouteKind::Tunnel
+        );
+        assert!(
+            book.claim_measurement("peer", Plane::Inference, 2),
+            "an unanswered analysis leaves the edge due, not held for PLAN_TTL"
+        );
+        assert!(
+            !book.claim_measurement("peer", Plane::Inference, 2),
+            "and repeats only after EMPTY_RETRY"
+        );
+        assert_eq!(
+            book.record_failure("peer", Plane::Inference),
+            FailureOutcome::Retry
+        );
+        assert_eq!(
+            book.record_failure("peer", Plane::Inference),
+            FailureOutcome::Exhausted
+        );
+        assert!(book.active("peer", Plane::Inference).is_none());
     }
 
     #[test]

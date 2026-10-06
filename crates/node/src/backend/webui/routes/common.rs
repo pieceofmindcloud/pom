@@ -17,12 +17,28 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(crate::plugin_ui::plugin_asset),
         )
         .route(
+            "/api/ui/plugins/:code/rpc/:op",
+            post(crate::plugin_ui::plugin_rpc),
+        )
+        .route(
+            "/api/internal/plugins/services",
+            get(crate::rag::list_services),
+        )
+        .route(
+            "/api/internal/plugins/:code/peer/:op",
+            post(crate::plugin_services::plugin_peer_call),
+        )
+        .route(
             "/api/ui/pom-update/status",
             get(crate::pom_core_update::pom_update_status),
         )
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/chat/capabilities", get(chat_capabilities))
         .route("/api/ui/cluster/models", get(cluster_models))
+        .route(
+            "/api/ui/model-sidecar-links",
+            get(super::super::sidecars::sidecar_links).post(super::super::sidecars::save_sidecar_link),
+        )
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/network/info", get(network_info))

@@ -11,13 +11,19 @@ pub const DEFAULT_MAX_TOKENS: u32 = 512;
 ///
 /// Um peer vivo na LAN responde `/health` em poucos milissegundos - as próprias
 /// chamadas de decode da inferência medem 12-18 ms de ida e volta. Quem não
-/// respondeu em 300 ms não é "lento": ou engoliu o SYN, ou está desligado, e nos
+/// respondeu em 100 ms não é "lento": ou engoliu o SYN, ou está desligado, e nos
 /// dois casos ele não vai servir esta requisição. Antes deste teto quem mandava
 /// era o `peer_client::CONNECT_TIMEOUT` de 2 s, e como `join_all` só termina com
 /// o mais lento, **um** anunciante inalcançável custava 2,005 s a toda
 /// inferência do cluster - medido em produção, constante entre motores, tamanhos
 /// de prompt e frio/quente.
-pub(crate) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+///
+/// Eram 300 ms. O teto vale por endereço, e os endereços de um peer são
+/// tentados em sequência: dois endereços mortos de um peer que nem servia o
+/// modelo custavam 609 ms de TTFT a uma requisição cujos hops respondiam em
+/// 6 ms (2026-10-05). Um peer vivo mais distante que este teto ainda entra
+/// pelo túnel (`TUNNEL_HEALTH_TIMEOUT`).
+pub(crate) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Quanto tempo um peer que falhou a sonda fica fora sem ser sondado de novo.
 ///
@@ -101,10 +107,17 @@ impl AdmissionHealth {
 /// request this guard exists to stop.
 pub(super) const CHARS_PER_TOKEN: usize = 3;
 
-/// Prazo do `/v1/session/rewind`. Curto de propósito: o evento final do stream
-/// espera por ele (ver `generate_stream_inner`), e do outro lado é só apagar
-/// uma sequência de KV.
-pub(super) const REWIND_TIMEOUT: Duration = Duration::from_secs(3);
+/// Deadline of the session lifecycle on the peer (`/v1/session/{rewind,release,
+/// rollback}`). On the other side it only erases or checks a KV sequence, but
+/// the handler needs the engine lock, and on a peer busy with another session's
+/// prefill chunk that waits for the whole chunk (~10 s per 512 tokens on slow
+/// hardware). The old 3 s deadline expired during that wait: the rewind failed
+/// and the conversation lost its retained prefix, and the release left the
+/// session stuck in the KV. A dead peer is caught earlier by the connection's
+/// lifetime. The stream's final event waits for the rewind (see
+/// `generate_stream_inner`), so on a busy peer it arrives later instead of
+/// arriving without the prefix.
+pub(super) const SESSION_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -123,90 +136,225 @@ pub(crate) struct ClusterSnapshotCache {
     pub(super) next_version: u64,
 }
 
-/// Handle shared by the gateway and the network-settings editor. It keeps the
-/// existing pkarr record fields intact and changes only the geo metadata when
-/// an administrator edits the network description.
+/// Live publisher of this node's pkarr record.
+///
+/// The record is the "key -> where to dial now" pointer: public multiaddresses
+/// the swarm confirmed or listens on and the keys of the relays where this node
+/// holds a reservation. It is rebuilt from the live `Network` state on every
+/// round and only republished when it changes, or every `PKARR_REFRESH` so it
+/// does not vanish from the DHT. It is always published, with or without a
+/// deployment: an idle admin is exactly who a new node needs to find by the
+/// trust document's key.
 pub(crate) struct PkarrPublishHandle {
     node: Arc<crate::pkarr_node::PkarrNode>,
-    addr: String,
     gateway_port: Option<u16>,
     inference_port: Option<u16>,
-    model_name: String,
-    assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
     serve_relay: bool,
-    /// Fonte do endereço publicado, quando o AutoNAT já confirmou um. O `addr`
-    /// derivado no arranque continua sendo o fallback.
-    network: Option<Arc<crate::network::Network>>,
+    network: Arc<crate::network::Network>,
+    geo_label: std::sync::Mutex<String>,
+    last: tokio::sync::Mutex<Option<(crate::pkarr_node::PkarrRecord, Instant)>>,
 }
+
+/// Republish even without changes: the Mainline DHT forgets old records.
+pub(crate) const PKARR_REFRESH: Duration = Duration::from_secs(30 * 60);
+/// How often the publisher checks whether the record changed.
+pub(crate) const PKARR_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 impl PkarrPublishHandle {
     pub(crate) fn new(
         node: Arc<crate::pkarr_node::PkarrNode>,
-        addr: String,
         gateway_port: Option<u16>,
         inference_port: Option<u16>,
-        model_name: String,
-        assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
         serve_relay: bool,
-        network: Option<Arc<crate::network::Network>>,
+        network: Arc<crate::network::Network>,
+        geo_label: String,
     ) -> Self {
         Self {
             node,
-            addr,
             gateway_port,
             inference_port,
-            model_name,
-            assignment,
             serve_relay,
             network,
+            geo_label: std::sync::Mutex::new(geo_label),
+            last: tokio::sync::Mutex::new(None),
         }
     }
 
-    pub(crate) async fn publish_geo_label(&self, geo_label: &str) -> anyhow::Result<()> {
-        let (start_layer, end_layer, total_layers) = self
-            .assignment
-            .read()
-            .await
-            .as_ref()
-            .map(|assignment| {
-                (
-                    assignment.start_layer,
-                    assignment.end_layer,
-                    assignment.total_layers,
-                )
-            })
-            .unwrap_or((0, 0, 0));
-        // O endereço confirmado pelo AutoNAT vence o derivado no arranque: é o
-        // que um nó que nunca viu este aqui precisa para discar a frio.
-        let addr = self
-            .network
-            .as_ref()
-            .and_then(|network| network.public_libp2p_addr())
-            .unwrap_or_else(|| self.addr.clone());
-        self.node
-            .publish(
-                &addr,
-                self.gateway_port,
-                self.inference_port,
-                &self.model_name,
-                start_layer,
-                end_layer,
-                total_layers,
-                self.serve_relay,
-                (!geo_label.trim().is_empty()).then_some(geo_label),
-            )
-            .await
+    pub(crate) fn node(&self) -> &Arc<crate::pkarr_node::PkarrNode> {
+        &self.node
     }
 
-    /// Resolve a public directory candidate with this node's Mainline/relay
-    /// client. The public key is announced as hex because the P2P announce
-    /// already carries that identity; no new wire field is needed.
+    /// The record this node should have published right now.
+    pub(crate) fn desired_record(&self) -> crate::pkarr_node::PkarrRecord {
+        let (multiaddrs, relays) = record_addrs(&self.network.libp2p_addrs());
+        let geo_label = self.geo_label.lock().expect("geo label lock").clone();
+        crate::pkarr_node::PkarrRecord {
+            multiaddrs,
+            relays,
+            gateway_port: self.gateway_port,
+            inference_port: self.inference_port,
+            is_relay: self.serve_relay,
+            geo_label: (!geo_label.trim().is_empty()).then_some(geo_label),
+        }
+    }
+
+    /// Changes the geo label and republishes immediately.
+    pub(crate) async fn set_geo_label(&self, geo_label: &str) -> anyhow::Result<()> {
+        *self.geo_label.lock().expect("geo label lock") = geo_label.to_string();
+        self.publish_if_changed().await.map(|_| ())
+    }
+
+    /// Publishes when the record changed or expired. Returns whether it
+    /// published.
+    pub(crate) async fn publish_if_changed(&self) -> anyhow::Result<bool> {
+        let desired = self.desired_record();
+        let mut last = self.last.lock().await;
+        if last
+            .as_ref()
+            .is_some_and(|(record, at)| *record == desired && at.elapsed() < PKARR_REFRESH)
+        {
+            return Ok(false);
+        }
+        self.node.publish(&desired).await?;
+        *last = Some((desired, Instant::now()));
+        Ok(true)
+    }
+
+    /// Republish loop, for the whole life of the process.
+    ///
+    /// With no reachable DHT (a network without internet access), every attempt
+    /// fails: the wait between attempts doubles up to `PKARR_REFRESH` and only
+    /// the 1st, 2nd, 4th, 8th... consecutive failure becomes a `warn` (see
+    /// `PublishBackoff`). To turn it off for good, use `--no-pkarr`.
+    pub(crate) fn spawn_republisher(self: Arc<Self>) {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(PKARR_CHECK_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut backoff = PublishBackoff::default();
+            loop {
+                ticker.tick().await;
+                if !backoff.ready(Instant::now()) {
+                    continue;
+                }
+                match self.publish_if_changed().await {
+                    Ok(_) => {
+                        if let Some(failures) = backoff.succeeded() {
+                            tracing::info!(
+                                "pkarr: publishing recovered after {failures} consecutive failure(s)"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let (failures, wait, loud) = backoff.failed(Instant::now());
+                        if loud {
+                            tracing::warn!(
+                                "pkarr: publish failed (consecutive failure #{failures}; next in {} s): {error:#}",
+                                wait.as_secs()
+                            );
+                        } else {
+                            tracing::debug!(
+                                "pkarr: publish failed (consecutive failure #{failures}): {error:#}"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Resolve a public directory candidate from its announced hex key.
     pub(crate) async fn resolve_public_peer(
         &self,
-        authority_pubkey: &str,
+        pubkey: &str,
     ) -> Option<crate::pkarr_node::ResolvedPeer> {
-        self.node.resolve_public_peer(authority_pubkey).await
+        self.node.resolve_public_peer(pubkey).await
     }
+}
+
+/// Wait between failed pkarr publications: doubles from
+/// `PKARR_CHECK_INTERVAL` up to `PKARR_REFRESH`, and only warns at the 1st,
+/// 2nd, 4th, 8th... consecutive failure. Without it, a network without internet
+/// access wrote a warning every 15 s forever.
+#[derive(Debug, Default)]
+pub(crate) struct PublishBackoff {
+    failures: u32,
+    next_try: Option<Instant>,
+}
+
+impl PublishBackoff {
+    pub(crate) fn ready(&self, now: Instant) -> bool {
+        self.next_try.is_none_or(|next| now >= next)
+    }
+
+    /// Records a failure: returns how many in a row, the wait until the next
+    /// attempt and whether this one deserves a `warn`.
+    pub(crate) fn failed(&mut self, now: Instant) -> (u32, Duration, bool) {
+        self.failures = self.failures.saturating_add(1);
+        let wait = PKARR_CHECK_INTERVAL
+            .saturating_mul(1u32 << self.failures.saturating_sub(1).min(16))
+            .min(PKARR_REFRESH);
+        self.next_try = Some(now + wait);
+        (self.failures, wait, self.failures.is_power_of_two())
+    }
+
+    /// Records a success; returns how many consecutive failures preceded it,
+    /// if any.
+    pub(crate) fn succeeded(&mut self) -> Option<u32> {
+        let previous = std::mem::take(&mut self.failures);
+        self.next_try = None;
+        (previous > 0).then_some(previous)
+    }
+}
+
+/// Splits the announced multiaddresses into direct ones and relays: a circuit
+/// (`<relay>/p2p/<relay>/p2p-circuit`) becomes the relay's `pk:` key, because
+/// the relay's address changes and its key does not; the resolver rebuilds the
+/// circuit.
+///
+/// The DHT is public: a private address (LAN, CGNAT, Tailscale, loopback) never
+/// goes to it, even when it is the operator's pin. That path stays in the
+/// `Announce`, which only admitted members read.
+pub(crate) fn record_addrs(addrs: &[String]) -> (Vec<String>, Vec<String>) {
+    use libp2p::multiaddr::Protocol;
+    let mut direct = Vec::new();
+    let mut relays = Vec::new();
+    for addr in addrs {
+        let Ok(multiaddr) = addr.parse::<libp2p::Multiaddr>() else {
+            continue;
+        };
+        let protocols: Vec<_> = multiaddr.iter().collect();
+        if let Some(circuit) = protocols
+            .iter()
+            .position(|protocol| matches!(protocol, Protocol::P2pCircuit))
+        {
+            let relay = protocols[..circuit]
+                .iter()
+                .rev()
+                .find_map(|protocol| match protocol {
+                    Protocol::P2p(peer_id) => crate::pkarr_node::uri_from_peer_id(peer_id),
+                    _ => None,
+                });
+            if let Some(relay) = relay {
+                if !relays.contains(&relay) {
+                    relays.push(relay);
+                }
+            }
+        } else {
+            let private = protocols.iter().any(|protocol| match protocol {
+                Protocol::Ip4(ip) => {
+                    ip.is_unspecified() || crate::addrs::is_private_or_local(&ip.to_string())
+                }
+                Protocol::Ip6(ip) => {
+                    ip.is_unspecified() || crate::addrs::is_private_or_local(&ip.to_string())
+                }
+                _ => false,
+            });
+            if !private && !direct.contains(addr) {
+                direct.push(addr.clone());
+            }
+        }
+    }
+    (direct, relays)
 }
 
 impl ClusterSnapshotCache {
@@ -284,10 +432,6 @@ pub struct GatewayState {
     pub admission_health: Arc<AdmissionHealth>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
-    /// Cycle policy used before a deployment exists. A loaded deployment's
-    /// `NodeConfig` takes precedence, so this is also the CLI fallback for a
-    /// gateway-only process.
-    pub cycle_config: crate::cycle::CycleConfig,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
     /// Gerenciador dos plugins independentes (licença, host de processo por
@@ -473,6 +617,38 @@ impl GatewayState {
             .await
     }
 
+    /// Signed control POST to `peer`'s gateway along the route this node
+    /// already measured to it (`route_plan`, gateway plane): only the pinned
+    /// address, or only the libp2p tunnel when that is what reaches the peer -
+    /// a machine behind NAT, for example. Without a measured route, the
+    /// address that last answered. For a call with a deadline of
+    /// milliseconds, where walking every announced address would spend it on
+    /// the ones that do not answer. The tunnel stays as the fallback.
+    pub(crate) async fn control_post_json_routed<T: serde::Serialize>(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        body: &T,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        use crate::route_plan::{book, Plane, RouteKind};
+        let bases = match book().active(&peer.node_id, Plane::Gateway) {
+            Some(route) if route.kind == RouteKind::Tunnel => Vec::new(),
+            Some(route) => vec![route.base_url.trim_end_matches('/').to_string()],
+            None => self.gateway_bases(peer).into_iter().take(1).collect(),
+        };
+        let bytes = serde_json::to_vec(body)?;
+        self.control_call_over(
+            peer,
+            &bases,
+            reqwest::Method::POST,
+            path,
+            Some(bytes),
+            timeout,
+        )
+        .await
+    }
+
     /// `control_get` só pelo túnel, para quem já tentou os endereços do peer
     /// com critério próprio (ver `send_to_gateway_over`).
     pub(crate) async fn control_get_via_tunnel(
@@ -557,7 +733,18 @@ pub(super) struct AdminAccessStatus {
     /// A senha em vigor é a padrão do primeiro acesso: a interface entra sem
     /// perguntar e pede para trocá-la.
     pub(super) default_password: bool,
+    /// Identifies this run of the process (`boot_id`). The interface warns
+    /// about the default password once per start, and this is how it tells a
+    /// restart from a page reload.
+    pub(super) boot_id: &'static str,
     pub(super) gateway_port: u16,
+}
+
+/// Random per process, never persisted: a restart is a new id. It says nothing
+/// about the node, which matters because `/api/access` is read before login.
+fn boot_id() -> &'static str {
+    static BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BOOT_ID.get_or_init(|| Uuid::new_v4().simple().to_string())
 }
 
 pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -566,6 +753,7 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
         admin_exposure: cfg.admin_exposure,
         requires_password: cfg.admin_exposure.requires_password(),
         default_password: cfg.admin_exposure.requires_password() && cfg.admin_password_default,
+        boot_id: boot_id(),
         gateway_port: cfg.gateway_port,
     })
 }
@@ -892,7 +1080,7 @@ fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<
 }
 
 /// Prazo da sonda `/health` pelo túnel: um circuito pelo relé na internet não
-/// cabe nos 300 ms da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
+/// cabe no teto da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
 const TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A sonda de admissão segue a rota fixada (`route_plan`): rota de túnel vai
@@ -946,25 +1134,36 @@ pub(crate) async fn ready_for_pipeline(
             if health.quarantined(&peer.node_id).await {
                 return None;
             }
+            // Every address at once, the first good answer wins. One after
+            // the other, each dead address (an unreachable IPv6, a stale LAN
+            // IP) cost the whole timeout, and the request paid ~700 ms of
+            // `orchestration` before its prefill started.
+            let probes = bases.iter().map(|base| {
+                let cliente = &cliente;
+                let peer_id = peer.node_id.as_str();
+                Box::pin(async move {
+                    let url = format!("{base}/health");
+                    let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
+                    else {
+                        return Err(());
+                    };
+                    if !response.status().is_success()
+                        || crate::peer_client::answered_by_other_node(response.headers(), peer_id)
+                            .is_some()
+                    {
+                        return Err(());
+                    }
+                    match tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await {
+                        Ok(Ok(value)) => Ok((base, value)),
+                        _ => Err(()),
+                    }
+                })
+            });
             let mut body = None;
-            for base in &bases {
-                let url = format!("{base}/health");
-                let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
-                else {
-                    continue;
-                };
-                if !response.status().is_success()
-                    || crate::peer_client::answered_by_other_node(response.headers(), &peer.node_id)
-                        .is_some()
-                {
-                    continue;
-                }
-                if let Ok(Ok(value)) =
-                    tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
-                {
+            if !bases.is_empty() {
+                if let Ok(((base, value), _)) = futures::future::select_ok(probes).await {
                     network.routes.mark_success(&peer.node_id, base);
                     body = Some(value);
-                    break;
                 }
             }
             // Nenhum endereço respondeu: o túnel libp2p, que a inferência
@@ -1001,6 +1200,18 @@ impl GatewayState {
         self.runtime.model_label(&self.default_model).await
     }
 
+    /// The model the panel shows: the one this node serves, or, on a node
+    /// that serves nothing (an admin that only coordinates), the model the
+    /// network serves. Without it, the Dashboard of such a node had no active
+    /// model, so no routes, RTT or measured speeds.
+    pub async fn displayed_model(&self) -> String {
+        let own = self.active_model().await;
+        if !own.is_empty() {
+            return own;
+        }
+        network_model(&self.all_peers().await)
+    }
+
     /// Where this node writes slices, keeps received files, and the only
     /// directory a peer may pull from. Read from the live configuration, so a
     /// change on the screen takes effect without a restart.
@@ -1034,7 +1245,7 @@ impl GatewayState {
     pub fn self_reply_hosts(&self) -> Vec<String> {
         let mut hosts = vec![self_dial_host(
             self.network.effective_host(),
-            crate::pkarr_node::detect_local_ip(),
+            crate::addrs::outbound_local_ip(),
         )];
         hosts.extend(self.network.self_addr_candidates());
         hosts
@@ -1069,7 +1280,7 @@ impl GatewayState {
             // O observado continua sendo fallback para NAT.
             let self_host = self_dial_host(
                 self.network.effective_host(),
-                crate::pkarr_node::detect_local_ip(),
+                crate::addrs::outbound_local_ip(),
             );
             peers.push(PeerInfo {
                 deploy_id: local
@@ -1079,7 +1290,6 @@ impl GatewayState {
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
-                authority_pubkey: self.network.authority_pubkey(),
                 cluster_id: self.network.cluster_id(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
@@ -1290,4 +1500,104 @@ pub(super) fn runtime_capacity_from_peers(
         }),
         false,
     )
+}
+
+#[cfg(test)]
+mod pkarr_record_tests {
+    use super::{record_addrs, PublishBackoff, PKARR_CHECK_INTERVAL, PKARR_REFRESH};
+    use std::time::Instant;
+
+    /// Consecutive failures double the wait up to the cap and only powers of
+    /// two warn; a success resets everything.
+    #[test]
+    fn publish_failures_back_off_and_stay_quiet() {
+        let mut backoff = PublishBackoff::default();
+        let now = Instant::now();
+        assert!(backoff.ready(now));
+
+        let (n, wait, loud) = backoff.failed(now);
+        assert_eq!((n, wait, loud), (1, PKARR_CHECK_INTERVAL, true));
+        assert!(!backoff.ready(now));
+        assert!(backoff.ready(now + wait));
+
+        let (_, wait, loud) = backoff.failed(now);
+        assert_eq!((wait, loud), (PKARR_CHECK_INTERVAL * 2, true));
+        let (_, _, loud) = backoff.failed(now);
+        assert!(!loud, "3rd failure does not warn");
+        for _ in 0..20 {
+            backoff.failed(now);
+        }
+        let (_, wait, _) = backoff.failed(now);
+        assert_eq!(wait, PKARR_REFRESH, "the wait is capped");
+
+        assert_eq!(backoff.succeeded(), Some(24));
+        assert!(backoff.ready(now));
+        assert_eq!(backoff.succeeded(), None);
+    }
+
+    /// A circuit becomes the relay's key, a private address does not go to the
+    /// DHT, and a direct public address passes as is.
+    #[test]
+    fn the_record_keeps_public_addrs_and_turns_circuits_into_relay_keys() {
+        let relay = pkarr::Keypair::random();
+        let relay_peer = crate::pkarr_node::peer_id_from_uri(&relay.to_uri_string()).unwrap();
+        let (direct, relays) = record_addrs(&[
+            "/ip4/203.0.113.7/udp/52777/quic-v1".into(),
+            "/ip4/192.168.0.10/tcp/52777".into(),
+            "/ip4/100.122.132.97/tcp/52777".into(),
+            "/dns/node.example/tcp/52777".into(),
+            format!("/ip4/198.51.100.1/tcp/52777/p2p/{relay_peer}/p2p-circuit"),
+        ]);
+        assert_eq!(
+            direct,
+            vec![
+                "/ip4/203.0.113.7/udp/52777/quic-v1".to_string(),
+                "/dns/node.example/tcp/52777".to_string(),
+            ]
+        );
+        assert_eq!(relays, vec![relay.to_uri_string()]);
+    }
+}
+
+/// The model most live serving peers run (ties by name), or empty.
+pub(crate) fn network_model(peers: &[crate::network::PeerInfo]) -> String {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for peer in peers {
+        if peer.is_alive()
+            && !peer.model.is_empty()
+            && (peer.runtime_capacity.is_some() || peer.idle)
+        {
+            *counts.entry(peer.model.as_str()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+        .map(|(model, _)| model.to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod network_model_tests {
+    use super::network_model;
+
+    #[test]
+    fn a_node_serving_nothing_shows_the_model_the_network_serves() {
+        let serving = |id: &str, model: &str| {
+            let mut peer = crate::gateway::testkit::peer(id, id, 8080);
+            peer.model = model.to_string();
+            peer.idle = true;
+            peer
+        };
+        let mut idle_other = crate::gateway::testkit::peer("x", "x", 8080);
+        idle_other.model.clear();
+        let peers = vec![
+            serving("a", "Ornith"),
+            serving("b", "Ornith"),
+            serving("c", "Qwen"),
+            idle_other,
+        ];
+        assert_eq!(network_model(&peers), "Ornith");
+        assert_eq!(network_model(&[]), "");
+    }
 }

@@ -513,6 +513,9 @@ pub(super) struct PrefillJob {
     /// Escolha do Chat que a cabeça deve aplicar ao template. Hops apenas
     /// repassam o campo junto do estado oculto.
     pub(super) thinking_enabled: Option<bool>,
+    /// Rótulos-candidatos de uma decisão tipada. Só o último hop usa: devolve
+    /// em `probe_result` a probabilidade de cada rótulo no lugar de decidir.
+    pub(super) probe: Option<super::prefill::HeadProbe>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
     pub(super) queued_at: Instant,
@@ -732,6 +735,9 @@ pub(crate) struct InferenceAppState {
     /// Keeps direct prefill forwarding in chunk order while the next chunk is
     /// already being computed by the preceding hop.
     pub(super) direct_forward_order: DirectForwardOrder,
+    /// Last `/health` snapshot, served while the engine is busy
+    /// (`handle_health`).
+    pub(super) health_snapshot: super::server::HealthSnapshot,
 }
 
 #[derive(Clone, Default)]
@@ -923,6 +929,21 @@ pub(super) fn new_session_slots(free_slots: usize, _retained: usize) -> usize {
     free_slots
 }
 
+/// Takes the sequence of the least recently used retained session.
+///
+/// Off the async threads: with the host-memory cache on, the eviction first
+/// copies that session's KV out of the context (`InferState::park_session`),
+/// which is a multi-gigabyte read for a long conversation.
+async fn reclaim_retained(state: &SharedState) -> bool {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.evict_retained()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 pub(super) async fn run_scheduler(
     mut rx: mpsc::Receiver<InferenceCommand>,
     state: SharedState,
@@ -993,10 +1014,7 @@ pub(super) async fn run_scheduler(
         // explicit: reclaim a retained KV slot immediately for this path, but
         // keep the five-second protection for unrelated standalone requests.
         if new_slots == 0 && retained > 0 && queue.has_pipeline_new_session_wait(is_existing) {
-            let reclaimed = {
-                let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
-                guard.evict_retained()
-            };
+            let reclaimed = reclaim_retained(&state).await;
             if reclaimed {
                 admission_wait_reason = Some(pipeline_scheduler_wait_reason());
                 continue;
@@ -1032,10 +1050,7 @@ pub(super) async fn run_scheduler(
             // pendurada até o `reap_idle` de 15 minutos.
             let waited = queue.oldest_new_session_wait(Instant::now(), is_existing);
             if retained > 0 && waited.is_some_and(|w| w >= RETAINED_RECLAIM_GRACE) {
-                let reclaimed = {
-                    let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
-                    guard.evict_retained()
-                };
+                let reclaimed = reclaim_retained(&state).await;
                 if reclaimed {
                     admission_wait_reason = Some(scheduler_wait_reason(true));
                     continue;
@@ -1096,7 +1111,7 @@ pub(super) fn execute_scheduled_batch(
     if items.iter().any(|item| {
         matches!(
             &item.payload,
-            InferenceCommand::Prefill { job, .. } if job.images.as_ref().is_some_and(|images| !images.is_empty())
+            InferenceCommand::Prefill { job, .. } if job.images.as_ref().is_some_and(|images| !images.is_empty()) || job.probe.is_some()
         )
     }) {
         for item in items {
@@ -1168,6 +1183,7 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.images,
                 job.chat_template,
                 job.thinking_enabled,
+                job.probe,
                 job.tensor,
                 job.capture_block,
                 job.chunk_tokens,
@@ -1247,6 +1263,37 @@ mod tests {
     fn health_reports_the_context_window_per_session() {
         assert_eq!(context_per_session(400_000, 4), 100_000);
         assert_eq!(context_per_session(100_000, 0), 100_000);
+    }
+
+    /// With the engine busy, `/health` returns the last snapshot, marked
+    /// `busy`; with no snapshot yet, there is nothing to return without waiting
+    /// for the engine.
+    #[test]
+    fn a_busy_engine_answers_health_from_the_last_snapshot() {
+        let snapshot = super::super::server::HealthSnapshot::default();
+        assert!(super::super::server::snapshot_health_body(&snapshot).is_none());
+        super::super::server::store_health_snapshot(
+            &snapshot,
+            &serde_json::json!({"model_loaded": true, "busy": false, "n_ctx_per_session": 150016}),
+        );
+        let body = super::super::server::snapshot_health_body(&snapshot).unwrap();
+        assert_eq!(body["busy"], true);
+        assert_eq!(body["model_loaded"], true);
+        assert_eq!(body["n_ctx_per_session"], 150016);
+        assert!(body["snapshot_age_ms"].is_u64());
+    }
+
+    /// One session's window is the peer's boundary: the prompt must leave room
+    /// for one token, and decode stops at its last position.
+    #[test]
+    fn the_session_window_bounds_prompt_and_decode() {
+        let window = context_per_session(300_032, 2);
+        assert_eq!(window, 150_016);
+        assert_eq!(prompt_window_refusal(150_015, window), None);
+        assert!(prompt_window_refusal(150_016, window).is_some());
+        assert_eq!(decode_window_refusal(150_015, window), None);
+        assert!(decode_window_refusal(150_016, window)
+            .is_some_and(|reason| reason.contains("150016 of 150016")));
     }
 
     #[test]
@@ -1701,6 +1748,7 @@ mod tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,
@@ -1713,16 +1761,22 @@ mod tests {
             prefill_max_inflight_chunks:
                 crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             n_batch: 512,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             max_new_tokens: 256,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
-            cycle_detection_enabled: true,
-            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -1733,6 +1787,10 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

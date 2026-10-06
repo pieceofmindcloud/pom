@@ -47,7 +47,65 @@ pub(crate) struct ControlEnvelope {
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) body_hash: String,
+    /// Unix seconds when the issuer signed. Outside `CONTROL_WINDOW_SECS` of
+    /// the receiver's clock the envelope is refused, which is what lets the
+    /// replay ledger forget a nonce once its window has passed.
+    pub(crate) issued_at: i64,
     pub(crate) signature: String,
+}
+
+/// Validity of a control envelope, on either side of the receiver's clock. It
+/// covers the clock difference between nodes; a captured envelope can only be
+/// replayed inside it, and that is the window the local replay ledger
+/// remembers it for.
+pub(crate) const CONTROL_WINDOW_SECS: i64 = 5 * 60;
+
+fn unix_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// Nonces and command ids already consumed by **this** node. It lives in a
+/// local file next to the chain (`<chain>.replay.json`), never in the trust
+/// document: the document is shared (download, local discovery, public
+/// directory) and replaced wholesale by `reconcile`, while this ledger is the
+/// state of a single node.
+///
+/// Control-envelope entries expire with the envelope's window; administrative
+/// mutation entries (grant, demotion, transfer, infer admission) do not expire,
+/// because those signed records carry no clock - and they are rare.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ReplayLedger {
+    entries: Vec<ReplayEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReplayEntry {
+    nonce: String,
+    command_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offer_id: Option<String>,
+    /// Unix seconds after which the entry can be forgotten; `None` for an
+    /// administrative mutation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<i64>,
+}
+
+/// Where a chain's replay ledger lives: next to it.
+pub(crate) fn replay_path_for(trust_path: &Path) -> PathBuf {
+    trust_path.with_extension("replay.json")
+}
+
+fn load_replay_ledger(trust_path: Option<&Path>) -> ReplayLedger {
+    let Some(path) = trust_path.map(replay_path_for) else {
+        return ReplayLedger::default();
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|error| {
+            tracing::warn!("unreadable replay ledger at {}: {error}", path.display());
+            ReplayLedger::default()
+        }),
+        Err(_) => ReplayLedger::default(),
+    }
 }
 
 impl AuthorityPrincipal {
@@ -100,9 +158,11 @@ pub(crate) struct TrustNetworkMetadata {
     pub(crate) city: String,
     #[serde(default)]
     pub(crate) geo_label: String,
-    pub(crate) advertised_address: String,
+    /// `pk:` keys of the dedicated relays the network uses. A key, never an
+    /// address: the document carries nobody's IP. A joining node resolves the
+    /// principal (and these relays) through pkarr at dial time.
     #[serde(default)]
-    pub(crate) bootstrap_address: String,
+    pub(crate) relay_hints: Vec<String>,
     #[serde(default)]
     pub(crate) directory_replicas: Vec<String>,
 }
@@ -218,14 +278,6 @@ pub(crate) struct CompletedTransfer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct ReplayRecord {
-    nonce: String,
-    command_id: String,
-    offer_id: Option<String>,
-    authority_epoch: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct AdminTrustDocument {
     pub(crate) version: u32,
     pub(crate) anchor: TrustAnchor,
@@ -238,7 +290,6 @@ pub(crate) struct AdminTrustDocument {
     pub(crate) demotions: Vec<AdminDemotion>,
     pub(crate) pending_transfer: Option<AdminTransferOffer>,
     pub(crate) completed_transfers: Vec<CompletedTransfer>,
-    pub(crate) replay: Vec<ReplayRecord>,
     /// Network and discovery values captured when the administrator creates
     /// the chain. Existing authority chains may omit this until regenerated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,6 +323,9 @@ pub(crate) enum EffectiveAuthority {
 pub(crate) struct AdminTrust {
     state: Arc<Mutex<AdminTrustDocument>>,
     path: Option<PathBuf>,
+    /// Local replay ledger; see `ReplayLedger`. Always locked after `state`
+    /// when both are taken.
+    replay: Arc<Mutex<ReplayLedger>>,
 }
 
 impl AdminTrust {
@@ -303,10 +357,10 @@ impl AdminTrust {
                 demotions: Vec::new(),
                 pending_transfer: None,
                 completed_transfers: Vec::new(),
-                replay: Vec::new(),
                 setup: None,
                 setup_signature: String::new(),
             })),
+            replay: Arc::new(Mutex::new(load_replay_ledger(path.as_deref()))),
             path,
         }
     }
@@ -319,6 +373,7 @@ impl AdminTrust {
             .with_context(|| format!("concessão administrativa inválida em {}", path.display()))?;
         Ok(Self {
             state: Arc::new(Mutex::new(document)),
+            replay: Arc::new(Mutex::new(load_replay_ledger(Some(&path)))),
             path: Some(path),
         })
     }
@@ -444,6 +499,7 @@ impl AdminTrust {
         let trust = Self {
             state: Arc::new(Mutex::new(document)),
             path: Some(path.as_ref().to_path_buf()),
+            replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
         };
         trust.save()?;
         Ok(trust)
@@ -455,6 +511,7 @@ impl AdminTrust {
         Ok(Self {
             state: Arc::new(Mutex::new(document)),
             path: None,
+            replay: Arc::new(Mutex::new(ReplayLedger::default())),
         })
     }
 
@@ -493,28 +550,78 @@ impl AdminTrust {
     }
 
     /// Consume a signed control command before its handler mutates anything.
-    /// The nonce and command id are durable so retrying a captured envelope
-    /// cannot replay a control action after a process restart.
+    /// The nonce and command id are durable in the local replay ledger until
+    /// the envelope's time window closes, so retrying a captured envelope
+    /// cannot replay a control action, not even after a process restart.
     pub(crate) fn consume_control_replay(&self, envelope: &ControlEnvelope) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
-        if document.replay.iter().any(|record| {
-            record.nonce == envelope.nonce || record.command_id == envelope.command_id
-        }) {
+        if !self.record_replay(
+            &envelope.nonce,
+            &envelope.command_id,
+            None,
+            Some(envelope.issued_at.saturating_add(CONTROL_WINDOW_SECS)),
+        )? {
             bail!("comando de controle já foi processado");
         }
-        document.replay.push(ReplayRecord {
-            nonce: envelope.nonce.clone(),
-            command_id: envelope.command_id.clone(),
-            offer_id: None,
-            authority_epoch: envelope.authority_epoch,
-        });
-        const MAX_CONTROL_REPLAYS: usize = 4096;
-        if document.replay.len() > MAX_CONTROL_REPLAYS {
-            let excess = document.replay.len() - MAX_CONTROL_REPLAYS;
-            document.replay.drain(..excess);
+        Ok(())
+    }
+
+    /// Administrative mutation: the signed record has no clock, so the entry
+    /// does not expire.
+    fn consume_admin_replay(
+        &self,
+        nonce: &str,
+        command_id: &str,
+        offer_id: Option<&str>,
+    ) -> Result<()> {
+        if !self.record_replay(nonce, command_id, offer_id, None)? {
+            bail!("repeated administrative mutation");
         }
-        persist_document(&document, self.path.as_deref())
+        Ok(())
+    }
+
+    /// Records the nonce/command pair in the local ledger and saves it. `false`
+    /// when either was already there. Expired entries are dropped here.
+    fn record_replay(
+        &self,
+        nonce: &str,
+        command_id: &str,
+        offer_id: Option<&str>,
+        expires_at: Option<i64>,
+    ) -> Result<bool> {
+        if nonce.is_empty() || command_id.is_empty() {
+            bail!("registro de replay administrativo incompleto");
+        }
+        let now = unix_now();
+        let mut ledger = self.replay.lock().expect("replay ledger lock poisoned");
+        ledger
+            .entries
+            .retain(|entry| entry.expires_at.is_none_or(|expires| expires >= now));
+        if ledger
+            .entries
+            .iter()
+            .any(|entry| entry.nonce == nonce || entry.command_id == command_id)
+        {
+            return Ok(false);
+        }
+        ledger.entries.push(ReplayEntry {
+            nonce: nonce.to_string(),
+            command_id: command_id.to_string(),
+            offer_id: offer_id.map(str::to_string),
+            expires_at,
+        });
+        let path = self.path.as_deref().map(replay_path_for);
+        persist_json(&*ledger, path.as_deref(), false)?;
+        Ok(true)
+    }
+
+    /// How many entries the local replay ledger holds.
+    #[cfg(test)]
+    pub(crate) fn replay_len(&self) -> usize {
+        self.replay
+            .lock()
+            .expect("replay ledger lock poisoned")
+            .entries
+            .len()
     }
 
     pub(crate) fn bootstrap_primary_with_anchor(
@@ -558,7 +665,6 @@ impl AdminTrust {
             demotions: Vec::new(),
             pending_transfer: None,
             completed_transfers: Vec::new(),
-            replay: Vec::new(),
             setup: None,
             setup_signature: String::new(),
         };
@@ -566,6 +672,7 @@ impl AdminTrust {
         let trust = Self {
             state: Arc::new(Mutex::new(document)),
             path: Some(path.as_ref().to_path_buf()),
+            replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
         };
         trust.save()?;
         Ok(trust)
@@ -619,7 +726,6 @@ impl AdminTrust {
             demotions: Vec::new(),
             pending_transfer: None,
             completed_transfers: Vec::new(),
-            replay: Vec::new(),
             setup: None,
             setup_signature: String::new(),
         };
@@ -741,7 +847,7 @@ impl AdminTrust {
         {
             bail!("concessão fora da cadeia vigente");
         }
-        consume_replay(&mut document, &grant.nonce, &grant.command_id, None)?;
+        self.consume_admin_replay(&grant.nonce, &grant.command_id, None)?;
         document.promotion_seq = grant.promotion_seq;
         document.grants.push(grant);
         validate_document(&document)?;
@@ -778,7 +884,7 @@ impl AdminTrust {
             bail!("concessão fora da cadeia vigente");
         }
         verify_grant_signature(&grant)?;
-        consume_replay(&mut document, &grant.nonce, &grant.command_id, None)?;
+        self.consume_admin_replay(&grant.nonce, &grant.command_id, None)?;
         document.promotion_seq = grant.promotion_seq;
         document.grants.push(grant);
         validate_document(&document)?;
@@ -829,7 +935,7 @@ impl AdminTrust {
             signature: String::new(),
         };
         demotion.signature = sign_bytes(signing_key, &demotion_message(&demotion));
-        consume_replay(&mut document, &demotion.nonce, &demotion.command_id, None)?;
+        self.consume_admin_replay(&demotion.nonce, &demotion.command_id, None)?;
         document.demotions.push(demotion.clone());
         validate_document(&document)?;
         persist_document(&document, self.path.as_deref())?;
@@ -892,7 +998,7 @@ impl AdminTrust {
         if document.pending_transfer.is_some() {
             bail!("não é possível autorizar nó durante transferência aberta");
         }
-        consume_replay(&mut document, &request.nonce, &request.command_id, None)?;
+        self.consume_admin_replay(&request.nonce, &request.command_id, None)?;
         let mut command = NodePromotionCommand {
             version: TRUST_VERSION,
             command_id: Uuid::new_v4().simple().to_string(),
@@ -904,7 +1010,7 @@ impl AdminTrust {
             signature: String::new(),
         };
         command.signature = sign_bytes(signing_key, &node_promotion_message(&command));
-        consume_replay(&mut document, &command.nonce, &command.command_id, None)?;
+        self.consume_admin_replay(&command.nonce, &command.command_id, None)?;
         persist_document(&document, self.path.as_deref())?;
         Ok(command)
     }
@@ -938,7 +1044,7 @@ impl AdminTrust {
             bail!("o pedido não foi autorizado por um admin vigente");
         }
         verify_node_promotion_signature(&command)?;
-        consume_replay(&mut document, &command.nonce, &command.command_id, None)?;
+        self.consume_admin_replay(&command.nonce, &command.command_id, None)?;
         persist_document(&document, self.path.as_deref())?;
         Ok(())
     }
@@ -999,12 +1105,7 @@ impl AdminTrust {
             signature: String::new(),
         };
         offer.signature = sign_bytes(signing_key, &offer_message(&offer));
-        consume_replay(
-            &mut document,
-            &offer.nonce,
-            &offer.command_id,
-            Some(&offer.offer_id),
-        )?;
+        self.consume_admin_replay(&offer.nonce, &offer.command_id, Some(&offer.offer_id))?;
         document.pending_transfer = Some(offer.clone());
         persist_document(&document, self.path.as_deref())?;
         Ok(offer)
@@ -1043,8 +1144,7 @@ impl AdminTrust {
             signature: String::new(),
         };
         acceptance.signature = sign_bytes(signing_key, &acceptance_message(&acceptance));
-        consume_replay(
-            &mut document,
+        self.consume_admin_replay(
             &acceptance.nonce,
             &acceptance.command_id,
             Some(&offer.offer_id),
@@ -1081,8 +1181,7 @@ impl AdminTrust {
         }
         verify_offer_signature(&offer)?;
         verify_acceptance_signature(&acceptance)?;
-        consume_replay(
-            &mut document,
+        self.consume_admin_replay(
             &acceptance.nonce,
             &acceptance.command_id,
             Some(&acceptance.offer_id),
@@ -1124,19 +1223,14 @@ pub(crate) fn anchor_fingerprint(document: &AdminTrustDocument) -> String {
 /// use the same principal construction and prevents the two paths from
 /// silently producing different public keys.
 pub(crate) fn local_authority_identity() -> Result<(SigningKey, AuthorityPrincipal)> {
+    // The node key is the authority key: see `identity.rs`.
     let local_identity = crate::identity::Identity::load_or_create(&crate::identity::key_path());
-    let pkarr = crate::pkarr_node::PkarrNode::load_or_create(&crate::identity::pkarr_key_path())
-        .context("não foi possível carregar a identidade libp2p para a âncora")?;
-    let signing_key = SigningKey::from_bytes(&pkarr.secret_key_bytes());
-    let mut seed = signing_key.to_bytes();
-    let keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
-        .context("a identidade local não pôde ser convertida em chave libp2p")?;
     let principal = AuthorityPrincipal::from_signing_key(
-        local_identity.node_id.0,
-        keypair.public().to_peer_id().to_string(),
-        &signing_key,
+        local_identity.node_id.0.clone(),
+        local_identity.peer_id(),
+        &local_identity.signing_key,
     );
-    Ok((signing_key, principal))
+    Ok((local_identity.signing_key, principal))
 }
 
 /// Build the exact document the administrator sees in the setup wizard. The
@@ -1175,7 +1269,6 @@ pub(crate) fn local_primary_document(
         demotions: Vec::new(),
         pending_transfer: None,
         completed_transfers: Vec::new(),
-        replay: Vec::new(),
         setup,
         setup_signature: String::new(),
     };
@@ -1238,6 +1331,26 @@ pub(crate) fn sign_control_envelope(
     path: &str,
     body: &[u8],
 ) -> Result<ControlEnvelope> {
+    sign_control_envelope_at(
+        signing_key,
+        issuer,
+        document,
+        method,
+        path,
+        body,
+        unix_now(),
+    )
+}
+
+fn sign_control_envelope_at(
+    signing_key: &SigningKey,
+    issuer: AuthorityPrincipal,
+    document: &AdminTrustDocument,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    issued_at: i64,
+) -> Result<ControlEnvelope> {
     validate_document(document)?;
     if issuer.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
         bail!("a chave do envelope não corresponde ao emissor");
@@ -1252,6 +1365,7 @@ pub(crate) fn sign_control_envelope(
         method: method.to_ascii_uppercase(),
         path: path.to_string(),
         body_hash: hex::encode(Sha256::digest(body)),
+        issued_at,
         signature: String::new(),
     };
     envelope.signature = sign_bytes(signing_key, &control_message(&envelope));
@@ -1275,6 +1389,7 @@ pub(crate) fn verify_control_envelope(
     {
         bail!("envelope de controle fora do contexto assinado");
     }
+    check_control_window(envelope)?;
     verify_bytes(
         &envelope.issuer.pubkey,
         &control_message(envelope),
@@ -1305,11 +1420,20 @@ pub(crate) fn verify_control_envelope_metadata(
     {
         bail!("envelope de controle fora do contexto assinado");
     }
+    check_control_window(envelope)?;
     verify_bytes(
         &envelope.issuer.pubkey,
         &control_message(envelope),
         &envelope.signature,
     )
+}
+
+/// Was the envelope signed inside the window, by this node's clock?
+fn check_control_window(envelope: &ControlEnvelope) -> Result<()> {
+    if (unix_now() - envelope.issued_at).abs() > CONTROL_WINDOW_SECS {
+        bail!("control envelope outside the time window (clocks out of sync?)");
+    }
+    Ok(())
 }
 
 pub(crate) fn control_issuer_is_admin(
@@ -1347,6 +1471,7 @@ struct ControlMessage<'a> {
     method: &'a str,
     path: &'a str,
     body_hash: &'a str,
+    issued_at: i64,
 }
 
 fn control_message(envelope: &ControlEnvelope) -> Vec<u8> {
@@ -1360,6 +1485,7 @@ fn control_message(envelope: &ControlEnvelope) -> Vec<u8> {
         method: &envelope.method,
         path: &envelope.path,
         body_hash: &envelope.body_hash,
+        issued_at: envelope.issued_at,
     })
     .expect("canonical control envelope JSON")
 }
@@ -1611,28 +1737,6 @@ fn grant_hash(grant: &AdminGrant) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(grant)?)))
 }
 
-fn consume_replay(
-    document: &mut AdminTrustDocument,
-    nonce: &str,
-    command_id: &str,
-    offer_id: Option<&str>,
-) -> Result<()> {
-    if document
-        .replay
-        .iter()
-        .any(|record| record.nonce == nonce || record.command_id == command_id)
-    {
-        bail!("mutação administrativa repetida");
-    }
-    document.replay.push(ReplayRecord {
-        nonce: nonce.to_string(),
-        command_id: command_id.to_string(),
-        offer_id: offer_id.map(str::to_string),
-        authority_epoch: document.authority_epoch,
-    });
-    Ok(())
-}
-
 fn validate_document(document: &AdminTrustDocument) -> Result<()> {
     if document.version != TRUST_VERSION || !document.anchor.validates() {
         bail!("arquivo de confiança administrativa não tem uma âncora válida");
@@ -1775,15 +1879,15 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
         }
         verify_offer_signature(offer)?;
     }
-    for record in &document.replay {
-        if record.nonce.is_empty() || record.command_id.is_empty() {
-            bail!("registro de replay administrativo incompleto");
-        }
-    }
     Ok(())
 }
 
 fn persist_document(document: &AdminTrustDocument, path: Option<&Path>) -> Result<()> {
+    persist_json(document, path, true)
+}
+
+/// Writes through a temporary file + rename, with `0600` permission on Unix.
+fn persist_json<T: Serialize>(value: &T, path: Option<&Path>, pretty: bool) -> Result<()> {
     let Some(path) = path else { return Ok(()) };
     let parent = path
         .parent()
@@ -1794,7 +1898,12 @@ fn persist_document(document: &AdminTrustDocument, path: Option<&Path>) -> Resul
         path.file_name().unwrap_or_default().to_string_lossy(),
         Uuid::new_v4().simple()
     ));
-    std::fs::write(&temp, serde_json::to_vec_pretty(document)?)?;
+    let bytes = if pretty {
+        serde_json::to_vec_pretty(value)?
+    } else {
+        serde_json::to_vec(value)?
+    };
+    std::fs::write(&temp, bytes)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1845,6 +1954,104 @@ mod tests {
         (trust, signing_key, root)
     }
 
+    /// An envelope signed outside the window is refused, on either side of the
+    /// clock; inside it, it passes.
+    #[test]
+    fn a_control_envelope_outside_the_time_window_is_refused() {
+        let dir = TempDir::new();
+        let (trust, signing_key, root) = boot(&dir.path().join("trust.json"));
+        let document = trust.document();
+        let at = |issued_at| {
+            sign_control_envelope_at(
+                &signing_key,
+                root.clone(),
+                &document,
+                "POST",
+                "/x",
+                b"{}",
+                issued_at,
+            )
+            .unwrap()
+        };
+        let now = unix_now();
+        for issued_at in [
+            now,
+            now - CONTROL_WINDOW_SECS + 5,
+            now + CONTROL_WINDOW_SECS - 5,
+        ] {
+            verify_control_envelope(&at(issued_at), &document, "POST", "/x", b"{}").unwrap();
+        }
+        for issued_at in [now - CONTROL_WINDOW_SECS - 5, now + CONTROL_WINDOW_SECS + 5] {
+            assert!(
+                verify_control_envelope(&at(issued_at), &document, "POST", "/x", b"{}").is_err()
+            );
+            assert!(
+                verify_control_envelope_metadata(&at(issued_at), &document, "POST", "/x").is_err()
+            );
+        }
+        // The time is part of the signature: changing it invalidates the
+        // envelope.
+        let mut moved = at(now);
+        moved.issued_at += 1;
+        assert!(verify_control_envelope(&moved, &document, "POST", "/x", b"{}").is_err());
+    }
+
+    /// The replay ledger lives next to the chain, never in the document, and
+    /// survives a restart.
+    #[test]
+    fn the_replay_ledger_is_local_and_survives_a_reload() {
+        let dir = TempDir::new();
+        let path = dir.path().join("trust.json");
+        let (trust, signing_key, root) = boot(&path);
+        let envelope =
+            sign_control_envelope(&signing_key, root, &trust.document(), "POST", "/x", b"{}")
+                .unwrap();
+        trust.consume_control_replay(&envelope).unwrap();
+        assert!(trust.consume_control_replay(&envelope).is_err());
+
+        let document = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !document.contains(&envelope.nonce),
+            "the nonce leaked into the chain"
+        );
+        assert!(!document.contains("\"replay\""));
+        assert!(replay_path_for(&path).exists());
+
+        let reloaded = AdminTrust::load(&path).unwrap();
+        assert!(reloaded.consume_control_replay(&envelope).is_err());
+    }
+
+    /// An envelope entry leaves the ledger when its window closes; an
+    /// administrative mutation entry stays.
+    #[test]
+    fn expired_control_entries_are_forgotten() {
+        let dir = TempDir::new();
+        let (trust, _signing_key, _root) = boot(&dir.path().join("trust.json"));
+        let past = unix_now() - 1;
+        assert!(trust
+            .record_replay("n-old", "c-old", None, Some(past))
+            .unwrap());
+        assert!(trust
+            .record_replay("n-admin", "c-admin", None, None)
+            .unwrap());
+        assert!(trust
+            .record_replay(
+                "n-new",
+                "c-new",
+                None,
+                Some(unix_now() + CONTROL_WINDOW_SECS)
+            )
+            .unwrap());
+        assert_eq!(
+            trust.replay_len(),
+            2,
+            "a vencida saiu, a administrativa ficou"
+        );
+        assert!(trust
+            .record_replay("n-old", "c-old", None, Some(past))
+            .unwrap());
+    }
+
     #[test]
     fn signed_setup_metadata_is_part_of_the_trust_document() {
         let dir = TempDir::new();
@@ -1859,8 +2066,7 @@ mod tests {
             country_name: String::new(),
             city: String::new(),
             geo_label: String::new(),
-            advertised_address: "[2001:db8::10]:42777".into(),
-            bootstrap_address: "[2001:db8::10]:42777".into(),
+            relay_hints: Vec::new(),
             directory_replicas: Vec::new(),
         });
         document.setup_signature = sign_bytes(&signing_key, &setup_message(&document));

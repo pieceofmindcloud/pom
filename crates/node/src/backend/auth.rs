@@ -173,11 +173,53 @@ pub fn is_valid_internal_node_token(config: &Config, token: &str) -> bool {
 /// Esta regra permanece separada da autenticação entre peers.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_valid_inference_token(config: &Config, token: &str) -> bool {
-    !token.is_empty()
-        && config
-            .api_keys
-            .iter()
-            .any(|key| key.active && token == key.key)
+    if token.is_empty() {
+        return false;
+    }
+    let hash = api_key_hash(token);
+    config
+        .api_keys
+        .iter()
+        .any(|key| key.active && constant_time_token_eq(&key.key_hash, &hash))
+}
+
+/// O prefixo das API keys emitidas pelo POM. Chaves antigas (`sk-<uuid>`)
+/// continuam válidas: a validação só compara hashes.
+pub const API_KEY_PREFIX: &str = "sk-pom-";
+
+/// Um segredo novo: 32 bytes aleatórios do sistema, em hex.
+pub fn generate_api_key_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    format!("{API_KEY_PREFIX}{}", hex::encode(bytes))
+}
+
+/// O que se guarda de uma API key: o SHA-256 do segredo, em hex.
+///
+/// SHA-256 e não um KDF lento (Argon2, bcrypt) de propósito: o segredo tem
+/// 256 bits de aleatoriedade, então não há dicionário a atacar, e este hash
+/// roda em toda requisição de inferência. Um KDF só custaria latência.
+pub fn api_key_hash(secret: &str) -> String {
+    hex::encode(Sha256::digest(secret.as_bytes()))
+}
+
+/// O começo e o fim do segredo, para a tela e os outros nós distinguirem as
+/// chaves sem poder usar nenhuma: `sk-pom-3f9a…c41e`.
+pub fn api_key_hint(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 16 {
+        let head: String = chars.iter().take(4).collect();
+        return format!("{head}…");
+    }
+    let head_len = if secret.starts_with(API_KEY_PREFIX) {
+        API_KEY_PREFIX.len() + 4
+    } else {
+        8
+    };
+    let head: String = chars.iter().take(head_len).collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 /// Return the non-secret identity stored with an API key. Configurations
@@ -217,7 +259,7 @@ async fn known_control_principal(
     }
     state.network.alive_peers().await.into_iter().any(|peer| {
         peer.node_id == issuer.node_id
-            && peer.authority_pubkey == issuer.pubkey
+            && peer.pubkey == issuer.pubkey
             && peer.libp2p_peer_id.as_deref() == Some(issuer.peer_id.as_str())
     })
 }
@@ -754,7 +796,10 @@ where
             // authenticated node-to-node admin channel. The bearer itself is
             // never used to authorize this lookup.
             if let Ok(Some(key)) = crate::admin::validate_api_key_remote(&gateway, token).await {
-                if key.active && key.key == token && database.insert_api_key(&key).is_ok() {
+                if key.active
+                    && key.key_hash == api_key_hash(token)
+                    && database.insert_api_key(&key).is_ok()
+                {
                     let blocked = gateway.auth.read().await.blocked_nodes.iter().any(|node| {
                         let origin = if key.origin_node_id.is_empty() {
                             &key.node_id
@@ -767,8 +812,9 @@ where
                         continue;
                     }
                     let mut cfg = gateway.auth.write().await;
-                    cfg.api_keys
-                        .retain(|existing| existing.id != key.id && existing.key != key.key);
+                    cfg.api_keys.retain(|existing| {
+                        existing.id != key.id && existing.key_hash != key.key_hash
+                    });
                     cfg.api_keys.push(key.clone());
                     return Ok(ApiKeyAuth {
                         caller: crate::reqlog::Caller {
@@ -1093,7 +1139,8 @@ mod tests {
     fn api_key_identity_is_stable_and_never_the_secret() {
         let key = crate::config::ApiKey {
             id: "finance-id".into(),
-            key: "sk-secret".into(),
+            key_hash: crate::auth::api_key_hash("sk-secret"),
+            key_hint: String::new(),
             label: "financeiro".into(),
             node_id: "node-a".into(),
             origin_node_id: "node-a".into(),
@@ -1101,7 +1148,7 @@ mod tests {
             created_at: String::new(),
         };
         assert_eq!(api_key_identity(&key), "finance-id");
-        assert_ne!(api_key_identity(&key), key.key);
+        assert_ne!(api_key_identity(&key), "sk-secret");
 
         let legacy = crate::config::ApiKey {
             id: String::new(),
@@ -1111,8 +1158,23 @@ mod tests {
         assert!(legacy_id.starts_with("legacy-"));
         assert!(!legacy_id.contains("sk-secret"));
         let mut other_legacy = legacy.clone();
-        other_legacy.key = "sk-other".into();
+        other_legacy.key_hash = crate::auth::api_key_hash("sk-other");
         assert_eq!(legacy_id, api_key_identity(&other_legacy));
+    }
+
+    #[test]
+    fn api_key_hint_shows_only_the_ends() {
+        let secret = format!("{API_KEY_PREFIX}{}", "ab".repeat(32));
+        assert_eq!(api_key_hint(&secret), "sk-pom-abab…abab");
+        assert_eq!(
+            api_key_hint("sk-12345678-aaaa-bbbb-cccc-0123456789ff"),
+            "sk-12345…89ff"
+        );
+        assert_eq!(api_key_hint("short"), "shor…");
+        let generated = generate_api_key_secret();
+        assert_eq!(generated.len(), API_KEY_PREFIX.len() + 64);
+        assert_ne!(generated, generate_api_key_secret());
+        assert_eq!(api_key_hash(&generated).len(), 64);
     }
 
     #[test]
@@ -1139,7 +1201,8 @@ mod tests {
             api_keys: vec![
                 crate::config::ApiKey {
                     id: "active-id".into(),
-                    key: "sk-active".into(),
+                    key_hash: crate::auth::api_key_hash("sk-active"),
+                    key_hint: String::new(),
                     label: "test".into(),
                     node_id: String::new(),
                     origin_node_id: String::new(),
@@ -1148,7 +1211,8 @@ mod tests {
                 },
                 crate::config::ApiKey {
                     id: "revoked-id".into(),
-                    key: "sk-revoked".into(),
+                    key_hash: crate::auth::api_key_hash("sk-revoked"),
+                    key_hint: String::new(),
                     label: "revoked".into(),
                     node_id: String::new(),
                     origin_node_id: String::new(),
@@ -1174,6 +1238,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
 
         assert!(!is_valid_inference_token(&cfg, "cluster-secret"));
@@ -1205,7 +1270,8 @@ mod tests {
             network: Default::default(),
             api_keys: vec![crate::config::ApiKey {
                 id: "active-id".into(),
-                key: "sk-active".into(),
+                key_hash: crate::auth::api_key_hash("sk-active"),
+                key_hint: String::new(),
                 label: "test".into(),
                 node_id: String::new(),
                 origin_node_id: String::new(),
@@ -1230,6 +1296,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
 
         assert_eq!(internal_node_token(&cfg).as_deref(), Some("cluster-secret"));
@@ -1248,7 +1315,8 @@ mod tests {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let key = crate::config::ApiKey {
             id: "claude-code-id".into(),
-            key: "api-secret".into(),
+            key_hash: crate::auth::api_key_hash("api-secret"),
+            key_hint: String::new(),
             label: "claude-code".into(),
             node_id: "eu".into(),
             origin_node_id: "eu".into(),

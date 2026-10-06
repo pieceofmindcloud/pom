@@ -24,6 +24,8 @@ pub async fn run_with_options(
     // direta sabem retomar; o anel ignora e roda do início.
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
+    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
     plan.validate_wire_dtype(dtype)?;
@@ -53,6 +55,7 @@ pub async fn run_with_options(
             overlap_window.clone(),
             resume,
             trace_id,
+            probe,
         )
         .await;
     }
@@ -75,6 +78,7 @@ pub async fn run_with_options(
             overlap_window.clone(),
             resume,
             trace_id,
+            probe,
         )
         .await;
     }
@@ -150,6 +154,7 @@ pub async fn run_with_options(
                 trace_id,
             );
             let head_meta = add_images_to_head_meta(head_meta, (idx == 0).then_some(images));
+            let head_meta = add_probe_to_head_meta(head_meta, probe);
             let mut head_trace = trace_id
                 .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
                 .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
@@ -401,6 +406,7 @@ pub async fn run_with_options(
     info!("prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens ({prompt_tokens} tokens)");
     Ok(PrefillOutcome {
         token_id,
+        probe: final_meta.get("probe_result").cloned(),
         text: final_meta
             .get("text")
             .and_then(|v| v.as_str())
@@ -539,6 +545,8 @@ pub(super) async fn run_ring(
     overlap_window: PrefillOverlapWindow,
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
+    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -582,6 +590,7 @@ pub(super) async fn run_ring(
             trace_id,
         );
         head_meta = add_images_to_head_meta(head_meta, (chunk_index == 0).then_some(images));
+        head_meta = add_probe_to_head_meta(head_meta, probe);
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
         head_meta["exec_end"] = json!(head.exec_end);
@@ -680,6 +689,7 @@ pub(super) async fn run_ring(
             );
             return Ok(PrefillOutcome {
                 token_id,
+                probe: sent.meta.get("probe_result").cloned(),
                 text: sent
                     .meta
                     .get("text")
@@ -737,6 +747,8 @@ pub(super) async fn run_direct(
     overlap_window: PrefillOverlapWindow,
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
+    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -816,6 +828,7 @@ pub(super) async fn run_direct(
                 ticket.id(),
                 &prefill_sequence_id,
                 trace_id,
+            probe,
             )
             .await
             {
@@ -946,10 +959,16 @@ pub(super) async fn run_direct(
                                 std::future::ready(Ok(head_sent)),
                                 &mut ticket,
                                 &head.node_id,
-                                crate::relay::frame_deadline(
-                                    chunk_size as usize,
-                                    if ci == 0 { images.len() } else { 0 },
-                                    plan.steps.len(),
+                                // A liveness deadline, not a work one: the chunk
+                                // may wait in the peer's queue behind another
+                                // session (see
+                                // `relay::PREFILL_FRAME_DEADLINE_PER_HOP`).
+                                crate::relay::prefill_frame_deadline(plan.steps.len()).max(
+                                    crate::relay::frame_deadline(
+                                        chunk_size as usize,
+                                        if ci == 0 { images.len() } else { 0 },
+                                        plan.steps.len(),
+                                    ),
                                 ),
                                 |_| {},
                             ),
@@ -1062,6 +1081,7 @@ pub(super) async fn run_direct(
     );
     Ok(PrefillOutcome {
         token_id,
+        probe: final_meta.get("probe_result").cloned(),
         text: final_meta
             .get("text")
             .and_then(|v| v.as_str())
@@ -1106,6 +1126,8 @@ pub(super) async fn dispatch_direct_prefill(
     ticket: &str,
     prefill_sequence_id: &str,
     trace_id: Option<&str>,
+    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    probe: Option<&DecisionProbe>,
 ) -> Result<crate::relay::SentFrame> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -1122,6 +1144,7 @@ pub(super) async fn dispatch_direct_prefill(
         trace_id,
     );
     head_meta = add_images_to_head_meta(head_meta, (chunk_index == 0).then_some(images));
+    head_meta = add_probe_to_head_meta(head_meta, probe);
     head_meta["next_hops"] = json!(next_hops);
     head_meta["reply_to"] = direct.reply_to(ticket);
     head_meta["prefill_sequence_id"] = json!(prefill_sequence_id);

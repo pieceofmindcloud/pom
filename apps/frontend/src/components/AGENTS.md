@@ -94,43 +94,18 @@ Per-file list:
   se a carga ou a renderização falhar. A rota normalizada faz parte da
   identidade da montagem para a troca entre telas do mesmo plugin não reter o
   componente anterior. Ver `docs/subsystems/plugins-ui.md`.
-- `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
-  pelo Chat. Mantém a tabela de fases, tempos por hop,
-  rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza
-  também os timings ponta a ponta com o processamento medido no nó, para não
-  chamar de gargalo do backend uma espera que ocorreu fora dele. A seção
-  distribuída mostra estado de coleta, cobertura de peers/spans, caminho
-  crítico, compute/transporte acumulados, overlap somente quando medido e os
-  histogramas agregados do `remote-stream`; não deduz `outside-node` por
-  subtração do wall-clock. Mostra também
-  o executor MoE efetivo e o motivo publicado pelo runtime quando há fallback
-  CPU ou indisponibilidade. O cartão distingue o caminho selecionado no
-  snapshot atual de `/health` do caminho observado no trace desta requisição;
-  cada fase também mostra seu `selected_path`, e uma divergência entre os dois
-  escopos é sinalizada. A timeline também mostra spans medidos, a decomposição
-  de `outside_node`, TTFT do servidor/motor/cliente, primeiro token, stream,
-  conexões e tokens por chamada; fronteiras ausentes permanecem não medidas.
-  O resumo exibe sempre a contagem e as razões do fallback HTTPS e, quando há
-  amostras, os quantis do intervalo de entrega de tokens do `remote-stream`,
-  separando produção, downstream, reserva do canal, fila e callback anterior;
-  o detalhe por nó também mostra o custo síncrono do draft MTP quando presente.
-  `TimingSummary` fica fora do `<details>` fechado para manter tokens/s, TTFT,
-  tempo de rede e total visíveis. O Chat fornece trace, timings e origem por
-  mensagem, então a mesma captura permanece disponível em mensagens anteriores.
-  O resumo por transporte diferencia RTT de execução, que inclui processamento
-  remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
-  medição da conexão quando disponível. A linha do backend separa
-  `node_backend_call_ms` (`llama_decode`/avaliação) de
-  `node_backend_sync_ms` (`llama_synchronize`). A linha da captura mostra o
-  ask-to-ready do scheduler, a chamada opaca `tensor_get`, o pós-processamento,
-  bytes e contagem de leituras; as conversões f32/f16 no peer e no cliente, a
-  conversão f8, a serialização do frame residual e a espera de envio/finalização
-  do corpo QUIC aparecem em linhas próprias. Os tempos de conversão são
-  subconjuntos do encode/decode geral, não devem ser somados novamente.
-  Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
-  hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
-  Uma coleta de transporte incompleta continua visível mesmo quando a resposta
-  terminou.
+- `TelemetryLine.tsx` - the open-source telemetry of a Chat answer: one compact
+  line with generation speed and tokens, TTFT, end-to-end total, prompt tokens
+  and their processing speed, and the pipeline (`source`). `basicTelemetry`
+  derives those numbers from the timings or, without them, from the trace.
+  Children render at the end of the line; the Chat puts the `chat.telemetry`
+  plugin slot there. The detailed, visual telemetry is not part of the POM.
+- `PluginSlot.tsx` - mounts the component an active plugin declares for a
+  native extension slot (`slots` in `pom-plugin-ui/v1`), through the same
+  module loader as `PluginScreen`. `usePluginSlot(slot)` resolves the claimant
+  from the plugin registry; while loading, without a claimant, or when the
+  module fails to load or render, the slot shows its fallback (nothing by
+  default) so a broken plugin never breaks the host screen.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
@@ -233,7 +208,12 @@ Per-file list:
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
   so an invisible exit layer never blocks the next hamburger click. A ação de
   sair da rede não fica exposta no menu.
-- `Notifications.tsx` — The activity bell: counts running slicing jobs
+- `ChatWaitingLine.tsx` — The Chat's line between sending and the first
+  token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
+  the "starting our engines" set while the deployment wakes from idle.
+- `Notifications.tsx` — The activity bell: carries the default-password
+  notice (once per start of the node, `lib/defaultPasswordNotice.ts`; it
+  replaced the fixed `DefaultPasswordNotice` banner), counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
   inside the popover. Offers can be accepted/rejected right there
@@ -269,8 +249,23 @@ Per-file list:
   Currently rendered hidden on Dashboard.
 - `ModelNetworkCanvas.tsx` - Cada card de máquina mostra também o TPS medido de
   decode e de prefill (`machine-tps`, de `peer_perf` do
-  `/api/ui/chat/telemetry`); sem medição diz "velocidade não medida". No
-  `PipelineGatewayNode`, o total de cada rota é o `total_ms` do backend
+  `/api/ui/chat/telemetry`) como selos (`speed-decode`/`speed-prefill`)
+  coloridos por `rateSpeed` (`../lib/peerSpeed`): a razão para a fatia mais
+  rápida do mesmo modelo (verde >= 75%, âmbar >= 40%, vermelho abaixo), neutro
+  quando só uma fatia foi medida; sem medição diz "velocidade não medida".
+  Cada card pode ser minimizado (`machine-compact-toggle`; nome, estado,
+  faixa, selos e uma linha de VRAM em `COMPACT_CARD_SIZE`), e o botão
+  `cards-compact-all` da barra dos modelos minimiza ou expande todos e apaga as
+  exceções; o estado fica em `readCardModes`/`writeCardModes`. Arestas,
+  `autoLayout` e limites do arrasto usam o tamanho real de cada card, e
+  "Organizar" grava só o que foi arrastado, para o arranjo se recompor quando
+  os cards mudam de tamanho. O `PipelineGatewayNode` é um card pequeno e
+  arrastável (posição em `GATEWAY_LAYOUT_ID`, no mesmo mapa das máquinas;
+  sem arrasto segue o último estágio): mostra o custo por token, o tok/s e o
+  aviso de relé; o botão `pipeline-gateway-open` (ou o duplo clique) abre a
+  janela com o resumo, todas as rotas (`pipeline-route`) perna por perna, o
+  modo de volta e as pernas por relé. No mapa de implantação ele continua
+  fixo. O total de cada rota é o `total_ms` do backend
   (`pipelineRouteTotalMs`): rede no modo de volta que o planejador escolheria
   mais compute de um token, com o tok/s equivalente (`pipeline-throughput`) e a
   divisão rede/modo/compute da melhor rota (`pipeline-route-breakdown`). A
@@ -307,10 +302,10 @@ Per-file list:
   summary; node and infer profiles use their own model and slice data instead.
   A missing peer load stays visibly unknown in the card meter and is never
   rendered as zero. The selected pipeline is drawn only forward; a virtual
-  `Gateway` is placed after the last layer stage and receives the return-leg
-  arrow. Its card shows every complete deployed route, including the return
-  leg, ordered by aggregate RTT and then node ID. It uses the least-cost route
-  for the headline and keeps alternatives visible; an absent leg remains
+  `Gateway` is placed after the last layer stage (until dragged) and receives
+  the return-leg arrow. Its window lists every complete deployed route,
+  including the return leg, ordered by time per token and then node ID. The
+  card uses the least-cost route for the headline; an absent leg remains
   unknown and is never treated as zero. An observed execution cost still
   includes peer compute when that measurement exists.
   When the Dashboard has an active deployment, its properties toggle is a
@@ -322,7 +317,10 @@ Per-file list:
   transporte efetivo (`HTTP`, `HTTPS` ou `QUIC`) observado na execução; quando
   a medição ainda não existe, conserva `RTT -` em vez de usar a sonda libp2p.
 - `PeerDetailCard.tsx` - The card of one machine, in the same drawing for every
-  machine. It lives outside `Dashboard` because it shows in two places: the
+  machine. Each GPU is one tile (`gpu-telemetry-row`: name, VRAM, usage,
+  temperature, power). `variant="dialog"` is the Flow window: no frame, larger
+  header with the speed badges (`SpeedBadge.tsx`, shared with the canvas),
+  named Resources/Deployment sections, `Modal size="xl"` with `titleHidden`. It lives outside `Dashboard` because it shows in two places: the
   details tab stacks one card per machine (`networkPeers` splits the whole
   network into the active deployment first, in layer order, then the rest), and
   the double-click on a Flow canvas card opens the same card in a
@@ -369,6 +367,17 @@ Per-file list:
   local medido do contexto e a razão da falha de anexação. A seção térmica mostra uma linha por GPU e declara temperatura
   desconhecida quando o driver não fornece leitura; a potência permanece
   desconhecida quando a plataforma não publica watts.
+- `PluginServices.tsx` - what a machine's plugins serve to the network
+  (`node.plugin_services`, e.g. Qdrant as the RAG server). `PluginServiceBadge`
+  is the badge, toned by status; `PluginServiceTether` hangs the badges under
+  the machine's card in `ModelNetworkCanvas` with a connecting line, and
+  `PeerDetailCard` lists them in a Services section. Tests in
+  `PluginServices.test.tsx`.
+- `KvCache.tsx` - the KV cache block of `PeerDetailCard`: disk used by the
+  machine's snapshot directory (`node.kv_cache`), the host-memory cache from
+  `/health` (`cache_ram`) and "Clear cache" with a confirmation, sent to the
+  local node with the target `node_id` (`clearKvCache`). Tests in
+  `KvCache.test.tsx`.
 - `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
   camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),
   os totais de peso por lado, onde o cache KV ficou e a cabeça de saída.
@@ -450,6 +459,10 @@ Per-file list:
   `assets/brand/pom-logo-dark.png` is the whole change. `variant` is only about
   filling: `"card"` pads (setup screen), `"band"` fills edge to edge (the
   sidebar header, which is the band). `LogoMark` (the real artwork, `<img>` from `/brand/`, served as a static asset because it is a detailed raster shown small) + `Logo` with wordmark. Name, tagline and image URL all come from `lib/brand` (`brand.json` at the repository root), never from literals here; callers size it through `size` only, so sidebar, setup screen and tab icon follow one source. The mark carries its own glow on transparency, so it gets no plate behind it.
+- `PlatformIcon.tsx` - Windows, Linux and macOS marks drawn inline in
+  `currentColor` (lucide has no brand icons), each with its name as the
+  accessible label and title. The Plugins cards use them for the systems a
+  plugin publishes builds for.
 - `MachineIcon.tsx` — `machineKind(system)` classifies a machine from its
   `SystemLoad` (nvidia GPU box, Apple Silicon Mac, Windows, Linux) into a
   label/icon/accent color; `MachineIcon` renders it. Reused by Dashboard,
@@ -491,8 +504,9 @@ Key logic carriers:
 - `ModelNetworkCanvas.isControlTarget` (ModelNetworkCanvas.tsx:69) — the
   double-click guard: a gesture that landed on a control is not a gesture on
   the card, so opening details never becomes a trap for a future button.
-- `ModelNetworkCanvas.beginDrag`/`drag` (ModelNetworkCanvas.tsx:152) — pointer
-  capture drag with zoom-aware offsets and clamping to the canvas; positions are
+- `ModelNetworkCanvas.beginDrag`/`drag` — pointer capture drag shared by
+  machine cards and the gateway, keyed by layout id and clamped by card size;
+  a pointer that starts on a control is left to the control. Positions are
   persisted on every move (`writePositions`).
 - `DeployNetworkCanvas.tsx` — The compact, deploy-time topology view. It
   reutiliza o contrato visual do `ModelNetworkCanvas`: fundo pontilhado, cards de
@@ -532,16 +546,41 @@ Key logic carriers:
   rolagem interna para preservar o tamanho dos cards e alinhar a curva aos
   endpoints mesmo quando o conteúdo é mais largo que o painel. A separação existe porque este grafo
   representa uma implantação ainda não aplicada.
+- `SidecarPicker.tsx` - the vision projector / MTP draft picker shared by the
+  three screens: a select naming each compatible file with its size and
+  machines, and below it one line (size and machine count) with "More info",
+  which opens a window with the full name and the path on every machine - the
+  per-machine list used to fill the inspector. On the deploy screen it also says whether the target already has
+  the file, copies it from another machine, or why it cannot. `sidecarOptions`
+  builds the options from the cluster catalog with the backend's
+  compatibility rule.
+- `GuideDialog.tsx` - a Documentation guide (`?guia=`) opened in a `Modal`
+  (`size="xl"`) next to the fields it explains. Nothing in it navigates away:
+  a reference link (`deep`) opens that document inside the dialog (loaded on
+  demand from `src/docs/`), with "Back to the guide". `GuideHelpButton` is the
+  round "?" button a section heading uses.
+- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
+  (Shards) or in a window (Models) and saved on the principal through
+  `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
 - `DeploymentInspector.tsx` - o inspetor de propriedades de uma implantação, e
   **um só** para os dois ecrãs: a tela de implantar o usa editável, o Histórico
   o usa com `readOnly` para mostrar com que parâmetros uma versão subiu. Em
   somente leitura não há `<input>` desabilitado: há o valor escrito. Três
   categorias, e a fronteira entre elas é de quem é o parâmetro - *Configurações
-  padrões* (o que o llama.cpp já tem, incluindo os combos de cache KV da
-  instalação), *Configurações POM* (desativar embeddings, ajuste de memória,
-  chunks em voo, fusão de fatias, precisão do estado oculto) e *Configurações
-  POM (DESENV)* (motor de inferência, detector de ciclo, recuo do MTP para a
-  RAM e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
+  padrões* (o que o llama.cpp já tem: contexto e lote; a amostragem na ordem
+  do llama.cpp - temperatura, top-p, top-k, min-p, penalidades de repetição,
+  presença e frequência, DRY - seguida da semente; base, tamanho permitido e
+  janela do DRY só aparecem com o multiplicador acima de 0, que é o que liga o
+  DRY; os combos de cache KV da instalação; os interruptores; e a
+  **Especulação**, uma escolha só - Nenhuma, MTP ou lookup -, porque o gateway
+  nunca roda as duas na mesma rodada (`lib/speculation.ts`); os números do MTP
+  e onde ele fica só aparecem com o MTP escolhido, e os do lookup só com ele), *Configurações POM* (desativar embeddings, ajuste de memória,
+  chunks em voo, fusão de fatias, precisão do estado oculto, and a *Beta*
+  group inside it, shown to everyone: MoE experts in RAM, the GPU expert cache
+  and the automatic prefill chunk) e *Configurações POM (DESENV)* (motor de
+  inferência e descarregamento ocioso por peer). Default settings, POM
+  settings and the Beta group each have a help button by the title that opens
+  their guide in a `GuideDialog`. O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto
@@ -554,32 +593,15 @@ Key logic carriers:
   depende de capability. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj pré-selecionado para modelos
   inteiros e fatias, oferece os `mmproj_candidates` compatíveis para escolha de
-  formato e mostra `mmproj_reason` quando não há candidatos. O teste de idle
+  formato e mostra `mmproj_reason` quando não há candidatos. With
+  `sidecars` (`DeployPlan.sidecars`), the vision section and the MTP section
+  render `SidecarPicker` instead, over the network's compatible files. O teste de idle
   fornece `candidates`, `reason` e `onPathChange` do contrato completo. A seção
   `Configurações POM (DESENV)` só é montada quando
   `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
   desligada, os controles somem, mas os valores recebidos continuam no estado
   e seguem no pedido quando um controle visível é editado. O modo ausente é
   apresentado como `dense` (`llama.cpp`).
-- `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
-  inferência usados pelo Deploy Studio e pela tela de implantações registradas;
-  inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,
-  1..8) e a reserva configurável do fit (`fit_memory_margin_mb`, em MiB), e
-  mantém os ajustes por máquina fora do bloco global. Também expõe o detector de
-  ciclos, seus limites de janela e o número de repetições. Todo campo numérico
-  passa `tip` para o `Field` (dica no `[i]`, sem texto fixo no layout);
-  `deploy.knob.<chave>Hint` no `locales.ts` é a fonte, e todas as chaves de
-  `KNOBS` agora têm uma. `CapabilitySwitch` usa o
-  estado tri-state retornado pelo plano: oculta incompatíveis, mantém
-  indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
-  controle `no_embeddings`.
-  O seletor `hidden_state_dtype` mantém f16 como padrão, oferece f32 como
-  opção sem perda de quatro bytes por valor e f8/i4g64/i4g128 como escolhas
-  explícitas com perda. f32/f16 não exigem capability; os formatos com perda
-  ficam desabilitados até todos os peers selecionados anunciarem suporte, e a
-  dica mostra o motivo da capability correspondente ao formato escolhido.
-  `RuntimeParamsForm` recebe a mesma flag e oculta os controles de ciclo e
-  recuo MTP quando ela está desligada.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `PeerDetailCard.ContextReservationNotice` (PeerDetailCard.tsx) - when the

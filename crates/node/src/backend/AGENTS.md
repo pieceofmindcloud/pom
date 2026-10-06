@@ -56,11 +56,14 @@ local do receptor.
 
 O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
 de geração dispara `reload_model` em paralelo para os peers ociosos da pipeline
-planejada. O evento é uma barreira idempotente: peer pronto retorna, peer
-iniciando é aguardado e peer ocioso carrega o runtime remoto. A espera da
-rodada tem teto de 15 minutos, para uma carga fria concluir sem deixar a
-requisição pendurada indefinidamente; o descarregamento continua sendo
-avaliado pelo monitor já existente.
+planejada. The event is idempotent and answers at once: `ready`, or `loading`
+when the peer was idle (the call starts the load) or already loading. The
+gateway repeats it every second until every planned peer is `ready`, with a
+15 min ceiling, instead of holding one call open for the whole model load;
+a 503 carries the reason a load cannot happen and ends the wait. After the
+wake it waits for the peers' announcement and plans again
+(`generate_stream_inner`, span `pipeline_wake`). O descarregamento continua
+sendo avaliado pelo monitor já existente.
 
 O `serve_with_quic` encerra o endpoint HTTP/3 com um canal one-shot, para que
 um pedido de parada emitido antes do primeiro poll da task não seja perdido.
@@ -114,7 +117,7 @@ profile policy remains the effective authorization boundary.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
   `Caller`. Uma chave desconhecida é consultada no principal pelo canal interno
-  autenticado e falha fechada em timeout ou erro. A porta de inferência não
+  autenticado, enviando só o hash, e falha fechada em timeout ou erro. A porta de inferência não
   usa a `connection_key` compartilhada somente em redes privadas; em redes
   públicas exige transporte TLS e o marcador interno, enquanto os callbacks de
   resultado validam o `Ticket` por quadro.
@@ -135,20 +138,18 @@ profile policy remains the effective authorization boundary.
   builds `GatewayState.prefix_disk`, `generate_stream_with_stops` spills each
   retained turn to disk in a detached task and, on a memory miss, restores the
   longest strict-prefix snapshot before prefill (`prefix_reuse_status = "disk"`),
-  the adaptive chunk tuner learns bytes/token, bandwidth, compute and RTT from
-  completed prefill traces for each model/route without waiting on the next
-  request, capped by `prefill_chunk_tokens` and `n_batch`, and the `testkit`
+  the adaptive chunk tuner fits each hop and link as fixed + per-token cost
+  from completed prefill traces for each model/route and simulates the chunked
+  pipeline for the next prompt's size to pick the chunk (see
+  `docs/subsystems/inference.md`, "Adaptive chunk"), capped by
+  `prefill_chunk_tokens` and `n_batch`, and the `testkit`
   test scaffold (peer/state_with/body_of).
 - `db.rs` - único armazenamento SQLite local, interno ao crate: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas e linhas do log de processo por `deploy_id`. Cada admin efetivo
-  mantém sua própria réplica dos logs e da auditoria. Os logs preservam a
-  ordem de chegada nesta réplica, guardam o timestamp de origem só como dado
-  informativo e acumulam descartes da fila limitada. `try_prune_cluster_logs`
-  apaga somente `cluster_logs`, em transações `BEGIN IMMEDIATE` de até 256
-  linhas numa conexão com timeout zero; contenda encerra a rodada e o WAL é
-  truncado depois de uma exclusão. O histórico identifica
+  conversas. Cada admin efetivo mantém sua própria réplica da auditoria. The
+  cluster process log is not here: the logs plugin keeps it in its own
+  database, and the schema drops the old `cluster_logs` tables. O histórico identifica
   modelos inteiros pelo caminho local, sem
   hashear os pesos durante o registro do catálogo; hashes de conteúdo ficam
   nas fronteiras explícitas de implantação, fatiamento e transferência.
@@ -184,7 +185,10 @@ profile policy remains the effective authorization boundary.
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
-  logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
+  logs (`GET /api/ui/cluster-logs` answered by the logs plugin, 403
+  `logs_plugin_required` without it; `POST /api/ui/network/logs`, primary
+  only, refuses turning collection on unless the logs plugin is active on that
+  node, while turning it off always works), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
   `GET /api/ui/plugins` (all profiles) lists local state for independent
   plugins restored or seen by the runtime (`crate::plugins`), each with its
@@ -249,7 +253,9 @@ profile policy remains the effective authorization boundary.
   assina-os com o principal local e grava a cadeia antes do download; uma
   autoridade secundária não pode fabricar esses metadados.
   `POST /api/ui/chat-key` é permitido a `node` porque cria somente a chave
-  local `pom-<node_id>` e a registra no principal pela rota interna assinada;
+  local `pom-<node_id>` e a registra no principal pela rota interna assinada
+  (só o hash vai; o segredo fica em `local_secrets`, `PomDb::node_api_key`, e
+  é trocado quando não bate mais com uma chave ativa);
   a exceção não permite criar, revogar ou validar chaves de terceiros.
   A leitura `/api/cluster/network-settings` é interna e somente leitura: um
   nó adota do principal o documento completo de `NetworkSettings`, inclusive
@@ -418,8 +424,13 @@ profile policy remains the effective authorization boundary.
   A secondary admin keeps management access but cannot promote another admin.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
-  transfer offer and acceptance state, monotonic replay records, and full-chain
-  reconciliation. A profile set to `admin` without a valid local chain remains
+  transfer offer and acceptance state, and full-chain reconciliation. Consumed
+  nonces live in a local replay ledger beside the chain
+  (`replay_path_for`: `<chain>.replay.json`), never in the shared document:
+  control-envelope entries expire with the envelope's `CONTROL_WINDOW_SECS`
+  (5 min) window, admin-mutation entries (grants, demotions, transfers, infer
+  promotion) have no clock and are kept. `ControlEnvelope.issued_at` is signed
+  and checked against that window on both verify paths. A profile set to `admin` without a valid local chain remains
   without administrative capability. `is_anchored`/`anchor_file_exists` are the
   anchored-versus-not judgement the UI shows; `parse_transported`,
   `anchor_fingerprint` and `fingerprint_matches` are the single manual check
@@ -429,9 +440,11 @@ profile policy remains the effective authorization boundary.
   already has one, because replacing a root is manual re-anchoring on the
   machine (`--replace`), not an interface gesture. A chain created by first
   access also carries a signed `setup` block with the network name, visibility,
-  access policy, geographic label, admin advertised address, bootstrap address
-  and federated-directory replicas, so a joining node does not retype network
-  identity data. `ensure_setup_metadata` repairs only a missing setup block
+  access policy, geographic label, `relay_hints` (dedicated relay `pk:` keys,
+  never addresses) and federated-directory replicas, so a joining node does not
+  retype network identity data. The block carries no IP: a joining node finds
+  the principal by its key through pkarr (`main::spawn_pkarr_bootstrap`), and
+  setup copies `relay_hints` into its `relay_peers`. `ensure_setup_metadata` repairs only a missing setup block
   from the local administrator configuration, and only when the local
   principal is the current primary.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
@@ -471,14 +484,45 @@ profile policy remains the effective authorization boundary.
   carregadas sobrepostas são permitidas quando pertencem a caminhos distintos;
   a cobertura é validada pelo caminho executável, não pela união dos arquivos.
   `undeploy` tira uma pipeline inteira do ar.
+- `webui/sidecars.rs` - `GET/POST /api/ui/model-sidecar-links`: the
+  principal's model -> projector / MTP draft links (`model_sidecar_links` in
+  `pom.db`). A secondary reads them from the principal and keeps the last copy
+  (`stale`), and forwards a save there. `load_sidecar_links` is what the deploy
+  preview and launch read.
+- `deploy/sidecars.rs` - `attach_sidecars` fills `Plan.sidecars`: the
+  compatible files of the network with every holder, the head's projector and
+  the tail's MTP draft (screen choice, else the link), whether each is already
+  on its target or copied from a holder, and the refusal when nobody has it. A
+  compatible external draft turns `capabilities.mtp` supported for a model
+  without `nextn`. `lifecycle::run` adds the copies to its `pulls` and sends
+  `mmproj_file` / `mtp_draft_file` so the target resolves the path on its own
+  disk (`jobs_apply`). `transfer::servable_path` serves a path outside the
+  shard folder only when it is in the node's sidecar inventory, and a finished
+  download invalidates the receiver's catalog.
+- `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
+  `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
+  `POST /api/ui/kv-cache/clear` (AdminOnly, forwarded by `node_id` like
+  `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
+  `GatewayState.prefix_disk` and clears the inference server's host-memory
+  cache. See `http-api.md`.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf`. Manifestos v1 são mesclados por `pom_id` no peer receptor,
+  require `.gguf` or no extension. Manifestos v1 são mesclados por `pom_id` no peer receptor,
   preservando `parts` e `tp_parts` locais. **O veredito volta para quem
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
+- `decisions.rs` - typed decisions, `POST /v1/systemone` and `/v1/decisions`
+  (Jev API shape). Each question is one blocking generation with
+  `max_tokens=1`, thinking off and a `prefill::DecisionProbe`: the last peer
+  returns the probability of each single-token label (`A`.. for choice,
+  `0`.. for score, `Yes`/`No` for noul) and this file turns them into typed
+  answers and confidences. The prompt is ordered fixed system turn ->
+  question head (instructions + answer format) -> compact state -> options;
+  the text up to the state is the prefix-cache key and the head's retain
+  boundary (`retain_prefix_bytes`), so repeated questions over new states
+  reuse the question's KV. See `docs/subsystems/inference.md` 3.9.
 - `openai.rs` - OpenAI-compatible `/v1/*` on top of the generation path;
   `max_tokens` da requisição é `min(pedido, n_ctx restante)`, com
   `DEFAULT_MAX_TOKENS=512` só como padrão de quem não pede. O
@@ -573,10 +617,13 @@ profile policy remains the effective authorization boundary.
   uma vez, tenta cada endereço anunciado - na ordem de `gateway_bases`, o host
   que já respondeu primeiro - e cai no túnel libp2p
   (`peer_client::send_to_gateway_over`), que é o caminho para um peer atrás de
-  NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
+  NAT simétrico. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` é o último recurso de quem já
   percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
-  `/api/ui/cluster`). Ficam fora do túnel a transferência de pesos e a
-  sincronização de `admin.rs`.
+  `/api/ui/cluster`). `admin.rs` sync with the principal (`sync_json`,
+  `post_internal_json`, `validate_api_key_remote_parts`) uses the same
+  `send_to_gateway_over`: direct addresses and, last, the tunnel; `sync_json`
+  signs a new envelope on every attempt. Only weight transfer stays outside
+  the tunnel.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
   request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
   vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo
@@ -625,8 +672,12 @@ faz o download autenticado do blob persistido.
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
   inference `/health` before planning, trying every inference address in
   `Network::inference_bases` order (the host that already answered first) with
-  the `ADMISSION_PROBE_TIMEOUT` of 300ms each, then `/health` over the libp2p
-  tunnel (`infer_tunnel::health_via_tunnel`, 3 s); probing only the first
+  the `ADMISSION_PROBE_TIMEOUT` of 100ms each, then `/health` over the libp2p
+  tunnel (`infer_tunnel::health_via_tunnel`, 3 s). The peer answers `/health`
+  without waiting for its engine (a busy peer returns its last snapshot with
+  `busy: true`), so a peer mid-prefill stays in the plan. Session lifecycle
+  calls use `SESSION_LIFECYCLE_TIMEOUT` (60 s), because the peer's handler
+  needs the engine lock. Probing only the first
   announced address left a peer behind an unreachable IPv6 out of every plan
   ("Gap at layer 0"). A direct success is remembered with
   `RouteTable::mark_success`. The probe follows the pinned route
@@ -741,7 +792,10 @@ faz o download autenticado do blob persistido.
 - `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
   número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
   de backend, escolha do operador, que a decisão do produto proíbe levantar.
-  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`. Esgotar a
+  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`, recomputed
+  after prefill with the real prompt (`OutputBudget::within_session_window`,
+  against `n_ctx_per_session`); reaching the window also ends with `length`.
+  Esgotar a
   perna não encerra a resposta -
   `note_leg_boundary` conta a perna e o laço segue decodificando na **mesma**
   sessão de KV, no mesmo fluxo SSE, sem reprefill e sem o cliente ver nada
@@ -754,14 +808,10 @@ faz o download autenticado do blob persistido.
   histórico de 513 tokens; a resposta separa TTFT, velocidade do prefill,
   velocidade da geração e total em `timings`. `generation_finish_reason` testa o
   orçamento total antes do EOS em cada ramo de decodificação;
-  `audit_status_for_summary` registra `length` como `incomplete`, e reserva
-  `partial` para falha de transporte com texto salvo.
-  O detector de ciclos (`inference/cycle.rs`) roda depois de cada peça no
-  gateway. Ele exige três janelas canônicas, trata sufixos numéricos de
-  identificadores como a mesma estrutura e preserva números de dados. Quando
-  confirma, termina sem pedir outra ficha, libera a sessão e publica
-  `finish_reason: "cycle"` e `partial: true`; desligado por padrão, o
-  detector é ligado em `RuntimeParams` ou com `--cycle-detection`.
+  `audit_status_for_summary` registra `length` como `incomplete` - exceto
+  numa decisão tipada (trace com `jev`/`probe`), que sempre para no seu único
+  token e por isso é `ok` -, e reserva `partial` para falha de transporte com
+  texto salvo.
   **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
   aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
   ela foi removida porque nenhum dos dois
@@ -874,6 +924,10 @@ faz o download autenticado do blob persistido.
   fila para o scan atual terminar. O enriquecimento registra início e conclusão
   (inclusive descarte), e uma falha terminal marca `metadata_error` no item e
   não impede os demais, então a passagem termina com `metadata_complete: true`.
+  Um arquivo que o enriquecimento descarta (sidecar que só o header revela,
+  como um draft MTP sem o prefixo `mtp-` ou sem extensão) sai também do
+  inventário atual (`drop_discarded`): pendente para sempre, ele reiniciava o
+  enriquecimento em laço, centenas de vezes por segundo.
   O resultado publicado é reutilizado nas requisições da interface; modelo cujo
   caminho, tamanho e mtime não mudaram não é relido. Nova leitura só ocorre em
   refresh por TTL ou invalidação. O survey de implantação só recusa uma
@@ -999,7 +1053,8 @@ faz o download autenticado do blob persistido.
   (`servable_path` canonicalizes and checks `starts_with`), while
   `local_send_path` lets the *operator's own* screen offer any readable GGUF
   via an opaque `grant` id (`TransferState::grants`) so a path never travels.
-  `ensure_gguf` (magic + extension, conjunction) gates every exit. **An offer
+  `ensure_gguf` (magic + GGUF file name, conjunction: `.gguf` or no extension,
+  never an Ollama `sha256-` blob) gates every exit. **An offer
   carries no digest**: `send_to_peer` posts only a `stat` (name + real
   `size_bytes`, `md5` empty - the field still travels because an older peer
   requires it); hashing the whole file is what used to hold the bell on the
@@ -1062,8 +1117,9 @@ faz o download autenticado do blob persistido.
   installs the trust document, persists network details in both `pom.json` and
   `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
   a network while preserving local hardware preferences. The setup hardware
-  response returns the effective P2P port used to render the advertised IPv6;
-  the anchor preview signs the network setup metadata into the trust document.
+  response returns the effective P2P port used to render the optional preferred
+  address (never pre-filled nor required); the anchor preview signs the network
+  setup metadata into the trust document.
   Public-network setup accepts an empty federated-directory list; configured
   environment or administration entries are still copied into that metadata.
   The setup health response also reports the existing Windows firewall-rule
@@ -1074,8 +1130,11 @@ faz o download autenticado do blob persistido.
   and `pom.json` persists only its Argon2id hash. Localhost-only exposure has
   no administrative password.
   `GET /api/public/network(s)` exposes public network metadata, including the
-  signed trust document, Markdown description/rules/channels and a P2P
-  bootstrap address for the no-secret join flow. `GET/POST
+  signed trust document, Markdown description/rules/channels, the publisher
+  `pk:` key and `relay_hints` for the no-secret join flow - never an address.
+  `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
+  through pkarr on the node and answers only `direct|relayed|unresolved` plus a
+  relay count (30 s cache; keys the node does not list get 404). `GET/POST
   /api/public/directory/records` is the federated directory
   ingress: records are checked locally for Ed25519 signature, proof of work,
   trust-root consistency and expiry before entering the bounded SQLite cache.
@@ -1085,6 +1144,13 @@ faz o download autenticado do blob persistido.
   peers through the listing feature. Direct pkarr discovery remains available
   only while the active network is public; it still cannot enumerate arbitrary
   pkarr keys or make an unroutable IPv6 address reachable.
+  `gateway::PkarrPublishHandle` is the live pkarr publisher: it rebuilds the
+  record from `Network::libp2p_addrs` every 15 s (`record_addrs` turns circuits
+  into relay keys and drops private addresses) and republishes on change or
+  every 30 min, with or without a deployment. Failed publishes back off from
+  15 s to 30 min (`PublishBackoff`) and only the 1st, 2nd, 4th, 8th...
+  consecutive failure logs at `warn`. With `--no-pkarr` there is no publisher
+  (`pkarr_publisher` is `None`).
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
@@ -1122,6 +1188,14 @@ faz o download autenticado do blob persistido.
   hashes the actual body before a mutating handler runs. `ApiKeyAuth` accepts
   `authorization` or `x-api-key`, but only for an active API key, and
   `api_key_identity` supplies the stable non-secret id used by the audit trail.
+  API keys are stored and exchanged only as `key_hash` (SHA-256 of the secret,
+  `api_key_hash`) plus `key_hint` (`api_key_hint`, start and end only); the
+  secret (`generate_api_key_secret`, `sk-pom-` + 32 random bytes) leaves the
+  node once, in the `POST /admin/api-keys` response (`IssuedApiKey`). The
+  tracking id (`ApiKey.id`, UUID v4) is what logs record. `db.rs`
+  (`migrate_api_key_secrets`) converts pre-hash databases in place, keeping
+  every id, and rewrites the file so no plain-text secret survives. `pom.json`
+  never carries API keys.
   `internal_node_token` remains the private-network credential for inference
   transport; client API keys never cross that boundary.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
@@ -1178,7 +1252,7 @@ faz o download autenticado do blob persistido.
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`
   (`Catalog`, `GgufLayout`, `PeerBudget`, `pom::PomManifest`), `crate::splitter`
   (`MergePart`, `merge`), `crate::sysmon`, `crate::route` (`RouteTable` for the
-  cluster view), `crate::pkarr_node` (`detect_local_ip`), `crate::prefill`
+  cluster view), `crate::addrs` (`outbound_local_ip`), `crate::prefill`
   (`RequestTrace` in the summaries), `crate::direct` (`ReplyInbox`,
   `DirectReply`, `Ticket`, `self_reply_urls`, `handle_relay_result`,
   `RELAY_RESULT_PATH` - the direct-reply relay that lets the tail answer the
@@ -1205,6 +1279,10 @@ inteiro ou do `ShardSet` escolhido. A interface pré-seleciona o primeiro
 candidato compatível e pode enviar `DeployRequest.mmproj_path` para escolher
 outro formato na cabeça selecionada. A seleção da cabeça usa a faixa e o nome
 do candidato escolhido, não o primeiro arquivo de visão da máquina.
+`deploy::launch` only passes `mmproj_path` to the plan with `vision: true`, and
+`planning::resolve_head_projector` resolves it against the head by path or, if
+the screen sent another machine's copy, by the unique file name among the
+head's candidates; with no match, the plan refuses naming the file.
 `DeployRequest.vision` só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve

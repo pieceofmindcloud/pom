@@ -38,35 +38,118 @@ pub fn prompt_chunk_of(prefill_chunk_tokens: u32, n_batch: u32) -> u32 {
     prefill_chunk_tokens.max(1).min(n_batch.max(1))
 }
 
+/// Time of one call of a pipeline stage as `fixed + per_token * tokens`,
+/// fitted by weighted least squares over the points seen so far. Older points
+/// decay, so the fit follows a route that changes.
 #[derive(Debug, Clone, Copy, Default)]
+struct StageFit {
+    weight: f64,
+    sum_x: f64,
+    sum_y: f64,
+    sum_xx: f64,
+    sum_xy: f64,
+}
+
+impl StageFit {
+    fn decay(&mut self, factor: f64) {
+        self.weight *= factor;
+        self.sum_x *= factor;
+        self.sum_y *= factor;
+        self.sum_xx *= factor;
+        self.sum_xy *= factor;
+    }
+
+    fn add(&mut self, tokens: f64, ms: f64) {
+        if !(tokens > 0.0 && ms.is_finite() && ms >= 0.0) {
+            return;
+        }
+        self.weight += 1.0;
+        self.sum_x += tokens;
+        self.sum_y += ms;
+        self.sum_xx += tokens * tokens;
+        self.sum_xy += tokens * ms;
+    }
+
+    /// `(fixed_ms, ms_per_token)`. With a single chunk size seen, the slope
+    /// is unknown and the whole cost is treated as per token (no fixed part),
+    /// which never makes chunks smaller than the data supports.
+    fn line(&self) -> Option<(f64, f64)> {
+        if self.weight <= 0.0 || self.sum_x <= 0.0 {
+            return None;
+        }
+        let mean_x = self.sum_x / self.weight;
+        let mean_y = self.sum_y / self.weight;
+        let var_x = self.sum_xx / self.weight - mean_x * mean_x;
+        let per_token = if var_x > 1e-6 {
+            (self.sum_xy / self.weight - mean_x * mean_y) / var_x
+        } else {
+            mean_y / mean_x
+        };
+        let per_token = per_token.max(1e-4);
+        let fixed = (mean_y - per_token * mean_x).max(0.0);
+        Some((fixed, per_token))
+    }
+}
+
+/// What the tuner knows about one route: for every hop, the link into it and
+/// its compute, each as a fixed-plus-per-token stage.
+#[derive(Debug, Clone, Default)]
 struct AdaptivePrefillProfile {
-    bytes_per_token: f64,
-    bandwidth_bytes_per_ms: f64,
-    compute_ms_per_token: f64,
-    rtt_ms: f64,
+    /// Pipeline order: link into hop 0, hop 0, link into hop 1, hop 1, ...
+    stages: Vec<StageFit>,
 }
 
 /// Learns from completed prefill traces and chooses a chunk without waiting on
 /// the request path. The configured chunk and `n_batch` remain hard ceilings.
+///
+/// The choice simulates the chunked pipeline: every hop and every link is a
+/// stage whose call costs `fixed + per_token * chunk`, chunks flow through
+/// the stages in order with at most `max_inflight` of them in flight, and the
+/// chunk size with the earliest finish of the last chunk wins. The fixed part
+/// is what the previous heuristic missed: on a fast LAN it read a near-zero
+/// RTT and cut a 199-token prompt into five 48-token chunks, paying the
+/// per-call overhead (GPU sync, frame encode) five times on every hop.
 #[derive(Debug, Default)]
 pub(crate) struct AdaptiveChunkTuner {
     profiles: StdMutex<HashMap<String, AdaptivePrefillProfile>>,
 }
+
+pub(crate) const MIN_CHUNK: u32 = 32;
+/// The smallest chunk while the MoE expert cache is on. The cache serves
+/// batches of up to 32 tokens as generation, uploading the experts they miss:
+/// a 32-token prefill chunk went through it, crossed PCIe for the experts of
+/// every chunk and evicted the ones generation keeps hot. Above that, prefill
+/// takes the regular offload.
+pub(crate) const MOE_CACHE_MIN_CHUNK: u32 = 64;
+const CHUNK_STEP: u32 = 16;
+/// Weight kept by older observations each time a trace is added.
+const FIT_DECAY: f64 = 0.8;
 
 impl AdaptiveChunkTuner {
     pub(crate) fn default_arc() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
-    pub(crate) fn choose(&self, route: &str, configured_max: u32, n_batch: u32) -> u32 {
+    /// Chunk size for a prompt of about `prompt_tokens` new tokens.
+    pub(crate) fn choose(
+        &self,
+        route: &str,
+        configured_max: u32,
+        n_batch: u32,
+        prompt_tokens: u32,
+        max_inflight: usize,
+        min_chunk: u32,
+    ) -> u32 {
         let ceiling = prompt_chunk_of(configured_max, n_batch);
         let profile = self
             .profiles
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(route)
-            .copied();
-        profile.map_or(ceiling, |profile| choose_from_profile(ceiling, profile))
+            .cloned();
+        profile.map_or(ceiling, |profile| {
+            choose_from_profile(ceiling, &profile, prompt_tokens, max_inflight, min_chunk)
+        })
     }
 
     pub(crate) fn observe(
@@ -76,48 +159,40 @@ impl AdaptiveChunkTuner {
         prompt_tokens: u32,
         cached_tokens: u32,
     ) {
-        let processed_tokens = prompt_tokens.saturating_sub(cached_tokens);
-        if processed_tokens == 0 {
+        let processed = f64::from(prompt_tokens.saturating_sub(cached_tokens));
+        if processed <= 0.0 || trace.hops.is_empty() {
             return;
         }
-
-        let mut compute_ms = 0.0;
-        let mut network_ms = 0.0;
-        let mut bytes_sent = 0.0;
-        let mut rtt_ms = 0.0;
+        let chunk = f64::from(trace.prefill_chunk_tokens);
+        let mut points: Vec<Vec<(f64, f64)>> = Vec::with_capacity(trace.hops.len() * 2);
         for hop in &trace.hops {
             let phase = &hop.prefill;
-            compute_ms += phase.node_backend_call_ms.max(0.0);
-            network_ms += phase.network_ms as f64;
-            bytes_sent += phase.hidden_state_bytes_sent as f64;
-            for transport in &phase.transport_summary.transports {
-                if transport.bytes_sent > 0 {
-                    rtt_ms += transport.net_rtt_median_ms as f64;
-                }
+            if phase.calls == 0 {
+                return;
             }
-        }
-        if bytes_sent <= 0.0 || compute_ms <= 0.0 || rtt_ms <= 0.0 {
-            return;
-        }
-        if network_ms <= 0.0 {
-            network_ms = rtt_ms;
-        }
-        let sample = AdaptivePrefillProfile {
-            bytes_per_token: bytes_sent / f64::from(processed_tokens),
-            bandwidth_bytes_per_ms: bytes_sent / network_ms,
-            compute_ms_per_token: compute_ms / f64::from(processed_tokens),
-            rtt_ms,
-        };
-        if ![
-            sample.bytes_per_token,
-            sample.bandwidth_bytes_per_ms,
-            sample.compute_ms_per_token,
-            sample.rtt_ms,
-        ]
-        .into_iter()
-        .all(|value| value.is_finite() && value > 0.0)
-        {
-            return;
+            let calls = f64::from(phase.calls);
+            let mean_tokens = processed / calls;
+            // Link into the hop: the bytes scale with the chunk, the round
+            // trip does not.
+            let rtt = phase
+                .transport_summary
+                .transports
+                .iter()
+                .filter(|transport| transport.calls > 0)
+                .map(|transport| transport.net_rtt_median_ms as f64)
+                .fold(0.0, f64::max);
+            let wire = (phase.network_ms as f64 / calls - rtt).max(0.0);
+            points.push(vec![
+                (mean_tokens, rtt + wire),
+                (mean_tokens * 2.0, rtt + wire * 2.0),
+            ]);
+            // Compute: the mean call (a partial last chunk pulls it below a
+            // full one) and the median call, which is a full chunk.
+            let mut compute = vec![(mean_tokens, phase.processing_ms as f64 / calls)];
+            if chunk > 0.0 && phase.node_p50_ms > 0.0 && (chunk - mean_tokens).abs() > 0.5 {
+                compute.push((chunk.min(processed), phase.node_p50_ms));
+            }
+            points.push(compute);
         }
 
         let mut profiles = self
@@ -125,46 +200,101 @@ impl AdaptiveChunkTuner {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let profile = profiles.entry(route.to_string()).or_default();
-        const ALPHA: f64 = 0.25;
-        if profile.bytes_per_token == 0.0 {
-            *profile = sample;
-        } else {
-            profile.bytes_per_token = ewma(profile.bytes_per_token, sample.bytes_per_token, ALPHA);
-            profile.bandwidth_bytes_per_ms = ewma(
-                profile.bandwidth_bytes_per_ms,
-                sample.bandwidth_bytes_per_ms,
-                ALPHA,
-            );
-            profile.compute_ms_per_token = ewma(
-                profile.compute_ms_per_token,
-                sample.compute_ms_per_token,
-                ALPHA,
-            );
-            profile.rtt_ms = ewma(profile.rtt_ms, sample.rtt_ms, ALPHA);
+        if profile.stages.len() != points.len() {
+            profile.stages = vec![StageFit::default(); points.len()];
+        }
+        for (stage, samples) in profile.stages.iter_mut().zip(points) {
+            stage.decay(FIT_DECAY);
+            for (tokens, ms) in samples {
+                stage.add(tokens, ms);
+            }
         }
     }
 }
 
-fn ewma(previous: f64, sample: f64, alpha: f64) -> f64 {
-    previous * (1.0 - alpha) + sample * alpha
+/// Finish time of the last chunk when `tokens` go through `stages` in chunks
+/// of `chunk`, at most `max_inflight` in flight.
+fn simulate_pipeline(stages: &[(f64, f64)], tokens: u32, chunk: u32, max_inflight: usize) -> f64 {
+    let chunk = chunk.max(1);
+    let count = tokens.div_ceil(chunk).max(1) as usize;
+    let window = max_inflight.max(1);
+    // done[s] for the previous chunk; finished[j] = last-stage finish of chunk j.
+    let mut done = vec![0.0_f64; stages.len()];
+    let mut finished: Vec<f64> = Vec::with_capacity(count);
+    for index in 0..count {
+        let size = if index + 1 == count {
+            tokens - chunk * (count as u32 - 1)
+        } else {
+            chunk
+        } as f64;
+        let mut ready = if index >= window {
+            finished[index - window]
+        } else {
+            0.0
+        };
+        for (stage, (fixed, per_token)) in stages.iter().enumerate() {
+            let start = ready.max(done[stage]);
+            done[stage] = start + fixed + per_token * size;
+            ready = done[stage];
+        }
+        finished.push(ready);
+    }
+    finished.last().copied().unwrap_or(0.0)
 }
 
-fn choose_from_profile(ceiling: u32, profile: AdaptivePrefillProfile) -> u32 {
-    const MIN_CHUNK: u32 = 32;
-    const BUCKET: f64 = 16.0;
-    if ceiling <= MIN_CHUNK {
+fn choose_from_profile(
+    ceiling: u32,
+    profile: &AdaptivePrefillProfile,
+    prompt_tokens: u32,
+    max_inflight: usize,
+    min_chunk: u32,
+) -> u32 {
+    if ceiling <= min_chunk || prompt_tokens == 0 {
         return ceiling;
     }
-
-    // Bandwidth-delay product estimates how many hidden-state tokens fill the
-    // link. Compute tokens per RTT estimates how many fit in one peer compute
-    // window. Their geometric mean balances utilization and pipeline overlap.
-    let bandwidth_delay_tokens =
-        profile.bandwidth_bytes_per_ms * profile.rtt_ms / profile.bytes_per_token;
-    let compute_window_tokens = profile.rtt_ms / profile.compute_ms_per_token;
-    let ideal = (bandwidth_delay_tokens.max(1.0) * compute_window_tokens.max(1.0)).sqrt();
-    let bucketed = (ideal / BUCKET).round() * BUCKET;
-    (bucketed as u32).clamp(MIN_CHUNK, ceiling)
+    let Some(stages) = profile
+        .stages
+        .iter()
+        .map(StageFit::line)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return ceiling;
+    };
+    let mut candidates: Vec<u32> = (min_chunk..ceiling).step_by(CHUNK_STEP as usize).collect();
+    candidates.push(ceiling);
+    if prompt_tokens < ceiling {
+        // One chunk holding the whole prompt.
+        candidates.retain(|chunk| *chunk < prompt_tokens);
+        candidates.push(prompt_tokens);
+    }
+    // Ties go to the larger chunk: fewer calls, fewer chances to fail.
+    candidates
+        .into_iter()
+        .map(|chunk| {
+            (
+                chunk,
+                simulate_pipeline(&stages, prompt_tokens, chunk, max_inflight),
+            )
+        })
+        .fold(None, |best: Option<(u32, f64)>, (chunk, time)| match best {
+            Some((_, best_time)) if time > best_time + 1e-9 => best,
+            Some((best_chunk, best_time))
+                if (time - best_time).abs() <= 1e-9 && best_chunk > chunk =>
+            {
+                best
+            }
+            _ => Some((chunk, time)),
+        })
+        // One chunk holding the whole prompt wins: send the ceiling, since the
+        // gateway's token count is an estimate and a slightly longer prompt
+        // must not spill into a tiny second chunk.
+        .map_or(ceiling, |(chunk, _)| {
+            if chunk >= prompt_tokens {
+                ceiling
+            } else {
+                chunk.max(1)
+            }
+        })
 }
 
 /// Same clamp as `prompt_chunk_of`, for the same reason: a speculative batch
@@ -192,37 +322,106 @@ pub(super) fn mtp_enabled_for_plan(
 mod adaptive_chunk_tests {
     use super::*;
 
-    fn profile(
-        bandwidth_bytes_per_ms: f64,
-        compute_ms_per_token: f64,
-        rtt_ms: f64,
-    ) -> AdaptivePrefillProfile {
+    /// With the MoE expert cache on, a prefill chunk never falls to the
+    /// cache's generation batch (32 tokens or fewer).
+    #[test]
+    fn with_the_moe_cache_no_chunk_is_a_generation_batch() {
+        let mut profile = AdaptivePrefillProfile::default();
+        // Two hops with a tiny fixed cost and a large per-token cost: the
+        // simulation alone would pick the smallest chunk.
+        profile.stages = vec![StageFit::default(); 4];
+        for stage in &mut profile.stages {
+            stage.add(32.0, 3.2);
+            stage.add(512.0, 51.2);
+        }
+        assert_eq!(choose_from_profile(512, &profile, 4000, 8, MIN_CHUNK), MIN_CHUNK);
+        assert!(choose_from_profile(512, &profile, 4000, 8, MOE_CACHE_MIN_CHUNK) >= MOE_CACHE_MIN_CHUNK);
+    }
+
+    fn fitted(points: &[(f64, f64)]) -> StageFit {
+        let mut fit = StageFit::default();
+        for (tokens, ms) in points {
+            fit.add(*tokens, *ms);
+        }
+        fit
+    }
+
+    fn profile(stages: &[(f64, f64)]) -> AdaptivePrefillProfile {
+        // Two exact points per stage reproduce `fixed + per_token * x`.
         AdaptivePrefillProfile {
-            bytes_per_token: 10_000.0,
-            bandwidth_bytes_per_ms,
-            compute_ms_per_token,
-            rtt_ms,
+            stages: stages
+                .iter()
+                .map(|(fixed, per_token)| {
+                    fitted(&[
+                        (10.0, fixed + per_token * 10.0),
+                        (100.0, fixed + per_token * 100.0),
+                    ])
+                })
+                .collect(),
         }
     }
 
     #[test]
-    fn chunk_tracks_bandwidth_rtt_and_compute_without_exceeding_batch_limit() {
-        let baseline = profile(200_000.0, 2.0, 20.0);
-        let faster_link = profile(600_000.0, 2.0, 20.0);
-        let higher_rtt = profile(200_000.0, 2.0, 40.0);
-        let slower_compute = profile(200_000.0, 4.0, 20.0);
+    fn the_fit_separates_fixed_and_per_token_cost() {
+        // The JEV trace: hop 2 had a 48-token median call of 79.8 ms and a
+        // 39.8-token mean call of 71.2 ms.
+        let (fixed, per_token) = fitted(&[(39.8, 71.2), (48.0, 79.8)]).line().unwrap();
+        assert!((per_token - 1.049).abs() < 0.01, "{per_token}");
+        assert!((fixed - 29.5).abs() < 0.5, "{fixed}");
+        // A single chunk size: no slope to fit, all cost is per token.
+        assert_eq!(fitted(&[(50.0, 100.0)]).line().unwrap(), (0.0, 2.0));
+    }
 
-        let baseline_chunk = choose_from_profile(512, baseline);
-        assert!(choose_from_profile(512, faster_link) > baseline_chunk);
-        assert!(choose_from_profile(512, higher_rtt) > baseline_chunk);
-        assert!(choose_from_profile(512, slower_compute) < baseline_chunk);
-        assert_eq!(choose_from_profile(64, higher_rtt), 64);
+    #[test]
+    fn a_short_prompt_with_per_call_overhead_goes_in_one_chunk() {
+        // Fixed/per-token costs fitted from the JEV trace (two hops on a LAN).
+        let jev = profile(&[(1.0, 0.0), (20.0, 0.1), (0.0, 0.1), (29.5, 1.05)]);
+        let forty_eight = simulate_pipeline(
+            &jev.stages
+                .iter()
+                .map(|s| s.line().unwrap())
+                .collect::<Vec<_>>(),
+            199,
+            48,
+            8,
+        );
+        let chosen = choose_from_profile(512, &jev, 199, 8, MIN_CHUNK);
+        let best = simulate_pipeline(
+            &jev.stages
+                .iter()
+                .map(|s| s.line().unwrap())
+                .collect::<Vec<_>>(),
+            199,
+            chosen,
+            8,
+        );
+        assert_eq!(chosen, 512);
+        assert!(best < forty_eight * 0.8, "{best} vs {forty_eight}");
+    }
+
+    #[test]
+    fn a_long_prompt_still_overlaps_when_calls_are_cheap() {
+        // Small fixed cost, real per-token cost on two balanced hops and a
+        // slow link: several chunks in flight beat one big call.
+        let route = profile(&[(1.0, 0.0), (2.0, 1.0), (2.0, 0.5), (2.0, 1.0)]);
+        let chosen = choose_from_profile(512, &route, 4000, 8, MIN_CHUNK);
+        assert!(chosen < 512, "{chosen}");
+        assert!(chosen >= MIN_CHUNK);
+    }
+
+    #[test]
+    fn the_inflight_window_limits_overlap() {
+        let stages = [(0.0, 1.0), (0.0, 1.0)];
+        // Unlimited window: the second stage trails by one chunk.
+        assert_eq!(simulate_pipeline(&stages, 100, 10, 100), 110.0);
+        // One chunk in flight: no overlap at all.
+        assert_eq!(simulate_pipeline(&stages, 100, 10, 1), 200.0);
     }
 
     #[test]
     fn unmeasured_route_uses_configured_limit_without_waiting() {
         let tuner = AdaptiveChunkTuner::default_arc();
-        assert_eq!(tuner.choose("model|head|tail", 512, 256), 256);
+        assert_eq!(tuner.choose("model|head|tail", 512, 256, 1000, 8, MIN_CHUNK), 256);
     }
 }
 
@@ -278,6 +477,27 @@ impl OutputBudget {
     /// Números utilizáveis: nunca zero, e a perna nunca maior que o total.
     pub(super) fn normalized(self) -> Self {
         let total = self.total.max(1);
+        Self {
+            total,
+            leg: self.leg.clamp(1, total),
+        }
+    }
+
+    /// The total fits in one session's window: real prompt plus output never
+    /// exceeds `window` (the `n_ctx_per_session` announced by `/health`).
+    ///
+    /// Admission only had the prompt estimate (`estimate_tokens`); after
+    /// prefill the real size is known, and a prompt denser than the estimate
+    /// let the generation cross the window - with the unified KV cache,
+    /// taking another session's cells and, at the limit, positions beyond the
+    /// training context. Reaching the window is a `length` stop, like reaching
+    /// the client's `max_tokens`. The first token already came with the
+    /// prefill, so the total never drops below one.
+    pub(super) fn within_session_window(self, window: Option<u32>, prompt_tokens: u32) -> Self {
+        let Some(window) = window.filter(|window| *window > 0) else {
+            return self;
+        };
+        let total = self.total.min(window.saturating_sub(prompt_tokens)).max(1);
         Self {
             total,
             leg: self.leg.clamp(1, total),
@@ -532,7 +752,19 @@ pub(super) fn generation_finish_reason(
 /// budget. Transport failures remain `partial`, even when they happened to
 /// produce the same amount of text.
 pub(super) fn audit_status_for_summary(summary: &GenSummary) -> &'static str {
-    if summary.finish_reason.as_deref() == Some("length") {
+    // A typed decision (`/v1/systemone`) asks for exactly one token, so it
+    // always ends by `length`: that is its normal, complete outcome.
+    let decision = summary
+        .trace
+        .as_ref()
+        .is_some_and(|trace| trace.jev.is_some() || trace.probe.is_some());
+    if decision {
+        if summary.partial {
+            "partial"
+        } else {
+            "ok"
+        }
+    } else if summary.finish_reason.as_deref() == Some("length") {
         "incomplete"
     } else if summary.partial {
         "partial"
@@ -551,8 +783,7 @@ pub struct GenerateResponse {
     pub duration_ms: u64,
     pub timings: Option<GenerationTimings>,
     pub stop_sequence: Option<String>,
-    /// Motivo terminal. `cycle` é uma interrupção explícita do detector de
-    /// degenerescência, distinta de `stop` e do limite `length`.
+    /// Motivo terminal, quando não é um fim comum.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "is_false")]
@@ -651,6 +882,9 @@ pub(crate) struct GenerationInput {
     /// The parsed HTTP request body, retained for audit without headers or
     /// credentials.
     pub(crate) request_details: serde_json::Value,
+    /// Rótulos de uma decisão tipada (`/v1/systemone`). O último peer devolve a
+    /// probabilidade de cada um em `GenSummary::trace.probe`.
+    pub(crate) probe: Option<crate::prefill::DecisionProbe>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1007,36 +1241,6 @@ pub(super) async fn send_length_summary(
         trace,
         false,
         Some("length".to_string()),
-        None,
-    );
-    let _ = tx.send(GenEvent::Done(summary)).await;
-}
-
-pub(super) async fn send_cycle_summary(
-    tx: &mpsc::Sender<GenEvent>,
-    plan: &PipelinePlan,
-    request_started: Instant,
-    first_token_at: Instant,
-    tokens_generated: u32,
-    legs: u32,
-    trace: crate::prefill::RequestTrace,
-    cycle: crate::cycle::CycleMatch,
-) {
-    info!(
-        tokens_generated,
-        period_tokens = cycle.period,
-        repetitions = cycle.repetitions,
-        "ciclo de repetição detectado; encerrando a geração"
-    );
-    let summary = summary_for(
-        plan,
-        request_started,
-        first_token_at,
-        tokens_generated,
-        legs,
-        trace,
-        true,
-        Some("cycle".to_string()),
         None,
     );
     let _ = tx.send(GenEvent::Done(summary)).await;

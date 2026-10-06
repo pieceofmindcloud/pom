@@ -99,6 +99,27 @@ describe("fetchPublicPluginCatalog", () => {
     expect("github_repository" in catalog.plugins[0]).toBe(false);
   });
 
+  it("reads featured, pom_team and a GitHub install suggestion, accepting only plain github.com repositories", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      plugins: [
+        publicPlugin("community", { requires_license: false, featured: true, pom_team: false, github_url: "https://github.com/dev/pom-plugin-x/" }),
+        publicPlugin("official", { pom_team: true, github_url: "https://evil.example/dev/pom-plugin-x" }),
+        publicPlugin("deep-path", { github_url: "https://github.com/dev/pom-plugin-x/releases/latest" }),
+        publicPlugin("plain-http", { github_url: "http://github.com/dev/pom-plugin-x" }),
+        publicPlugin("older-server", {})
+      ]
+    }), { status: 200 })));
+
+    const catalog = await fetchPublicPluginCatalog();
+    const byCode = Object.fromEntries(catalog.plugins.map((plugin) => [plugin.code, plugin]));
+
+    expect(byCode.community).toMatchObject({ featured: true, pom_team: false, github_url: "https://github.com/dev/pom-plugin-x" });
+    expect(byCode.official).toMatchObject({ featured: false, pom_team: true, github_url: null });
+    expect(byCode["deep-path"]!.github_url).toBeNull();
+    expect(byCode["plain-http"]!.github_url).toBeNull();
+    expect(byCode["older-server"]).toMatchObject({ featured: false, pom_team: null, github_url: null });
+  });
+
   it("does not load catalog images with embedded credentials", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       plugins: [publicPlugin("safe-image", {

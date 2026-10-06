@@ -730,7 +730,6 @@ mod tests {
             tls: false,
             node_id: node_id.to_string(),
             pubkey: "p".into(),
-            authority_pubkey: String::new(),
             cluster_id: None,
             addr: "10.0.0.1:42777".into(),
             addr_candidates: Vec::new(),

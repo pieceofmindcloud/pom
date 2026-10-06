@@ -58,6 +58,28 @@ mod prefix_reuse_gate_tests {
     use super::*;
 
     #[test]
+    fn probe_meta_carries_labels_and_the_head_retain_boundary() {
+        let probe = parse_probe(&json!({"probe": ["A", "B"], "retain_prefix_bytes": 96}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(probe.labels, ["A", "B"]);
+        assert_eq!(probe.retain_prefix_bytes, Some(96));
+        let bare = parse_probe(&json!({"probe": ["Yes", "No"]}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(bare.retain_prefix_bytes, None);
+
+        // A retain boundary without labels: nothing is scored, the boundary stays.
+        let boundary = parse_probe(&json!({"retain_prefix_bytes": 512}))
+            .unwrap()
+            .unwrap();
+        assert!(boundary.labels.is_empty());
+        assert_eq!(boundary.retain_prefix_bytes, Some(512));
+        assert!(parse_probe(&json!({})).unwrap().is_none());
+        assert!(parse_probe(&json!({"probe": []})).is_err());
+    }
+
+    #[test]
     fn gate_names_missing_and_inconsistent_peer_sessions() {
         assert_eq!(
             prefix_reuse_gate(true, 0, PrefixReuseSnapshot::default()),
@@ -237,6 +259,10 @@ pub(super) async fn handle_prefill(
     };
     let chat_template = meta.get("chat_template").and_then(|v| v.as_bool());
     let thinking_enabled = meta.get("thinking_enabled").and_then(|v| v.as_bool());
+    let probe = match parse_probe(&meta) {
+        Ok(probe) => probe,
+        Err(error) => return err400(error),
+    };
     // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
     // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
     // `nextn` no `decode_hidden` (ver `prefill_blocking`). Ausente é peer antigo.
@@ -312,6 +338,7 @@ pub(super) async fn handle_prefill(
         mrope_positions,
         chat_template,
         thinking_enabled,
+        probe,
         tensor,
         capture_block,
         chunk_tokens,
@@ -384,6 +411,9 @@ pub(super) async fn handle_prefill(
     if let Some(value) = meta.get("thinking_enabled") {
         local_meta["thinking_enabled"] = value.clone();
     }
+    if let Some(value) = meta.get("probe") {
+        local_meta["probe"] = value.clone();
+    }
     preserve_batch_identity(&meta, &mut local_meta);
 
     // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
@@ -452,6 +482,9 @@ pub(super) async fn handle_prefill(
         }
         if let Some(value) = local_meta.get("thinking_enabled") {
             forward["thinking_enabled"] = value.clone();
+        }
+        if let Some(value) = local_meta.get("probe") {
+            forward["probe"] = value.clone();
         }
         for field in ["start_pos", "next_pos", "stable_len"] {
             if let Some(value) = local_meta.get(field) {
@@ -585,6 +618,9 @@ pub(super) async fn handle_prefill(
         }
         if let Some(value) = local_meta.get("thinking_enabled") {
             relay_meta["thinking_enabled"] = value.clone();
+        }
+        if let Some(value) = local_meta.get("probe") {
+            relay_meta["probe"] = value.clone();
         }
         if ring_overlap {
             relay_meta["ring_overlap"] = json!(true);
@@ -906,6 +942,75 @@ fn apply_mrope_positions(meta: &mut Value, positions: Option<&[[u32; 4]]>) {
     }
 }
 
+/// A typed decision as a peer sees it: the labels to score (last peer) and,
+/// on the head, where the reusable part of the prompt text ends.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct HeadProbe {
+    pub(super) labels: Vec<String>,
+    pub(super) retain_prefix_bytes: Option<usize>,
+}
+
+/// Rótulos de uma decisão tipada (`probe`): 1 a 256 textos curtos.
+pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<HeadProbe>, String> {
+    let retain_prefix_bytes = meta
+        .get("retain_prefix_bytes")
+        .and_then(Value::as_u64)
+        .map(|bytes| bytes as usize);
+    let Some(value) = meta.get("probe").filter(|value| !value.is_null()) else {
+        // No labels to score, but the gateway may still say where the
+        // reusable part of the prompt ends (retrieved context after it).
+        return Ok(retain_prefix_bytes.map(|bytes| HeadProbe {
+            labels: Vec::new(),
+            retain_prefix_bytes: Some(bytes),
+        }));
+    };
+    let labels: Vec<String> = serde_json::from_value(value.clone())
+        .map_err(|_| "campo probe deve ser uma lista de rótulos".to_owned())?;
+    if labels.is_empty() || labels.len() > 256 {
+        return Err("campo probe aceita de 1 a 256 rótulos".into());
+    }
+    if labels
+        .iter()
+        .any(|label| label.trim().is_empty() || label.len() > 32)
+    {
+        return Err("rótulo de probe vazio ou maior que 32 bytes".into());
+    }
+    Ok(Some(HeadProbe {
+        labels,
+        retain_prefix_bytes,
+    }))
+}
+
+/// Ids do primeiro token de cada rótulo, com e sem espaço inicial: o modelo
+/// pode começar a resposta de qualquer um dos dois jeitos.
+pub(super) fn probe_token_groups(engine: &LlmEngine, labels: &[String]) -> Vec<Vec<i32>> {
+    labels
+        .iter()
+        .map(|label| {
+            let mut ids = Vec::new();
+            for text in [label.clone(), format!(" {label}")] {
+                if let Some(first) = engine.tokenize(&text, false, false).first() {
+                    if !ids.contains(first) {
+                        ids.push(*first);
+                    }
+                }
+            }
+            ids
+        })
+        .collect()
+}
+
+/// Probabilidade de cada rótulo na posição seguinte ao prompt.
+pub(super) fn probe_reply(engine: &LlmEngine, logits: &[f32], labels: &[String]) -> Value {
+    let groups = probe_token_groups(engine, labels);
+    let result = crate::llm::probe_candidates(logits, &groups);
+    json!({
+        "labels": labels,
+        "probabilities": result.probabilities,
+        "mass": result.mass,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prefill_blocking(
     state: SharedState,
@@ -925,6 +1030,7 @@ pub(super) fn prefill_blocking(
     images: Option<Vec<Vec<u8>>>,
     chat_template: Option<bool>,
     thinking_enabled: Option<bool>,
+    probe: Option<HeadProbe>,
     tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
@@ -958,6 +1064,7 @@ pub(super) fn prefill_blocking(
     let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
     timings.selected_path = s.inference_path;
+    s.note_thinking(&sid_key, thinking_enabled);
 
     // ── Session setup ────────────────────────────────────────────────────────
 
@@ -965,6 +1072,10 @@ pub(super) fn prefill_blocking(
     // Reusar exige a sessão viva aqui. Ela pode ter sido despejada ou reciclada
     // desde o turno anterior; nesse caso este peer simplesmente recomeça, e é a
     // resposta dele (`reuse_prefix` no meta) que os hops seguintes obedecem.
+    if reuse_prefix && chunk_index == 0 {
+        // The session may be parked in host RAM (`--cache-ram`).
+        s.unpark_session(&sid_key);
+    }
     let reuse_snapshot = PrefixReuseSnapshot::from_session(s.sessions.get(&sid_key));
     let (want_reuse, reuse_gate_reason) =
         prefix_reuse_gate(reuse_prefix, chunk_index, reuse_snapshot);
@@ -1009,7 +1120,13 @@ pub(super) fn prefill_blocking(
             let add_bos = !use_tmpl;
             let tokens = s.engine.tokenize(&formatted, add_bos, true);
             let new_prompt_tokens = tokens.len();
-            let stable = stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
+            check_prompt_fits_session(&s, new_prompt_tokens)?;
+            let mut stable = stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
+            if let Some(bytes) = probe.as_ref().and_then(|probe| probe.retain_prefix_bytes) {
+                stable = stable.min(bounded_stable_len(
+                    &s.engine, text, bytes, use_tmpl, no_think, &tokens,
+                ) as u32);
+            }
             prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
             if chunk_index == 0 {
                 info!(
@@ -1252,7 +1369,21 @@ pub(super) fn prefill_blocking(
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
-        let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let probe_result = probe
+            .as_ref()
+            .filter(|probe| !probe.labels.is_empty())
+            .map(|probe| {
+                let mut reply = probe_reply(&s.engine, logits, &probe.labels);
+                // The last peer's forward pass plus the label read.
+                reply["probe_ms"] = json!(decode_started.elapsed().as_secs_f64() * 1000.0);
+                reply
+            });
+        let (next_id, sampling_timing) = sample_token_within_budget(
+            logits,
+            &recent,
+            &sampling,
+            s.thinking_open_at_start(&sid_key),
+        );
         super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
@@ -1314,6 +1445,9 @@ pub(super) fn prefill_blocking(
             expected_pos + n_tokens as u32,
             done,
         );
+        if let Some(result) = probe_result {
+            reply["probe_result"] = result;
+        }
         apply_prefix_decision(
             &mut reply,
             chunk_index,
@@ -1463,6 +1597,8 @@ pub(super) fn prefill_batch_blocking(
             next_pos,
             chat_template,
             thinking_enabled,
+            // Pedidos com sonda nunca entram em lote (`execute_scheduled_batch`).
+            probe: _probe,
             tensor,
             capture_block,
             chunk_tokens,
@@ -1476,6 +1612,10 @@ pub(super) fn prefill_batch_blocking(
         let result = (|| -> Result<PreparedPrefill> {
             // Mesmo contrato do caminho não-lotado (`prefill_blocking`): reuso
             // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
+            if reuse_prefix && chunk_index == 0 {
+                s.unpark_session(&sid_key);
+            }
+            s.note_thinking(&sid_key, thinking_enabled);
             let reuse_snapshot = PrefixReuseSnapshot::from_session(s.sessions.get(&sid_key));
             let (want_reuse, reuse_gate_reason) =
                 prefix_reuse_gate(reuse_prefix, chunk_index, reuse_snapshot);
@@ -1514,6 +1654,7 @@ pub(super) fn prefill_batch_blocking(
                     };
                     let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
                     let new_prompt_tokens = tokens.len();
+                    check_prompt_fits_session(&s, new_prompt_tokens)?;
                     let stable =
                         stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
                     prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
@@ -1864,8 +2005,12 @@ pub(super) fn prefill_batch_blocking(
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
-                let (next_id, sampling_timing) =
-                    sample_token_profiled(logits, &recent, &s.sampling);
+                let (next_id, sampling_timing) = sample_token_within_budget(
+                    logits,
+                    &recent,
+                    &s.sampling,
+                    s.thinking_open_at_start(&item.sid_key),
+                );
                 super::core::mark_first_token_produced(&mut timings, decode_started);
                 let piece = s.engine.token_to_piece_bytes(next_id, false);
                 let mut text = s
@@ -2360,8 +2505,12 @@ pub(super) fn step_batch_blocking(
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
-                let (next_id, sampling_timing) =
-                    sample_token_profiled(logits, &recent, &s.sampling);
+                let (next_id, sampling_timing) = sample_token_within_budget(
+                    logits,
+                    &recent,
+                    &s.sampling,
+                    s.thinking_open_at_start(&item.sid_key),
+                );
                 super::core::mark_first_token_produced(&mut timings, decode_started);
                 let token_text_started = Instant::now();
                 let piece = s.engine.token_to_piece_bytes(next_id, false);

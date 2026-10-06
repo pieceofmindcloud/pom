@@ -24,12 +24,18 @@ pub mod kv_cache;
 pub mod llm;
 pub mod moe;
 pub mod mtp;
+pub mod mtp_draft;
 pub mod multipart;
 pub mod sysmon;
 pub mod tp_probe;
 pub mod wire;
 
 pub use kv_cache::KvCacheType;
+pub use mtp::MtpPlacement;
+
+/// The micro-batch a context uses under the memory fit when a deployment names
+/// none: the value that was fixed in the code before it became a setting.
+pub const DEFAULT_N_UBATCH: u32 = 512;
 
 /// Folga conservadora para a projeção de alocação CUDA: 256 MiB mantém o ganho
 /// de capacidade observado no modelo híbrido sem voltar a consumir 1 GiB.

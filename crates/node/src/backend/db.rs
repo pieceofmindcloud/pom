@@ -10,10 +10,9 @@ use crate::config::{ApiKey, NetworkSettings};
 use crate::deployment::Deployment;
 use crate::thermal::ThermalPolicy;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -78,24 +77,6 @@ const GEO_REFERENCE: &[(&str, &str, &str, f64, f64)] = &[
     ("US", "Estados Unidos", "São Francisco", 37.7749, -122.4194),
     ("US", "Estados Unidos", "Seattle", 47.6062, -122.3321),
 ];
-
-fn is_sqlite_busy(error: &rusqlite::Error) -> bool {
-    matches!(
-        error,
-        rusqlite::Error::SqliteFailure(sqlite_error, _)
-            if matches!(
-                sqlite_error.code,
-                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-            )
-    )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClusterLogsPruneResult {
-    Deleted { count: usize, space_reclaimed: bool },
-    NothingToPrune,
-    Contended,
-}
 
 /// Durable transcript accepted by the authenticated UI history API.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -365,17 +346,22 @@ impl PomDb {
     }
 
     pub fn insert_api_key(&self, key: &ApiKey) -> Result<()> {
-        if key.id.trim().is_empty() || key.key.trim().is_empty() {
-            anyhow::bail!("API key sem identidade ou segredo");
+        if key.id.trim().is_empty() || key.key_hash.trim().is_empty() {
+            anyhow::bail!("API key sem identidade ou hash");
         }
         self.with_write("salvar chave de API", |connection| {
             connection.execute(
-                "INSERT INTO api_keys (id, key, label, node_id, origin_node_id, active, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                "INSERT INTO api_keys
+                    (id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     label = excluded.label,
                     node_id = excluded.node_id,
                     origin_node_id = excluded.origin_node_id,
+                    key_hint = CASE
+                        WHEN excluded.key_hint = '' THEN api_keys.key_hint
+                        ELSE excluded.key_hint
+                    END,
                     active = CASE
                         WHEN EXISTS (
                             SELECT 1 FROM api_key_revocations
@@ -385,7 +371,8 @@ impl PomDb {
                     END",
                 params![
                     &key.id,
-                    &key.key,
+                    &key.key_hash,
+                    &key.key_hint,
                     &key.label,
                     &key.node_id,
                     if key.origin_node_id.is_empty() {
@@ -403,21 +390,10 @@ impl PomDb {
 
     pub fn api_keys(&self) -> Result<Vec<ApiKey>> {
         self.with_read("ler chaves de API", |connection| {
-            let mut statement = connection.prepare(
-                "SELECT id, key, label, node_id, origin_node_id, active, created_at
-                 FROM api_keys ORDER BY created_at, id",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok(ApiKey {
-                    id: row.get(0)?,
-                    key: row.get(1)?,
-                    label: row.get(2)?,
-                    node_id: row.get(3)?,
-                    origin_node_id: row.get(4)?,
-                    active: row.get::<_, i64>(5)? != 0,
-                    created_at: row.get(6)?,
-                })
-            })?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT {API_KEY_COLUMNS} FROM api_keys ORDER BY created_at, id"
+            ))?;
+            let rows = statement.query_map([], api_key_from_row)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .context("ler API keys do banco local")
         })
@@ -432,29 +408,33 @@ impl PomDb {
             let tx = connection.unchecked_transaction()?;
             tx.execute("DELETE FROM api_key_revocations", [])?;
             tx.execute("DELETE FROM api_keys", [])?;
+            tx.execute(
+                "DELETE FROM local_secrets WHERE secret_key = ?",
+                params![NODE_API_KEY_SECRET],
+            )?;
             tx.commit()?;
             Ok(())
         })
     }
 
+    /// The active key whose hash matches a presented token. The token itself
+    /// is hashed here and never reaches SQLite.
     pub fn api_key_for_token(&self, token: &str) -> Result<Option<ApiKey>> {
+        if token.is_empty() {
+            return Ok(None);
+        }
+        self.api_key_for_hash(&crate::auth::api_key_hash(token))
+    }
+
+    pub fn api_key_for_hash(&self, key_hash: &str) -> Result<Option<ApiKey>> {
         self.with_read("consultar chave de API", |connection| {
             connection
                 .query_row(
-                    "SELECT id, key, label, node_id, origin_node_id, active, created_at
-                     FROM api_keys WHERE key = ? AND active = 1",
-                    params![token],
-                    |row| {
-                        Ok(ApiKey {
-                            id: row.get(0)?,
-                            key: row.get(1)?,
-                            label: row.get(2)?,
-                            node_id: row.get(3)?,
-                            origin_node_id: row.get(4)?,
-                            active: row.get::<_, i64>(5)? != 0,
-                            created_at: row.get(6)?,
-                        })
-                    },
+                    &format!(
+                        "SELECT {API_KEY_COLUMNS} FROM api_keys WHERE key_hash = ? AND active = 1"
+                    ),
+                    params![key_hash],
+                    api_key_from_row,
                 )
                 .optional()
                 .context("consultar API key no banco local")
@@ -465,40 +445,70 @@ impl PomDb {
         self.with_read("consultar chave nomeada de API", |connection| {
             connection
                 .query_row(
-                    "SELECT id, key, label, node_id, origin_node_id, active, created_at
-                     FROM api_keys
-                     WHERE label = ? AND node_id = ? AND active = 1
-                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                    &format!(
+                        "SELECT {API_KEY_COLUMNS} FROM api_keys
+                         WHERE label = ? AND node_id = ? AND active = 1
+                         ORDER BY created_at DESC, id DESC LIMIT 1"
+                    ),
                     params![label, node_id],
-                    |row| {
-                        Ok(ApiKey {
-                            id: row.get(0)?,
-                            key: row.get(1)?,
-                            label: row.get(2)?,
-                            node_id: row.get(3)?,
-                            origin_node_id: row.get(4)?,
-                            active: row.get::<_, i64>(5)? != 0,
-                            created_at: row.get(6)?,
-                        })
-                    },
+                    api_key_from_row,
                 )
                 .optional()
                 .context("consultar chave nomeada de API")
         })
     }
 
+    /// The secret of this node's own key (the one its chat UI and plugins call
+    /// `/v1` with), and its tracking id. It lives in `local_secrets`, the same
+    /// place as the Hugging Face token: it is this node's client credential,
+    /// not a row of the key registry, which holds only hashes.
+    pub fn node_api_key(&self) -> Result<Option<(String, String)>> {
+        self.with_read("ler chave de API do nó", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_text FROM local_secrets WHERE secret_key = ?",
+                    params![NODE_API_KEY_SECRET],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            let Some(value) = value else { return Ok(None) };
+            let parsed: serde_json::Value =
+                serde_json::from_str(&value).context("interpretar chave de API do nó")?;
+            Ok(parsed["id"]
+                .as_str()
+                .zip(parsed["secret"].as_str())
+                .map(|(id, secret)| (id.to_string(), secret.to_string())))
+        })
+    }
+
+    pub fn save_node_api_key(&self, id: &str, secret: &str) -> Result<()> {
+        let value = serde_json::json!({ "id": id, "secret": secret }).to_string();
+        self.with_write("salvar chave de API do nó", |connection| {
+            connection.execute(
+                "INSERT INTO local_secrets (secret_key, value_text) VALUES (?, ?)
+                 ON CONFLICT(secret_key) DO UPDATE SET value_text = excluded.value_text",
+                params![NODE_API_KEY_SECRET, value],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Revoke once, retaining both the inactive key and the first audit event.
+    /// `key_or_id` is the tracking id or, for an operator holding it, the
+    /// secret itself (matched by hash).
     pub fn revoke_api_key(&self, key_or_id: &str, revoked_by: &str) -> Result<bool> {
+        let presented_hash = crate::auth::api_key_hash(key_or_id);
         self.with_write("revogar chave de API", |connection| {
             let tx = connection.unchecked_transaction()?;
             let key = tx
                 .query_row(
-                    "SELECT id, key FROM api_keys WHERE (key = ? OR id = ?)",
-                    params![key_or_id, key_or_id],
+                    "SELECT id, key_hash FROM api_keys WHERE id = ? OR key_hash = ?",
+                    params![key_or_id, presented_hash],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
-            let Some((key_id, secret)) = key else {
+            let Some((key_id, key_hash)) = key else {
                 tx.commit()?;
                 return Ok(false);
             };
@@ -511,11 +521,43 @@ impl PomDb {
                     (key_id, key_sha256, revoked_by, revoked_at)
                  SELECT ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE NOT EXISTS (SELECT 1 FROM api_key_revocations WHERE key_id = ?)",
-                params![&key_id, secret_digest(&secret), revoked_by, &key_id],
+                params![&key_id, &key_hash, revoked_by, &key_id],
             )?;
             tx.commit()?;
             Ok(true)
         })
+    }
+
+    /// Revoke a node's superseded internal keys (`pom-<node_id>`), keeping
+    /// only the newest active one per node. The node mints a new internal key
+    /// whenever its local secret stops matching, and the old secret is gone at
+    /// that point, so every older active row is an orphan nobody can use.
+    pub fn revoke_superseded_node_keys(&self, revoked_by: &str) -> Result<usize> {
+        let superseded = self.with_read("procurar chaves internas substituídas", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT older.id FROM api_keys AS older
+                 WHERE older.active = 1
+                   AND older.label = 'pom-' || older.node_id
+                   AND EXISTS (
+                       SELECT 1 FROM api_keys AS newer
+                       WHERE newer.active = 1
+                         AND newer.label = older.label
+                         AND newer.node_id = older.node_id
+                         AND (newer.created_at > older.created_at
+                              OR (newer.created_at = older.created_at AND newer.id > older.id))
+                   )",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("procurar chaves internas substituídas")
+        })?;
+        let mut revoked = 0;
+        for id in superseded {
+            if self.revoke_api_key(&id, revoked_by)? {
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
     }
 
     pub fn api_key_revocations(&self) -> Result<Vec<(String, String, String)>> {
@@ -538,7 +580,7 @@ impl PomDb {
             let tx = connection.unchecked_transaction()?;
             let ids = {
                 let mut statement = tx.prepare(
-                    "SELECT id, key FROM api_keys
+                    "SELECT id, key_hash FROM api_keys
                      WHERE origin_node_id = ? OR (origin_node_id = '' AND node_id = ?)",
                 )?;
                 let rows = statement.query_map(params![origin, origin], |row| {
@@ -547,7 +589,7 @@ impl PomDb {
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
             let mut changed = 0;
-            for (id, secret) in ids {
+            for (id, key_hash) in ids {
                 changed += tx.execute(
                     "UPDATE api_keys SET active = 0 WHERE id = ? AND active = 1",
                     params![&id],
@@ -557,12 +599,94 @@ impl PomDb {
                         (key_id, key_sha256, revoked_by, revoked_at)
                      SELECT ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                      WHERE NOT EXISTS (SELECT 1 FROM api_key_revocations WHERE key_id = ?)",
-                    params![&id, secret_digest(&secret), revoked_by, &id],
+                    params![&id, &key_hash, revoked_by, &id],
                 )?;
             }
             tx.commit()?;
             Ok(changed)
         })
+    }
+
+    /// Every model -> sidecar link. Authoritative on the principal; elsewhere
+    /// the last copy read from it, used when the principal does not answer.
+    pub fn model_sidecar_links(&self) -> Result<Vec<crate::catalog::SidecarLink>> {
+        self.with_read("ler vínculos de visão e MTP", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT model_key, kind, mode, file_name, size_bytes, updated_at, updated_by
+                 FROM model_sidecar_links ORDER BY model_key, kind",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            let mut links = Vec::new();
+            for row in rows {
+                let (model_key, kind, mode, file_name, size_bytes, updated_at, updated_by) = row?;
+                links.push(crate::catalog::SidecarLink {
+                    model_key,
+                    kind: serde_json::from_value(serde_json::Value::String(kind))
+                        .context("tipo de vínculo inválido")?,
+                    mode: serde_json::from_value(serde_json::Value::String(mode))
+                        .context("modo de vínculo inválido")?,
+                    file_name,
+                    size_bytes: size_bytes.and_then(|size| u64::try_from(size).ok()),
+                    updated_at,
+                    updated_by,
+                });
+            }
+            Ok(links)
+        })
+    }
+
+    /// Insert or replace one link (one model, one kind).
+    pub fn save_model_sidecar_link(&self, link: &crate::catalog::SidecarLink) -> Result<()> {
+        link.validate().map_err(anyhow::Error::msg)?;
+        let kind = serde_json::to_value(link.kind)?.as_str().unwrap_or_default().to_string();
+        let mode = serde_json::to_value(link.mode)?.as_str().unwrap_or_default().to_string();
+        self.with_write("salvar vínculo de visão ou MTP", |connection| {
+            connection.execute(
+                "INSERT INTO model_sidecar_links
+                    (model_key, kind, mode, file_name, size_bytes, updated_at, updated_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(model_key, kind) DO UPDATE SET
+                    mode = excluded.mode,
+                    file_name = excluded.file_name,
+                    size_bytes = excluded.size_bytes,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by",
+                params![
+                    &link.model_key,
+                    kind,
+                    mode,
+                    &link.file_name,
+                    link.size_bytes.and_then(|size| i64::try_from(size).ok()),
+                    &link.updated_at,
+                    &link.updated_by,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Replace the local copy with the principal's full list.
+    pub fn replace_model_sidecar_links(&self, links: &[crate::catalog::SidecarLink]) -> Result<()> {
+        self.with_write("espelhar vínculos de visão e MTP", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            tx.execute("DELETE FROM model_sidecar_links", [])?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        for link in links {
+            self.save_model_sidecar_link(link)?;
+        }
+        Ok(())
     }
 
     pub fn thermal_policy(&self) -> Result<Option<ThermalPolicy>> {
@@ -1033,229 +1157,6 @@ impl PomDb {
         })
     }
 
-    /// Persiste um lote na ordem em que o principal o aceitou. O contador de
-    /// perdas é global ao banco porque uma linha descartada não tem mais
-    /// `deploy_id` confiável para uma segunda tentativa.
-    pub fn append_cluster_logs(
-        &self,
-        entries: &[crate::cluster_logs::LogEntry],
-        dropped: u64,
-    ) -> Result<()> {
-        if entries.is_empty() && dropped == 0 {
-            return Ok(());
-        }
-        self.with_write("persistir logs do cluster", |connection| {
-            let tx = connection.unchecked_transaction()?;
-            for entry in entries {
-                tx.execute(
-                    "INSERT INTO cluster_logs (
-                        node_id, node_name, deploy_id, origin_at, received_at,
-                        level, target, message
-                     ) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?)",
-                    params![
-                        &entry.node_id,
-                        &entry.node_name,
-                        &entry.deploy_id,
-                        &entry.origin_at,
-                        &entry.level,
-                        &entry.target,
-                        &entry.message,
-                    ],
-                )?;
-            }
-            if dropped > 0 {
-                tx.execute(
-                    "INSERT INTO cluster_log_counters (counter_key, value)
-                     VALUES ('dropped', ?)
-                     ON CONFLICT(counter_key) DO UPDATE SET
-                        value = cluster_log_counters.value + excluded.value",
-                    params![dropped as i64],
-                )?;
-            }
-            tx.commit()?;
-            Ok(())
-        })
-    }
-
-    /// Remove one bounded batch of cluster logs that falls outside both
-    /// retention limits. The connection and transaction deliberately use a
-    /// zero busy timeout: pruning is best-effort and must yield immediately
-    /// to an active writer instead of delaying inference or audit writes.
-    pub fn try_prune_cluster_logs(
-        &self,
-        older_than: &str,
-        max_rows: u64,
-        batch_size: usize,
-    ) -> Result<ClusterLogsPruneResult> {
-        let batch_size = batch_size.clamp(1, 1_000) as i64;
-        let max_rows = max_rows.max(1);
-        let mut connection = Connection::open(&self.path)
-            .with_context(|| format!("abrir conexão para podar logs {}", self.path.display()))?;
-        connection.busy_timeout(std::time::Duration::ZERO)?;
-
-        // This read happens before BEGIN IMMEDIATE so a large offset cannot
-        // hold the writer lock. If a concurrent writer changes the count
-        // after this snapshot, the next cycle corrects the conservative
-        // result without ever deleting a newly inserted row.
-        let oldest_kept = match connection
-            .query_row(
-                "SELECT received_seq
-                 FROM cluster_logs
-                 ORDER BY received_seq DESC
-                 LIMIT 1 OFFSET ?",
-                params![max_rows.saturating_sub(1).min(i64::MAX as u64) as i64],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
-        {
-            Ok(oldest_kept) => oldest_kept,
-            Err(error) if is_sqlite_busy(&error) => {
-                return Ok(ClusterLogsPruneResult::Contended);
-            }
-            Err(error) => return Err(error).context("ler limite de retenção dos logs"),
-        };
-        let transaction = match connection.transaction_with_behavior(TransactionBehavior::Immediate)
-        {
-            Ok(transaction) => transaction,
-            Err(error) if is_sqlite_busy(&error) => {
-                return Ok(ClusterLogsPruneResult::Contended);
-            }
-            Err(error) => return Err(error).context("iniciar transação de poda dos logs"),
-        };
-
-        let deleted = match oldest_kept {
-            Some(oldest_kept) => transaction.execute(
-                "DELETE FROM cluster_logs
-                 WHERE received_seq IN (
-                     SELECT received_seq
-                     FROM cluster_logs
-                     WHERE received_at < ?1 OR received_seq < ?2
-                     ORDER BY received_seq
-                     LIMIT ?3
-                 )",
-                params![older_than, oldest_kept, batch_size],
-            ),
-            None => transaction.execute(
-                "DELETE FROM cluster_logs
-                 WHERE received_seq IN (
-                     SELECT received_seq
-                     FROM cluster_logs
-                     WHERE received_at < ?1
-                     ORDER BY received_seq
-                     LIMIT ?2
-                 )",
-                params![older_than, batch_size],
-            ),
-        };
-        let deleted = match deleted {
-            Ok(deleted) => deleted,
-            Err(error) if is_sqlite_busy(&error) => {
-                return Ok(ClusterLogsPruneResult::Contended);
-            }
-            Err(error) => return Err(error).context("apagar lote de logs antigos"),
-        };
-        if let Err(error) = transaction.commit() {
-            if is_sqlite_busy(&error) {
-                return Ok(ClusterLogsPruneResult::Contended);
-            }
-            return Err(error).context("confirmar poda dos logs");
-        }
-
-        if deleted == 0 {
-            return Ok(ClusterLogsPruneResult::NothingToPrune);
-        }
-
-        let space_reclaimed =
-            match connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                row.get::<_, i64>(0)
-            }) {
-                Ok(busy) => busy == 0,
-                Err(error) if is_sqlite_busy(&error) => false,
-                Err(error) => return Err(error).context("recuperar espaço do WAL dos logs"),
-            };
-        Ok(ClusterLogsPruneResult::Deleted {
-            count: deleted,
-            space_reclaimed,
-        })
-    }
-
-    /// Lê a janela mais recente e devolve-a em ordem crescente de chegada.
-    /// `origin_at` nunca aparece no ORDER BY: relógios remotos são apenas
-    /// informação, não uma fonte de ordenação.
-    pub fn cluster_logs(
-        &self,
-        deploy_id: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<crate::cluster_logs::StoredLogEntry>> {
-        let limit = limit.clamp(1, 1000) as i64;
-        self.with_read("ler logs do cluster", |connection| {
-            let mut rows = Vec::new();
-            if let Some(deploy_id) = deploy_id {
-                let mut statement = connection.prepare(
-                    "SELECT received_seq, received_at, node_id, node_name,
-                            deploy_id, origin_at, level, target, message
-                     FROM cluster_logs
-                     WHERE deploy_id = ?
-                     ORDER BY received_seq DESC LIMIT ?",
-                )?;
-                let mapped = statement.query_map(params![deploy_id, limit], |row| {
-                    Ok(crate::cluster_logs::StoredLogEntry {
-                        received_seq: row.get::<_, i64>(0)? as u64,
-                        received_at: row.get(1)?,
-                        node_id: row.get(2)?,
-                        node_name: row.get(3)?,
-                        deploy_id: row.get(4)?,
-                        origin_at: row.get(5)?,
-                        level: row.get(6)?,
-                        target: row.get(7)?,
-                        message: row.get(8)?,
-                    })
-                })?;
-                for row in mapped {
-                    rows.push(row?);
-                }
-            } else {
-                let mut statement = connection.prepare(
-                    "SELECT received_seq, received_at, node_id, node_name,
-                            deploy_id, origin_at, level, target, message
-                     FROM cluster_logs
-                     ORDER BY received_seq DESC LIMIT ?",
-                )?;
-                let mapped = statement.query_map(params![limit], |row| {
-                    Ok(crate::cluster_logs::StoredLogEntry {
-                        received_seq: row.get::<_, i64>(0)? as u64,
-                        received_at: row.get(1)?,
-                        node_id: row.get(2)?,
-                        node_name: row.get(3)?,
-                        deploy_id: row.get(4)?,
-                        origin_at: row.get(5)?,
-                        level: row.get(6)?,
-                        target: row.get(7)?,
-                        message: row.get(8)?,
-                    })
-                })?;
-                for row in mapped {
-                    rows.push(row?);
-                }
-            }
-            rows.reverse();
-            Ok(rows)
-        })
-    }
-
-    pub fn cluster_log_dropped(&self) -> Result<u64> {
-        self.with_read("ler perdas dos logs do cluster", |connection| {
-            Ok(connection
-                .query_row(
-                    "SELECT value FROM cluster_log_counters WHERE counter_key = 'dropped'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .unwrap_or(0) as u64)
-        })
-    }
-
     fn save_setting<T: serde::Serialize + ?Sized>(&self, key: &str, value: &T) -> Result<()> {
         self.with_write("salvar configuração local", |connection| {
             connection.execute(
@@ -1493,7 +1394,8 @@ impl PomDb {
     fn insert_test_marker(&self, marker: &str) -> Result<()> {
         let key = ApiKey {
             id: marker.into(),
-            key: format!("secret-{marker}"),
+            key_hash: crate::auth::api_key_hash(&format!("secret-{marker}")),
+            key_hint: String::new(),
             label: marker.into(),
             node_id: String::new(),
             origin_node_id: String::new(),
@@ -1512,8 +1414,8 @@ impl PomDb {
         self.with_write("teste de escrita presa", |connection| {
             let transaction = connection.unchecked_transaction()?;
             transaction.execute(
-                "INSERT INTO api_keys (id, key, label, node_id, origin_node_id, active, created_at)
-                 VALUES ('held-write', 'held-secret', 'held', '', '', 1, 'held')",
+                "INSERT INTO api_keys (id, key_hash, label, node_id, origin_node_id, active, created_at)
+                 VALUES ('held-write', 'held-hash', 'held', '', '', 1, 'held')",
                 [],
             )?;
             started.send(()).expect("sinalizar escrita presa");
@@ -1629,7 +1531,8 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE TABLE IF NOT EXISTS api_keys (
             id TEXT PRIMARY KEY,
-            key TEXT NOT NULL UNIQUE,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_hint TEXT NOT NULL DEFAULT '',
             label TEXT NOT NULL,
             node_id TEXT NOT NULL,
             origin_node_id TEXT NOT NULL DEFAULT '',
@@ -1646,6 +1549,16 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS api_key_revocations_key_idx
             ON api_key_revocations(key_id, revoked_at);
+        CREATE TABLE IF NOT EXISTS model_sidecar_links (
+            model_key TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('mmproj', 'mtp')),
+            mode TEXT NOT NULL CHECK (mode IN ('file', 'embedded', 'none')),
+            file_name TEXT,
+            size_bytes INTEGER,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            PRIMARY KEY (model_key, kind)
+        );
         CREATE TABLE IF NOT EXISTS model_history (
             model_id TEXT PRIMARY KEY,
             identity_kind TEXT NOT NULL,
@@ -1798,25 +1711,9 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             prompt,
             tokenize = 'unicode61'
         );
-        CREATE TABLE IF NOT EXISTS cluster_logs (
-            received_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            node_id TEXT NOT NULL,
-            node_name TEXT NOT NULL,
-            deploy_id TEXT NOT NULL,
-            origin_at TEXT NOT NULL,
-            received_at TEXT NOT NULL,
-            level TEXT NOT NULL,
-            target TEXT NOT NULL,
-            message TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS cluster_logs_deploy_seq_idx
-            ON cluster_logs(deploy_id, received_seq);
-        CREATE INDEX IF NOT EXISTS cluster_logs_received_at_seq_idx
-            ON cluster_logs(received_at, received_seq);
-        CREATE TABLE IF NOT EXISTS cluster_log_counters (
-            counter_key TEXT PRIMARY KEY,
-            value INTEGER NOT NULL
-        );
+        -- Process logs belong to the logs plugin's own database now.
+        DROP TABLE IF EXISTS cluster_logs;
+        DROP TABLE IF EXISTS cluster_log_counters;
         PRAGMA user_version = 1;",
     )?;
     let has_origin_node_id = connection
@@ -1835,7 +1732,61 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             [],
         )?;
     }
+    migrate_api_key_secrets(connection)?;
     seed_geo_reference(connection)?;
+    Ok(())
+}
+
+/// Bancos de antes do hash guardavam cada segredo, em texto puro, na coluna
+/// `api_keys.key`. Esta migração troca o segredo pelo SHA-256 e pelo trecho
+/// visível, e renomeia a coluna para `key_hash`. O tracking id (`id`) não
+/// muda: os logs continuam ligados às mesmas chaves, e quem já tem o token
+/// continua usando o mesmo, porque a validação compara hashes.
+///
+/// O texto antigo não pode sobrar no arquivo: `secure_delete` zera as páginas
+/// liberadas, e o checkpoint e o `VACUUM` reescrevem WAL e banco sem ele.
+fn migrate_api_key_secrets(connection: &Connection) -> Result<()> {
+    let columns = connection
+        .prepare("PRAGMA table_info(api_keys)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "key") {
+        return Ok(());
+    }
+    connection.execute_batch("PRAGMA secure_delete = ON;")?;
+    let tx = connection.unchecked_transaction()?;
+    if !columns.iter().any(|column| column == "key_hint") {
+        tx.execute(
+            "ALTER TABLE api_keys ADD COLUMN key_hint TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    let secrets = {
+        let mut statement = tx.prepare("SELECT id, key FROM api_keys")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (id, secret) in &secrets {
+        tx.execute(
+            "UPDATE api_keys SET key = ?, key_hint = ? WHERE id = ?",
+            params![
+                crate::auth::api_key_hash(secret),
+                crate::auth::api_key_hint(secret),
+                id
+            ],
+        )?;
+    }
+    tx.execute("ALTER TABLE api_keys RENAME COLUMN key TO key_hash", [])?;
+    tx.commit()?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+        .context("reescrever o banco sem os segredos antigos")?;
+    tracing::info!(
+        "API keys migradas para hash: {} chave(s), tracking ids preservados",
+        secrets.len()
+    );
     Ok(())
 }
 
@@ -1895,10 +1846,24 @@ pub(crate) fn secure_database_permissions(path: &Path) -> Result<()> {
     restrict_sidecar_permissions(path)
 }
 
-fn secret_digest(secret: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    hex::encode(hasher.finalize())
+/// Columns of an `ApiKey`, in `api_key_from_row` order.
+const API_KEY_COLUMNS: &str =
+    "id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at";
+
+/// `local_secrets` row holding this node's own API key (`node_api_key`).
+const NODE_API_KEY_SECRET: &str = "node_api_key";
+
+fn api_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
+    Ok(ApiKey {
+        id: row.get(0)?,
+        key_hash: row.get(1)?,
+        key_hint: row.get(2)?,
+        label: row.get(3)?,
+        node_id: row.get(4)?,
+        origin_node_id: row.get(5)?,
+        active: row.get::<_, i64>(6)? != 0,
+        created_at: row.get(7)?,
+    })
 }
 
 fn model_identity(model: &DiscoveredModel) -> Result<(String, &'static str, String, &'static str)> {
@@ -1967,11 +1932,10 @@ fn is_last(model: &DiscoveredModel) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClusterLogsPruneResult, PomDb, DATABASE_FILENAME};
+    use super::{PomDb, DATABASE_FILENAME};
     use crate::config::ApiKey;
     use rusqlite::Connection;
     use std::path::{Path, PathBuf};
-    use std::time::Instant;
 
     #[test]
     fn creates_missing_database_with_the_complete_schema() {
@@ -1995,8 +1959,6 @@ mod tests {
             "audit_requests",
             "audit_request_hops",
             "audit_prompt_fts",
-            "cluster_logs",
-            "cluster_log_counters",
         ] {
             assert!(
                 tables.contains(&table.to_string()),
@@ -2006,201 +1968,6 @@ mod tests {
         assert_eq!(db.journal_mode().expect("ler journal"), "wal");
         remove_database(&path);
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn cluster_logs_keep_deploy_id_and_database_arrival_order() {
-        let path = temporary_path("cluster-logs");
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        let first = crate::cluster_logs::LogEntry {
-            node_id: "node-b".into(),
-            node_name: "ksia".into(),
-            deploy_id: "deploy-1".into(),
-            origin_at: "2099-01-01T00:00:00Z".into(),
-            level: "INFO".into(),
-            target: "test".into(),
-            message: "primeiro recebido".into(),
-        };
-        let second = crate::cluster_logs::LogEntry {
-            origin_at: "2000-01-01T00:00:00Z".into(),
-            message: "segundo recebido".into(),
-            ..first.clone()
-        };
-
-        db.append_cluster_logs(&[first, second], 3)
-            .expect("persistir logs");
-        let rows = db.cluster_logs(Some("deploy-1"), 100).expect("ler logs");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].message, "primeiro recebido");
-        assert_eq!(rows[1].message, "segundo recebido");
-        assert_eq!(rows[0].received_seq + 1, rows[1].received_seq);
-        assert_eq!(rows[0].deploy_id, "deploy-1");
-        assert_eq!(db.cluster_log_dropped().unwrap(), 3);
-        remove_database(&path);
-    }
-
-    #[test]
-    fn cluster_logs_retention_removes_old_rows_even_below_count_limit() {
-        let path = temporary_path("cluster-logs-retention-age");
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo-1");
-        insert_cluster_log(&db, "2026-01-02T00:00:00Z", "antigo-2");
-        insert_cluster_log(&db, "2026-09-10T00:00:00Z", "recente");
-
-        let result = db
-            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
-            .expect("podar logs antigos");
-
-        assert!(matches!(
-            result,
-            ClusterLogsPruneResult::Deleted { count: 2, .. }
-        ));
-        let rows = db.cluster_logs(None, 100).expect("ler logs restantes");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].message, "recente");
-        remove_database(&path);
-    }
-
-    #[test]
-    fn cluster_logs_retention_respects_count_in_small_batches() {
-        let path = temporary_path("cluster-logs-retention-count");
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        for index in 0..7 {
-            insert_cluster_log(&db, "2099-01-01T00:00:00Z", &format!("mensagem-{index}"));
-        }
-
-        let first = db
-            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
-            .expect("primeiro lote");
-        let second = db
-            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
-            .expect("segundo lote");
-        let third = db
-            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
-            .expect("fim da poda");
-
-        assert!(matches!(
-            first,
-            ClusterLogsPruneResult::Deleted { count: 2, .. }
-        ));
-        assert!(matches!(
-            second,
-            ClusterLogsPruneResult::Deleted { count: 2, .. }
-        ));
-        assert_eq!(third, ClusterLogsPruneResult::NothingToPrune);
-        assert_eq!(db.cluster_logs(None, 100).unwrap().len(), 3);
-        remove_database(&path);
-    }
-
-    #[test]
-    fn cluster_logs_retention_returns_immediately_under_sqlite_contention() {
-        let path = temporary_path("cluster-logs-retention-contention");
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
-        let holder = Connection::open(&path).expect("abrir conexão de contenção");
-        holder
-            .execute_batch("BEGIN IMMEDIATE")
-            .expect("reservar escrita");
-
-        let started = Instant::now();
-        let result = db
-            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
-            .expect("contenção deve ser tratável");
-
-        assert_eq!(result, ClusterLogsPruneResult::Contended);
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
-        holder.execute_batch("ROLLBACK").expect("liberar escrita");
-        remove_database(&path);
-    }
-
-    #[test]
-    fn cluster_logs_retention_checkpoints_wal_after_a_delete() {
-        let path = temporary_path("cluster-logs-retention-checkpoint");
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
-
-        let result = db
-            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
-            .expect("podar e recuperar espaço");
-
-        assert!(matches!(
-            result,
-            ClusterLogsPruneResult::Deleted {
-                count: 1,
-                space_reclaimed: true
-            }
-        ));
-        remove_database(&path);
-    }
-
-    #[test]
-    fn cluster_logs_retention_does_not_touch_request_audit_tables() {
-        let path = temporary_path("cluster-logs-retention-audit");
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        db.with_write("preparar auditoria do teste", |connection| {
-            connection.execute(
-                "INSERT INTO audit_requests (
-                    id, received_at, route, model, api_key_id, api_key_label,
-                    entry_node_id, prompt, status
-                 ) VALUES ('request-1', '2026-09-10T00:00:00Z', '/v1/chat/completions',
-                    'model', 'key-1', 'test', 'node-a', 'prompt', 'in_progress')",
-                [],
-            )?;
-            connection.execute(
-                "INSERT INTO audit_request_hops (request_id, position, node_id)
-                 VALUES ('request-1', 0, 'node-a')",
-                [],
-            )?;
-            connection.execute(
-                "INSERT INTO audit_prompt_fts (request_id, prompt)
-                 VALUES ('request-1', 'prompt')",
-                [],
-            )?;
-            Ok(())
-        })
-        .expect("preparar auditoria");
-        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
-
-        db.try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
-            .expect("podar logs");
-
-        db.with_read("conferir auditoria", |connection| {
-            assert_eq!(
-                connection.query_row("SELECT COUNT(*) FROM audit_requests", [], |row| {
-                    row.get::<_, i64>(0)
-                })?,
-                1
-            );
-            assert_eq!(
-                connection.query_row("SELECT COUNT(*) FROM audit_request_hops", [], |row| {
-                    row.get::<_, i64>(0)
-                })?,
-                1
-            );
-            assert_eq!(
-                connection.query_row("SELECT COUNT(*) FROM audit_prompt_fts", [], |row| {
-                    row.get::<_, i64>(0)
-                })?,
-                1
-            );
-            Ok(())
-        })
-        .expect("auditoria preservada");
-        remove_database(&path);
-    }
-
-    fn insert_cluster_log(db: &PomDb, received_at: &str, message: &str) {
-        db.with_write("preparar log do teste", |connection| {
-            connection.execute(
-                "INSERT INTO cluster_logs (
-                    node_id, node_name, deploy_id, origin_at, received_at,
-                    level, target, message
-                 ) VALUES ('node-a', 'test', 'deploy-1', ?, ?, 'INFO', 'test', ?)",
-                rusqlite::params![received_at, received_at, message],
-            )?;
-            Ok(())
-        })
-        .expect("preparar log");
     }
 
     #[test]
@@ -2313,7 +2080,8 @@ mod tests {
         let db = PomDb::open(&path).expect("abrir banco novo");
         db.insert_api_key(&ApiKey {
             id: "key-1".into(),
-            key: "sk-secret".into(),
+            key_hash: crate::auth::api_key_hash("sk-secret"),
+            key_hint: String::new(),
             label: "operador".into(),
             node_id: "node-a".into(),
             origin_node_id: "node-a".into(),
@@ -2330,7 +2098,8 @@ mod tests {
         assert!(reopened.api_key_for_token("sk-secret").unwrap().is_none());
         let key = ApiKey {
             id: "key-1".into(),
-            key: "sk-secret".into(),
+            key_hash: crate::auth::api_key_hash("sk-secret"),
+            key_hint: String::new(),
             label: "operador".into(),
             node_id: "node-a".into(),
             origin_node_id: "node-a".into(),
@@ -2353,7 +2122,8 @@ mod tests {
         for (id, origin) in [("a-1", "node-a"), ("a-2", "node-a"), ("b-1", "node-b")] {
             db.insert_api_key(&ApiKey {
                 id: id.into(),
-                key: format!("sk-{id}"),
+                key_hash: crate::auth::api_key_hash(&format!("sk-{id}")),
+                key_hint: String::new(),
                 label: id.into(),
                 node_id: origin.into(),
                 origin_node_id: origin.into(),
@@ -2562,6 +2332,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: true,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         };
         db.record_catalog(&catalog).unwrap();
 
@@ -2582,6 +2354,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: true,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         })
         .unwrap();
         assert!(db
@@ -2611,6 +2385,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: false,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         };
 
         db.record_catalog(&catalog).unwrap();
@@ -2655,6 +2431,7 @@ mod tests {
             metadata_error: None,
             metadata_identity: None,
             architecture: Some("llama".into()),
+            embedding_length: None,
             is_moe: false,
             total_layers: shard_range.map(|_| 32),
             quant: Some("Q4_K_M".into()),
@@ -2668,6 +2445,111 @@ mod tests {
             tp_size: None,
             capabilities: None,
         }
+    }
+
+    #[test]
+    fn revokes_superseded_node_keys_and_keeps_the_newest() {
+        let path = temporary_path("superseded");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        let key = |id: &str, label: &str, node: &str, created: &str| ApiKey {
+            id: id.into(),
+            key_hash: crate::auth::api_key_hash(id),
+            key_hint: String::new(),
+            label: label.into(),
+            node_id: node.into(),
+            origin_node_id: node.into(),
+            active: true,
+            created_at: created.into(),
+        };
+        db.insert_api_key(&key("old", "pom-n1", "n1", "2026-01-01"))
+            .unwrap();
+        db.insert_api_key(&key("new", "pom-n1", "n1", "2026-10-03"))
+            .unwrap();
+        db.insert_api_key(&key("only", "pom-n2", "n2", "2026-01-01"))
+            .unwrap();
+        // Chave de produto com dois tokens: não é interna, nada muda.
+        db.insert_api_key(&key("prod-a", "produto", "n1", "2026-01-01"))
+            .unwrap();
+        db.insert_api_key(&key("prod-b", "produto", "n1", "2026-10-03"))
+            .unwrap();
+
+        assert_eq!(db.revoke_superseded_node_keys("principal").unwrap(), 1);
+        let active: Vec<String> = db
+            .api_keys()
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.active)
+            .map(|key| key.id)
+            .collect();
+        assert_eq!(active, vec!["only", "prod-a", "new", "prod-b"]);
+        assert_eq!(db.revoke_superseded_node_keys("principal").unwrap(), 0);
+        remove_database(&path);
+    }
+
+    /// Um banco de antes do hash: o segredo em texto puro na coluna `key`.
+    /// Depois de abrir, a chave vale pelo mesmo token, mantém o tracking id, e
+    /// o texto não está mais em nenhum byte do arquivo nem do WAL.
+    #[test]
+    fn migrates_plaintext_api_keys_to_hashes_and_scrubs_the_file() {
+        let root = temporary_path("hash-migration");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(DATABASE_FILENAME);
+        let secret = "sk-0b5d7e2a-1c3f-4a6b-9d8e-7f6a5b4c3d2e";
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(&format!(
+                    "PRAGMA journal_mode = WAL;
+                     CREATE TABLE api_keys (
+                        id TEXT PRIMARY KEY,
+                        key TEXT NOT NULL UNIQUE,
+                        label TEXT NOT NULL,
+                        node_id TEXT NOT NULL,
+                        origin_node_id TEXT NOT NULL DEFAULT '',
+                        active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL
+                     );
+                     CREATE TABLE api_key_revocations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        key_id TEXT NOT NULL REFERENCES api_keys(id),
+                        key_sha256 TEXT NOT NULL,
+                        revoked_by TEXT NOT NULL,
+                        revoked_at TEXT NOT NULL
+                     );
+                     INSERT INTO api_keys VALUES
+                        ('produto-x', '{secret}', 'produto', 'n1', 'n1', 1, '2026-01-01');"
+                ))
+                .unwrap();
+        }
+
+        let db = PomDb::open(&path).expect("abrir e migrar");
+        let key = db
+            .api_key_for_token(secret)
+            .unwrap()
+            .expect("mesmo token vale");
+        assert_eq!(key.id, "produto-x");
+        assert_eq!(key.key_hash, crate::auth::api_key_hash(secret));
+        assert_eq!(key.key_hint, "sk-0b5d7…3d2e");
+        drop(db);
+        let reopened = PomDb::open(&path).expect("reabrir já migrado");
+        assert_eq!(reopened.api_keys().unwrap().len(), 1);
+        drop(reopened);
+
+        for file in [
+            path.clone(),
+            PathBuf::from(format!("{}-wal", path.display())),
+        ] {
+            if let Ok(bytes) = std::fs::read(&file) {
+                assert!(
+                    !bytes
+                        .windows(secret.len())
+                        .any(|window| window == secret.as_bytes()),
+                    "segredo em texto puro sobrou em {file:?}"
+                );
+            }
+        }
+        remove_database(&path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn temporary_path(label: &str) -> PathBuf {

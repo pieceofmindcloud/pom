@@ -145,6 +145,25 @@ if [ "$(index_in "$frontend_instructions" '^RUN .*npm run build')" -eq "$(printf
 else
     fail "frontend npm build should be the last RUN in its stage"
 fi
+# The development toolchain is a base of the development image, never a layer
+# on top of POM's own files: a POM build must not reinstall it.
+dev_os=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ / AS dev-os$/ { print $1; exit }')
+dev_runtime=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ / AS dev-runtime$/ { print $1; exit }')
+if printf '%s\n' "$all_instructions" | grep -Eq "^${dev_os}	FROM	runtime-os AS dev-os$" \
+   && in_stage "$dev_os" | grep -q 'rustup' \
+   && ! in_stage "$dev_os" | grep -Eq '^(COPY|ARG[[:space:]]POM_BUILD_COMMIT)' \
+   && printf '%s\n' "$all_instructions" | grep -Eq "^${dev_runtime}	FROM	dev-os AS dev-runtime$" \
+   && ! in_stage "$dev_runtime" | grep -Eq 'rustup|apt-get'; then
+    pass "the development toolchain is installed in a base stage, before POM's files"
+else
+    fail "the development toolchain must live in dev-os (FROM runtime-os), with dev-runtime only copying POM's files"
+fi
+if in_stage "$runtime_base" | grep -Eq 'rustup|build-essential' || in_stage "$runtime" | grep -Eq 'rustup|build-essential'; then
+    fail "the distribution image must not install a toolchain"
+else
+    pass "the distribution image has no toolchain"
+fi
+
 runtime_last_instruction=$(printf '%s\n' "$runtime_instructions" | tail -n 1 | tr '\t' ' ')
 if [ "$runtime_last_instruction" = 'COPY --from=frontend /build/apps/frontend/dist /app/apps/frontend/dist' ]; then
     pass "the frontend bundle is the final runtime image layer"

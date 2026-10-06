@@ -22,7 +22,6 @@ import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcas
 import { useI18n } from "./i18n/provider";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
-import { DefaultPasswordNotice } from "./components/DefaultPasswordNotice";
 import { Panel, PanelHeader } from "./components/ui";
 
 
@@ -404,9 +403,6 @@ export default function App() {
             }
           >
             <Topbar />
-          </ErrorBoundary>
-          <ErrorBoundary fallback={null}>
-            <DefaultPasswordNotice />
           </ErrorBoundary>
           <main
             className={

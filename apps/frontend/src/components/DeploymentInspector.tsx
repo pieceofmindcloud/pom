@@ -15,12 +15,20 @@
  * **Três categorias, e a fronteira entre elas é de quem é o parâmetro:**
  *
  * * *Configurações padrões* - o que o llama.cpp já tem: contexto, lote,
- *   amostragem, cache KV, e os interruptores de recurso do próprio motor.
+ *   amostragem (temperatura, top-p/top-k/min-p, penalidades, DRY e semente),
+ *   cache KV, e os interruptores de recurso do próprio motor, com onde o MTP
+ *   fica logo abaixo dos números do MTP.
  * * *Configurações POM* - o que existe porque a inferência é distribuída:
  *   desativar embeddings, ajuste de memória, chunks de prefill em voo, fusão
- *   de fatias e a precisão do estado oculto entre peers.
- * * *Configurações POM (DESENV)* - o motor de inferência, o detector de ciclo
- *   e o recuo do MTP, que ainda estão sendo medidos.
+ *   de fatias e a precisão do estado oculto entre peers. Dentro dela, o grupo
+ *   *Beta* reúne o que funciona mas ainda está sendo medido: experts do MoE na
+ *   RAM, cache de experts na GPU e pedaço de prefill automático.
+ * * *Configurações POM (DESENV)* - o motor de inferência e o descarregamento
+ *   ocioso, que ainda estão sendo medidos.
+ *
+ * Cada categoria (e o grupo Beta) tem um botão de ajuda que abre, numa janela,
+ * o guia dela na Documentação (`guides/deploySettings.ts`): o que cada
+ * propriedade faz e como mudá-la.
  *
  * **O ícone de informação vem antes do nome**, e não depois: os nomes têm
  * larguras diferentes, e um `[i]` colado ao fim de cada um deixava a coluna de
@@ -28,8 +36,20 @@
  * inspetor. É a mesma razão de o controle ter largura fixa à direita.
  */
 import { useState, type ReactNode } from "react";
+import { Check } from "lucide-react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
-import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
+import { GuideDialog, GuideHelpButton } from "./GuideDialog";
+import { DEPLOY_SETTINGS_GUIDES } from "../guides/deploySettings";
+import { speculationModeOf, speculationPatch, type SpeculationMode } from "../lib/speculation";
+import { SidecarPicker, type SidecarPick } from "./SidecarPicker";
+import {
+  DEFAULT_SAMPLER_SEED,
+  reasoningBudgetText,
+  reasoningBudgetValue,
+  seedText,
+  withLlamaCppName,
+} from "../lib/llamaCppNames";
+import type { MtpPlacement, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -39,6 +59,37 @@ import type {
   WireDtype,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+
+/** A caixinha de marcar do inspetor (`role="checkbox"` + `aria-label`, que é como os testes a encontram). */
+export function Tick({
+  on,
+  label,
+  onToggle,
+  disabled = false,
+}: {
+  on: boolean;
+  label: string;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onToggle}
+      className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] border transition-colors duration-150 ${
+        on
+          ? "border-iris bg-iris text-white"
+          : "border-line-strong bg-ink text-transparent hover:border-iris/60"
+      }`}
+    >
+      <Check className="h-3 w-3" strokeWidth={3} />
+    </button>
+  );
+}
 
 /** Toda linha do inspetor: `[i]` · nome · controle. */
 const ROW =
@@ -56,14 +107,20 @@ type NumericKey =
   | "top_k"
   | "repeat_penalty"
   | "repeat_last_n"
+  | "presence_penalty"
+  | "frequency_penalty"
+  | "min_p"
+  | "dry_multiplier"
+  | "dry_base"
+  | "dry_allowed_length"
+  | "dry_penalty_last_n"
+  | "n_ubatch"
   | "speculative_k"
   | "speculative_lookup_window"
   | "mtp_draft_tokens"
   | "mtp_min_probability"
-  | "cycle_detection_min_window_tokens"
-  | "cycle_detection_max_window_tokens"
-  | "cycle_detection_repetitions"
-  | "idle_minutes";
+  | "idle_minutes"
+  | "moe_cache_mib";
 
 /**
  * `step` só existe onde o valor não é inteiro: sem ele o navegador recusa
@@ -73,6 +130,11 @@ const NUMERIC_STEP: Partial<Record<NumericKey, string>> = {
   temperature: "0.05",
   top_p: "0.01",
   repeat_penalty: "0.01",
+  presence_penalty: "0.05",
+  frequency_penalty: "0.05",
+  min_p: "0.01",
+  dry_multiplier: "0.05",
+  dry_base: "0.05",
   mtp_min_probability: "0.01",
 };
 
@@ -82,19 +144,27 @@ const DEFAULT_NUMERIC_KNOBS: NumericKey[] = [
   "max_sessions",
   "max_new_tokens",
   "n_batch",
+  "n_ubatch",
   "prefill_chunk_tokens",
+  // Amostragem na ordem do llama.cpp: temperatura e os cortes do conjunto de
+  // candidatos, depois as penalidades de repetição, depois o DRY (que também é
+  // uma penalidade de repetição, por sequência). A semente vem logo depois.
   "temperature",
   "top_p",
   "top_k",
+  "min_p",
   "repeat_penalty",
   "repeat_last_n",
+  "presence_penalty",
+  "frequency_penalty",
+  "dry_multiplier",
+  "dry_base",
+  "dry_allowed_length",
+  "dry_penalty_last_n",
 ];
 
-const CYCLE_KNOBS: NumericKey[] = [
-  "cycle_detection_min_window_tokens",
-  "cycle_detection_max_window_tokens",
-  "cycle_detection_repetitions",
-];
+/** O DRY se desliga com o multiplicador em 0; os outros números dele só valem ligado. */
+const DRY_DETAIL_KNOBS: NumericKey[] = ["dry_base", "dry_allowed_length", "dry_penalty_last_n"];
 
 export const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
   f32: "F32",
@@ -124,6 +194,25 @@ export interface MergeControl {
 }
 
 /** Vision is a deployment control, even though only the pipeline head uses it. */
+/** One sidecar choice in the inspector: the pick, what the plan did with it. */
+export interface SidecarChoiceControl {
+  value: SidecarPick;
+  onChange: (next: SidecarPick) => void;
+  slot?: SidecarSlot | null;
+  /** Describes the model's saved link; `null` when none is saved. */
+  linkLabel: string | null;
+}
+
+/**
+ * Vision projector for the head and MTP draft for the tail, picked among the
+ * compatible files of the whole network (`DeployPlan.sidecars.options`).
+ */
+export interface SidecarControls {
+  options: SidecarOption[];
+  vision: SidecarChoiceControl;
+  mtp: SidecarChoiceControl & { allowEmbedded: boolean };
+}
+
 export interface VisionControl {
   available: boolean;
   enabled: boolean;
@@ -137,12 +226,17 @@ export interface VisionControl {
 function Section({
   title,
   tone,
+  guide,
   children,
 }: {
   title: string;
   tone: "iris" | "aqua" | "amber";
+  /** The `?guia=` id the help button opens in a dialog. */
+  guide?: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
+  const [helpOpen, setHelpOpen] = useState(false);
   const head = {
     iris: "border-iris/20 bg-iris/10 text-iris",
     aqua: "border-aqua/20 bg-aqua/10 text-aqua",
@@ -155,13 +249,50 @@ function Section({
   }[tone];
   return (
     <section className={`border-b ${body}`}>
-      <p
-        className={`border-b px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] ${head}`}
-      >
-        {title}
-      </p>
+      <div className={`flex items-center justify-between gap-2 border-b px-2 py-1 ${head}`}>
+        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
+        {guide && (
+          <GuideHelpButton
+            label={t("inspector.guideHelp", { section: title })}
+            onClick={() => setHelpOpen(true)}
+          />
+        )}
+      </div>
       <div className="space-y-1 px-2 py-2">{children}</div>
+      {guide && <GuideDialog guideId={guide} open={helpOpen} onClose={() => setHelpOpen(false)} />}
     </section>
+  );
+}
+
+/**
+ * A group inside a category, for settings that work but are still being
+ * measured. It carries its own short explanation and a help button, because
+ * these are the settings that only pay off in combination.
+ */
+function BetaGroup({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
+  const [helpOpen, setHelpOpen] = useState(false);
+  const title = t("inspector.sectionBeta");
+  return (
+    <div className="mt-2 rounded-md border border-amber/25 bg-amber/[0.05]">
+      <div className="flex items-center justify-between gap-2 border-b border-amber/20 px-2 py-1 text-amber">
+        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em]">{title}</p>
+        <GuideHelpButton
+          label={t("inspector.guideHelp", { section: title })}
+          onClick={() => setHelpOpen(true)}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={() => setHelpOpen(true)}
+        className="block w-full px-2 pt-1.5 text-left text-[0.6rem] leading-relaxed text-muted hover:text-fg"
+      >
+        {t("inspector.betaInfo")}{" "}
+        <span className="text-amber underline-offset-2 hover:underline">{t("inspector.betaInfoLink")}</span>
+      </button>
+      <div className="space-y-1 px-2 py-2">{children}</div>
+      <GuideDialog guideId={DEPLOY_SETTINGS_GUIDES.beta} open={helpOpen} onClose={() => setHelpOpen(false)} />
+    </div>
   );
 }
 
@@ -212,6 +343,12 @@ function showNumber(value: unknown): string {
 }
 
 /** O valor, quando não há nada a mexer nele. */
+const MTP_PLACEMENT_LABELS: Record<MtpPlacement, string> = {
+  auto: "deploy.mtpPlacementAuto",
+  vram: "deploy.mtpPlacementVram",
+  ram: "deploy.mtpPlacementRam",
+};
+
 function ReadValue({ children }: { children: ReactNode }) {
   return (
     <span className="truncate text-right font-mono text-[0.65rem] text-fg">{children}</span>
@@ -226,6 +363,7 @@ export function DeploymentInspector({
   cacheTypes,
   merge,
   vision,
+  sidecars,
   /**
    * O motor só é uma pergunta quando o modelo é MoE: num modelo denso não há
    * escolha a fazer, e um combo com uma resposta só é ruído. O Histórico
@@ -244,6 +382,7 @@ export function DeploymentInspector({
   cacheTypes?: CacheTypeControl;
   merge?: MergeControl;
   vision?: VisionControl;
+  sidecars?: SidecarControls;
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
@@ -303,7 +442,7 @@ export function DeploymentInspector({
   function numeric(key: NumericKey) {
     const label = t("inspector.knob." + key);
     return (
-      <InspectorRow key={key} label={label} tip={t("deploy.knob." + key + "Hint")}>
+      <InspectorRow key={key} label={label} tip={withLlamaCppName(t("deploy.knob." + key + "Hint"), key)}>
         {readOnly ? (
           <ReadValue>{value[key] == null ? "-" : showNumber(value[key])}</ReadValue>
         ) : (
@@ -311,7 +450,7 @@ export function DeploymentInspector({
             aria-label={label}
             name={key}
             type="number"
-            min={key === "idle_minutes" ? 1 : undefined}
+            min={key === "idle_minutes" ? 1 : key === "moe_cache_mib" ? 0 : undefined}
             step={NUMERIC_STEP[key]}
             value={shown(key)}
             onChange={(event) => setKnob(key, event.target.value)}
@@ -369,7 +508,7 @@ export function DeploymentInspector({
           }`
         : undefined;
     return (
-      <InspectorRow key={key} label={label} tip={tip} alert={alert}>
+      <InspectorRow key={key} label={label} tip={tip ? withLlamaCppName(tip, key) : tip} alert={alert}>
         <Tick
           on={checked}
           label={label}
@@ -380,21 +519,44 @@ export function DeploymentInspector({
     );
   }
 
-  const cycleOn = value.cycle_detection_enabled ?? false;
-  const speculativeOn = value.speculative_decoding_enabled ?? false;
-  const mtpOn = value.mtp_enabled ?? false;
+  const dryOn = (value.dry_multiplier ?? 0) > 0;
+  const speculation = speculationModeOf(value);
+  const speculationCapability = (mode: SpeculationMode) =>
+    mode === "mtp" ? capabilities?.mtp : mode === "lookup" ? capabilities?.speculative_decoding : undefined;
+  const chosenCapability = speculationCapability(speculation);
+  // Uma escolha cujo suporte o nó ainda não sabe dizer fica disponível, mas avisada.
+  const speculationAlert = chosenCapability?.state === "unknown"
+    ? `${t("inspector.capabilityUnknown")} ${chosenCapability.reason}`
+    : chosenCapability?.warning || undefined;
 
   return (
     <>
-      <Section title={t("inspector.sectionDefaults")} tone="iris">
-        {DEFAULT_NUMERIC_KNOBS.map((key) => numeric(key))}
+      <Section title={t("inspector.sectionDefaults")} tone="iris" guide={DEPLOY_SETTINGS_GUIDES.defaults}>
+        {DEFAULT_NUMERIC_KNOBS.filter((key) => dryOn || !DRY_DETAIL_KNOBS.includes(key)).map((key) => numeric(key))}
+        <InspectorRow label={t("inspector.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
+          {readOnly ? (
+            <ReadValue>{value.seed ?? DEFAULT_SAMPLER_SEED}</ReadValue>
+          ) : (
+            <Input
+              aria-label={t("inspector.knob.seed")}
+              name="seed"
+              type="text"
+              inputMode="numeric"
+              value={value.seed ?? DEFAULT_SAMPLER_SEED}
+              onChange={(event) => set({ seed: seedText(event.target.value) })}
+              onBlur={() => {
+                if (!value.seed) set({ seed: DEFAULT_SAMPLER_SEED });
+              }}
+            />
+          )}
+        </InspectorRow>
 
         {cacheTypes &&
           (["k", "v"] as const).map((part) => {
             const label = part === "k" ? t("inspector.cacheK") : t("inspector.cacheV");
             const current = part === "k" ? cacheTypes.k : cacheTypes.v;
             return (
-              <InspectorRow key={`cache_${part}`} label={label} tip={t("inspector.cacheHint")}>
+              <InspectorRow key={`cache_${part}`} label={label} tip={withLlamaCppName(t("inspector.cacheHint"), `cache_type_${part}`)}>
                 {readOnly ? (
                   <ReadValue>{CACHE_TYPE_LABELS[current]}</ReadValue>
                 ) : (
@@ -427,37 +589,93 @@ export function DeploymentInspector({
           onToggle: (next) => set({ no_thinking: next }),
           tip: t("deploy.noThinkingHint"),
         })}
-        {toggle({
-          key: "speculative_decoding_enabled",
-          label: t("deploy.speculative"),
-          capability: capabilities?.speculative_decoding,
-          checked: speculativeOn,
-          onToggle: (next) => set({ speculative_decoding_enabled: next }),
-          tip: t("deploy.speculativeHint"),
-        })}
-        {speculativeOn && capabilities?.speculative_decoding?.state !== "unsupported" && (
+        {!(value.no_thinking ?? false) && (
+          <InspectorRow
+            label={t("inspector.knob.reasoning_budget")}
+            tip={withLlamaCppName(t("deploy.knob.reasoning_budgetHint"), "reasoning_budget")}
+          >
+            {readOnly ? (
+              <ReadValue>{reasoningBudgetText(value.reasoning_budget) || t("deploy.reasoningBudgetUnlimited")}</ReadValue>
+            ) : (
+              <Input
+                aria-label={t("inspector.knob.reasoning_budget")}
+                name="reasoning_budget"
+                type="text"
+                inputMode="numeric"
+                placeholder={t("deploy.reasoningBudgetUnlimited")}
+                value={reasoningBudgetText(value.reasoning_budget)}
+                onChange={(event) => set({ reasoning_budget: reasoningBudgetValue(event.target.value) })}
+              />
+            )}
+          </InspectorRow>
+        )}
+        <InspectorRow
+          label={t("deploy.speculationMode")}
+          tip={t("deploy.speculationModeHint")}
+          alert={speculationAlert}
+        >
+          {readOnly ? (
+            <ReadValue>{t(`deploy.speculationMode.${speculation}`)}</ReadValue>
+          ) : (
+            <Select
+              aria-label={t("deploy.speculationMode")}
+              name="speculation_mode"
+              value={speculation}
+              onChange={(event) => set(speculationPatch(event.target.value as SpeculationMode, value))}
+              compact
+            >
+              {(["none", "mtp", "lookup"] as const)
+                .filter((mode) => mode === "none" || mode === speculation || speculationCapability(mode)?.state !== "unsupported")
+                .map((mode) => (
+                  <option key={mode} value={mode}>{t(`deploy.speculationMode.${mode}`)}</option>
+                ))}
+            </Select>
+          )}
+        </InspectorRow>
+        {speculation === "lookup" && capabilities?.speculative_decoding?.state !== "unsupported" && (
           <>
             {numeric("speculative_k")}
             {numeric("speculative_lookup_window")}
           </>
         )}
-        {toggle({
-          key: "mtp_enabled",
-          label: t("deploy.mtp"),
-          capability: capabilities?.mtp,
-          checked: mtpOn,
-          onToggle: (next) =>
-            set({
-              mtp_enabled: next,
-              ...(next ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
-            }),
-          tip: t("deploy.mtpHint"),
-        })}
-        {mtpOn && capabilities?.mtp?.state !== "unsupported" && (
+        {speculation === "mtp" && capabilities?.mtp?.state !== "unsupported" && (
           <>
             {numeric("mtp_draft_tokens")}
             {numeric("mtp_min_probability")}
+            <InspectorRow label={t("deploy.mtpPlacement")} tip={t("deploy.mtpPlacementHint")}>
+              {readOnly ? (
+                <ReadValue>{t(MTP_PLACEMENT_LABELS[value.mtp_placement ?? "auto"])}</ReadValue>
+              ) : (
+                <Select
+                  aria-label={t("deploy.mtpPlacement")}
+                  name="mtp_placement"
+                  value={value.mtp_placement ?? "auto"}
+                  onChange={(event) => set({ mtp_placement: event.target.value as MtpPlacement })}
+                  compact
+                >
+                  <option value="auto">{t("deploy.mtpPlacementAuto")}</option>
+                  <option value="vram">{t("deploy.mtpPlacementVram")}</option>
+                  <option value="ram">{t("deploy.mtpPlacementRam")}</option>
+                </Select>
+              )}
+            </InspectorRow>
           </>
+        )}
+        {speculation === "mtp" && sidecars && !readOnly && (
+          <div className="px-0.5 py-1.5">
+            <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.mtp")}</p>
+            <SidecarPicker
+              kind="mtp"
+              label={t("sidecars.mtp")}
+              options={sidecars.options.filter((option) => option.kind === "mtp")}
+              value={sidecars.mtp.value}
+              onChange={sidecars.mtp.onChange}
+              slot={sidecars.mtp.slot}
+              linkLabel={sidecars.mtp.linkLabel}
+              allowEmbedded={sidecars.mtp.allowEmbedded}
+              compact
+            />
+          </div>
         )}
       </Section>
 
@@ -473,7 +691,21 @@ export function DeploymentInspector({
                   onToggle={() => vision.onChange(!vision.enabled)}
                 />
               </InspectorRow>
-              {vision.candidates.length > 1 ? (
+              {vision.enabled && sidecars && !readOnly ? (
+                <div className="px-0.5 py-1.5">
+                  <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.vision")}</p>
+                  <SidecarPicker
+                    kind="mmproj"
+                    label={t("sidecars.vision")}
+                    options={sidecars.options.filter((option) => option.kind === "mmproj")}
+                    value={sidecars.vision.value}
+                    onChange={sidecars.vision.onChange}
+                    slot={sidecars.vision.slot}
+                    linkLabel={sidecars.vision.linkLabel}
+                    compact
+                  />
+                </div>
+              ) : vision.candidates.length > 1 ? (
                 <InspectorRow label="Modelo de visão" tip="Escolha o projetor compatível que será usado na cabeça da implantação.">
                   <Select
                     aria-label="Projetor de visão"
@@ -503,7 +735,7 @@ export function DeploymentInspector({
         </Section>
       )}
 
-      <Section title={t("inspector.sectionPom")} tone="aqua">
+      <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
         {toggle({
           key: "no_embeddings",
           label: t("inspector.noEmbeddings"),
@@ -573,6 +805,25 @@ export function DeploymentInspector({
             )}
           </>
         )}
+        <BetaGroup>
+          {toggle({
+            key: "moe_experts_in_ram",
+            label: t("inspector.moeExpertsInRam"),
+            alwaysVisible: true,
+            checked: value.moe_experts_in_ram ?? false,
+            onToggle: (next) => set({ moe_experts_in_ram: next }),
+            tip: t("deploy.moeExpertsInRamHint"),
+          })}
+          {numeric("moe_cache_mib")}
+          {toggle({
+            key: "adaptive_prefill_chunks",
+            label: t("inspector.adaptivePrefillChunks"),
+            alwaysVisible: true,
+            checked: value.adaptive_prefill_chunks ?? true,
+            onToggle: (next) => set({ adaptive_prefill_chunks: next }),
+            tip: t("deploy.adaptivePrefillChunksHint"),
+          })}
+        </BetaGroup>
       </Section>
 
       {pomDesenv && <Section title={t("inspector.sectionPomDev")} tone="amber">
@@ -602,23 +853,6 @@ export function DeploymentInspector({
             )}
           </InspectorRow>
         )}
-        {CYCLE_KNOBS.map((key) => numeric(key))}
-        {toggle({
-          key: "cycle_detection_enabled",
-          label: t("deploy.cycleDetection"),
-          alwaysVisible: true,
-          checked: cycleOn,
-          onToggle: (next) => set({ cycle_detection_enabled: next }),
-          tip: t("deploy.cycleDetectionHint"),
-        })}
-        {toggle({
-          key: "mtp_cpu_fallback_enabled",
-          label: t("deploy.mtpCpuFallback"),
-          alwaysVisible: true,
-          checked: value.mtp_cpu_fallback_enabled ?? true,
-          onToggle: (next) => set({ mtp_cpu_fallback_enabled: next }),
-          tip: t("deploy.mtpCpuFallbackHint"),
-        })}
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

@@ -23,7 +23,10 @@ import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
 import { LeaveNode } from "./LeaveNode";
+import { KvCache } from "./KvCache";
+import { PluginServiceBadge } from "./PluginServices";
 import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
+import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
 import {
   isServing,
@@ -35,7 +38,7 @@ import {
 } from "../lib/format";
 import { hasSlice } from "../lib/networkPeers";
 import { usePeerRuntime } from "../lib/queries";
-import type { DiskStat, GpuStat, PeerLoadParams, PeerRuntimeHealth, PeerView, ThermalPolicy } from "../lib/types";
+import type { ChatTelemetryPeerPerf, DiskStat, GpuStat, PeerLoadParams, PeerRuntimeHealth, PeerView, ThermalPolicy } from "../lib/types";
 import { temperatureBand } from "../lib/thermal";
 import { useI18n } from "../i18n/provider";
 
@@ -261,7 +264,14 @@ function DiskMeter({ disk, label }: { disk: DiskStat; label: string }) {
   );
 }
 
-function GpuTelemetryRow({
+/**
+ * Uma placa, inteira num bloco: nome, VRAM, uso, temperatura e potência.
+ *
+ * A VRAM morava numa grade separada, abaixo de todas as linhas de telemetria,
+ * e numa caixa com duas placas era preciso casar "qual barra é de qual linha"
+ * pelo nome. Aqui cada placa responde por si.
+ */
+function GpuTile({
   gpu,
   label,
   policy,
@@ -291,23 +301,37 @@ function GpuTelemetryRow({
   return (
     <div
       data-testid="gpu-telemetry-row"
-      className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-x-2 rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-[0.66rem]"
+      className="min-w-0 rounded-lg border border-line bg-raised/60 px-2.5 py-2"
       aria-label={`${label}: ${temperature}`}
     >
-      <span className="min-w-0 truncate text-faint" title={label}>{label}</span>
-      <span className="whitespace-nowrap font-mono text-muted">
-        <span className="mr-1 text-faint">{t("dashboard.gpuUsage")}</span>
-        {gpu.utilization_pct == null ? num(null) : `${num(gpu.utilization_pct)}%`}
-      </span>
-      <Badge tone={tone} className="whitespace-nowrap px-1.5 py-0 text-[0.58rem]">
-        {temperature}
-      </Badge>
-      <span className="whitespace-nowrap font-mono text-muted">
-        <span className="mr-1 text-faint">{t("dashboard.gpuPower")}</span>
-        {gpu.power_watts == null || !Number.isFinite(gpu.power_watts)
-          ? num(null)
-          : `${num(gpu.power_watts)} W`}
-      </span>
+      <div className="mb-1.5 truncate text-[0.72rem] font-medium text-fg" title={label}>{label}</div>
+      {gpu.vram_used_pct != null && (
+        <Meter
+          compact
+          label="VRAM"
+          value={gpu.vram_used_pct}
+          tone={gpu.vram_used_pct > 88 ? "rose" : "lime"}
+          detail={t("dashboard.usedOf", {
+            used: megabytes(gpu.vram_used_mb),
+            total: megabytes(gpu.vram_total_mb),
+          })}
+        />
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.66rem]">
+        <span className="whitespace-nowrap font-mono text-muted">
+          <span className="mr-1 text-faint">{t("dashboard.gpuUsage")}</span>
+          {gpu.utilization_pct == null ? num(null) : `${num(gpu.utilization_pct)}%`}
+        </span>
+        <Badge tone={tone} className="whitespace-nowrap px-1.5 py-0 text-[0.58rem]">
+          {temperature}
+        </Badge>
+        <span className="ml-auto whitespace-nowrap font-mono text-muted">
+          <span className="mr-1 text-faint">{t("dashboard.gpuPower")}</span>
+          {gpu.power_watts == null || !Number.isFinite(gpu.power_watts)
+            ? num(null)
+            : `${num(gpu.power_watts)} W`}
+        </span>
+      </div>
     </div>
   );
 }
@@ -323,6 +347,9 @@ export function PeerDetailCard({
   index,
   group,
   otherRanges,
+  variant = "panel",
+  perf,
+  speed,
 }: {
   peer: PeerView;
   index: number;
@@ -330,7 +357,18 @@ export function PeerDetailCard({
   group: string;
   /** Faixas dos outros peers deste modelo, para saber se este é o último. */
   otherRanges: [number, number][];
+  /**
+   * `panel` é o card da aba Detalhes, um entre muitos numa grade. `dialog` é
+   * a mesma máquina sozinha na janela do Fluxo: sem moldura (a janela já é
+   * uma), com cabeçalho maior e seções nomeadas, porque ali há espaço.
+   */
+  variant?: "panel" | "dialog";
+  /** Velocidade medida e a nota contra as outras fatias, quando o Fluxo a tem. */
+  perf?: ChatTelemetryPeerPerf;
+  speed?: PeerSpeed;
 }) {
+  const dialog = variant === "dialog";
+  const pad = dialog ? "px-0" : "px-3";
   const { t } = useI18n();
   const track = trackOf(index);
   const n = peer.node;
@@ -342,7 +380,6 @@ export function PeerDetailCard({
   // Só as que reportam VRAM: memória unificada cai no ramo `unified` abaixo,
   // que mede outra coisa (wired), e uma barra sem valor viraria animação de
   // "carregando" para sempre.
-  const vramGpus = (system?.gpus ?? []).filter((g) => g.vram_used_pct != null);
   const range = cardRange(peer);
   /*
    * O `/health` é pedido uma vez por card, aqui, e não dentro da seção de
@@ -366,23 +403,25 @@ export function PeerDetailCard({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.26, delay: Math.min(index, 6) * 0.04 }}
-      className="panel relative overflow-hidden"
+      className={dialog ? "relative" : "panel relative overflow-hidden"}
     >
-      <span
-        className={clsx(
-          "absolute inset-x-0 top-0 h-[2px]",
-          range ? track.fill : "bg-line-strong",
-        )}
-      />
+      {!dialog && (
+        <span
+          className={clsx(
+            "absolute inset-x-0 top-0 h-[2px]",
+            range ? track.fill : "bg-line-strong",
+          )}
+        />
+      )}
 
-      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-line px-3 py-2.5">
-        <div className="flex min-w-0 items-start gap-2">
-          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-line bg-raised">
-            <MachineIcon system={system} size="sm" />
+      <div className={clsx("flex flex-wrap items-start justify-between gap-2 border-b border-line", dialog ? "pb-4" : "px-3 py-2.5")}>
+        <div className={clsx("flex min-w-0 items-start", dialog ? "gap-3" : "gap-2")}>
+          <div className={clsx("mt-0.5 flex shrink-0 items-center justify-center rounded-lg border border-line bg-raised", dialog ? "h-11 w-11" : "h-7 w-7")}>
+            <MachineIcon system={system} size={dialog ? "md" : "sm"} />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
-              <h3 className="truncate font-display text-[0.86rem] font-semibold text-fg">
+              <h3 className={clsx("truncate font-display font-semibold text-fg", dialog ? "text-lg leading-tight" : "text-[0.86rem]")}>
                 {n?.hostname || peer.short_id}
               </h3>
               {peer.is_self && (
@@ -391,12 +430,13 @@ export function PeerDetailCard({
                 </Badge>
               )}
             </div>
-            <p className="truncate text-[0.66rem] text-muted">{kind.label}</p>
+            <p className={clsx("truncate text-muted", dialog ? "text-[0.75rem]" : "text-[0.66rem]")}>{kind.label}</p>
+            {dialog && speed && <div className="mt-2"><SpeedBadges perf={perf} rating={speed} /></div>}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className={clsx("flex shrink-0 items-center gap-2", dialog && "rounded-lg border border-line bg-raised/50 px-2.5 py-1.5")}>
           {range ? (
-            <span className={clsx("font-mono text-[0.78rem] font-semibold", track.text)}>
+            <span className={clsx("font-mono font-semibold", dialog ? "text-sm" : "text-[0.78rem]", track.text)}>
               {layerRange(range[0], range[1])}
             </span>
           ) : (
@@ -454,7 +494,7 @@ export function PeerDetailCard({
             nomeada. O distintivo do MTP vem junto porque é estado de operação,
             não medida: responde "o rascunho está de pé?" e onde ele coube.
           */}
-          <div className="flex flex-wrap items-center gap-1.5 border-b border-line bg-raised/40 px-3 py-2">
+          <div className={clsx("flex flex-wrap items-center gap-1.5 border-b border-line", dialog ? "py-3" : "bg-raised/40 px-3 py-2")}>
             {mtpRequested && health && (
               <span className="flex items-center gap-1">
                 <Badge
@@ -506,7 +546,8 @@ export function PeerDetailCard({
             </div>
           </div>
 
-          <div className="grid gap-2.5 px-3 py-2.5 sm:grid-cols-2">
+          {dialog && <h4 className="pt-4 font-display text-sm font-semibold text-fg">{t("dashboard.sectionResources")}</h4>}
+          <div className={clsx("grid gap-2.5 sm:grid-cols-2", pad, dialog ? "pb-4 pt-2" : "py-2.5")}>
             {hasGpu && (
               <section data-testid="gpu-telemetry-section" className="min-w-0 sm:col-span-2">
                 <div className="mb-1.5 flex items-center gap-1">
@@ -516,9 +557,9 @@ export function PeerDetailCard({
                   )}
                 </div>
                 {system?.gpus.length ? (
-                  <div className="grid min-w-0 gap-1.5">
+                  <div className={clsx("grid min-w-0 gap-1.5", system.gpus.length > 1 && "sm:grid-cols-2")}>
                     {system.gpus.map((g) => (
-                      <GpuTelemetryRow
+                      <GpuTile
                         key={g.index}
                         gpu={g}
                         policy={n?.thermal}
@@ -527,23 +568,6 @@ export function PeerDetailCard({
                     ))}
                   </div>
                 ) : null}
-                {vramGpus.length > 0 && (
-                  <div className="mt-1.5 grid min-w-0 gap-1.5 sm:grid-cols-2">
-                    {vramGpus.map((g) => (
-                      <Meter
-                        compact
-                        key={g.index}
-                        label={t("dashboard.vram", { name: gpuDisplayName(g, system?.gpus ?? []) })}
-                        value={g.vram_used_pct ?? null}
-                        tone={(g.vram_used_pct ?? 0) > 88 ? "rose" : "lime"}
-                        detail={t("dashboard.usedOf", {
-                          used: megabytes(g.vram_used_mb),
-                          total: megabytes(g.vram_total_mb),
-                        })}
-                      />
-                    ))}
-                  </div>
-                )}
                 {system?.gpu_kind === "unified" && (
                   <div className="mt-1.5">
                     <Meter
@@ -603,7 +627,8 @@ export function PeerDetailCard({
             </div>
           </div>
 
-          <dl className="grid gap-x-3 gap-y-2 border-t border-line px-3 py-2.5 sm:grid-cols-3">
+          {dialog && <h4 className="border-t border-line pt-4 font-display text-sm font-semibold text-fg">{t("dashboard.sectionDeployment")}</h4>}
+          <dl className={clsx("grid gap-x-3 gap-y-2 sm:grid-cols-3", pad, dialog ? "pb-4 pt-2" : "border-t border-line py-2.5")}>
             <KeyValue compact label={t("dashboard.model")}>
               {cfg?.model_label ? (
                 <span className="font-mono">{cfg.model_label}</span>
@@ -686,8 +711,36 @@ export function PeerDetailCard({
             </KeyValue>
           </dl>
 
+          {(n?.plugin_services?.length ?? 0) > 0 && (
+            <div data-testid="plugin-services" className={clsx("border-t border-line", pad, dialog ? "py-4" : "py-2.5")}>
+              <div className="mb-1.5 flex items-center gap-1">
+                <span className="eyebrow">{t("dashboard.services")}</span>
+                <InfoTip label={t("dashboard.services")} message={t("dashboard.servicesTip")} />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {n?.plugin_services?.map((service) => (
+                  <PluginServiceBadge key={`${service.plugin_code}:${service.id}`} service={service} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* O disco do cache existe com ou sem modelo carregado; a RAM só
+              aparece quando o `/health` desta máquina a reporta. */}
+          <KvCache
+            nodeId={peer.node_id}
+            hostname={n?.hostname || peer.short_id}
+            isSelf={peer.is_self}
+            disk={n?.kv_cache}
+            ram={health?.cache_ram}
+            className={clsx("border-t border-line", pad, dialog ? "py-4" : "py-2.5")}
+          />
+
           {/* Só faz pergunta quem tem a quem perguntar: sem modelo carregado
               não há colocação nenhuma a mostrar. */}
+          {/* As seções abaixo trazem o próprio recuo; na janela, sem moldura,
+              elas se alinham com o resto puxando a margem. */}
+          <div className={clsx(dialog && "-mx-3")}>
           {serving && (
             <PeerPlacement
               health={health}
@@ -713,6 +766,7 @@ export function PeerDetailCard({
               </ul>
             </Accordion>
           )}
+          </div>
         </>
       )}
     </motion.div>
@@ -730,17 +784,22 @@ export function PeerDetailDialog({
   group,
   otherRanges,
   onClose,
+  perf,
+  speed,
 }: {
   peer: PeerView | null;
   group: string;
   otherRanges: [number, number][];
   onClose: () => void;
+  perf?: ChatTelemetryPeerPerf;
+  speed?: PeerSpeed;
 }) {
   const { t } = useI18n();
   return (
     <Modal
       open={peer != null}
-      size="lg"
+      size="xl"
+      titleHidden
       title={
         peer
           ? t("dashboard.machineDetails", { hostname: peer.node?.hostname || peer.short_id })
@@ -755,7 +814,7 @@ export function PeerDetailDialog({
     >
       {peer && (
         <div className="text-fg">
-          <PeerDetailCard peer={peer} index={0} group={group} otherRanges={otherRanges} />
+          <PeerDetailCard peer={peer} index={0} group={group} otherRanges={otherRanges} variant="dialog" perf={perf} speed={speed} />
         </div>
       )}
     </Modal>

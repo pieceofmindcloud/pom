@@ -137,11 +137,23 @@ export interface NodeConfig {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
-  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
-  cycle_detection_enabled?: boolean;
-  cycle_detection_min_window_tokens?: number;
-  cycle_detection_max_window_tokens?: number;
-  cycle_detection_repetitions?: number;
+  /** Subtracted once from the logit of each token seen in the window; 0 is off. */
+  presence_penalty?: number;
+  /** Subtracted per occurrence of a token in the window; 0 is off. */
+  frequency_penalty?: number;
+  /** Drops candidates less likely than this fraction of the most likely one; 0 is off. */
+  min_p?: number;
+  /** Seed of the sampler's generator, as text: a 64-bit integer does not fit a JS number. */
+  seed?: string;
+  /** DRY sampler: penalty for extending a sequence already seen; 0 is off. */
+  dry_multiplier?: number;
+  dry_base?: number;
+  dry_allowed_length?: number;
+  dry_penalty_last_n?: number;
+  /** Physical micro-batch under the memory fit; never more than `n_batch`. */
+  n_ubatch?: number;
+  /** Token limit of a thinking block; -1 (or absent) is no limit. */
+  reasoning_budget?: number;
   no_thinking: boolean;
   single_peer: boolean;
   no_embeddings: boolean;
@@ -154,6 +166,12 @@ export interface NodeConfig {
   /** Local peer unload policy; absent means the pre-feature default. */
   unload_if_idle?: boolean;
   idle_minutes?: number;
+  /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
+  moe_experts_in_ram?: boolean;
+  /** GPU cache, in MiB, for the experts kept in RAM; 0 turns it off. */
+  moe_cache_mib?: number;
+  /** The gateway picks each prefill chunk; off, it uses `prefill_chunk_tokens` as is. */
+  adaptive_prefill_chunks?: boolean;
 }
 
 /** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
@@ -165,6 +183,8 @@ export interface AdminAccessStatus {
   requires_password: boolean;
   /** A senha em vigor é a padrão do primeiro acesso (`admin`). */
   default_password?: boolean;
+  /** Identifies this run of the node; changes on every restart. */
+  boot_id?: string;
   gateway_port: number;
 }
 
@@ -364,6 +384,10 @@ export interface NodeInfo {
   config: NodeConfig | null;
   status: RuntimeStatus;
   system: SystemLoad;
+  /** O que os plugins em execução nesta máquina servem para a rede. Ausente num nó antigo. */
+  plugin_services?: PluginService[];
+  /** Disco usado pelo diretório de snapshots de KV desta máquina (`kv-slots`). Ausente num nó antigo. */
+  kv_cache?: KvCacheDisk;
   peer_count: number;
   load: number;
   active_model: string;
@@ -636,6 +660,55 @@ export interface PeerLoadParams {
   fit_memory_applied: boolean;
 }
 
+/**
+ * Um serviço que um plugin de uma máquina oferece ao cluster (`host.services`),
+ * como o Qdrant servindo de banco de RAG. O nó valida e publica; a tela só
+ * desenha.
+ */
+export interface PluginService {
+  plugin_code: string;
+  id: string;
+  /** Para que serve: `rag`. Vocabulário aberto; um tipo desconhecido aparece como veio. */
+  kind: string;
+  name: string;
+  status: "ready" | "starting" | "installing" | "waiting" | "error";
+  version?: string;
+  detail?: string;
+}
+
+/** O diretório de snapshots de KV de uma máquina, medido pelo próprio nó. */
+export interface KvCacheDisk {
+  /** `false` quando `slot_save_path` está desligado naquela máquina. */
+  enabled: boolean;
+  path: string | null;
+  snapshots: number;
+  bytes: number;
+}
+
+/** O cache de KV em RAM (`--cache-ram`) do servidor de inferência. */
+export interface KvCacheRam {
+  enabled: boolean;
+  /** `null` com o cache ligado: máquina com menos de 12 GiB de RAM, ou ainda não medida. */
+  limit_bytes: number | null;
+  user_reserve_bytes: number | null;
+  bytes: number;
+  entries: number;
+  tokens: number;
+  parked: number;
+  restored: number;
+  evicted: number;
+}
+
+/** O que `POST /api/ui/kv-cache/clear` devolve. */
+export interface KvCacheCleared {
+  cleared: boolean;
+  node_id: string;
+  disk_files: number;
+  disk_bytes: number;
+  ram_entries: number;
+  ram_bytes: number;
+}
+
 /** O `/health` do servidor de inferência de uma máquina, como a tela o lê. */
 export interface PeerRuntimeHealth {
   start_layer: number;
@@ -657,6 +730,8 @@ export interface PeerRuntimeHealth {
   moe_executor_dtypes?: number[];
   /** Razão concreta quando o executor MoE não foi instalado ou usa CPU. */
   moe_executor_reason?: string | null;
+  /** Cache de KV em RAM deste nó. Ausente num nó antigo. */
+  cache_ram?: KvCacheRam;
   mtp_ready: boolean;
   /** Motivo retornado pelo runtime quando o MTP pedido não foi anexado. */
   mtp_unavailable_reason?: string | null;
@@ -825,6 +900,15 @@ export interface ChatCapabilities {
   coverage: "complete" | "incomplete" | "unavailable";
   /** Thinking is available only when the active deployment leaves it enabled. */
   thinking: "supported" | "unsupported" | "unavailable";
+  /**
+   * A machine of the active pipeline unloaded its model for idleness, or is
+   * loading it again: the next answer waits for the reload.
+   */
+  asleep?: boolean;
+  /** The network has a RAG server and retrieval is on. Absent on an older node. */
+  rag?: "supported" | "unavailable";
+  /** Collections of the RAG server a message may keep its search to. */
+  rag_collections?: string[];
 }
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
@@ -856,6 +940,10 @@ export interface DiscoveredModel {
   /** Motivo concreto que impede ler um conjunto multipart incompleto. */
   multipart_error?: string | null;
   architecture: string | null;
+  /** `<arch>.embedding_length`: the width a projector or MTP draft must match. */
+  embedding_length?: number | null;
+  /** Header evidence: `mtp` is true when the GGUF carries its own `nextn` block. */
+  capabilities?: { thinking?: boolean | null; mtp?: boolean | null } | null;
   /** True only when the GGUF metadata reports more than one expert. */
   is_moe?: boolean;
   total_layers: number | null;
@@ -982,9 +1070,90 @@ export interface CatalogResponse {
   node_id: string;
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
+  /** Vision projectors and MTP drafts found in this node's folders. */
+  sidecars?: Sidecar[];
   scanned: ScannedRoot[];
   /** False while the node is reading GGUF headers in the background. */
   metadata_complete: boolean;
+}
+
+export type SidecarKind = "mmproj" | "mtp";
+export type SidecarMode = "file" | "embedded" | "none";
+
+/** A vision projector or an external MTP draft on one machine's disk. */
+export interface Sidecar {
+  kind: SidecarKind;
+  path: string;
+  file_name: string;
+  size_bytes: number;
+  architecture: string | null;
+  /** Projection width for a projector, embedding width for an MTP draft. */
+  dim: number | null;
+  general_name: string | null;
+  quant: string | null;
+}
+
+/** A sidecar named the way it crosses machines: name + size. */
+export interface SidecarFile {
+  file_name: string;
+  size_bytes: number;
+}
+
+/** The operator's choice of sidecar for one model, kept on the principal. */
+export interface SidecarLink {
+  model_key: string;
+  kind: SidecarKind;
+  mode: SidecarMode;
+  file_name?: string | null;
+  size_bytes?: number | null;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface SidecarHolder {
+  node_id: string;
+  hostname: string;
+  path: string;
+}
+
+/** One compatible file and every machine that holds it. */
+export interface SidecarOption {
+  kind: SidecarKind;
+  file_name: string;
+  size_bytes: number;
+  general_name: string | null;
+  quant: string | null;
+  holders: SidecarHolder[];
+}
+
+/** How one sidecar reaches the machine that loads it in a plan. */
+export interface SidecarSlot {
+  kind: SidecarKind;
+  mode: SidecarMode;
+  file: SidecarFile | null;
+  from_link: boolean;
+  target_node_id: string;
+  target_host: string;
+  target_path: string | null;
+  source_node_id: string | null;
+  source_host: string | null;
+  source_path: string | null;
+  problem: string | null;
+}
+
+export interface SidecarsPlan {
+  model_key: string | null;
+  embedded_mtp: boolean;
+  options: SidecarOption[];
+  vision: SidecarSlot | null;
+  mtp: SidecarSlot | null;
+  links_stale: boolean;
+}
+
+/** What the screen asks for one kind; no mode leaves the saved link in charge. */
+export interface SidecarChoice {
+  mode?: SidecarMode;
+  file?: SidecarFile | null;
 }
 
 export interface PeerCatalog {
@@ -993,6 +1162,7 @@ export interface PeerCatalog {
   is_self: boolean;
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
+  sidecars?: Sidecar[];
   scanned?: ScannedRoot[];
   /** False while this peer is reading GGUF headers in the background. */
   metadata_complete?: boolean;
@@ -1319,10 +1489,13 @@ export interface PeerRouteLink {
  * Por onde este nó fala de fato com o peer, observado - não o endereço que o
  * peer anuncia. `http`: um endereço direto respondeu; `p2p_direct`: conexão
  * libp2p direta (discada ou por hole punch); `relayed`: só pelo relé.
+ * `relay_kind` diz, em `relayed`, se o relé é dedicado (configurado) ou um
+ * membro do cluster servindo de relé - o último degrau da escada.
  */
 export interface PeerRoute {
   kind: "http" | "p2p_direct" | "relayed" | "none";
   address?: string | null;
+  relay_kind?: "dedicated" | "member" | null;
   hole_punched: boolean;
   links: PeerRouteLink[];
 }
@@ -1411,14 +1584,21 @@ export type TrustAnchorRefusal =
   | "install_failed";
 
 export interface ApiKey {
-  /** Stable identity used by audit queries, never a secret. */
+  /** Tracking id: identifies the key in every node's logs. Never a secret. */
   id: string;
-  key: string;
+  /** Start and end of the secret (`sk-pom-3f9a…c41e`). The secret itself is
+   *  never listed: the network keeps only its hash. */
+  key_hint: string;
   label: string;
   node_id: string;
   origin_node_id?: string;
   active: boolean;
   created_at: string;
+}
+
+/** The response that mints a key: the only one that carries the secret. */
+export interface IssuedApiKey extends ApiKey {
+  key: string;
 }
 
 /** Request-level performance, aggregated over the whole inference pipeline. */
@@ -1764,6 +1944,8 @@ export interface DeployLoadDistribution {
  * derived from the live runtime context and is read from `/v1/models`; there
  * is no absolute output-capacity knob in this deployment shape.
  */
+export type MtpPlacement = "auto" | "vram" | "ram";
+
 export interface RuntimeParams {
   /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
   inference_mode: InferenceMode;
@@ -1786,11 +1968,23 @@ export interface RuntimeParams {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
-  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
-  cycle_detection_enabled?: boolean;
-  cycle_detection_min_window_tokens?: number;
-  cycle_detection_max_window_tokens?: number;
-  cycle_detection_repetitions?: number;
+  /** Subtracted once from the logit of each token seen in the window; 0 is off. */
+  presence_penalty?: number;
+  /** Subtracted per occurrence of a token in the window; 0 is off. */
+  frequency_penalty?: number;
+  /** Drops candidates less likely than this fraction of the most likely one; 0 is off. */
+  min_p?: number;
+  /** Seed of the sampler's generator, as text: a 64-bit integer does not fit a JS number. */
+  seed?: string;
+  /** DRY sampler: penalty for extending a sequence already seen; 0 is off. */
+  dry_multiplier?: number;
+  dry_base?: number;
+  dry_allowed_length?: number;
+  dry_penalty_last_n?: number;
+  /** Physical micro-batch under the memory fit; never more than `n_batch`. */
+  n_ubatch?: number;
+  /** Token limit of a thinking block; -1 (or absent) is no limit. */
+  reasoning_budget?: number;
   no_thinking: boolean;
   no_embeddings: boolean;
   /** Kill-switch do operador: mesmo com todos os peers capazes, a
@@ -1811,8 +2005,16 @@ export interface RuntimeParams {
   mtp_min_probability: number;
   /** Permite o recuo do MTP para pesos e cache em RAM quando a VRAM falhar. */
   mtp_cpu_fallback_enabled?: boolean;
+  /** Where the MTP block goes: with the model when it all fits (auto), always in VRAM, or always in RAM. */
+  mtp_placement?: MtpPlacement;
   unload_if_idle?: boolean;
   idle_minutes?: number;
+  /** Every routed MoE expert stays in RAM and the CPU computes it (llama.cpp `--cpu-moe`). */
+  moe_experts_in_ram?: boolean;
+  /** GPU cache, in MiB, for the experts kept in RAM; 0 turns it off. */
+  moe_cache_mib?: number;
+  /** The gateway picks each prefill chunk; off, it uses `prefill_chunk_tokens` as is. */
+  adaptive_prefill_chunks?: boolean;
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
@@ -1943,4 +2145,6 @@ export interface DeployPlan {
   chunk_tokens: number;
   route_options: DeployRouteOption[];
   load_distribution: DeployLoadDistribution[];
+  /** Vision projector for the head and MTP draft for the tail. */
+  sidecars?: SidecarsPlan;
 }

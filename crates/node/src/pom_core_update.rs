@@ -7,7 +7,7 @@
 //! (`rdma-pom-core-github-releases`). Até essa migração, o mecanismo aqui
 //! continua exatamente como antes: usa o manifest genérico
 //! `/v1/plugins/:plugin_code/manifest` com `crate::core_update::CORE_PLUGIN_CODE`,
-//! autenticado emprestando o lease do plugin [`crate::plugins::ENTERPRISE_PLUGIN_CODE`]
+//! autenticado emprestando o lease do plugin [`crate::plugins::LOGS_PLUGIN_CODE`]
 //! (era a única licença que existia quando isto foi escrito). Essa dependência é
 //! transicional por natureza - a tarefa irmã substitui a autenticação inteira -
 //! e por isso este arquivo não tenta desenhar uma fonte de licença mais genérica
@@ -20,7 +20,7 @@
 //! `apps/frontend/src/routes/About.tsx` para o `pom_core` e
 //! `apps/frontend/src/routes/Plugins.tsx` para os plugins).
 
-use crate::plugins::{LicenseClientError, LicenseService, PluginManager, ENTERPRISE_PLUGIN_CODE};
+use crate::plugins::{LicenseClientError, LicenseService, PluginManager, LOGS_PLUGIN_CODE};
 use enterprise_protocol::{Fingerprint, LicenseErrorCode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -87,30 +87,30 @@ impl PomCoreUpdater {
         self.status.read().await.clone()
     }
 
-    fn enterprise_lease_error() -> LicenseClientError {
+    fn logs_lease_error() -> LicenseClientError {
         LicenseClientError::new(
             LicenseErrorCode::LeaseUnknown,
-            "lease do plugin enterprise ausente para atualização do pom",
+            "lease do plugin logs ausente para atualização do pom",
         )
     }
 
     /// Procura uma release do próprio binário somente quando o plugin
-    /// enterprise está ativo (é dele que este mecanismo transicional empresta
+    /// logs está ativo (é dele que este mecanismo transicional empresta
     /// o lease). A detecção apenas publica o aviso no status; download, troca
     /// e reinício ficam reservados à ação explícita em `apply`.
     pub(crate) async fn detect(&self) -> Result<(), LicenseClientError> {
         let _guard = self.update_lock.lock().await;
-        let Some(enterprise) = self.plugins.runtime_for(ENTERPRISE_PLUGIN_CODE) else {
+        let Some(logs) = self.plugins.runtime_for(LOGS_PLUGIN_CODE) else {
             return Ok(());
         };
-        if !enterprise.status().await.active {
+        if !logs.status().await.active {
             *self.status.write().await = None;
             return Ok(());
         }
-        let persisted = enterprise
+        let persisted = logs
             .persisted_state()
             .await
-            .ok_or_else(Self::enterprise_lease_error)?;
+            .ok_or_else(Self::logs_lease_error)?;
         let manifest = self
             .service
             .manifest(
@@ -160,19 +160,19 @@ impl PomCoreUpdater {
                 "a atualização confirmada já não é a atualização disponível",
             ));
         }
-        let Some(enterprise) = self.plugins.runtime_for(ENTERPRISE_PLUGIN_CODE) else {
-            return Err(Self::enterprise_lease_error());
+        let Some(logs) = self.plugins.runtime_for(LOGS_PLUGIN_CODE) else {
+            return Err(Self::logs_lease_error());
         };
-        if !enterprise.status().await.active {
+        if !logs.status().await.active {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "uma licença do plugin enterprise ativa é necessária para atualizar o pom",
+                "uma licença do plugin logs ativa é necessária para atualizar o pom",
             ));
         }
-        let persisted = enterprise
+        let persisted = logs
             .persisted_state()
             .await
-            .ok_or_else(Self::enterprise_lease_error)?;
+            .ok_or_else(Self::logs_lease_error)?;
         let manifest = self
             .service
             .manifest(
@@ -316,17 +316,17 @@ mod tests {
     fn activation(release_id: &str) -> ActivationResponse {
         ActivationResponse {
             license_id: "lic-1".into(),
-            plugin_code: ENTERPRISE_PLUGIN_CODE.into(),
+            plugin_code: LOGS_PLUGIN_CODE.into(),
             activation_id: "act-1".into(),
             activation_token: "pat-test".into(),
             lease_id: "lease-1".into(),
             lease_token: "plt-test".into(),
-            licensed_plugins: vec![ENTERPRISE_PLUGIN_CODE.into()],
+            licensed_plugins: vec![LOGS_PLUGIN_CODE.into()],
             license_expires_at: Some("2099-12-31T00:00:00Z".into()),
             activation_count: Some(1),
             max_activations: Some(5),
             plugin_usage: vec![enterprise_protocol::PluginUsage {
-                plugin_code: ENTERPRISE_PLUGIN_CODE.into(),
+                plugin_code: LOGS_PLUGIN_CODE.into(),
                 activation_count: 1,
                 max_activations: 5,
             }],
@@ -341,7 +341,7 @@ mod tests {
                 product: "pom".into(),
                 version: "0.1.0".into(),
                 channel: "stable".into(),
-                feature_set: vec!["enterprise.request_logs".into()],
+                feature_set: vec!["logs.request_logs".into()],
                 os: std::env::consts::OS.into(),
                 arch: std::env::consts::ARCH.into(),
                 min_host_version: "0.1.0".into(),
@@ -389,9 +389,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_an_active_enterprise_plugin_no_core_manifest_is_checked() {
+    async fn without_an_active_logs_plugin_no_core_manifest_is_checked() {
         let service = Arc::new(MockLicenseService::new());
-        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
         let updater = PomCoreUpdater::new(manager);
 
         updater.detect().await.expect("skip without active plugin");
@@ -401,10 +401,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_enterprise_plugin_advertises_a_core_release_without_downloading() {
+    async fn active_logs_plugin_advertises_a_core_release_without_downloading() {
         let artifact = b"new-pom".to_vec();
         let service = Arc::new(MockLicenseService::single(
-            ENTERPRISE_PLUGIN_CODE,
+            LOGS_PLUGIN_CODE,
             activation("ent-1"),
         ));
         service
@@ -419,15 +419,15 @@ mod tests {
                 artifact,
             )
             .await;
-        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let enterprise = manager
-            .runtime_for(ENTERPRISE_PLUGIN_CODE)
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
+        let logs = manager
+            .runtime_for(LOGS_PLUGIN_CODE)
             .expect("runtime");
-        enterprise
+        logs
             .activate("PM-test-key")
             .await
-            .expect("activate enterprise");
-        enterprise
+            .expect("activate logs");
+        logs
             .mark_plugin_ready("0.1.0")
             .await
             .expect("mark ready");
@@ -445,7 +445,7 @@ mod tests {
     async fn applying_an_unconfirmed_release_is_rejected_without_downloading() {
         let artifact = b"new-pom".to_vec();
         let service = Arc::new(MockLicenseService::single(
-            ENTERPRISE_PLUGIN_CODE,
+            LOGS_PLUGIN_CODE,
             activation("ent-1"),
         ));
         service
@@ -460,15 +460,15 @@ mod tests {
                 artifact,
             )
             .await;
-        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let enterprise = manager
-            .runtime_for(ENTERPRISE_PLUGIN_CODE)
+        let manager = PluginManager::test_manager(&["logs"], service.clone());
+        let logs = manager
+            .runtime_for(LOGS_PLUGIN_CODE)
             .expect("runtime");
-        enterprise
+        logs
             .activate("PM-test-key")
             .await
-            .expect("activate enterprise");
-        enterprise
+            .expect("activate logs");
+        logs
             .mark_plugin_ready("0.1.0")
             .await
             .expect("mark ready");

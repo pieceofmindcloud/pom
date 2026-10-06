@@ -18,7 +18,8 @@ mod tests {
             .database
             .insert_api_key(&crate::config::ApiKey {
                 id: "ui-key".into(),
-                key: "sk-active".into(),
+                key_hash: crate::auth::api_key_hash("sk-active"),
+                key_hint: String::new(),
                 label: "pom-eu".into(),
                 node_id: "eu".into(),
                 origin_node_id: "eu".into(),
@@ -1119,134 +1120,41 @@ mod tests {
     }
 
     #[test]
+    fn the_output_budget_stops_at_the_session_window() {
+        let budget = OutputBudget {
+            total: 50_000,
+            leg: 1_024,
+        };
+        // Real prompt larger than estimated: the total shrinks to the window.
+        let windowed = budget.within_session_window(Some(150_016), 140_000);
+        assert_eq!(
+            windowed,
+            OutputBudget {
+                total: 10_016,
+                leg: 1_024
+            }
+        );
+        // More room than requested: nothing changes.
+        assert_eq!(budget.within_session_window(Some(150_016), 1_000), budget);
+        // Full window: only the token that came with the prefill is left.
+        assert_eq!(
+            budget.within_session_window(Some(150_016), 150_016),
+            OutputBudget { total: 1, leg: 1 }
+        );
+        // With no known capacity, the budget stays as it was.
+        assert_eq!(budget.within_session_window(None, 150_016), budget);
+        // And the usual loop ends with `length` when it reaches the total.
+        assert_eq!(
+            generation_finish_reason(windowed.total, windowed.total, false),
+            Some("length")
+        );
+    }
+
+    #[test]
     fn generation_finish_reason_prioritizes_the_effective_limit() {
         assert_eq!(generation_finish_reason(4000, 4000, true), Some("length"));
         assert_eq!(generation_finish_reason(4000, 3640, true), Some("stop"));
         assert_eq!(generation_finish_reason(4000, 3640, false), None);
-    }
-
-    /// Exercicio de ponta a ponta do caminho que um consumidor de
-    /// `/api/generate` usa: o gateway transmite as fichas repetidas, para
-    /// antes de pedir a próxima, libera a sessão e publica `cycle` em vez de
-    /// amputar silenciosamente o orçamento.
-    #[tokio::test]
-    async fn api_generate_reports_and_stops_a_detected_cycle() {
-        let steps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let script: std::sync::Arc<Vec<&'static str>> = std::sync::Arc::new(vec![
-            "alpha ", "beta ", "alpha ", "beta ", "alpha ", "beta ",
-        ]);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let app = axum::Router::new()
-            .route(
-                "/health",
-                axum::routing::get(|| async {
-                    axum::Json(json!({"status": "ok", "model_loaded": true}))
-                }),
-            )
-            .route(
-                "/v1/prefill",
-                axum::routing::post(|| async {
-                    let response = json!({
-                        "done": false,
-                        "more_chunks": false,
-                        "n_prompt_tokens": 1,
-                        "token_id": 1,
-                        "text": "seed "
-                    });
-                    let bytes = crate::wire::encode_batch_single(
-                        &response,
-                        None,
-                        crate::wire::WireDtype::F16,
-                    )
-                    .unwrap();
-                    (
-                        StatusCode::OK,
-                        [("content-type", "application/octet-stream")],
-                        bytes,
-                    )
-                        .into_response()
-                }),
-            )
-            .route(
-                "/v1/step",
-                axum::routing::post({
-                    let steps = steps.clone();
-                    let script = script.clone();
-                    move || {
-                        let steps = steps.clone();
-                        let script = script.clone();
-                        async move {
-                            let index = steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            let text = script.get(index).copied().unwrap_or("unexpected ");
-                            let response = json!({
-                                "done": false,
-                                "token_id": index as u32 + 2,
-                                "text": text
-                            });
-                            let bytes = crate::wire::encode_batch_single(
-                                &response,
-                                None,
-                                crate::wire::WireDtype::F16,
-                            )
-                            .unwrap();
-                            (
-                                StatusCode::OK,
-                                [("content-type", "application/octet-stream")],
-                                bytes,
-                            )
-                                .into_response()
-                        }
-                    }
-                }),
-            )
-            .route(
-                "/v1/session/release",
-                axum::routing::post(|| async { StatusCode::OK }),
-            );
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
-        let mut peer = crate::gateway::testkit::peer("head", "head", 8080);
-        peer.model = "lab".into();
-        peer.start_layer = 0;
-        peer.end_layer = 0;
-        peer.total_layers = 1;
-        peer.inference_port = Some(port);
-        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
-        let mut config = crate::gateway::testkit::spec_config();
-        config.total_layers = 1;
-        config.end_layer = 0;
-        config.peer_count = 1;
-        config.speculative_decoding_enabled = false;
-        config.cycle_detection_min_window_tokens = 2;
-        config.cycle_detection_max_window_tokens = 2;
-        config.cycle_detection_repetitions = 3;
-        state.runtime.seed_config_for_test(config).await;
-
-        let request = serde_json::to_vec(&GenerateRequest {
-            model: Some("lab".into()),
-            prompt: "Oi".into(),
-            max_tokens: Some(32),
-            stop: None,
-        })
-        .unwrap();
-        let response = handle_generate(
-            crate::auth::ApiKeyAuth::for_test(crate::reqlog::Caller::operator()),
-            State(state),
-            axum::body::Bytes::from(request),
-        )
-        .await
-        .into_response();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = crate::gateway::testkit::body_of(response).await;
-        assert_eq!(body["response"], "seed alpha beta alpha beta alpha beta ");
-        assert_eq!(body["tokens_generated"], 7);
-        assert_eq!(body["finish_reason"], "cycle");
-        assert_eq!(body["partial"], true);
-        assert_eq!(body["stop_sequence"], Value::Null);
-        assert_eq!(steps.load(std::sync::atomic::Ordering::SeqCst), 6);
     }
 
     #[test]
@@ -1292,6 +1200,15 @@ mod tests {
             audit_status_for_summary(&summary(Some("stop"), false)),
             "ok"
         );
+
+        // A typed decision always stops at its single token: that is `ok`.
+        let mut decision = summary(Some("length"), false);
+        let mut trace = crate::prefill::RequestTrace::new("qwen", &[("node-a", 0, 15)]);
+        trace.jev = Some(json!({"enabled": true}));
+        decision.trace = Some(trace);
+        assert_eq!(audit_status_for_summary(&decision), "ok");
+        decision.partial = true;
+        assert_eq!(audit_status_for_summary(&decision), "partial");
     }
 
     /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
@@ -1440,6 +1357,7 @@ mod tests {
             "/api/generate",
             crate::reqlog::Caller::operator(),
             crate::gateway::GenerationInput {
+                probe: None,
                 state,
                 inference_token: "test-api-key".into(),
                 model: "ornith".into(),
@@ -1791,9 +1709,11 @@ mod budget_tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             max_sessions,
             batching_enabled: true,
             max_queue_requests: 128,
@@ -1809,10 +1729,15 @@ mod budget_tests {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
-            cycle_detection_enabled: true,
-            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -1821,6 +1746,10 @@ mod budget_tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,
@@ -2126,7 +2055,6 @@ mod peer_visibility_tests {
             tls: false,
             node_id: id.into(),
             pubkey: String::new(),
-            authority_pubkey: String::new(),
             cluster_id: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
@@ -2417,8 +2345,9 @@ mod replicated_admin_logs_tests {
             .audit
             .try_ingest_remote(crate::reqlog::AuditEvent::Begin(request)));
 
-        state.cluster_logs.flush();
         state.audit.flush();
+        // The secondary accepts the process log, and keeping it is the logs
+        // plugin's: without the plugin there is nothing to read back.
         let logs = state
             .cluster_logs
             .list(Some("deploy-1"), Some(10))
@@ -2430,8 +2359,7 @@ mod replicated_admin_logs_tests {
             .await
             .expect("auditoria local");
 
-        assert_eq!(logs.entries.len(), 1);
-        assert_eq!(logs.entries[0].message, "processo iniciou");
+        assert!(logs.is_none());
         assert_eq!(requests.entries.len(), 1);
         assert_eq!(requests.entries[0].id, "request-1");
         assert_eq!(requests.entries[0].status, "ok");
@@ -2447,8 +2375,10 @@ mod replicated_admin_logs_tests {
                 state,
                 require_admin_for_surface,
             ));
+        // Both pass the admin surface; without the logs plugin each one
+        // answers its own refusal, not the surface's.
         for (path, expected) in [
-            ("/api/ui/cluster-logs", StatusCode::OK),
+            ("/api/ui/cluster-logs", StatusCode::FORBIDDEN),
             ("/api/ui/requests", StatusCode::FORBIDDEN),
         ] {
             let mut request = Request::get(path)
@@ -2468,7 +2398,7 @@ mod replicated_admin_logs_tests {
         let mut state = testkit::state_with("enterprise-free", vec![]).await;
         state
             .database
-            .save_local_setting("plugin_license:enterprise", &serde_json::json!({}))
+            .save_local_setting("plugin_license:logs", &serde_json::json!({}))
             .expect("register an inactive runtime for the test");
         state.plugins = crate::plugins::PluginManager::runtime_with_database(
             "enterprise-free",
@@ -2501,16 +2431,16 @@ mod replicated_admin_logs_tests {
             .expect("status response");
         assert_eq!(status.status(), StatusCode::OK);
         let plugins: serde_json::Value = body_of(status).await;
-        let enterprise = plugins
+        let logs = plugins
             .as_array()
             .expect("plugin list")
             .iter()
-            .find(|plugin| plugin["code"] == "enterprise")
-            .expect("enterprise plugin entry");
-        assert_eq!(enterprise["active"], false);
-        assert_eq!(enterprise["state"], "needs_activation");
+            .find(|plugin| plugin["code"] == "logs")
+            .expect("logs plugin entry");
+        assert_eq!(logs["active"], false);
+        assert_eq!(logs["state"], "needs_activation");
         assert_eq!(
-            enterprise["manage_url"],
+            logs["manage_url"],
             "https://pieceofmind.cloud/enterprise"
         );
 
@@ -2567,8 +2497,6 @@ mod replicated_admin_logs_tests {
             cluster_id: "test-cluster".into(),
             name: "Rede federada".into(),
             fingerprint: crate::admin_trust::anchor_fingerprint(&state.admin_trust.document()),
-            address: "203.0.113.10:8080".into(),
-            bootstrap_address: "203.0.113.10:42777".into(),
             trust_document,
             organization: "Teste".into(),
             description: "Registro remoto".into(),
@@ -2580,6 +2508,7 @@ mod replicated_admin_logs_tests {
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             location: None,
+            relay_hints: Vec::new(),
             directory_replicas: Vec::new(),
         };
         let record = crate::public_directory::SignedPublicDirectoryRecord::sign(
@@ -2675,8 +2604,7 @@ pub(crate) mod testkit {
             deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
-            pubkey: "pk".into(),
-            authority_pubkey,
+            pubkey: authority_pubkey,
             cluster_id: None,
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),
@@ -2744,11 +2672,6 @@ pub(crate) mod testkit {
             .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Node)
             .expect("aplicação da concessão secundária de teste");
 
-        *state
-            .network
-            .authority_pubkey
-            .write()
-            .expect("chave de autoridade do testkit") = secondary.pubkey.clone();
         state
             .network
             .set_profile(crate::profile::NodeProfile::Admin);
@@ -2774,10 +2697,23 @@ pub(crate) mod testkit {
         peers: Vec<PeerInfo>,
     ) -> GatewayState {
         let net = Arc::new(
-            Network::testkit(node_id.into(), "pk".into(), vec![], None, None, None)
-                .await
-                .expect("socket UDP em porta efêmera")
-                .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
+            Network::testkit(
+                node_id.into(),
+                // The same key as `authority_signing_key` below: a node has a
+                // single key.
+                hex::encode(
+                    ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                        .verifying_key()
+                        .as_bytes(),
+                ),
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("socket UDP em porta efêmera")
+            .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
         );
         {
             let mut table = net.peers.write().await;
@@ -2794,8 +2730,7 @@ pub(crate) mod testkit {
         let database = Arc::new(crate::db::PomDb::open(&database_path).expect("banco de teste"));
         let (capture, receiver) =
             crate::cluster_logs::LogCapture::new(crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
-        let cluster_logs =
-            crate::cluster_logs::ClusterLogs::new(capture, receiver, database.clone());
+        let cluster_logs = crate::cluster_logs::ClusterLogs::new(capture, receiver);
         let authority_signing_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             node_id,
@@ -2827,6 +2762,7 @@ pub(crate) mod testkit {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
             connection_key: "chave".into(),
             gateway_port: 8080,
             admin_exposure: Default::default(),
@@ -2865,7 +2801,6 @@ pub(crate) mod testkit {
             )),
             admission_health: Default::default(),
             runtime: NodeRuntime::new(net, assignment),
-            cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(database.clone()),
             plugins,
             pom_core_update,
@@ -2917,9 +2852,11 @@ pub(crate) mod testkit {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             max_sessions: 1,
             batching_enabled: true,
             max_queue_requests: 128,
@@ -2935,10 +2872,15 @@ pub(crate) mod testkit {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
-            cycle_detection_enabled: true,
-            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -2947,6 +2889,10 @@ pub(crate) mod testkit {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: 60,
             tp: None,

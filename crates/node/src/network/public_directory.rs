@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const PUBLIC_DIRECTORY_VERSION: u32 = 2;
+pub(crate) const PUBLIC_DIRECTORY_VERSION: u32 = 3;
 pub(crate) const PUBLIC_DIRECTORY_POW_BITS: u8 = 16;
 pub(crate) const PUBLIC_DIRECTORY_MAX_RECORD_TTL_SECS: i64 = 7 * 24 * 60 * 60;
 pub(crate) const PUBLIC_DIRECTORY_CLOCK_SKEW_SECS: i64 = 5 * 60;
@@ -83,13 +83,15 @@ impl PublicDirectorySettings {
 /// The signed part of a directory record. `discovered_via` is intentionally
 /// absent: it is a local UI annotation and must not affect the network
 /// identity or its signature.
+///
+/// There is no address here. The network is found by the publisher's key
+/// (`publisher_pubkey`, the same as the principal's and the pkarr record's)
+/// and by the relay keys in `relay_hints`; nobody's IP is ever listed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct PublicDirectoryNetwork {
     pub cluster_id: String,
     pub name: String,
     pub fingerprint: String,
-    pub address: String,
-    pub bootstrap_address: String,
     pub trust_document: String,
     pub organization: String,
     pub description: String,
@@ -102,8 +104,13 @@ pub(crate) struct PublicDirectoryNetwork {
     pub access_policy: crate::config::NetworkAccessPolicy,
     pub location: Option<crate::config::NetworkLocation>,
     #[serde(default)]
+    pub relay_hints: Vec<String>,
+    #[serde(default)]
     pub directory_replicas: Vec<String>,
 }
+
+/// Cap on relays in a public record.
+pub(crate) const PUBLIC_DIRECTORY_MAX_RELAY_HINTS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct SignedPublicDirectoryRecord {
@@ -241,8 +248,6 @@ fn validate_network(network: &PublicDirectoryNetwork) -> Result<()> {
         ("cluster_id", &network.cluster_id),
         ("name", &network.name),
         ("fingerprint", &network.fingerprint),
-        ("address", &network.address),
-        ("bootstrap_address", &network.bootstrap_address),
         ("trust_document", &network.trust_document),
     ] {
         if value.trim().is_empty() {
@@ -256,6 +261,14 @@ fn validate_network(network: &PublicDirectoryNetwork) -> Result<()> {
         bail!("o registro anuncia ingressos demais");
     }
     PublicDirectorySettings::from_urls(network.directory_replicas.iter())?;
+    if network.relay_hints.len() > PUBLIC_DIRECTORY_MAX_RELAY_HINTS {
+        bail!("the record announces too many relays");
+    }
+    for relay in &network.relay_hints {
+        if !relay.starts_with("pk:") || crate::pkarr_node::peer_id_from_uri(relay).is_none() {
+            bail!("a public record relay must be a pk: key, never an address");
+        }
+    }
     Ok(())
 }
 
@@ -335,8 +348,6 @@ impl PublicDirectoryNetwork {
             cluster_id: "cluster-test".to_string(),
             name: "Rede pública de teste".to_string(),
             fingerprint: "a".repeat(64),
-            address: "127.0.0.1:8080".to_string(),
-            bootstrap_address: "127.0.0.1:42777".to_string(),
             trust_document: "{}".to_string(),
             organization: "POM".to_string(),
             description: String::new(),
@@ -348,6 +359,7 @@ impl PublicDirectoryNetwork {
             geo_label: "br.curitiba".to_string(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             location: None,
+            relay_hints: Vec::new(),
             directory_replicas: vec!["https://directory.example".to_string()],
         }
     }
@@ -371,6 +383,17 @@ mod tests {
         let mut tampered = record.clone();
         tampered.network.name.push_str(" adulterada");
         assert!(tampered.validate(1_700_000_001).is_err());
+    }
+
+    /// A public record names relays by key. An address does not pass.
+    #[test]
+    fn relay_hints_must_be_keys_not_addresses() {
+        let mut network = PublicDirectoryNetwork::test_fixture();
+        network.relay_hints =
+            vec!["pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".to_string()];
+        assert!(validate_network(&network).is_ok());
+        network.relay_hints = vec!["198.51.100.1:42777".to_string()];
+        assert!(validate_network(&network).is_err());
     }
 
     #[test]

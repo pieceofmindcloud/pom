@@ -11,8 +11,10 @@ catalog of installable plugins: `PluginManager`/`PluginRuntime` in
 `crates/node/src/plugins.rs` creates runtimes for every `plugin_code` granted by
 the server and restores the codes persisted locally. Each plugin has its own
 activation state, lease, heartbeat, process host and version update check, with
-nothing shared between plugins. The name of this file and of the `"enterprise"`
-`plugin_code` stayed as they were because renaming is not worth the cost - what
+nothing shared between plugins. The Request Logs/Statistics plugin's
+`plugin_code` was `"enterprise"` until 2026-10-04 and is now `"logs"`
+(`LOGS_PLUGIN_CODE`); "POM Enterprise" is the product/plan name, and this
+file and the `enterprise-protocol` crate kept the name. What
 changed is that the GENERAL CODE stopped assuming "a single licensable
 product". See `## Phase 7` below for what this change touched and what was
 left out on purpose (the `pom_core` update itself, which was a separate product
@@ -73,7 +75,7 @@ boundary before and still is).
   did not come up.
 
   `PluginHost::start` receives `POM_PLUGIN_DB` with the path derived from POM's
-  database directory. For `plugin_code=enterprise`, the file is `logs.db`, so
+  database directory. For `plugin_code=logs`, the file is `logs.db`, so
   the existing persistent volume `/data` gets `/data/logs.db`. Other codes keep
   `<plugin_code>.db`; POM does not pass `enterprise.db`, and there is no
   `POM_ENTERPRISE_DB` nor any additional volume.
@@ -114,7 +116,7 @@ boundary before and still is).
   manifest resolves the `pom_<plugin_code>_plugin_v1` entry point; there is no
   fixed symbol for a product. `pom` does not use `libloading`.
 - `crates/enterprise-plugin-fixture` is a test `cdylib` library that validates
-  the `pom_enterprise_plugin_v1` and `pom_base_plugin_v1` ABI entry points, as
+  the `pom_logs_plugin_v1` and `pom_base_plugin_v1` ABI entry points, as
   well as the host flow.
 - The production `cdylib` of the `enterprise` plugin (the audit domain in
   `enterprise.db`, with its own schema, indexes, filtered listing and
@@ -174,14 +176,13 @@ only the generic boundary, reusable by any future `plugin_code`:
   `network/discovery.rs`), which replicates the `Begin` and `Complete` DTOs even
   when the local host accepted the event. Each receiver forwards the ordered
   copy to the active host; the plugin still owns persistence and queries in
-  `enterprise.db`. There is no P2P transport inside the plugin, and no new
+  `logs.db`. There is no P2P transport inside the plugin, and no new
   artifact needs to be published to restore the fanout.
-- `plugin_code` is still `"enterprise"` in the `feature_set`
-  (`enterprise.request_logs`, `enterprise.statistics`): only the code's
-  repository changed, not the plugin's identity nor the contract with the
-  license server.
+- `plugin_code` is `"logs"` and its `feature_set` is
+  (`logs.request_logs`, `logs.statistics`); the wire contract with the
+  license server did not change, only the code value.
 - `pom-release.sh` no longer releases anything with that plugin_code: it now
-  only releases `pom_core`. The release of the `enterprise` plugin (build,
+  only releases `pom_core`. The release of the `logs` plugin (build,
   reproducible packaging for macOS/Linux/Windows, GitHub Actions and publishing
   the version already built on GitHub to the license server) lives entirely in
   `pom-plugin-logs` - see that repository's `AGENTS.md`.
@@ -218,7 +219,8 @@ origin. Errors come back as `checkout_request_invalid` (400),
 
 `GET /api/ui/plugins` publishes the local states of the plugins restored or
 seen by the runtime. The public catalog `GET /v1/plugins` is read directly by
-the browser and includes plugins with no local state yet. Each local state has
+the browser and includes plugins with no local state yet; the Plugins screen
+asks it for one page at a time (`q`, `page`, `per_page`, answered with `total`). Each local state has
 its own entitlement, `manage_url` and `available_update`. The answer starts at
 `needs_activation`. The `state` field follows the license, while `active`
 requires the host installed and ready. A failure after the license was
@@ -230,6 +232,10 @@ the others. `POST /api/ui/plugins/activate` only receives `{license_key}` (no
 `plugin_code`: the `{activated: [...]}` answer names which plugins that key
 granted and installed). `POST /api/ui/plugins/:code/refresh|deactivate` and
 `POST /api/ui/plugins/:code/update/check|apply` act on a single plugin.
+Deactivating an activation the license server answers `ACTIVATION_UNKNOWN` for
+(a server moved to a new database, or an activation already deleted there)
+removes it locally: there is no slot left to free on the server. Any other
+error keeps the license.
 
 Plugins are local to each node, so activating a license, registering a GitHub
 repository, installing, updating and using a plugin's UI is allowed to the
@@ -259,7 +265,7 @@ The `Request Logs` and `Statistics` entries stay in the menu for every
 profile, with or without a license. A direct access or a click without
 entitlement shows the Enterprise invitation and the link
 `https://pieceofmind.cloud/enterprise` (through `useEnterpriseStatus()`, a
-selector over `usePlugins()` for the `"enterprise"` `plugin_code`). The menu is
+selector over `usePlugins()` for the `"logs"` `plugin_code`). The menu is
 product discovery, not proof of authorization: the backend is still the
 security boundary.
 

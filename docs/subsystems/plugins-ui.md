@@ -134,13 +134,52 @@ targets of the same `plugin_code`, so an internal navigation does not retain
 the previous route's component. The plugin does not bundle another React:
 `lib/pluginHost.ts` exposes on `globalThis.__POM_HOST__` React, ReactDOM, the
 JSX runtime, React Query, the design kit (`components/ui`), `format`,
-`useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `ExecutionTelemetry`,
-`Markdown` and `storageKey`. The plugin swaps those imports for reads of that
-object when bundling; hooks and contexts are the application's. The surface is
-versioned (`PLUGIN_HOST_VERSION`) and only grows compatibly. Version 2 added
-`context()` (current language and theme), `events`, `protocol` and
-`plugin(code)`, the door to the event protocol described below. The plugin's
-CSS uses the same color tokens (CSS variables) as POM.
+`useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `TelemetryLine`,
+`ExecutionTelemetry`, `Markdown` and `storageKey`. The plugin swaps those
+imports for reads of that object when bundling; hooks and contexts are the
+application's. The surface is versioned (`PLUGIN_HOST_VERSION`) and only grows
+compatibly. Version 2 added `context()` (current language and theme), `events`,
+`protocol` and `plugin(code)`, the door to the event protocol described below.
+Version 3 added `TelemetryLine` (the basic one-line telemetry) and the
+`chat.telemetry` slot; the detailed telemetry view left the POM, so
+`ExecutionTelemetry` is kept only for bundles built against version 2 and now
+renders that basic line. The plugin's CSS uses the same color tokens (CSS
+variables) as POM.
+
+## Plugin RPC
+
+A plugin screen that needs more than reading (saving settings, a directory,
+custom queries) calls `__POM_HOST__.plugin(code).rpc(op, params)` (host
+version 4). It posts to `POST /api/ui/plugins/<code>/rpc/<op>`; the node
+forwards `{params, profile}` to the plugin's `query` as operation
+`rpc.<op>` and returns the plugin's JSON reply as is. The node knows no
+operation and checks only the name, the size (256 KiB), the same origin and
+that the plugin is active. `profile` is the node's persisted profile
+(`admin`, `node` or `infer`), so the plugin decides who may call each
+operation; the enterprise plugin, for example, answers its directory and
+insights only for `admin`.
+
+## Slots inside native screens
+
+`slots` maps a slot id (lowercase, dots, dashes or underscores, up to 64
+characters; at most 16 per manifest) to a key of `screens`. Both
+`plugin_ui.rs` and `lib/pluginUi.ts` reject a manifest whose slot names an
+undeclared screen. A host screen that offers a slot asks
+`usePluginSlot("<id>")` (`components/PluginSlot.tsx`) and renders `PluginSlot`
+with its own props; the first active plugin in the node's order that claims the
+id wins. Loading or render failures show the slot's fallback instead of an
+error card. Hosts ignore slot ids they do not offer.
+
+| Slot | Where | Props |
+|---|---|---|
+| `chat.telemetry` | end of the compact telemetry line under each Chat answer (not for `infer`, not while streaming) | `ChatTelemetrySlotProps` in `lib/chatTelemetry.ts`: `messageId`, `trace`, `timings`, `source`, `environment` (cluster snapshot, network RTT, runtimes - fetched only while a plugin claims the slot), `model`, `onAsk({visibleText, requestContent})`, `askDisabled` |
+
+~~~json
+{
+  "screens": { "chat-telemetry": { "module": "ui/screens.js", "export": "chatTelemetry", "styles": ["ui/plugin.css"] } },
+  "slots": { "chat.telemetry": "chat-telemetry" }
+}
+~~~
 
 ## Release preferences and host context
 
@@ -240,6 +279,133 @@ logically `~/pom_workspace`, with no question in the wizard; in Compose the
 stable mount is `/data/workspace` and must stay persistent across restarts.
 POM checks the path when saving the configuration and resends the context to
 running hosts when the root changes.
+
+## Services a plugin offers to the cluster
+
+A plugin is local to its node, but what it runs can serve everyone - a vector
+database that is the retrieval source of the pipeline, for example. Two generic
+pieces, in `crates/node/src/plugin_services.rs`, make that visible and
+reachable without the node knowing any plugin.
+
+**`host.services`.** A running plugin may describe what it serves:
+
+```json
+{"operation": "host.services"}
+{"services": [{"id": "rag", "kind": "rag", "name": "Qdrant",
+               "status": "ready", "version": "v1.19.1", "detail": null}]}
+```
+
+`id` and `kind` are lowercase slugs, `name` and the optional `version` and
+`detail` are short single-line texts, and `status` is one of `ready`,
+`starting`, `installing`, `waiting` or `error`. The node drops an entry that
+does not follow the contract (at most 8 per plugin), asks the plugins at most
+every 5 s and publishes the result in `plugin_services` of `GET /api/ui/node`.
+The dashboard draws each service next to its machine: in the Flow, hanging
+under the machine's card with a connecting line, and in the machine's detail
+card (`components/PluginServices.tsx`). A plugin that does not know the
+operation answers with an error, which is ignored.
+
+**Peer calls.** `POST /api/internal/plugins/:code/peer/:op` lets a peer call
+the plugin's `peer.<op>` operation on another machine. The call must carry the
+signed control envelope (the shared connection key alone is refused, because it
+proves membership and not identity) and its issuer must be a live peer. The
+plugin receives who is asking and decides what to hand over:
+
+```json
+{"operation": "peer.connection", "params": null,
+ "caller": {"node_id": "<node>", "head": true, "model": "<model>"}}
+```
+
+`head` is true when the caller announces layer 0 of a model, the machine every
+prompt enters through. This is how a plugin shares a secret with the heads of
+the network and nobody else: the Qdrant plugin answers `peer.connection` with
+its port and API key only when `caller.head` is true. The body is capped at
+256 KiB and the plugin's reply is returned as is.
+
+`GET /api/internal/plugins/services` (signed or key-authenticated peer call)
+returns the same service list, so a peer can find which machine serves what.
+
+## Transparent retrieval (RAG)
+
+`crates/node/src/rag.rs` adds passages from the network's RAG server to chat
+requests. The RAG server is any plugin, on any machine, that publishes a ready
+service of kind `rag`; the gateway knows no plugin by name.
+
+- **Finding the server.** The gateway keeps the choice for 15 s. A request
+  never waits for the network to find it: this node's own plugins are asked in
+  line, peers are asked behind the request (`/api/internal/plugins/services`),
+  so with the server on another machine the first request after startup goes
+  out without context.
+- **Whether to search at all (optional, off by default).** With
+  `POM_RAG_DECISION=1`, when the request asked for retrieval with
+  `"rag": true`, the gateway first asks the pipeline a typed yes-or-no
+  decision (`decisions.rs`, the same mechanism as `/v1/systemone`): would the
+  user's stored documents help answer this message? It costs one token; the
+  last peer reports the probability of each label, and below 0.3 for "yes"
+  (`POM_RAG_DECISION_MIN`) nothing is searched and nothing is added. The
+  question's head is fixed and kept by the prefix cache, and the decision
+  reads only the last 600 characters of the message, never the conversation:
+  a 30 thousand token prompt is not sent twice. It is still an extra pass
+  through the pipeline for those characters, so it only pays for itself when
+  a good share of the messages sent with retrieval on turn out not to need
+  documents; without it, the search score (`POM_RAG_MIN_SCORE`) is what keeps
+  irrelevant passages out, at no pipeline cost. A decision that fails does not
+  stop the search. The audit records the probability as
+  `rag.needed`, and `rag: {skipped: "not_needed"}` when the search was skipped.
+  Like the query rewrite below, the decision is a request of its own and takes
+  a KV session on every hop.
+- **The query.** A message of up to 400 characters
+  (`POM_RAG_REWRITE_MIN_CHARS`) is searched as written. A longer one is reduced
+  to search terms first: when the request asked for retrieval with
+  `"rag": true`, by a short generation on the pipeline itself (at most 32
+  tokens, no thinking, 8 s, reading the first 400 and the last 1100 characters
+  of the message); otherwise, or when that generation fails or
+  `POM_RAG_REWRITE=0`, by dropping stop words and repeats and keeping the last
+  24 significant words. The short generation is a request of its own and takes
+  a KV session on every hop: with `max_sessions = 1` it displaces the retained
+  conversation, which comes back from the host-memory cache or is prefilled
+  again. The audit records the query and how it was obtained
+  (`rag.query`, `rag.query_source`: `message`, `model` or `words`).
+- **Searching.** `POST /v1/chat/completions` takes the text of the last
+  message when a person wrote it (role `user`; a tool result or an assistant
+  turn at the end is an agent in its loop, not a question) and calls the
+  plugin's `peer.search` - directly when the plugin is on this node, through
+  the peer route otherwise. The call goes along the route already measured to
+  that machine (`GatewayState::control_post_json_routed`): the pinned address,
+  or the libp2p tunnel alone when that is what reaches a peer behind NAT,
+  instead of walking every announced address. The whole search has 300 ms
+  (`POM_RAG_TIMEOUT_MS`, 20 to 5000); past it, or on any failure, the request
+  goes on unchanged. Retrieval never fails a request.
+- **What is added.** One passage by default (`POM_RAG_PASSAGES`, up to 20),
+  of at most 1500 characters, scoring at least
+  0.8 (`POM_RAG_MIN_SCORE`), in the order the plugin ranked them - its ranking
+  may use more than the similarity it reports as `score` -, appended after the whole conversation as a
+  "Retrieved context" block naming each source. `x_pom` is unchanged; the
+  request audit gets `rag: {node_id, plugin, passages: [{path, score}]}`,
+  never the text.
+- **The prefix cache survives.** The passages change with every question, so
+  they must not be part of the retained KV. The request carries a retain
+  boundary at the end of the conversation (`DecisionProbe.retain_prefix_bytes`
+  with no labels; see `inference.md` 3.9) and the cache key stays the
+  conversation alone. The next turn's prompt starts with exactly what was
+  kept. A request with this boundary is not batched with other prefills on the
+  head, like every probe request.
+- **Collections.** `"rag_collection": "<name>"` in the request keeps the search
+  to one collection of the server (letters, digits, `_` and `-`; anything else
+  is ignored); without it the plugin searches every collection it has a folder
+  linked to. The gateway reads the names with the plugin's `peer.collections`
+  (same route and timeout as the search, cached 15 s) and publishes them as
+  `rag_collections` in `GET /api/ui/chat/capabilities`. The audit records the
+  collection as `rag.collection`.
+- **Turning it on and off.** A request without the `rag` field retrieves;
+  `"rag": false` does not. The Chat has a database icon next to the model
+  picker (shown only while `GET /api/ui/chat/capabilities` reports
+  `rag: "supported"`); its menu offers no search (the default), every
+  collection, or one collection, and the Chat always states the choice,
+  `true` or `false`. `POM_RAG=0` turns retrieval
+  off on the gateway.
+
+`/v1/messages`, `/v1/completions` and `/api/generate` do not retrieve.
 
 ## Events and notifications (`pom-plugin-events/v1`)
 

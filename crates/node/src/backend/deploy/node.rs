@@ -503,6 +503,9 @@ pub(super) async fn add_node_endpoint(
                 peer_count: Some(peer_count),
                 tp: None,
                 mmproj_path: None,
+                mtp_draft_path: None,
+                mtp_draft_file: None,
+                mmproj_file: None,
                 use_mmproj: false,
             }],
             // Quem e a entrada do pipeline nao muda por isto: so quem fica com
@@ -545,6 +548,9 @@ pub(super) async fn add_node_endpoint(
             peer_count: Some(peer_count),
             tp: None,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
             use_mmproj: false,
         };
         let machines = survey(&state, &req.group, req.kind, None, None)
@@ -634,7 +640,7 @@ pub(super) async fn remove_node_endpoint(
             return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
         };
         match state
-            .control_post_empty(&peer, "/api/ui/unload", PEER_TIMEOUT)
+            .control_post_empty(&peer, "/api/ui/unload", crate::webui::PEER_STOP_TIMEOUT)
             .await
         {
             Ok(r) if r.status().is_success() => {}
@@ -937,7 +943,7 @@ pub(super) async fn release_one(
         return Ok(());
     }
     match state
-        .control_post_empty(peer, "/api/ui/unload", PEER_TIMEOUT)
+        .control_post_empty(peer, "/api/ui/unload", crate::webui::PEER_STOP_TIMEOUT)
         .await
     {
         Ok(r) if r.status().is_success() => Ok(()),

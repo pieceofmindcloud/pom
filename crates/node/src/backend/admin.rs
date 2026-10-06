@@ -67,9 +67,22 @@ struct RevokeOriginRequest {
     revoked_by: String,
 }
 
+/// Asks the principal about a key this node does not know. Only the hash
+/// travels: the principal never needs, and never receives, the secret.
 #[derive(Debug, Serialize, Deserialize)]
 struct ValidateRequest {
-    token: String,
+    key_hash: String,
+}
+
+/// A key just minted: the registry entry plus its secret, which leaves the
+/// node exactly once, in this response.
+#[derive(Debug, Serialize)]
+pub(crate) struct IssuedApiKey {
+    #[serde(flatten)]
+    pub key: ApiKey,
+    /// The secret. Named `key` because that is what clients copy.
+    #[serde(rename = "key")]
+    pub secret: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -93,7 +106,7 @@ async fn principal_peer_for(
         peer.node_id != network.node_id
             && peer.node_id == primary.node_id
             && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
-            && peer.authority_pubkey == primary.pubkey
+            && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     })
 }
@@ -104,9 +117,12 @@ fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerIn
     network.gateway_bases(peer)
 }
 
-/// Envia uma chamada de controle para cada endereço anunciado pelo peer até
-/// que um deles responda. Um endereço que deixou de existir não pode impedir
-/// a promoção quando o mesmo anúncio ainda traz um candidato vivo.
+/// Sends a control call to each address the peer announced until one of them
+/// answers and, last, through the libp2p tunnel
+/// (`peer_client::send_to_gateway_over`). An address that ceased to exist must
+/// not block the promotion while the same announcement still carries a live
+/// candidate, and a peer only the relay reaches (Docker bridge, NAT) has no
+/// direct address at all.
 async fn post_internal_json<T: Serialize>(
     state: &crate::gateway::GatewayState,
     peer: &crate::network::PeerInfo,
@@ -115,7 +131,7 @@ async fn post_internal_json<T: Serialize>(
     timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
     let urls = gateway_urls(&state.network, peer);
-    if urls.is_empty() {
+    if urls.is_empty() && crate::peer_client::TunnelPeer::from_peer(peer).is_none() {
         anyhow::bail!("o peer não anuncia porta de gateway");
     }
     let client = state.peer_http.for_peer(&peer.node_id)?;
@@ -125,9 +141,7 @@ async fn post_internal_json<T: Serialize>(
         let config = state.auth.read().await;
         crate::auth::internal_node_token(&config)
     };
-
-    let mut last_error = "nenhum endereço de gateway respondeu".to_string();
-    for base in &urls {
+    crate::peer_client::send_to_gateway_over(peer, &urls, |base| {
         let mut request = client
             .post(format!("{base}{path}"))
             .timeout(timeout)
@@ -135,19 +149,11 @@ async fn post_internal_json<T: Serialize>(
         if let Some(connection_key) = &connection_key {
             request = request.bearer_auth(connection_key);
         }
-        match request
+        request
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body_bytes.clone())
-            .send()
-            .await
-        {
-            Ok(response) => return Ok(response),
-            Err(error) => {
-                last_error = format!("{base}: {error}");
-            }
-        }
-    }
-    anyhow::bail!(last_error)
+    })
+    .await
 }
 
 async fn sync_json<T: Serialize>(
@@ -162,14 +168,18 @@ async fn sync_json<T: Serialize>(
     let urls = gateway_urls(&state.network, &peer);
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
-    let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
     let connection_key = {
         let config = state.auth.read().await;
         crate::auth::internal_node_token(&config)
     };
     let mut last_error = "central admin synchronization failed".to_string();
     for attempt in 0..SYNC_ATTEMPTS {
-        for base in &urls {
+        // Direct addresses and, last, the tunnel: a node that only reaches the
+        // principal through the relay also registers and revokes keys. Each
+        // attempt signs a new envelope, because the principal refuses a nonce
+        // it has already seen and these mutations are idempotent.
+        let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
+        let result = crate::peer_client::send_to_gateway_over(&peer, &urls, |base| {
             let mut request = client
                 .post(format!("{base}{path}"))
                 .timeout(SYNC_TIMEOUT)
@@ -177,16 +187,20 @@ async fn sync_json<T: Serialize>(
             if let Some(connection_key) = &connection_key {
                 request = request.bearer_auth(connection_key);
             }
-            let result = request
+            request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone())
-                .send()
-                .await;
-            match result {
-                Ok(response) if response.status().is_success() => return Ok(()),
-                Ok(_) => last_error = "central admin rejected synchronization".into(),
-                Err(_) => last_error = "central admin synchronization timed out".into(),
+        })
+        .await;
+        match result {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                last_error = format!(
+                    "central admin rejected synchronization: {}",
+                    response.status()
+                )
             }
+            Err(error) => last_error = format!("central admin unreachable: {error:#}"),
         }
         if attempt + 1 < SYNC_ATTEMPTS {
             tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
@@ -243,14 +257,18 @@ async fn notify_origin_revoked(
     .await
 }
 
+/// Mint a key. The registry (here and at the principal) keeps the hash and
+/// the hint; the secret is returned to the caller and forgotten.
 async fn create_key(
     state: &crate::gateway::GatewayState,
     label: String,
     node_id: String,
-) -> anyhow::Result<ApiKey> {
+) -> anyhow::Result<IssuedApiKey> {
+    let secret = crate::auth::generate_api_key_secret();
     let key = ApiKey {
         id: Uuid::new_v4().simple().to_string(),
-        key: format!("sk-{}", Uuid::new_v4()),
+        key_hash: crate::auth::api_key_hash(&secret),
+        key_hint: crate::auth::api_key_hint(&secret),
         label,
         node_id,
         origin_node_id: state.network.node_id.clone(),
@@ -260,23 +278,24 @@ async fn create_key(
     notify_key_created(state, &key).await?;
     state.database.insert_api_key(&key)?;
     refresh_api_key_snapshot(state).await?;
-    Ok(key)
+    Ok(IssuedApiKey { key, secret })
 }
 
 pub(crate) async fn validate_api_key_remote(
     state: &crate::gateway::GatewayState,
     token: &str,
 ) -> anyhow::Result<Option<ApiKey>> {
+    let key_hash = crate::auth::api_key_hash(token);
     validate_api_key_remote_parts(
         &state.network,
         &state.peer_http,
         &state.auth,
-        token,
+        &key_hash,
         Some(state.signed_control_headers(
             "POST",
             "/api/internal/api-keys/validate",
             &serde_json::to_vec(&ValidateRequest {
-                token: token.to_string(),
+                key_hash: key_hash.clone(),
             })?,
         )?),
     )
@@ -287,7 +306,7 @@ pub(crate) async fn validate_api_key_remote_parts(
     network: &crate::network::Network,
     peer_http: &crate::peer_client::PeerClients,
     auth: &AuthState,
-    token: &str,
+    key_hash: &str,
     control_headers: Option<reqwest::header::HeaderMap>,
 ) -> anyhow::Result<Option<ApiKey>> {
     let peer = network
@@ -302,7 +321,7 @@ pub(crate) async fn validate_api_key_remote_parts(
         .ok_or_else(|| anyhow::anyhow!("central admin node is unavailable"))?;
     let client = peer_http.for_peer(&peer.node_id)?;
     let body = ValidateRequest {
-        token: token.to_string(),
+        key_hash: key_hash.to_string(),
     };
     let body_bytes = serde_json::to_vec(&body)?;
     let control_headers = control_headers;
@@ -310,8 +329,10 @@ pub(crate) async fn validate_api_key_remote_parts(
         let config = auth.read().await;
         crate::auth::internal_node_token(&config)
     };
+    let bases = gateway_urls(network, &peer);
     for attempt in 0..SYNC_ATTEMPTS {
-        for base in gateway_urls(network, &peer) {
+        // Direct addresses and, last, the libp2p tunnel.
+        let result = crate::peer_client::send_to_gateway_over(&peer, &bases, |base| {
             let mut request = client
                 .post(format!("{base}/api/internal/api-keys/validate"))
                 .timeout(SYNC_TIMEOUT)
@@ -319,15 +340,14 @@ pub(crate) async fn validate_api_key_remote_parts(
             if let Some(connection_key) = &connection_key {
                 request = request.bearer_auth(connection_key);
             }
-            let result = request
+            request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone())
-                .send()
-                .await;
-            if let Ok(response) = result {
-                if let Ok(payload) = response.json::<ValidateResponse>().await {
-                    return Ok(payload.valid.then_some(payload.key).flatten());
-                }
+        })
+        .await;
+        if let Ok(response) = result {
+            if let Ok(payload) = response.json::<ValidateResponse>().await {
+                return Ok(payload.valid.then_some(payload.key).flatten());
             }
         }
         if attempt + 1 < SYNC_ATTEMPTS {
@@ -383,9 +403,12 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
 }
 
 /// Named node-to-node event used to wake all idle peers in one planned
-/// pipeline. The sender dispatches these requests concurrently and waits for
-/// each local health watcher, so no hop reloads sequentially through the
-/// inference chain.
+/// pipeline. It starts the load and answers at once with `state`: `loading`
+/// while the model comes up, `ready` when it is loaded. The gateway sends it
+/// to every idle peer concurrently and repeats it until all answer `ready`, so
+/// no call stays open for the length of a model load and no hop reloads
+/// sequentially through the inference chain. A load that cannot happen
+/// (failed, thermal, not configured) is a 503 with the reason.
 async fn internal_reload_model(
     _auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
@@ -397,12 +420,13 @@ async fn internal_reload_model(
             Json(json!({ "error": "evento desconhecido" })),
         );
     }
-    match state.runtime.reload_from_idle().await {
-        Ok(reloaded) => (
+    match state.runtime.wake_from_idle().await {
+        Ok(wake) => (
             StatusCode::OK,
             Json(json!({
                 "event": "reload_model",
-                "reloaded": reloaded,
+                "state": if wake == crate::runtime::Wake::Ready { "ready" } else { "loading" },
+                "reloaded": wake == crate::runtime::Wake::Started,
             })),
         ),
         Err(error) => (
@@ -441,7 +465,7 @@ async fn require_signed_admin(
 fn is_self_owned_chat_key(key: &ApiKey, issuer: &AuthorityPrincipal) -> bool {
     key.active
         && !key.id.trim().is_empty()
-        && !key.key.trim().is_empty()
+        && !key.key_hash.trim().is_empty()
         && key.node_id == issuer.node_id
         && key.origin_node_id == issuer.node_id
         && key.label == format!("pom-{}", issuer.node_id)
@@ -510,7 +534,7 @@ fn peer_for_principal<'a>(
     peers.iter().find(|peer| {
         peer.node_id == principal.node_id
             && peer.libp2p_peer_id.as_deref() == Some(principal.peer_id.as_str())
-            && peer.authority_pubkey == principal.pubkey
+            && peer.pubkey == principal.pubkey
     })
 }
 
@@ -694,13 +718,13 @@ async fn request_node_promotion(
         let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
             return false;
         };
-        if peer.authority_pubkey.is_empty() {
+        if peer.pubkey.is_empty() {
             return false;
         }
         let admin = AuthorityPrincipal {
             node_id: peer.node_id.clone(),
             peer_id: peer_id.to_string(),
-            pubkey: peer.authority_pubkey.clone(),
+            pubkey: peer.pubkey.clone(),
         };
         state
             .admin_trust
@@ -761,7 +785,7 @@ async fn internal_authorize_node(
     }
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == request.subject.node_id
-            && peer.authority_pubkey == request.subject.pubkey
+            && peer.pubkey == request.subject.pubkey
             && peer.libp2p_peer_id.as_deref() == Some(request.subject.peer_id.as_str())
     }) else {
         return (
@@ -884,14 +908,23 @@ async fn internal_upsert_api_key(
     let self_owned_chat_key = auth
         .principal()
         .is_some_and(|issuer| is_self_owned_chat_key(&key, issuer));
-    if !(admin || self_owned_chat_key) || key.key.is_empty() || key.id.is_empty() {
+    if !(admin || self_owned_chat_key) || key.key_hash.is_empty() || key.id.is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match state.database.insert_api_key(&key) {
-        Ok(()) => match refresh_api_key_snapshot(&state).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        },
+    if let Err(error) = state.database.insert_api_key(&key) {
+        tracing::warn!("não foi possível registrar a API key: {error:#}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    // A chave interna nova de um nó aposenta a anterior, cujo segredo o nó já
+    // não tem: sem isto ela ficaria ativa no principal, sem dono.
+    if let Err(error) = state
+        .database
+        .revoke_superseded_node_keys(&state.network.node_id)
+    {
+        tracing::warn!("não foi possível revogar chaves internas substituídas: {error:#}");
+    }
+    match refresh_api_key_snapshot(&state).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -953,7 +986,7 @@ async fn internal_validate_api_key(
     }
     let key = state
         .database
-        .api_key_for_token(&request.token)
+        .api_key_for_hash(&request.key_hash)
         .ok()
         .flatten();
     let blocked_nodes = state.auth.read().await.blocked_nodes.clone();
@@ -1229,7 +1262,7 @@ async fn promote_node_to_admin(
         )
             .into_response();
     };
-    if peer.authority_pubkey.is_empty() {
+    if peer.pubkey.is_empty() {
         return (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": "o peer não anuncia a chave de autoridade libp2p" })),
@@ -1239,7 +1272,7 @@ async fn promote_node_to_admin(
     let subject = AuthorityPrincipal {
         node_id: peer.node_id.clone(),
         peer_id,
-        pubkey: peer.authority_pubkey.clone(),
+        pubkey: peer.pubkey.clone(),
     };
     let grant = match state.admin_trust.signed_secondary_grant(
         &state.authority_signing_key,
@@ -1427,7 +1460,7 @@ async fn resign_authority(
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == successor.node_id
             && peer.libp2p_peer_id.as_deref() == Some(successor.peer_id.as_str())
-            && peer.authority_pubkey == successor.pubkey
+            && peer.pubkey == successor.pubkey
             && peer.profile == NodeProfile::Admin
     }) else {
         return (
@@ -1525,7 +1558,7 @@ pub(crate) async fn accept_authority_transfer(
     let Some(peer) = peers.into_iter().find(|peer| {
         peer.node_id == offer.issuer.node_id
             && peer.libp2p_peer_id.as_deref() == Some(offer.issuer.peer_id.as_str())
-            && peer.authority_pubkey == offer.issuer.pubkey
+            && peer.pubkey == offer.issuer.pubkey
     }) else {
         return Json(json!({
             "accepted": true,
@@ -1787,11 +1820,14 @@ pub(crate) async fn chat_key(
             };
             (status, Json(key)).into_response()
         }
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "não foi possível preparar a chave do chat" })),
-        )
-            .into_response(),
+        Err(error) => {
+            tracing::warn!("could not prepare the chat key: {error:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "não foi possível preparar a chave do chat" })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -1800,22 +1836,48 @@ pub(crate) async fn chat_key(
 /// chave que um nó sem autoridade administrativa pode registrar no principal
 /// (`is_self_owned_chat_key`), por isso os plugins não recebem uma própria.
 /// Devolve a chave e se ela acabou de ser criada.
+///
+/// O segredo fica no cofre local do nó (`PomDb::node_api_key`); o registro
+/// guarda só o hash. Se o cofre não tem segredo, ou o segredo não bate mais
+/// com uma chave ativa (revogada, ou um banco migrado de antes do hash, que
+/// perdeu o texto), uma chave nova é emitida e as antigas do nó são revogadas.
 pub(crate) async fn node_chat_key(
     state: &crate::gateway::GatewayState,
-) -> anyhow::Result<(ApiKey, bool)> {
+) -> anyhow::Result<(IssuedApiKey, bool)> {
     let node_id = state.network.node_id.clone();
     let label = format!("pom-{node_id}");
-    if let Ok(Some(key)) = state.database.active_api_key_named(&label, &node_id) {
-        let origin = if key.origin_node_id.is_empty() {
-            &key.node_id
-        } else {
-            &key.origin_node_id
-        };
-        if origin == &node_id {
-            return Ok((key, false));
+    if let Ok(Some((id, secret))) = state.database.node_api_key() {
+        if let Ok(Some(key)) = state.database.api_key_for_token(&secret) {
+            let origin = if key.origin_node_id.is_empty() {
+                &key.node_id
+            } else {
+                &key.origin_node_id
+            };
+            if key.id == id && origin == &node_id && key.label == label {
+                return Ok((IssuedApiKey { key, secret }, false));
+            }
         }
     }
-    Ok((create_key(state, label, node_id).await?, true))
+    let stale = state
+        .database
+        .api_keys()?
+        .into_iter()
+        .filter(|key| key.active && key.label == label && key.node_id == node_id)
+        .map(|key| key.id)
+        .collect::<Vec<_>>();
+    let issued = create_key(state, label, node_id.clone()).await?;
+    state
+        .database
+        .save_node_api_key(&issued.key.id, &issued.secret)?;
+    for id in stale {
+        // A chave anterior não tem mais dono: ninguém sabe o segredo dela.
+        let _ = state.database.revoke_api_key(&id, &node_id);
+        if let Err(error) = notify_key_revoked(state, &id, &node_id).await {
+            tracing::warn!("revogação central da chave antiga do nó falhou: {error:#}");
+        }
+    }
+    let _ = refresh_api_key_snapshot(state).await;
+    Ok((issued, true))
 }
 
 async fn revoke_api_key(
@@ -1906,6 +1968,23 @@ mod tests {
         let key_id = created["id"].as_str().unwrap().to_string();
         let secret = created["key"].as_str().unwrap().to_string();
         assert!(state.database.api_key_for_token(&secret).unwrap().is_some());
+        assert!(secret.starts_with(crate::auth::API_KEY_PREFIX));
+
+        // Depois de criada, a chave só aparece pelo trecho visível.
+        let response = admin_routes()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/admin/api-keys")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let listed = crate::gateway::testkit::body_of(response).await;
+        assert!(!listed.to_string().contains(&secret));
+        assert_eq!(listed[0]["key_hint"], crate::auth::api_key_hint(&secret));
+        assert!(listed[0].get("key").is_none());
 
         let response = admin_routes()
             .with_state(state.clone())
@@ -1932,6 +2011,49 @@ mod tests {
             .any(|key| key.id == key_id && !key.active));
     }
 
+    /// A chave do próprio nó: o segredo fica no cofre local, o registro só
+    /// tem o hash, e um cofre vazio (banco migrado) troca a chave e revoga a
+    /// antiga, que ninguém mais saberia usar.
+    #[tokio::test]
+    async fn node_chat_key_keeps_its_secret_local_and_rotates_an_orphan() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.profile = NodeProfile::Admin;
+        let orphan = ApiKey {
+            id: "orphan".into(),
+            key_hash: crate::auth::api_key_hash("sk-lost-secret"),
+            key_hint: crate::auth::api_key_hint("sk-lost-secret"),
+            label: "pom-eu".into(),
+            node_id: "eu".into(),
+            origin_node_id: "eu".into(),
+            active: true,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        state.database.insert_api_key(&orphan).unwrap();
+
+        let (first, created) = node_chat_key(&state).await.unwrap();
+        assert!(created);
+        assert_ne!(first.key.id, "orphan");
+        assert_eq!(
+            state.database.node_api_key().unwrap(),
+            Some((first.key.id.clone(), first.secret.clone()))
+        );
+        assert!(state
+            .database
+            .api_key_for_token("sk-lost-secret")
+            .unwrap()
+            .is_none());
+        assert!(state
+            .database
+            .api_key_for_token(&first.secret)
+            .unwrap()
+            .is_some());
+
+        let (again, created) = node_chat_key(&state).await.unwrap();
+        assert!(!created);
+        assert_eq!(again.key.id, first.key.id);
+        assert_eq!(again.secret, first.secret);
+    }
+
     #[test]
     fn a_node_can_register_only_its_own_chat_key() {
         let issuer = AuthorityPrincipal {
@@ -1941,7 +2063,8 @@ mod tests {
         };
         let own = ApiKey {
             id: "chat-id".into(),
-            key: "sk-chat".into(),
+            key_hash: crate::auth::api_key_hash("sk-chat"),
+            key_hint: String::new(),
             label: "pom-worker".into(),
             node_id: "worker".into(),
             origin_node_id: "worker".into(),
@@ -1971,7 +2094,8 @@ mod tests {
         };
         let key = ApiKey {
             id: "chat-id".into(),
-            key: "sk-chat".into(),
+            key_hash: crate::auth::api_key_hash("sk-chat"),
+            key_hint: String::new(),
             label: "pom-worker".into(),
             node_id: "worker".into(),
             origin_node_id: "worker".into(),
@@ -1992,7 +2116,7 @@ mod tests {
         assert_eq!(
             state
                 .database
-                .api_key_for_token(&key.key)
+                .api_key_for_hash(&key.key_hash)
                 .unwrap()
                 .map(|stored| stored.node_id),
             Some("worker".into())
@@ -2101,14 +2225,21 @@ mod tests {
                     if !trusted {
                         return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response();
                     }
-                    match request.token.as_str() {
+                    // Só o hash chega ao principal; o teste o reconhece
+                    // pelos tokens que conhece.
+                    let token = ["remote-valid", "admin-error", "admin-timeout"]
+                        .into_iter()
+                        .find(|token| crate::auth::api_key_hash(token) == request.key_hash)
+                        .unwrap_or_default();
+                    match token {
                         "remote-valid" => (
                             StatusCode::OK,
                             Json(ValidateResponse {
                                 valid: true,
                                 key: Some(ApiKey {
                                     id: "remote-id".into(),
-                                    key: request.token,
+                                    key_hash: request.key_hash.clone(),
+                                    key_hint: String::new(),
                                     label: "remote".into(),
                                     node_id: "origin-node".into(),
                                     origin_node_id: "origin-node".into(),
@@ -2211,7 +2342,8 @@ mod tests {
         };
         let key = ApiKey {
             id: "retry-safe".into(),
-            key: "sk-retry-safe".into(),
+            key_hash: crate::auth::api_key_hash("sk-retry-safe"),
+            key_hint: String::new(),
             label: "retry-safe".into(),
             node_id: "worker".into(),
             origin_node_id: "worker".into(),
@@ -2258,7 +2390,7 @@ mod tests {
         assert_eq!(state.database.api_key_revocations().unwrap().len(), 1);
         assert!(state
             .database
-            .api_key_for_token(&key.key)
+            .api_key_for_hash(&key.key_hash)
             .unwrap()
             .is_none());
     }
@@ -2269,7 +2401,8 @@ mod tests {
         state.auth.write().await.profile = NodeProfile::Admin;
         let key = ApiKey {
             id: "blocked-origin-key".into(),
-            key: "sk-blocked-origin".into(),
+            key_hash: crate::auth::api_key_hash("sk-blocked-origin"),
+            key_hint: String::new(),
             label: "worker-key".into(),
             node_id: "worker".into(),
             origin_node_id: "worker".into(),
@@ -2287,12 +2420,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(state
             .database
-            .api_key_for_token(&key.key)
+            .api_key_for_hash(&key.key_hash)
             .unwrap()
             .is_none());
 
         let request = Request::get("/v1/models")
-            .header("x-api-key", &key.key)
+            .header("x-api-key", "sk-blocked-origin")
             .body(())
             .unwrap();
         let (mut parts, _) = request.into_parts();
@@ -2352,14 +2485,14 @@ mod tests {
         let admin_peer = {
             let mut peer = crate::gateway::testkit::peer("admin", "admin", admin_port);
             peer.profile = NodeProfile::Admin;
-            peer.authority_pubkey = admin_principal.pubkey.clone();
+            peer.pubkey = admin_principal.pubkey.clone();
             peer.libp2p_peer_id = Some(admin_principal.peer_id.clone());
             peer
         };
         let infer_peer = {
             let mut peer = crate::gateway::testkit::peer("infer", "infer", infer_port);
             peer.profile = NodeProfile::Infer;
-            peer.authority_pubkey = infer_principal.pubkey.clone();
+            peer.pubkey = infer_principal.pubkey.clone();
             peer.libp2p_peer_id = Some(infer_principal.peer_id.clone());
             peer.addr = format!("{stale_infer_host}:42777");
             peer.addr_candidates = vec!["127.0.0.1:42777".into()];
@@ -2442,8 +2575,8 @@ mod tests {
             admin_peer.addr = "[2001:db8::dead]:42777".into();
             admin_peer.addr_candidates = vec!["127.0.0.1:42777".into()];
         }
-        assert_eq!(admin.admin_trust.document().replay.len(), 0);
-        assert_eq!(infer.admin_trust.document().replay.len(), 0);
+        assert_eq!(admin.admin_trust.replay_len(), 0);
+        assert_eq!(infer.admin_trust.replay_len(), 0);
         let admin_address = spawn_admin_router(admin_listener, admin.clone()).await;
         let infer_address = spawn_admin_router(infer_listener, infer.clone()).await;
 
@@ -2458,10 +2591,10 @@ mod tests {
         let status = response.status();
         let body = response.text().await.unwrap();
         assert_eq!(
-            admin.admin_trust.document().replay.len(),
+            admin.admin_trust.replay_len(),
             2,
             "a ida chegou ao admin: status={status}, body={body}, infer_replay={}, infer_profile={:?}",
-            infer.admin_trust.document().replay.len(),
+            infer.admin_trust.replay_len(),
             infer.auth.read().await.profile,
         );
         assert_eq!(

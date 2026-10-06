@@ -328,12 +328,16 @@ mod pool_tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: 99,
             n_threads: 0,
             max_sessions: 2,
             need_embeddings: true,
             mtp: false,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -723,6 +727,19 @@ mod pool_tests {
         // ja foi revertida para 128 uma vez. Comparar com a constante deixaria
         // o teste passar na mesma; o literal faz esta mudanca ficar vermelha.
         assert_eq!(params.n_ubatch, 512);
+    }
+
+    #[test]
+    fn threads_default_to_everything_the_process_may_use() {
+        let available = std::thread::available_parallelism().unwrap().get() as i32;
+        assert_eq!(effective_n_threads(0), available);
+        assert_eq!(effective_n_threads(-1), available);
+        assert_eq!(effective_n_threads(3), 3);
+
+        let mut params = unsafe { sys::llama_context_default_params() };
+        apply_thread_params(&mut params, &cfg());
+        assert_eq!(params.n_threads, available);
+        assert_eq!(params.n_threads_batch, available);
     }
 
     #[test]

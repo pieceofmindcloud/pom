@@ -185,7 +185,11 @@ the accepted MTP drafts) times the plan's hops when there is no explicit
 expectation from the remote-stream callbacks: each hop reports one span per
 round, and a speculative round produces several tokens. Counting only the
 tokens expected ~3.8x the spans of a run with MTP and marked 26% coverage on a
-complete trace. The reported spans are still observed counts per hop.
+complete trace. The reported spans are still observed counts per hop. Typed
+`/v1/systemone` (`/v1/decisions`) requests are prefill-only: the final peer
+scores labels from the next-token distribution and does not run a decode step.
+They count one API output token, but a trace with `probe` or `jev` expects zero
+decode rounds, so its coverage follows the prefill peers (section 3.9).
 
 `hidden_state_dtype` is evidence from the wire, not the gateway's local
 configuration: it only shows up when hidden-state bytes crossed the hop. That is
@@ -228,7 +232,7 @@ announcer. The answer carries the executable identity (`model_label`/
 replace the P2P snapshot while the next `Announce` is still in transit. So a new
 deployment does not fail with a coverage gap just because gossip arrived after
 the local load. What changed is the price. The deadline is
-`ADMISSION_PROBE_TIMEOUT` of 300 ms, not the general client's 2 s
+`ADMISSION_PROBE_TIMEOUT` of 100 ms, not the general client's 2 s
 `CONNECT_TIMEOUT`, and whoever fails goes into quarantine for
 `ADMISSION_FAILURE_COOLDOWN` (`AdmissionHealth`, in `gateway/state.rs`), staying
 out of the plan without being probed again. Before that, since `join_all` only
@@ -498,25 +502,60 @@ stays cached for the process, so the next load of the same model does not
 repeat the measurement. There is no vendor API, card table or fixed priority
 per backend.
 
-The ordering is only applied if every result is finite and positive, each
-boundary between neighboring speeds exceeds 25% and every handle uses the same
-backend. If a backend reports no memory, does not initialize, does not allocate
-or does not run the graph, if the speeds are equivalent, or if the backends are
-heterogeneous or unknown, the result is undetermined and POM does not guess: it
-leaves `llama_model_params.devices` null, keeping the current order and
-behavior. The same applies to a single device, which does not pay for the
+The ordering is only applied if every device reports its total memory and
+every handle uses the same backend. If a backend reports no memory, or if the
+backends are heterogeneous or unknown, POM does not guess: it leaves
+`llama_model_params.devices` null, keeping the current order and behavior. A
+speed measurement that failed, or speeds within 25% of each other, only mean
+that cards of the same size keep their current order. The same applies to a single device, which does not pay for the
 probe. The backend guard is needed because an explicit list can change the copy
 and split topology of a mixed Vulkan/CUDA graph; the automatic fit must not turn
-a synthetic measurement into a new heterogeneous path. When there is
-confidence, the explicit list is passed both to `common_fit_params` and to the
-real load, from slowest to fastest. Since the fit fills layers from back to
-front, the fastest device gets the final range and the output head, which is
-walked on every token, while the ranges stay contiguous and the number of graph
-boundaries does not grow.
+a reordering into a new heterogeneous path. When the order applies, the
+explicit list is passed both to `common_fit_params` and to the
+real load, from the largest total memory to the smallest. The fit fills the
+devices in the order it is given: the first takes layers up to its memory
+budget and each next device takes what is left, so the largest card is used to
+its limit and the unused memory, and any layer that spills to system memory,
+ends up on a smaller one. (With a slowest-first order, a 12 GB RTX 3060 was
+filled to 376 MiB free with one layer overflowing while a 16 GB RTX 5060 Ti
+after it kept 3 GB unused.) Cards of the same size are ordered by the measured
+speed, fastest first, when the difference exceeds 25%; otherwise they keep
+their order. The ranges stay contiguous and the number of graph boundaries does
+not grow; the final range and the output head sit on the last device that
+received layers.
+
+An external MTP draft (`mtp_draft_path`) is a second model loaded on the device
+of the last NextN layer. The joint fit reserves there, besides the NextN KV,
+the weights of the file that is really loaded (the completed copy of a shared
+draft, which is larger than the draft itself; an upper bound) and 512 MiB for
+its compute buffers. Reserving only the KV let the fit fill that card, and the draft then
+failed with `cudaMalloc failed: out of memory` on its compute buffers and MTP
+was dropped. When the reserve does not fit without taking layers from the main
+model, the existing policy applies: the main layers win and MTP falls back.
+A deployment chooses where MTP goes with `mtp_placement` ("Where MTP runs" in
+the deployment forms):
+
+- `auto` (the default): MTP goes to VRAM only when the whole main model still
+  fits there with it; otherwise it goes to host memory and the main model keeps
+  every layer on the GPU.
+- `vram`: MTP takes its VRAM first. The joint fit is accepted even when it
+  offloads fewer main layers than the main model would get alone, and it runs
+  even when the main model alone already did not fit entirely; the main model
+  takes the memory that is left and gives up layers to host memory.
+- `ram`: the fit is asked for host memory from the start; MTP spends no VRAM
+  and runs on the CPU.
+
+`mtp_cpu_fallback_enabled` keeps its meaning in every placement: whether a
+VRAM attempt that fails may fall back to host memory instead of leaving the
+deployment without MTP.
+
+If the context of a draft whose weights are in VRAM still cannot be created,
+with its KV on the card and then in host memory, the draft is loaded again in
+host memory and attached there instead of MTP being given up.
 
 The KV cache is not artificially moved to the slow device. It is accessed on
 every token, grows with the context and follows the layer's device; so the fast
-device also gets the KV of the layers it runs and the head, within the memory
+device also gets the KV of the layers it runs, within the memory
 limit. Free memory is still the hard constraint for weights, context and
 temporaries. This policy avoids trading a repeated crossing for a nominal byte
 saving and keeps the existing fallback to `offload_kqv=false` when the KV does
@@ -932,6 +971,13 @@ answer body, has a single deadline, the frame's: (1 s + 50 ms per token + 2 s
 per image) x remaining hops (`relay::frame_deadline`), the same on QUIC,
 HTTP/HTTPS, the persistent channel and the tunnel. A peer that went down is
 detected earlier by the connection's lifetime (`QUIC_MAX_IDLE`, TCP keep-alive).
+A prefill chunk (`/v1/prefill`, `relay::frame_deadline_for_path`) is the
+exception: its deadline is a liveness one, 10 min per hop
+(`PREFILL_FRAME_DEADLINE_PER_HOP`), because the chunk may wait in the peer's
+queue behind another session's chunk; the work-based deadline expired during
+that wait, the delivered frame could not be repeated, and both sessions failed
+in cascade ("libp2p tunnel did not answer in time"). The gateway's wait for each
+chunk's direct result (`prefill/pipeline.rs`) uses the same deadline.
 
 **Cleanup.** Every pending delivery lives in a per-channel registry and leaves
 it on a guard's `Drop`, on any exit path: answer, error, deadline, caller
@@ -1106,12 +1152,20 @@ chunk is decoded at its own position and the hidden state travels alone.
   `min(prefill_chunk_tokens, n_batch)` (`prompt_chunk_of`), because a chunk is
   decoded as one batch on the peer and anything larger than `n_batch` would
   abort llama.cpp just like the whole prompt used to.
-- **Adaptive chunk**: the gateway learns bytes per token, bandwidth, compute per
-  token and RTT from finished prefill traces, separately per model and route. On
-  the next request it picks a size that balances bandwidth-delay and compute
-  per RTT, rounded to blocks of 16 and capped by `prefill_chunk_tokens` and
-  `n_batch`. A route without samples uses the configured ceiling; the choice
-  makes no probe and adds no wait on the request path.
+- **Adaptive chunk**: the gateway models every hop and every link into a hop
+  as a stage whose call costs `fixed + per_token * chunk`, fitted per model and
+  route by decaying least squares over finished prefill traces (two points per
+  hop and trace: the mean call and the median, full-chunk call; a link's fixed
+  part is its network RTT). For the next request it simulates the chunked
+  pipeline with the expected new tokens (prompt bytes / 4 minus the prefix it
+  will reuse) and `prefill_max_inflight_chunks`, and picks the chunk size, in
+  steps of 16 from 32, whose last chunk finishes first; when one chunk holding
+  the whole prompt wins it sends the ceiling. Capped by `prefill_chunk_tokens`
+  and `n_batch`. A route without samples uses the ceiling; the choice makes no
+  probe and adds no wait on the request path. The fixed part is what the
+  earlier bandwidth-delay heuristic missed: on a LAN with a ~0 ms RTT it cut a
+  199-token decision into five 48-token chunks and paid the per-call overhead
+  (GPU sync, frame encode, ~20-30 ms per hop) five times.
 - **Transport failure in prefill**: a chunk can be tried up to three times
   (`relay::CHUNK_ATTEMPTS = 3`) with a backoff of 100 ms and 200 ms, but only
   when every path proves the body was not delivered. If earlier chunks were
@@ -1428,7 +1482,9 @@ disappears"). The snapshot directory turns on a mechanism to write and reread
 that KV, equivalent to llama-server's `--slot-save-path`. It comes, in this
 precedence, from the `POM_SLOT_SAVE_PATH` variable or the `slot_save_path` field
 of `pom.json` (`Config::slot_save_path_effective`); the env var is per process
-and not persisted. The value is injected into `NodeConfig` in `apply_locked`
+and not persisted. With neither set, it is `~/.pom/kv-slots`
+(`config::default_slot_save_dir`), so every peer serves snapshots by default; an
+empty value turns the feature off. The value is injected into `NodeConfig` in `apply_locked`
 from the installation, like `cache_type_*`.
 
 - **Engine** (`llama-engine`): `LlmEngine::state_seq_save_file` /
@@ -1439,7 +1495,11 @@ from the installation, like `cache_type_*`.
   row size per layer) - a mismatch is `0` bytes, which becomes an error, never
   an abort.
 - **Peer** (`infer_server`): `POST /v1/session/slot`
-  `{action: save|restore|erase, session_id, slot_name, dest_session_id?}`.
+  `{action: save|restore|erase, session_id, slot_name, dest_session_id?}`. The
+  gateway reaches each hop (`generation::slot_call_step`) along the same path
+  as the session lifecycle: a route pinned to the tunnel goes straight through
+  it, otherwise the inference addresses and, on a transport failure, the
+  tunnel - a hop only the relay reaches also saves and restores.
   `save` writes **`prompt_seq` truncated at `prompt_len`** - never `gen_seq`,
   the volatile tail does not enter a snapshot - plus a `<name>.json` sidecar
   with the model's identity (`model_label`, layer range, `n_embd`) that
@@ -1461,6 +1521,13 @@ from the installation, like `cache_type_*`.
   an error. Operator: `GET /admin/slots`,
   `POST /admin/slots/{name}?action=save|restore|erase` (see `http-api.md`).
 
+The directory is flat and shared by every model: nothing is organised per
+model on disk. A KV state only fits the model and layer range that wrote it,
+and that is enforced per snapshot - the sidecar check above on restore, and the
+model plus hop sequence in the name of every automatic snapshot
+(`PrefixRouteKey`). Snapshots of a model no longer served stay until the TTL,
+the byte budget, or `POST /api/ui/kv-cache/clear` remove them.
+
 Restoring reproduces the same physical state as a live retained session (cells
 beyond `prompt_len` may remain in `prompt_seq`, exactly as on the normal path),
 so the next turn follows `plan_prefix_reuse`'s append-only rule unchanged.
@@ -1470,7 +1537,8 @@ no partial removal, so the mechanism applies to every served model.
 #### Persistent prefix cache (automatic)
 
 With `slot_persist_prefix_cache` on (a `pom.json` field or
-`POM_SLOT_PERSIST_PREFIX_CACHE=1`; off by default) and `slot_save_path`
+`POM_SLOT_PERSIST_PREFIX_CACHE`; on by default, a `pom.json` without the field
+reads `true`) and `slot_save_path`
 configured on **every** hop, the gateway makes the prefix cache survive restarts,
 with no manual call:
 
@@ -1509,6 +1577,50 @@ with no manual call:
   fails (a file vanished on a hop, incompatible geometry) forgets the entry and
   proceeds cold - reuse is an optimization, never a reason for the request to
   fail.
+
+### 3.1.2 Host-memory KV cache (`cache_ram_mib`)
+
+A peer has `max_sessions` live KV sequences (one by default). A retained
+session that loses its sequence - the scheduler reclaims it for another
+conversation (`evict_retained`), or the idle collector takes it (`reap_idle`) -
+used to have its KV wiped, and the conversation's next turn paid a cold
+prefill on that peer. With the host-memory cache the peer first copies the
+session's `prompt_seq` state to RAM (`LlmEngine::state_seq_get_data`,
+`InferState::park_session`) and keeps it under the same `session_id`. This is
+llama-server's `--cache-ram`: the parked entries are extra slots that cost RAM
+instead of KV context.
+
+- **Return.** On chunk 0 of a prefill that asks for `reuse_prefix`, a session
+  that is not live but is parked is copied back into a free sequence
+  (`unpark_session`, `state_seq_set_data`) as a retained session, and the turn
+  proceeds through the same append-only rule as any hit. The scheduler treats
+  the parked session as a new one, so the sequence it needs is admitted the
+  usual way. Nothing changes for the gateway, the wire or the other hops.
+- **Budget.** `cache_ram_mib` in `pom.json` or `POM_CACHE_RAM`, with the
+  llama-server values: a positive ceiling in MiB, `0` for off, absent or `-1`
+  for as much as the machine allows. Least recently parked entries leave first.
+- **The user comes first.** Whatever the setting, half of the host RAM stays
+  **available** to whoever uses the machine: a state is parked only if the host
+  still has that half available after the copy, and the cache never holds more
+  than the other half. A host whose half is under 6 GiB (less than 12 GiB of
+  RAM) parks nothing. Available memory is sampled every 2 s in the background
+  (`HostMemory`), so the parking path never waits on the operating system; a
+  host not sampled yet parks nothing.
+- **What is not parked.** A session that is not retained, has no prompt, holds
+  media or M-RoPE cells (same eligibility as a disk snapshot), or belongs to a
+  tensor-parallel group, where the ranks keep their sessions in lockstep.
+- **What forgets an entry.** `/v1/session/release`, a reset of the same
+  session id, `POST /v1/session/cache/clear`, and unloading the model: the
+  bytes belong to the loaded context and never outlive it. Surviving a restart
+  is the job of the disk snapshots above.
+- **Observability.** `/health` publishes `cache_ram`: `enabled`, `limit_bytes`
+  (`null` when the host is too small or not measured), `user_reserve_bytes`,
+  `bytes`, `entries`, `tokens` and the `parked`/`restored`/`evicted` counters.
+
+The eviction copies the KV out of the context, a multi-gigabyte read for a
+long conversation, so `run_scheduler` reclaims through `spawn_blocking`.
+Each hop parks and restores on its own; a hop that no longer has the entry
+answers as it always did for a lost session and the gateway rebuilds cold.
 
 ### 3.2 Executor selection
 
@@ -1671,6 +1783,67 @@ probability in the vector itself and keeps the smallest prefix whose mass
 reaches `top_p`; after renormalizing that nucleus, it does the multinomial draw
 with the `Mutex`-protected LCG.
 
+The overrides of the window carry three penalties, applied in llama.cpp's
+order: `repeat_penalty` scales the logit (divides a positive one, multiplies a
+negative one), then `frequency_penalty` is subtracted once per occurrence of
+the token in the window and `presence_penalty` once per distinct token. All
+three are off at 1, 0 and 0, and with all off no override is built. `min_p`,
+when positive, runs after the top-p nucleus: candidates below that fraction of
+the most likely one are dropped and the rest renormalized.
+
+The deployment forms show, in each property's description, the name llama.cpp
+gives it (`apps/frontend/src/lib/llamaCppNames.ts`); a property without one is
+POM's own. Sampler settings of llama.cpp that POM's sampler does not implement
+are absent from the forms: `typical_p`, `top_n_sigma`, XTC, mirostat and
+dynamic temperature.
+
+`reasoning_budget` is llama.cpp's `--reasoning-budget`: the tokens a thinking
+block may take, -1 for no limit (the default) and 0 to close it at once. The
+machine that samples resolves the tokens of `<think>` and `</think>` when the
+deployment is loaded. Before sampling, `forced_reasoning_token` looks at the
+tokens generated in this request: if a thinking block is open and has reached
+the budget, the end tag is returned instead of a sampled token, one token per
+step until the tag is whole, and the answer then goes on freely. A block is
+open when a start tag was generated after the last end tag, or when the request
+started inside one: thinking is on for it and the model's template ends the
+prompt with the start tag (`thinking_forced_open`, checked once by rendering
+the template), which each prefill records per session (`note_thinking`),
+because the sampling machine never sees the prompt's tokens. llama.cpp's
+`--reasoning-budget-message` has no counterpart. A model whose thinking tags
+are not `<think>` and `</think>` is not limited.
+
+DRY (`dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n`)
+is llama.cpp's sampler against repeated runs, ported to the same sparse
+overrides. For the tokens so far, it finds every earlier place where the
+current ending already appeared; the token that followed it there would extend
+a run of `match` tokens and loses `multiplier * base^(match - allowed_length)`
+from its logit once `match >= allowed_length`. A run does not reach across a
+sequence breaker: the tokens this model has for llama.cpp's default breakers
+(newline, `:`, `"`, `*`), resolved when the deployment is loaded, so the frame
+of a list or a table is not taken for a repetition. Runs are counted up to 50
+tokens and searched in the last `dry_penalty_last_n` tokens (0 is the whole
+history, capped at 8192). `dry_multiplier = 0`, the default, turns it off.
+
+`n_ubatch` is the physical micro-batch of a context under the memory fit:
+`min(n_batch, n_ubatch)`, and at most 128 on the main context of an external
+MoE executor. Its default, 512, is the value that was a constant before it
+became a deployment setting. With the fit off the micro-batch stays equal to
+`n_batch`. A smaller value shrinks the compute buffers in VRAM, including those
+of the MTP context.
+
+`seed` is where the sampler's generator starts. It is applied once, when the
+deployment is loaded (`set_sampler_seed`), and the sequence then runs on across
+requests; it is not restarted for each one, unlike llama.cpp's per-request
+seed. The default, `DEFAULT_SAMPLER_SEED` (9600629759793949339), is the fixed
+state POM has always started from. It travels as text in JSON because a browser
+cannot hold every 64-bit integer in a number.
+
+Repetition is handled by the sampler only: the penalties and DRY. An earlier gateway-side
+detector that stopped a generation after repeated windows of output
+(`finish_reason: "cycle"`, `--cycle-detection`, the `cycle_detection_*`
+deployment fields) was removed: it was not a setting any LLM engine has, and
+old deployments that still carry those fields load with them ignored.
+
 Ties at the `top_k` cut are broken by the original id and do not grow the set
 beyond K. The top-p cut also keeps only the minimal prefix, even with ties, so
 the chosen mass is observable and deterministic before the draw.
@@ -1690,45 +1863,6 @@ defaults went from about 237 us to 203 us per token and the top-k stage from
 227 us to 200 us; with `top_k` off, time went from 3.03 ms to 2.76 ms. The input
 is synthetic and times vary per host, so they are not a universal latency
 target.
-
-### 3.7 Cycle detection in the output
-
-POM picks family **C, detect and stop**, as a safety net on the gateway. Family
-**D, repeat the inference**, is incompatible with streaming: by the time the
-pattern is evident, the tokens have already reached the client and a second run
-would have to discard minutes of already sent output. Family **A** can be added
-to the sampler in the future, but a structural penalty needs tuning against
-legitimate tables, lists and code. Family **B** also stays open for a future
-intervention, but it cannot take back a token already sent nor promises to
-recover a model that became confident in the pattern.
-
-`inference/cycle.rs` watches the pieces' text after sampling, keeps a bounded
-history and looks for three equal consecutive windows. For incremented names,
-digits at the suffix of an identifier are normalized to a common mark
-(`SRS_FINAL_FULL_2`, `_3`, `_4`); separate numbers in table data stay distinct.
-The default minimum window is 32 tokens, the maximum 512, and the detector
-accepts configurable limits from 1 to 1024 tokens and from 2 to 8 repetitions.
-Confirmation requires three occurrences to reduce false positives: a table or
-list that repeats the frame with new values does not match, because the
-canonical content also changes.
-
-The detector does not change logits, temperature, `top_p`, `top_k`,
-`repeat_penalty`, `repeat_last_n`, the recurrent state or `kv_seq_budget`, and
-is not part of the protocol between peers. When it confirms a cycle, the gateway
-includes the token it just received, empties the `StopMatcher`, asks for no
-further decode round, releases the session and emits a summary with
-`partial: true` and `finish_reason: "cycle"`. `/api/generate` exposes those
-fields directly. In the OpenAI and Anthropic adapters, the specific reason goes
-in `x_pom.finish_reason` on the final frame and `x_pom.partial` is true; the
-providers' default reasons stay compatible (`stop` and `end_turn`). There is no
-silent truncation and no new inference.
-
-It is off by default; the operator turns it on with `--cycle-detection` on the
-process or by checking `cycle_detection_enabled` in the deployment
-configuration. The fields `cycle_detection_min_window_tokens`,
-`cycle_detection_max_window_tokens` and `cycle_detection_repetitions` tune the
-policy through the deploy screen's runtime parameters and are propagated to
-every peer.
 
 In TP, `handle_prefill` and `handle_step` also serialize the path of a frame with
 a single item using `tp_batch_gate`. The gateway may send that frame through the
@@ -1797,6 +1931,52 @@ same session.
 The `/health` endpoint exposes `scheduler.queue_depth`, the effective limits,
 the size and tokens of the last batch, plus the accumulated counters. That makes
 it possible to tell local queueing from network time and decode time.
+
+### 3.9 Typed decisions (`probe`)
+
+`POST /v1/systemone` (`backend/decisions.rs`) runs each typed question as one
+generation with `max_tokens=1` and a `prefill::DecisionProbe` in
+`GenerationInput::probe`. The gateway puts the labels in the head's metadata
+(`probe`) and every hop forwards them; the last peer, before sampling, reads
+the full-vocabulary softmax of the first token of each label (with and without
+a leading space, `llm::probe_candidates`) and answers `probe_result`
+(`labels`, `probabilities`, `mass`, `probe_ms`). `mass` is the share of the
+distribution that fell on the labels; `probe_ms` is that peer's forward pass
+plus the read. Probe jobs are never batched with other sessions.
+
+**Prompt order and prefix reuse.** The rendered prompt is: fixed system turn,
+then the question head (instructions and answer format), then the state as
+compact JSON or text, then the options. Everything before the state is the
+same for every request that asks this question, so `decisions.rs` uses that
+text as the prefix-cache key and sends its byte length to the head as
+`retain_prefix_bytes`. The head bounds the stable boundary of section 3.1 by
+it (`prefix::bounded_stable_len`, the same token-common-prefix measurement as
+`stable_prefix_len`, cut before the state), so the retained `prompt_seq` holds
+only the question and the next decision with the same question and a new
+state is an append-only hit. Keying by the full prompt, as chat does, could
+never hit: the state changes on every call. Questions of one request share
+only the system turn; they are not batched against each other's state. The
+ignored test `decision_prefix_tests` (run with `POM_JEV_TEST_MODEL=<gguf>`)
+checks this with a real tokenizer and chat template: with Qwen2.5-0.5B the
+head retains 64 of 112 prompt tokens and a new state reuses them, while the
+unbounded boundary reuses nothing.
+
+**Chunking.** Decisions use the same chunked prefill and in-flight window as
+chat (`prefill_chunk_tokens`, `prefill_max_inflight_chunks`). When a hop runs
+over a slow route (relay or libp2p tunnel), the hidden state of the prompt
+dominates the time to the answer; chunking overlaps compute with transfer but
+does not reduce the bytes. What reduces them is prefix reuse, a compact state
+and the wire dtype.
+
+**Trace.** On success the gateway copies `probe_result` to `RequestTrace::probe`
+and builds `RequestTrace::jev` (`DecisionProbe::trace_summary`): `enabled`,
+`question`, `question_type`, `candidates`, `labels`, `options`, normalized
+`probabilities` per label, `selected`, `selected_option`, `confidence`
+(normalized top probability), `mass`, `probe_ms`, `probe_tokens`,
+`prefill_ms` and `cache_hit_tokens`. `refresh_telemetry` expects no decode
+spans for such a trace. A decision always stops at its single token with
+`finish_reason: "length"`; the request log records that as `ok`, not
+`incomplete` (`audit_status_for_summary`).
 
 ## 4. Ring mode vs direct reply
 
@@ -1891,7 +2071,11 @@ covers both situations.
 describes itself on the way out and the caller sends separate evidence of the
 crossing. `transport_traversals` holds one entry per call, in order, with
 `transport` (`local`, `libp2p-tunnel`, `http`, `https` or `quic`),
-`transport_fallback`, time and bytes sent and received. The trace copies each
+`transport_fallback`, time and bytes sent and received. `transport_fallback`
+only marks a call that tried one transport and fell to another after a failure;
+a tunnel chosen on purpose (route pinned to it or a peer that only answers
+through it) is not a fallback. The Chat shows the sum as "transport fallback"
+(`https_fallback_calls`, an old internal name), with the reasons. The trace copies each
 entry to the matching hop and phase, without charging the residual to the first
 hop. The result does not wait for late receipts: if some evidence has not
 arrived yet, the request proceeds with `transport_trace_complete=false` and the
@@ -2117,6 +2301,22 @@ two values are equal.
   file itself did not load. See `crates/llama-engine/src/mtp.rs` for the full
   mechanics.
 
+  **Shared drafts borrow the target's embedding and output head.** Some
+  published drafts (flagged `<arch>.nextn_shared_target_tensors = true`) leave
+  `token_embd.weight` and `output.weight` out, and llama.cpp loads a draft as an
+  independent model, so such a file fails with `check_tensor_dims: tensor
+  'token_embd.weight' not found`. Before loading, `load_with_cache` passes the
+  draft through `llama_engine::mtp_draft::ready_draft_path`: a draft that has
+  `token_embd.weight` is used unchanged; otherwise a completed copy is written
+  that keeps the draft's metadata and tensors and appends the missing tensors
+  read from the node's own target file (the final slice or the whole model,
+  multipart included). The copy lives in `.mtp-drafts/` next to the target, is
+  named after the draft plus a fingerprint of both files (path, size, mtime),
+  is reused while neither changes, and replaces older copies of the same
+  draft. The original files are never written. A target without
+  `token_embd.weight` (a middle slice) is refused by name, and that reason
+  reaches `mtp_unavailable_reason`. The model catalog skips `.mtp-drafts/`.
+
   **Attaching the draft is not enough - both loading the weights and the MTP
   context can blow VRAM even when the fit already decided RAM.**
   `LoadedModel::load_mtp_draft` alone always tries VRAM (`MtpFitMode::Vram`,
@@ -2290,6 +2490,26 @@ measures the prompt (`estimate_tokens` ≈ chars/3, pessimistic) **before** any
 peer sees the prompt and refuses with a message citing the flags. `/health`
 exposes both values as `n_ctx_total` and `n_ctx_per_session`.
 
+**The session window is enforced, not just estimated.** The KV cache is
+unified (`kv_unified`), so llama.cpp lets a sequence grow beyond `n_ctx` by
+using another session's cells - and reports `n_ctx_seq = n_ctx_total`, which
+produces the warning `n_ctx_seq (...) > n_ctx_train (...) -- possible training
+context overflow` when the total exceeds the training context. The warning is
+about the whole pool; each session's window is still `n_ctx`, enforced at three
+points:
+
+- **gateway, after prefill:** `OutputBudget::within_session_window` recomputes
+  the total with the **real** prompt size (`n_ctx_per_session - prompt`). A
+  prompt denser than the 3-characters-per-token estimate (code, CJK) no longer
+  lets the generation cross the window; reaching it ends with
+  `finish_reason: "length"`.
+- **peer, at prefill:** `check_prompt_fits_session` refuses a tokenized prompt
+  that fills the whole window, leaving no room for the answer.
+- **peer, at decode:** `check_decode_fits_session` refuses to decode with the
+  session already at the window's last position - the safety net for a caller
+  that does not go through the gateway and for the head that generates ahead in
+  remote-stream.
+
 That admission applies **also on a gateway that loads no model at all**. Until
 2026-09-08 it only existed when there was a local `NodeConfig`; a gateway-only
 node let the prompt cross whole, and the peer's decode aborted the process with
@@ -2347,13 +2567,14 @@ Today there are **two numbers**, never a single one (`gateway::OutputBudget`):
 | | who decides | what it limits |
 |---|---|---|
 | **leg** (`leg`) | the deployment's `NodeConfig.max_new_tokens` | **one** backend generation |
-| **total** (`total`) | `min(request, n_ctx - prompt)` | the **whole request** |
+| **total** (`total`) | `min(request, n_ctx - prompt)`, recomputed with the real prompt after prefill | the **whole request** |
 
 Exhausting the leg does not end the answer. `gateway::note_leg_boundary` counts
 the leg and the loop keeps decoding on the **same** KV session, on the same
 connection, in the same SSE stream: nothing is re-prefilled, nothing is resent,
 the client has no way to tell the stitch apart. Only the **total** ends it, and
-only it produces `finish_reason: "length"`. `x_pom.continuation_legs` says how
+only it produces `finish_reason: "length"` - whether it is the client's
+`max_tokens` or the session window. `x_pom.continuation_legs` says how
 many legs the answer used - `1` is a single generation.
 
 That applies to `stream: true` and `stream: false` through the same path:
@@ -2419,9 +2640,6 @@ on a cut emits **only what is missing**, so a normal partial fragment and a
 terminal truncation are never confused. `x_pom` tells the truth:
 `truncated_tool_call` says whether the cut fell inside a call, and `partial` is
 `true` whenever that happened or there was a transport loss.
-
-A detected cycle is also an explicit terminal stop, but uses
-`finish_reason: "cycle"` in `x_pom`, with `partial: true`; see section 3.7.
 
 **Why there is no re-prefill.** The loop does not reopen a generation: it
 continues the one already open. The alternative - ending the leg, reopening
@@ -2595,7 +2813,7 @@ stream.
   `--skip prefix_reuse_lab`. The tests
   `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` and
   `prefix_reuse_lab::unknown_session_recovery_is_bounded` now isolate,
-  respectively, the cycle detector's budget and the cold attempt limit; the
+  respectively, the generation budget and the cold attempt limit; the
   total of frames stays determined by the prefill window.
 - **The `webui` tests that forward to a fake machine are flaky under load**
   (2026-09-03): each round of the full suite drops **one** of them, and not

@@ -65,85 +65,186 @@ fn log_early_outcome(outcome: &str, reason: &str) {
     warn!("⛔ requisição encerrada antes do plano ({outcome}): {reason}");
 }
 
-/// Wakes every idle step selected for this request at once. This is a control
-/// event on the gateway port, not an inference hop, so all peers begin their
-/// local load concurrently before the first prefill is sent. The event is
-/// idempotent if another request has already woken the same peer.
+/// Wakes every idle step selected for this request at once and waits until
+/// all of them are ready. This is a control event on the gateway port, not an
+/// inference hop, so all peers begin their local load concurrently before the
+/// first prefill is sent. The event is idempotent if another request has
+/// already woken the same peer.
+///
+/// A remote peer answers the event at once (`loading` or `ready`) and the
+/// gateway repeats it every `IDLE_RELOAD_POLL`. One call held open for the
+/// whole load depended on a connection surviving minutes of silence - a model
+/// takes longer to load than a tunnel request or an idle QUIC stream lives -
+/// and when it broke the request failed while the peer went on loading.
 const IDLE_RELOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Deadline of one `reload_model` call. It only has to carry the answer.
+const IDLE_RELOAD_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(not(test))]
+const IDLE_RELOAD_POLL: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const IDLE_RELOAD_POLL: Duration = Duration::from_millis(20);
+/// How long the gateway waits for the woken peers' announcement after they
+/// answered `ready`. The plan is rebuilt from it: an idle peer announces no
+/// runtime capabilities, so a plan made while it slept would run degraded.
+const IDLE_ANNOUNCE_WAIT: Duration = Duration::from_secs(5);
+
+fn idle_steps<'a>(
+    plan: &PipelinePlan,
+    peers: &'a [crate::network::PeerInfo],
+) -> Vec<&'a crate::network::PeerInfo> {
+    let mut idle: Vec<&crate::network::PeerInfo> = Vec::new();
+    for step in &plan.steps {
+        if let Some(peer) = peers
+            .iter()
+            .find(|peer| peer.node_id == step.node_id && peer.idle)
+        {
+            if !idle.iter().any(|known| known.node_id == peer.node_id) {
+                idle.push(peer);
+            }
+        }
+    }
+    idle
+}
 
 async fn reload_idle_pipeline(
     state: &GatewayState,
     plan: &PipelinePlan,
     peers: &[crate::network::PeerInfo],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     reload_idle_pipeline_with_timeout(state, plan, peers, IDLE_RELOAD_TIMEOUT).await
 }
 
+/// Asks one remote peer to load until it answers `ready`. A call that does not
+/// arrive is tried again - the peer may be busy starting its server - and only
+/// the peer saying the load cannot happen ends the wait.
+async fn wake_remote_peer(
+    state: &GatewayState,
+    peer: &crate::network::PeerInfo,
+    last_error: &std::sync::Mutex<Option<String>>,
+) -> anyhow::Result<()> {
+    let node_id = &peer.node_id;
+    loop {
+        let call = state
+            .control_post_json(
+                peer,
+                "/api/internal/reload_model",
+                &serde_json::json!({ "event": "reload_model" }),
+                IDLE_RELOAD_CALL_TIMEOUT,
+            )
+            .await;
+        let transient = match call {
+            Ok(response) if response.status().is_success() => {
+                let body = response
+                    .json::<serde_json::Value>()
+                    .await
+                    .unwrap_or(serde_json::Value::Null);
+                if body.get("state").and_then(|value| value.as_str()) != Some("loading") {
+                    return Ok(());
+                }
+                None
+            }
+            // The tunnel's own answer for a gateway that is not listening.
+            Ok(response) if response.status() == reqwest::StatusCode::BAD_GATEWAY => {
+                Some("HTTP 502".to_string())
+            }
+            Ok(response) => {
+                let status = response.status();
+                let reason = response
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .and_then(|body| {
+                        body.get("error")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| format!("HTTP {status}"));
+                anyhow::bail!("reload_model falhou para {node_id}: {reason}");
+            }
+            Err(error) => Some(format!("{error:#}")),
+        };
+        if let Some(reason) = transient {
+            debug!("reload_model para {node_id} ainda sem resposta: {reason}");
+            if let Ok(mut slot) = last_error.lock() {
+                *slot = Some(format!("{node_id}: {reason}"));
+            }
+        }
+        tokio::time::sleep(IDLE_RELOAD_POLL).await;
+    }
+}
+
+/// Returns whether any peer had to be woken.
 async fn reload_idle_pipeline_with_timeout(
     state: &GatewayState,
     plan: &PipelinePlan,
     peers: &[crate::network::PeerInfo],
     timeout: Duration,
-) -> anyhow::Result<()> {
-    if !plan.steps.iter().any(|step| {
-        peers
-            .iter()
-            .any(|peer| peer.node_id == step.node_id && peer.idle)
-    }) {
-        return Ok(());
+) -> anyhow::Result<bool> {
+    let idle = idle_steps(plan, peers);
+    if idle.is_empty() {
+        return Ok(false);
     }
-    let requests = plan
-        .steps
-        .iter()
-        .filter_map(|step| {
-            let peer = peers.iter().find(|peer| peer.node_id == step.node_id)?;
-            if !peer.idle {
-                return None;
-            }
-            let node_id = peer.node_id.clone();
-            if node_id == state.network.node_id {
-                let runtime = state.runtime.clone();
-                return Some(Ok(async move {
-                    runtime
-                        .reload_from_idle()
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| {
-                            anyhow::anyhow!("reload_model falhou para {node_id}: {error}")
-                        })
-                }
-                .boxed()));
-            }
-            let peer = peer.clone();
-            Some(Ok(async move {
-                let response = state
-                    .control_post_json(
-                        &peer,
-                        "/api/internal/reload_model",
-                        &serde_json::json!({ "event": "reload_model" }),
-                        timeout,
-                    )
+    let started = Instant::now();
+    info!(
+        "⏰ pipeline ociosa: acordando {} peer(s) antes do prefill ({})",
+        idle.len(),
+        idle.iter()
+            .map(|peer| peer.node_id.chars().take(8).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let last_error = std::sync::Mutex::new(None);
+    let requests = idle.iter().map(|peer| {
+        let last_error = &last_error;
+        async move {
+            if peer.node_id == state.network.node_id {
+                let node_id = &peer.node_id;
+                return state
+                    .runtime
+                    .reload_from_idle()
                     .await
-                    .map_err(|error| {
-                        anyhow::anyhow!("reload_model falhou para {node_id}: {error:#}")
-                    })?;
-                if response.status().is_success() {
-                    Ok(())
-                } else {
-                    Err(anyhow::anyhow!(
-                        "reload_model falhou para {node_id}: HTTP {}",
-                        response.status()
-                    ))
-                }
+                    .map(|_| ())
+                    .map_err(|error| anyhow::anyhow!("reload_model falhou para {node_id}: {error}"));
             }
-            .boxed()))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+            wake_remote_peer(state, peer, last_error).await
+        }
+        .boxed()
+    });
     let results = tokio::time::timeout(timeout, futures::future::try_join_all(requests))
         .await
-        .map_err(|_| anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}"))?;
+        .map_err(|_| {
+            let detail = last_error
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .map(|reason| format!(" (última falha: {reason})"))
+                .unwrap_or_default();
+            anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}{detail}")
+        })?;
     results?;
-    Ok(())
+    info!(
+        "✅ pipeline acordada em {:.1}s",
+        started.elapsed().as_secs_f64()
+    );
+    Ok(true)
+}
+
+/// After a wake, waits until the gossip shows the woken peers as loaded. A
+/// peer clears `idle` and announces its runtime capabilities when its model
+/// answers, and the plan has to be rebuilt from that announcement. Bounded: if
+/// it does not arrive the request goes on with what the admission probe reads.
+async fn wait_for_woken_announcements(state: &GatewayState, woken: &[String]) {
+    let deadline = Instant::now() + IDLE_ANNOUNCE_WAIT;
+    loop {
+        let peers = state.all_peers().await;
+        let pending = woken
+            .iter()
+            .any(|node_id| peers.iter().any(|peer| &peer.node_id == node_id && peer.idle));
+        if !pending || Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[cfg(test)]
@@ -262,6 +363,106 @@ mod reload_tests {
 
         first_task.abort();
         second_task.abort();
+    }
+
+    /// Answers `loading` until the given call, then `ready`; or a fixed 503.
+    #[derive(Clone)]
+    struct LoadingPeer {
+        calls: Arc<AtomicUsize>,
+        ready_at: usize,
+        refusal: Option<&'static str>,
+    }
+
+    async fn loading_reload(
+        State(peer): State<LoadingPeer>,
+        _body: Bytes,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let call = peer.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(reason) = peer.refusal {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "event": "reload_model", "error": reason })),
+            );
+        }
+        let state = if call >= peer.ready_at { "ready" } else { "loading" };
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "event": "reload_model", "state": state })),
+        )
+    }
+
+    async fn spawn_loading_server(peer: LoadingPeer) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("porta de teste");
+        let port = listener.local_addr().expect("endereço de teste").port();
+        let router = Router::new()
+            .route("/api/internal/reload_model", post(loading_reload))
+            .with_state(peer);
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (port, task)
+    }
+
+    /// The wake is short calls repeated until the peer is ready, never one
+    /// call held open for the whole model load.
+    #[tokio::test]
+    async fn a_loading_peer_is_asked_again_until_it_is_ready() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (port, server) = spawn_loading_server(LoadingPeer {
+            calls: calls.clone(),
+            ready_at: 3,
+            refusal: None,
+        })
+        .await;
+        let mut peer = crate::gateway::testkit::peer("idle-loading", "loading", port);
+        peer.idle = true;
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["idle-loading"]);
+
+        let woke =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
+                .await
+                .expect("o peer fica pronto na terceira resposta");
+        assert!(woke, "a pipeline estava ociosa e foi acordada");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_cannot_load_ends_the_wait_with_its_reason() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (port, server) = spawn_loading_server(LoadingPeer {
+            calls: calls.clone(),
+            ready_at: 1,
+            refusal: Some("o modelo aguarda resfriamento"),
+        })
+        .await;
+        let mut peer = crate::gateway::testkit::peer("idle-hot", "hot", port);
+        peer.idle = true;
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["idle-hot"]);
+
+        let error =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
+                .await
+                .expect_err("a recusa do peer encerra a espera");
+        assert!(error.to_string().contains("resfriamento"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "uma recusa não é repetida");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_with_no_idle_peer_is_not_woken() {
+        let peer = crate::gateway::testkit::peer("awake", "awake", 1);
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["awake"]);
+        let woke =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(1))
+                .await
+                .unwrap();
+        assert!(!woke);
     }
 
     #[tokio::test]
@@ -473,8 +674,9 @@ pub(super) async fn generate_stream_inner(
         cache_key,
         preferred_head,
         request_details: _,
+        probe,
     } = input;
-    let budget = budget.normalized();
+    let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
         log_early_outcome("cancelado", "o cliente desistiu antes do início");
         return;
@@ -508,6 +710,13 @@ pub(super) async fn generate_stream_inner(
             }
         }
     }
+    // One session's window (`n_ctx_per_session`): the same capacity the
+    // admission above uses, applied again to the total after prefill, with the
+    // real prompt size (`OutputBudget::within_session_window`).
+    let session_window = match state.runtime_capacity_for_model(Some(&model)).await {
+        (Some(capacity), false) => Some(capacity.n_ctx),
+        _ => state.runtime.config().await.map(|cfg| cfg.n_ctx),
+    };
     record_gateway_span(
         &mut gateway_spans,
         request_started,
@@ -516,109 +725,153 @@ pub(super) async fn generate_stream_inner(
         "validation",
     );
 
-    let orchestration_started = Instant::now();
-    let orchestration_wall = wall_clock_ms();
-    // O anúncio P2P pode chegar depois da carga local. A admissão devolve a
-    // fotografia executável do `/health` junto com cada peer, para que o
-    // planejador não transforme essa janela de propagação num buraco falso.
-    let peers = ready_for_pipeline(
-        &state.peer_http,
-        &state.admission_health,
-        &state.network,
-        state.all_peers().await,
-        ADMISSION_PROBE_TIMEOUT,
-    )
-    .await;
-    record_gateway_span(
-        &mut gateway_spans,
-        request_started,
-        orchestration_started,
-        orchestration_wall,
-        "orchestration",
-    );
-
     // `qwen3:8b@d-4f2a91c3` escolhe **qual** implantação atende; o nome pelado
     // deixa a escolha para quem monta o pipeline. Ver `deployment::split_selector`.
     let (model, deploy_id) = crate::deployment::split_selector(&model);
-
-    // Total layers for THIS model, as reported by a peer that serves it.
-    let total_layers = peers
-        .iter()
-        .find(|p| match deploy_id {
-            Some(id) => p.deploy_id == id,
-            None => p.model == model,
-        })
-        .map(|p| p.total_layers)
-        .unwrap_or(32);
-
-    let route_rtt = state
-        .network
-        .rtts
-        .fresh_snapshot()
-        .into_iter()
-        .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
-        .collect::<std::collections::HashMap<_, _>>();
-    let selection_started = Instant::now();
-    let selection_wall = wall_clock_ms();
     let prefix_model = format!(
         "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
         model,
         deploy_id.unwrap_or("<default>")
     );
     let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
-    // Planejamento por tempo de entrega (`fastest`): velocidade medida de cada
-    // peer, fila de toda a rede, RTT de cada aresta e o prefixo já retido.
-    // Sem nenhum caminho viável por ele, o planejador guloso de antes decide.
-    let fastest = plan_by_delivery_time(
-        &state,
-        &peers,
-        model,
-        deploy_id,
-        total_layers,
-        &route_rtt,
-        preferred_head.as_deref(),
-        &prefix_model,
-        &cache_prompt,
-        budget.total,
-        images.is_empty(),
-    )
-    .await;
-    let (planned, planned_return) = match fastest {
-        Some((plan, mode)) => (Some(plan), Some(mode)),
-        None => (
-            crate::pipeline::plan_pipeline_with_rtt_from_head(
-                &peers,
-                model,
-                deploy_id,
-                total_layers,
-                &state.loads,
-                &route_rtt,
-                preferred_head.as_deref(),
-            )
-            .await,
-            None,
-        ),
-    };
-    let Some(mut plan) = planned else {
-        let error = format!(
-            "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+
+    // Admission and planning run once, or twice when the chosen pipeline was
+    // asleep (`unload_if_idle`): the first pass finds the idle peers and wakes
+    // them, the second plans again over the pipeline that is now loaded. The
+    // plan of the first pass is not used for inference - an idle peer
+    // announces no runtime capabilities, so that plan would run degraded.
+    let mut woke_idle = false;
+    let (mut plan, planned_return) = loop {
+        let orchestration_started = Instant::now();
+        let orchestration_wall = wall_clock_ms();
+        // O anúncio P2P pode chegar depois da carga local. A admissão devolve a
+        // fotografia executável do `/health` junto com cada peer, para que o
+        // planejador não transforme essa janela de propagação num buraco falso.
+        let peers = ready_for_pipeline(
+            &state.peer_http,
+            &state.admission_health,
+            &state.network,
+            state.all_peers().await,
+            ADMISSION_PROBE_TIMEOUT,
+        )
+        .await;
+        record_gateway_span(
+            &mut gateway_spans,
+            request_started,
+            orchestration_started,
+            orchestration_wall,
+            "orchestration",
         );
-        log_early_outcome("recusado", &error);
-        let _ = tx.send(GenEvent::Failed(error)).await;
-        return;
+
+        // Total layers for THIS model, as reported by a peer that serves it.
+        let total_layers = peers
+            .iter()
+            .find(|p| match deploy_id {
+                Some(id) => p.deploy_id == id,
+                None => p.model == model,
+            })
+            .map(|p| p.total_layers)
+            .unwrap_or(32);
+
+        let route_rtt = state
+            .network
+            .rtts
+            .fresh_snapshot()
+            .into_iter()
+            .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
+            .collect::<std::collections::HashMap<_, _>>();
+        let selection_started = Instant::now();
+        let selection_wall = wall_clock_ms();
+        // Planejamento por tempo de entrega (`fastest`): velocidade medida de cada
+        // peer, fila de toda a rede, RTT de cada aresta e o prefixo já retido.
+        // Sem nenhum caminho viável por ele, o planejador guloso de antes decide.
+        let fastest = plan_by_delivery_time(
+            &state,
+            &peers,
+            model,
+            deploy_id,
+            total_layers,
+            &route_rtt,
+            preferred_head.as_deref(),
+            &prefix_model,
+            &cache_prompt,
+            budget.total,
+            images.is_empty(),
+        )
+        .await;
+        let (planned, planned_return) = match fastest {
+            Some((plan, mode)) => (Some(plan), Some(mode)),
+            None => (
+                crate::pipeline::plan_pipeline_with_rtt_from_head(
+                    &peers,
+                    model,
+                    deploy_id,
+                    total_layers,
+                    &state.loads,
+                    &route_rtt,
+                    preferred_head.as_deref(),
+                )
+                .await,
+                None,
+            ),
+        };
+        let Some(plan) = planned else {
+            let error = format!(
+                "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+            );
+            log_early_outcome("recusado", &error);
+            let _ = tx.send(GenEvent::Failed(error)).await;
+            return;
+        };
+        record_gateway_span(
+            &mut gateway_spans,
+            request_started,
+            selection_started,
+            selection_wall,
+            "pipeline_selection",
+        );
+        if woke_idle {
+            break (plan, planned_return);
+        }
+        let wake_started = Instant::now();
+        let wake_wall = wall_clock_ms();
+        let woken: Vec<String> = idle_steps(&plan, &peers)
+            .iter()
+            .map(|peer| peer.node_id.clone())
+            .collect();
+        match reload_idle_pipeline(&state, &plan, &peers).await {
+            Ok(false) => break (plan, planned_return),
+            Ok(true) => {
+                wait_for_woken_announcements(&state, &woken).await;
+                record_gateway_span(
+                    &mut gateway_spans,
+                    request_started,
+                    wake_started,
+                    wake_wall,
+                    "pipeline_wake",
+                );
+                if cancellation.is_cancelled() {
+                    log_early_outcome("cancelado", "o cliente desistiu enquanto a pipeline acordava");
+                    return;
+                }
+                woke_idle = true;
+            }
+            Err(error) => {
+                log_early_outcome("reload_model", &error.to_string());
+                let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+                return;
+            }
+        }
     };
-    if let Err(error) = reload_idle_pipeline(&state, &plan, &peers).await {
-        log_early_outcome("reload_model", &error.to_string());
-        let _ = tx.send(GenEvent::Failed(error.to_string())).await;
-        return;
-    }
-    record_gateway_span(
-        &mut gateway_spans,
-        request_started,
-        selection_started,
-        selection_wall,
-        "pipeline_selection",
-    );
+    // The window read before the wake came from peers with no loaded runtime.
+    let session_window = if woke_idle {
+        match state.runtime_capacity_for_model(Some(model)).await {
+            (Some(capacity), false) => Some(capacity.n_ctx),
+            _ => session_window,
+        }
+    } else {
+        session_window
+    };
 
     // The gateway may be a middle or tail peer. Vision is an admission fact
     // of the selected head, so only reject here when this process owns that
@@ -840,6 +1093,15 @@ pub(super) async fn generate_stream_inner(
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
     // constants baked into the protocol.
+    // The head tokenizes; the gateway only needs the size to plan chunks.
+    // About 4 bytes per token, minus what the prefix cache will reuse.
+    let estimated_new_prompt_tokens = ((prompt.len() as f64 / 4.0).ceil() as u32)
+        .saturating_sub(if reuse_prefix {
+            prefix_lease.cached_tokens
+        } else {
+            0
+        })
+        .max(1);
     let (
         chunk_tokens,
         max_inflight_chunks,
@@ -859,10 +1121,21 @@ pub(super) async fn generate_stream_inner(
             // cru do knob.
             cfg.as_ref()
                 .map(|config| {
+                    if !config.adaptive_prefill_chunks {
+                        // The operator fixed the chunk: use it as it is.
+                        return prompt_chunk_tokens(config);
+                    }
                     state.adaptive_chunk_tuner.choose(
                         &adaptive_chunk_route,
                         prompt_chunk_tokens(config),
                         config.n_batch,
+                        estimated_new_prompt_tokens,
+                        config.prefill_max_inflight_chunks as usize,
+                        if config.moe_cache_mib > 0 {
+                            super::budget::MOE_CACHE_MIN_CHUNK
+                        } else {
+                            super::budget::MIN_CHUNK
+                        },
                     )
                 })
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
@@ -915,18 +1188,6 @@ pub(super) async fn generate_stream_inner(
     };
 
     let mut stop_matcher = StopMatcher::new(stops);
-    let cycle_config = state
-        .runtime
-        .config()
-        .await
-        .map(|cfg| crate::cycle::CycleConfig {
-            enabled: cfg.cycle_detection_enabled,
-            min_window_tokens: cfg.cycle_detection_min_window_tokens as usize,
-            max_window_tokens: cfg.cycle_detection_max_window_tokens as usize,
-            repetitions: cfg.cycle_detection_repetitions as usize,
-        })
-        .unwrap_or(state.cycle_config);
-    let mut cycle_detector = crate::cycle::CycleDetector::new(cycle_config);
 
     // O evento final não pode sair antes de a sessão estar arrumada.
     //
@@ -976,6 +1237,7 @@ pub(super) async fn generate_stream_inner(
                 max_inflight_chunks,
                 resume,
                 trace_id.as_deref(),
+                probe.as_ref(),
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
@@ -1046,6 +1308,14 @@ pub(super) async fn generate_stream_inner(
         }
         let first = match prefill_result {
             Ok(mut o) => {
+                o.trace.probe = o.probe.take();
+                if let (Some(decision), Some(result)) = (probe.as_ref(), o.trace.probe.as_ref()) {
+                    o.trace.jev = Some(decision.trace_summary(
+                        result,
+                        o.trace.prefill_ms,
+                        o.cached_tokens,
+                    ));
+                }
                 o.trace.gateway_prefix_miss_reason =
                     prefix_lease.miss_reason().map(str::to_owned);
                 o.trace.prefill_chunk_tokens = chunk_tokens;
@@ -1086,8 +1356,9 @@ pub(super) async fn generate_stream_inner(
                 } else if cold_recovery_attempted {
                     "Prefill falhou: uma falha de transporte deixou incerto se o peer processou o último chunk. O sistema tentou reconstruir o contexto uma vez, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
                 } else {
-                    format!("Prefill falhou: {e}")
+                    format!("Prefill falhou: {}", crate::prefill::failure_cause(&e))
                 };
+                warn!("prefill falhou: {e:#}");
                 let _ = tx
                     .send(GenEvent::FailedWithTelemetry {
                         error: message,
@@ -1097,6 +1368,15 @@ pub(super) async fn generate_stream_inner(
                 return;
             }
         };
+
+        let windowed = budget.within_session_window(session_window, first.prompt_tokens);
+        if windowed.total < budget.total {
+            info!(
+                "output limited by the session window: {} of {} tokens (prompt {} of {:?})",
+                windowed.total, budget.total, first.prompt_tokens, session_window
+            );
+            budget = windowed;
+        }
 
         let first_token_at = Instant::now();
         let mut next_token = first.token_id;
@@ -1149,25 +1429,6 @@ pub(super) async fn generate_stream_inner(
                 return;
             }
             StopSend::Continue => {}
-        }
-        if !first.done {
-            if let Some(cycle) = cycle_detector.observe(first.token_id, &first.text) {
-                if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                    return;
-                }
-                send_cycle_summary(
-                    &tx,
-                    &plan,
-                    request_started,
-                    first_token_at,
-                    tokens_generated,
-                    legs,
-                    trace,
-                    cycle,
-                )
-                .await;
-                return;
-            }
         }
         if generation_finish_reason(budget.total, tokens_generated, first.done)
             == Some("length")
@@ -1463,6 +1724,9 @@ pub(super) async fn generate_stream_inner(
                     }
                 }
                 trace.merge(&step.trace);
+                if !remote_stream_mode {
+                    trace.note_decode_round();
+                }
 
                 // A round can confirm more tokens than remain in the budget —
                 // stream only what fits, and note it so `step.done` (which
@@ -1473,7 +1737,6 @@ pub(super) async fn generate_stream_inner(
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
-                let mut cycle_match = None;
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
@@ -1499,30 +1762,6 @@ pub(super) async fn generate_stream_inner(
                         }
                         StopSend::Continue => {}
                     }
-                    if cycle_match.is_none() {
-                        cycle_match = cycle_detector.observe(*token_id, text);
-                    }
-                    if cycle_match.is_some() {
-                        break;
-                    }
-                }
-
-                if let Some(cycle) = cycle_match {
-                    if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                        return;
-                    }
-                    send_cycle_summary(
-                        &tx,
-                        &plan,
-                        request_started,
-                        first_token_at,
-                        tokens_generated,
-                        legs,
-                        trace,
-                        cycle,
-                    )
-                    .await;
-                    return;
                 }
 
                 let finish_reason = generation_finish_reason(
@@ -1644,6 +1883,9 @@ pub(super) async fn generate_stream_inner(
             match res {
                 Ok(step) => {
                     trace.merge(&step.trace);
+                    if remote_stream.is_none() {
+                        trace.note_decode_round();
+                    }
                     if step.accepted.is_empty() {
                         let _ = tx
                             .send(GenEvent::Failed(
@@ -1656,7 +1898,6 @@ pub(super) async fn generate_stream_inner(
                         remaining_generation_steps(budget.total, tokens_generated) as usize;
                     let take = step.accepted.len().min(remaining);
                     let truncated_by_budget = take < step.accepted.len();
-                    let mut cycle_match = None;
                     for (index, (token_id, text)) in step.accepted.iter().take(take).enumerate() {
                         next_token = *token_id;
                         tokens_generated += 1;
@@ -1688,29 +1929,6 @@ pub(super) async fn generate_stream_inner(
                                 cycle_started.elapsed().as_millis() as u64,
                             );
                         }
-                        if !step.done || index + 1 < take {
-                            if let Some(cycle) = cycle_detector.observe(*token_id, text) {
-                                cycle_match = Some(cycle);
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(cycle) = cycle_match {
-                        if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                            return;
-                        }
-                        send_cycle_summary(
-                            &tx,
-                            &plan,
-                            request_started,
-                            first_token_at,
-                            tokens_generated,
-                            legs,
-                            trace,
-                            cycle,
-                        )
-                        .await;
-                        return;
                     }
                     let finish_reason = generation_finish_reason(
                         budget.total,
@@ -2086,7 +2304,7 @@ pub(super) async fn rewind_sessions(
             "/v1/session/rewind",
             &body,
             session_id,
-            REWIND_TIMEOUT,
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2145,7 +2363,7 @@ pub(super) async fn release_sessions(
             "/v1/session/release",
             &body,
             session_id,
-            Duration::from_secs(10),
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2186,7 +2404,7 @@ pub(super) async fn rollback_sessions(
             "/v1/session/rollback",
             &body,
             session_id,
-            Duration::from_secs(10),
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2238,23 +2456,109 @@ pub(super) fn plan_supports_slot_persist(plan: &PipelinePlan) -> Result<(), Stri
     Ok(())
 }
 
+/// Call to `POST /v1/session/slot` (save, restore or erase a hop's KV
+/// snapshot), along the same path as the session lifecycle
+/// (`post_session_lifecycle`): with the plan's route pinned to the tunnel,
+/// straight through it; otherwise the peer's inference addresses and, if none
+/// answers at the transport level, the tunnel. A peer only the relay reaches
+/// (Docker bridge, NAT) had no other path, and the persistent prefix cache
+/// failed on it every turn. An HTTP refusal from the peer is final on any path.
 pub(super) async fn slot_call_step(
     step: &crate::pipeline::PipelineStep,
     body: serde_json::Value,
     clients: &crate::peer_client::PeerClients,
 ) -> Result<serde_json::Value, String> {
-    let http = clients
-        .for_peer(&step.node_id)
-        .map_err(|e| format!("sem cliente para {}: {e}", step.node_id))?;
     let session_id = body
         .get("session_id")
         .or_else(|| body.get("dest_session_id"))
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.libp2p_peer_id.is_some());
+    let pinned_tunnel = crate::route_plan::book()
+        .kind_map(crate::route_plan::Plane::Inference)
+        .get(&step.node_id)
+        .is_some_and(|kind| kind == "tunnel");
+    let via_tunnel = |tunnel: &'static crate::infer_tunnel::TunnelOutboundSender| {
+        let body = body.clone();
+        let session_id = session_id.clone();
+        async move {
+            crate::relay::post_json_via_tunnel(
+                clients,
+                tunnel,
+                step,
+                "/v1/session/slot",
+                &body,
+                &session_id,
+                SLOT_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|error| {
+                let error = error.to_string();
+                if error.contains(" respondeu HTTP ") {
+                    SlotCallError::Refused(format!(
+                        "{} refused the snapshot: {error}",
+                        step.node_id
+                    ))
+                } else {
+                    SlotCallError::Unreachable(error)
+                }
+            })
+        }
+    };
+    if let (true, Some(tunnel)) = (pinned_tunnel, tunnel) {
+        return via_tunnel(tunnel)
+            .await
+            .map_err(SlotCallError::into_message);
+    }
+    match slot_call_direct(step, &body, &session_id, clients).await {
+        Ok(payload) => Ok(payload),
+        Err(SlotCallError::Unreachable(direct)) => match tunnel {
+            Some(tunnel) => via_tunnel(tunnel).await.map_err(|error| match error {
+                SlotCallError::Refused(message) => message,
+                SlotCallError::Unreachable(tunnel) => {
+                    format!("{direct}; libp2p-tunnel: {tunnel}")
+                }
+            }),
+            None => Err(direct),
+        },
+        Err(error) => Err(error.into_message()),
+    }
+}
+
+const SLOT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Why a snapshot call failed: the peer refused (final) or was not reached on
+/// that path (worth trying the next one).
+enum SlotCallError {
+    Refused(String),
+    Unreachable(String),
+}
+
+impl SlotCallError {
+    fn into_message(self) -> String {
+        match self {
+            SlotCallError::Refused(message) | SlotCallError::Unreachable(message) => message,
+        }
+    }
+}
+
+/// The peer's announced inference addresses, in route-memory order.
+async fn slot_call_direct(
+    step: &crate::pipeline::PipelineStep,
+    body: &serde_json::Value,
+    session_id: &str,
+    clients: &crate::peer_client::PeerClients,
+) -> Result<serde_json::Value, SlotCallError> {
+    let http = clients
+        .for_peer(&step.node_id)
+        .map_err(|e| SlotCallError::Unreachable(format!("no client for {}: {e}", step.node_id)))?;
+    let session_id = (!session_id.is_empty()).then_some(session_id);
     let route_key = format!("inference:{}", step.node_id);
     let mut last_error = None;
     for base in clients.route_order(&route_key, &inference_route_candidates(step)) {
         let url = format!("{}/v1/session/slot", base.trim_end_matches('/'));
-        let request = http.post(&url).json(&body).timeout(Duration::from_secs(60));
+        let request = http.post(&url).json(body).timeout(SLOT_CALL_TIMEOUT);
         let response = match clients
             .authorize_inference_request_for_session(request, session_id)
             .await
@@ -2264,34 +2568,30 @@ pub(super) async fn slot_call_step(
             Ok(response) => response,
             Err(error) => {
                 clients.remember_route_failure(&route_key, &base);
-                last_error = Some(format!("{} não respondeu: {error}", step.node_id));
+                last_error = Some(format!("{} did not answer: {error}", step.node_id));
                 continue;
             }
         };
         let status = response.status();
-        let payload: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("{} devolveu corpo ilegível: {e}", step.node_id))?;
+        let payload: serde_json::Value = response.json().await.map_err(|e| {
+            SlotCallError::Refused(format!("{} returned an unreadable body: {e}", step.node_id))
+        })?;
         if !status.is_success() {
-            return Err(format!(
-                "{} recusou o snapshot ({status}): {}",
+            return Err(SlotCallError::Refused(format!(
+                "{} refused the snapshot ({status}): {}",
                 step.node_id,
                 payload
                     .as_str()
                     .or_else(|| payload.get("error").and_then(|v| v.as_str()))
                     .unwrap_or("sem detalhe")
-            ));
+            )));
         }
         clients.remember_route_success(&route_key, &base);
         return Ok(payload);
     }
-    Err(last_error.unwrap_or_else(|| {
-        format!(
-            "{} não respondeu por nenhum endereço de inferência",
-            step.node_id
-        )
-    }))
+    Err(SlotCallError::Unreachable(last_error.unwrap_or_else(
+        || format!("{} did not answer on any inference address", step.node_id),
+    )))
 }
 
 /// Constrói o índice de disco do cache de prefixo, ou `None` quando
@@ -2705,7 +3005,7 @@ pub fn spawn_logged_generation_with_stops(
             &audit_for_begin,
             crate::reqlog::AuditEvent::Begin(begin.clone()),
             plugins_for_begin.ingest_audit_event(
-                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::plugins::LOGS_PLUGIN_CODE,
                 crate::reqlog::AuditEvent::Begin(begin),
             ),
         )
@@ -2822,7 +3122,7 @@ pub fn spawn_logged_generation_with_stops(
                 completion: completion.clone(),
             },
             plugins.ingest_audit_event(
-                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::plugins::LOGS_PLUGIN_CODE,
                 crate::reqlog::AuditEvent::Complete {
                     id: request_id,
                     completion,
@@ -2877,13 +3177,13 @@ pub(crate) fn record_rejected(
             completion: completion.clone(),
         };
         if plugins
-            .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, begin_event.clone())
+            .ingest_audit_event(crate::plugins::LOGS_PLUGIN_CODE, begin_event.clone())
             .await
         {
             audit.replicate_event(begin_event);
             if plugins
                 .ingest_audit_event(
-                    crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                    crate::plugins::LOGS_PLUGIN_CODE,
                     complete_event.clone(),
                 )
                 .await

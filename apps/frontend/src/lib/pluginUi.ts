@@ -58,6 +58,8 @@ export interface PluginUiManifest {
   menu: PluginMenuItem[];
   routes: PluginRoute[];
   screens: Record<string, PluginScreenSpec>;
+  /** Extension slots inside native screens: slot id -> key of `screens`. */
+  slots?: Record<string, string>;
   /** idioma -> asset do catálogo de textos do plugin */
   i18n?: Record<string, string>;
   /** Documentação Markdown do plugin, separada em guias e referência. */
@@ -80,6 +82,14 @@ export interface ActivePluginUi {
   code: string;
   version?: string | null;
   manifest: PluginUiManifest;
+}
+
+/** A plugin component mounted inside a native screen (see `pluginSlot`). */
+export interface ResolvedPluginSlot {
+  code: string;
+  slot: string;
+  screen: PluginScreenSpec;
+  version: string | null;
 }
 
 export interface ResolvedPluginRoute {
@@ -271,6 +281,23 @@ function normalizePlugin(
     };
   }
 
+  const SLOT_ID = /^[a-z][a-z0-9._-]{0,63}$/;
+  let slots: Record<string, string> | undefined;
+  if (manifest.slots !== undefined) {
+    if (!isRecord(manifest.slots)) return null;
+    slots = Object.create(null) as Record<string, string>;
+    for (const [slot, screen] of Object.entries(manifest.slots)) {
+      if (
+        !SLOT_ID.test(slot) ||
+        !isNonEmptyString(screen) ||
+        !Object.prototype.hasOwnProperty.call(screens, screen)
+      ) {
+        return null;
+      }
+      slots[slot] = screen;
+    }
+  }
+
   const routes: ResolvedPluginRoute[] = [];
   const routePaths = new Set<string>();
   const rawRoutes: PluginRoute[] = [];
@@ -419,6 +446,7 @@ function normalizePlugin(
       menu: rawMenu,
       routes: rawRoutes,
       screens,
+      ...(slots ? { slots: { ...slots } } : {}),
       assets: [...manifest.assets],
       ...(manifest.i18n !== undefined
         ? { i18n: { ...(manifest.i18n as Record<string, string>) } }
@@ -481,6 +509,20 @@ export function setPluginUi(plugins: readonly ActivePluginUi[] | null | undefine
 
 export function pluginUiSnapshot(): readonly ActivePluginUi[] {
   return snapshot;
+}
+
+/**
+ * The component an active plugin mounts in a native extension slot, or `null`.
+ * With several claimants the first plugin in the node's order wins, so the
+ * choice is stable across renders.
+ */
+export function pluginSlot(slot: string): ResolvedPluginSlot | null {
+  for (const { plugin } of registry) {
+    const screenName = plugin.manifest.slots?.[slot];
+    const screen = screenName ? plugin.manifest.screens[screenName] : undefined;
+    if (screen) return { code: plugin.code, slot, screen, version: plugin.version ?? null };
+  }
+  return null;
 }
 
 /** A rota de plugin mais específica que cobre este caminho, ou `null`. */

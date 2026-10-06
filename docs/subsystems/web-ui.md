@@ -196,10 +196,13 @@ does not get past that clip. The minimized choice is persisted in the browser.
   its own content scrolling inside, instead of the central column with
   `max-w-[1400px]`. `WholeModels`, `Shards` and the `RemoteModels` search became
   full-width tables; `RemoteModelCard`, the card the search used before, was
-  removed. `WholeModels` and `Shards` show a vision column/note with the
-  `mmproj` file name (`DiscoveredModel.mmproj_path`/`ShardSet.mmproj_path`,
-  resolved by the catalog with a GGUF identity and compatible dimensions) or
-  "no projector" with the refusal reason. The screen never invents the name.
+  removed. `Shards` shows, for each slice set, the vision / MTP link editor
+  (`SidecarLinkEditor`): two pickers over the compatible sidecars of every
+  machine, each option naming its machines and the full path on each, saved on
+  the principal. `WholeModels` keeps the catalog's projector column and opens
+  the same editor in a window. The deploy inspector offers the same pickers
+  (head projector, tail MTP draft) prefilled from the link, and says whether
+  the target already has the file or will copy it.
 - `/implantar` -> DeployModel (a top-level entry to put slices into service)
 - `/implantacoes` -> Deployments (the record of deployments, activating the
   default one, versions per `deploy_id`, redeploying by version or by new
@@ -324,7 +327,9 @@ the normal `NAV` projection.
   summary), Network (name and **Private** or **Public**; country and city only
   for public, because they go to pkarr and the directory) and Invitation
   (connection key, when private, and the `trust.json` to download or copy). The
-  advertised address comes suggested and sits under "Advanced". There is no
+  preferred address is optional, starts empty under "Advanced" and is only a
+  hint (IP or DNS name); `trust.json` carries no IP - a joining node finds the
+  primary by its key through pkarr. There is no
   "local-only network" or "who can access" question: private requires the key
   and the `trust.json`, public requires the `trust.json`.
 - **Node and inference, 2 steps:** Start and Join. Join looks for the
@@ -342,8 +347,12 @@ the normal `NAV` projection.
   to the network with the password `admin`; the workspace is `~/pom_workspace`.
   Everything can be adjusted later, inside POM. While the password is the
   default one, the gate does not ask for it (`useAdminSurface` logs in with it
-  when `/api/access` says `default_password`) and `DefaultPasswordNotice` shows
-  a fixed banner asking to change it in Preferences.
+  when `/api/access` says `default_password`) and the bell
+  (`Notifications.tsx`) carries a notice asking to change it in Preferences.
+  The notice is sent once per start of the node (`boot_id` of `/api/access`,
+  state in `lib/defaultPasswordNotice.ts`): opening the bell reads it, it can
+  be dismissed, and it comes back unread after a restart. Ignoring it blocks
+  nothing.
 
 The shell uses `.pom-login*` and `.pom-setup*` (`index.css`): the floating dark
 panel with the `assets/pom-mark-dark.png` mark, the `BrandLanguageSwitch`
@@ -393,9 +402,12 @@ documentation, manage its own API key and ask to join the network's processing.
 Any of the three can activate and install plugins on its own machine.
 `GET /api/ui/node` is the source the browser uses and the toolbar shows the
 label through i18n. The same snapshot carries `pom_desenv`, true only when the
-process was started with exactly `POM_DESENV=1`. `DeployModel`, History and the
-redeploy box completely hide `Configurações POM (DESENV)` ("POM settings
-(DEV)") when the flag is false. On the `/implantar` screen, Tensor, the
+process was started with exactly `POM_DESENV=1`. `DeployModel` and History
+completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", the
+inference engine and idle unloading) when the flag is false; the whole sampler
+(min-p, frequency, DRY), the seed and where MTP runs are default settings
+shown to everyone, in the deploy inspector and in History's redeploy panel
+(the same inspector, editable, on the right side of the list). On the `/implantar` screen, Tensor, the
 Simple/Complete strategies and the "Back to the node's plan" button are also
 hidden when `pom_desenv` is false. This is only local visibility: the UI and the
 backend keep the deployment values received over the network, even when the
@@ -459,9 +471,9 @@ restored on future visits. The Statistics screen uses the same aggregated
 source, but is not a tab inside Logs. Each Markdown area also has an icon-only
 expand button in the top right corner; reading opens in a large window,
 follows the global toggle and keeps the same sanitization and credential
-redaction. REQUEST and TELEMETRY keep the full JSON, with TELEMETRY separating
-the request path from the visual `ExecutionTelemetry` card, shared with the
-Chat. The loading indicator takes a slot to the left of the errors badge,
+redaction. REQUEST and TELEMETRY keep the full JSON; TELEMETRY shows the request path,
+the plugin's visual telemetry panel (the same one the Chat opens) and the raw
+JSON. The loading indicator takes a slot to the left of the errors badge,
 keeping the badge fixed on the right. Copying redacts credentials, including
 the `key` of records in `api_keys` when the value has a known secret format,
 without hiding innocent `key` fields. `in_progress`, `incomplete`, `partial`,
@@ -629,10 +641,10 @@ diagnosed. On Windows the binary creates no console, so tracing also opens
 `<project_root>/pom.log` directly; the PowerShell `*> file` redirection is not
 the reliable source in that mode. For a native reproduction, use
 `RUST_LOG=debug` and collect that `pom.log` together with
-`infer_server_<port>.log`. The `advertise_addr` suggestion uses the real
-enumeration of the interfaces: non-temporary global IPv6 first, then IPv4; it
-is only an editable suggestion and the announcement keeps redetecting the
-addresses on every cycle. A configured node's answer publishes
+`infer_server_<port>.log`. The wizard neither suggests nor requires
+`advertise_addr`: the interface enumeration (`preferred_local_advertise_ip`)
+only reports whether there is a public IPv6 (`public_ipv6_available`), and the
+announcement keeps redetecting the addresses on every cycle. A configured node's answer publishes
 `addr_candidates`, `libp2p_peer_id` and the tunnel capabilities, used by the TP
 deploy to carry the right address to each rank.
 
@@ -643,14 +655,15 @@ never the pkarr key. The local index persists labels already observed and
 accepts `geo_prefix`/`geo_suffix`, allowing candidates to be filtered before the
 HTTP probes. The `/redes-publicas` page is full-bleed, like Logs, and shows a
 table with name, organization, country/city, label, nodes, latency, VRAM,
-models and address. The local cluster's metrics are computed from
+models and reachability. **No IP is listed**: reachability comes from
+`GET /api/public/networks/locate`, which the node resolves from the publisher's
+key through pkarr (`direct`, `relayed` or `unresolved`); the details show the
+publisher key and the dedicated relays (`relay_hints`). The local cluster's metrics are computed from
 `ClusterView` when the network matches; the other fields show as unavailable
 because the current public catalog does not provide them. The trust document
 travels inside the signed federated record for a join without a secret. A
 private node queries the directory over outgoing HTTP(S), but does not use the
-private swarm to look for candidates. The listed address may still be
-unreachable, for example when it is an IPv6 announced without an external
-route. Joining a public network ends the current private network; two
+private swarm to look for candidates. Joining a public network ends the current private network; two
 simultaneous P2P networks are not supported in v1.
 
 The UI **profile** (*Menu and routes*) is not part of this math as a
@@ -701,6 +714,15 @@ machine, and there is **only one**: the Details tab stacks one per machine and
 double-clicking a card in Flow opens the same component in a
 `PeerDetailDialog`. Duplicating the presentation in both places is what is
 being avoided.
+
+The card also carries the machine's **KV cache** (`components/KvCache.tsx`):
+the disk its snapshot directory uses and the number of snapshots
+(`node.kv_cache`), the host-memory cache when a model is loaded
+(`cache_ram` from `/health`), and "Clear cache", which empties both on that
+machine only through `POST /api/ui/kv-cache/clear` after a confirmation. The
+disk line shows with or without a loaded model, because snapshots of models no
+longer served are exactly what accumulates. A node that does not publish the
+field yet draws nothing.
 
 That card is **the administrator's**, and `canSeePeerDetails`
 (`src/lib/access.ts`) says who sees it. It carries each machine's internal
@@ -861,10 +883,15 @@ time; the lines come from the admin's local replica in arrival order and the
 screen polls for new batches every second. The deployment selector sends
 `deploy_id`, allowing the same logs to be opened from a deployment in History.
 
-`Preferences.tsx` shows the "Cluster logs" panel next to TLS. The switch is
-disabled outside the principal and the backend also rejects the operation on
-those nodes. Reading the logs is available to any effective admin because the
-copy is local. State and authority come from `GET /api/ui/node`; the change
+The lines are kept by the logs plugin (`pom-plugin-logs`) on each admin; the
+POM only captures, carries them to the admins and holds the collection policy.
+Without the plugin active on this node the console says so instead of
+polling, and the Dashboard does not show the dock.
+
+`Preferences.tsx` shows the "Process logs between nodes" panel only when the
+logs plugin is active on this machine. The switch is disabled outside the
+principal, and the backend rejects turning collection on unless the plugin is
+active there; turning it off always works. Only the admins need the plugin. State and authority come from `GET /api/ui/node`; the change
 uses `POST /api/ui/network/logs` and needs no restart. The counter of entries
 dropped by the bounded queue shows above the terminal, so the screen does not
 present an incomplete view as if it were the full stream.
@@ -891,6 +918,11 @@ without forcing a re-render per token. Only the stop button or sending a new
 message aborts the previous request. The conversation keeps three things
 besides the turns:
 
+- While an answer has not started, `ChatWaitingLine` shows a line that
+  changes every few seconds (`lib/chatWaiting.ts`, texts under `chat.wait.*`).
+  The sets follow the wait: `wake` while `chat/capabilities` reports
+  `asleep` - a machine of the pipeline unloaded its model for idleness or is
+  loading it again - then `pieces`, `assemble` and `long` as the seconds pass.
 - The single file field reads `GET /api/ui/chat/capabilities`, which aggregates
   the active head and the coverage without reusing the topology the `infer`
   profile cannot query. It accepts any file type, button and drag and drop.
@@ -933,21 +965,20 @@ left the screen where it was - the menu looked like it had stopped responding.
 Whoever is already in the chat is not sent again, so equal entries do not pile
 up in the browser history.
 
-- **Run telemetry arrives collapsed** (`components/ExecutionTelemetry.tsx`): the
-  phase table and the dense network and environment sections sit below the
-  answer; opening them is one click. The summary line shows `N from cache` next
-  to the input tokens when the turn reused the previous turn's prefix
-  (`trace.cached_tokens`); it is what the pipeline **executed**, not what the
-  cache chose, and it disappears when there was no reuse - see `inference.md`,
-  section 3.1. The same section shows the `trace_id`, profile, cold/warm state,
-  the timeline of local spans, `outside_node_total_ms`,
-  `outside_node_accounted_ms` and `outside_node_unaccounted_ms`. The main
-  bottleneck is only highlighted among measurements present; time that did not
-  reach a boundary stays explicitly unattributed.
+- **Each answer shows one telemetry line** (`components/TelemetryLine.tsx`):
+  generation speed and tokens, TTFT, end-to-end total, prompt tokens and their
+  processing speed, and the pipeline. That is the whole open-source telemetry.
+  When an active plugin claims the `chat.telemetry` slot
+  (`docs/subsystems/plugins-ui.md`), its component is mounted at the end of the
+  line with the trace, timings, origin and the captured environment, and
+  provides the detailed view (in the enterprise plugin: a side panel that opens
+  a full dialog, with the animated pipeline, request waterfall, per-phase
+  breakdown, findings and JSON/AI export). The network RTT and runtime queries
+  for that environment run only while a plugin claims the slot.
   At the end of the stream, `Bubble` temporarily uses the trace, timings and
   origin from `telemetryCapture` when the final capture arrives before the
   message's immutable update. `telemetrySnapshots` keeps the full capture per
-  `messageId`, so earlier messages keep their own quick summary and closed card.
+  `messageId`, so earlier messages keep their own line and slot props.
   Once the history gets `message.trace` and `message.timings`, they stay the
   preferred source; that transition keeps the footer visible without reloading
   the page.
@@ -962,11 +993,9 @@ up in the browser history.
 `chatStream` separates `<think>` from the visible content without leaking the
 delimiter between chunks; `finishChatStream` records the summary of TTFT,
 prompt preprocessing speed, output generation speed and end-to-end total, plus
-the per-hop trace. The Chat shows those lines in the answer summary, plus
-`server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms` and the observed network
-time, before the closed card. The summary stays visible without expanding the
-telemetry and says explicitly when a rate is not measurable, as with full prefix
-reuse or a one-token answer. During the SSE, the browser measures first chunk,
+the per-hop trace. The Chat shows the basic numbers in the telemetry line; the
+remaining fields (`server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms`, network
+time) travel in the trace to the `chat.telemetry` slot. During the SSE, the browser measures first chunk,
 first token, duration, end of the last token, chunks and bytes with
 `performance.now()`; the `Date.now()` attached on receipt only serves to
 correlate with the peers' wall timestamps. No clocks of different machines are
@@ -1172,11 +1201,15 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   first new field. It has three categories, and the boundary between them is
   whose parameter it is - *Default settings* (what llama.cpp already has:
   context, sessions, max tokens, batch, prefill chunk, sampling, the
-  installation's K/V cache, disabling thinking/embeddings, speculative and
-  MTP), *POM settings* (inference engine, fit to memory, chunks in flight,
-  merging neighboring slices and hidden-state precision) and *POM settings
-  (DEV)* (inference engine, the cycle detector's three windows, its switch and
-  the MTP fallback to RAM, plus per-peer idle unloading). That section only
+  installation's K/V cache, disabling thinking/embeddings and the speculation
+  choice), *POM settings* (fit to memory, chunks in flight, merging neighboring
+  slices and hidden-state precision, plus a *Beta* group inside it with MoE
+  experts in RAM, the GPU expert cache and the automatic prefill chunk, shown
+  to everyone) and *POM settings (DEV)* (inference engine and per-peer idle
+  unloading). Default settings, POM settings and the Beta group each carry a
+  help button by their title that opens their guide from Documentation in a
+  dialog (`components/GuideDialog.tsx`, guides `config-padrao`, `config-pom`
+  and `config-beta` in `guides/deploySettings.ts`). The DEV section only
   shows up when `NodeInfo.pom_desenv` is on; without the flag the UI removes
   its controls from the DOM. The `[i]` comes **before** the name, not after:
   with names of different widths, icons to the right of the text came out
@@ -1216,9 +1249,13 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   bytes per value, while f8 and i4 are lossy. In the globals, the whole model
   facts section and its machine selector are not shown: the machine chosen on
   the map is the only one that counts for the deployment. In the globals, the
-  execution section separates lookup speculation from MTP; when MTP is checked,
-  the minimum probability starts at `0.75`, but stays a field the operator can
-  edit and the changed value goes into the deploy. The **Inference engine**
+  execution section has one **Speculation** choice - None, MTP or lookup -
+  because the gateway never runs both in the same round (with both stored, MTP
+  wins); MTP's numbers and where it runs only show with MTP chosen. A new
+  deployment starts with MTP on (`RuntimeParams` default, used only when the
+  plan supports it) and the minimum probability at `0.75`, a field the operator
+  can still edit. The vision projector and the MTP draft show one summary line;
+  the path on every machine opens in a "More info" window. The **Inference engine**
   section only shows up when the GGUF's real metadata reports more than one
   expert. The UI presents `dense` (llama.cpp) and `moe`, and sends the choice in
   whole model, sliced pipeline and Tensor Parallelism modes. The backend also

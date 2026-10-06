@@ -91,6 +91,19 @@ vi.mock("../lib/queries", () => ({
   usePeerRuntimes: () => [],
 }));
 
+// A fake plugin claiming the `chat.telemetry` slot: it prints what the Chat
+// hands it, so the test sees the slot contract rather than a real bundle.
+vi.mock("../components/PluginSlot", () => ({
+  usePluginSlot: (slot: string) => slot === "chat.telemetry"
+    ? { code: "fake", slot, screen: { module: "ui/screens.js" }, version: "1" }
+    : null,
+  PluginSlot: ({ props }: { props: { source?: string; environment?: { network?: { measurements: Array<{ rtt_ms: number }> } } } }) => (
+    <span data-testid="fake-telemetry-slot">
+      slot {props.source} {props.environment?.network?.measurements.map((m) => `${m.rtt_ms} ms`).join(",") ?? "sem rede"}
+    </span>
+  ),
+}));
+
 vi.mock("../components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,
   LogoMark: () => <div aria-hidden="true" />,
@@ -135,14 +148,14 @@ describe("telemetria do rodapé atualiza sem F5", () => {
     // The final capture must mount the footer even if the transcript patch and
     // lastStreamResult are observed in separate React commits.
     await waitFor(
-      () => expect(screen.getByText(/Telemetria da execução/)).toBeTruthy(),
+      () => expect(screen.getByTestId("telemetry-line")).toBeTruthy(),
       { timeout: 2000 },
     );
 
     // The network RTT query resolves ~30ms after the stream ends. Without a
-    // remount, this text must appear once the query settles.
+    // remount, the plugin slot must receive it once the query settles.
     await waitFor(
-      () => expect(screen.getByText(/12,5|12\.5/)).toBeTruthy(),
+      () => expect(screen.getByTestId("fake-telemetry-slot").textContent).toContain("12.5 ms"),
       { timeout: 2000 },
     );
   });
@@ -160,16 +173,20 @@ describe("telemetria do rodapé atualiza sem F5", () => {
     };
 
     await send("primeira", "oi");
-    await waitFor(() => expect(screen.getByText("12,5 ms")).toBeTruthy(), { timeout: 2000 });
+    await waitFor(
+      () => expect(screen.getByTestId("fake-telemetry-slot").textContent).toContain("12.5 ms"),
+      { timeout: 2000 },
+    );
     await send("segunda", "resposta 2");
 
     await waitFor(() => {
-      expect(screen.getAllByText(/Telemetria da execução/)).toHaveLength(2);
-      expect(screen.getAllByText("Geração")).toHaveLength(2);
-      expect(screen.getByText("gateway-1")).toBeTruthy();
-      expect(screen.getByText("gateway-2")).toBeTruthy();
-      expect(screen.getByText("12,5 ms")).toBeTruthy();
-      expect(screen.getAllByText("25 ms").length).toBeGreaterThan(0);
+      expect(screen.getAllByTestId("telemetry-line")).toHaveLength(2);
+      const slots = screen.getAllByTestId("fake-telemetry-slot").map((slot) => slot.textContent);
+      expect(slots).toHaveLength(2);
+      expect(slots[0]).toContain("gateway-1");
+      expect(slots[0]).toContain("12.5 ms");
+      expect(slots[1]).toContain("gateway-2");
+      expect(slots[1]).toContain("25 ms");
     }, { timeout: 2000 });
   });
 });

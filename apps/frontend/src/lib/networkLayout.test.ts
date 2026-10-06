@@ -134,7 +134,7 @@ describe("autoLayout", () => {
     ];
     const gateway = pipelineGatewayPosition(peers);
     expect(gateway).not.toBeNull();
-    expect(gateway!.left).toBe(404 + CARD_WIDTH + 92);
+    expect(gateway!.left).toBe(404 + CARD_WIDTH + 148);
     expect(gateway!.top + GATEWAY_HEIGHT / 2).toBe((96 + CARD_HEIGHT / 2 + 136 + CARD_HEIGHT / 2) / 2);
   });
 

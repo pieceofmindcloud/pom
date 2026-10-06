@@ -69,10 +69,6 @@ describe("DeploymentInspector idle policy", () => {
       {
         ...params,
         inference_mode: "moe",
-        cycle_detection_enabled: true,
-        cycle_detection_min_window_tokens: 7,
-        cycle_detection_max_window_tokens: 9,
-        cycle_detection_repetitions: 8,
         mtp_cpu_fallback_enabled: false,
         unload_if_idle: true,
         idle_minutes: 2,
@@ -89,10 +85,6 @@ describe("DeploymentInspector idle policy", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Disable embeddings" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       inference_mode: "moe",
-      cycle_detection_enabled: true,
-      cycle_detection_min_window_tokens: 7,
-      cycle_detection_max_window_tokens: 9,
-      cycle_detection_repetitions: 8,
       mtp_cpu_fallback_enabled: false,
       unload_if_idle: true,
       idle_minutes: 2,
@@ -147,5 +139,79 @@ describe("DeploymentInspector idle policy", () => {
       "Vision unavailable: projector ownership could not be verified. Check the GGUF model identity and projection dimensions.",
     );
     expect(screen.queryByRole("checkbox", { name: "Enable vision" })).toBeNull();
+  });
+});
+
+describe("DeploymentInspector default settings", () => {
+  it("shows the full sampler, the seed and where MTP runs without POM_DESENV", () => {
+    mount({ ...params, mtp_enabled: true, dry_multiplier: 0.8 }, vi.fn(), undefined, false);
+
+    const labels = [
+      ...["Temperature", "Top-p", "Top-k", "Min-p", "Penalty", "Frequency", "DRY base"]
+        .map((name) => screen.getByRole("spinbutton", { name })),
+      screen.getByRole("textbox", { name: "Seed" }),
+    ];
+    // Sampling keeps llama.cpp's order: candidate cuts, repetition penalties, DRY, then the seed.
+    for (let index = 1; index < labels.length; index += 1) {
+      expect(labels[index - 1].compareDocumentPosition(labels[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    const mtpProbability = screen.getByRole("spinbutton", { name: "MTP minimum probability" });
+    const placement = screen.getByRole("combobox", { name: "Where MTP runs" });
+    expect(mtpProbability.compareDocumentPosition(placement) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Unload if idle" })).toBeNull();
+  });
+});
+
+describe("DeploymentInspector DRY", () => {
+  it("shows the DRY base, allowed length and window only while the multiplier turns DRY on", () => {
+    mount({ ...params, dry_multiplier: 0 });
+    expect(screen.getByRole("spinbutton", { name: "DRY multiplier" })).toBeTruthy();
+    expect(screen.queryByRole("spinbutton", { name: "DRY base" })).toBeNull();
+    cleanup();
+    mount({ ...params, dry_multiplier: 0.8 });
+    expect(screen.getByRole("spinbutton", { name: "DRY base" })).toBeTruthy();
+  });
+});
+
+describe("DeploymentInspector Beta group", () => {
+  it("offers the experts in RAM, the GPU expert cache and the automatic prefill chunk under POM settings, without POM_DESENV", () => {
+    const onChange = mount({ ...params }, vi.fn(), undefined, false);
+    const beta = screen.getByText("Beta").closest("div")!.parentElement!;
+    fireEvent.click(screen.getByRole("checkbox", { name: "MoE experts in RAM" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ moe_experts_in_ram: true }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Expert cache on GPU (MiB)" }), { target: { value: "8000" } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ moe_cache_mib: 8000 }));
+    expect(beta.contains(screen.getByRole("checkbox", { name: "Automatic prefill chunk" }))).toBe(true);
+    // The development section keeps only the engine and the idle unload.
+    expect(screen.queryByRole("checkbox", { name: "Unload if idle" })).toBeNull();
+  });
+});
+
+describe("DeploymentInspector help", () => {
+  it("opens each category's guide in a dialog from the help button next to its title", () => {
+    mount({ ...params }, vi.fn(), undefined, false);
+    for (const [section, title] of [
+      ["Default settings", "Default deployment settings"],
+      ["POM settings", "POM settings"],
+      ["Beta", "Beta settings"],
+    ]) {
+      fireEvent.click(screen.getByRole("button", { name: `Learn more about ${section}` }));
+      const dialog = screen.getByRole("dialog", { name: title });
+      expect(dialog.textContent).toContain(title);
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    }
+  });
+
+  it("opens a reference link inside the dialog, with a way back, without leaving the screen", async () => {
+    const before = window.location.href;
+    mount({ ...params }, vi.fn(), undefined, false);
+    fireEvent.click(screen.getByRole("button", { name: "Learn more about Beta" }));
+    fireEvent.click(screen.getByRole("button", { name: /MoE experts in RAM and the GPU expert cache/ }));
+    expect(screen.getByRole("dialog", { name: "Beta settings" })).toBeTruthy();
+    await screen.findByRole("button", { name: "Back to the guide" });
+    expect(window.location.href).toBe(before);
+    fireEvent.click(screen.getByRole("button", { name: "Back to the guide" }));
+    expect(screen.getByRole("dialog").textContent).toContain("Combining them");
   });
 });

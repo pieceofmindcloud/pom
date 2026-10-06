@@ -62,7 +62,7 @@ fn split_host_port(addr: &str) -> Option<(&str, &str)> {
 /// Returned `None` for every IPv6 bootstrap before: the address was pasted into
 /// an `/ip4/` multiaddr, which never parses, so the dial was dropped without a
 /// word in the log.
-fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
+pub(crate) fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
     use std::net::IpAddr;
 
     if !is_valid_destination(addr) {
@@ -278,6 +278,133 @@ fn publish_swarm_addrs(swarm: &Swarm<DiscBehaviour>, network: &Network) {
     }
 }
 
+/// How long to wait for a dedicated relay before accepting a member relay.
+const DEDICATED_RELAY_GRACE: Duration = Duration::from_secs(15);
+/// How often the relay policy is re-evaluated.
+const RELAY_POLICY_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Relay ladder order: **dedicated first, member only as a fallback**.
+///
+/// A dedicated relay is a configured one (`relay_peers`, which includes the
+/// trust document's `relay_hints`). A member relay is any other peer offering
+/// the hop protocol - a node of the cluster itself running `--serve-relay`. A
+/// member spends the bandwidth of a node serving inference, so it only gets a
+/// reservation when no dedicated relay holds a live one and, when a dedicated
+/// relay is configured, after giving it `DEDICATED_RELAY_GRACE`. When a
+/// dedicated relay comes back, the member reservations are undone.
+struct RelayPolicy {
+    /// Circuit listeners requested from each relay. The key being present means
+    /// "already asked", so identify does not open a repeated listener.
+    listeners: HashMap<PeerId, Vec<libp2p::core::transport::ListenerId>>,
+    /// Relays with an accepted reservation and a listener still alive.
+    accepted: HashSet<PeerId>,
+    /// Member relays seen by identify, waiting for their turn.
+    pending_members: HashSet<PeerId>,
+    started: std::time::Instant,
+}
+
+impl RelayPolicy {
+    fn new() -> Self {
+        Self {
+            listeners: HashMap::new(),
+            accepted: HashSet::new(),
+            pending_members: HashSet::new(),
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn dedicated_active(&self, dedicated: &HashSet<PeerId>) -> bool {
+        self.accepted.iter().any(|peer| dedicated.contains(peer))
+    }
+
+    /// May a member relay get a reservation now?
+    fn members_allowed(&self, dedicated: &HashSet<PeerId>) -> bool {
+        !self.dedicated_active(dedicated)
+            && (dedicated.is_empty() || self.started.elapsed() >= DEDICATED_RELAY_GRACE)
+    }
+
+    /// A circuit listener closed: that relay's reservation ended.
+    fn listener_closed(&mut self, listener: libp2p::core::transport::ListenerId) {
+        let owner = self
+            .listeners
+            .iter()
+            .find(|(_, ids)| ids.contains(&listener))
+            .map(|(peer, _)| *peer);
+        if let Some(peer) = owner {
+            let ids = self
+                .listeners
+                .get_mut(&peer)
+                .expect("dono encontrado acima");
+            ids.retain(|id| *id != listener);
+            if ids.is_empty() {
+                self.listeners.remove(&peer);
+                self.accepted.remove(&peer);
+            }
+        }
+    }
+}
+
+/// Reapplies the relay policy: undoes member reservations when a dedicated
+/// relay holds one, reserves on pending members when none does, and asks
+/// connected dedicated relays that lost theirs to reserve again.
+async fn apply_relay_policy(
+    swarm: &mut Swarm<DiscBehaviour>,
+    network: &Network,
+    relay_peer_addrs: &HashSet<Multiaddr>,
+    dedicated: &HashSet<PeerId>,
+    connected_relays: &HashSet<PeerId>,
+    dialed_addrs: &HashMap<PeerId, Multiaddr>,
+    relays: &mut RelayPolicy,
+) {
+    for peer in connected_relays {
+        if !relays.listeners.contains_key(peer) {
+            reserve_circuit(
+                swarm,
+                network,
+                *peer,
+                relay_peer_addrs,
+                dialed_addrs.get(peer),
+                relays,
+            )
+            .await;
+        }
+    }
+    if relays.dedicated_active(dedicated) {
+        let members: Vec<PeerId> = relays
+            .listeners
+            .keys()
+            .filter(|peer| !dedicated.contains(peer))
+            .copied()
+            .collect();
+        for peer in members {
+            for listener in relays.listeners.remove(&peer).unwrap_or_default() {
+                swarm.remove_listener(listener);
+            }
+            relays.accepted.remove(&peer);
+            relays.pending_members.insert(peer);
+            info!(
+                "libp2p: dedicated relay active; dropping the reservation on member relay {peer}"
+            );
+        }
+    } else if relays.members_allowed(dedicated) {
+        let pending: Vec<PeerId> = relays.pending_members.drain().collect();
+        for peer in pending {
+            if swarm.is_connected(&peer) {
+                info!("libp2p: no dedicated relay holds a reservation; using member relay {peer}");
+                reserve_circuit(
+                    swarm,
+                    network,
+                    peer,
+                    relay_peer_addrs,
+                    dialed_addrs.get(&peer),
+                    relays,
+                )
+                .await;
+            }
+        }
+    }
+}
+
 /// Pede uma reserva de Circuit Relay v2 neste relé.
 ///
 /// O endereço do circuito é `<relé>/p2p-circuit`; `listen_on` nele faz o swarm
@@ -295,11 +422,12 @@ async fn reserve_circuit(
     peer_id: PeerId,
     relay_peer_addrs: &HashSet<Multiaddr>,
     dialed: Option<&Multiaddr>,
-    circuit_listens: &mut HashSet<PeerId>,
+    relays: &mut RelayPolicy,
 ) {
-    if !circuit_listens.insert(peer_id) {
+    if relays.listeners.contains_key(&peer_id) {
         return;
     }
+    relays.listeners.insert(peer_id, Vec::new());
     let peer_id_text = peer_id.to_string();
     let announced = network
         .alive_peers()
@@ -310,14 +438,17 @@ async fn reserve_circuit(
         .unwrap_or_default();
     let addresses = relay_reservation_addrs(peer_id, relay_peer_addrs, &announced, dialed);
     if addresses.is_empty() {
-        circuit_listens.remove(&peer_id);
+        relays.listeners.remove(&peer_id);
         debug!("libp2p: relé {peer_id} sem endereço discável para reservar circuito");
         return;
     }
     for address in addresses {
         let circuit = address.with(libp2p::multiaddr::Protocol::P2pCircuit);
         match swarm.listen_on(circuit.clone()) {
-            Ok(_) => info!("libp2p: reservando circuito em {circuit}"),
+            Ok(listener) => {
+                info!("libp2p: reservando circuito em {circuit}");
+                relays.listeners.entry(peer_id).or_default().push(listener);
+            }
             Err(error) => {
                 debug!("libp2p: reserva de circuito em {circuit} não iniciou: {error}")
             }
@@ -394,6 +525,10 @@ fn observed_host_port(addr: &Multiaddr) -> Option<String> {
     Some(format!("{host}:{udp_port}"))
 }
 
+/// Announces stay far below this; only an unusually large gossip message
+/// still gets IDONTWANT.
+const GOSSIP_IDONTWANT_THRESHOLD_BYTES: usize = 64 * 1024;
+
 /// How gossipsub tells two announces apart.
 ///
 /// **This has to be set, and the default is silently wrong for us.** Gossipsub
@@ -468,7 +603,7 @@ pub struct Discovery {
     /// Pares para os quais já se pediu `listen_on(.../p2p-circuit)`.
     /// `listen_on` repetido abre um listener novo a cada chamada; o identify
     /// de um mesmo relé chega muitas vezes.
-    circuit_listens: HashSet<PeerId>,
+    relays: RelayPolicy,
     /// Used only to forward an inbound tunnel request to this node's own
     /// inference server on loopback — see `infer_tunnel::serve_loopback`.
     http: reqwest::Client,
@@ -493,6 +628,7 @@ impl Discovery {
         udp_port: u16,
         bootstrap_addrs: &[String],
         relay_addrs: &[String],
+        relay_keys: &[String],
         serve_relay: bool,
         use_default_relays: bool,
         network: Arc<Network>,
@@ -523,7 +659,6 @@ impl Discovery {
             }
         }
 
-        let mdns_enabled = network.advertised_host().is_none();
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -545,6 +680,13 @@ impl Discovery {
                     // Without this, gossipsub silently stops carrying
                     // announces. See `announce_message_id`.
                     .message_id_fn(announce_message_id)
+                    // IDONTWANT saves bandwidth only for large messages. The
+                    // default threshold (1000 bytes) is below the size of a
+                    // typical announce (~1.3 KB), so every announce made each
+                    // node queue an IDONTWANT for every mesh peer; a peer
+                    // behind a slow relay or tunnel then filled its send queue
+                    // and the log repeated "Send Queue full" thousands of times.
+                    .idontwant_message_size_threshold(GOSSIP_IDONTWANT_THRESHOLD_BYTES)
                     .build()
                     .expect("gossipsub config");
                 let gossipsub = gossipsub::Behaviour::new(
@@ -558,11 +700,14 @@ impl Discovery {
                     kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
                 kademlia.set_mode(Some(kad::Mode::Server));
 
-                let mdns = mdns_enabled
-                    .then(|| mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id))
-                    .transpose()
-                    .expect("mdns init")
-                    .into();
+                // mDNS is always on: `advertise_addr` is a priority hint, not
+                // isolation, and the LAN is still the shortest path between two
+                // nodes on the same network.
+                let mdns = Some(
+                    mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
+                        .expect("mdns init"),
+                )
+                .into();
 
                 // Sem cache de endereços: por padrão o identify guarda os
                 // `listen_addrs` que cada par informa e os oferece para discar.
@@ -655,6 +800,9 @@ impl Discovery {
             }
         }
 
+        // A dedicated relay is identified by its key, not its address: a relay
+        // whose pkarr record did not resolve at startup is still dedicated
+        // when the cold dial (`main::spawn_pkarr_bootstrap`) reaches it.
         let relay_peer_ids: HashSet<PeerId> = relay_peer_addrs
             .iter()
             .filter_map(|ma| {
@@ -666,7 +814,13 @@ impl Discovery {
                     }
                 })
             })
+            .chain(
+                relay_keys
+                    .iter()
+                    .filter_map(|key| crate::pkarr_node::peer_id_from_uri(key)),
+            )
             .collect();
+        network.set_dedicated_relays(relay_peer_ids.iter().map(PeerId::to_string));
 
         for ma in &relay_peer_addrs {
             info!("libp2p: dialling relay {}", ma);
@@ -682,7 +836,7 @@ impl Discovery {
             while let Some(events) = remote_audit_rx.recv().await {
                 for event in events {
                     if !plugins
-                        .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, event.clone())
+                        .ingest_audit_event(crate::plugins::LOGS_PLUGIN_CODE, event.clone())
                         .await
                         && !remote_audit_log.try_ingest_remote_ordered(event)
                     {
@@ -710,7 +864,7 @@ impl Discovery {
             relay_peer_addrs,
             relay_peer_ids,
             connected_relays: HashSet::new(),
-            circuit_listens: HashSet::new(),
+            relays: RelayPolicy::new(),
             http: reqwest::Client::new(),
         })
     }
@@ -735,7 +889,7 @@ impl Discovery {
             relay_peer_addrs,
             relay_peer_ids,
             mut connected_relays,
-            mut circuit_listens,
+            mut relays,
             http,
         } = self;
         // Outstanding outbound tunnel calls, keyed by the id the swarm
@@ -757,12 +911,14 @@ impl Discovery {
         let mut dial_backoff = DialBackoff::default();
         let (inbound_response_tx, mut inbound_response_rx) =
             mpsc::channel::<InboundTunnelResponse>(64);
+        let mut relay_policy_tick = tokio::time::interval(RELAY_POLICY_INTERVAL);
+        relay_policy_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &mut circuit_listens, &mut dialed_addrs, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log, &remote_audit_tx, &mut dial_backoff).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &mut relays, &mut dialed_addrs, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log, &remote_audit_tx, &mut dial_backoff).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -776,10 +932,23 @@ impl Discovery {
                 }
                 ma = dial_rx.recv() => {
                     let Some(addr) = ma else { break };
+                    // The target is the trailing `/p2p/<id>` (in a circuit, the
+                    // peer after the relay). Already connected or backing off:
+                    // no new dial.
+                    let target = match addr.iter().last() {
+                        Some(libp2p::multiaddr::Protocol::P2p(peer)) => Some(peer),
+                        _ => None,
+                    };
+                    if target.is_some_and(|peer| swarm.is_connected(&peer) || dial_backoff.blocked(&peer)) {
+                        continue;
+                    }
                     info!("pkarr: dialling {}", addr);
                     if let Err(e) = swarm.dial(addr) {
                         warn!("pkarr dial: {}", e);
                     }
+                }
+                _ = relay_policy_tick.tick() => {
+                    apply_relay_policy(&mut swarm, &network, &relay_peer_addrs, &relay_peer_ids, &connected_relays, &dialed_addrs, &mut relays).await;
                 }
                 out = tunnel_rx.recv() => {
                     let Some(TunnelOutbound { peer_id, addr_candidates, request, reply }) = out else { break };
@@ -870,7 +1039,7 @@ async fn handle_event(
     relay_peer_addrs: &HashSet<Multiaddr>,
     relay_peer_ids: &HashSet<PeerId>,
     connected_relays: &mut HashSet<PeerId>,
-    circuit_listens: &mut HashSet<PeerId>,
+    relays: &mut RelayPolicy,
     dialed_addrs: &mut HashMap<PeerId, Multiaddr>,
     http: &reqwest::Client,
     pending_tunnel: &mut HashMap<
@@ -899,7 +1068,6 @@ async fn handle_event(
                 node_id,
                 deploy_id,
                 pubkey,
-                authority_pubkey,
                 addr,
                 addr_candidates,
                 model,
@@ -969,8 +1137,7 @@ async fn handle_event(
                 let peer = PeerInfo {
                     deploy_id,
                     node_id: node_id.clone(),
-                    pubkey,
-                    authority_pubkey: authority_pubkey.clone(),
+                    pubkey: pubkey.clone(),
                     cluster_id,
                     // O caminho do gossipsub nao tem endereco de origem para
                     // reescrever, e o anunciado costuma ser o literal
@@ -1030,20 +1197,10 @@ async fn handle_event(
                 }
                 network.insert_admitted_peer(peer).await;
 
-                network.trigger_cluster_logs_probe(
-                    &node_id,
-                    &authority_pubkey,
-                    cluster_logs_enabled,
-                    tls,
-                );
-                network.trigger_quic_probe(&node_id, &authority_pubkey, quic, tls);
-                network.trigger_network_chat_probe(
-                    &node_id,
-                    &authority_pubkey,
-                    network_chat_enabled,
-                    tls,
-                );
-                network.trigger_network_settings_probe(&node_id, &authority_pubkey, tls);
+                network.trigger_cluster_logs_probe(&node_id, &pubkey, cluster_logs_enabled, tls);
+                network.trigger_quic_probe(&node_id, &pubkey, quic, tls);
+                network.trigger_network_chat_probe(&node_id, &pubkey, network_chat_enabled, tls);
+                network.trigger_network_settings_probe(&node_id, &pubkey, tls);
 
                 // Warm the connection ahead of ever needing the NAT-tunnel
                 // fallback: a relay reservation / DCuTR hole-punch has time
@@ -1075,10 +1232,6 @@ async fn handle_event(
 
         // ── mDNS: LAN peer found ─────────────────────────────────────────────
         SwarmEvent::Behaviour(DiscBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-            if network.advertised_host().is_some() {
-                debug!("mDNS: ignorando endereços LAN porque advertise_addr está fixado");
-                return;
-            }
             for (peer_id, addr) in list {
                 info!("mDNS: {} at {}", peer_id, addr);
                 swarm
@@ -1144,21 +1297,34 @@ async fn handle_event(
                     .protocols
                     .iter()
                     .any(|p| *p == relay::HOP_PROTOCOL_NAME);
+            // A dedicated relay reserves right away; a member only when no
+            // dedicated relay is available (see `RelayPolicy`), otherwise it
+            // waits for the next policy round.
             if is_relay {
-                reserve_circuit(
-                    swarm,
-                    network,
-                    peer_id,
-                    relay_peer_addrs,
-                    dialed_addrs.get(&peer_id),
-                    circuit_listens,
-                )
-                .await;
+                if relay_peer_ids.contains(&peer_id) || relays.members_allowed(relay_peer_ids) {
+                    reserve_circuit(
+                        swarm,
+                        network,
+                        peer_id,
+                        relay_peer_addrs,
+                        dialed_addrs.get(&peer_id),
+                        relays,
+                    )
+                    .await;
+                } else {
+                    debug!("libp2p: member relay {peer_id} waiting: a dedicated relay exists");
+                    relays.pending_members.insert(peer_id);
+                }
             }
         }
 
         SwarmEvent::NewListenAddr { address, .. } => {
             info!("libp2p listening on {}", address);
+            publish_swarm_addrs(swarm, network);
+        }
+
+        SwarmEvent::ListenerClosed { listener_id, .. } => {
+            relays.listener_closed(listener_id);
             publish_swarm_addrs(swarm, network);
         }
 
@@ -1236,6 +1402,7 @@ async fn handle_event(
             relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },
         )) => {
             info!("Relay slot reserved on {}", relay_peer_id);
+            relays.accepted.insert(relay_peer_id);
             network.remember_reservation(&relay_peer_id.to_string());
             // A reserva vira um listener de circuito; é esse endereço que o
             // `Announce` precisa levar para o outro lado ter o que discar.
@@ -1720,6 +1887,50 @@ mod tests {
             addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
             vec![format!("/ip4/203.0.113.7/tcp/52777/p2p/{peer}")]
         );
+    }
+
+    /// A member relay only steps in when no dedicated relay is available: right
+    /// away with none configured; after the grace period with one configured;
+    /// never while a dedicated relay holds a live reservation.
+    #[test]
+    fn member_relays_wait_for_dedicated_relays() {
+        let dedicated_peer = PeerId::random();
+        let dedicated: HashSet<PeerId> = [dedicated_peer].into_iter().collect();
+        let none = HashSet::new();
+
+        let mut policy = RelayPolicy::new();
+        assert!(policy.members_allowed(&none));
+        assert!(
+            !policy.members_allowed(&dedicated),
+            "dedicated grace period"
+        );
+
+        policy.started = std::time::Instant::now() - DEDICATED_RELAY_GRACE;
+        assert!(
+            policy.members_allowed(&dedicated),
+            "dedicated relay never showed up"
+        );
+
+        policy.accepted.insert(dedicated_peer);
+        assert!(
+            !policy.members_allowed(&dedicated),
+            "dedicated relay holds a reservation"
+        );
+    }
+
+    /// Closing a relay's last listener ends its reservation.
+    #[test]
+    fn closing_the_circuit_listener_ends_the_reservation() {
+        let relay = PeerId::random();
+        let listener = libp2p::core::transport::ListenerId::next();
+        let mut policy = RelayPolicy::new();
+        policy.listeners.insert(relay, vec![listener]);
+        policy.accepted.insert(relay);
+
+        policy.listener_closed(listener);
+
+        assert!(!policy.listeners.contains_key(&relay));
+        assert!(!policy.accepted.contains(&relay));
     }
 
     /// An IPv6 bootstrap used to be dropped in silence: the address went into an

@@ -29,7 +29,7 @@ describe("useChatCapabilities", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("status").textContent).toBe(
-        JSON.stringify({ active_model: "", vision: "unavailable", coverage: "unavailable", thinking: "unavailable" }),
+        JSON.stringify({ active_model: "", vision: "unavailable", coverage: "unavailable", thinking: "unavailable", rag: "unavailable" }),
       );
     });
   });

@@ -11,12 +11,13 @@
 //!   POST /v1/session/rollback — discard an unconfirmed speculative batch
 //!   POST /v1/session/slot     - save/restore/erase a KV cache snapshot on disk
 //!                                (`--slot-save-path`, like llama-server)
+//!   POST /v1/session/cache/clear - drop the host-memory KV cache (`--cache-ram`)
 //!   GET  /health              — readiness probe
 //!
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
 //! Decode calls run in `spawn_blocking` so they don't starve the tokio runtime.
 
-pub(crate) use crate::llm::{sample_token_profiled, LlmEngine, ModelCache, SamplingConfig};
+pub(crate) use crate::llm::{sample_token_within_budget, LlmEngine, ModelCache, SamplingConfig};
 pub(crate) use crate::pipeline::PipelineStep;
 pub(crate) use crate::runtime::NodeConfig;
 pub(crate) use crate::wire::{self, TensorShape, WireDtype};
@@ -53,6 +54,8 @@ mod perf;
 mod prefill;
 #[path = "prefix.rs"]
 mod prefix;
+#[path = "ram_cache.rs"]
+mod ram_cache;
 #[path = "server.rs"]
 mod server;
 #[path = "step.rs"]
@@ -66,6 +69,7 @@ pub(crate) use direct::forward_direct_ordered;
 pub(super) use direct::*;
 pub(super) use prefill::*;
 pub(super) use prefix::*;
+use ram_cache::*;
 pub(crate) use server::http_client;
 pub(super) use server::*;
 pub(super) use step::*;

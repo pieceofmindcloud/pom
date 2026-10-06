@@ -281,7 +281,17 @@ resets the activity. It sends the authenticated `reload_model` event in
 parallel to each planned idle peer; the event is idempotent for a second
 request that wakes the same machine, and each recipient loads its own slice.
 So the first request may wait for the load, but the hops are not warmed up
-sequentially nor wait on each other. The supervisor waits for the idle
+sequentially nor wait on each other. The event answers at once (`loading` or
+`ready`) and the gateway repeats it every second until every peer is `ready`
+(15 min ceiling): one call held open for the whole load depended on a
+connection surviving minutes of silence, and when it broke the request failed
+while the peer went on loading. A waking peer keeps announcing `idle` until its
+model answers, so a second request that arrives during the load waits for it
+instead of dropping the peer from the plan. Once the pipeline is awake the
+gateway waits for the peers' announcement (up to 5 s) and runs admission and
+planning again, because an idle peer announces no runtime capabilities and a
+plan made while it slept would run degraded. The wait shows up in the trace as
+the `pipeline_wake` gateway span. The supervisor waits for the idle
 generation to shut down completely before starting the new one, and the
 model's FFI release runs off the async executor in `spawn_blocking`; the
 gateway and `/health` stay responsive during that interval. The status goes
@@ -369,6 +379,32 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   other than `99` is explicit and turns this layer fit off. In
   `tensor_parallel`, the planner normalizes `fit_memory` to off because the
   native fit does not support `split-mode tensor`.
+- **MoE experts in RAM and the GPU expert cache** (POM settings, Beta group):
+  `RuntimeParams.moe_experts_in_ram` keeps every routed expert in host memory,
+  computed by the CPU (llama.cpp's `--cpu-moe`, as a `tensor_buft_overrides`
+  entry); it turns the layer fit off, because `common_fit_params` refuses
+  overrides set before it. `RuntimeParams.moe_cache_mib` (`0` = off) becomes
+  `llama_context_params::moe_cache_size`: recently used experts held in RAM are
+  served from VRAM and only misses cross PCIe, for batches of up to 32 tokens
+  (generation; prefill keeps the regular offload). With the fit on, each node
+  first fits without the cache and keeps it only when that plan leaves routed
+  experts in host memory (`fit_plan`): a node whose experts all fit in VRAM
+  would otherwise lose expert layers and the MTP draft's room to the cache. When
+  the cache stays, the fit counts it and keeps fewer whole expert layers on the
+  GPU. When a context fails to fit with the cache, the engine retries with half
+  the cache, and turns it off once half is under 512 MiB
+  (`moe_cache_retry_mib`). Without routed experts in host memory the cache has
+  nothing to hold and changes nothing. The
+  size is per GPU: on a node with two GPUs (an RTX over CUDA and a Radeon over
+  Vulkan, say) both cards keep their share of the layers in VRAM and each one
+  caches the experts of its own layers (one cache per device in the fork).
+  While the cache is on, the gateway's adaptive prefill chunk never goes below
+  64 tokens (`MOE_CACHE_MIN_CHUNK`): a 32-token chunk is a generation batch for
+  the cache and thrashed it. `RuntimeParams.adaptive_prefill_chunks` (POM
+  settings, Beta group, on by default) turns the adaptive chunk off, so every prompt
+  goes in chunks of exactly `prefill_chunk_tokens`. Measured on a whole
+  Qwen3.8-Flash-Next UD-IQ3_XXS (78 GB) with one 16 GB GPU: generation 14.95 ->
+  19.26 tok/s with all experts in RAM and an 8000 MiB cache.
 - **A slice that exists on no machine** -> `blocked` ("slice L{}-{} exists on
   no machine in the cluster"). `plan.blocked` and empty `steps` are the two
   400 refusals of `deploy`.
@@ -429,6 +465,39 @@ image into a hidden state; the following peers receive that state and never
 touch the raw image. Before starting the server, `NodeConfig::validate`
 rereads the headers and refuses a dimensional mismatch or a contradictory GGUF
 identity, including on a path persisted by an old configuration.
+
+### Sidecars: vision projector and MTP draft anywhere in the network
+
+A projector or an external MTP draft rarely sits next to the file a peer
+loads: a slice lives in the shard folder, and the sidecars stay in a models
+folder, often the folder of another quantization. Three pieces handle that.
+
+- **Inventory.** Each node's catalog lists `sidecars` (`catalog::Sidecar`)
+  under the shard folder and the GGUF libraries, read from the header: a
+  projector has `general.architecture == "clip"`; an MTP draft has
+  `<arch>.nextn_predict_layers > 0`, no split and at most
+  `MTP_DRAFT_MAX_TENSORS` tensors (the `mtp-` prefix is only a hint, because a
+  draft's `general.name` may say nothing about its model). Sidecars are never
+  listed as models. `Sidecar::compatible_with` is the one rule: a projector
+  matches the model's `embedding_length`; a draft also its architecture.
+- **Link.** `SidecarLink` (`model_key`, `kind`, `mode` = file / embedded /
+  none, file name + size) is kept on the principal in `model_sidecar_links`.
+  `model_key` is the model label, the same string for a slice set
+  (`model_label`) and a whole model (`name`). A file is named by name + size,
+  never by path, because each machine keeps it in its own folder.
+- **Plan and launch.** `deploy::attach_sidecars` resolves the screen's choice
+  (`DeployRequest.vision_choice` / `mtp_choice`) or else the link: the head
+  gets the projector, the tail gets the MTP draft. A target that already has a
+  file with that name and size uses it; otherwise a holder is chosen, the copy
+  joins `transfer_bytes` and the `pulls` of `lifecycle::run` (by path, landing
+  in the target's `recebidos/` folder), and a file nobody has blocks the plan
+  naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
+  `mtp_draft_file`; the target resolves them on its own disk at apply time
+  (`catalog::find_local_sidecar`), so a file copied a moment ago is found
+  without waiting for the catalog cache. A model without `nextn` reports MTP as
+  supported when a compatible draft exists anywhere in the network. With no
+  choice and no link, the old defaults apply: the catalog's sibling projector
+  and the `mtp-` sibling of the loaded file.
 
 ### The model and its size
 

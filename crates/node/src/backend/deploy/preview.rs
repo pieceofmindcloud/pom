@@ -54,6 +54,19 @@ pub(super) async fn plan_endpoint(
             }
         }
     }
+    let (links, links_stale) = crate::webui::load_sidecar_links(&state).await;
+    attach_sidecars(
+        &mut p,
+        &machines,
+        &survey.sidecars,
+        survey.model_shape.as_ref(),
+        &links,
+        links_stale,
+        req.vision,
+        req.vision_choice.as_ref(),
+        true,
+        req.mtp_choice.as_ref(),
+    );
     if let Some(reason) = survey.metadata_pending {
         p.blocked = Some(reason);
     }

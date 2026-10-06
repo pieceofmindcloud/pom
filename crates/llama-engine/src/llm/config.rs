@@ -103,6 +103,11 @@ pub struct EngineConfig {
     /// este campo é somente a reserva de segurança configurável.
     pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
+    /// The physical micro-batch (llama.cpp's `n_ubatch`) while the memory fit
+    /// is on: the context decodes at most this many tokens at once, and its
+    /// compute buffers are sized for it. Never more than `n_batch`. With the
+    /// fit off the micro-batch is the batch, as before.
+    pub n_ubatch: u32,
     pub n_gpu_layers: i32,
     pub n_threads: i32,
     pub max_sessions: u32,
@@ -116,6 +121,15 @@ pub struct EngineConfig {
     /// Permite recuar o bloco `nextn` para pesos e cache na RAM se a tentativa
     /// com a VRAM falhar. Só é lido quando `mtp` está ligado.
     pub mtp_cpu_fallback_enabled: bool,
+    /// Where the deployment wants the MTP block. See `crate::MtpPlacement`.
+    pub mtp_placement: crate::MtpPlacement,
+    /// Keep every routed MoE expert in host memory, computed by the CPU
+    /// (llama.cpp's `--cpu-moe`). The memory fit is skipped: it refuses
+    /// overrides set before it.
+    pub moe_experts_in_ram: bool,
+    /// GPU cache, in MiB, for the MoE experts kept in host memory
+    /// (`llama_context_params::moe_cache_size`); `0` disables it.
+    pub moe_cache_mib: u32,
     /// Quantos snapshots de estado recorrente manter por sequência
     /// (`llama_context_params::n_rs_seq`), para permitir desfazer um
     /// rascunho especulativo recusado num modelo híbrido/recorrente
@@ -230,7 +244,7 @@ pub(super) const FIT_MIN_CONTEXT: u32 = 4096;
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
-pub(super) const FIT_MAX_UBATCH: u32 = 512;
+pub(super) const FIT_MAX_UBATCH: u32 = crate::DEFAULT_N_UBATCH;
 /// Exceção aprovada para o contexto principal que usa o executor externo de
 /// MoE. O microlote menor devolve VRAM ao cache residente; não é a política
 /// do contexto denso nem do MTP, que continuam em `FIT_MAX_UBATCH`.
@@ -323,29 +337,88 @@ pub(super) fn mtp_mode_for_nextn_availability(
     }
 }
 
-/// O fit conjunto só pode habilitar o MTP se conservar o encaixe integral que
-/// o modelo principal obteve sozinho. `common_fit_params` usa a mesma contagem
-/// para as camadas principais e as camadas `nextn`; aceitar um resultado
-/// reduzido aqui faria o sufixo MTP empurrar camadas principais para a CPU.
+/// Decides where MTP goes once the joint fit answered.
+///
+/// By default the joint fit may only enable MTP in VRAM if it keeps the full
+/// offload the main model got on its own: `common_fit_params` counts the main
+/// layers and the `nextn` layers together, and accepting a reduced result
+/// would let the MTP suffix push main layers to the CPU. MTP then goes to host
+/// memory.
+///
+/// With `mtp_first` (the deployment placed MTP in VRAM), MTP owns
+/// its share of VRAM: any joint fit that succeeded is accepted, and the main
+/// model takes what is left, giving up layers to host memory if it has to.
 pub(super) fn choose_mtp_fit_mode(
     requested: MtpFitMode,
     primary_gpu_layers: i32,
     mtp_gpu_layers: Option<i32>,
+    mtp_first: bool,
 ) -> MtpFitMode {
     match requested {
         MtpFitMode::Disabled => MtpFitMode::Disabled,
         MtpFitMode::Vram if primary_gpu_layers == -1 && mtp_gpu_layers == Some(-1) => {
             MtpFitMode::Vram
         }
+        MtpFitMode::Vram if mtp_first && mtp_gpu_layers.is_some() => MtpFitMode::Vram,
         MtpFitMode::Vram | MtpFitMode::Ram => MtpFitMode::Ram,
     }
 }
 
-pub(super) fn mtp_mode_without_gpu_fit(requested: MtpFitMode) -> MtpFitMode {
+/// The MTP mode when no GPU fit ran (experts kept in RAM, explicit GPU layers,
+/// or a fit that found nothing). Without a plan to protect, MTP goes to host
+/// memory - unless the deployment placed it in VRAM, which is then honored: the
+/// load still falls back to RAM if the VRAM context really fails.
+pub(super) fn mtp_mode_without_gpu_fit(requested: MtpFitMode, placement: crate::MtpPlacement) -> MtpFitMode {
     match requested {
         MtpFitMode::Disabled => MtpFitMode::Disabled,
+        MtpFitMode::Vram if placement == crate::MtpPlacement::Vram => MtpFitMode::Vram,
         MtpFitMode::Vram | MtpFitMode::Ram => MtpFitMode::Ram,
     }
+}
+
+/// What the compute buffers of an external MTP draft context are allowed for
+/// in the fit. The draft runs one block over a `n_ubatch` batch; 510 MiB was
+/// measured for a Qwen NextN block with `n_ubatch = 512`.
+const EXTERNAL_MTP_DRAFT_COMPUTE_BYTES: usize = 512 << 20;
+
+/// Device memory an external MTP draft needs besides its KV: its weights,
+/// taken as the size of the file that is really loaded (an upper bound: the
+/// token embedding in it stays in host memory), plus its compute buffers.
+/// A shared draft is loaded as its completed copy, which carries the target's
+/// embedding and output head and is larger than the draft itself (1.8 GB
+/// became 2.7 GB), so that copy is what is measured. `None` when there is no
+/// external draft or its file cannot be read.
+pub(super) fn external_mtp_draft_bytes(
+    draft_path: Option<&str>,
+    target_path: &str,
+) -> Option<usize> {
+    let draft = std::path::Path::new(draft_path?);
+    let loaded = crate::mtp_draft::ready_draft_path(draft, std::path::Path::new(target_path))
+        .unwrap_or_else(|_| draft.to_path_buf());
+    let size = std::fs::metadata(loaded).ok()?.len();
+    usize::try_from(size)
+        .ok()?
+        .checked_add(EXTERNAL_MTP_DRAFT_COMPUTE_BYTES)
+}
+
+/// Adds the external draft's weights and compute to the device its block is
+/// loaded on: the one that holds the last NextN layer's KV, which is the last
+/// device with a cost, or the last device when the KV costs nothing.
+pub(super) fn with_external_mtp_draft(
+    mut costs: Vec<usize>,
+    draft_bytes: Option<usize>,
+) -> Vec<usize> {
+    let Some(draft_bytes) = draft_bytes else {
+        return costs;
+    };
+    let device = costs
+        .iter()
+        .rposition(|&cost| cost > 0)
+        .or(costs.len().checked_sub(1));
+    if let Some(device) = device {
+        costs[device] = costs[device].saturating_add(draft_bytes);
+    }
+    costs
 }
 
 pub(super) fn fit_memory_margins_with_mtp(
@@ -691,11 +764,15 @@ mod fit_memory_margin_tests {
             fit_memory: true,
             fit_memory_margin_mb: 256,
             n_batch: 128,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: DEFAULT_GPU_LAYERS,
             n_threads: 0,
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -753,6 +830,43 @@ mod fit_memory_margin_tests {
                 tensor_split: vec![7.5, 3.5],
             })
         );
+    }
+
+    #[test]
+    fn an_external_mtp_draft_is_reserved_on_the_device_of_its_block() {
+        // The KV of the last NextN layer is on device 1: the draft goes there.
+        assert_eq!(
+            with_external_mtp_draft(vec![0, 160], Some(3000)),
+            vec![0, 3160]
+        );
+        assert_eq!(
+            with_external_mtp_draft(vec![160, 0], Some(3000)),
+            vec![3160, 0]
+        );
+        // No KV cost (host KV): the last device, where the final layers are.
+        assert_eq!(
+            with_external_mtp_draft(vec![0, 0], Some(3000)),
+            vec![0, 3000]
+        );
+        // A draft inside the model itself reserves nothing extra.
+        assert_eq!(with_external_mtp_draft(vec![0, 160], None), vec![0, 160]);
+        assert_eq!(
+            with_external_mtp_draft(Vec::new(), Some(3000)),
+            Vec::<usize>::new()
+        );
+
+        assert_eq!(external_mtp_draft_bytes(None, "/models/target.gguf"), None);
+        assert_eq!(
+            external_mtp_draft_bytes(Some("/nonexistent/draft.gguf"), "/models/target.gguf"),
+            None
+        );
+        // A file that is not a readable draft is measured as it is.
+        let draft =
+            std::env::temp_dir().join(format!("pom-draft-size-{}.gguf", std::process::id()));
+        std::fs::write(&draft, vec![0u8; 4096]).unwrap();
+        let bytes = external_mtp_draft_bytes(draft.to_str(), "/models/target.gguf");
+        std::fs::remove_file(&draft).unwrap();
+        assert_eq!(bytes, Some(4096 + EXTERNAL_MTP_DRAFT_COMPUTE_BYTES));
     }
 
     #[test]
@@ -846,7 +960,7 @@ mod fit_memory_margin_tests {
         // Reproduz a inversão de 27fda8b: o fit principal cabe inteiro, mas
         // o fit conjunto só cabe se remover camadas. Nesse caso o MTP cede.
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(50)),
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(50), false),
             MtpFitMode::Ram
         );
     }
@@ -854,11 +968,11 @@ mod fit_memory_margin_tests {
     #[test]
     fn mtp_em_vram_so_e_aceito_quando_o_fit_conjunto_tambem_cabe() {
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(-1)),
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(-1), false),
             MtpFitMode::Vram
         );
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, -1, None),
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, None, false),
             MtpFitMode::Ram
         );
     }
@@ -866,15 +980,38 @@ mod fit_memory_margin_tests {
     #[test]
     fn principal_reduzido_nao_da_direito_ao_mtp_na_vram() {
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Vram, 50, Some(-1)),
+            choose_mtp_fit_mode(MtpFitMode::Vram, 50, Some(-1), false),
             MtpFitMode::Ram
+        );
+    }
+
+    #[test]
+    fn mtp_placed_in_vram_keeps_its_vram_and_the_model_takes_the_rest() {
+        // The joint fit had to take main layers off the GPU: accepted.
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(40), true),
+            MtpFitMode::Vram
+        );
+        // Even when the main model alone was already partly in host memory.
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, 30, Some(26), true),
+            MtpFitMode::Vram
+        );
+        // No joint fit at all: there is nothing to accept.
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, None, true),
+            MtpFitMode::Ram
+        );
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Disabled, -1, Some(-1), true),
+            MtpFitMode::Disabled
         );
     }
 
     #[test]
     fn mtp_desligado_mantem_a_distribuicao_do_fit_principal() {
         assert_eq!(
-            choose_mtp_fit_mode(MtpFitMode::Disabled, 50, Some(50)),
+            choose_mtp_fit_mode(MtpFitMode::Disabled, 50, Some(50), false),
             MtpFitMode::Disabled
         );
     }
@@ -918,6 +1055,42 @@ mod fit_memory_margin_tests {
         b
     }
 
+    /// The cache stays only where the fit sent routed experts to host memory.
+    #[test]
+    fn a_plan_keeps_experts_in_host_only_with_an_exps_override() {
+        let mut plan = empty_fit_plan(&cfg_for_fit_plan());
+        assert!(!plan_keeps_experts_in_host(&plan));
+        plan.tensor_buft_overrides = vec![
+            sys::llama_model_tensor_buft_override { pattern: c"blk\\.3\\.ffn_(up|down|gate_up|gate)_(ch|)exps".as_ptr(), buft: ptr::null_mut() },
+            sys::llama_model_tensor_buft_override { pattern: ptr::null(), buft: ptr::null_mut() },
+        ];
+        assert!(plan_keeps_experts_in_host(&plan));
+        plan.tensor_buft_overrides = vec![
+            sys::llama_model_tensor_buft_override { pattern: c"blk\\.3\\.attn_q".as_ptr(), buft: ptr::null_mut() },
+        ];
+        assert!(!plan_keeps_experts_in_host(&plan));
+    }
+
+    /// Without a GPU fit (experts kept in RAM), MTP placed in VRAM stays there.
+    #[test]
+    fn mtp_placed_in_vram_is_honored_without_a_gpu_fit() {
+        use crate::MtpPlacement;
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Vram, MtpPlacement::Vram), MtpFitMode::Vram);
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Vram, MtpPlacement::Auto), MtpFitMode::Ram);
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Ram, MtpPlacement::Ram), MtpFitMode::Ram);
+        assert_eq!(mtp_mode_without_gpu_fit(MtpFitMode::Disabled, MtpPlacement::Vram), MtpFitMode::Disabled);
+    }
+
+    /// A cache that does not fit is halved until it does, then turned off.
+    #[test]
+    fn the_moe_cache_halves_then_turns_off() {
+        let mut steps = vec![8000];
+        while *steps.last().unwrap() > 0 {
+            steps.push(moe_cache_retry_mib(*steps.last().unwrap()));
+        }
+        assert_eq!(steps, vec![8000, 4000, 2000, 1000, 0]);
+    }
+
     fn cfg_for_fit_plan() -> EngineConfig {
         EngineConfig {
             n_ctx: 4096,
@@ -932,11 +1105,15 @@ mod fit_memory_margin_tests {
             fit_memory: false,
             fit_memory_margin_mb: 256,
             n_batch: 128,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: DEFAULT_GPU_LAYERS,
             n_threads: 0,
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -1047,7 +1224,25 @@ pub(super) struct FitPlan {
 }
 
 pub(super) fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
-    cfg.fit_memory && cfg.n_gpu_layers == DEFAULT_GPU_LAYERS
+    cfg.fit_memory && cfg.n_gpu_layers == DEFAULT_GPU_LAYERS && !cfg.moe_experts_in_ram
+}
+
+/// llama.cpp's `LLM_FFN_EXPS_REGEX`: the routed expert tensors `--cpu-moe`
+/// sends to the CPU buffer.
+pub(super) const MOE_EXPERTS_PATTERN: &std::ffi::CStr = c"\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
+
+/// The next MoE expert cache size to try after a context failed to fit: half,
+/// and off once half is under 512 MiB (fewer slots than that rarely hold the
+/// experts of one token).
+pub(super) fn moe_cache_retry_mib(mib: u32) -> u32 {
+    let half = mib / 2;
+    if half < 512 { 0 } else { half }
+}
+
+/// The cache size llama.cpp takes in bytes, from the deployment's MiB. It is
+/// per GPU: with several GPUs each one caches the experts of its own layers.
+pub(super) fn moe_cache_bytes(cfg: &EngineConfig) -> usize {
+    cfg.moe_cache_mib as usize * 1024 * 1024
 }
 
 pub(super) fn empty_fit_plan(cfg: &EngineConfig) -> FitPlan {
@@ -1125,15 +1320,39 @@ pub fn effective_mtp_n_ubatch(cfg: &EngineConfig) -> u32 {
 fn effective_n_ubatch_with_limit(cfg: &EngineConfig, external_moe: bool) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
+        let chosen = cfg.n_ubatch.max(1);
         let limit = if external_moe {
-            MOE_EXTERNAL_MAX_UBATCH
+            MOE_EXTERNAL_MAX_UBATCH.min(chosen)
         } else {
-            FIT_MAX_UBATCH
+            chosen
         };
         n_batch.min(limit)
     } else {
         n_batch
     }
+}
+
+/// Quantos threads de CPU o llama.cpp usa num contexto.
+///
+/// Sem valor configurado (`n_threads <= 0`), o POM usa todos os threads que o
+/// processo tem disponíveis na máquina onde roda: `available_parallelism`
+/// respeita a afinidade e a cota de CPU do container. O padrão do llama.cpp é
+/// um número fixo e pequeno, que deixa a CPU quase ociosa justamente quando
+/// parte das camadas não coube na VRAM e roda nela.
+pub fn effective_n_threads(requested: i32) -> i32 {
+    if requested > 0 {
+        return requested;
+    }
+    std::thread::available_parallelism()
+        .map(|threads| i32::try_from(threads.get()).unwrap_or(i32::MAX))
+        .unwrap_or(1)
+}
+
+/// Aplica `effective_n_threads` à geração e ao lote do contexto.
+pub fn apply_thread_params(cparams: &mut sys::llama_context_params, cfg: &EngineConfig) {
+    let threads = effective_n_threads(cfg.n_threads);
+    cparams.n_threads = threads;
+    cparams.n_threads_batch = threads;
 }
 
 /// Aplica a política de lote público e microlote do contexto principal.
@@ -1149,7 +1368,49 @@ pub fn apply_mtp_context_batch_params(cparams: &mut sys::llama_context_params, c
     cparams.n_ubatch = effective_mtp_n_ubatch(cfg);
 }
 
+/// The memory fit, with the MoE expert cache only where it pays.
+///
+/// The cache size is one value for the whole deployment, but it only helps a
+/// node whose experts do not all fit in VRAM: elsewhere it pushes expert layers
+/// out of the GPU just to serve some of them back, and takes the VRAM other
+/// contexts (the MTP draft) needed. So the fit runs first without the cache,
+/// and the cache is kept only when that plan leaves routed experts in host
+/// memory.
 pub(super) fn fit_plan(
+    model_path: &str,
+    cfg: &EngineConfig,
+    mtp_mode: MtpFitMode,
+) -> Result<FitPlan> {
+    if cfg.moe_cache_mib == 0 || !fit_can_adjust_layers(cfg) {
+        return fit_plan_with_cache(model_path, cfg, mtp_mode);
+    }
+    let without_cache = EngineConfig {
+        moe_cache_mib: 0,
+        ..cfg.clone()
+    };
+    let plan = fit_plan_with_cache(model_path, &without_cache, mtp_mode)?;
+    if plan.applied && !plan_keeps_experts_in_host(&plan) {
+        tracing::info!(
+            moe_cache_mib = cfg.moe_cache_mib,
+            "cache de experts do MoE desligado neste nó: todos os experts cabem na VRAM"
+        );
+        return Ok(plan);
+    }
+    fit_plan_with_cache(model_path, cfg, mtp_mode)
+}
+
+/// Whether a fitted plan sends routed MoE experts to host memory: the fit
+/// does it with `tensor_buft_overrides` on the `*_exps` tensors.
+pub(super) fn plan_keeps_experts_in_host(plan: &FitPlan) -> bool {
+    plan.tensor_buft_overrides.iter().any(|entry| {
+        !entry.pattern.is_null()
+            && unsafe { std::ffi::CStr::from_ptr(entry.pattern) }
+                .to_str()
+                .is_ok_and(|pattern| pattern.contains("exps"))
+    })
+}
+
+fn fit_plan_with_cache(
     model_path: &str,
     cfg: &EngineConfig,
     mtp_mode: MtpFitMode,
@@ -1216,7 +1477,7 @@ pub(super) fn fit_plan(
         }
         return Ok(empty_fit_plan_with_mtp_mode_and_reason(
             cfg,
-            mtp_mode_without_gpu_fit(mtp_mode),
+            mtp_mode_without_gpu_fit(mtp_mode, cfg.mtp_placement),
             mtp_unavailable_reason,
         ));
     }
@@ -1292,10 +1553,17 @@ pub(super) fn fit_plan(
         .iter()
         .map(Option::as_deref)
         .collect::<Vec<_>>();
-    let ordered_devices = device_placement::confident_slow_to_fast_order_for_backends(
+    let total_memories = device_memories
+        .iter()
+        .map(|memory| memory.total_bytes as u64)
+        .collect::<Vec<_>>();
+    let ordered_devices = device_placement::largest_memory_first_order_for_backends(
+        &total_memories,
         &speed_scores,
         &backend_name_refs,
     )
+    // A partial memory snapshot names fewer devices than there are: no order.
+    .filter(|order| order.len() == available_devices.len())
     .filter(|order| {
         order
             .iter()
@@ -1320,8 +1588,9 @@ pub(super) fn fit_plan(
         tracing::info!(
             device_backend_names = ?backend_names,
             device_speed_scores = ?speed_scores,
-            speed_order_applied = !ordered_devices.is_empty(),
-            "llama.cpp fit sondou a velocidade relativa dos dispositivos"
+            device_total_bytes = ?total_memories,
+            memory_order_applied = !ordered_devices.is_empty(),
+            "llama.cpp fit ordenou os dispositivos pela memória (velocidade só desempata)"
         );
     }
     let fit_memories = device_memories
@@ -1392,6 +1661,11 @@ pub(super) fn fit_plan(
         apply_cache_types(&mut params, cfg.cache_type_k, cfg.cache_type_v);
         params.embeddings = cfg.need_embeddings;
         params.n_rs_seq = cfg.rs_seq_window;
+        // The fit has to count the expert cache, or it fills the VRAM the
+        // cache is allocated from at context creation. `mtp` here is the main
+        // context sized for MTP's batch (the joint fit), not the draft's own
+        // context, so it carries the cache too.
+        params.moe_cache_size = moe_cache_bytes(cfg);
         params
     };
 
@@ -1426,19 +1700,22 @@ pub(super) fn fit_plan(
         );
         return Ok(empty_fit_plan_with_mtp_mode_and_reason(
             cfg,
-            mtp_mode_without_gpu_fit(mtp_mode),
+            mtp_mode_without_gpu_fit(mtp_mode, cfg.mtp_placement),
             mtp_unavailable_reason,
         ));
     }
 
     let primary_gpu_layers = primary_mparams.n_gpu_layers;
-    let mut selected_mtp_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, None);
+    // The deployment placed MTP in VRAM: it gets its share first and the main
+    // model fits in the rest.
+    let mtp_first = cfg.mtp_placement == crate::MtpPlacement::Vram;
+    let mut selected_mtp_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, None, mtp_first);
     let mut selected_n_gpu_layers = primary_mparams.n_gpu_layers;
     let mut selected_n_ctx = primary_cparams.n_ctx;
     let mut selected_tensor_split = primary_tensor_split;
     let mut selected_tensor_buft_overrides = primary_tensor_buft_overrides;
 
-    if mtp_mode == MtpFitMode::Vram && primary_gpu_layers == -1 {
+    if mtp_mode == MtpFitMode::Vram && (primary_gpu_layers == -1 || mtp_first) {
         // First discover the native layer split, then charge each NextN layer's
         // KV to the device llama.cpp assigned to it. Refit until the split and
         // the reservation agree; otherwise use the CPU companion rather than
@@ -1447,6 +1724,8 @@ pub(super) fn fit_plan(
         let mtp_info = crate::gguf::read_info(std::path::Path::new(model_path)).ok();
         let mut reserved_mtp_cost = vec![0usize; physical_devices];
         let mut exhausted_attempts = true;
+        let external_draft_bytes =
+            external_mtp_draft_bytes(cfg.mtp_draft_path.as_deref(), model_path);
 
         for attempt in 0..MAX_MTP_FIT_ATTEMPTS {
             let mut joint_margins =
@@ -1474,7 +1753,8 @@ pub(super) fn fit_plan(
                 )
             };
             let joint_gpu_layers = (mtp_status == 0).then_some(mtp_mparams.n_gpu_layers);
-            let joint_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, joint_gpu_layers);
+            let joint_mode =
+                choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, joint_gpu_layers, mtp_first);
             if joint_mode != MtpFitMode::Vram {
                 selected_mtp_mode = joint_mode;
                 tracing::info!(
@@ -1505,13 +1785,17 @@ pub(super) fn fit_plan(
                 exhausted_attempts = false;
                 break;
             };
-            let actual_mtp_cost = estimate.costs;
+            // An external draft is a second model on the device of the last
+            // NextN layer. Reserving only its KV let the fit fill that card and
+            // the draft then failed to allocate its weights and compute.
+            let actual_mtp_cost = with_external_mtp_draft(estimate.costs, external_draft_bytes);
             let effective_tensor_split = estimate.tensor_split;
             tracing::info!(
                 attempt,
                 mtp_vram_cost_estimate = ?actual_mtp_cost,
                 mtp_tensor_split = ?effective_tensor_split.get(..physical_devices),
-                "llama.cpp fit calculou o KV MTP por dispositivo pela divisão efetiva de camadas"
+                external_draft_bytes = external_draft_bytes.unwrap_or(0),
+                "llama.cpp fit calculou a reserva MTP por dispositivo pela divisão efetiva de camadas"
             );
 
             if actual_mtp_cost == reserved_mtp_cost {

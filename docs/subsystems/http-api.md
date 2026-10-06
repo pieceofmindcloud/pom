@@ -23,7 +23,15 @@ slice record to `serving`, see `slicing.md`) and exposes the executable identity
 `model_label`/`deploy_id` and its range `start_layer`/`end_layer`/
 `total_layers`. The gateway uses that range during admission when the P2P
 announcement is still late. The endpoint also exposes `kv_can_shift`, the
-condition for the head to draft in speculative decoding. The internal routes of
+condition for the head to draft in speculative decoding. It **does not wait for
+the engine**: with the `InferState` lock held (a prefill chunk may take
+seconds), it returns the last snapshot with `busy: true` and `snapshot_age_ms`,
+recomputing only the scheduler queue and the routes; the snapshot is stored
+again whenever the lock is free. With no snapshot yet, it waits for the lock on
+a blocking thread. It used to wait, and the gateway's readiness probe (3 s
+through the tunnel) and the route plan's probe (2 s) expired on a busy peer -
+the peer dropped out of the plan ("Gap at layer 0") and the tunnel route was
+erased. The internal routes of
 that listener require the `connection_key` and `x-pom-internal-node: 1` on
 private networks; on public networks, HTTPS and QUIC can use the secure
 transport and the marker, while the HTTP fallback carries the same shared
@@ -47,10 +55,27 @@ last):
   /api/public/directory/records` are public metadata ingresses. GET delivers
   signed records and POST only accepts records with a compatible signature,
   proof of work, chain of trust and principal. The local cache is bounded and
-  expiring; none of these routes carries bootstrap data or private network
-  credentials.
+  expiring; none of these routes carries bootstrap data, addresses or private
+  network credentials: the record names the network by the publisher's key and
+  the relays by `relay_hints` (`pk:` keys).
+- **Public networks** (`gateway/http.rs`, no authentication): `GET
+  /api/public/network` (the local network, when public) and `GET
+  /api/public/networks` (local, directory and pkarr candidates) return
+  `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. `GET
+  /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
+  node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
+  only accepts keys the node already lists (404 otherwise) and caches the answer
+  for 30 s.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
+- **Typed decisions** (`decisions.rs`): `POST /v1/systemone`, alias
+  `POST /v1/decisions`, the Jev API shape. Body `{model?, state, questions}`,
+  where each question is `{type: noul|choice|score, instructions, criteria}`;
+  the answer carries one typed answer per question id plus
+  `x_pom.questions.<id>` (`label_mass`, tokens, `cached_tokens`, duration).
+  An unknown `model` name (such as `jev-latest`) falls back to the active
+  model. Same API key authentication as the rest of `/v1`. See
+  `inference.md` 3.9.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
   `POST /v1/messages/count_tokens` + OPTIONS.
 - **Dashboard** (`webui.rs`): the `/api/ui/*` plane (see below).
@@ -129,8 +154,13 @@ the administrative signature when the operation changes authority. On the
 `common/identity internal` routes, calls between private nodes require the
 right `connection_key` and the internal marker validated by the handler, never
 the marker alone. On public networks, control uses `x-pom-control-signature`:
-an Ed25519 envelope covers method, path, nonce, epoch and body hash, and the
-sender must be a current authority in the chain. Inference frames stay outside
+an Ed25519 envelope covers method, path, nonce, epoch, body hash and the issue
+time (`issued_at`), and the sender must be a current authority in the chain.
+The receiver refuses an envelope outside `CONTROL_WINDOW_SECS` (5 min, on
+either side of its own clock) and records the nonce and command id of every
+signed POST/PUT/DELETE in the local replay ledger, which forgets the entry when
+the envelope's window closes. Nodes whose clocks differ by more than 5 min make
+signed control fail. Inference frames stay outside
 that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/models`, `/api/setup/admin-anchor/preview`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
@@ -162,8 +192,11 @@ do not define the key, signature or storage of grants.
 credential of the administrative surface. On a public network, it is neither an
 admission secret nor shared. Admin capability comes from the separate file
 `config::admin_trust_path()`, protected with mode 0600 and containing the manual
-anchor, the root grant, the chain of secondary grants, demotions, succession
-and persisted replay records. `profile: admin` alone creates no capability:
+anchor, the root grant, the chain of secondary grants, demotions and
+succession. Consumed nonces are **not** kept in that document, which is shared
+and replaced wholesale by `reconcile`: they live in the local replay ledger next
+to it (`<chain>.replay.json`, also 0600), state of a single node.
+`profile: admin` alone creates no capability:
 without a valid chain the node stays without access to the `admin-only` routes
 and emits a diagnostic at startup.
 
@@ -272,7 +305,8 @@ The pipeline routes are not part of that boundary: `/api/generate`,
 server routes on `inference_port`, stay reachable over IPv4 and IPv6 so the
 libp2p tunnel's HTTP fallback is not interrupted. `GET /api/access` is the only
 public exception of administration, since it only reports the mode, whether a
-password is needed, the port and `default_password` - the password in effect
+password is needed, the port, `boot_id` (random per run of the process, which
+is how the interface repeats a notice once per start) and `default_password` - the password in effect
 is still the first access default (`admin`, `auth::DEFAULT_ADMIN_PASSWORD`). It
 is a flag written in `pom.json` (`admin_password_default`) next to the hash, so
 this public route never runs Argon2; `POST /api/setup/save` sets it (the UI
@@ -307,10 +341,7 @@ configuration.
   effective capacity comes from the `n_ctx` confirmed by the runtime and the
   smallest value among the live peers; the deployment's `max_new_tokens` only
   limits one leg of the continuation loop. If the prompt fills the whole
-  context, the route answers 413 before opening the SSE. `finish_reason` and
-  `partial` also show up in the body: a generation stopped by the cycle
-  detector has `finish_reason: "cycle"` and `partial: true`; that reason is
-  neither a silent cut nor a new run. The route only accepts
+  context, the route answers 413 before opening the SSE. The route only accepts
   `Authorization: Bearer <active API key>` or `x-api-key: <active API key>`;
   the `connection_key`, a missing token and an anonymous caller are refused
   before the pipeline. `trace` also exposes, per request,
@@ -499,7 +530,10 @@ request's validation. A peer only enters that capacity after its `/health`
 confirms the model is loaded; during a restart, the previous announcement is
 withdrawn. An idle peer chosen by the plan is woken by `reload_model` before
 generation and the request waits for its `/health`; the planned idle peers are
-woken in parallel, with a 15-minute ceiling for the barrier. A live peer on an
+woken in parallel, with a 15-minute ceiling for the barrier.
+`POST /api/internal/reload_model` answers at once with `state: "loading"` or
+`"ready"` (503 with `error` when the load cannot happen) and the gateway
+repeats it until every peer is ready. A live peer on an
 alternative route blocks neither the catalog nor admission. A planned non-idle
 peer without that confirmation keeps the model pending, instead of falling back
 to the local capacity and hiding an old stage.
@@ -666,6 +700,18 @@ key never authenticates again.
 `prefix_auto_cache: {enabled, index_entries, index_bytes}` when the persistent
 prefix cache (`slot_persist_prefix_cache`) is on in this gateway.
 
+`POST /api/ui/kv-cache/clear` (AdminOnly) empties the KV cache of **one**
+machine. The body is `{node_id?}`: absent or the node's own id acts locally,
+another id is forwarded to that machine, since only the owner of a disk deletes
+from it. Locally it removes every `.bin` and `.json` of the snapshot directory,
+resets this gateway's automatic prefix index and calls
+`POST /v1/session/cache/clear` on the local inference server. Sessions that are
+live in the model context are untouched. The answer is `{cleared, node_id,
+disk_files, disk_bytes, ram_entries, ram_bytes}`. `GET /api/ui/node` publishes
+the disk side as `kv_cache: {enabled, path, snapshots, bytes}`, measured on each
+call, and `/health` of the inference port publishes the RAM side as `cache_ram`
+(see `inference.md` 3.1.2).
+
 `POST /admin/slots/:name?action=save|restore|erase` orchestrates a snapshot
 across the whole deployment. Body: `{model, session_id?, dest_session_id?}`
 (`model` is the label or the `deploy_id`). The gateway resolves the pipeline
@@ -761,6 +807,15 @@ server. `PluginStatus.github_repository`, `public_install`,
 `preferences_schema` and `preferences` expose the local state, with no tokens
 and no synthetic entitlement.
 
+`POST /api/ui/plugins/:code/rpc/:op` is a plugin's own API for its screens
+(`plugin_ui::plugin_rpc`, contract in `plugins-ui.md`). The JSON body (at most
+256 KiB) reaches the plugin's generic `query` as operation `rpc.<op>` with
+`{params, profile}`, and the plugin's JSON reply is returned unchanged. `op` is
+lowercase letters, digits, `.`, `_` and `-` (up to 64). Same-origin only, like
+the proxy; 400 for a bad name or body, 413 above the ceiling, 502 when the
+plugin is inactive or the operation fails. Open to every profile; the plugin
+authorizes by the forwarded `profile`.
+
 `ANY /api/ui/plugins/:code/proxy` and `/api/ui/plugins/:code/proxy/*path` are
 the proxy of the web UIs served by the plugins themselves
 (`crates/node/src/plugin_proxy.rs`, contract in `plugins-ui.md`). Open to every
@@ -819,7 +874,9 @@ metadata up to the deployment's head, which combines it with the global
 relays keep the field together with the existing metadata.
 `GET /api/ui/chat/capabilities` publishes `thinking: "supported"`,
 `"unsupported"` or `"unavailable"` for the UI, based on the global
-configuration of the active model's head.
+configuration of the active model's head. Its `asleep` flag is true while a
+machine of the active pipeline has its model unloaded for idleness or is
+loading it again, so the Chat can say the next answer waits for the reload.
 
 `GET /api/ui/deployments` deduplicates the persisted copies by `deploy_id` and
 marks `serving` only when a live peer announces the deployment. The record can
@@ -908,11 +965,31 @@ refused so a preference that will not be honored is not presented.
 
 In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can
-send `DeployRequest.mmproj_path` to choose another format.
-`DeployRequest.vision` still enables the projector only on the head. The
+send `DeployRequest.mmproj_path` to choose another format;
+`POST /api/ui/deploy/plan` ignores that field. `DeployRequest.vision` still
+enables the projector only on the head, and `mmproj_path` is only considered
+with `vision: true` - without vision, a path that was sent does not refuse the
+deployment. The path is resolved against the head
+(`planning::resolve_head_projector`): the same path, or the head's only
+candidate with the same file name, because each machine keeps its own copy in
+different folders. The plan refuses, naming the file, only when the head does
+not have it. The
 backend redoes the survey, checks the chosen path against the GGUF headers in
 the peer's apply and does not compute the SHA-256 of the `mmproj` payload to
 discover or select candidates.
+
+`GET /api/ui/model-sidecar-links` (`NodeAdmin`) returns `{ links, stale }`:
+the principal's list of model -> projector / MTP draft links, read from the
+principal by a secondary (which keeps the last copy and sets `stale: true`
+when the principal does not answer). `POST /api/ui/model-sidecar-links`
+(`AdminOnly`) saves one `SidecarLink`; a secondary forwards it to the
+principal, which stamps `updated_at`/`updated_by`. A file link needs a name and
+a size; vision cannot be `embedded`. `DeployRequest` accepts `vision_choice`
+and `mtp_choice` (`{ mode, file: { file_name, size_bytes } }`) and
+`DeployPlan.sidecars` answers with the compatible files of the network (each
+with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
+slots and whether each is already there or will be copied.
+`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine.
 
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and
 control the optional Hugging Face token. GET only returns
@@ -1240,14 +1317,6 @@ spans, duplicates, late receipts, absences and `remote-stream` aggregates.
 `client_ttft_ms`. A missing field means the boundary was not measured, not
 zero. The audit at `GET /api/ui/requests` keeps that same object in
 `telemetry`, next to the generation `timings`.
-
-`x_pom.finish_reason: "cycle"` and `x_pom.partial: true` identify a stop due to
-repetition in the OpenAI and Anthropic adapters, in the final chunk and in the
-non-streaming answer. The provider's default reason stays compatible (`stop`
-in OpenAI and `end_turn` in Anthropic); POM-aware clients must read the
-extension to tell a cycle from a normal answer. The gateway already sent the
-token that confirmed the cycle, asks for no further token, releases the session
-and closes the stream.
 
 ## 5. Route tests - there is a single scaffold (`gateway::testkit`)
 

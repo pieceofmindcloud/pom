@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
   oldKey: {
     id: "old-id",
-    key: "sk-old",
+    key_hint: "sk-pom-0ld0…0ld0",
     label: "Inferência",
     node_id: "inference-node",
     active: true,
@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   },
   foreignKey: {
     id: "foreign-id",
-    key: "sk-foreign",
+    key_hint: "sk-pom-f0r3…1gn0",
     label: "Outra máquina",
     node_id: "other-node",
     active: true,
@@ -91,12 +91,33 @@ describe("TokenKeys no perfil infer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Criar token" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Criar token" }).at(-1)!);
 
-    await waitFor(() => expect(mocks.del).toHaveBeenCalledWith("/admin/api-keys/sk-old"));
+    await waitFor(() => expect(mocks.del).toHaveBeenCalledWith("/admin/api-keys/old-id"));
     expect(mocks.post).toHaveBeenCalledWith("/admin/api-keys", {
       label: "Inferência",
       node_id: "inference-node",
     });
     expect(mocks.refetch).toHaveBeenCalled();
+  });
+
+  it("mostra o token novo uma vez só, e na lista apenas o trecho visível", async () => {
+    mocks.post.mockResolvedValueOnce({
+      ...mocks.oldKey,
+      id: "new-id",
+      key: "sk-pom-0123456789abcdef",
+      key_hint: "sk-pom-0123…cdef",
+    });
+    mocks.del.mockResolvedValueOnce({ revoked: true });
+    mount();
+
+    expect(screen.getAllByTestId("key-hint").map((hint) => hint.textContent)).toEqual(["sk-pom-0ld0…0ld0"]);
+    expect(screen.getByText("old-id")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Criar token" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Criar token" }).at(-1)!);
+
+    await waitFor(() => expect(screen.getByTestId("issued-secret").textContent).toBe("sk-pom-0123456789abcdef"));
+    fireEvent.click(screen.getByRole("button", { name: "Já copiei" }));
+    await waitFor(() => expect(screen.queryByTestId("issued-secret")).toBeNull());
   });
 
   it("abre a confirmação de revogação sem exigir o label duas vezes", () => {

@@ -30,17 +30,22 @@ Per-file list:
   trazidas pela descoberta local (`LocalDiscoveryPanel`) ou coladas em
   `TrustFields`, que só monta quando o bloco manual é aberto. No convite, cada
   computador que procura a rede aparece em `DiscoveredMachineCard` com nome,
-  sistema, IP, CPU, RAM e GPU. Pastas, disco, reservas, senha (`admin`) e
+  sistema, IP (da LAN, só no wizard local), CPU, RAM e GPU. The admin's
+  preferred address is optional and never pre-filled: the network is found by
+  the principal's key, and neither the trust root nor joining from Public
+  networks brings an IP bootstrap. Pastas, disco, reservas, senha (`admin`) e
   workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
   com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
   `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
-  label geo-hierárquico, endereço publicado com indicador de alcançabilidade,
-  nós, latência, VRAM, modelos e ação de entrada. Usa `/api/public/networks`;
-  o indicador consulta `/health` no navegador com timeout de 1,8 s e cache de
-  30 s, sem alterar a publicação pkarr. Métricas agregadas só aparecem quando o cluster local
+  label geo-hierárquico, alcance, nós, latência, VRAM, modelos e ação de
+  entrada. Usa `/api/public/networks`. **No IP is shown**: reachability comes
+  from `usePublicLocator` (`lib/publicLocator.ts`), which asks the node
+  (`/api/public/networks/locate?key=<publisher_key>`) whether the publisher key
+  has a direct route, only a relay or no pkarr record at all; the details show
+  the publisher key and the `relay_hints`. Métricas agregadas só aparecem quando o cluster local
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
   Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
   país, o combo de cidade mostra apenas as cidades daquele país.
@@ -99,17 +104,30 @@ Per-file list:
   encoded `plugin=<code>` parameter via `lib/pluginPurchase.ts`. Cards are
   compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
   catalog, GitHub repository and local state for the same code share one card.
-  The right column contains the "Add from GitHub" card (public repository URL)
-  above license activation. A repository card shows its manifest description
+  The screen has two tabs, on the right side of the title bar
+  (`FullBleedHeader` `actions`). "Plugins" searches and pages the store on the
+  license server (`GET /v1/plugins?q=&page=&per_page=10`, featured and POM-team
+  plugins first; the full unpaged catalog is still read to decide whether the
+  license form shows and to name the plugins a key granted). Plugins known only
+  to this node (a registered repository or an active plugin outside the store)
+  are appended to the first page and filtered by the same search text. Its
+  right column is, in order, license activation, the "Add from GitHub" card
+  (public repository URL) and the development builds. "Develop your plugin"
+  highlights `pom-plugin-base` (the example plugin, as its own card or an
+  install button) and links to `https://pieceofmind.cloud/plugins/publicar/`,
+  saying that a submission is reviewed before it is listed. Cards no longer
+  show the plugin code; one Version field shows the installed version or else
+  the newest one this node can install, and the supported systems are icons
+  (`components/PlatformIcon.tsx`). Installing from GitHub anything whose
+  catalog entry is not `pom_team: true` adds an unverified-code warning to the
+  confirmation (the install is at the operator's own risk). A repository card shows its manifest description
   and screenshots (`raw.githubusercontent.com`), refresh/remove icon actions,
   and a selector containing only releases compatible with this node
   (`available_for_node`), defaulting to the latest. Its action is Install,
   Update (when the public installation came from that repository), or disabled
   Installed (when the selected tag is already current). Install/update requires
   confirmation; this source does not check `requires_license` or contact the
-  license server. The card does not show features or the last update check, and
-  the commercial release row appears only when the catalog has a release for
-  the node's target. Activation, installation, update and deactivation
+  license server. The card does not show features or the last update check. Activation, installation, update and deactivation
   invalidate `keys.pluginUi` so the plugin menu updates immediately; 30-second
   polling covers changes made outside this tab. One form activates every
   `plugin_code` granted by the server in a batch (`POST
@@ -490,10 +508,14 @@ Per-file list:
   seria inventar um registro que ninguém guardou. Cada linha expande
   (`VersionList`) e mostra `deployment.versions` da mais nova para a mais
   antiga, com a badge "Ativa" em `active_version` e um botão "Reimplantar esta
-  versão" (`redeployDeployment(id, { version })`). O botão "Reimplantar com
-  novos parâmetros" abre o `RedeployDialog`, que semeia do
-  `versions[active].params` (não do `nodes[0].config`) e no submit manda só
-  `params` + `per_node` - o backend decide reusar ou anexar versão. Também
+  versão" (`redeployDeployment(id, { version })`). "Reimplantar com novos
+  parâmetros" (na linha) e "Editar e reimplantar" (no inspetor de uma versão)
+  abrem à direita, no lugar do inspetor de leitura, o `RedeployPanel`: o mesmo
+  `DeploymentInspector` editável da tela de implantar, semeado com a versão
+  ativa ou com a versão aberta (não com o `nodes[0].config`), mais os ajustes
+  por máquina (`n_gpu_layers`, KV na GPU) e "Recarregar com estes valores", que
+  manda só `params` + `per_node` - o backend decide reusar ou anexar versão. O
+  lado direito mostra uma coisa de cada vez. Também
   ativa uma implantação e a desimplanta pelo `deploy_id`. O painel do job de
   reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
   Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
@@ -506,7 +528,9 @@ Per-file list:
   auditoria de requisições, que é do plugin `enterprise`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys` delega a tabela full-bleed
   `ApiKeysTable`: per-node API tokens for
-  harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
+  harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:id`. The
+  list carries only `key_hint` and the tracking id; the secret appears once,
+  in the `IssuedSecret` window right after creation.
   No perfil `infer`, mostra só a chave ativa deste nó, esconde o seletor de nó
   e, ao gerar uma chave nova, revoga a anterior. As rotas de API key são
   `infer+node+admin`: são a credencial de quem atende `/v1`, e todo perfil
@@ -531,7 +555,9 @@ Per-file list:
   `/config/rede/participantes`; the route is allowed only to `admin` and
   `node`, and block/unblock mutations remain admin-only. Each peer row shows
   the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
-  never the advertised `addr`, which only goes into the row's `title`.
+  never the advertised `addr`, which only goes into the row's `title`. A
+  relayed route names the relay kind (`relay_kind`: dedicated relay or member
+  relay, the last rung of the ladder).
   (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving
   is abdication, not a privilege) and the known-node list from
   `GET /admin/nodes` (`node+admin`: reading the roster is what this screen
@@ -593,15 +619,15 @@ Per-file list:
   rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
   `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
-  the node_id prefix. Full-bleed shell; each `ShardCard` shows the set's
-  `mmproj_path` basename (`../lib/format::optionalBasename`) next to the coverage bar,
-  or "no projector" when the set has none - never invented.
+  the node_id prefix. Full-bleed shell; each `ShardCard` carries the set's
+  vision / MTP link editor (`SidecarLinkEditor`), with the compatible files of
+  every machine from `useClusterCatalog`.
 - `SliceModels.tsx` - "Fatiar": full-bleed shell. Pipeline and Tensor
   Parallelism are a segmented tab pair (`role="tablist"`), not a checkbox -
   each mode owns its own controls (Pipeline: size list, one explicit layer
   range, or Tensor Parallelism's rank count). The Tensor Parallelism tab only
   mounts when `useNode().data.pom_desenv === true` (the same
-  `POM_DESENV=1`-gated pattern as `DeploymentInspector`/`RuntimeParamsForm`);
+  `POM_DESENV=1`-gated pattern as `DeploymentInspector`);
   without it the screen never offers or sends `mode: "tensor_parallel"`, and an
   effect snaps a stale selection back to `"pipeline"` if the flag turns out
   false after the first render. Pipeline builds a by-size plan
@@ -640,7 +666,8 @@ Per-file list:
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
   catalog already resolves this file from GGUF identity and projection dimensions,
-  the screen only renders it. `ScannedRoots`
+  the screen only renders it; the cell's "Vision and MTP" button opens the
+  same `SidecarLinkEditor` as Shards in a window. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
 - `RemoteModels.tsx` - mostra modelos GGUF em alta pela API pública do Hugging
   Face ao abrir, sem credenciais; a busca autenticada usa debounce em
@@ -664,28 +691,18 @@ Key logic carriers:
   the partial session on a 50 ms scheduler while the stream is active. The
   final or interrupted state is flushed immediately. Route unmounts do not
   abort it; `stopStream` and a new message do.
-- `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
-  closed-by-default telemetry card shared by Chat and Logs: per-hop
-  prefill/decode phases, selected
-  path versus backend-reported executed engine, mixed/mismatch evidence,
-  gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
-  optional TP collective table, aggregate transport identity, execution RTT and
-  measured network RTT distributions, bytes with fallback and switch counts,
-  prefix reuse counters, overlap counters and a pure diagnosis card. The
-  request summary stays visible before the closed details card and shows TTFT,
-  prompt-token prefill rate, output-token generation rate, observed network RTT
-  and end-to-end total, including an explicit unavailable state when a rate has
-  no measurable interval. The AI action sends
-  both tables as private request content, while the initial model is shown as
-  a non-turn mark before chat messages. Decode rows separate scheduler-ready,
-  `tensor_get`, residual postprocess and wire encoding/serialization timings;
-  QUIC summaries show request body send/finish wall separately from response
-  header wait.
-- `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
-  knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8)
-  and `fit_memory_margin_mb` (per-device VRAM safety reserve).
+- `components/TelemetryLine.tsx` plus the `chat.telemetry` slot - each answer
+  shows the basic one-line telemetry; when an active plugin claims the slot,
+  `Bubble` mounts its component at the end of that line with the props of
+  `lib/chatTelemetry.ts` (trace, timings, source, captured environment,
+  `onAsk`). Only then does `ChatScreen` fetch the per-node network RTT and
+  runtimes for the environment. `onAsk` sends the plugin's question as a turn
+  whose visible text differs from the request content.
+- `DeployModel` and `Deployments` both edit the runtime knobs through
+  `DeploymentInspector` (the Deploy Studio inspector, and the History redeploy
+  panel), so a new property cannot reach one screen and miss the other.
   As duas telas leem `NodeInfo.pom_desenv` de `useNode`; o Deploy Studio, o
-  inspetor do histórico e a caixa de reimplantação falham fechados. A flag só
+  inspetor do histórico e o painel de reimplantação falham fechados. A flag só
   esconde os controles de desenvolvimento locais; o estado de planejamento,
   lançamento e reimplantação mantém os valores recebidos da implantação,
   mesmo quando este nó não pode editá-los.
@@ -733,11 +750,19 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 ### Deploy e chat multimodais
 
 `DeployModel.tsx` exibe a opção de visão para modelo inteiro e para conjunto de
-fatias quando o plano expõe `mmproj_candidates`. A lista é pré-selecionada pelo
-primeiro caminho compatível e permite escolher outro formato local na hora da
-implantação. Sem candidatos, mostra `mmproj_reason` ou uma orientação
-localizada. A tela envia `vision` e `mmproj_path`, e a rota de implantação refaz
-o survey e o plano antes de validar o caminho escolhido para a cabeça.
+fatias quando o plano expõe `mmproj_candidates`. Once the plan has answered,
+the options are **only** those of the layer-0 machine
+(`currentPlan.mmproj_candidates` and `mmproj_path`); the catalog, which mixes
+every machine's paths, only fills the list while the first plan loads, and a
+selection that is not among the head's options is replaced. The list is
+preselected with the plan's path and lets the operator pick another local
+format at deploy time. Without candidates, it shows `mmproj_reason` or a
+localized hint. The plan request carries no projector; the deployment sends
+`vision` and, only with vision on, `mmproj_path`, and the route redoes the
+survey and the plan before validating the path chosen for the head.
+The vision and MTP pickers of the inspector (`DeployPlan.sidecars`) send
+`vision_choice` / `mtp_choice` with the plan and the deploy; "use the model's
+link" sends nothing and leaves the saved link in charge.
 `Chat.tsx` usa um único
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens

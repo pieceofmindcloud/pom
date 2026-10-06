@@ -50,6 +50,10 @@ pub struct RuntimeParams {
     pub fit_memory_margin_mb: u32,
     #[serde(default = "d_n_batch")]
     pub n_batch: u32,
+    /// Microlote físico (`n_ubatch` do llama.cpp) enquanto o fit de memória
+    /// está ligado; nunca maior que `n_batch`.
+    #[serde(default = "d_n_ubatch")]
+    pub n_ubatch: u32,
     #[serde(default = "d_max_new")]
     pub max_new_tokens: u32,
     /// Generations allowed in flight at once. Each generation gets the full
@@ -82,16 +86,36 @@ pub struct RuntimeParams {
     pub repeat_penalty: f32,
     #[serde(default = "d_repeat_last_n")]
     pub repeat_last_n: u32,
-    /// Detector conservador de ciclos; fica desligado por padrão e pode ser
-    /// ligado sem alterar os parâmetros do sampler.
-    #[serde(default = "d_cycle_detection_enabled")]
-    pub cycle_detection_enabled: bool,
-    #[serde(default = "d_cycle_detection_min_window_tokens")]
-    pub cycle_detection_min_window_tokens: u32,
-    #[serde(default = "d_cycle_detection_max_window_tokens")]
-    pub cycle_detection_max_window_tokens: u32,
-    #[serde(default = "d_cycle_detection_repetitions")]
-    pub cycle_detection_repetitions: u32,
+    /// Subtraída uma vez do logit de cada token visto na janela. 0 desliga.
+    #[serde(default)]
+    pub presence_penalty: f32,
+    /// Subtraída do logit por ocorrência do token na janela. 0 desliga.
+    #[serde(default)]
+    pub frequency_penalty: f32,
+    /// Corta candidatos abaixo desta fração do mais provável. 0 desliga.
+    #[serde(default)]
+    pub min_p: f32,
+    /// Semente do gerador do sampler, aplicada quando a implantação carrega.
+    /// O padrão é o valor fixo que o POM sempre usou.
+    #[serde(
+        with = "llama_engine::llm::seed_text",
+        default = "llama_engine::llm::seed_text::default_seed"
+    )]
+    pub seed: u64,
+    /// Sampler DRY do llama.cpp: penaliza o token que estenderia uma sequência
+    /// já vista. `dry_multiplier` 0 desliga.
+    #[serde(default)]
+    pub dry_multiplier: f32,
+    #[serde(default = "d_dry_base")]
+    pub dry_base: f32,
+    #[serde(default = "d_dry_allowed_length")]
+    pub dry_allowed_length: u32,
+    #[serde(default = "d_dry_penalty_last_n")]
+    pub dry_penalty_last_n: u32,
+    /// Limite de tokens de um bloco de raciocínio (`--reasoning-budget` do
+    /// llama.cpp): ao atingi-lo, a tag de fim é forçada. -1 não limita.
+    #[serde(default = "d_reasoning_budget")]
+    pub reasoning_budget: i32,
     #[serde(default = "d_true")]
     pub no_thinking: bool,
     /// Disable embedding extraction in llama.cpp context on this peer.
@@ -108,8 +132,9 @@ pub struct RuntimeParams {
     pub speculative_lookup_window: u32,
     /// Predição multi-token pelo bloco `nextn` do modelo. Interruptor
     /// separado do de cima de propósito: são mecanismos diferentes, e só
-    /// este usa peso treinado do modelo. Ver `crate::mtp`.
-    #[serde(default)]
+    /// este usa peso treinado do modelo. Ver `crate::mtp`. Ligado por padrão:
+    /// o gateway só o usa quando o plano suporta (`mtp_enabled_for_plan`).
+    #[serde(default = "d_true")]
     pub mtp_enabled: bool,
     #[serde(default = "d_mtp_draft_tokens")]
     pub mtp_draft_tokens: u32,
@@ -118,6 +143,25 @@ pub struct RuntimeParams {
     /// Permite recuar o MTP para a RAM quando a VRAM não comportar o contexto.
     #[serde(default = "d_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
+    /// Onde o bloco MTP fica: `auto`, `vram` ou `ram`.
+    #[serde(default)]
+    pub mtp_placement: llama_engine::MtpPlacement,
+    /// Todos os experts roteados de um MoE ficam na RAM e a CPU os calcula
+    /// (o `--cpu-moe` do llama.cpp); a VRAM fica com o resto do modelo. Pula o
+    /// ajuste de memória, que recusa overrides definidos antes dele.
+    #[serde(default)]
+    pub moe_experts_in_ram: bool,
+    /// Cache na GPU, em MiB, dos experts que ficaram na RAM: os usados há
+    /// pouco são servidos da VRAM, só as faltas sobem pelo PCIe (lotes de até
+    /// 32 tokens). `0` desliga. Com o ajuste de memória ligado, o ajuste conta
+    /// o cache e deixa menos camadas de experts inteiras na GPU.
+    #[serde(default)]
+    pub moe_cache_mib: u32,
+    /// The gateway picks each request's prefill chunk (between 32 tokens and
+    /// `prefill_chunk_tokens`) from a model of the route it learns. Off, every
+    /// prompt goes in chunks of exactly `prefill_chunk_tokens`.
+    #[serde(default = "d_adaptive_prefill_chunks")]
+    pub adaptive_prefill_chunks: bool,
     /// Descarrega os pesos depois de um período sem requisições neste peer.
     #[serde(default)]
     pub unload_if_idle: bool,
@@ -177,18 +221,6 @@ pub(super) fn d_repeat_penalty() -> f32 {
 pub(super) fn d_repeat_last_n() -> u32 {
     64
 }
-pub(super) fn d_cycle_detection_enabled() -> bool {
-    false
-}
-pub(super) fn d_cycle_detection_min_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
-}
-pub(super) fn d_cycle_detection_max_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
-}
-pub(super) fn d_cycle_detection_repetitions() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_REPETITIONS
-}
 pub(super) fn d_true() -> bool {
     true
 }
@@ -204,10 +236,29 @@ pub(super) fn d_speculative_lookup_window() -> u32 {
 pub(super) fn d_mtp_draft_tokens() -> u32 {
     3
 }
+/// O mesmo piso que a tela grava ao ligar o MTP (`MTP_MIN_PROBABILITY`).
 pub(super) fn d_mtp_min_probability() -> f32 {
-    0.0
+    0.75
+}
+pub(super) fn d_dry_base() -> f32 {
+    1.75
+}
+pub(super) fn d_dry_allowed_length() -> u32 {
+    2
+}
+pub(super) fn d_dry_penalty_last_n() -> u32 {
+    1024
+}
+pub(super) fn d_n_ubatch() -> u32 {
+    llama_engine::DEFAULT_N_UBATCH
+}
+pub(super) fn d_reasoning_budget() -> i32 {
+    -1
 }
 pub(super) fn d_mtp_cpu_fallback_enabled() -> bool {
+    true
+}
+pub(super) fn d_adaptive_prefill_chunks() -> bool {
     true
 }
 pub(super) fn d_idle_minutes() -> u32 {
@@ -225,6 +276,7 @@ impl Default for RuntimeParams {
             fit_memory: d_true(),
             fit_memory_margin_mb: d_fit_memory_margin_mb(),
             n_batch: d_n_batch(),
+            n_ubatch: d_n_ubatch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
             batching_enabled: d_batching_enabled(),
@@ -239,19 +291,28 @@ impl Default for RuntimeParams {
             top_k: d_top_k(),
             repeat_penalty: d_repeat_penalty(),
             repeat_last_n: d_repeat_last_n(),
-            cycle_detection_enabled: d_cycle_detection_enabled(),
-            cycle_detection_min_window_tokens: d_cycle_detection_min_window_tokens(),
-            cycle_detection_max_window_tokens: d_cycle_detection_max_window_tokens(),
-            cycle_detection_repetitions: d_cycle_detection_repetitions(),
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: d_true(),
             no_embeddings: false,
             speculative_decoding_enabled: false,
             speculative_k: d_speculative_k(),
             speculative_lookup_window: d_speculative_lookup_window(),
-            mtp_enabled: false,
+            mtp_enabled: d_true(),
             mtp_draft_tokens: d_mtp_draft_tokens(),
             mtp_min_probability: d_mtp_min_probability(),
             mtp_cpu_fallback_enabled: d_mtp_cpu_fallback_enabled(),
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
+            adaptive_prefill_chunks: true,
             unload_if_idle: false,
             idle_minutes: d_idle_minutes(),
         }
@@ -274,6 +335,7 @@ impl From<&NodeConfig> for RuntimeParams {
             fit_memory: c.fit_memory,
             fit_memory_margin_mb: c.fit_memory_margin_mb,
             n_batch: c.n_batch,
+            n_ubatch: c.n_ubatch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
             batching_enabled: c.batching_enabled,
@@ -288,10 +350,15 @@ impl From<&NodeConfig> for RuntimeParams {
             top_k: c.top_k,
             repeat_penalty: c.repeat_penalty,
             repeat_last_n: c.repeat_last_n,
-            cycle_detection_enabled: c.cycle_detection_enabled,
-            cycle_detection_min_window_tokens: c.cycle_detection_min_window_tokens,
-            cycle_detection_max_window_tokens: c.cycle_detection_max_window_tokens,
-            cycle_detection_repetitions: c.cycle_detection_repetitions,
+            presence_penalty: c.presence_penalty,
+            frequency_penalty: c.frequency_penalty,
+            min_p: c.min_p,
+            seed: c.seed,
+            dry_multiplier: c.dry_multiplier,
+            dry_base: c.dry_base,
+            dry_allowed_length: c.dry_allowed_length,
+            dry_penalty_last_n: c.dry_penalty_last_n,
+            reasoning_budget: c.reasoning_budget,
             no_thinking: c.no_thinking,
             no_embeddings: c.no_embeddings,
             speculative_decoding_enabled: c.speculative_decoding_enabled,
@@ -301,6 +368,10 @@ impl From<&NodeConfig> for RuntimeParams {
             mtp_draft_tokens: c.mtp_draft_tokens,
             mtp_min_probability: c.mtp_min_probability,
             mtp_cpu_fallback_enabled: c.mtp_cpu_fallback_enabled,
+            mtp_placement: c.mtp_placement,
+            moe_experts_in_ram: c.moe_experts_in_ram,
+            moe_cache_mib: c.moe_cache_mib,
+            adaptive_prefill_chunks: c.adaptive_prefill_chunks,
             unload_if_idle: c.unload_if_idle,
             idle_minutes: c.idle_minutes,
         }
@@ -363,6 +434,16 @@ pub struct ApplyRequest {
     /// away from the original whole model, so adjacency is not sufficient.
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// External MTP draft to load with the model, chosen by the deployment.
+    #[serde(default)]
+    pub mtp_draft_path: Option<String>,
+    /// The draft by name + size, resolved on this machine's disk when no path
+    /// came with the request.
+    #[serde(default)]
+    pub mtp_draft_file: Option<crate::catalog::SidecarFile>,
+    /// The projector by name + size, under the same rule.
+    #[serde(default)]
+    pub mmproj_file: Option<crate::catalog::SidecarFile>,
     #[serde(default)]
     pub params: RuntimeParams,
 }

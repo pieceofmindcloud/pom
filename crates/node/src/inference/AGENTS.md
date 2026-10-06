@@ -22,7 +22,9 @@ supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
 anotação da fatia servida (estado Pending/Serving/Idle em
 `models/lastslice.rs`). Quando a política por deployment pede descarregamento
 ocioso, `RequestActivity` é avaliado pelo monitor existente fora do caminho de
-inferência; a restauração recebe `reload_model`, espera o `/health` do runtime
+inferência; a restauração recebe `reload_model` (`NodeRuntime::wake_from_idle`
+starts the load and returns; `reload_from_idle` also waits, for the local
+node), keeps `idle` announced while the model loads, espera o `/health` do runtime
 e volta a anunciar `serving`. O supervisor só inicia a próxima geração depois
 de o supervisor anterior terminar o encerramento, incluindo a liberação nativa
 do modelo, e essa liberação roda em `spawn_blocking` para não parar o executor
@@ -244,7 +246,7 @@ visibilidade dos controles de implantação na UI local.
   executor externo de MoE fica de fora da pré-visualização. A reserva MTP não abre um modelo nem constrói um
   grafo especulativo: para arquiteturas conhecidas, `fit_plan` calcula somente
   o KV determinístico dos blocos `nextn` a partir da metadata GGUF, e o coloca
-  no último dispositivo da ordem slow-to-fast. O custo de compute fica para a
+  no último dispositivo da ordem de carga (do mais rápido ao mais lento), onde ficam as últimas camadas. O custo de compute fica para a
   criação real do contexto, que pode recuar para a RAM sem abortar o processo.
   A captura identifica o eixo de tokens pela quantidade conhecida de tokens do
   microlote físico e pela forma do tensor. `n_embd_inp` valida a forma 2D ou
@@ -847,6 +849,20 @@ visibilidade dos controles de implantação na UI local.
   quente, não capacidade: contá-la como slot admitia um prefill que, no worker,
   só entrava destruindo o prefixo de outra conversa.
   `SchedulerQueue::oldest_new_session_wait` é o relógio dessa carência.
+- `check_prompt_fits_session`/`check_decode_fits_session`
+  (`infer_server/server.rs`) - one session's window
+  (`context_per_session = n_ctx_total / max_sessions`) is enforced on the peer:
+  the tokenized prompt must leave room for one token, and decode refuses with
+  the session at the last position. With `kv_unified` llama.cpp would let it
+  go past it using another session's cells. The gateway stops earlier, with
+  `length`.
+- `handle_health` (`infer_server/server.rs`) - never waits for the engine: it
+  tries the `InferState` lock without blocking; when busy, it returns the last
+  snapshot (`HealthSnapshot`, `busy: true`, `snapshot_age_ms`) with queue and
+  routes recomputed; when free, it builds the body (`health_body`) and stores
+  the snapshot again. With no snapshot yet, it waits for the lock in
+  `spawn_blocking`. The gateway's readiness probe and the route plan's probe
+  depend on this on a peer with a long prefill.
 - `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho
@@ -908,9 +924,19 @@ visibilidade dos controles de implantação na UI local.
   mais o sidecar `<name>.json` (identidade do modelo e da fatia).
   `restore_slot` confere o sidecar antes de tocar no motor, `alloc_seq` uma
   sessão nova `retained` na fronteira salva. `slot_dir` vem de
-  `NodeConfig.slot_save_path`; sem ele a rota responde 400. `replicate_slot_call`
+  `NodeConfig.slot_save_path` (default `~/.pom/kv-slots`, from
+  `Config::slot_save_path_effective`); with it empty the route answers 400. `replicate_slot_call`
   repassa a ação aos workers de TP. Capability `inference/slot-persist-v1`.
   Ver `inference.md` §3.1.1.
+- `infer_server/ram_cache.rs` - the host-memory KV cache (`--cache-ram`):
+  `KvRamCache` parks the serialized `prompt_seq` of a retained session that
+  loses its sequence and `InferState::park_session`/`unpark_session`
+  (`server.rs`) move it out of and back into the context. `evict_retained` and
+  `reap_idle` park before closing; `finish` and a reset forget the entry; the
+  prefill unparks on chunk 0 when `reuse_prefix` is asked. Half of the host RAM
+  always stays available to the user and a host under 12 GiB parks nothing
+  (`user_ram_reserve`, `HostMemory`). Off for tensor-parallel ranks.
+  `POST /v1/session/cache/clear` empties it. See `inference.md` §3.1.2.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
   reinício do processo também remove o estado em memória. Se um desses eventos
   ocorrer no meio de um prefill, o peer devolve sessão desconhecida e o gateway
@@ -989,6 +1015,11 @@ visibilidade dos controles de implantação na UI local.
   parte de uma camada para a CPU. `json_from_wrapper` é quem chama e quem
   libera a string (`llama_rs_string_free`, nunca `free` nem
   `CString::from_raw`).
+- `effective_n_threads` / `apply_thread_params` (`llama-engine`, `llm/config.rs`)
+  - threads de CPU dos contextos principal e MTP. Sem `n_threads` configurado,
+  usa todos os threads disponíveis ao processo (`available_parallelism`, que
+  respeita afinidade e cota de CPU do container) em vez do número fixo e
+  pequeno do llama.cpp; vale para geração e lote.
 - `LlmEngine::flash_attn` / `LlmEngine::load_params` - com que parâmetros de
   llama.cpp este contexto está de pé, para o `/health` e a tela de Detalhes.
   Nada aqui é eco do `EngineConfig`: os valores saem do contexto vivo
@@ -1039,14 +1070,6 @@ visibilidade dos controles de implantação na UI local.
   devolve argmax. `repeat_last_n=64` continua padrão: a penalidade é por token
   e não detecta ciclos de n-gramas, então ampliar a janela não garantiria
   bloquear o ciclo observado e mudaria a política.
-- `cycle.rs` - detector de última linha no gateway, não do servidor de
-  inferência: observa peças já amostradas, normaliza apenas sufixos numéricos
-  embutidos em identificadores e confirma três janelas canônicas consecutivas.
-  A janela padrão é 32..512 tokens; limites e o interruptor ficam em
-  `RuntimeParams`. Ao confirmar, o gateway envia a peça corrente, não pede
-  outro decode, libera a sessão e marca o resumo como `partial` com
-  `finish_reason: "cycle"`. O detector é deliberadamente separado do sampler,
-  do estado recorrente e do contrato de wire.
 - `BatchLayout` - transforma a ordem física das linhas do `llama_batch` em
   ranges por `item_id`; a posição global de logits nunca é inferida pelo índice
   da sessão. Mistura de token e hidden state fica em lanes distintas.
@@ -1151,7 +1174,11 @@ visibilidade dos controles de implantação na UI local.
 `http`, `https`, `quic` ou `remote-stream`). O detalhe interno
 `https-link` é normalizado para `http`/`https` na telemetria. O campo
 `transport_fallback` denuncia quando a chamada desceu a escada depois de
-falha de transporte.
+falha de transporte. A frame that goes straight to the tunnel without trying
+the direct path - route pinned to the tunnel (`tunnel_first`) or a peer marked
+by `prefer_tunnel` - is **not** a fallback: only what had already failed before
+the ladder counts (the persistent channel, for example). `DIRECT_SKIPPED` is the
+reason that only shows up in the error of a tunnel that also failed.
 - `send_batch_body` é o único ponto por onde todo lote remoto passa, inclusive
   as ativações `remote_stream` que não podem ser agrupadas com uma sessão
   diferente. É ali que a seleção de transporte vive: com QUIC ligado, tenta
@@ -1161,7 +1188,9 @@ falha de transporte.
   usado depois de o anterior falhar por **transporte**; uma recusa HTTP do peer
   é final, exceto 404/405 no QUIC, que significam peer sem a rota HTTP/3. O
   degrau usado vira `transport`, e ter descido a escada vira
-  `transport_fallback`.
+  `transport_fallback`. With the direct path skipped on purpose, a tunnel that
+  delivers does not mark a fallback and there is no empty-reason "did not
+  receive the batch".
 - O transporte por requisição tenta QUIC antes do cliente TCP quando a
   preferência está ligada; uma falha QUIC cai no cliente HTTP pinado e, só se
   todos os endereços diretos falharem, no túnel libp2p/Noise. Os destinos QUIC
@@ -1230,7 +1259,10 @@ falha de transporte.
   antigo borbulhou a resposta inteira - `token_id` presente vale como
   resultado), e o prazo do frame que o chamador passa (`relay::frame_deadline`
   com os tokens da rodada e todos os hops do plano; hop morreu depois de
-  aceitar). `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
+  aceitar). In prefill the deadline is a liveness one,
+  `relay::prefill_frame_deadline` (10 min per hop): the chunk may wait in the
+  peer's queue behind another session, and the work-based deadline brought both
+  down. `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
   callbacks. Se o resultado chega antes do ack, ele não espera telemetria
   atrasada: o futuro do ack continua em tarefa destacada para registrar a
   evidência do primeiro hop.
@@ -1450,6 +1482,20 @@ prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S
 medido pelo operador), aqui a implementação está completa e verde nos testes de
 unidade mas **não** tem número medido de ponta a ponta.
 
+## Typed decisions (`probe`)
+
+- `prefill::DecisionProbe` (gateway side) carries the labels, the head's
+  `retain_prefix_bytes` and the question metadata; `add_probe_to_head_meta`
+  puts `probe` and `retain_prefix_bytes` in the head frame, and
+  `trace_summary` builds `RequestTrace::jev`.
+- `infer_server/prefill.rs`: `HeadProbe`/`parse_probe` read the frame;
+  the head bounds the stable boundary with `prefix::bounded_stable_len`; the
+  last peer answers `probe_result` (`probe_reply`, plus `probe_ms`) before
+  sampling. Probe jobs run alone in the scheduler.
+- `RequestTrace::refresh_telemetry` expects no decode rounds for a trace with
+  `probe` or `jev`: decisions are prefill-only.
+- Details: `docs/subsystems/inference.md` 3.9.
+
 ## Ligações
 
 - **Chamado por**: `backend/gateway.rs` (monta `DirectReply` com `ReplyInbox` +
@@ -1484,6 +1530,41 @@ Antes de aplicar uma configuração, `NodeConfig::validate` lê os dois headers
 GGUF e recusa um caminho que não seja projetor ou cuja identidade/dimensão de
 saída contradiga o modelo. Isso também impede que um `mmproj_path` incompatível
 persistido anteriormente chegue ao servidor.
+The projector is placed by `VisionContext::load` after the model and its
+contexts are loaded: on the GPU with the most free memory that fits its
+weights plus `VISION_COMPUTE_RESERVE_BYTES`, or on the CPU when none fits
+(loading it on a full GPU made llama.cpp abort in the warmup or dereference
+null in `ggml_gallocr_alloc_graph` on the first image). `image_max_tokens` is
+capped at `VISION_MAX_IMAGE_TOKENS`, which bounds the warmup and each encode.
+
+**An image on a hyper-connection model enters as `hc` copies.** `qwen4exp`
+reads any batch without token ids as its wide residual (`n_embd_out = hc *
+n_embd` per row), the form one pipeline hop forwards to the next. The
+projector emits `n_embd_inp` per row, so `mtmd_helper_eval_chunks` aborted the
+head in `ggml_reshape_3d` on the first image. When `n_embd_out` is a whole
+multiple of `n_embd_inp`, `decode_multimodal` evaluates the chunks itself
+(`eval_chunks_with_wide_images`): text chunks still go through the mtmd
+helper, and each image is encoded by mtmd and decoded with every row repeated
+`n_embd_out / n_embd_inp` times, which is how the token path starts the
+residual. Positions and the non-causal switch follow the helper. Such a model
+runs without `cparams.embeddings`, so its last layer keeps only the rows
+marked as outputs; when the hop forwards the residual, every text and image
+cell is marked (the mtmd helper marks only the last one, and `take_residual`
+then refused the short capture). Text chunks are decoded there too for that
+reason. Other models keep the stock helper.
+
+A failed prefill reaches the client as `Prefill falhou: <cause>`, built by
+`prefill::failure_cause`, which drops the telemetry and resume wrappers from
+the error chain; the gateway also logs the full chain at `warn`.
+
+**M-RoPE hidden-state batches always carry four positions per row.** With an
+embedding batch (`batch.token` null) llama.cpp reads `pos[j * n_tokens + i]`
+for every M-RoPE section. Text-only requests used to send one scalar position
+per row, so every peer after the head rotated sections 1-3 with heap garbage
+and a long prompt crashed in `llama_batch_allocr::ubatch_add` once the read
+crossed a page. `decode_hidden` and the batched hidden path now build the four
+sections (`text_mrope_positions`) whenever the model's rope type is MROPE or
+IMROPE. MTP batches carry tokens, so llama.cpp reads one position there.
 
 **Célula de KV não é posição lógica.** Uma imagem escreve `n_tokens` células
 de embedding no KV, mas em M-RoPE ocupa apenas

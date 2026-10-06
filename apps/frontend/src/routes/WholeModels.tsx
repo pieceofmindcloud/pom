@@ -17,17 +17,44 @@ import { useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { isWholeModel, type DiscoveredModel, type ModelSource } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { useState } from "react";
+import { Modal } from "../components/Confirm";
+import { SidecarLinkEditor } from "../components/SidecarLinkEditor";
+import { useClusterCatalog } from "../lib/queries";
 
 const SOURCE_TONE: Record<string, "sky" | "amber" | "neutral"> = {
   lmstudio: "sky",
   ollama: "amber",
 };
 
+/** The vision/MTP link of one whole model, in a window over the table. */
+function WholeModelLinks({ model, onClose }: { model: DiscoveredModel; onClose: () => void }) {
+  const { t } = useI18n();
+  const cluster = useClusterCatalog();
+  return (
+    <Modal
+      open
+      size="lg"
+      title={`${t("sidecars.linkTitle")} · ${model.name}`}
+      onClose={onClose}
+      footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}
+    >
+      <SidecarLinkEditor
+        modelKey={model.name}
+        model={model}
+        embeddedMtp={model.capabilities?.mtp === true}
+        peers={cluster.data?.peers}
+      />
+    </Modal>
+  );
+}
+
 export function ModelRow({ model }: { model: DiscoveredModel }) {
   const { t } = useI18n();
   const toast = useToast();
   const catalog = useLocalCatalog();
   const mmprojName = optionalBasename(model.mmproj_path);
+  const [linkOpen, setLinkOpen] = useState(false);
 
   async function remove() {
     try {
@@ -73,6 +100,10 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
         ) : (
           <span className="text-[0.78rem] text-faint">{t("models.mmprojNone")}</span>
         )}
+        <Button size="sm" variant="ghost" className="ml-2 h-6 px-2 text-[0.68rem]" onClick={() => setLinkOpen(true)}>
+          {t("sidecars.linkTitle")}
+        </Button>
+        {linkOpen && <WholeModelLinks model={model} onClose={() => setLinkOpen(false)} />}
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
         <Mono>{bytes(model.size_bytes)}</Mono>

@@ -58,6 +58,8 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
       changed_at: "2026-08-15T00:00:00Z",
     },
     system: fakeSystem({ hostname: over.hostname ?? "salem" }),
+    plugin_services: [],
+    kv_cache: { enabled: true, path: "/data/kv-slots", snapshots: 0, bytes: 0 },
     thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
     peer_count: 1,
     load: 0,

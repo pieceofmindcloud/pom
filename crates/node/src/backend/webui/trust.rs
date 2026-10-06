@@ -130,26 +130,29 @@ fn is_loopback(peer: Option<&crate::serve::PeerAddr>) -> bool {
     peer.is_some_and(|peer| crate::auth::is_loopback_addr(peer.0))
 }
 
+/// Only valid `pk:` keys go into the document: `relay_peers` also accepts
+/// multiaddresses, and a multiaddress carries an IP.
+pub(crate) fn relay_hint_keys(relay_peers: &[String]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for entry in relay_peers {
+        let entry = entry.trim();
+        if entry.starts_with("pk:") && crate::pkarr_node::peer_id_from_uri(entry).is_some() {
+            if !keys.iter().any(|known| known == entry) {
+                keys.push(entry.to_string());
+            }
+        }
+    }
+    keys
+}
+
 pub(crate) async fn setup_metadata_from_local_configuration(
     state: &GatewayState,
 ) -> anyhow::Result<Option<crate::admin_trust::TrustNetworkMetadata>> {
-    let (network, advertised_address, bootstrap_address) = {
+    let (network, relay_hints) = {
         let config = state.auth.read().await;
-        let Some(advertised_address) = config.advertise_addr.clone() else {
-            return Ok(None);
-        };
-        let bootstrap_address = config
-            .bootstrap_nodes
-            .first()
-            .cloned()
-            .unwrap_or_else(|| advertised_address.clone());
-        (
-            config.network.clone(),
-            advertised_address,
-            bootstrap_address,
-        )
+        (config.network.clone(), relay_hint_keys(&config.relay_peers))
     };
-    if network.public_name.trim().is_empty() || advertised_address.trim().is_empty() {
+    if network.public_name.trim().is_empty() {
         return Ok(None);
     }
     let directory_replicas = state
@@ -166,8 +169,7 @@ pub(crate) async fn setup_metadata_from_local_configuration(
         country_name: network.country_name.trim().to_string(),
         city: network.city.trim().to_string(),
         geo_label: network.geo_label.trim().to_string(),
-        advertised_address: advertised_address.trim().to_string(),
-        bootstrap_address: bootstrap_address.trim().to_string(),
+        relay_hints,
         directory_replicas,
     }))
 }
@@ -433,8 +435,14 @@ mod tests {
                 access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
                 ..Default::default()
             };
+            // A local pin and bootstrap do not go into the document: it only
+            // carries keys. A multiaddress in `relay_peers` stays out too.
             config.advertise_addr = Some("[2001:db8::10]:43123".into());
             config.bootstrap_nodes = vec!["[2001:db8::10]:43123".into()];
+            config.relay_peers = vec![
+                "pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".into(),
+                "/ip4/198.51.100.1/tcp/52777/p2p/12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK".into(),
+            ];
         }
         state
             .database
@@ -461,8 +469,14 @@ mod tests {
             .expect("download deve carregar o setup da rede");
         assert_eq!(setup.public_name, "Rede do wizard");
         assert_eq!(setup.organization, "POM");
-        assert_eq!(setup.advertised_address, "[2001:db8::10]:43123");
-        assert_eq!(setup.bootstrap_address, "[2001:db8::10]:43123");
+        assert_eq!(
+            setup.relay_hints,
+            vec!["pk:yg4gxe7z1r7mr6orids9fh95y7gxhdsxjqi6nngsxxtakqaxr5no".to_string()]
+        );
+        assert!(
+            !body["document"].as_str().unwrap().contains("2001:db8"),
+            "the trust document must not carry an IP"
+        );
         assert_eq!(setup.directory_replicas, vec!["https://directory.example"]);
         assert_eq!(state.admin_trust.document().setup, Some(setup));
     }

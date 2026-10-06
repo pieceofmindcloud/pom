@@ -119,6 +119,32 @@ pub(super) async fn run(
     // of them on that peer before any destination asks the transfer service to
     // pull a path. Grouping keeps one source read/manifest operation per
     // source model even when the selected pipeline has several ranges.
+    // Projector for the head and MTP draft for the tail, when the machine that
+    // loads them does not have them yet. They go by path, like any file outside
+    // a manifest, and land in the target's `recebidos/` folder, which its
+    // catalog scans: the post-copy survey finds them there by name and size.
+    for slot in [&plan.sidecars.vision, &plan.sidecars.mtp].into_iter().flatten() {
+        if !slot.needs_copy() {
+            continue;
+        }
+        let (Some(file), Some(source_node), Some(source_path)) =
+            (&slot.file, &slot.source_node_id, &slot.source_path)
+        else {
+            continue;
+        };
+        pulls.push(Pull {
+            target_node_id: slot.target_node_id.clone(),
+            target_host: slot.target_host.clone(),
+            source_node_id: source_node.clone(),
+            source_path: source_path.clone(),
+            source_sha256: None,
+            source_needs_split: false,
+            name: file.file_name.clone(),
+            start_layer: 0,
+            end_layer: 0,
+        });
+    }
+
     let mut materializations: HashMap<(String, String, u32, String), Vec<SliceRange>> =
         HashMap::new();
     for pull in &pulls {
@@ -289,15 +315,15 @@ pub(super) async fn run(
             })
             .collect::<Vec<_>>()
     });
-    let machines = survey(
+    let fresh = survey(
         &state,
         &plan.group,
         plan.kind,
         launch_selection.as_deref(),
         plan.tp.as_ref(),
     )
-    .await
-    .machines;
+    .await;
+    let machines = fresh.machines;
     let mut targets = launch_targets(
         &plan.steps,
         &machines,
@@ -314,6 +340,32 @@ pub(super) async fn run(
             })?;
         head.use_mmproj = true;
         head.mmproj_path = plan.mmproj_path.clone();
+        if let Some(slot) = plan.sidecars.vision.as_ref() {
+            if let Some(file) = slot.file.as_ref().filter(|_| slot.mode == crate::catalog::SidecarMode::File) {
+                // Known path when the survey already sees it; otherwise the
+                // head finds the copy on its own disk by name and size.
+                head.mmproj_path = local_sidecar_path(
+                    &fresh.sidecars,
+                    &slot.target_node_id,
+                    crate::catalog::SidecarKind::Mmproj,
+                    file,
+                );
+                head.mmproj_file = Some(file.clone());
+            }
+        }
+    }
+    if let Some(slot) = plan.sidecars.mtp.as_ref() {
+        if let Some(file) = slot.file.as_ref().filter(|_| slot.mode == crate::catalog::SidecarMode::File) {
+            let path = local_sidecar_path(&fresh.sidecars, &slot.target_node_id, crate::catalog::SidecarKind::Mtp, file);
+            let tail_end = plan.total_layers.map(|total| total.saturating_sub(1));
+            for target in targets
+                .iter_mut()
+                .filter(|target| target.node_id == slot.target_node_id && Some(target.end_layer) == tail_end)
+            {
+                target.mtp_draft_path = path.clone();
+                target.mtp_draft_file = Some(file.clone());
+            }
+        }
     }
     if params.no_embeddings {
         // O planner já validou atomicamente a topologia. Marcar cada alvo
@@ -842,6 +894,11 @@ pub(super) async fn run_redeploy(
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                         .map(str::to_string),
+                    mtp_draft_path: config
+                        .and_then(|c| c.get("mtp_draft_path"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
                     model_label: config
                         .and_then(|c| c.get("model_label"))
                         .and_then(|v| v.as_str())
@@ -945,6 +1002,7 @@ pub(super) async fn run_redeploy(
                 .and_then(|s| s.model_path.clone())
                 .or_else(|| no.source_model_path.clone()),
             mmproj_path: snap.and_then(|s| s.mmproj_path.clone()),
+            mtp_draft_path: snap.and_then(|s| s.mtp_draft_path.clone()),
             part_sha256: no.part_sha256.clone(),
             model_label: snap
                 .and_then(|s| s.model_label.clone())
@@ -995,6 +1053,10 @@ pub(super) async fn run_redeploy(
 pub(super) struct NodeIdentitySnapshot {
     pub(super) model_path: Option<String>,
     pub(super) mmproj_path: Option<String>,
+    /// The external MTP draft the tail had loaded. It comes from the model's
+    /// sidecar link and rarely sits next to the slice, so the slice's own
+    /// folder cannot find it again.
+    pub(super) mtp_draft_path: Option<String>,
     pub(super) model_label: Option<String>,
     pub(super) deployment_name: String,
     pub(super) single_peer: bool,

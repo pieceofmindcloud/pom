@@ -56,6 +56,102 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// A sidecar the fast scan cannot tell by name (an MTP draft called
+    /// `Ckpt_Q38.gguf`) enters as a pending model and the enrichment drops it.
+    /// It has to leave the inventory too: left there it stayed pending, and
+    /// every finished enrichment started the next one in a tight loop.
+    #[test]
+    fn a_sidecar_known_only_by_its_header_does_not_stay_pending() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-catalog-discarded-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        std::fs::write(
+            models.join("model.gguf"),
+            crate::splitter::test_gguf_bytes(1),
+        )
+        .unwrap();
+        std::fs::write(
+            models.join("Ckpt_Q38.gguf"),
+            crate::catalog::tests::mtp_draft_fixture("llama", 64, 32),
+        )
+        .unwrap();
+
+        let fast = crate::catalog::discover_fast(std::slice::from_ref(&models), &shards);
+        assert_eq!(
+            fast.models.len(),
+            2,
+            "the fast scan cannot tell the draft by name"
+        );
+        let input = pending_metadata(&fast);
+        let enriched = crate::catalog::enrich(input.clone());
+        assert_eq!(
+            enriched.models.len(),
+            1,
+            "the header shows the draft is not a model"
+        );
+
+        let mut current = fast;
+        reconcile_enriched_catalog(&mut current, &enriched);
+        let removed = drop_discarded(&mut current, &input, &enriched);
+
+        assert_eq!(removed.len(), 1);
+        assert!(removed[0].ends_with("Ckpt_Q38.gguf"));
+        assert!(
+            pending_metadata(&current).models.is_empty(),
+            "nothing left to enrich again"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The inventory a refresh publishes has to carry the sidecars itself:
+    /// the enrichment only runs while a model still lacks its headers, so a
+    /// list filled only there was empty again after the next refresh - the
+    /// MTP drafts in the shard folder never reached the deploy screen.
+    #[tokio::test]
+    async fn every_refresh_publishes_the_sidecars_of_the_inventory() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-catalog-sidecars-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(shards.join("MTP")).unwrap();
+        std::fs::write(
+            models.join("model.gguf"),
+            crate::splitter::test_gguf_bytes(1),
+        )
+        .unwrap();
+        std::fs::write(
+            shards.join("MTP").join("mtp-model-shared-Q8_0.gguf"),
+            crate::catalog::tests::mtp_draft_fixture("llama", 64, 32),
+        )
+        .unwrap();
+        let roots = normalize_catalog_roots(vec![models.clone()], shards.clone());
+
+        let first = scan_catalog(&roots).await;
+        let enriched = crate::catalog::enrich(first.clone());
+        let mut refreshed = scan_catalog(&roots).await;
+        reconcile_enriched_catalog(&mut refreshed, &enriched);
+
+        for catalog in [&first, &refreshed] {
+            assert_eq!(
+                catalog
+                    .sidecars
+                    .iter()
+                    .map(|sidecar| sidecar.file_name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["mtp-model-shared-Q8_0.gguf"]
+            );
+        }
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn catalog_refresh_claim_is_single_flight() {
         let roots = (vec!["/models".into()], "/slices".into());
@@ -64,6 +160,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: false,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         });
         let mut cached = CachedCatalog {
             at: Instant::now(),
@@ -124,6 +222,8 @@ mod tests {
                 shard_sets: Vec::new(),
                 scanned: Vec::new(),
                 metadata_complete: false,
+                sidecars: Vec::new(),
+                sidecar_roots: Vec::new(),
             }),
             refreshing: Some(roots),
             enriching: None,
@@ -182,6 +282,9 @@ mod tests {
             params: RuntimeParams::default(),
             use_mmproj: false,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
         };
         let ident = |rank: u32, role: &str| crate::network::TpIdentity {
             role: role.into(),
@@ -254,6 +357,9 @@ mod tests {
             peer_count: None,
             tp: None,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
             use_mmproj: false,
         };
 
@@ -294,6 +400,9 @@ mod tests {
             params: RuntimeParams::default(),
             use_mmproj: false,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
         }
     }
 
@@ -332,19 +441,6 @@ mod tests {
         assert_eq!(
             p.fit_memory_margin_mb,
             crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB
-        );
-        assert!(!p.cycle_detection_enabled);
-        assert_eq!(
-            p.cycle_detection_min_window_tokens,
-            crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
-        );
-        assert_eq!(
-            p.cycle_detection_max_window_tokens,
-            crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
-        );
-        assert_eq!(
-            p.cycle_detection_repetitions,
-            crate::cycle::DEFAULT_CYCLE_REPETITIONS
         );
     }
 
@@ -422,26 +518,6 @@ mod tests {
         assert!(!p.fit_memory);
         assert_eq!(p.fit_memory_margin_mb, 512);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
-    }
-
-    #[test]
-    fn cycle_detection_can_be_disabled_and_tuned_as_a_runtime_parameter() {
-        let p: RuntimeParams = serde_json::from_value(serde_json::json!({
-            "cycle_detection_enabled": false,
-            "cycle_detection_min_window_tokens": 64,
-            "cycle_detection_max_window_tokens": 256,
-            "cycle_detection_repetitions": 4
-        }))
-        .unwrap();
-
-        assert!(!p.cycle_detection_enabled);
-        assert_eq!(p.cycle_detection_min_window_tokens, 64);
-        assert_eq!(p.cycle_detection_max_window_tokens, 256);
-        assert_eq!(p.cycle_detection_repetitions, 4);
-
-        let encoded = serde_json::to_value(p).unwrap();
-        assert_eq!(encoded["cycle_detection_enabled"], false);
-        assert_eq!(encoded["cycle_detection_repetitions"], 4);
     }
 
     #[test]

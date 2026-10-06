@@ -21,13 +21,14 @@ import {
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { bytes, layerRange, num, optionalBasename } from "../lib/format";
+import { bytes, layerRange, num } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
 import { uniquePeerName } from "../lib/peerName";
 import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { tpPartsOf, type DiscoveredModel, type PeerCatalog, type ShardSet } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { SidecarLinkEditor } from "../components/SidecarLinkEditor";
 
 function CoverageBar({ set }: { set: ShardSet }) {
   const total = set.total_layers ?? 0;
@@ -152,12 +153,15 @@ function PartRows({
 
 function ShardCard({
   set,
+  peers,
   peersMissing,
   aloneInNetwork,
   onSend,
   onDelete,
 }: {
   set: ShardSet;
+  /** Every machine's catalog: where the sidecars that can be linked live. */
+  peers: PeerCatalog[] | undefined;
   peersMissing: (shard: DiscoveredModel) => PeerCatalog[];
   /** No other machine is on the network at all — different from "everyone
       already has this slice", and the label has to say so. */
@@ -176,7 +180,8 @@ function ShardCard({
       return groups;
     }, new Map<number, DiscoveredModel[]>()),
   ).sort(([a], [b]) => a - b);
-  const mmprojName = optionalBasename(set.mmproj_path);
+  const shape = set.shards.find((shard) => shard.embedding_length != null) ?? set.shards[0];
+  const embeddedMtp = set.shards.some((shard) => shard.capabilities?.mtp === true);
   return (
     <Panel>
       <PanelHeader
@@ -193,15 +198,13 @@ function ShardCard({
           </Badge>
         }
       />
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5 text-[0.78rem]">
-        <span className="text-faint">{t("models.mmproj")}:</span>
-        {mmprojName ? (
-          <span className="break-path font-mono text-fg" title={set.mmproj_path ?? undefined}>
-            {mmprojName}
-          </span>
-        ) : (
-          <span className="text-faint">{t("models.mmprojNone")}</span>
-        )}
+      <div className="border-b border-line px-5 py-3">
+        <SidecarLinkEditor
+          modelKey={set.model_label || set.group}
+          model={shape}
+          embeddedMtp={embeddedMtp}
+          peers={peers}
+        />
       </div>
       {set.shards.length > 0 && (
         <div className="px-5 py-3">
@@ -324,6 +327,7 @@ export function Shards() {
             <ShardCard
               key={set.group}
               set={set}
+              peers={clusterCatalog.data?.peers}
               peersMissing={peersMissing}
               aloneInNetwork={others.length === 0}
               onSend={(shard, nodeId) => void send(shard, nodeId)}

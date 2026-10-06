@@ -301,10 +301,7 @@ pub fn context_params_with_offload(
     // Sem instantâneos de estado recorrente: o bloco `nextn` é uma camada
     // de atenção comum, e o upstream zera este campo pelo mesmo motivo.
     cparams.n_rs_seq = 0;
-    if cfg.n_threads > 0 {
-        cparams.n_threads = cfg.n_threads;
-        cparams.n_threads_batch = cfg.n_threads;
-    }
+    crate::llm::apply_thread_params(&mut cparams, cfg);
     cparams
 }
 
@@ -693,12 +690,16 @@ mod tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 4096,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: 99,
             n_threads: 0,
             max_sessions: 1,
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -839,12 +840,16 @@ mod tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: 99,
             n_threads: 0,
             max_sessions: 1,
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -956,12 +961,16 @@ mod tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: 99,
             n_threads: 0,
             max_sessions: 1,
             need_embeddings: false,
             mtp: true,
             mtp_cpu_fallback_enabled: true,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -994,4 +1003,19 @@ mod tests {
         );
         eprintln!("MTP externo pronto: alocação {:?}", engine.mtp_allocation());
     }
+}
+
+/// Where a deployment wants the MTP block (its weights, KV and compute).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MtpPlacement {
+    /// In VRAM when the whole main model still fits there with it; otherwise
+    /// in host memory, so the main model keeps every layer on the GPU.
+    #[default]
+    Auto,
+    /// Always in VRAM, reserved first: the main model takes what is left and
+    /// gives up layers to host memory if it has to.
+    Vram,
+    /// Always in host memory, run by the CPU: no VRAM is spent on MTP.
+    Ram,
 }

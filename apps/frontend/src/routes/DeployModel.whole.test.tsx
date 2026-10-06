@@ -868,23 +868,25 @@ describe("DeployModel · MTP", () => {
     );
   }
 
+  /** A especulação é uma escolha só: nenhuma, MTP ou lookup. */
+  async function chooseSpeculation(mode: "none" | "mtp" | "lookup") {
+    const select = await screen.findByRole("combobox", { name: "Especulação" });
+    fireEvent.change(select, { target: { value: mode } });
+  }
+
   it("liga o MTP, vê os controles numéricos e os manda na implantação", async () => {
     mountWhole();
     chooseWhole();
     await ensureWholeMachine();
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
-    const switchEl = await screen.findByRole("checkbox", {
-      name: /Predição multi-token/,
-    });
-    expect(switchEl).toBeTruthy();
-    fireEvent.click(switchEl);
+    await chooseSpeculation("mtp");
 
-    const ramFallback = await screen.findByRole("checkbox", {
-      name: "Permitir recuo do MTP para a RAM",
-    });
-    expect(ramFallback.getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(ramFallback);
+    const placement = (await screen.findByRole("combobox", {
+      name: "Onde o MTP fica",
+    })) as HTMLSelectElement;
+    expect(placement.value).toBe("auto");
+    fireEvent.change(placement, { target: { value: "vram" } });
 
     await waitFor(() => {
       expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
@@ -920,7 +922,7 @@ describe("DeployModel · MTP", () => {
       };
       expect(body.kind).toBe("whole");
       expect(body.params.mtp_enabled).toBe(true);
-      expect(body.params.mtp_cpu_fallback_enabled).toBe(false);
+      expect(body.params.mtp_placement).toBe("vram");
       expect(body.params.mtp_draft_tokens).toBe(5);
     });
   });
@@ -931,10 +933,7 @@ describe("DeployModel · MTP", () => {
     await ensureWholeMachine();
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
-    const switchEl = await screen.findByRole("checkbox", {
-      name: /Predição multi-token/,
-    });
-    fireEvent.click(switchEl);
+    await chooseSpeculation("mtp");
 
     await waitFor(() => {
       expect(screen.getByText("Probabilidade mínima do MTP")).toBeTruthy();
@@ -971,7 +970,7 @@ describe("DeployModel · MTP", () => {
   /// "Voltar ao plano do nó" tem que desfazer **também** o que está meio
   /// digitado.
   ///
-  /// O texto em edição vive dentro do `RuntimeParamsForm` desde que ele saiu
+  /// O texto em edição vive dentro do `DeploymentInspector` desde que ele saiu
   /// desta tela. Quem limpava o rascunho aqui era um `setDrafts({})` que deixou
   /// de existir: sem remontar o formulário, o botão zerava os parâmetros por
   /// baixo e o campo continuava mostrando o número velho — a tela dizendo uma
@@ -1033,7 +1032,7 @@ describe("DeployModel · MTP", () => {
     await waitFor(() => expect(campo()!.value).toBe("4096"));
   });
 
-  it("em modo fatiado o interruptor do MTP está habilitado e liga os controles", async () => {
+  it("em modo fatiado o MTP é oferecido na especulação e liga os controles", async () => {
     post.mockImplementation((url: string) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(shardPlan());
@@ -1062,13 +1061,9 @@ describe("DeployModel · MTP", () => {
     );
 
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
-    const switchEl = await screen.findByRole("checkbox", {
-      name: /Predição multi-token/,
-    });
-    expect(switchEl.getAttribute("aria-checked")).toBe("false");
-    expect((switchEl as HTMLInputElement).disabled).toBe(false);
-
-    fireEvent.click(switchEl);
+    const speculation = (await screen.findByRole("combobox", { name: "Especulação" })) as HTMLSelectElement;
+    expect([...speculation.options].map((option) => option.value)).toContain("mtp");
+    await chooseSpeculation("mtp");
 
     await waitFor(() => {
       expect(
@@ -1077,48 +1072,45 @@ describe("DeployModel · MTP", () => {
     });
   });
 
-  it("o MTP desligado por padrão: o interruptor nasce apagado", async () => {
+  it("a especulação segue o plano: MTP no plano vem selecionado, sem ele nasce em Nenhuma", async () => {
+    mountWhole(true);
+    chooseWhole();
+    const speculation = (await screen.findByRole("combobox", { name: "Especulação" })) as HTMLSelectElement;
+    await waitFor(() => expect(speculation.value).toBe("mtp"));
+    expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
+    cleanup();
+
     mountWhole(false);
-
-    await waitFor(async () => {
-      chooseWhole();
-    });
-
-    const switchEl = await screen.findByRole("checkbox", {
-      name: /Predição multi-token/,
-    });
-    expect(switchEl.getAttribute("aria-checked")).toBe("false");
-    // Sem MTP ligado, os controles numéricos não aparecem.
-    expect(
-      screen.queryByText("Tokens rascunhados pelo MTP"),
-    ).toBeNull();
-    expect(
-      screen.queryByText("Probabilidade mínima do MTP"),
-    ).toBeNull();
+    chooseWhole();
+    const none = (await screen.findByRole("combobox", { name: "Especulação" })) as HTMLSelectElement;
+    await waitFor(() => expect(none.value).toBe("none"));
+    expect(screen.queryByText("Tokens rascunhados pelo MTP")).toBeNull();
+    expect(screen.queryByText("Probabilidade mínima do MTP")).toBeNull();
   });
 
-  it("o MTP e a especulação por lookup são independentes — ligar um não mexe no outro", async () => {
+  it("uma especulação de cada vez: escolher o lookup desliga o MTP", async () => {
     mountWhole();
     chooseWhole();
+    await ensureWholeMachine();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
-    const mtpSwitch = await screen.findByRole("checkbox", {
-      name: /Predição multi-token/,
-    });
-    fireEvent.click(mtpSwitch);
+    await chooseSpeculation("mtp");
+    await waitFor(() => expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy());
 
+    await chooseSpeculation("lookup");
+    await waitFor(() => expect(screen.queryByText("Tokens rascunhados pelo MTP")).toBeNull());
+    expect(screen.queryByRole("combobox", { name: "Onde o MTP fica" })).toBeNull();
+
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
     await waitFor(() => {
-      expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
+      const deploys = post.mock.calls.filter(([url]) => url === "/api/ui/deploy");
+      expect(deploys).toHaveLength(1);
+      const body = deploys[0][1] as { params: RuntimeParams };
+      expect(body.params.mtp_enabled).toBe(false);
+      expect(body.params.speculative_decoding_enabled).toBe(true);
     });
-
-    // The speculative decoding switch should still be off.
-    const specSwitch = screen.getByRole("checkbox", {
-      name: /Decodificação especulativa/,
-    });
-    expect(specSwitch.getAttribute("aria-checked")).toBe("false");
-
-    // And none of the speculative knobs are visible.
-    expect(screen.queryByText("Largura do rascunho")).toBeNull();
-    expect(screen.queryByText("Janela de busca")).toBeNull();
   });
 });
 

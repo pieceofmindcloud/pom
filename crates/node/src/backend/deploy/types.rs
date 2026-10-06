@@ -159,10 +159,20 @@ pub struct DeployRequest {
     /// Start the selected model with its catalogued mmproj projector.
     #[serde(default)]
     pub vision: bool,
-    /// Optional projector selected by the operator. The path is local to the
-    /// selected pipeline head and is validated there before launch.
+    /// Optional projector selected by the operator, used only with `vision`.
+    /// It is resolved against the selected pipeline head by path or, when the
+    /// screen sent another machine's copy, by file name
+    /// (`planning::resolve_head_projector`), and validated there before launch.
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// Vision projector chosen on the screen, by file name + size. Overrides
+    /// the model's saved link; `None` leaves the link (or the catalog's
+    /// sibling projector) in charge.
+    #[serde(default)]
+    pub vision_choice: Option<SidecarChoice>,
+    /// MTP draft chosen on the screen (file, embedded or none). Same rules.
+    #[serde(default)]
+    pub mtp_choice: Option<SidecarChoice>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

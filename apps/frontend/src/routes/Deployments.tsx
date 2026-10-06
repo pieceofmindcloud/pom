@@ -29,18 +29,14 @@ import {
 import { useDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
-import { Modal } from "../components/Confirm";
 import { DeploymentInspector } from "../components/DeploymentInspector";
-import { RuntimeParamsForm } from "../components/RuntimeParamsForm";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import {
   Badge,
   Button,
   Empty,
-  Field,
   Input,
   Mono,
-  Panel,
   Progress,
   ScrollX,
   Skeleton,
@@ -50,6 +46,9 @@ import { useI18n } from "../i18n/provider";
 
 /** Que versão de que implantação está aberta no inspetor da direita. */
 type Inspected = { deployId: string; version: DeploymentVersion };
+
+/** A reimplantação em edição à direita: de que implantação, a partir de que valores. */
+type Editing = { deployId: string; seed: RuntimeParams; fromVersion: number };
 
 const KIND_TONE: Record<DeploymentKind, "iris" | "aqua" | "sky"> = {
   shards: "iris",
@@ -68,37 +67,31 @@ function dateTimeLabel(iso: string, locale: string) {
 }
 
 /**
- * A caixa de reimplantar: os parâmetros comuns mais os dois botões que são de
- * verdade por máquina.
+ * Reimplantar: o mesmo inspetor da tela de implantar, editável, à direita da
+ * lista, mais os dois ajustes que são de verdade por máquina.
  *
- * Os campos vêm preenchidos com o que a implantação está rodando — que é o que
- * o registro guarda —, então mexer num campo é mexer num valor real, e não
- * preencher um formulário do zero torcendo para acertar o resto.
+ * Os campos vêm preenchidos com a versão escolhida (a ativa, por padrão) - que
+ * é o que o registro guarda -, então mexer num campo é mexer num valor real, e
+ * não preencher um formulário do zero torcendo para acertar o resto. Um só
+ * inspetor nas duas telas é o que impede uma propriedade nova de entrar numa e
+ * faltar na outra.
  */
-function RedeployDialog({
+function RedeployPanel({
   row,
-  open,
-  onClose,
+  editing,
   pomDesenv,
+  onClose,
 }: {
   row: DeploymentRow;
-  open: boolean;
-  onClose: () => void;
+  editing: Editing;
   pomDesenv: boolean;
+  onClose: () => void;
 }) {
   const { t } = useI18n();
   const toast = useToast();
   const invalidate = useInvalidate();
   const { data: jobsData } = useJobs();
-
-  const first = row.deployment.nodes[0];
-  // Semeia com os parâmetros do deployment inteiro da versão ativa (não o
-  // `config` do nó 0, que já traz os ajustes por máquina embutidos).
-  const activeParams =
-    row.deployment.versions?.find(
-      (v) => v.version === row.deployment.active_version,
-    )?.params ?? first.config;
-  const [params, setParams] = useState<RuntimeParams>(() => ({ ...activeParams }));
+  const [params, setParams] = useState<RuntimeParams>(() => ({ ...editing.seed }));
   const [perNode, setPerNode] = useState<
     Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>
   >(() =>
@@ -111,9 +104,7 @@ function RedeployDialog({
   );
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
-
   const job = jobsData?.jobs.find((j) => j.id === jobId);
-  const isTp = row.deployment.kind === "tensor_parallel";
 
   async function submit() {
     setBusy(true);
@@ -133,117 +124,99 @@ function RedeployDialog({
   }
 
   return (
-    <Modal
-      open={open}
-      size="lg"
-      title={t("deployments.redeployTitle", { model: row.deployment.model.label })}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            {t("common.close")}
-          </Button>
-          <Button onClick={submit} disabled={busy}>
-            {t("deployments.redeployAction")}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-5">
-        <p className="text-sm text-muted">
-          {t("deployments.redeployHint", { id: row.deployment.deploy_id })}
-        </p>
-
-        {job && (
-          <Panel>
-            <div className="space-y-2 px-4 py-3">
-              <div className="text-sm text-fg">{job.message || job.step}</div>
-              <Progress value={job.progress ?? 0} />
-              {job.outputs.length > 0 && (
-                <ul className="mt-2 space-y-1 border-t border-line pt-2 text-[0.72rem] text-muted">
-                  {job.outputs.map((output) => (
-                    <li key={output} className="break-path font-mono">
-                      {output}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </Panel>
-        )}
-
-        <RuntimeParamsForm
-          value={params}
-          onChange={setParams}
-          disabled={busy}
-          isTp={isTp}
-          pomDesenv={pomDesenv}
-        />
-
-        <div className="space-y-2 border-t border-line pt-4">
-          <div className="text-[0.82rem] text-fg">{t("deployments.perMachine")}</div>
-          <ScrollX>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-faint">
-                  <th className="py-1 pr-4">{t("deployments.machine")}</th>
-                  <th className="py-1 pr-4">{t("deployments.layers")}</th>
-                  <th className="py-1 pr-4">{t("deploy.knob.n_gpu_layers")}</th>
-                  <th className="py-1">{t("deploy.offloadKqv")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {row.deployment.nodes.map((n) => (
-                  <tr key={n.node_id} className="border-t border-line">
-                    <td className="py-2 pr-4">{n.hostname || n.node_id.slice(0, 12)}</td>
-                    <td className="py-2 pr-4 text-muted">
-                      {layerRange(n.start_layer, n.end_layer)}
-                    </td>
-                    <td className="py-2 pr-4">
-                      <Field label="" >
-                        <Input
-                          type="number"
-                          min={0}
-                          disabled={busy}
-                          aria-label={`${t("deploy.knob.n_gpu_layers")} ${n.hostname}`}
-                          value={String(perNode[n.node_id]?.n_gpu_layers ?? "")}
-                          onChange={(e) =>
-                            setPerNode((s) => ({
-                              ...s,
-                              [n.node_id]: {
-                                ...s[n.node_id],
-                                n_gpu_layers: Number(e.target.value),
-                              },
-                            }))
-                          }
-                        />
-                      </Field>
-                    </td>
-                    <td className="py-2">
-                      <input
-                        type="checkbox"
-                        aria-label={`${t("deploy.offloadKqv")} ${n.hostname}`}
-                        checked={perNode[n.node_id]?.offload_kqv ?? true}
-                        disabled={busy}
-                        onChange={(e) =>
-                          setPerNode((s) => ({
-                            ...s,
-                            [n.node_id]: {
-                              ...s[n.node_id],
-                              offload_kqv: e.target.checked,
-                            },
-                          }))
-                        }
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </ScrollX>
+    <>
+      <div className="sticky top-0 z-10 flex items-start justify-between gap-2 border-b border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
+        <div className="min-w-0">
+          <p className="truncate text-[0.7rem] font-semibold text-fg">
+            {t("deployments.redeployTitle", { model: row.deployment.model.label })}
+          </p>
+          <p className="truncate font-mono text-[0.6rem] text-faint">
+            {row.deployment.deploy_id} · {t("deployments.version", { n: editing.fromVersion })}
+          </p>
         </div>
+        <button
+          type="button"
+          aria-label={t("deployments.closeProperties")}
+          onClick={onClose}
+          className="shrink-0 rounded p-1 text-muted hover:text-fg"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
       </div>
-    </Modal>
+      <p className="border-b border-line px-2 py-1.5 text-[0.6rem] leading-relaxed text-faint">
+        {t("deployments.redeployHint", { id: row.deployment.deploy_id })}
+      </p>
+      {job && (
+        <div className="space-y-1.5 border-b border-line px-2 py-2">
+          <div className="text-[0.7rem] text-fg">{job.message || job.step}</div>
+          <Progress value={job.progress ?? 0} />
+          {job.outputs.length > 0 && (
+            <ul className="space-y-0.5 text-[0.6rem] text-muted">
+              {job.outputs.map((output) => (
+                <li key={output} className="break-path font-mono">{output}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <DeploymentInspector
+        value={params}
+        onChange={setParams}
+        showInferenceMode
+        pomDesenv={pomDesenv}
+        showHiddenStateDtype={params.hidden_state_dtype != null}
+      />
+
+      <div className="space-y-1.5 border-t border-line px-2 py-2">
+        <p className="text-[0.65rem] font-semibold text-fg">{t("deployments.perMachine")}</p>
+        {row.deployment.nodes.map((n) => (
+          <div key={n.node_id} className="grid grid-cols-[minmax(0,1fr)_4.5rem_auto] items-center gap-2 text-[0.65rem]">
+            <div className="min-w-0">
+              <p className="truncate text-fg">{n.hostname || n.node_id.slice(0, 12)}</p>
+              <p className="text-faint">{t("deployments.layers")} {layerRange(n.start_layer, n.end_layer)}</p>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              compact
+              disabled={busy}
+              aria-label={`${t("deploy.knob.n_gpu_layers")} ${n.hostname}`}
+              title={t("deploy.knob.n_gpu_layers")}
+              value={String(perNode[n.node_id]?.n_gpu_layers ?? "")}
+              onChange={(e) =>
+                setPerNode((s) => ({
+                  ...s,
+                  [n.node_id]: { ...s[n.node_id], n_gpu_layers: Number(e.target.value) },
+                }))
+              }
+            />
+            <label className="flex items-center gap-1 text-muted" title={t("deploy.offloadKqv")}>
+              <input
+                type="checkbox"
+                aria-label={`${t("deploy.offloadKqv")} ${n.hostname}`}
+                checked={perNode[n.node_id]?.offload_kqv ?? true}
+                disabled={busy}
+                onChange={(e) =>
+                  setPerNode((s) => ({
+                    ...s,
+                    [n.node_id]: { ...s[n.node_id], offload_kqv: e.target.checked },
+                  }))
+                }
+              />
+              KQV
+            </label>
+          </div>
+        ))}
+      </div>
+
+      <div className="sticky bottom-0 flex justify-end gap-2 border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
+        <Button variant="ghost" size="sm" onClick={onClose}>{t("common.cancel")}</Button>
+        <Button size="sm" onClick={submit} loading={busy} icon={<RefreshCw className="h-3.5 w-3.5" />}>
+          {t("deployments.redeployAction")}
+        </Button>
+      </div>
+    </>
   );
 }
 
@@ -346,17 +319,16 @@ function Row({
   row,
   inspected,
   onInspect,
-  pomDesenv,
+  onRedeploy,
 }: {
   row: DeploymentRow;
   inspected: Inspected | null;
   onInspect: (next: Inspected | null) => void;
-  pomDesenv: boolean;
+  onRedeploy: () => void;
 }) {
   const { locale, t } = useI18n();
   const toast = useToast();
   const invalidate = useInvalidate();
-  const [redeploying, setRedeploying] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const d = row.deployment;
   const versionCount = d.versions?.length ?? 1;
@@ -439,7 +411,7 @@ function Row({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => setRedeploying(true)}
+              onClick={onRedeploy}
               icon={<RefreshCw className="h-3.5 w-3.5" />}
             >
               {t("deployments.redeployNewParams")}
@@ -464,16 +436,6 @@ function Row({
                   start_layer: n.start_layer,
                   end_layer: n.end_layer,
                 }))}
-              />
-            )}
-            {/* O `Modal` se muda para o `body` por portal, então ficar aqui
-                dentro é só onde ele nasce — não afeta o layout da tabela. */}
-            {redeploying && (
-              <RedeployDialog
-                row={row}
-                open
-                onClose={() => setRedeploying(false)}
-                pomDesenv={pomDesenv}
               />
             )}
           </div>
@@ -502,6 +464,16 @@ export function Deployments() {
    * cada refresh da lista.
    */
   const [inspected, setInspected] = useState<Inspected | null>(null);
+  // O lado direito mostra uma coisa de cada vez: a versão lida ou a reimplantação.
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const inspect = (next: Inspected | null) => {
+    setEditing(null);
+    setInspected(next);
+  };
+  const edit = (deployId: string, version: DeploymentVersion | undefined, fallback: RuntimeParams, fromVersion: number) => {
+    setInspected(null);
+    setEditing({ deployId, seed: version?.params ?? fallback, fromVersion: version?.version ?? fromVersion });
+  };
   const rows = [...(data?.deployments ?? [])].sort((a, b) => {
     const aTime = Date.parse(a.deployment.activated_at);
     const bTime = Date.parse(b.deployment.activated_at);
@@ -531,7 +503,7 @@ export function Deployments() {
 
       <div
         className={`flex min-h-0 min-w-0 flex-1 flex-col ${
-          inspected ? "lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]" : ""
+          inspected || editing ? "lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]" : ""
         }`}
       >
         <div className="min-h-0 min-w-0 flex-1 overflow-auto">
@@ -565,8 +537,16 @@ export function Deployments() {
                       key={r.deployment.deploy_id}
                       row={r}
                       inspected={inspected}
-                      onInspect={setInspected}
-                      pomDesenv={pomDesenv}
+                      onInspect={inspect}
+                      onRedeploy={() => {
+                        const d = r.deployment;
+                        edit(
+                          d.deploy_id,
+                          d.versions?.find((v) => v.version === d.active_version),
+                          d.nodes[0].config,
+                          d.active_version,
+                        );
+                      }}
                     />
                   ))}
                 </tbody>
@@ -589,7 +569,7 @@ export function Deployments() {
               <button
                 type="button"
                 aria-label={t("deployments.closeProperties")}
-                onClick={() => setInspected(null)}
+                onClick={() => inspect(null)}
                 className="shrink-0 rounded p-1 text-muted hover:text-fg"
               >
                 <X className="h-3.5 w-3.5" />
@@ -611,8 +591,33 @@ export function Deployments() {
               pomDesenv={pomDesenv}
               showHiddenStateDtype={inspected.version.params.hidden_state_dtype != null}
             />
+            <div className="sticky bottom-0 flex justify-end border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
+              <Button
+                size="sm"
+                variant="outline"
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+                onClick={() => edit(inspected.deployId, inspected.version, inspected.version.params, inspected.version.version)}
+              >
+                {t("deployments.editAndRedeploy")}
+              </Button>
+            </div>
           </aside>
         )}
+
+        {editing && (() => {
+          const row = rows.find((r) => r.deployment.deploy_id === editing.deployId);
+          return row ? (
+            <aside className="min-h-0 shrink-0 overflow-y-auto border-t border-line bg-surface/45 lg:border-l lg:border-t-0">
+              <RedeployPanel
+                key={`${editing.deployId}:${editing.fromVersion}`}
+                row={row}
+                editing={editing}
+                pomDesenv={pomDesenv}
+                onClose={() => setEditing(null)}
+              />
+            </aside>
+          ) : null;
+        })()}
       </div>
     </div>
   );

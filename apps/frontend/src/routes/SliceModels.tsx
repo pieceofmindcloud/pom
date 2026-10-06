@@ -378,7 +378,7 @@ export function SliceModels() {
                   só existe quando o backend confirma `POM_DESENV=1`. Uma vista
                   só não é escolha, então sem a flag este grupo nem aparece e o
                   modo nunca sai de "pipeline" (mesmo padrão de
-                  `DeploymentInspector`/`RuntimeParamsForm`).
+                  `DeploymentInspector`).
                 */}
                 {pomDesenv && (
                   <div

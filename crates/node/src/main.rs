@@ -67,10 +67,12 @@ mod config;
 mod continuation_lab;
 #[path = "core_update.rs"]
 mod core_update;
-#[path = "inference/cycle.rs"]
-mod cycle;
+#[path = "utils/crash.rs"]
+mod crash;
 #[path = "backend/db.rs"]
 mod db;
+#[path = "backend/decisions.rs"]
+mod decisions;
 #[path = "backend/deploy/mod.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
@@ -147,6 +149,7 @@ mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_proxy;
+mod plugin_services;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
@@ -175,6 +178,7 @@ mod public_directory;
 pub mod quic;
 #[path = "network/quic_policy.rs"]
 pub mod quic_policy;
+mod rag;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
@@ -236,7 +240,7 @@ use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Subcommand, Debug)]
@@ -325,10 +329,6 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0")]
     setup_bind: std::net::IpAddr,
 
-    /// Enable the conservative cycle detector for this node (off by default).
-    #[arg(long)]
-    cycle_detection: bool,
-
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
     #[arg(long, default_value = "")]
     pkarr_peers: String,
@@ -374,6 +374,15 @@ struct Args {
     #[arg(long)]
     no_discovery: bool,
 
+    /// Turns pkarr off: publishes no record to the Mainline DHT and resolves no
+    /// `pk:` keys (`--pkarr-peers`, `relay_peers`, trust chain principals).
+    /// For a network without internet access, where the DHT is unreachable:
+    /// paths stay on UDP/mDNS on the LAN and on `bootstrap_nodes` between
+    /// segments. A relay listed in `relay_peers` is still recognised as
+    /// dedicated by its key, but it must also be in `bootstrap_nodes`.
+    #[arg(long)]
+    no_pkarr: bool,
+
     /// `--port` veio da variável de ambiente, não da linha de comando.
     /// Preenchido por `parse_args`; ver `apply_env_overrides`.
     #[arg(skip)]
@@ -396,13 +405,13 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("ollama_url", "OLLAMA_URL"),
     ("gateway_port", "GATEWAY_PORT"),
     ("setup_bind", "SETUP_BIND"),
-    ("cycle_detection", "CYCLE_DETECTION"),
     ("pkarr_peers", "PKARR_PEERS"),
     ("public_addr", "PUBLIC_ADDR"),
     ("relay_peers", "RELAY_PEERS"),
     ("serve_relay", "SERVE_RELAY"),
     ("no_default_relays", "NO_DEFAULT_RELAYS"),
     ("no_discovery", "NO_DISCOVERY"),
+    ("no_pkarr", "NO_PKARR"),
 ];
 
 /// Opções cuja variável não é o mesmo valor da flag e por isso não passa pelo
@@ -468,6 +477,9 @@ fn apply_env_overrides(config: &mut config::Config, args: &Args) {
 /// disso existe e o runtime é construído aqui mesmo, de modo que quem corre o
 /// binário num servidor Linux não ganha dependência de interface gráfica.
 fn main() -> Result<()> {
+    // First of all: a native crash inside llama.cpp leaves no line in the
+    // node's own log otherwise.
+    crash::install();
     respawn::remember_argv(std::env::args().collect());
     let (log_capture, log_receiver) =
         cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
@@ -617,7 +629,6 @@ fn anchor_admin(
             demotions: Vec::new(),
             pending_transfer: None,
             completed_transfers: Vec::new(),
-            replay: Vec::new(),
             setup: None,
             setup_signature: String::new(),
         };
@@ -747,7 +758,7 @@ async fn async_main(
         info!("Generated a local admin credential for the configured node");
     }
     log_capture.set_min_level(app_config.cluster_logs_min_level);
-    let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
+    let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver);
     let audit = reqlog::AuditLog::new(database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
@@ -794,6 +805,7 @@ async fn async_main(
         app_config.clone(),
         args.ollama_url,
         args.no_discovery,
+        args.no_pkarr,
         args.no_default_relays,
         merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
         merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
@@ -801,7 +813,6 @@ async fn async_main(
         args.serve_relay,
         args.advertise_addr.clone(),
         args.public_addr.clone(),
-        args.cycle_detection,
         cluster_logs,
         audit,
         gateway_ready,
@@ -884,6 +895,7 @@ fn force_setup_mode() -> anyhow::Result<()> {
     let candidates = [
         config::Config::config_path(),
         config::admin_trust_path(),
+        crate::admin_trust::replay_path_for(&config::admin_trust_path()),
         database.clone(),
         with_suffix("-wal"),
         with_suffix("-shm"),
@@ -972,9 +984,10 @@ async fn start_setup_mode(
         node_name: None,
         huggingface_token: None,
         slot_save_path: None,
-        slot_persist_prefix_cache: false,
+        slot_persist_prefix_cache: true,
         slot_auto_max_bytes: None,
         slot_auto_ttl_secs: None,
+        cache_ram_mib: None,
     })));
 
     let setup_p2p_port = config.read().await.p2p_port;
@@ -1072,44 +1085,81 @@ fn resolve_advertise_addr(
     }
 }
 
-/// Convert the operator-facing advertised endpoint into the libp2p address
-/// stored in the pkarr record. IPv6 endpoints must use `/ip6` and preserve
-/// their configured port, including the bracketed `[addr]:port` form used by
-/// the setup wizard.
-fn pkarr_multiaddr_for_advertise(
-    configured: Option<&str>,
-    fallback_ip: Option<String>,
-    default_udp_port: u16,
-) -> String {
-    let raw = configured
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or(fallback_ip)
-        .unwrap_or_else(|| "0.0.0.0".to_string());
-    let (host, udp_port) = if let Some(rest) = raw.strip_prefix('[') {
-        rest.split_once(']')
-            .map(|(host, suffix)| {
-                let port = suffix
-                    .strip_prefix(':')
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(default_udp_port);
-                (host.to_string(), port)
-            })
-            .unwrap_or((rest.trim_end_matches(']').to_string(), default_udp_port))
-    } else if raw.parse::<std::net::Ipv6Addr>().is_ok() {
-        (raw, default_udp_port)
-    } else if let Some((host, port)) = raw.rsplit_once(':') {
-        (host.to_string(), port.parse().unwrap_or(default_udp_port))
-    } else {
-        (raw, default_udp_port)
-    };
-    let protocol = if host.parse::<std::net::Ipv6Addr>().is_ok() {
-        "ip6"
-    } else {
-        "ip4"
-    };
-    format!("/{protocol}/{host}/tcp/{}", udp_port.saturating_add(10000))
+/// Keys this node must reach without knowing an address: those of
+/// `--pkarr-peers` and the principals (current and secondary) of the local
+/// trust chain. The authority key is the same as the pkarr record's.
+fn pkarr_bootstrap_keys(
+    admin_trust: &crate::admin_trust::AdminTrust,
+    extra: &[String],
+) -> Vec<String> {
+    let mut keys: Vec<String> = extra.to_vec();
+    if admin_trust.is_anchored() {
+        let principals =
+            std::iter::once(admin_trust.current_primary()).chain(admin_trust.latest_secondary());
+        for principal in principals {
+            if let Some(uri) = pkarr_node::PkarrNode::public_key_uri_from_hex(&principal.pubkey) {
+                if !keys.contains(&uri) {
+                    keys.push(uri);
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Interval of the cold dial by key while the target is not in the table.
+const PKARR_BOOTSTRAP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Resolves through pkarr, and dials through libp2p, every key in
+/// `pkarr_bootstrap_keys` that is not yet a live peer. The ladder is the one in
+/// `pkarr_node::dial_addrs`: direct addresses first, then the circuit through
+/// each published relay, and DCuTR upgrades the relayed connection to a direct
+/// one when the NAT allows. A target already in `alive_peers` is not dialed
+/// again.
+fn spawn_pkarr_bootstrap(
+    node: Arc<pkarr_node::PkarrNode>,
+    dial_tx: mpsc::Sender<libp2p::Multiaddr>,
+    net: Arc<Network>,
+    admin_trust: Arc<crate::admin_trust::AdminTrust>,
+    extra_keys: Vec<String>,
+) {
+    let own = node.public_key_uri();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(PKARR_BOOTSTRAP_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let alive: std::collections::HashSet<String> = net
+                .alive_peers()
+                .await
+                .into_iter()
+                .filter_map(|peer| peer.libp2p_peer_id)
+                .collect();
+            for key in pkarr_bootstrap_keys(&admin_trust, &extra_keys) {
+                if key == own {
+                    continue;
+                }
+                let Some(peer_id) = pkarr_node::peer_id_from_uri(&key) else {
+                    continue;
+                };
+                if alive.contains(&peer_id.to_string()) {
+                    continue;
+                }
+                let addrs =
+                    tokio::time::timeout(Duration::from_secs(10), node.resolve_dial_addrs(&key))
+                        .await
+                        .unwrap_or_default();
+                if addrs.is_empty() {
+                    debug!("pkarr: {key} has no dialable record yet");
+                }
+                for address in addrs {
+                    if dial_tx.send(address).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,
@@ -1121,6 +1171,8 @@ fn pkarr_multiaddr_for_advertise(
 struct P2pStackArgs {
     node_id: String,
     pubkey: String,
+    /// The node key; see `identity.rs`.
+    signing_key: ed25519_dalek::SigningKey,
     p2p_port: u16,
     bootstrap_nodes: Vec<String>,
     ollama_port: Option<u16>,
@@ -1155,6 +1207,8 @@ struct P2pStackArgs {
     serve_relay: bool,
     use_default_relays: bool,
     no_discovery: bool,
+    /// `--no-pkarr`: no pkarr client is created.
+    no_pkarr: bool,
 }
 
 /// What a caller needs after `start_p2p_stack` returns, to keep going with
@@ -1194,6 +1248,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let cluster_logs = args.cluster_logs.clone();
     let primary_authority_pubkey = args.primary_authority_pubkey.clone();
     let plugins = args.plugins.clone();
+    cluster_logs.attach_plugins(plugins.clone());
     cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
     // Keep the startup behavior of the existing process-log receiver until
     // the authenticated trust document is loaded below; the final receiver
@@ -1203,27 +1258,28 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let audit = args.audit.clone();
     audit.set_admin_receiver(args.profile == crate::profile::NodeProfile::Admin);
 
-    let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
-        Ok(n) => {
-            info!("🔑 Pkarr address: {}", n.public_key_uri());
-            Some(n)
-        }
-        Err(e) => {
-            warn!("pkarr init failed (discovery disabled): {}", e);
-            None
+    // A single key (`.pom-node.key`): `node_id`, `PeerId`, pkarr record and
+    // authority signature all come from it. See `identity.rs`.
+    let pkarr_node = if args.no_pkarr {
+        info!("pkarr off (--no-pkarr): no DHT publication or key resolution");
+        None
+    } else {
+        match pkarr_node::PkarrNode::from_signing_key(&args.signing_key) {
+            Ok(n) => {
+                info!("🔑 Pkarr address: {}", n.public_key_uri());
+                Some(n)
+            }
+            Err(e) => {
+                warn!("pkarr init failed (discovery disabled): {}", e);
+                None
+            }
         }
     };
 
-    // `Network` needs to advertise the resulting PeerId in its own
-    // `Announce`, and it's built (then wrapped in `Arc`, no longer mutable
-    // in place) a few lines below — so the keypair has to exist before that.
-    let authority_signing_key = pkarr_node
-        .as_ref()
-        .map(|pn| ed25519_dalek::SigningKey::from_bytes(&pn.secret_key_bytes()))
-        .unwrap_or_else(|| ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng));
+    let authority_signing_key = args.signing_key.clone();
     let mut authority_seed = authority_signing_key.to_bytes();
     let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut authority_seed[..])
-        .expect("a chave Ed25519 da autoridade deve ser uma identidade libp2p válida");
+        .expect("the node Ed25519 key must be a valid libp2p identity");
     let libp2p_peer_id = libp2p_keypair.public().to_peer_id().to_string();
 
     // Resolved *here*, not by the caller — needs the `pkarr_node` this
@@ -1237,9 +1293,10 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
             .await
             .unwrap_or_default();
             peers
-                .into_iter()
-                .filter(|p| p.is_relay)
-                .map(|p| p.multiaddr)
+                .iter()
+                .filter(|p| p.record.is_relay)
+                .flat_map(|p| pkarr_node::dial_addrs(p, &[]))
+                .map(|address| address.to_string())
                 .collect()
         } else {
             vec![]
@@ -1273,9 +1330,6 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_identity(args.profile, args.node_display_name)
         .with_advertise_addr(args.advertise_addr)
         .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
-        .with_authority_pubkey(hex::encode(
-            authority_signing_key.verifying_key().as_bytes(),
-        ))
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
@@ -1317,6 +1371,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         net.bind_addr.port(),
         &bootstrap_nodes,
         &resolved_relay_addrs,
+        &args.relay_peer_keys,
         args.serve_relay,
         args.use_default_relays,
         net.clone(),
@@ -1442,6 +1497,7 @@ async fn start_node(
     app_config: config::Config,
     ollama_url: String,
     no_discovery: bool,
+    no_pkarr: bool,
     no_default_relays: bool,
     bootstrap_nodes: Vec<String>,
     relay_peer_keys: Vec<String>,
@@ -1449,7 +1505,6 @@ async fn start_node(
     serve_relay: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
-    cycle_detection_enabled: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
     gateway_ready: Option<gateway::GatewayReadySender>,
@@ -1458,6 +1513,14 @@ async fn start_node(
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
+    // Chaves internas que um nó trocou antes de o principal saber aposentá-las
+    // (a troca da migração para hash): só a mais nova de cada nó vale.
+    match database.revoke_superseded_node_keys(&node_id) {
+        Ok(0) => {}
+        // A validação lê o banco, não o retrato em `api_keys`: nada a recarregar.
+        Ok(count) => info!("{count} chave(s) interna(s) substituída(s) revogada(s)"),
+        Err(error) => warn!("não foi possível revogar chaves internas substituídas: {error:#}"),
+    }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
 
     let node_display_name = match app_config.node_name.clone() {
@@ -1483,6 +1546,7 @@ async fn start_node(
     let stack = start_p2p_stack(P2pStackArgs {
         node_id: node_id.clone(),
         pubkey: pubkey.clone(),
+        signing_key: identity.signing_key.clone(),
         p2p_port: app_config.p2p_port,
         bootstrap_nodes,
         ollama_port,
@@ -1504,10 +1568,11 @@ async fn start_node(
         auth: auth_state.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
-        relay_peer_keys,
+        relay_peer_keys: relay_peer_keys.clone(),
         serve_relay,
         use_default_relays: !no_default_relays,
         no_discovery,
+        no_pkarr,
     })
     .await?;
     let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
@@ -1538,52 +1603,34 @@ async fn start_node(
     let network_chat = stack.network_chat;
     let disc_dial_tx = stack.disc_dial_tx;
 
-    // Um admin público ainda precisa do registro pkarr para o diretório de
-    // redes públicas encontrá-lo antes de qualquer implantação.
+    // The pkarr record is always published, with or without a deployment, and
+    // republished when the swarm addresses change: it is how a node that only
+    // knows the key (trust document, public directory, `--relay-peers`) finds
+    // out where to dial.
     let pkarr_node = stack.pkarr_node.map(Arc::new);
-    let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
-        advertise_addr.as_deref(),
-        pkarr_node::detect_local_ip(),
-        app_config.p2p_port,
-    );
     let pkarr_publisher = pkarr_node.as_ref().map(|node| {
         Arc::new(crate::gateway::PkarrPublishHandle::new(
             node.clone(),
-            pkarr_multiaddr.clone(),
             Some(gateway_port),
             None,
-            String::new(),
-            assignment_shared.clone(),
             serve_relay,
-            Some(net.clone()),
+            net.clone(),
+            app_config.network.geo_label.clone(),
         ))
     });
     if let Some(publisher) = pkarr_publisher.clone() {
-        let geo_label = app_config.network.geo_label.clone();
-        tokio::spawn(async move {
-            if let Err(error) = publisher.publish_geo_label(&geo_label).await {
-                warn!("pkarr initial publish failed: {error}");
-            }
-        });
+        publisher.spawn_republisher();
     }
-    // `--pkarr-peers`: resolvidos uma vez e discados pelo libp2p, em segundo
-    // plano para a resolução (até 10 s) não atrasar o gateway.
-    if let (Some(node), Some(dial_tx), false) =
-        (pkarr_node.clone(), disc_dial_tx, pkarr_peer_keys.is_empty())
-    {
-        tokio::spawn(async move {
-            let peers = tokio::time::timeout(
-                Duration::from_secs(10),
-                node.resolve_peers(&pkarr_peer_keys),
-            )
-            .await
-            .unwrap_or_default();
-            for peer in &peers {
-                if let Ok(address) = peer.multiaddr.parse::<libp2p::Multiaddr>() {
-                    let _ = dial_tx.send(address).await;
-                }
+    // Cold dial by key: `--pkarr-peers`, the dedicated relays and the trust
+    // chain principals. No IP comes from configuration or a document.
+    if let (Some(node), Some(dial_tx)) = (pkarr_node.clone(), disc_dial_tx) {
+        let mut keys = pkarr_peer_keys;
+        for key in relay_peer_keys {
+            if !keys.contains(&key) {
+                keys.push(key);
             }
-        });
+        }
+        spawn_pkarr_bootstrap(node, dial_tx, net.clone(), admin_trust.clone(), keys);
     }
     let local_is_admin = admin_trust
         .effective_authority(&authority_principal, app_config.profile)
@@ -1678,10 +1725,6 @@ async fn start_node(
         peer_http: peer_clients.clone(),
         admission_health: Default::default(),
         runtime: node_runtime.clone(),
-        cycle_config: crate::cycle::CycleConfig {
-            enabled: cycle_detection_enabled,
-            ..crate::cycle::CycleConfig::default()
-        },
         audit,
         plugins: plugins.clone(),
         pom_core_update: pom_core_update.clone(),
@@ -2018,18 +2061,6 @@ mod main_tests {
         assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
     }
 
-    /// Sem nenhuma flag de CLI, o detector de ciclos fica desligado - o padrão
-    /// pedido pelo produto. `--cycle-detection` é o interruptor explícito para
-    /// ligá-lo.
-    #[test]
-    fn cycle_detection_is_off_by_default_from_cli_args() {
-        let args = Args::parse_from(["pom"]);
-        assert!(!args.cycle_detection);
-
-        let with_flag = Args::parse_from(["pom", "--cycle-detection"]);
-        assert!(with_flag.cycle_detection);
-    }
-
     #[test]
     fn runtime_build_commit_overrides_the_compiled_fallback() {
         assert_eq!(
@@ -2072,22 +2103,6 @@ mod main_tests {
             Some("3.3.3.3:3".to_string())
         );
         assert_eq!(resolve_advertise_addr("", "", None), None);
-    }
-
-    #[test]
-    fn pkarr_advertise_addr_preserves_ipv6_and_port() {
-        assert_eq!(
-            pkarr_multiaddr_for_advertise(Some("[2001:db8::1]:42777"), None, 42777),
-            "/ip6/2001:db8::1/tcp/52777"
-        );
-        assert_eq!(
-            pkarr_multiaddr_for_advertise(Some("192.0.2.1:42777"), None, 42777),
-            "/ip4/192.0.2.1/tcp/52777"
-        );
-        assert_eq!(
-            pkarr_multiaddr_for_advertise(Some("2001:db8::1"), None, 42777),
-            "/ip6/2001:db8::1/tcp/52777"
-        );
     }
 
     #[test]

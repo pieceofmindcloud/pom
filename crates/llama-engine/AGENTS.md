@@ -205,6 +205,11 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   `peek_batch_header`/`validate_batch_bytes` leem só o cabeçalho para quem
   precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
   `docs/subsystems/inference.md` §2.
+- `mtp_draft.rs` - `ready_draft_path(draft, target)`: a shared MTP draft
+  without `token_embd.weight` gets a completed copy in `.mtp-drafts/` next to
+  the target, with `token_embd`/`output` appended from the target GGUF; a
+  complete draft comes back unchanged. Called by `LlmEngine::load_with_cache`
+  before the draft load. See `docs/subsystems/inference.md` (shared drafts).
 - `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo nomes de
   identidade (`general.name`, `general.basename` e `general.base_model.*`),
   `embedding_length` textual e `clip.vision.projection_dim` para associar

@@ -523,7 +523,6 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
 
     let state = crate::gateway::testkit::state_with("eu", peers).await;
     let mut config = crate::gateway::testkit::spec_config();
-    config.cycle_detection_enabled = false; // Isola o orçamento do detector de ciclos nesta fixture.
     config.n_batch = n_batch;
     state.runtime.seed_config_for_test(config).await;
 
@@ -534,6 +533,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
         crate::gateway::GenerationInput {
+            probe: None,
             state,
             inference_token: "test-api-key".into(),
             model: "lab".into(),

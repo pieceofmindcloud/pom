@@ -123,6 +123,7 @@ const mocks = vi.hoisted(() => ({
   node: {
     data: { system: { os: "linux", arch: "x86_64" } },
   },
+  catalogQueries: [] as unknown[],
 }));
 
 vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => mocks.queryClient }));
@@ -137,7 +138,11 @@ vi.mock("../lib/queries", () => ({
   usePlugins: () => mocks.plugins,
   useGithubRepositories: () => mocks.githubRepositories,
   useDevelopmentPluginSources: () => mocks.developmentSources,
-  usePublicPluginCatalog: () => mocks.catalog,
+  usePublicPluginCatalog: (query?: unknown) => {
+    mocks.catalogQueries.push(query);
+    return mocks.catalog;
+  },
+  usePublicPlugin: () => ({ data: null, isLoading: false }),
   useNode: () => mocks.node,
 }));
 vi.mock("../lib/pluginPurchase", () => ({ navigateToPluginPurchase: mocks.navigateToPluginPurchase }));
@@ -176,6 +181,7 @@ describe("Plugins", () => {
     mocks.catalog.isError = false;
     mocks.catalog.error = null;
     mocks.catalog.refetch.mockReset();
+    mocks.catalogQueries.length = 0;
     mocks.node.data = { system: { os: "linux", arch: "x86_64" } };
     mocks.navigateToPluginPurchase.mockReset();
     mocks.queryClient.invalidateQueries.mockReset();
@@ -220,10 +226,10 @@ describe("Plugins", () => {
   });
 
   it("mostra uma falha de instalação sem apresentar o plugin como pronto", () => {
-    mocks.catalog.data = { plugins: [publicPlugin("enterprise", { display_name: "Enterprise" })] };
-    mocks.plugins.data = [pluginStatus("enterprise", {
+    mocks.catalog.data = { plugins: [publicPlugin("logs", { display_name: "Enterprise" })] };
+    mocks.plugins.data = [pluginStatus("logs", {
       state: "active",
-      licensed_plugins: ["enterprise"],
+      licensed_plugins: ["logs"],
       installation_error: "handshake ready do plugin host falhou: plugin recusou configuração",
     })];
     renderPage();
@@ -273,7 +279,10 @@ describe("Plugins", () => {
 
     expect(screen.getByText("Alpha & Beta")).toBeTruthy();
     expect(screen.getByText("Descrição pública")).toBeTruthy();
-    expect(screen.getByText("1.2.0 · stable · linux / x86_64")).toBeTruthy();
+    expect(screen.getByText("1.2.0")).toBeTruthy();
+    expect(screen.getAllByRole("img", { name: "Linux" }).length).toBeGreaterThan(0);
+    expect(screen.queryByText("alpha_beta")).toBeNull();
+    expect(screen.queryByText("-")).toBeNull();
     expect(screen.getByText("R$ 14,99/mês")).toBeTruthy();
     expect(screen.getByAltText("Alpha & Beta")).toBeTruthy();
     const screenshotGroup = screen.getByRole("group", { name: "Capturas de tela" });
@@ -289,6 +298,26 @@ describe("Plugins", () => {
     expect(screen.getByRole("button", { name: "Instalar atualização" })).toBeTruthy();
   });
 
+  it("registra o repositório GitHub de um plugin gratuito do catálogo só quando o operador clica", async () => {
+    mocks.post.mockResolvedValue({});
+    mocks.catalog.data = {
+      plugins: [
+        publicPlugin("community_tool", {
+          display_name: "Community Tool", requires_license: false, featured: true, pom_team: false,
+          github_url: "https://github.com/dev/pom-plugin-community",
+        }),
+      ],
+    };
+    renderPage();
+    expect(screen.getByText("Destaque")).toBeTruthy();
+    expect(screen.getByText("Comunidade")).toBeTruthy();
+    expect(mocks.post).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Instalar do GitHub" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/github-repositories", {
+      repository_url: "https://github.com/dev/pom-plugin-community",
+    }));
+  });
+
   it("mostra a release do sistema local em vez da última release global", () => {
     mocks.catalog.data = {
       plugins: [publicPlugin("cross-platform", {
@@ -300,8 +329,11 @@ describe("Plugins", () => {
     };
     renderPage();
 
-    expect(screen.getByText("1.5.0 · stable · linux / x86_64")).toBeTruthy();
-    expect(screen.queryByText("9.0.0 · stable · macos / aarch64")).toBeNull();
+    expect(screen.getByText("1.5.0")).toBeTruthy();
+    expect(screen.queryByText("9.0.0")).toBeNull();
+    expect(screen.getByRole("img", { name: "Linux" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "macOS" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Windows" })).toBeNull();
   });
 
   it("opens the public plugin store with the selected plugin code", () => {
@@ -372,7 +404,7 @@ describe("Plugins", () => {
 
     const card = screen.getByRole("heading", { name: "no-images" }).closest(".panel");
     expect(card).toBeTruthy();
-    expect(within(card as HTMLElement).queryAllByRole("img")).toHaveLength(0);
+    expect((card as HTMLElement).querySelectorAll("img")).toHaveLength(0);
     expect(within(card as HTMLElement).getByText("no-images description")).toBeTruthy();
   });
 
@@ -453,12 +485,12 @@ describe("Plugins", () => {
   it("uses a licensed plugin's authenticated status for its inactive activation candidate", () => {
     mocks.catalog.data = { plugins: [publicPlugin("analytics_plus")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise", "analytics_plus"],
+        licensed_plugins: ["logs", "analytics_plus"],
         plugin_usage: [
-          { plugin_code: "enterprise", activation_count: 1, max_activations: 5 },
+          { plugin_code: "logs", activation_count: 1, max_activations: 5 },
           { plugin_code: "analytics_plus", activation_count: 2, max_activations: 5 },
         ],
         activation_candidates: [],
@@ -483,10 +515,10 @@ describe("Plugins", () => {
   it("shows the activation form for an inactive public plugin that requires a license", () => {
     mocks.catalog.data = { plugins: [publicPlugin("candidate")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise"],
+        licensed_plugins: ["logs"],
         activation_candidates: [activationCandidate("candidate")],
       }),
       pluginStatus("candidate"),
@@ -499,10 +531,10 @@ describe("Plugins", () => {
   it("keeps activation visible for an inactive plugin outside the current license context", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("not-eligible")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise"],
+        licensed_plugins: ["logs"],
         activation_candidates: [],
       }),
       pluginStatus("not-eligible"),
@@ -538,10 +570,10 @@ describe("Plugins", () => {
   it("keeps activation available for expired and revoked plugins beside another active plugin", () => {
     mocks.catalog.data = { plugins: [publicPlugin("expired_plugin"), publicPlugin("revoked_plugin")] };
     mocks.plugins.data = [
-      pluginStatus("enterprise", {
+      pluginStatus("logs", {
         active: true,
         state: "active",
-        licensed_plugins: ["enterprise"],
+        licensed_plugins: ["logs"],
       }),
       pluginStatus("expired_plugin", { state: "expired" }),
       pluginStatus("revoked_plugin", { state: "revoked" }),
@@ -691,14 +723,14 @@ describe("Plugins", () => {
     }));
   });
 
-  it("adds any GitHub repository from the card above license activation", async () => {
+  it("adds any GitHub repository from the card below license activation", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("licensed")] };
     mocks.post.mockResolvedValue({});
     renderPage();
 
     const githubHeading = screen.getByRole("heading", { name: "Adicionar do GitHub" });
     const activationHeading = screen.getByRole("heading", { name: "Digite sua chave de licença" });
-    expect(githubHeading.compareDocumentPosition(activationHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(activationHeading.compareDocumentPosition(githubHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.change(screen.getByLabelText("URL do repositório público do GitHub"), {
       target: { value: "https://github.com/acme/new-plugin" },
     });
@@ -953,8 +985,8 @@ describe("Plugins", () => {
 
   it("keeps license activation available for a running local development build", () => {
     mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
-    mocks.catalog.data = { plugins: [publicPlugin("enterprise")] };
-    mocks.plugins.data = [pluginStatus("enterprise", {
+    mocks.catalog.data = { plugins: [publicPlugin("logs")] };
+    mocks.plugins.data = [pluginStatus("logs", {
       active: true,
       development_install: true,
       state: "needs_activation",
@@ -1012,5 +1044,53 @@ describe("Plugins", () => {
 
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/sigma/deactivate"));
     expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("pom-update"));
+  });
+  it("warns that a plugin not made by the POM team is unverified before installing it", async () => {
+    const repository = {
+      id: "repo-a",
+      repository_url: "https://github.com/acme/a",
+      manifest: { schema: 1, plugin_code: "alpha", display_name: "Alpha", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+      releases: [{ release_id: "1", tag_name: "v1.0.0", name: null, changelog: null, published_at: null, prerelease: false, asset_name: "a.so", asset_size: 1, available_for_node: true }],
+      checked_at: "2026-09-24T00:00:00Z",
+      check_error: null,
+    };
+    mocks.githubRepositories.data = [repository];
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Instalar" }));
+    expect(await screen.findByText("Código não verificado")).toBeTruthy();
+    expect(screen.getByText(/por sua conta e risco/)).toBeTruthy();
+    cleanup();
+
+    mocks.catalog.data = { plugins: [publicPlugin("alpha", { display_name: "Alpha", requires_license: false, pom_team: true })] };
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Instalar" }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.queryByText("Código não verificado")).toBeNull();
+  });
+
+  it("searches and pages the store on the license server", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("first")], total: 25 } as { plugins: Array<Record<string, unknown>> };
+    renderPage();
+    expect(mocks.catalogQueries).toContainEqual({ q: undefined, page: 1, perPage: 10 });
+    expect(screen.getByText("Página 1 de 3")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    expect(mocks.catalogQueries.at(-1)).toEqual({ q: undefined, page: 2, perPage: 10 });
+
+    fireEvent.change(screen.getByLabelText("Buscar plugins"), { target: { value: "  qdrant " } });
+    await waitFor(() => expect(mocks.catalogQueries.at(-1)).toEqual({ q: "qdrant", page: 1, perPage: 10 }));
+  });
+
+  it("puts the example plugin and the publishing link in the Develop your plugin tab", async () => {
+    mocks.post.mockResolvedValue({});
+    renderPage();
+    fireEvent.click(screen.getByRole("tab", { name: "Desenvolva seu plugin" }));
+    expect(screen.getByRole("heading", { name: "Comece pelo pom-plugin-base" })).toBeTruthy();
+    const publish = screen.getByRole("link", { name: /Enviar meu plugin/ });
+    expect(publish.getAttribute("href")).toBe("https://pieceofmind.cloud/plugins/publicar/");
+    expect(screen.getByText(/processo de revisão/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Instalar do GitHub" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/github-repositories", {
+      repository_url: "https://github.com/pieceofmindcloud/pom-plugin-base",
+    }));
   });
 });

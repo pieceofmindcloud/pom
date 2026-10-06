@@ -22,7 +22,7 @@ about.pluginBaseLink,POM Plugin Base,POM Plugin Base
 about.pomUpdateApply,Install and restart,Instalar e reiniciar
 about.pomUpdateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
 about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
-about.pomUpdateNeedsPlugin,POM update checks currently borrow the enterprise plugin's license.,A verificação de atualização do POM hoje usa o lease do plugin enterprise.
+about.pomUpdateNeedsPlugin,POM update checks currently borrow the logs plugin's license.,A verificação de atualização do POM hoje usa o lease do plugin logs.
 about.pomUpdateOpenPlugins,Open Plugins,Abrir Plugins
 about.pomUpdateRelease,Release {release_id},Release {release_id}
 about.pomUpdateSubtitle,"On-demand check and, once confirmed, installation of a new POM build.","Verificação sob demanda e, após confirmação, instalação de uma nova versão do POM."
@@ -109,9 +109,26 @@ adminAuthority.successorRule,This is the last node promoted by the principal. Yo
 adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
+canvas.cardExpand,Expand card,Expandir card
+canvas.cardMinimize,Minimize card,Minimizar card
+canvas.cardsExpandAll,Expand all cards,Expandir todos os cards
+canvas.cardsMinimizeAll,Minimize all cards,Minimizar todos os cards
 canvas.fit,Fit to network,Ajustar à rede
 canvas.gateway,Gateway,Gateway
+canvas.gatewayCompute,compute,compute
+canvas.gatewayCycleLegs,Legs of the measured cycle,Pernas do ciclo medido
+canvas.gatewayDialogTitle,Gateway · pipeline and routes,Gateway · pipeline e rotas
+canvas.gatewayIntro,"Each token enters the first machine of a route, crosses the slices in layer order and comes back to the gateway. The planner serves through the route with the lowest time per token: the network in the chosen return mode plus the measured compute.","Cada token entra na primeira máquina de uma rota, atravessa as fatias na ordem das camadas e volta ao gateway. O planejador serve pela rota com menor tempo por token: a rede no modo de volta escolhido mais o compute medido."
+canvas.gatewayLeg,leg {index},perna {index}
+canvas.gatewayLegs,Legs,Pernas
+canvas.gatewayNetwork,network,rede
+canvas.gatewayOpenDetails,Open pipeline and routes,Abrir pipeline e rotas
+canvas.gatewayPerToken,per token,por token
 canvas.gatewayReturn,return leg,perna de retorno
+canvas.gatewayRouteBest,fastest,mais rápida
+canvas.gatewayRoutesEmpty,No route measured yet. Routes show up once requests cross the pipeline.,Nenhuma rota medida ainda. As rotas aparecem quando as requisições atravessam a pipeline.
+canvas.gatewayRoutesTitle,Routes found,Rotas encontradas
+canvas.gatewayThroughput,throughput,vazão
 canvas.inFlight,{count} in flight,{count} em voo
 canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
@@ -131,6 +148,7 @@ canvas.openDetails,Double-click to open this machine''s details,Duplo clique abr
 canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
 canvas.pipelineRouteBreakdown,network {network} ms ({mode}) · compute {compute} ms,rede {network} ms ({mode}) · compute {compute} ms
 canvas.returnDirect,direct return,resposta direta
+canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
 canvas.returnRing,ring,anel
 canvas.relayBadge,RELAY,RELAY
 "canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
@@ -148,6 +166,12 @@ canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
 canvas.pipelineTotalLabel,cycle cost,custo do ciclo
 canvas.pipelineTotalUnknown,not measured,não medido
 canvas.resetLayout,"Reset the arrangement, including what you dragged","Redefinir o arranjo, inclusive o que você arrastou"
+canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
+canvas.speedDecode,decode,decode
+canvas.speedPrefill,prefill,prefill
+canvas.speedRelative,"{kind}: {value} tok/s, {percent}% of the fastest slice of this model. Green from 75%, amber from 40%, red below.","{kind}: {value} tok/s, {percent}% da fatia mais rápida deste modelo. Verde a partir de 75%, âmbar a partir de 40%, vermelho abaixo."
+canvas.speedSolo,"{kind}: {value} tok/s. Only this slice was measured, so there is nothing to compare it with.","{kind}: {value} tok/s. Só esta fatia foi medida, então não há com o que comparar."
+canvas.speedUnknown,{kind}: not measured yet,{kind}: ainda não medido
 canvas.vramTotal,VRAM · {count} GPUs,VRAM · {count} GPUs
 canvas.zoomIn,Zoom in,Aumentar zoom
 canvas.zoomOut,Zoom out,Diminuir zoom
@@ -173,7 +197,6 @@ chat.emptyResponse,The network replied without any tokens. Check the Dashboard t
 chat.errorCopied,Copied,Copiado
 chat.filePrompt,"File {name}:\n{content}","Arquivo {name}:\n{content}"
 chat.fileRejected,File rejected,Ficheiro recusado
-chat.generationSpeed,Generation,Geração
 chat.headAlternatives,Other heads,Outras cabeças
 chat.headCandidateCount,"{count} candidate{count, plural, =1 {} other {s}}","{count} candidata{count, plural, =1 {} other {s}}"
 chat.headCapacity,"context {context} · leg {leg} tokens","contexto {context} · perna {leg} tokens"
@@ -219,9 +242,12 @@ chat.noModelDetail,Assign a model to the nodes in Settings before testing.,Atrib
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
 chat.placeholder,Write to the network…,Escreva para a rede…
-chat.prefillSpeed,Prefill,Pré-processamento
-chat.promptTokensUnit,prompt tokens,tokens do prompt
-chat.rateUnavailable,not measurable,não mensurável
+chat.ragCollection,Documents searched for this conversation,Documentos consultados nesta conversa
+chat.ragCollectionAll,All collections,Todas as coleções
+chat.ragOff,No document search,Sem busca em documentos
+chat.ragOn,Searching documents: {collection},Buscando em documentos: {collection}
+chat.ragToggle,RAG,RAG
+chat.ragToggleHint,Search the indexed documents (RAG) and add what is found to each question of this conversation.,Buscar nos documentos indexados (RAG) e acrescentar o que for encontrado a cada pergunta desta conversa.
 chat.removeAttachment,Remove {name},Remover {name}
 chat.renameAria,Conversation name,Nome da conversa
 chat.renameHint,Click to rename this conversation,Clique para renomear esta conversa
@@ -230,210 +256,44 @@ chat.serverError,Server error,Erro do servidor
 chat.speedUnit,tok/s,tok/s
 chat.stop,Stop,Parar
 chat.surfaceLabel,Chat surface,Superfície do chat
-chat.telemetry.accumulatedCompute,Accumulated peer compute,Compute acumulado dos peers
-chat.telemetry.accumulatedTransport,Accumulated transport,Transporte acumulado
-chat.telemetry.analysis,Execution analysis,Análise da execução
-chat.telemetry.analysis.backendDetail,Most measured processing time is inside llama_decode rather than transport or queue wait.,"A maior parte do tempo medido está dentro do llama_decode, não no transporte ou na fila."
-chat.telemetry.analysis.backendNextStep,"Compare model quantisation, GPU offload and batch settings on this node.","Compare quantização, offload para GPU e configurações de batch neste nó."
-chat.telemetry.analysis.backendTitle,Local backend work dominates,O trabalho local do backend domina
-chat.telemetry.analysis.balancedDetail,"The available measurements are balanced or incomplete, so this result does not justify one dominant cause.","As medições disponíveis estão equilibradas ou incompletas, então não sustentam uma causa dominante."
-chat.telemetry.analysis.balancedNextStep,Use the detailed tables and compare several requests before changing the deployment.,Use as tabelas detalhadas e compare várias execuções antes de mudar a implantação.
-chat.telemetry.analysis.balancedTitle,No single bottleneck was identified,Nenhum gargalo único foi identificado
-chat.telemetry.analysis.label,Execution reading,Leitura da execução
-chat.telemetry.analysis.outsideNodeDetail,"The end-to-end time is much larger than the node measurements. This gap can be route selection, callback delivery, connection setup or another wait outside the inference engine.","O tempo ponta a ponta é muito maior que as medições do nó. A diferença pode estar na escolha de rota, na entrega de callbacks, na abertura da conexão ou em outra espera fora do motor de inferência."
-chat.telemetry.analysis.outsideNodeNextStep,"Check advertised addresses, route failures and transport callbacks before changing the model or GPU settings.","Confira endereços anunciados, falhas de rota e callbacks de transporte antes de mudar o modelo ou as configurações da GPU."
-chat.telemetry.analysis.outsideNodeTitle,Time outside the node dominates,O tempo fora do nó domina
-chat.telemetry.analysis.pipelineDetail,Time outside the node handler is larger than the local work. In pipeline mode this includes hidden-state movement and HTTP overhead.,O tempo fora do handler do nó é maior que o trabalho local. No pipeline isso inclui estado oculto e overhead HTTP.
-chat.telemetry.analysis.pipelineNextStep,"Check hop placement, frame size and the direct versus tunnel path.","Confira a colocação dos hops, o tamanho dos frames e o caminho direto ou túnel."
-chat.telemetry.analysis.pipelineTitle,Pipeline transport or residual transfer dominates,O transporte ou residual do pipeline domina
-chat.telemetry.analysis.queueDetail,A large mutex wait means another request was decoding on the same node.,Uma espera grande no mutex significa que outra requisição estava decodificando no mesmo nó.
-chat.telemetry.analysis.queueNextStep,Reduce concurrent requests on this node or add capacity.,Reduza a concorrência neste nó ou adicione capacidade.
-chat.telemetry.analysis.queueTitle,The inference engine is busy,O motor de inferência está ocupado
-chat.telemetry.analysis.remoteTelemetryIncompleteDetail,"The response is complete, but distributed spans are still collecting or missing. The available wall-clock gap is not classified as outside-node time.","A resposta está completa, mas os spans distribuídos ainda estão sendo coletados ou estão ausentes. A diferença do relógio ponta a ponta não é classificada como tempo fora do nó."
-chat.telemetry.analysis.remoteTelemetryIncompleteNextStep,"Wait for trace reconciliation or inspect the missing peer and transport receipts before diagnosing a bottleneck.","Aguarde a reconciliação do trace ou confira o peer ausente e os recibos de transporte antes de diagnosticar um gargalo."
-chat.telemetry.analysis.remoteTelemetryIncompleteTitle,Distributed telemetry is incomplete,A telemetria distribuída está incompleta
-chat.telemetry.analysis.tpDetail,The measured TP collective wait is a large part of decode. The hop is waiting for activation reductions between ranks.,A espera medida das coletivas TP ocupa grande parte do decode. O hop está aguardando as reduções de ativações entre os ranks.
-chat.telemetry.analysis.tpNextStep,"Check RTT, route, tunnel fallback and the number of reductions per token. This is not weight traffic.","Confira RTT, fallback para túnel e a quantidade de reduções por token. Pesos não estão trafegando."
-chat.telemetry.analysis.tpTitle,Tensor-parallel network wait dominates,A espera de rede do TP domina
-chat.telemetry.analysisPrompt,Analyze this execution,Analise esta execução
-chat.telemetry.analyze,Analyze with AI,Analisar com IA
-chat.telemetry.backendHeader,backend,backend
-chat.telemetry.backendRow,backend: evaluation call {call} ms · sync {sync} ms · D2H capture {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · D2H da captura {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms
-chat.telemetry.backendRowCurrent,backend: evaluation call {call} ms · sync {sync} ms · decode p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · decode p50 {p50} ms · p95 {p95} ms
-chat.telemetry.bytesHeader,bytes,bytes
-chat.telemetry.calls,calls,chamadas
-chat.telemetry.capacity,Capacity,Capacidade
-chat.telemetry.clientTtft,Client TTFT,TTFT do cliente
-chat.telemetry.configIntent,Configured intent,Intenção configurada
-chat.telemetry.configOff,off,desligado
-chat.telemetry.configOn,on,ligado
-chat.telemetry.connectionSummary,connections: {fresh} new · {reused} reused · {unknown} unknown,conexões: {fresh} novas · {reused} reutilizadas · {unknown} desconhecidas
-chat.telemetry.cpu,CPU: {count} cores,CPU: {count} núcleos
-chat.telemetry.cpuBackedLayers,CPU-backed layers: {count},Camadas com peso em CPU: {count}
-chat.telemetry.criticalPath,Critical path,Caminho crítico
-chat.telemetry.currentPath,current state: selected path: {value},estado atual: caminho selecionado: {value}
-chat.telemetry.decode,decode,decode
-chat.telemetry.decodeCoverage,Decode spans observed / expected,Spans de decode observados / esperados
-chat.telemetry.decodeSummary,decode calls: {calls} · tokens: {tokens} · tokens/call: {perCall},chamadas de decode: {calls} · tokens: {tokens} · tokens/chamada: {perCall}
-chat.telemetry.distributedTitle,Distributed execution,Execução distribuída
-chat.telemetry.effectivePlacement,Effective layer placement,Colocação efetiva das camadas
-chat.telemetry.engine,engine: {value},motor: {value}
-chat.telemetry.engineHeader,engine,motor
-chat.telemetry.engineLlamaCpp,llama.cpp,llama.cpp
-chat.telemetry.engineMismatch,path/engine mismatch,divergência caminho/motor
-chat.telemetry.engineMixed,mixed,misto
-chat.telemetry.engineMoe,MoE engine,motor MoE
-chat.telemetry.engineTtft,Engine TTFT,TTFT do motor
-chat.telemetry.engineUnknown,unknown,desconhecido
-chat.telemetry.engineWait,engine wait {ms} ms,espera do motor {ms} ms
-chat.telemetry.environmentPathMismatch,Current state differs from this execution: current {current}; observed {observed}.,O estado atual diverge desta execução: atual {current}; observado {observed}.
-chat.telemetry.environmentScopeExplain,Environment values are a current /health snapshot; the execution path is recorded by each hop.,Os valores do ambiente são um snapshot atual de /health; o caminho desta execução é registrado por cada hop.
-chat.telemetry.environmentTitle,Pipeline machines,Máquinas do pipeline
-chat.telemetry.firstTokenClient,first token at client: {value},primeiro token no cliente: {value}
-chat.telemetry.firstTokenEngine,first token from engine: {value},primeiro token no motor: {value}
-chat.telemetry.firstTokenNode,node serialization: {value},serialização no nó: {value}
-chat.telemetry.firstTokenTransport,node to gateway: {value},nó até gateway: {value}
-chat.telemetry.fitMemory,Fit memory: {value},Ajuste à memória: {value}
-chat.telemetry.footnote,"""Gateway"" is the work of the gateway alone (encode + decode the frame). ""Backend"" is the node''s llama_decode; the detail line also shows completion measured by llama_synchronize, which includes already-queued output transfers - not pure kernel time. ""Residual"" is the hidden-state read that forces GPU to CPU. ""Transport"" is the round trip outside the node handler, not pure packet latency. ""Engine wait"" is time spent waiting on the llama_context mutex, which is unsafe for concurrent use: two requests on the same node decode one at a time, and this is the queue. Wait larger than backend means busy node, not slow node. POM_PROFILE_SYNC is shown per machine in the environment section.","""Gateway"" é só o trabalho do gateway (codificar + decodificar o frame). ""Backend"" é o llama_decode do nó; a linha detalhada mostra também a conclusão medida por llama_synchronize, que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. ""Residual"" é a leitura do estado oculto que força GPU -> CPU. ""Transporte"" é a ida e volta fora do handler do nó, não latência de pacote pura. ""Espera do motor"" é o tempo parado no mutex do llama_context, que não é seguro para uso concorrente: duas requisições no mesmo nó decodificam uma de cada vez, e esta é a fila. Espera maior que o backend significa nó ocupado, não nó lento. POM_PROFILE_SYNC aparece por máquina na seção de ambiente."
-chat.telemetry.gatewayHeader,gateway,gateway
-chat.telemetry.gatewayRow,gateway: encode {encode} ms · to headers {headers} ms · body {body} ms · decode {decode} ms,gateway: codificar {encode} ms · até headers {headers} ms · corpo {body} ms · decodificar {decode} ms
-chat.telemetry.gpu,GPU: {value},GPU: {value}
-chat.telemetry.gpuBackedLayers,GPU-backed layers: {count},Camadas com peso em GPU: {count}
-chat.telemetry.hiddenState,hidden state: {sent} sent / {received} received · {dtype},estado oculto: {sent} enviados / {received} recebidos · {dtype}
-chat.telemetry.hop,hop,hop
-chat.telemetry.integrity,integrity: {duplicates} duplicate · {late} late · {orphan} orphan spans,integridade: {duplicates} duplicados · {late} tardios · {orphan} spans órfãos
-chat.telemetry.legacyBoth,both,as duas
-chat.telemetry.legacyDecodeRow,decode/token p50 {decodeP50} ms · p95 {decodeP95} ms · gateway: encode {encode} ms · to headers {headers} ms · body {body} ms · decode {decode} ms,decode/token p50 {decodeP50} ms · p95 {decodeP95} ms · gateway: codificar {encode} ms · até headers {headers} ms · corpo {body} ms · decodificar {decode} ms
-chat.telemetry.legacyNodeRow,"node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · setup {setup} ms · frame out {frameOut} ms{__notZero_unattributed, select, false {} other { · unattributed {unattributed} ms}}","nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · setup {setup} ms · frame out {frameOut} ms{__notZero_unattributed, select, false {} other { · não atribuído {unattributed} ms}}"
-chat.telemetry.legacyNote,"legacy telemetry: this run was recorded before the phase split, so the numbers above sum prefill and decode ({prefillCalls} prefill + {decodeCalls} tokens) and cannot be separated now.","telemetria antiga: esta execução foi gravada antes da separação por fase, então os números acima somam prefill e decode ({prefillCalls} prefill + {decodeCalls} tokens) e não dá para separá-los agora."
-chat.telemetry.machineCount,"{count} machine{count, plural, =1 {} other {s}}","{count}{count, plural, =1 { máquina} other { máquinas}}"
-chat.telemetry.missingPeers,Missing peers: {peers},Peers ausentes: {peers}
-chat.telemetry.mixedLayers,Mixed layers: {count},Camadas mistas: {count}
-chat.telemetry.moeExecutor,MoE executor: {value},executor MoE: {value}
-chat.telemetry.moeExecutorReason,MoE executor reason: {reason},motivo do executor MoE: {reason}
-chat.telemetry.nBatch,Batch: {count},Batch: {count}
-chat.telemetry.nCtx,Context: {count},Contexto: {count}
-chat.telemetry.networkLoading,Reading directional RTT...,Lendo o RTT direcional...
-chat.telemetry.networkTotal,Observed network time: {ms} ms,Tempo de rede observado: {ms} ms
-chat.telemetry.networkTotalMissing,Observed network time: not available for this trace,Tempo de rede observado: indisponível neste trace
-chat.telemetry.networkUnavailable,Directional RTT unavailable,RTT direcional indisponível
-chat.telemetry.noEdges,"This execution used one peer, so there are no inter-peer edges to measure.","Esta execução usou uma máquina, então não há arestas entre peers para medir."
-chat.telemetry.noMeasurement,not measured,não medido
-chat.telemetry.nodeResidual,node residual {ms} ms,residual do nó {ms} ms
-chat.telemetry.nodeRow,node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · engine wait {engineWait} ms · setup {setup} ms · MTP draft {mtpDraft} ms · frame out {frameOut} ms,nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · espera do motor {engineWait} ms · draft MTP {mtpDraft} ms · setup {setup} ms · frame out {frameOut} ms
-chat.telemetry.notInformed,not informed,não informado
-chat.telemetry.notMeasured,not measured,não medido
-chat.telemetry.observedPath,this execution: selected path: {value},nesta execução: caminho selecionado: {value}
-chat.telemetry.offloadKqv,KV offload request: {value},Pedido de offload KV: {value}
-chat.telemetry.outsideAccounted,outside node accounted,fora do nó atribuído
-chat.telemetry.outsideTotal,outside node total,total fora do nó
-chat.telemetry.outsideUnaccounted,outside node unaccounted,fora do nó não atribuído
-chat.telemetry.overlap,"prefill pipeline: depth {depth}/{limit}, {chunks} chunk(s) overlapped","pipeline do prefill: profundidade {depth}/{limit}, {chunks} pedaço(s) sobrepostos"
-chat.telemetry.overlapMeasured,Measured overlap,Overlap medido
-chat.telemetry.pathMixed,mixed paths,caminhos mistos
-chat.telemetry.pathNotReported,not reported,não informado
-chat.telemetry.peersCoverage,Peers reported / expected,Peers reportados / esperados
-chat.telemetry.phase,phase,fase
-chat.telemetry.phasePath,selected path: {value},caminho selecionado: {value}
-chat.telemetry.pipelineRttExplain,Each value is measured from the origin peer to the destination peer. It is not the gateway card RTT.,Cada valor é medido do peer de origem até o peer de destino. Não é o RTT do card do gateway.
-chat.telemetry.pipelineRttTitle,Edge RTT (pipeline source -> destination),RTT da aresta (origem -> destino)
-chat.telemetry.pipelineTitle,Pipeline network,Rede do pipeline
-chat.telemetry.placementMissing,not measured after load,não medido depois da carga
-chat.telemetry.prefill,prefill,prefill
-chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
-chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
-chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
-chat.telemetry.prefixMissReason,gateway cache miss: {reason},miss do cache no gateway: {reason}
-chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
-chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
-chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
-chat.telemetry.profileSyncActive,active,ativo
-chat.telemetry.profileSyncOff,off,desligado
-chat.telemetry.profileSyncUnknown,not informed,não informado
-chat.telemetry.quicRequestSend,"QUIC request body send and finish {ms} ms over {calls, plural, one {# request} other {# requests}}","envio e finalização do corpo QUIC {ms} ms em {calls, plural, one {# requisição} other {# requisições}}"
-chat.telemetry.ram,RAM: {available} available / {total} total,RAM: {available} disponível / {total} total
-chat.telemetry.remoteStreamCompute,remote compute total {total} ms · p50 {p50} ms · p95 {p95} ms,compute remoto total {total} ms · p50 {p50} ms · p95 {p95} ms
-chat.telemetry.remoteStreamFrames,frames received / sent {received} / {sent} · bytes {bytes},frames recebidos / enviados {received} / {sent} · bytes {bytes}
-chat.telemetry.remoteStreamLatency,frame latency first / p50 / p95 / max {first} / {p50} / {p95} / {max} ms,latência de frame primeira / p50 / p95 / máxima {first} / {p50} / {p95} / {max} ms
-chat.telemetry.remoteStreamTitle,Remote stream,Remote stream
-chat.telemetry.remoteStreamTokenDelivery,token delivery interval samples {samples} · p50/p95/p99/max {p50}/{p95}/{p99}/{max} ms,amostras do intervalo de entrega de tokens {samples} · p50/p95/p99/máximo {p50}/{p95}/{p99}/{max} ms
-chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · p95 {p95} ms,espera do stream total {total} ms · p50 {p50} ms · p95 {p95} ms
-chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{producerP95} ms · channel send total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · queued token total/p95 {queueTotal}/{queueP95} ms · prior delivery total/p95 {deliveryTotal}/{deliveryP95} ms,produção total/p95 {producerTotal}/{producerP95} ms · envio ao canal total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · token na fila total/p95 {queueTotal}/{queueP95} ms · entrega anterior total/p95 {deliveryTotal}/{deliveryP95} ms
-chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
-chat.telemetry.residualCaptureRow,residual capture: scheduler ask-to-ready {ready} ms · tensor_get wall {tensorGet} ms · postprocess {postprocess} ms · compatibility total {total} ms · {bytes} bytes in {copies} reads,captura residual: scheduler até pronto {ready} ms · tensor_get {tensorGet} ms · pós-processamento {postprocess} ms · total compatível {total} ms · {bytes} bytes em {copies} leituras
-chat.telemetry.residualHeader,residual,residual
-chat.telemetry.residualWireRow,"residual wire f16 encode/decode {f16Encode}/{f16Decode} ms (submetrics) · client f16 encode/decode {clientF16Encode}/{clientF16Decode} ms (submetrics) · f8 conversion {f8} ms · frame/header serialization {serialize} ms · residual frame encode count {calls}","wire do residual: encode/decode f16 no peer {f16Encode}/{f16Decode} ms (submétricas) · encode/decode f16 no cliente {clientF16Encode}/{clientF16Decode} ms (submétricas) · conversão f8 {f8} ms · serialização do frame/cabeçalho {serialize} ms · contagem de frames codificados {calls}"
-chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms
-chat.telemetry.rttTotalMissing,Aggregate execution RTT: not available for this trace,RTT agregado da execução: indisponível neste trace
-chat.telemetry.runtimeLoading,Reading effective runtime state...,Lendo o estado efetivo do runtime...
-chat.telemetry.runtimeNotLoaded,Effective state unavailable: {reason},Estado efetivo indisponível: {reason}
-chat.telemetry.samplingHeader,sampling,sampling
-chat.telemetry.samplingRow,sampling: access {access} ms · clone {clone} ms · penalty {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · selection {selection} ms · text {text} ms,sampling: acesso {access} ms · clone {clone} ms · penalidade {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · seleção {selection} ms · texto {text} ms
-chat.telemetry.selectedPath,selected path: {value},caminho selecionado: {value}
-chat.telemetry.serverTtft,Server TTFT,TTFT do servidor
-chat.telemetry.sessions,Sessions: {count},Sessões: {count}
-chat.telemetry.snapshotMissing,The environment snapshot was not captured for this execution.,O snapshot do ambiente não foi capturado nesta execução.
-chat.telemetry.spanFirstTokenReturn,first-token return,retorno do primeiro token
-chat.telemetry.spanOrchestration,orchestration,orquestração
-chat.telemetry.spanPipelineSelection,pipeline selection,seleção da pipeline
-chat.telemetry.spanRouteResolution,route resolution,resolução da rota
-chat.telemetry.spanSessionAcquire,session acquire,aquisição da sessão
-chat.telemetry.spanUnknown,{name},{name}
-chat.telemetry.spanValidation,validation,validação
-chat.telemetry.status.collecting,collecting,coletando
-chat.telemetry.status.complete,complete,completa
-chat.telemetry.status.incomplete,incomplete,incompleta
-chat.telemetry.status.response_complete,response complete,resposta completa
-chat.telemetry.status.timeout,timeout,expirada
-chat.telemetry.statusLabel,Trace status: {status},Estado do trace: {status}
-chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk -> [DONE]: {duration} · last token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk -> [DONE]: {duration} · último token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
-chat.telemetry.timelineTitle,Execution timeline,Linha do tempo da execução
-chat.telemetry.timelineUnavailable,Detailed spans are not available for this trace. The missing time remains unaccounted.,Spans detalhados indisponíveis para este trace. O tempo ausente continua não atribuído.
-chat.telemetry.title,Execution telemetry,Telemetria da execução
-chat.telemetry.tlsIdle,channel: no calls in this phase,canal: nenhuma chamada nesta fase
-chat.telemetry.tlsOff,channel: in the clear,canal: texto claro
-chat.telemetry.tlsOn,"channel: TLS · handshake {handshake} ms (per connection, not per token; pooled connections report 0)","canal: TLS · handshake {handshake} ms (por conexão, não por token; conexão reaproveitada dá 0)"
-chat.telemetry.tlsPartial,channel: TLS on {cifradas}/{total} calls — the rest went in the clear · handshake {handshake} ms,canal: TLS em {cifradas}/{total} chamadas — as demais foram em claro · handshake {handshake} ms
-chat.telemetry.tokensCached,{count} reused,{count} do cache
-chat.telemetry.tokensCachedHint,Prompt tokens the pipeline did not reprocess: they were already in this conversation''s KV cache.,Tokens do prompt que o pipeline não reprocessou: já estavam no cache KV desta conversa.
-chat.telemetry.tokensIn,{count} in,{count} in
-chat.telemetry.tokensOut,{count} out,{count} out
-chat.telemetry.tokensTransmitted,{count} crossed,{count} atravessaram
-chat.telemetry.tpBroadcastShort,broadcast,broadcast
-chat.telemetry.tpBytes,collective bytes,bytes da coletiva
-chat.telemetry.tpChannel,channel,canal
-chat.telemetry.tpDirect,direct {calls},direto {calls}
-chat.telemetry.tpMachineScope,TP worker machines are not named in this execution trace; only participating pipeline peers are shown.,As máquinas workers do TP não são nomeadas neste trace; só os peers do pipeline identificados aparecem.
-chat.telemetry.tpReduces,reduces / expected,reduções / esperado
-chat.telemetry.tpTitle,Tensor parallelism collectives,Coletivas do tensor parallelism
-chat.telemetry.tpTunnel,tunnel {calls} · fallback {fallback},túnel {calls} · fallback {fallback}
-chat.telemetry.tpWait,TP wait,espera TP
-chat.telemetry.traceMissing,trace not reported,trace não informado
-chat.telemetry.transportFallbackTotal,fallback total {calls},fallback total {calls}
-chat.telemetry.transportHeader,transport,transporte
-chat.telemetry.transportHttpsFallback,"HTTPS fallback: {calls, plural, =0 {0 times} one {1 time} other {# times}} · reason(s): {reasons}","fallback para HTTPS: {calls, plural, =0 {0 vezes} one {1 vez} other {# vezes}} · motivo(s): {reasons}"
-chat.telemetry.transportMissing,transport traversal: not measured,travessia de transporte: não medida
-chat.telemetry.transportSummary,{transport}: {calls} calls · sent {sent} · received {received} · execution RTT min/median/p95/max {min}/{median}/{p95}/{max} ms · network RTT {netMin}/{netMedian}/{netP95}/{netMax} ms · fallback {fallback},{transport}: {calls} chamadas · enviados {sent} · recebidos {received} · RTT de execução mínimo/mediana/p95/máximo {min}/{median}/{p95}/{max} ms · RTT de rede mínimo/mediana/p95/máximo {netMin}/{netMedian}/{netP95}/{netMax} ms · fallback {fallback}
-chat.telemetry.transportSwitch,transport switch {from} -> {to} ({calls}),troca de transporte {from} -> {to} ({calls})
-chat.telemetry.transportTraceIncomplete,Transport trace incomplete: the result arrived before every traversal receipt.,Telemetria de transporte incompleta: o resultado chegou antes de todas as travessias.
-chat.telemetry.transportValue,transport: {value},transporte: {value}
-chat.telemetry.trueResidual,True residual,Residual verdadeiro
-chat.telemetry.unaccounted,unaccounted,não atribuído
-chat.telemetry.unattributed,unattributed {ms} ms,não atribuído {ms} ms
-chat.telemetry.unknownLayers,Unclassified layers: {count},Camadas não classificadas: {count}
+chat.telemetryLine.generationHint,"Generation speed after the first token, and tokens generated","Velocidade de geração após o primeiro token, e tokens gerados"
+chat.telemetryLine.prefill,prompt {count} tok · {rate} tok/s,prompt {count} tok · {rate} tok/s
+chat.telemetryLine.prefillHint,"Prompt tokens processed before the first token, and their processing speed","Tokens do prompt processados antes do primeiro token, e a velocidade desse processamento"
+chat.telemetryLine.rate,{value} tok/s,{value} tok/s
+chat.telemetryLine.sourceHint,Pipeline that served this answer: {source},Pipeline que atendeu esta resposta: {source}
+chat.telemetryLine.tokens,"{count, plural, one {# token} other {# tokens}}","{count, plural, one {# token} other {# tokens}}"
+chat.telemetryLine.total,total {value},total {value}
+chat.telemetryLine.totalHint,End-to-end time of the request,Tempo ponta a ponta da requisição
+chat.telemetryLine.ttft,TTFT {value},TTFT {value}
+chat.telemetryLine.ttftHint,Time to first token,Tempo até o primeiro token
 chat.thinkToggle,Think,Think
 chat.thinkToggleHint,"Use thinking for this inference. The choice stays active in this conversation.","Usar thinking nesta inferência. A escolha permanece ativa nesta conversa."
 chat.thinking,Thinking,Pensamento
 chat.through,moving through the pipeline,atravessando o pipeline
 chat.timeUnit,s,s
 chat.title,Chat,Chat
-chat.tokensPerSecondUnit,tokens/s,tokens/s
 chat.tokensUnit,tokens,tokens
-chat.totalTime,End-to-end total,Total ponta a ponta
-chat.ttft,First token (TTFT),Primeiro token (TTFT)
-chat.ttftClient,Client first token,Primeiro token no cliente
-chat.ttftPipeline,Pipeline first token,Primeiro token do pipeline
 chat.ttftServer,Server TTFT,TTFT do servidor
+chat.wait.assemble.1,Fitting the pieces together...,Encaixando as peças...
+chat.wait.assemble.2,"Layer by layer, a thought takes shape...","Camada por camada, um pensamento toma forma..."
+chat.wait.assemble.3,"One mind, many pieces. Almost there...","Uma mente, muitas peças. Quase lá..."
+chat.wait.assemble.4,The GPUs are comparing notes...,As GPUs estão trocando figurinhas...
+chat.wait.assemble.5,Starting with the corner pieces...,Começando pelas peças do canto...
+chat.wait.long.1,Big thoughts need more pieces. Still on it...,Pensamento grande pede mais peças. Seguimos nisso...
+chat.wait.long.2,This puzzle has a lot of sky...,Esse quebra-cabeça tem muito céu...
+chat.wait.long.3,No piece left behind. Hang tight...,Nenhuma peça fica para trás. Aguenta aí...
+chat.wait.long.4,Still thinking. The good kind of thinking...,Ainda pensando. Do tipo bom de pensar...
+chat.wait.pieces.1,Collecting all the pieces for your request...,Juntando todas as peças do seu pedido...
+chat.wait.pieces.2,Handing your prompt to the first piece of mind...,Entregando seu prompt à primeira peça da mente...
+chat.wait.pieces.3,Passing thoughts from machine to machine...,Passando pensamentos de máquina em máquina...
+chat.wait.pieces.4,Your tokens are boarding the pipeline...,Seus tokens estão embarcando no pipeline...
+chat.wait.pieces.5,Asking every piece what it thinks...,Perguntando a cada peça o que ela acha...
+chat.wait.wake.1,"Starting our engines again, just a moment...","Estamos ligando nossos motores novamente, só um momento..."
+chat.wait.wake.2,The network was napping. Waking every piece...,A rede estava cochilando. Acordando cada peça...
+chat.wait.wake.3,Loading the model back into the GPUs...,Colocando o modelo de volta nas GPUs...
+chat.wait.wake.4,Warming up the GPUs. Coffee is brewing...,Aquecendo as GPUs. O café está passando...
+chat.wait.wake.5,"Putting the mind back together, piece by piece...","Remontando a mente, peça por peça..."
+chat.wait.wake.6,Almost awake. Your request is first in line...,Quase acordados. Seu pedido é o primeiro da fila...
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
 common.close,Close,Fechar
@@ -480,6 +340,22 @@ dashboard.inFlight,In flight,Em voo
 dashboard.inFlightUnavailable,in-flight count unavailable,carga em voo indisponível
 dashboard.incompletePipeline,pipeline incomplete,pipeline incompleto
 dashboard.inference,Inference,Inferência
+dashboard.kvCache,KV cache,Cache de KV
+dashboard.kvCacheClear,Clear cache,Limpar cache
+dashboard.kvCacheClearConfirm,Clear cache,Limpar cache
+dashboard.kvCacheClearDescription,Deletes the KV snapshots {hostname} keeps on disk ({size}) and what it holds in RAM. Conversations in progress keep working; a conversation that was only saved reprocesses its whole prompt on the next turn.,Apaga os snapshots de KV que {hostname} guarda em disco ({size}) e o que ela mantém em RAM. Conversas em andamento continuam; uma conversa que estava só salva reprocessa o prompt inteiro no próximo turno.
+dashboard.kvCacheClearFailed,The cache of {hostname} was not cleared,O cache de {hostname} não foi limpo
+dashboard.kvCacheClearTitle,Clear the KV cache of {hostname}?,Limpar o cache de KV de {hostname}?
+dashboard.kvCacheCleared,Cache of {hostname} cleared,Cache de {hostname} limpo
+dashboard.kvCacheClearedDetail,"{disk} freed on disk, {ram} in RAM","{disk} liberados em disco, {ram} em RAM"
+dashboard.kvCacheDisk,On disk,Em disco
+dashboard.kvCacheOff,off,desligado
+dashboard.kvCacheRam,In RAM,Em RAM
+dashboard.kvCacheRamOf,{used} of {limit},{used} de {limit}
+dashboard.kvCacheRamUnavailable,unavailable on this machine,indisponível nesta máquina
+dashboard.kvCacheRamUnavailableTip,"The RAM cache always leaves half of the machine memory to the user, and at least 6 GB. This machine has less than 12 GB, so nothing is kept in RAM.","O cache em RAM sempre deixa metade da memória da máquina para o usuário, e no mínimo 6 GB. Esta máquina tem menos de 12 GB, então nada é guardado em RAM."
+dashboard.kvCacheSnapshots,"{count} {count, plural, =1 {snapshot} other {snapshots}}","{count} {count, plural, =1 {snapshot} other {snapshots}}"
+dashboard.kvCacheTip,"Saved KV lets a conversation continue without reprocessing its prompt. Disk holds the snapshots of every model this machine served ({path}). RAM holds the conversations that lost their slot to another one, always leaving half of the machine memory to the user.","O KV salvo deixa uma conversa continuar sem reprocessar o prompt. O disco guarda os snapshots de todos os modelos que esta máquina serviu ({path}). A RAM guarda as conversas que perderam o slot para outra, sempre deixando metade da memória da máquina para o usuário."
 dashboard.layers,{covered} of {total} layers,{covered} de {total} camadas
 dashboard.leaveNode,Leave network,Sair da rede
 dashboard.leaveNodeConfirm,Leave network,Confirmar saída
@@ -547,7 +423,17 @@ dashboard.role,Role,Papel
 dashboard.route,Route,Rota
 dashboard.routeUnmeasured,not measured yet,ainda não medida
 dashboard.sampled,"Sampled {time} · unified memory does not report dedicated VRAM, so the Mac shows wired memory.","Amostrado {time} · memória unificada não reporta VRAM dedicada, por isso o Mac mostra memória wired."
+dashboard.sectionDeployment,Deployment,Implantação
+dashboard.sectionResources,Resources,Recursos
 dashboard.server,Server,Servidor
+dashboard.serviceKindRag,RAG server,Servidor de RAG
+dashboard.serviceStatusError,error,erro
+dashboard.serviceStatusInstalling,installing,instalando
+dashboard.serviceStatusReady,running,em execução
+dashboard.serviceStatusStarting,starting,iniciando
+dashboard.serviceStatusWaiting,waiting,aguardando
+dashboard.services,Services,Serviços
+dashboard.servicesTip,What the plugins of this machine serve to the whole network.,O que os plugins desta máquina servem para a rede inteira.
 dashboard.serving,serving,servindo
 dashboard.session,"{count, plural, =1 {session} other {sessions}}","{count, plural, =1 {sessão} other {sessões}}"
 dashboard.single,serves the full model,serve o modelo inteiro
@@ -574,6 +460,7 @@ dashboard.usedOf,{used} of {total},{used} de {total}
 dashboard.versionProperties,Deployment version properties,Propriedades da versão da implantação
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
+deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
 deploy.addNode,Add,Adicionar
 deploy.addNodeCacheK,KV cache K,Cache KV K
 deploy.addNodeCacheV,KV cache V,Cache KV V
@@ -607,8 +494,6 @@ deploy.copyCount,"{count}{count, plural, =1 { copy} other { copies}}","{count}{c
 deploy.copyFrom,copy from {host},copiar de {host}
 deploy.copySummary,"{count}{count, plural, =1 { copy} other { copies}} · {size} over the network","{count}{count, plural, =1 { cópia} other { cópias}} · {size} pela rede"
 deploy.coverage,Layers covered by this selection,Camadas cobertas pela escolha
-deploy.cycleDetection,Stop repetition cycles,Interromper ciclos de repetição
-deploy.cycleDetectionHint,Stops after three consecutive windows repeat the same structure. Identifier suffixes such as _2 and _3 are treated as one shape; new table values remain progress.,Interrompe quando três janelas consecutivas repetem a mesma estrutura. Sufixos de identificador como _2 e _3 contam como o mesmo formato; valores novos de tabela continuam sendo progresso.
 deploy.deploy,Deploy this way,Implantar assim
 deploy.deployment,Deployment,Implantação
 deploy.destination,Destination,Vai para
@@ -644,14 +529,18 @@ deploy.kindTp,Tensor parallel,Tensor parallel
 deploy.kindTpHint,"One primary + workers, each holding a tensor shard. No weight crosses the network.","Um primary + workers, cada um com um shard de tensor. Nenhum peso cruza a rede."
 deploy.kindWhole,A whole model,Um modelo inteiro
 deploy.kindWholeHint,"One machine serves every layer. No slicing, no pipeline.","Uma máquina serve todas as camadas. Sem fatiar, sem pipeline."
-deploy.knob.cycle_detection_max_window_tokens,Cycle maximum window,Janela máxima do ciclo
-deploy.knob.cycle_detection_max_window_tokensHint,Largest token window compared for a repeated structure.,Maior janela de tokens comparada em busca de uma estrutura repetida.
-deploy.knob.cycle_detection_min_window_tokens,Cycle minimum window,Janela mínima do ciclo
-deploy.knob.cycle_detection_min_window_tokensHint,Smallest token window compared for a repeated structure.,Menor janela de tokens comparada em busca de uma estrutura repetida.
-deploy.knob.cycle_detection_repetitions,Cycle repetitions,Repetições do ciclo
-deploy.knob.cycle_detection_repetitionsHint,Consecutive occurrences required before stopping. Higher is safer for legitimate repeated structure.,Ocorrências consecutivas necessárias antes de interromper. Um valor maior protege melhor estruturas legítimas.
+deploy.knob.dry_allowed_length,DRY allowed length,Tamanho permitido do DRY
+deploy.knob.dry_allowed_lengthHint,Repeated sequences shorter than this are not penalized. 2 is the default.,Sequências repetidas menores que isto não são penalizadas. 2 é o padrão.
+deploy.knob.dry_base,DRY base,Base do DRY
+deploy.knob.dry_baseHint,How fast the DRY penalty grows with each extra token of the repeated sequence. 1.75 is the default.,"O quanto a penalidade do DRY cresce a cada token a mais da sequência repetida. 1,75 é o padrão."
+deploy.knob.dry_multiplier,DRY multiplier,Multiplicador do DRY
+deploy.knob.dry_multiplierHint,"Turns on the DRY sampler: a token that would continue a sequence already seen in the text loses multiplier x base^(length - allowed length) from its logit. 0 is off; 0.8 is the usual value. Unlike the repeat penalty, it does not punish single repeated words, only repeated runs.","Liga o sampler DRY: um token que continuaria uma sequência já vista no texto perde multiplicador x base^(tamanho - tamanho permitido) do logit. 0 desliga; 0,8 é o valor usual. Diferente da penalidade de repetição, não pune palavras repetidas isoladas, só sequências repetidas."
+deploy.knob.dry_penalty_last_n,DRY window,Janela do DRY
+deploy.knob.dry_penalty_last_nHint,"How many of the most recent tokens DRY searches for the repeated sequence. 0 searches the whole history, up to 8192 tokens.","Quantos dos tokens mais recentes o DRY percorre atrás da sequência repetida. 0 percorre o histórico inteiro, até 8192 tokens."
 deploy.knob.fit_memory_margin_mb,VRAM safety reserve (MiB),Reserva de segurança da VRAM (MiB)
 deploy.knob.fit_memory_margin_mbHint,"VRAM the automatic fit leaves unused on each device, to cover allocator drift and late workspaces. Raise it if a deploy starts then dies with an out-of-memory error.","VRAM que o ajuste automático deixa livre em cada dispositivo, para cobrir folga do alocador e buffers tardios. Aumente se uma implantação sobe e cai com erro de falta de memória."
+deploy.knob.frequency_penalty,Frequency penalty,Penalidade de frequência
+deploy.knob.frequency_penaltyHint,"Subtracted from the logit of a token once for each time it appeared in the penalty window, so the more a word repeats the less likely it gets. 0 is off. Same as llama.cpps frequency_penalty.","Subtraída do logit de um token uma vez para cada vez que ele apareceu na janela da penalidade: quanto mais a palavra se repete, menos provável ela fica. 0 desliga. É o frequency_penalty do llama.cpp."
 deploy.knob.hidden_state_dtype,Hidden-state precision,Precisão do estado oculto
 deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valor
 deploy.knob.hidden_state_dtypeF32,f32 - 4 bytes per value,f32 - 4 bytes por valor
@@ -666,6 +555,9 @@ deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
 deploy.knob.max_sessionsHint,"Generations served at once. Each one reserves its own full context, so this multiplies the KV-cache VRAM: two sessions at 32k cost the same as one at 64k.","Gerações atendidas ao mesmo tempo. Cada uma reserva o contexto inteiro, então isto multiplica a VRAM do cache KV: duas sessões a 32k custam o mesmo que uma a 64k."
+deploy.knob.min_p,Min-p,Min-p
+deploy.knob.min_pHint,"Drops every candidate token whose probability is below this fraction of the most likely one, after top-k and top-p. 0 is off; 0.05 is a common value.","Descarta todo token candidato cuja probabilidade fica abaixo desta fração do mais provável, depois do top-k e do top-p. 0 desliga; 0,05 é um valor comum."
+deploy.knob.moe_cache_mibHint,"VRAM, in MiB, that keeps the recently used experts held in RAM: only the misses cross PCIe, for batches of up to 32 tokens (generation). 0 turns it off. With the memory fit on, the fit counts it and keeps fewer whole expert layers on the GPU. Per GPU: with two cards, each one caches the experts of its own layers.","VRAM, em MiB, que guarda os experts da RAM usados há pouco: só as faltas atravessam o PCIe, em lotes de até 32 tokens (a geração). 0 desliga. Com o ajuste de memória ligado, o ajuste conta esse espaço e deixa menos camadas de experts inteiras na GPU. Por GPU: com duas placas, cada uma guarda os experts das próprias camadas."
 deploy.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 deploy.knob.mtp_draft_tokensHint,How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.,Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.
 deploy.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
@@ -676,15 +568,23 @@ deploy.knob.n_ctx,Context (n_ctx),Contexto (n_ctx)
 deploy.knob.n_ctxHint,"Full attention window per request, in tokens. This is the largest driver of KV-cache VRAM after the weights, and it is multiplied by the concurrent-request count.","Janela de atenção completa por requisição, em tokens. É o que mais pesa na VRAM do cache KV depois dos pesos, e é multiplicada pelo número de requisições simultâneas."
 deploy.knob.n_gpu_layers,GPU layers,Camadas na GPU
 deploy.knob.n_gpu_layersHint,How many transformer blocks this machine keeps on the GPU; the rest run on CPU. Blank means all of them. Fewer layers on the GPU frees VRAM but slows this hop.,"Quantos blocos do transformer esta máquina mantém na GPU; o resto roda na CPU. Em branco são todos. Menos camadas na GPU liberam VRAM, mas deixam este salto mais lento."
+deploy.knob.n_ubatch,Micro-batch,Microlote
+deploy.knob.n_ubatchHint,"How many tokens the context decodes at once while the memory fit is on; the compute buffers in VRAM are sized for it. Smaller frees VRAM (for MTP, for example) and makes prefill a little slower. Never more than the batch; with the fit off, the micro-batch is the batch. The default, 512, is the value that used to be fixed.","Quantos tokens o contexto decodifica de uma vez enquanto o ajuste de memória está ligado; os buffers de cálculo na VRAM são dimensionados por ele. Menor libera VRAM (para o MTP, por exemplo) e deixa o prefill um pouco mais lento. Nunca maior que o lote; com o ajuste desligado, o microlote é o lote. O padrão, 512, é o valor que antes era fixo."
 deploy.knob.offload_kqvHint,"Keep this machine''s KV cache in VRAM. Turn it off to spend host RAM instead of GPU memory on large contexts, at some latency cost. Set per machine.","Mantém o cache KV desta máquina na VRAM. Desligue para gastar RAM do host em vez de memória de GPU em contextos grandes, com algum custo de latência. É por máquina."
 deploy.knob.prefill_chunk_tokens,Tokens per chunk,Tokens por pedaço
 deploy.knob.prefill_chunk_tokensHint,Prompt tokens sent through the pipeline per round trip during prefill. Smaller chunks start streaming sooner on a slow link; larger chunks cut the number of round trips.,Tokens do prompt enviados pelo pipeline a cada ida e volta no prefill. Pedaços menores começam a transmitir antes num link lento; maiores reduzem o número de idas e voltas.
 deploy.knob.prefill_max_inflight_chunks,Prefill chunks in flight,Pedaços de prefill em voo
 deploy.knob.prefill_max_inflight_chunksHint,How many prefill chunks travel the pipeline at once (1..8). Higher hides per-hop latency on a deep pipeline; 1 turns the overlap off.,Quantos pedaços de prefill andam pelo pipeline ao mesmo tempo (1..8). Maior esconde a latência de cada salto num pipeline profundo; 1 desliga a sobreposição.
+deploy.knob.presence_penalty,Presence penalty,Penalidade de presença
+deploy.knob.presence_penaltyHint,"Subtracted once from the logit of every token already seen in the penalty window, however often it appeared, which pushes the model toward new words. 0 is off; Qwen recommends up to 1.5 against endless repetition. Same as llama.cpps presence_penalty.","Subtraída uma vez do logit de cada token já visto na janela da penalidade, não importa quantas vezes apareceu, o que empurra o modelo para palavras novas. 0 desliga; a Qwen recomenda até 1,5 contra repetição sem fim. É o presence_penalty do llama.cpp."
+deploy.knob.reasoning_budget,Reasoning budget (tokens),Limite de raciocínio (tokens)
+deploy.knob.reasoning_budgetHint,"How many tokens a thinking block may take. When it reaches the limit, the end-of-thinking tag is forced and the model goes on to the answer. Empty is no limit (-1); 0 closes the block at once.","Quantos tokens um bloco de raciocínio pode ocupar. Ao atingir o limite, a tag de fim do raciocínio é forçada e o modelo segue para a resposta. Vazio é sem limite (-1); 0 fecha o bloco de imediato."
 deploy.knob.repeat_last_n,Penalty window,Janela da penalidade
 deploy.knob.repeat_last_nHint,How many of the most recent tokens the repeat penalty looks back over. 0 disables the window.,Quantos dos tokens mais recentes a penalidade de repetição considera. 0 desliga a janela.
 deploy.knob.repeat_penalty,Repeat penalty,Penalidade de repetição
 deploy.knob.repeat_penaltyHint,"Divides the logit of tokens seen in the recent window before sampling, discouraging loops. 1 is no penalty; values above ~1.3 can distort fluency.","Divide o logit dos tokens vistos na janela recente antes da amostragem, desencorajando laços. 1 é sem penalidade; acima de ~1,3 pode distorcer a fluência."
+deploy.knob.seed,Seed,Semente
+deploy.knob.seedHint,"Where the samplers random generator starts when the deployment is loaded. The sequence then runs on across requests; it is not restarted for each one. The same seed, the same model and the same requests in the same order give the same answers. The default is the fixed value POM has always used.","De onde o gerador aleatório do sampler parte quando a implantação é carregada. A sequência depois segue entre as requisições; não recomeça a cada uma. A mesma semente, o mesmo modelo e as mesmas requisições na mesma ordem dão as mesmas respostas. O padrão é o valor fixo que o POM sempre usou."
 deploy.knob.speculative_k,Draft width (K),Largura do rascunho (K)
 deploy.knob.speculative_kHint,The confirmed token plus up to K-1 guesses in one batch. Higher means more tokens per round trip and more wasted work when the guess is wrong.,O token confirmado mais até K-1 palpites num lote só. Maior rende mais tokens por ida e volta e desperdiça mais trabalho quando o palpite erra.
 deploy.knob.speculative_lookup_window,Lookup window,Janela de busca
@@ -714,6 +614,7 @@ deploy.missing,"{count}{count, plural, =1 { layer missing} other { layers missin
 deploy.model,Model to deploy,Modelo a implantar
 deploy.modelDetail,Shard sets that a cluster machine already has.,Conjuntos de fatias que alguma máquina do cluster já tem.
 deploy.modelLayers,{count} layers in model,{count} camadas no modelo
+deploy.moeExpertsInRamHint,"Keep every routed expert of a MoE model in RAM, computed by the CPU, and give the VRAM to the rest of the model. Turns the memory fit off. Pair it with the GPU expert cache.","Mantém todos os experts roteados de um modelo MoE na RAM, calculados pela CPU, e deixa a VRAM para o resto do modelo. Desliga o ajuste de memória. Use junto com o cache de experts na GPU."
 deploy.moveDown,Move {range} later in the order,Atrasar {range} na ordem
 deploy.moveUp,Move {range} earlier in the order,Adiantar {range} na ordem
 deploy.mtp,Multi-token prediction (MTP),Predição multi-token (MTP)
@@ -722,6 +623,11 @@ deploy.mtpCpuFallbackHint,"If the MTP context does not fit in VRAM, load its wei
 deploy.mtpDraftTokens,MTP draft tokens,Tokens rascunhados pelo MTP
 deploy.mtpDraftTokensHint,How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.,Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.
 deploy.mtpHint,"Uses the model''s own trained nextn block as the draft head, instead of guessing from repetitions - a different mechanism from the option above, and a much stronger guess on text that never repeats. It only kicks in on models that ship the block (Qwen3.5 and later): on a single machine serving the whole model, and on sliced pipelines where the machine serving the last layer drafts and the head decodes. It needs every machine in the chain to run a new-enough build. A wrong guess is discarded, never emitted.","Usa o bloco nextn treinado dentro do próprio modelo como cabeça de rascunho, em vez de adivinhar por repetição - é outro mecanismo, e um palpite muito melhor em texto que não se repete. Só entra em ação em modelo que traga o bloco (Qwen3.5 em diante): numa máquina servindo o modelo inteiro, e em pipeline fatiado onde a máquina da última camada rascunha e a cabeça decodifica. Todas as máquinas da cadeia precisam rodar um build novo o bastante. Palpite errado é descartado, nunca sai na resposta."
+deploy.mtpPlacement,Where MTP runs,Onde o MTP fica
+deploy.mtpPlacementAuto,Automatic (VRAM if the model still fits),Automático (VRAM se o modelo ainda couber)
+deploy.mtpPlacementHint,"Automatic: MTP goes to VRAM only when the whole model still fits there with it; otherwise it goes to RAM and the model keeps every layer on the GPU. VRAM: MTP always takes its VRAM first and the model uses what is left, moving layers to RAM if needed. RAM: MTP always stays in host memory and runs on the CPU, spending no VRAM.","Automático: o MTP vai para a VRAM só quando o modelo inteiro ainda cabe nela junto com ele; senão vai para a RAM e o modelo mantém todas as camadas na GPU. VRAM: o MTP sempre pega a VRAM dele primeiro e o modelo usa o que sobra, movendo camadas para a RAM se precisar. RAM: o MTP fica sempre na memória do host e roda na CPU, sem gastar VRAM."
+deploy.mtpPlacementRam,RAM (runs on the CPU),RAM (roda na CPU)
+deploy.mtpPlacementVram,VRAM (always; the model uses the rest),VRAM (sempre; o modelo usa o resto)
 deploy.noEmbeddings,Force no embeddings (all peers),Forçar sem embeddings (todos os peers)
 deploy.noEmbeddingsHint,"Normally automatic - only the last peer does without it. Turning this on prevents the first peer from extracting hidden state, and the pipeline stops working.","Normalmente é automático - só o último peer dispensa. Ligar aqui impede o primeiro de extrair o estado oculto, e o pipeline para de funcionar."
 deploy.noMachine,no machine,sem máquina
@@ -746,6 +652,7 @@ deploy.processesPrompt,processes prompt,processa o prompt
 deploy.progress,In progress,Em andamento
 deploy.prompt,prompt,prompt
 deploy.properties,Deployment properties,Propriedades da implantação
+deploy.reasoningBudgetUnlimited,no limit,sem limite
 deploy.removeLeavesGap,Layers {layers} are left uncovered and the pipeline stops planning until someone takes them.,As camadas {layers} ficam descobertas e o pipeline para de planejar até alguém assumir.
 deploy.removeNode,Remove,Remover
 deploy.removeNodeTitle,Take this machine out of the model,Tirar esta máquina do modelo
@@ -759,6 +666,11 @@ deploy.shardSelection,"Which shards take part, and on which machine","Quais fati
 deploy.shardsEmpty,No shard set on the network,Nenhum conjunto de fatias na rede
 deploy.shardsEmptyDetail,"No cluster machine has shards. Slice a model under Models › Slice models, or receive shards from another machine.","Nenhuma máquina do cluster tem fatias. Fatie um modelo em Modelos › Fatiar, ou receba as fatias de outra máquina."
 deploy.size,Size,Tamanho
+deploy.speculationMode,Speculation,Especulação
+deploy.speculationMode.lookup,Speculative (lookup),Especulativa (lookup)
+deploy.speculationMode.mtp,MTP (draft),MTP (draft)
+deploy.speculationMode.none,None,Nenhuma
+deploy.speculationModeHint,"How the next tokens are drafted ahead to be checked in one batch. MTP drafts with the model's own trained head (nextn), when the model has one; the speculative decoding (lookup) drafts by repeating text already in the context, which only pays off on repetitive output. Only one runs at a time.","Como os próximos tokens são rascunhados para serem conferidos num lote só. O MTP rascunha com a cabeça treinada do próprio modelo (nextn), quando o modelo tem uma; a decodificação especulativa (lookup) rascunha repetindo texto que já está no contexto, e só compensa em saída repetitiva. Só uma roda de cada vez."
 deploy.speculative,Speculative decoding,Decodificação especulativa
 deploy.speculativeHint,"Guesses the next tokens from repetitions already in the text and checks them in a single pass through the pipeline, so one internet round trip can yield several tokens. A wrong guess is discarded, never emitted - the answer is the same either way.","Adivinha os próximos tokens a partir de repetições que já estão no texto e confere todos numa passagem só pelo pipeline, então uma ida e volta pela internet pode render vários tokens. Palpite errado é descartado, nunca sai na resposta - o texto gerado é o mesmo."
 deploy.startFailed,Deployment did not start,A implantação não começou
@@ -799,7 +711,7 @@ deploymentLogs.allDeployments,All deployments,Todas as implantações
 deploymentLogs.autoScrollOff,Auto-scroll: off,Rolagem automática: desligada
 deploymentLogs.autoScrollOn,Auto-scroll: on,Rolagem automática: ligada
 deploymentLogs.consoleSubtitle,Node names and source timestamps are informational; arrival order is authoritative.,Nomes dos nós e horários de origem são informativos; a ordem de chegada é a que vale.
-deploymentLogs.consoleTitle,Cluster console,Consola do cluster
+deploymentLogs.consoleTitle,Cluster console,Console do cluster
 deploymentLogs.copyFailed,Could not copy logs.,Não foi possível copiar os logs.
 deploymentLogs.copyLogs,Copy logs,Copiar logs
 deploymentLogs.disableAutoScroll,Disable automatic scrolling,Desligar rolagem automática
@@ -811,7 +723,9 @@ deploymentLogs.filterLabel,Filter by deployment,Filtrar por implantação
 deploymentLogs.live,Live,Ao vivo
 deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
-deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,A consola do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
+deploymentLogs.pluginRequiredHint,"The cluster process logs are kept by the Logs plugin. Activate it on this admin machine, then turn collection on in Administrative preferences.","Os logs de processo do cluster ficam no plugin de Logs. Ative-o nesta máquina administradora e depois ligue a coleta nas Preferências administrativas."
+deploymentLogs.pluginRequiredTitle,The Logs plugin is not active here,O plugin de Logs não está ativo aqui
+deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
 deploymentLogs.title,Deployment logs,Logs da implantação
 deployments.actions,Actions,Ações
 deployments.activateFailed,Could not make it the default,Não deu para tornar padrão
@@ -821,6 +735,7 @@ deployments.closeProperties,Close the properties,Fechar as propriedades
 deployments.collapseVersions,Hide versions,Ocultar versões
 deployments.created,Created,Criada
 deployments.default,Default,Padrão
+deployments.editAndRedeploy,Edit and redeploy,Editar e reimplantar
 deployments.emptyHint,Put a model into service from “Deploy to network” and it shows up here.,Ponha um modelo em serviço em “Implantar na rede” e ele aparece aqui.
 deployments.emptyTitle,Nothing deployed yet,Nada implantado ainda
 deployments.expandVersions,Show versions,Ver versões
@@ -963,7 +878,7 @@ enterprise.store.step1.body,The button opens Stripe Checkout with the official p
 enterprise.store.step1.title,Buy with Stripe,Compre com Stripe
 enterprise.store.step2.body,"After payment, the confirmation page shows your license key.","Depois do pagamento, a página de confirmação mostra a sua chave de licença."
 enterprise.store.step2.title,Get your license key,Receba a sua chave de licença
-enterprise.store.step3.body,"Paste the key in Settings, Plugins. The plugin installs itself and these screens replace this page.","Cole a chave em Configurações, Plugins. O plugin se instala sozinho e as telas substituem esta página."
+enterprise.store.step3.body,"Paste the key in the Plugins menu. The plugin installs itself and these screens replace this page.","Cole a chave no menu Plugins. O plugin se instala sozinho e as telas substituem esta página."
 enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
 enterprise.store.stepsLabel,How it works,Como funciona
 enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos
@@ -1029,6 +944,9 @@ huggingFace.title,Hugging Face,Hugging Face
 huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-only permissions and is never returned here.,O token é salvo no pom.json deste nó com permissão exclusiva do proprietário e nunca é devolvido aqui.
 huggingFace.tokenLabel,Access token,Token de acesso
 huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
+inspector.adaptivePrefillChunks,Automatic prefill chunk,Pedaço de prefill automático
+inspector.betaInfo,"Settings that work but are still being measured, for MoE models larger than VRAM. They pay off in combination:","Configurações que funcionam mas ainda estão sendo medidas, para modelos MoE maiores que a VRAM. Elas rendem em combinação:"
+inspector.betaInfoLink,see how to combine them,veja como combinar
 inspector.cacheHint,"KV cache type llama.cpp allocates on this installation. It applies to every context this node loads next, not only to this deployment.","Tipo do cache KV que o llama.cpp aloca nesta instalação. Vale para todo contexto que este nó carregar em seguida, não só para esta implantação."
 inspector.cacheK,K cache,Cache K
 inspector.cacheV,V cache,Cache V
@@ -1040,30 +958,42 @@ inspector.engine.auto,Automatic,Automático
 inspector.engine.dense,llama.cpp,llama.cpp
 inspector.engine.moe,MoE,MoE
 inspector.fitMemory,Fit to memory,Ajustar à memória
+inspector.guideBack,Back to the guide,Voltar ao guia
+inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}
 inspector.inferenceMode,Inference engine,Motor de inferência
 inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
-inspector.knob.cycle_detection_max_window_tokens,Cycle: maximum window,Ciclo: janela máxima
-inspector.knob.cycle_detection_min_window_tokens,Cycle: minimum window,Ciclo: janela mínima
-inspector.knob.cycle_detection_repetitions,Cycle: repetitions,Ciclo: repetições
+inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
+inspector.knob.dry_base,DRY base,DRY: base
+inspector.knob.dry_multiplier,DRY multiplier,DRY: multiplicador
+inspector.knob.dry_penalty_last_n,DRY window,DRY: janela
+inspector.knob.frequency_penalty,Frequency,Frequência
 inspector.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 inspector.knob.max_new_tokens,Max. tokens,Máx. tokens
 inspector.knob.max_sessions,Sessions,Sessões
+inspector.knob.min_p,Min-p,Min-p
+inspector.knob.moe_cache_mib,Expert cache on GPU (MiB),Cache de experts na GPU (MiB)
 inspector.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 inspector.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
 inspector.knob.n_batch,Batch,Batch
 inspector.knob.n_ctx,Context,Contexto
+inspector.knob.n_ubatch,Micro-batch,Microlote
 inspector.knob.prefill_chunk_tokens,Prefill chunk,Chunk prefill
 inspector.knob.prefill_max_inflight_chunks,Chunks in flight,Chunks em voo
+inspector.knob.presence_penalty,Presence,Presença
+inspector.knob.reasoning_budget,Reasoning budget,Limite de raciocínio
 inspector.knob.repeat_last_n,Repeat window,Janela repetição
 inspector.knob.repeat_penalty,Penalty,Penalidade
+inspector.knob.seed,Seed,Semente
 inspector.knob.speculative_k,Draft width,Largura do rascunho
 inspector.knob.speculative_lookup_window,Lookup window,Janela de busca
 inspector.knob.temperature,Temperature,Temperatura
 inspector.knob.top_k,Top-k,Top-k
 inspector.knob.top_p,Top-p,Top-p
+inspector.moeExpertsInRam,MoE experts in RAM,Experts do MoE na RAM
 inspector.noEmbeddings,Disable embeddings,Desativar embeddings
 inspector.noThinking,Disable thinking,Desativar thinking
 inspector.readOnly,Read only,Somente leitura
+inspector.sectionBeta,Beta,Beta
 inspector.sectionDefaults,Default settings,Configurações padrões
 inspector.sectionPom,POM settings,Configurações POM
 inspector.sectionPomDev,POM settings (DEV),Configurações POM (DESENV)
@@ -1113,6 +1043,10 @@ keys.inferenceNewToken,Replace API key,Trocar API key
 keys.inferenceSingle,One active key for this node.,Uma chave ativa para este nó.
 keys.inferenceSubtitle,Use this key to talk to models available on the network. This view keeps one active key for this node.,Use esta chave para conversar com os modelos disponíveis na rede. Esta tela mantém uma chave ativa para este nó.
 keys.inferenceTitle,Your Inference API key,Sua API key de inferência
+keys.issuedCopied,Copied,Copiado
+keys.issuedDetail,"This is the only time this token is shown. The network keeps only its hash and the start and end you see in the list, so copy it now and store it somewhere safe.","Esta é a única vez que este token aparece. A rede guarda só o hash dele e o começo e o fim que você vê na lista, então copie agora e guarde num lugar seguro."
+keys.issuedDone,I copied it,Já copiei
+keys.issuedTitle,Copy your new token,Copie o seu novo token
 keys.keyAccess,What this key grants access to,O que esta chave abre
 keys.networkNode,Network node,Nó da rede
 keys.newToken,New token,Novo token
@@ -1142,6 +1076,8 @@ keys.tokenLabel,token {label},token {label}
 keys.tokenSubtitle,One token per node or harness. Every request made with a token is attributed to it on the Logs screen.,Um token por nó ou harness. Toda requisição com token fica atribuída a ele na tela de Logs.
 keys.tokenValue,Token,Token
 keys.tokensCoexist,Tokens coexist: creating one does not revoke earlier tokens.,Tokens convivem: criar um novo não revoga os anteriores.
+keys.trackingId,Tracking ID,ID de rastreio
+keys.trackingIdHint,Identifies this token in the logs of every node. It is not a credential.,Identifica este token nos logs de todos os nós. Não é uma credencial.
 keys.unnamed,unnamed,sem nome
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas
@@ -1230,7 +1166,7 @@ network.addrSave,Save,Salvar
 network.addrSaveFailed,Could not save the address,Não foi possível salvar o endereço
 network.addrSaved,Address updated,Endereço atualizado
 network.addrSavedDetail,Takes effect immediately — no restart needed.,Vale imediatamente — sem reinício.
-network.advertiseSubtitle,The address peers use to reach this node''s HTTP/inference ports.,O endereço que os peers usam para alcançar as portas HTTP/inferência deste nó.
+network.advertiseSubtitle,"An optional address or DNS name peers try first. Leave it empty and the node finds its own addresses; it is a hint, never the node''s identity.","Endereço ou nome DNS opcional que os peers tentam primeiro. Vazio, o nó descobre os próprios endereços; é uma dica, nunca a identidade do nó."
 network.advertiseTitle,Advertised address,Endereço anunciado
 network.authority,Authority,Autoridade
 network.authority.primary,Primary administrator,Administrador principal
@@ -1310,7 +1246,7 @@ network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
-network.logsHowItWorks,Every node sends a copy to each admin over a separate libp2p protocol. Each admin stores arrival order and deployment id in its local SQLite.,Cada nó envia uma cópia para cada admin por um protocolo libp2p separado. Cada admin grava a ordem de chegada e o deploy_id no próprio SQLite local.
+network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate libp2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo libp2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
 network.logsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando
@@ -1403,6 +1339,7 @@ network.routeHolePunched,Direct (hole punch),Direto (hole punch)
 network.routeNone,No route,Sem rota
 network.routeP2pDirect,Direct (P2P),Direto (P2P)
 network.routeRelayed,Via relay,Via relé
+network.routeViaMemberRelay,member relay {address},relé membro {address}
 network.routeViaRelay,relay {address},relé {address}
 network.rules,Network rules,Regras da rede
 network.shareEyebrow,Share network access,Compartilhar acesso à rede
@@ -1493,6 +1430,7 @@ notFound.title,This page does not exist,Esta tela não existe
 notifications.accept,Accept,Aceitar
 notifications.activityAria,"{count, plural, =0 {No activity} other {{count}{count, plural, =1 { activity} other { activities}}}}","{count, plural, =0 {Nenhuma atividade} other {{count}{count, plural, =1 { atividade} other { atividades}}}}"
 notifications.allTransfers,View all transfers,Ver todas as transferências
+notifications.defaultPasswordTitle,Default administrative password,Senha administrativa padrão
 notifications.downloadProgress,"{done} of {total} · {rate}{__truthy_remaining, select, false {} other { · {remaining} remaining}}","{done} de {total} · {rate}{__truthy_remaining, select, false {} other { · faltam {remaining}}}"
 notifications.empty,Nothing happening,Nada acontecendo
 notifications.emptyDetail,"Slicing and transfers appear here while running, even after reloading the page.","Fatiamentos e transferências aparecem aqui enquanto rodam, mesmo depois de recarregar a página."
@@ -1607,8 +1545,23 @@ plugins.activationUsage.partial,Partially used,Parcialmente utilizada
 plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.activeTitle,Active,Ativo
 plugins.annualPrice,{price}/year,{price}/ano
-plugins.availableRelease,Available release,Release disponível
 plugins.buy,Buy,Comprar
+plugins.developDescription,"The example of how to build a POM plugin: screens, menu, preferences and the host interface. Install it to see it working, then use its repository as the starting point for yours.","O exemplo de como desenvolver um plugin do POM: telas, menu, preferências e a interface com o host. Instale para ver funcionando e use o repositório dele como ponto de partida para o seu."
+plugins.developEyebrow,Example plugin,Plugin de exemplo
+plugins.developSource,View the source code on GitHub,Ver o código-fonte no GitHub
+plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
+plugins.featured,Featured,Destaque
+plugins.pageNext,Next,Próxima
+plugins.pagePrevious,Previous,Anterior
+plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
+plugins.pagination,Plugin pages,Páginas de plugins
+plugins.platform.linux,Linux,Linux
+plugins.platform.macos,macOS,macOS
+plugins.platform.windows,Windows,Windows
+plugins.platforms,Platforms,Plataformas
+plugins.pomTeam,POM team,Equipe POM
+plugins.community,Community,Comunidade
+plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
 plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
 plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.
@@ -1688,6 +1641,11 @@ plugins.preferencesSave,Save preferences,Salvar preferências
 plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
 plugins.preferencesTitle,Plugin preferences,Preferências do plugin
 plugins.pricing,Pricing,Preços
+plugins.publishDescription,Submit your plugin's public GitHub repository on the POM website.,Envie o repositório público do seu plugin pelo site do POM.
+plugins.publishEyebrow,Publish,Publicar
+plugins.publishLink,Submit my plugin,Enviar meu plugin
+plugins.publishReview,Every submission goes through a review process before it is published in the plugin list.,Todo envio passa por um processo de revisão antes de ser efetivamente publicado na lista de plugins.
+plugins.publishTitle,Publish your plugin on POM,Publique seu plugin no POM
 plugins.refresh,Refresh,Atualizar
 plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
 plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
@@ -1697,6 +1655,9 @@ plugins.screenshotOpen,Open screenshot {number} of {name},Abrir captura de tela 
 plugins.screenshotPrevious,Previous screenshot,Captura de tela anterior
 plugins.screenshots,Screenshots,Capturas de tela
 plugins.screenshotsTitle,Screenshots for {name},Capturas de tela de {name}
+plugins.searchEmpty,"No plugin matches ""{query}"".","Nenhum plugin corresponde a ""{query}""."
+plugins.searchLabel,Search plugins,Buscar plugins
+plugins.searchPlaceholder,Search by name or description,Buscar por nome ou descrição
 plugins.state.active,License active,Licença ativa
 plugins.state.degraded,Degraded,Degradado
 plugins.state.expired,Expired,Expirado
@@ -1704,7 +1665,12 @@ plugins.state.needs_activation,Not activated,Não ativado
 plugins.state.revoked,Revoked,Revogado
 plugins.state.unavailable,Unavailable,Indisponível
 plugins.subtitle,"Independent plugins for this node, each with its own license, version and lifecycle.","Plugins independentes para este nó, cada um com sua própria licença, versão e ciclo de vida."
+plugins.tabCatalog,Plugins,Plugins
+plugins.tabDevelop,Develop your plugin,Desenvolva seu plugin
+plugins.tabsLabel,Plugin sections,Seções de plugins
 plugins.title,Plugins,Plugins
+plugins.unverifiedTitle,Unverified code,Código não verificado
+plugins.unverifiedWarning,This plugin was not made by the POM team and its code has not been verified. It may harm your computer. You install it at your own risk.,Este plugin não foi feito pelo time do POM e o código dele não foi verificado. Ele pode causar danos ao seu computador. A instalação é por sua conta e risco.
 plugins.updateApply,Install update,Instalar atualização
 plugins.updateApplyFailed,Could not apply the plugin update.,Não foi possível aplicar a atualização do plugin.
 plugins.updateAvailable,Update available: {version},Atualização disponível: {version}
@@ -1749,7 +1715,6 @@ profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
 publicNetworks.action,Action,Ação
-publicNetworks.address,Address,Endereço
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.checking,Checking reachability,Verificando alcance
@@ -1766,7 +1731,6 @@ publicNetworks.emptyTitle,No public networks found,Não encontramos redes públi
 publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
-publicNetworks.ipv6Unavailable,IPv6 unavailable on this machine,IPv6 indisponível nesta máquina
 publicNetworks.join,Open joining,Entrar na rede
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
@@ -1783,15 +1747,19 @@ publicNetworks.nodes,Nodes,Nós
 publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
 publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
-publicNetworks.reachable,Reachable,Alcançável
+publicNetworks.publisherKey,Publisher key,Chave do publicador
+publicNetworks.reach,Reachability,Alcance
+publicNetworks.reachDirect,Direct route published,Rota direta publicada
+publicNetworks.reachRelayed,Reachable through a relay,Alcançável por relé
+publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
+publicNetworks.relayHints,Dedicated relays,Relés dedicados
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
 publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
 publicNetworks.title,Public networks,Redes públicas
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
-publicNetworks.unreachable,Not reachable,Inacessível
 publicNetworks.vram,Total VRAM,VRAM total
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
@@ -1944,8 +1912,8 @@ setupWizard.adminToken,Administrative access token,Token de acesso administrativ
 setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
 setupWizard.adminTokenFailed,The administrative token could not be generated,O token administrativo não pôde ser gerado
 setupWizard.adminTokenMissing,The token will be generated here,O token será gerado aqui
-setupWizard.advertiseAddress,IPv6 address this machine will announce,Endereço IPv6 que esta máquina anunciará
-setupWizard.advertiseAddressHint,Use this machine's stable public IPv6. The POM port is added automatically.,Use o IPv6 público estável desta máquina. A porta do POM é adicionada automaticamente.
+setupWizard.advertiseAddress,Preferred address (optional),Endereço preferido (opcional)
+setupWizard.advertiseAddressHint,An IP or DNS name peers try first. Leave it empty to detect automatically. The POM port is added automatically.,IP ou nome DNS que os peers tentam primeiro. Deixe vazio para detectar automaticamente. A porta do POM é adicionada automaticamente.
 setupWizard.advertiseAddressPlaceholder,2001:db8::1,2001:db8::1
 setupWizard.anchorFailed,The trust root could not be created,Não foi possível criar a raiz de confiança
 setupWizard.anyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
@@ -2170,6 +2138,25 @@ sidebar.leaveNetworkDescription,"This removes the trust document and private net
 sidebar.leaveNetworkFailed,The node could not leave the network,Não foi possível sair da rede
 sidebar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
 sidebar.thisNetwork,this network,esta rede
+sidecars.copy,{host} copies it from {source} ({size}) before starting,{host} copia de {source} ({size}) antes de subir
+sidecars.details,More info,Mais informações
+sidecars.embedded,Embedded in the model,Embutido no modelo
+sidecars.linkHint,"Which vision projector and which MTP draft belong to this model, wherever each file is in the network. Deployments use this link by default.","Qual projetor de visão e qual MTP pertencem a este modelo, onde quer que cada arquivo esteja na rede. As implantações usam este vínculo por padrão."
+sidecars.linkTitle,Vision and MTP,Visão e MTP
+sidecars.machineCount,"{count, plural, one {# machine} other {# machines}}","{count, plural, one {# máquina} other {# máquinas}}"
+sidecars.missing,not found in the network,não encontrado na rede
+sidecars.mtp,MTP draft (tail),MTP (cauda)
+sidecars.noMtp,No external MTP,Sem MTP externo
+sidecars.noVision,No vision,Sem visão
+sidecars.noneCompatible,No compatible file was found in the network.,Nenhum arquivo compatível foi encontrado na rede.
+sidecars.readOnly,Only an administrator changes the link.,Só um administrador altera o vínculo.
+sidecars.ready,{host} already has the file,{host} já tem o arquivo
+sidecars.saveFailed,The link was not saved,O vínculo não foi salvo
+sidecars.saved,Link saved,Vínculo salvo
+sidecars.stale,The principal did not answer: showing the last copy of the links.,O principal não respondeu: mostrando a última cópia dos vínculos.
+sidecars.useLink,Model link: {name},Vínculo do modelo: {name}
+sidecars.useLinkNone,Model link (none saved),Vínculo do modelo (nenhum salvo)
+sidecars.vision,Vision projector (head),Projetor de visão (cabeça)
 slice.actualSize,Actual size,Peso real
 slice.add,Add another shard,Mais uma fatia
 slice.complete,full model covered,modelo inteiro coberto

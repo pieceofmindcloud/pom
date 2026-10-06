@@ -1333,6 +1333,86 @@ mod tests {
     }
 
     #[test]
+    fn decode_coverage_counts_the_rounds_the_gateway_sent() {
+        // 1649 tokens, 722 drafts aceitos, 926 rodadas: a estimativa por tokens
+        // esperava 927 e mostrava 98,9% com os dois saltos respondendo tudo.
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
+        trace.output_tokens = 1649;
+        trace.mtp_draft_tokens_accepted = 722;
+        for hop in 0..2 {
+            trace.record_hop_from_json(
+                hop,
+                Phase::Decode,
+                &json!({"span_count": 926, "round_trip_ms": 76, "processing_ms": 75}),
+            );
+        }
+        for _ in 0..926 {
+            trace.note_decode_round();
+        }
+        trace.complete = true;
+        trace.refresh_telemetry(76);
+
+        assert_eq!(trace.telemetry.expected_decode_spans, 1852);
+        assert_eq!(trace.telemetry.completeness_percent, 100.0);
+        assert_eq!(trace.telemetry.status, "complete");
+    }
+
+    #[test]
+    fn remote_stream_rounds_are_not_estimated_from_tokens() {
+        // 90 tokens sem MTP pelo remote stream: o primeiro veio do prefill, as
+        // 89 rodadas renderam 178 spans, e a estimativa por tokens esperava 180.
+        let mut trace = RequestTrace::new("qwen", &[("head", 0, 26), ("tail", 27, 47)]);
+        for index in 0..89 {
+            let mut frame = RequestTrace::new("qwen", &[("head", 0, 26), ("tail", 27, 47)]);
+            assert!(frame.record_remote_stream_batch(&json!({
+                "stream_id": "stream-90",
+                "remote_stream_frame_index": index,
+                "accepted": [1],
+            })));
+            frame.note_decode_round();
+            for hop in 0..2 {
+                frame.record_hop_from_json(
+                    hop,
+                    Phase::Decode,
+                    &json!({"span_count": 1, "node_timings": {}}),
+                );
+            }
+            trace.merge(&frame);
+        }
+        trace.output_tokens = 90;
+        trace.complete = true;
+        trace.refresh_telemetry(100);
+
+        assert_eq!(trace.telemetry.expected_decode_spans, 178);
+        assert_eq!(trace.telemetry.reported_decode_spans, 178);
+        assert_eq!(trace.telemetry.status, "complete");
+    }
+
+    #[test]
+    fn a_hop_missing_a_counted_round_is_still_incomplete() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
+        trace.output_tokens = 10;
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({"span_count": 10, "round_trip_ms": 76, "processing_ms": 75}),
+        );
+        trace.record_hop_from_json(
+            1,
+            Phase::Decode,
+            &json!({"span_count": 9, "round_trip_ms": 76, "processing_ms": 75}),
+        );
+        for _ in 0..10 {
+            trace.note_decode_round();
+        }
+        trace.complete = true;
+        trace.refresh_telemetry(76);
+
+        assert_eq!(trace.telemetry.expected_decode_spans, 20);
+        assert_eq!(trace.telemetry.status, "response_complete");
+    }
+
+    #[test]
     fn regular_decode_coverage_uses_output_tokens_per_pipeline_hop() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15), ("no2", 16, 31)]);
         trace.output_tokens = 3;
@@ -1732,4 +1812,85 @@ mod tests {
         assert!(first.remote_stream_downstream_wait_p50_ms >= 60);
         assert!(first.remote_stream_delivery_p50_ms >= 25);
     }
+
+    #[test]
+    fn a_typed_decision_expects_no_decode_spans() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
+        trace.output_tokens = 1;
+        for hop in 0..2 {
+            trace.record_hop_from_json(
+                hop,
+                Phase::Prefill,
+                &json!({"round_trip_ms": 40, "processing_ms": 30}),
+            );
+        }
+        trace.probe = Some(json!({"labels": ["A", "B"], "probabilities": [0.6, 0.2], "mass": 0.8}));
+        trace.complete = true;
+        trace.refresh_telemetry(90);
+
+        assert_eq!(trace.telemetry.expected_decode_spans, 0);
+        assert_eq!(trace.telemetry.status, "complete");
+    }
+
+    #[test]
+    fn the_jev_trace_summary_names_the_selected_option() {
+        let probe = DecisionProbe {
+            labels: vec!["A".into(), "B".into(), "C".into()],
+            retain_prefix_bytes: Some(120),
+            question: Some("move".into()),
+            question_type: Some("choice".into()),
+            options: vec!["down".into(), "left".into(), "up".into()],
+        };
+        let summary = probe.trace_summary(
+            &json!({"labels": ["A", "B", "C"], "probabilities": [0.1, 0.6, 0.3], "mass": 0.95, "probe_ms": 69.8861}),
+            3007,
+            42,
+        );
+        assert_eq!(summary["enabled"], true);
+        assert_eq!(summary["candidates"], 3);
+        assert_eq!(summary["selected"], "B");
+        assert_eq!(summary["selected_option"], "left");
+        assert_eq!(summary["confidence"], 0.6);
+        assert_eq!(summary["probabilities"]["C"], 0.3);
+        assert_eq!(summary["mass"], 0.95);
+        assert_eq!(summary["probe_ms"], 69.8861);
+        assert_eq!(summary["prefill_ms"], 3007);
+        assert_eq!(summary["cache_hit_tokens"], 42);
+        assert_eq!(summary["question"], "move");
+
+        let meta = add_probe_to_head_meta(json!({}), Some(&probe));
+        assert_eq!(meta["probe"], json!(["A", "B", "C"]));
+        assert_eq!(meta["retain_prefix_bytes"], 120);
+
+        // A retain boundary without labels (retrieved context after the
+        // conversation) reaches the head on its own, and scores nothing.
+        let boundary = DecisionProbe {
+            retain_prefix_bytes: Some(512),
+            ..Default::default()
+        };
+        let meta = add_probe_to_head_meta(json!({"chunk_index": 0}), Some(&boundary));
+        assert_eq!(meta["retain_prefix_bytes"], 512);
+        assert!(meta.get("probe").is_none());
+        let untouched = add_probe_to_head_meta(json!({"chunk_index": 0}), None);
+        assert_eq!(untouched, json!({"chunk_index": 0}));
+    }
+}
+
+#[test]
+fn a_failed_prefill_names_its_cause_not_the_telemetry_wrapper() {
+    let error = anyhow::anyhow!("captura tem 3 linhas, esperado 238")
+        .context("hop 1 recusou o pedaço 0")
+        .context(PartialPrefillTrace {
+            trace: Box::new(RequestTrace::from_plan(
+                "m",
+                &crate::pipeline::PipelinePlan {
+                    steps: Vec::new(),
+                    edges: Vec::new(),
+                },
+            )),
+        });
+    assert_eq!(
+        failure_cause(&error),
+        "hop 1 recusou o pedaço 0: captura tem 3 linhas, esperado 238"
+    );
 }

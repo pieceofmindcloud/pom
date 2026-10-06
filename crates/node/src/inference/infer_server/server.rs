@@ -1,6 +1,23 @@
 use super::*;
 
 impl InferState {
+    /// Records, when a request's prefill arrives, whether its generation
+    /// starts inside a thinking block: thinking is on for it and the template
+    /// opens the block in the prompt.
+    pub(super) fn note_thinking(&mut self, sid_key: &str, thinking_enabled: Option<bool>) {
+        let thinking = !self.no_thinking && thinking_enabled.unwrap_or(!self.no_thinking);
+        // Sessions that are gone take their entries along.
+        let sessions = &self.sessions;
+        self.thinking_open
+            .retain(|key, _| key == sid_key || sessions.contains_key(key));
+        self.thinking_open
+            .insert(sid_key.to_owned(), thinking && self.thinking_forced_open);
+    }
+
+    pub(super) fn thinking_open_at_start(&self, sid_key: &str) -> bool {
+        self.thinking_open.get(sid_key).copied().unwrap_or(false)
+    }
+
     pub(super) fn new(
         engine: LlmEngine,
         cfg: &NodeConfig,
@@ -10,6 +27,28 @@ impl InferState {
     ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
+        // The deployment's seed restarts the sampler's generator once, here,
+        // when the model is loaded.
+        crate::llm::set_sampler_seed(cfg.seed);
+        // Whether this model's template opens the thinking block in the
+        // prompt itself: then the generation starts inside it and no start
+        // tag is ever generated for the reasoning budget to see.
+        let thinking_start = engine.tokenize(crate::llm::THINKING_START_TAG, false, true);
+        let thinking_end = engine.tokenize(crate::llm::THINKING_END_TAG, false, true);
+        let thinking_forced_open = engine
+            .apply_chat_template(&[("user", "x")], true, false)
+            .is_ok_and(|prompt| prompt.trim_end().ends_with(crate::llm::THINKING_START_TAG));
+        // llama.cpp's default DRY sequence breakers, as the tokens this
+        // model has for them: a repeated run does not reach across one.
+        let dry_breakers: Vec<i32> = crate::llm::DRY_SEQUENCE_BREAKERS
+            .iter()
+            .filter_map(
+                |text| match engine.tokenize(text, false, false).as_slice() {
+                    [token] => Some(*token),
+                    _ => None,
+                },
+            )
+            .collect();
         Self {
             tls_handshake_ms: None,
             engine,
@@ -24,7 +63,24 @@ impl InferState {
                 top_k: cfg.top_k as i32,
                 repeat_penalty: cfg.repeat_penalty,
                 repeat_last_n: cfg.repeat_last_n as usize,
+                presence_penalty: cfg.presence_penalty,
+                frequency_penalty: cfg.frequency_penalty,
+                min_p: cfg.min_p,
+                dry: crate::llm::DrySampling {
+                    multiplier: cfg.dry_multiplier,
+                    base: cfg.dry_base,
+                    allowed_length: cfg.dry_allowed_length as usize,
+                    penalty_last_n: cfg.dry_penalty_last_n as usize,
+                    breakers: dry_breakers,
+                },
+                reasoning: crate::llm::ReasoningBudget {
+                    tokens: cfg.reasoning_budget,
+                    start: thinking_start,
+                    end: thinking_end,
+                },
             },
+            thinking_forced_open,
+            thinking_open: HashMap::new(),
             no_thinking: cfg.no_thinking,
             // Mantém o comportamento dos chamadores antigos que não enviam a
             // flag. O gateway atual sempre a explicita por endpoint.
@@ -41,6 +97,20 @@ impl InferState {
                 .map(str::trim)
                 .filter(|d| !d.is_empty())
                 .map(std::path::PathBuf::from),
+            ram_cache: {
+                // Tensor parallelism keeps one session per rank in lockstep; a
+                // rank parking on its own would leave the group out of step.
+                let setting = if cfg.tp.as_ref().is_some_and(|tp| tp.size > 1) {
+                    CacheRamSetting::Off
+                } else {
+                    CacheRamSetting::from_mib(cfg.cache_ram_mib)
+                };
+                let host = Arc::new(HostMemory::default());
+                if setting != CacheRamSetting::Off {
+                    host.spawn_sampler();
+                }
+                KvRamCache::new(setting, host)
+            },
             slot_freed: Arc::new(tokio::sync::Notify::new()),
             original_block_count: None, // filled in after engine load
             inference_path,
@@ -131,11 +201,118 @@ impl InferState {
         else {
             return false;
         };
+        let parked = self.park_session(&sid);
         info!(
-            "despejando prefixo retido da sessão {}… para liberar slot",
-            &sid[..8.min(sid.len())]
+            "despejando prefixo retido da sessão {}… para liberar slot (cache em RAM: {})",
+            &sid[..8.min(sid.len())],
+            if parked { "guardado" } else { "não" }
         );
-        self.finish(&sid);
+        self.close_session(&sid);
+        true
+    }
+
+    /// Copies a retained session's prompt KV to host RAM before its sequence
+    /// is given away, so `unpark_session` can bring it back (`--cache-ram`).
+    ///
+    /// Same eligibility as `save_slot`: only a retained prompt whose cells
+    /// match its logical positions. Returns whether the session was parked;
+    /// the caller still closes the live session either way.
+    pub(super) fn park_session(&mut self, sid: &str) -> bool {
+        if !self.ram_cache.enabled() {
+            return false;
+        }
+        let Some(session) = self.sessions.get(sid) else {
+            return false;
+        };
+        if !session.retained
+            || session.prompt_len == 0
+            || !session.positions_match_cells()
+            || session.prompt_cells != session.prompt_len
+        {
+            return false;
+        }
+        let seq = session.prompt_seq;
+        if !self
+            .ram_cache
+            .accepts(self.engine.state_seq_size(seq) as u64)
+        {
+            return false;
+        }
+        let started = Instant::now();
+        let data = match self.engine.state_seq_get_data(seq) {
+            Ok(data) => data,
+            Err(error) => {
+                warn!(
+                    "cache em RAM: não foi possível copiar o KV da sessão {}…: {error:#}",
+                    &sid[..8.min(sid.len())]
+                );
+                return false;
+            }
+        };
+        let bytes = data.len();
+        let session = self.sessions.get(sid).expect("session exists");
+        let entry = ParkedSession::new(
+            data,
+            session.prompt_len,
+            session.stable_len,
+            session.prompt_tokens.clone(),
+        );
+        let tokens = entry.prompt_len;
+        let parked = self.ram_cache.insert(sid, entry);
+        if parked {
+            info!(
+                "cache em RAM: sessão {}… guardada ({tokens} tokens, {bytes} bytes, {} ms)",
+                &sid[..8.min(sid.len())],
+                started.elapsed().as_millis()
+            );
+        }
+        parked
+    }
+
+    /// Brings a parked session back into a free sequence as a retained
+    /// session, exactly as `restore_slot` does from disk. Returns `false`
+    /// when the session is not parked, no sequence is free, or the engine
+    /// refuses the state; in every such case the parked entry is gone and the
+    /// caller proceeds as with any unknown session.
+    pub(super) fn unpark_session(&mut self, sid: &str) -> bool {
+        if self.sessions.contains_key(sid) {
+            return false;
+        }
+        let Some(entry) = self.ram_cache.remove(sid) else {
+            return false;
+        };
+        let Some(seq) = self.alloc_seq() else {
+            return false;
+        };
+        let started = Instant::now();
+        // The sequence may hold cells of whoever used it last.
+        let _ = self.engine.kv_remove(seq, 0, -1);
+        if let Err(error) = self.engine.state_seq_set_data(&entry.data, seq) {
+            warn!(
+                "cache em RAM: sessão {}… não pôde ser restaurada: {error:#}",
+                &sid[..8.min(sid.len())]
+            );
+            let _ = self.engine.kv_remove(seq, 0, -1);
+            self.free_seq(seq);
+            return false;
+        }
+        let mut session = Session::new(seq);
+        session.prompt_len = entry.prompt_len;
+        session.n_past = entry.prompt_len;
+        session.stable_len = entry.stable_len;
+        session.prompt_cells = entry.prompt_len;
+        session.prompt_tokens = entry.prompt_tokens;
+        session.retained = true;
+        session.last_used = Instant::now();
+        self.sessions.insert(sid.to_string(), session);
+        self.ram_cache.note_restored();
+        info!(
+            "cache em RAM: sessão {}… restaurada ({} tokens, {} bytes, {} ms)",
+            &sid[..8.min(sid.len())],
+            entry.prompt_len,
+            entry.data.len(),
+            started.elapsed().as_millis()
+        );
         true
     }
 
@@ -513,6 +690,8 @@ impl InferState {
             .collect();
         let count = stale.len();
         for sid in stale {
+            // An idle conversation may still come back: keep its KV in RAM.
+            self.park_session(&sid);
             if let Some(mut s) = self.sessions.remove(&sid) {
                 // A timeout is an aborted stream. Clear its byte tail before
                 // returning the sequence slot so it cannot affect a later
@@ -536,6 +715,9 @@ impl InferState {
 
     pub(super) fn get_or_create(&mut self, sid: &str, reset: bool) -> Result<&mut Session> {
         if reset {
+            // A reset starts the session over: a parked KV of the same id is
+            // a past this session no longer has.
+            self.ram_cache.remove(sid);
             if let Some(mut old) = self.sessions.remove(sid) {
                 let _ = old.finish_token_stream();
                 self.wipe_kv(&old);
@@ -559,6 +741,14 @@ impl InferState {
     /// `retain_prompt`, que guarda o prompt. Aqui chegam a liberação explícita
     /// do gateway, o cancelamento e a limpeza de erro.
     pub(super) fn finish(&mut self, sid: &str) {
+        // Releasing for good also forgets the copy parked in host RAM.
+        self.ram_cache.remove(sid);
+        self.close_session(sid);
+    }
+
+    /// Wipes the live session and returns its sequence to the pool, leaving
+    /// the host-memory cache alone - the eviction path parks first.
+    pub(super) fn close_session(&mut self, sid: &str) {
         if let Some(mut s) = self.sessions.remove(sid) {
             // The output path flushes before the caller reaches this method;
             // the cleanup cases deliberately discard the result after clearing
@@ -802,6 +992,7 @@ pub async fn run(
     let app_state = InferenceAppState {
         state,
         scheduler,
+        health_snapshot: HealthSnapshot::default(),
         tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
         direct_forward_order: DirectForwardOrder::default(),
         loads,
@@ -830,7 +1021,8 @@ pub async fn run(
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rewind", post(handle_rewind))
         .route("/v1/session/rollback", post(handle_rollback))
-        .route("/v1/session/slot", post(handle_slot));
+        .route("/v1/session/slot", post(handle_slot))
+        .route("/v1/session/cache/clear", post(handle_cache_clear));
     let inference_routes = if let Some(auth) = auth.clone() {
         inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
@@ -1224,20 +1416,143 @@ pub(super) fn context_per_session(n_ctx_total: u32, max_sessions: u32) -> u32 {
     n_ctx_total / max_sessions.max(1)
 }
 
+/// The tokenized prompt fits in the session window, with room for at least one
+/// generated token. With the unified KV cache llama.cpp would accept a larger
+/// prompt - it would take another session's cells -, so the boundary is
+/// enforced here. The gateway already refuses by the estimate; this catches a
+/// prompt denser than it and any caller that does not go through the gateway.
+pub(super) fn check_prompt_fits_session(
+    s: &super::InferState,
+    prompt_tokens: usize,
+) -> anyhow::Result<()> {
+    let window = context_per_session(s.engine.n_ctx(), s.max_sessions);
+    match prompt_window_refusal(prompt_tokens, window) {
+        Some(reason) => Err(anyhow::anyhow!(reason)),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn prompt_window_refusal(prompt_tokens: usize, window: u32) -> Option<String> {
+    (prompt_tokens >= window as usize).then(|| {
+        format!(
+            "the prompt has {prompt_tokens} tokens and the session window is {window}; \
+             there is no room left for the answer"
+        )
+    })
+}
+
+/// This session's generation still fits in the window. Reaching it is a stop:
+/// the gateway bounds the total (`OutputBudget::within_session_window`) and
+/// ends with `length` before getting here; this refusal is the safety net for
+/// the path that does not go through it and for the head that generates ahead
+/// in remote-stream mode.
+pub(super) fn check_decode_fits_session(s: &super::InferState, n_past: u32) -> anyhow::Result<()> {
+    let window = context_per_session(s.engine.n_ctx(), s.max_sessions);
+    match decode_window_refusal(n_past, window) {
+        Some(reason) => Err(anyhow::anyhow!(reason)),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn decode_window_refusal(n_past: u32, window: u32) -> Option<String> {
+    (n_past >= window).then(|| {
+        format!(
+            "the session window is full ({n_past} of {window} positions); \
+             generation stopped at the context limit"
+        )
+    })
+}
+
 // ── /health ───────────────────────────────────────────────────────────────────
 
+/// `GET /health`. With the engine busy, it answers the last snapshot marked
+/// `busy: true` (with `snapshot_age_ms`); the snapshot is stored again whenever
+/// the lock is free.
 pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     let scheduler = app.scheduler;
     let state = app.state;
-    let slot_dir = match lock_inference_state(&state) {
-        Ok(s) => s.slot_dir.clone(),
-        Err(error) => return err500(error),
+    let snapshot = app.health_snapshot;
+    // `/health` is a readiness and route probe: it has to answer with the
+    // engine busy. The `InferState` lock is held for a whole prefill chunk
+    // (seconds), and waiting for it made the gateway's readiness probe and the
+    // route plan's probe expire - the peer dropped out of the plan ("Gap at
+    // layer 0") and the tunnel route was erased. When busy, return the last
+    // snapshot.
+    let slot_dir = match state.try_lock() {
+        Ok(s) => Some(s.slot_dir.clone()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return err500(anyhow::anyhow!("inference state mutex poisoned"))
+        }
     };
-    let slot_count = slot_dir.as_deref().map(count_slot_entries).unwrap_or(0);
-    let s = match lock_inference_state(&state) {
-        Ok(s) => s,
-        Err(error) => return err500(error),
-    };
+    if let Some(slot_dir) = slot_dir {
+        let slot_count = slot_dir.as_deref().map(count_slot_entries).unwrap_or(0);
+        if let Ok(s) = state.try_lock() {
+            let body = health_body(&s, &scheduler, slot_count);
+            drop(s);
+            store_health_snapshot(&snapshot, &body);
+            return Json(body).into_response();
+        }
+    }
+    if let Some(body) = busy_health_body(&snapshot, &scheduler) {
+        return Json(body).into_response();
+    }
+    // Busy and no snapshot yet (first probe after loading): wait for the
+    // engine on a blocking thread, so the async runtime is not stalled.
+    let built = tokio::task::spawn_blocking(move || {
+        let s = lock_inference_state(&state)?;
+        let slot_dir = s.slot_dir.clone();
+        let slot_count = slot_dir.as_deref().map(count_slot_entries).unwrap_or(0);
+        anyhow::Ok(health_body(&s, &scheduler, slot_count))
+    })
+    .await;
+    match built {
+        Ok(Ok(body)) => {
+            store_health_snapshot(&snapshot, &body);
+            Json(body).into_response()
+        }
+        Ok(Err(error)) => err500(error),
+        Err(error) => err500(anyhow::anyhow!("/health did not complete: {error}")),
+    }
+}
+
+/// `/health` snapshot kept for when the engine is busy.
+pub(super) type HealthSnapshot = Arc<std::sync::Mutex<Option<(Value, Instant)>>>;
+
+pub(super) fn store_health_snapshot(snapshot: &HealthSnapshot, body: &Value) {
+    if let Ok(mut slot) = snapshot.lock() {
+        *slot = Some((body.clone(), Instant::now()));
+    }
+}
+
+/// The last snapshot, with what does not depend on the engine recomputed now:
+/// the scheduler queue and the routes. `busy` says the rest comes from the
+/// snapshot.
+fn busy_health_body(snapshot: &HealthSnapshot, scheduler: &SchedulerHandle) -> Option<Value> {
+    let mut body = snapshot_health_body(snapshot)?;
+    body["scheduler"] = scheduler.stats.json(&scheduler.config);
+    add_route_fields(&mut body);
+    Some(body)
+}
+
+/// The stored snapshot, marked as served with the engine busy.
+pub(super) fn snapshot_health_body(snapshot: &HealthSnapshot) -> Option<Value> {
+    let (mut body, at) = snapshot.lock().ok()?.clone()?;
+    body["busy"] = Value::Bool(true);
+    body["snapshot_age_ms"] = Value::from(at.elapsed().as_millis() as u64);
+    Some(body)
+}
+
+fn add_route_fields(body: &mut Value) {
+    let book = crate::route_plan::book();
+    body["route_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Inference));
+    body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
+    body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
+    body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
+    body["relayed_peers"] = json!(book.relayed_nodes());
+}
+
+fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -> Value {
     // Keep in sync with network.rs's `self_announce`, gateway.rs's local peer
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
@@ -1258,6 +1573,7 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
     if scheduler.config.enabled {
         caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
+    let ram_cache = s.ram_cache.stats();
     if s.slot_dir.is_some() {
         caps.push(crate::pipeline::CAP_SLOT_PERSIST);
     }
@@ -1358,18 +1674,26 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         "slot_persist_enabled": s.slot_dir.is_some(),
         "slot_count": slot_count,
     });
+    // Host-memory KV cache (`--cache-ram`): retained sessions parked in RAM
+    // after losing their sequence. See `ram_cache.rs`. A `null` limit with the
+    // cache on means this host is too small (half of its RAM is under 6 GiB)
+    // or was not measured yet.
+    body["cache_ram"] = json!({
+        "enabled": s.ram_cache.enabled(),
+        "limit_bytes": s.ram_cache.limit_bytes(),
+        "user_reserve_bytes": s.ram_cache.reserve_bytes(),
+        "bytes": ram_cache.bytes,
+        "entries": ram_cache.entries,
+        "tokens": ram_cache.tokens,
+        "parked": ram_cache.parked,
+        "restored": ram_cache.restored,
+        "evicted": ram_cache.evicted,
+    });
     // Rotas fixadas deste nó (`route_plan`): RTT e transporte até o servidor
     // de inferência e até o gateway de cada peer. O gateway que planeja não
     // mede as arestas entre dois outros peers nem a volta até ele; lê daqui.
     // Fora do `json!` acima, que já está no limite de recursão da macro.
-    {
-        let book = crate::route_plan::book();
-        body["route_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Inference));
-        body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
-        body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
-        body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
-        body["relayed_peers"] = json!(book.relayed_nodes());
-    }
+    add_route_fields(&mut body);
     // Keep the identity fields separate from the large diagnostic object. A
     // direct addition to the json! tree would exceed the macro recursion limit
     // and would make this readiness contract depend on compiler settings.
@@ -1378,7 +1702,8 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
     body["start_layer"] = Value::from(s.start_layer);
     body["end_layer"] = Value::from(s.end_layer);
     body["total_layers"] = Value::from(s.total_layers);
-    Json(body).into_response()
+    body["busy"] = Value::Bool(false);
+    body
 }
 
 // ── /v1/tp/reduce ────────────────────────────────────────────────────────────
@@ -1600,6 +1925,20 @@ pub(super) async fn handle_slot(
         }
         other => err400(format!("ação de snapshot desconhecida: {other}")),
     }
+}
+
+/// `POST /v1/session/cache/clear` - drops every session parked in host RAM
+/// (`--cache-ram`). Live and retained sessions keep their sequences: this only
+/// gives back the memory of conversations that had already lost theirs.
+pub(super) async fn handle_cache_clear(State(app): State<InferenceAppState>) -> Response {
+    let mut state = match lock_inference_state(&app.state) {
+        Ok(state) => state,
+        Err(error) => return err500(error),
+    };
+    let (entries, bytes) = state.ram_cache.clear();
+    drop(state);
+    info!("cache em RAM limpo: {entries} sessões, {bytes} bytes");
+    Json(json!({ "cleared": true, "entries": entries, "bytes": bytes })).into_response()
 }
 
 pub(super) fn replicate_slot_call(

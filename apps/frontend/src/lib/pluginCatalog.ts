@@ -29,10 +29,32 @@ export interface PublicPluginCatalogEntry {
     annual: PublicPluginPrice | null;
   };
   releases: PublicPluginRelease[];
+  /** Shown first in the store (destaque). */
+  featured: boolean;
+  /** Made by the POM team; false for a community plugin, null from an older license server. */
+  pom_team: boolean | null;
+  /** Free plugin installed from this public GitHub repository instead of the license server. */
+  github_url: string | null;
 }
 
 export interface PublicPluginCatalog {
   plugins: PublicPluginCatalogEntry[];
+  /** Entries matching the query across every page; null from a license server without pagination. */
+  total: number | null;
+}
+
+export interface PublicPluginCatalogQuery {
+  /** Searched by the license server in the code, name and descriptions. */
+  q?: string;
+  /** One-based page in store order (featured, then the POM team's, then by name). */
+  page?: number;
+  perPage?: number;
+}
+
+/** The operating systems a plugin publishes builds for, in a fixed display order. */
+export function supportedPlatforms(releases: PublicPluginRelease[]): string[] {
+  const systems = new Set(releases.map((release) => release.os.toLowerCase()));
+  return ["windows", "linux", "macos"].filter((os) => systems.has(os));
 }
 
 /** Pick a release only when the catalog identifies the current node target. */
@@ -110,6 +132,19 @@ function publicPrice(value: unknown): PublicPluginPrice | null {
   return { amount, currency: currency.toUpperCase(), interval };
 }
 
+function githubUrl(value: unknown): string | null {
+  const candidate = nonEmptyString(value);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    const path = url.pathname.split("/").filter(Boolean);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || path.length !== 2 || url.username || url.password) return null;
+    return `https://github.com/${path[0]}/${path[1]}`;
+  } catch {
+    return null;
+  }
+}
+
 function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
   if (!isRecord(value)) return null;
   const code = nonEmptyString(value.code);
@@ -139,6 +174,9 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
       annual: publicPrice(pricing.annual),
     },
     releases,
+    featured: value.featured === true,
+    pom_team: typeof value.pom_team === "boolean" ? value.pom_team : null,
+    github_url: githubUrl(value.github_url),
   };
 }
 
@@ -155,15 +193,31 @@ export function normalizePublicPluginCatalog(value: unknown): PublicPluginCatalo
     seen.add(entry.code);
     plugins.push(entry);
   }
-  return { plugins };
+  const total = typeof value.total === "number" && Number.isInteger(value.total) && value.total >= 0 ? value.total : null;
+  return { plugins, total };
 }
 
 /** Public storefront read. It intentionally bypasses the authenticated node API client. */
-export async function fetchPublicPluginCatalog(signal?: AbortSignal): Promise<PublicPluginCatalog> {
-  const response = await fetch(PUBLIC_PLUGIN_CATALOG_URL, {
+export async function fetchPublicPluginCatalog(signal?: AbortSignal, query: PublicPluginCatalogQuery = {}): Promise<PublicPluginCatalog> {
+  const url = new URL(PUBLIC_PLUGIN_CATALOG_URL);
+  if (query.q?.trim()) url.searchParams.set("q", query.q.trim());
+  if (query.page !== undefined) url.searchParams.set("page", String(query.page));
+  if (query.perPage !== undefined) url.searchParams.set("per_page", String(query.perPage));
+  const response = await fetch(url.toString(), {
     credentials: "omit",
     signal,
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return normalizePublicPluginCatalog(await response.json());
+}
+
+/** One plugin's public entry, or null when the store does not list it. */
+export async function fetchPublicPlugin(code: string, signal?: AbortSignal): Promise<PublicPluginCatalogEntry | null> {
+  const response = await fetch(`${PUBLIC_PLUGIN_CATALOG_URL}/${encodeURIComponent(code)}`, {
+    credentials: "omit",
+    signal,
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return catalogEntry(await response.json());
 }

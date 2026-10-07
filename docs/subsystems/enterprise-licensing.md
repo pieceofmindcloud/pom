@@ -134,6 +134,14 @@ boundary before and still is).
   instance per active plugin without them stepping on each other. The active
   path sends neutral events to the host; the legacy `pom.db` is a transitional
   fallback for tests, migration and plugin failure.
+- How POM starts the host (`plugin_host.rs`): the host's stderr, and that of
+  the processes a plugin starts (node, npm, code-server), is read line by line
+  into POM's log with the `plugin_code`. On Windows, where `pom.exe` has no
+  console, the host starts with `CREATE_NO_WINDOW` (no console window, for it
+  or for the processes it starts), and goes into its own kill-on-close Job
+  Object (`process_tree.rs`): stopping the host, or POM exiting, ends the host
+  and everything it started. Inherited pipes in those children used to keep
+  the host from ever seeing its input close.
 - The Docker image copies `pom-plugin-host` to `/usr/local/bin` next to `pom`.
   The entrypoint validates both, and `pom` only starts the host after
   activation, with the absolute path of the downloaded plugin and stdin/stdout

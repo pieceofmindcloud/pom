@@ -185,6 +185,7 @@ mod rag;
 mod relay;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
+mod process_tree;
 #[path = "utils/respawn.rs"]
 mod respawn;
 #[path = "network/route.rs"]

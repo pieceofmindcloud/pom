@@ -732,6 +732,7 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            relay: None,
             addr: "10.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "m".into(),

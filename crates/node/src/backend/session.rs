@@ -292,6 +292,7 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             relay_peers: vec![],
+            relay: Default::default(),
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],

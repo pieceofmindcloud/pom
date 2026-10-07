@@ -161,8 +161,29 @@ the discredited ones. The offer is a signed control call
 last, the libp2p tunnel (`/api/transfer/offer` is on the tunnel's list). The
 return address (`from_gateway`, through `local_ip_for`) comes from the first
 of that list, so it points at the interface through which the peer is really
-reached. The download is still direct HTTP in both directions: weights do not
-go through the relay.
+reached.
+
+The download itself is direct HTTP when the address connects. When it does
+not - two machines behind NAT - `run_download` falls back to the libp2p
+tunnel (`download_over_tunnel`): the manifest and the `.pom` go as small signed
+requests, and the file comes in closed pieces of 4 MiB
+(`Range: bytes=<first>-<last>`, `infer_tunnel::TRANSFER_CHUNK_BYTES`), each
+one signed, appended to the same `.part` and checked by the same MD5/sha256 at
+the end. The sender answers exactly the piece asked, keeps one job for the
+whole file and answers 410 to a piece of a job it already closed.
+
+**A file never crosses a public relay.** A piece travels over a direct libp2p
+connection (dialed or hole punched) or over a circuit through a relay that is
+a member of the same cluster and allows transfers; a relay configured in
+`relay_peers`, or one that is not a member, carries none. The serving node
+checks the connection each piece arrived on and answers 421 otherwise, and a
+request without a bounded range is refused with 416, because the tunnel holds
+an answer in memory. libp2p spreads requests over every connection it has
+with a peer, so the receiver retries a 421 while some connection may carry
+the file, waits up to 12 s for a hole punch to close before giving up, and
+then fails with "the only path goes through a public relay". The rule and
+who counts as a member relay are in `p2p-network.md`, "Who relays for whom"
+and "Files and relays".
 
 ## 5.1 The dialer's scheme is the local one, not the offer's
 
@@ -265,7 +286,7 @@ All behind `ConnectionAuth` (connection key, see `http-api.md`):
 | Route | Direction | Role |
 |---|---|---|
 | `GET /api/transfer/manifest` | serve | size + MD5 of the requested file (by `?path=` or `?grant=`) |
-| `GET /api/transfer/download` | serve | stream with `Range`, resume and progress |
+| `GET /api/transfer/download` | serve | stream with `Range` (open to resume, closed for one piece through the tunnel) and progress |
 | `POST /api/transfer/pull` | pull | this node asks a peer for a slice (path in `models/`) |
 | `POST /api/transfer/offer` | offer | the peer registers an offer of ours; nothing downloads until accepted |
 | `GET /api/transfer/offers` | receive | lists the offers + `disk_free_mb` |
@@ -287,7 +308,11 @@ table seeded by hand and an axum `fake_peer` on loopback that captures the
 offer body. The offer latency tests prove that the offer goes out **without** a
 digest (empty `md5`) and that `auto_accept` stays closed unless the variable is
 explicitly set. There is also a security test: a `?path=` outside `models/` and
-an invented `grant` are refused.
+an invented `grant` are refused. `a_closed_range_serves_one_piece_and_keeps_one_job`
+covers the sender's side of a download in pieces, and
+`network::a_file_crosses_a_member_relay_but_never_a_public_one` the rule of
+which connection may carry one. The receiver's loop through the tunnel has no
+test: it needs a swarm.
 
 ## 11. Defects noted
 

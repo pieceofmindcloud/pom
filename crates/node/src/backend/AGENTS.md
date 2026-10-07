@@ -514,6 +514,11 @@ profile policy remains the effective authorization boundary.
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
+  When no direct address connects, `run_download` falls back to
+  `download_over_tunnel`: closed 4 MiB pieces through the libp2p tunnel, only
+  over a connection that may carry a file - **never across a public relay**
+  (`Network::transfer_links`, and the 421 the serving node answers). `download`
+  serves a closed range as one piece of the same job.
 - `decisions.rs` - typed decisions, `POST /v1/systemone` and `/v1/decisions`
   (Jev API shape). Each question is one blocking generation with
   `max_tokens=1`, thinking off and a `prefill::DecisionProbe`: the last peer

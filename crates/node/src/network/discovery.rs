@@ -278,29 +278,25 @@ fn publish_swarm_addrs(swarm: &Swarm<DiscBehaviour>, network: &Network) {
     }
 }
 
-/// How long to wait for a dedicated relay before accepting a member relay.
-const DEDICATED_RELAY_GRACE: Duration = Duration::from_secs(15);
 /// How often the relay policy is re-evaluated.
 const RELAY_POLICY_INTERVAL: Duration = Duration::from_secs(5);
+/// How many member relays a node keeps a reservation on at once.
+const MEMBER_RELAY_RESERVATIONS: usize = 2;
 
-/// Relay ladder order: **dedicated first, member only as a fallback**.
+/// Where this node holds circuit reservations.
 ///
 /// A dedicated relay is a configured one (`relay_peers`, which includes the
-/// trust document's `relay_hints`). A member relay is any other peer offering
-/// the hop protocol - a node of the cluster itself running `--serve-relay`. A
-/// member spends the bandwidth of a node serving inference, so it only gets a
-/// reservation when no dedicated relay holds a live one and, when a dedicated
-/// relay is configured, after giving it `DEDICATED_RELAY_GRACE`. When a
-/// dedicated relay comes back, the member reservations are undone.
+/// trust document's `relay_hints`): a public relay. A member relay is a node
+/// of this cluster that announces a relay offer (`PeerInfo::relay`). The two
+/// are kept **side by side**: a public relay carries no file transfer, so a
+/// node behind NAT needs a reservation on a member relay as well for a file
+/// to reach it when the hole punch does not close.
 struct RelayPolicy {
     /// Circuit listeners requested from each relay. The key being present means
     /// "already asked", so identify does not open a repeated listener.
     listeners: HashMap<PeerId, Vec<libp2p::core::transport::ListenerId>>,
     /// Relays with an accepted reservation and a listener still alive.
     accepted: HashSet<PeerId>,
-    /// Member relays seen by identify, waiting for their turn.
-    pending_members: HashSet<PeerId>,
-    started: std::time::Instant,
 }
 
 impl RelayPolicy {
@@ -308,19 +304,16 @@ impl RelayPolicy {
         Self {
             listeners: HashMap::new(),
             accepted: HashSet::new(),
-            pending_members: HashSet::new(),
-            started: std::time::Instant::now(),
         }
     }
 
-    fn dedicated_active(&self, dedicated: &HashSet<PeerId>) -> bool {
-        self.accepted.iter().any(|peer| dedicated.contains(peer))
-    }
-
-    /// May a member relay get a reservation now?
-    fn members_allowed(&self, dedicated: &HashSet<PeerId>) -> bool {
-        !self.dedicated_active(dedicated)
-            && (dedicated.is_empty() || self.started.elapsed() >= DEDICATED_RELAY_GRACE)
+    /// Whether one more relay that is not dedicated may be asked.
+    fn member_slot_free(&self, dedicated: &HashSet<PeerId>) -> bool {
+        self.listeners
+            .keys()
+            .filter(|peer| !dedicated.contains(peer))
+            .count()
+            < MEMBER_RELAY_RESERVATIONS
     }
 
     /// A circuit listener closed: that relay's reservation ended.
@@ -344,9 +337,23 @@ impl RelayPolicy {
     }
 }
 
-/// Reapplies the relay policy: undoes member reservations when a dedicated
-/// relay holds one, reserves on pending members when none does, and asks
-/// connected dedicated relays that lost theirs to reserve again.
+/// What the peers table says about `peer_id` as a relay: `Some(true)` for a
+/// member announcing a relay offer, `Some(false)` for a member that does not
+/// relay, `None` for a node that is not a member (a relay outside the
+/// network, reached as a bootstrap).
+async fn member_relay_offer(network: &Network, peer_id: &PeerId) -> Option<bool> {
+    let text = peer_id.to_string();
+    network
+        .alive_peers()
+        .await
+        .iter()
+        .find(|peer| peer.libp2p_peer_id.as_deref() == Some(text.as_str()))
+        .map(|peer| peer.relay.is_some())
+}
+
+/// Reapplies the relay policy: tells the relay server who the members are,
+/// asks connected dedicated relays that lost their reservation to reserve
+/// again, and reserves on the member relays the peers table announces.
 async fn apply_relay_policy(
     swarm: &mut Swarm<DiscBehaviour>,
     network: &Network,
@@ -356,6 +363,10 @@ async fn apply_relay_policy(
     dialed_addrs: &HashMap<PeerId, Multiaddr>,
     relays: &mut RelayPolicy,
 ) {
+    let peers = network.alive_peers().await;
+    network
+        .relay_gate()
+        .set_members(peers.iter().filter_map(|peer| peer.libp2p_peer_id.clone()));
     for peer in connected_relays {
         if !relays.listeners.contains_key(peer) {
             reserve_circuit(
@@ -369,39 +380,29 @@ async fn apply_relay_policy(
             .await;
         }
     }
-    if relays.dedicated_active(dedicated) {
-        let members: Vec<PeerId> = relays
-            .listeners
-            .keys()
-            .filter(|peer| !dedicated.contains(peer))
-            .copied()
-            .collect();
-        for peer in members {
-            for listener in relays.listeners.remove(&peer).unwrap_or_default() {
-                swarm.remove_listener(listener);
-            }
-            relays.accepted.remove(&peer);
-            relays.pending_members.insert(peer);
-            info!(
-                "libp2p: dedicated relay active; dropping the reservation on member relay {peer}"
-            );
+    let members: Vec<PeerId> = peers
+        .iter()
+        .filter(|peer| peer.relay.is_some())
+        .filter_map(|peer| peer.libp2p_peer_id.as_deref()?.parse().ok())
+        .filter(|peer| !dedicated.contains(peer))
+        .collect();
+    for peer in members {
+        if !relays.member_slot_free(dedicated) {
+            break;
         }
-    } else if relays.members_allowed(dedicated) {
-        let pending: Vec<PeerId> = relays.pending_members.drain().collect();
-        for peer in pending {
-            if swarm.is_connected(&peer) {
-                info!("libp2p: no dedicated relay holds a reservation; using member relay {peer}");
-                reserve_circuit(
-                    swarm,
-                    network,
-                    peer,
-                    relay_peer_addrs,
-                    dialed_addrs.get(&peer),
-                    relays,
-                )
-                .await;
-            }
+        if relays.listeners.contains_key(&peer) || !swarm.is_connected(&peer) {
+            continue;
         }
+        info!("libp2p: reserving a circuit on member relay {peer}");
+        reserve_circuit(
+            swarm,
+            network,
+            peer,
+            relay_peer_addrs,
+            dialed_addrs.get(&peer),
+            relays,
+        )
+        .await;
     }
 }
 
@@ -630,7 +631,6 @@ impl Discovery {
         bootstrap_addrs: &[String],
         relay_addrs: &[String],
         relay_keys: &[String],
-        serve_relay: bool,
         use_default_relays: bool,
         network: Arc<Network>,
         keypair: libp2p::identity::Keypair,
@@ -660,6 +660,7 @@ impl Discovery {
             }
         }
 
+        let relay_gate = network.relay_gate();
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -720,42 +721,45 @@ impl Discovery {
                         .with_cache_size(0),
                 );
 
-                // Build relay server config. When `serve_relay` is false we set
-                // max_reservations to 0 so no clients can reserve slots.
-                let relay_server_cfg = if serve_relay {
-                    relay::Config {
-                        max_reservations: 128,
-                        max_reservations_per_peer: 4,
-                        reservation_duration: Duration::from_secs(3600),
-                        // Os dois limites valem para o circuito inteiro, não
-                        // por pedido: o libp2p soma os bytes das duas direções
-                        // desde a abertura (`CopyFuture`) e fecha o circuito
-                        // ao passar do teto ou do prazo. O teto antigo, do
-                        // tamanho de um frame de prefill, derrubava o circuito
-                        // depois de mais ou menos um frame, e o prazo de 120 s
-                        // o derrubava de qualquer jeito: um par que só o relé
-                        // alcança perdia a rota em minutos e saía da tabela.
-                        // Este é um relé do próprio operador, então sem teto
-                        // de bytes (`0` = ilimitado) e com prazo longo; a
-                        // reserva continua renovando a cada hora.
-                        max_circuit_duration: Duration::from_secs(24 * 60 * 60),
-                        max_circuit_bytes: 0,
-                        // libp2p's defaults are 16 circuits in total and 4 per
-                        // peer. Circuits here live for a day, so a handful of
-                        // nodes behind NAT filled them and every later dial
-                        // through the relay - a member reaching a member, a
-                        // candidate reaching a lobby - was refused with
-                        // "resource limit exceeded".
-                        max_circuits: 1024,
-                        max_circuits_per_peer: 32,
-                        ..relay::Config::default()
-                    }
-                } else {
-                    relay::Config {
-                        max_reservations: 0,
-                        ..relay::Config::default()
-                    }
+                // The relay server always has capacity; who gets a
+                // reservation is decided per request by `RelayGate`: everyone
+                // on a public relay (`serve_relay`), the admitted members of
+                // this cluster on a node the internet reaches, nobody
+                // otherwise. A circuit's source is not checked: a candidate
+                // that is not a member yet has to reach a member behind NAT.
+                let gate = relay_gate.clone();
+                let mut relay_server_cfg = relay::Config {
+                    max_reservations: 128,
+                    max_reservations_per_peer: 4,
+                    reservation_duration: Duration::from_secs(3600),
+                    // Os dois limites valem para o circuito inteiro, não
+                    // por pedido: o libp2p soma os bytes das duas direções
+                    // desde a abertura (`CopyFuture`) e fecha o circuito
+                    // ao passar do teto ou do prazo. O teto antigo, do
+                    // tamanho de um frame de prefill, derrubava o circuito
+                    // depois de mais ou menos um frame, e o prazo de 120 s
+                    // o derrubava de qualquer jeito: um par que só o relé
+                    // alcança perdia a rota em minutos e saía da tabela.
+                    // Sem teto de bytes (`0` = ilimitado) e com prazo longo;
+                    // a reserva continua renovando a cada hora.
+                    max_circuit_duration: Duration::from_secs(24 * 60 * 60),
+                    max_circuit_bytes: 0,
+                    // libp2p's defaults are 16 circuits in total and 4 per
+                    // peer. Circuits here live for a day, so a handful of
+                    // nodes behind NAT filled them and every later dial
+                    // through the relay - a member reaching a member, a
+                    // candidate reaching a lobby - was refused with
+                    // "resource limit exceeded".
+                    max_circuits: 1024,
+                    max_circuits_per_peer: 32,
+                    ..relay::Config::default()
                 };
+                // Added to libp2p's own rate limits, which stay.
+                relay_server_cfg.reservation_rate_limiters.push(Box::new(
+                    move |peer: PeerId, _: &Multiaddr, _: std::time::Instant| {
+                        gate.allows_reservation(&peer.to_string())
+                    },
+                ));
 
                 let relay_server = relay::Behaviour::new(peer_id, relay_server_cfg);
 
@@ -1118,6 +1122,7 @@ async fn handle_event(
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
+                relay,
                 ..
             }) = serde_json::from_slice(&message.data)
             {
@@ -1161,6 +1166,7 @@ async fn handle_event(
                     pubkey: pubkey.clone(),
                     cluster_id,
                     trust_version,
+                    relay,
                     // O caminho do gossipsub nao tem endereco de origem para
                     // reescrever, e o anunciado costuma ser o literal
                     // `0.0.0.0`. Com candidatos ha o que usar: o primeiro
@@ -1319,11 +1325,15 @@ async fn handle_event(
                     .protocols
                     .iter()
                     .any(|p| *p == relay::HOP_PROTOCOL_NAME);
-            // A dedicated relay reserves right away; a member only when no
-            // dedicated relay is available (see `RelayPolicy`), otherwise it
-            // waits for the next policy round.
+            // A dedicated relay reserves right away, and so does a relay
+            // that is not a member (one outside the network, reached as a
+            // bootstrap). A member is asked only when it announces a relay
+            // offer; the policy round picks it up if the announce comes later.
             if is_relay {
-                if relay_peer_ids.contains(&peer_id) || relays.members_allowed(relay_peer_ids) {
+                let ask = relay_peer_ids.contains(&peer_id)
+                    || (relays.member_slot_free(relay_peer_ids)
+                        && member_relay_offer(network, &peer_id).await != Some(false));
+                if ask {
                     reserve_circuit(
                         swarm,
                         network,
@@ -1333,9 +1343,6 @@ async fn handle_event(
                         relays,
                     )
                     .await;
-                } else {
-                    debug!("libp2p: member relay {peer_id} waiting: a dedicated relay exists");
-                    relays.pending_members.insert(peer_id);
                 }
             }
         }
@@ -1469,6 +1476,14 @@ async fn handle_event(
             // nada: sem endereço externo confirmado, este nó não o anuncia no
             // identify, os pares não o aprendem, e o DCuTR não tem o endereço
             // público para o par discar no momento do punch.
+            // A node the internet reaches relays for its cluster; one that
+            // is known to be behind NAT does not. `Unknown` keeps what was
+            // known (an address the operator configured, for instance).
+            match &new {
+                autonat::NatStatus::Public(_) => network.relay_gate().set_reachable(true),
+                autonat::NatStatus::Private => network.relay_gate().set_reachable(false),
+                autonat::NatStatus::Unknown => {}
+            }
             if let autonat::NatStatus::Public(address) = new {
                 info!("libp2p: endereço externo confirmado {address}");
                 swarm.add_external_address(address);
@@ -1483,7 +1498,11 @@ async fn handle_event(
         // `tunnel_rx` in `run()`'s select loop, by looking up the
         // `OutboundRequestId` the swarm handed back from `send_request`.
         SwarmEvent::Behaviour(DiscBehaviourEvent::InferTunnel(event)) => match event {
-            request_response::Event::Message { peer, message, .. } => match message {
+            request_response::Event::Message {
+                peer,
+                connection_id,
+                message,
+            } => match message {
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
@@ -1498,7 +1517,26 @@ async fn handle_event(
                             .inference_port
                             .ok_or((503u16, "no inference server on this node".to_string())),
                         infer_tunnel::TunnelTarget::Gateway => {
-                            if infer_tunnel::gateway_path_is_allowed(&request.path) {
+                            if infer_tunnel::is_transfer_data_path(&request.path)
+                                && !network
+                                    .connection_carries_transfers(&peer, connection_id)
+                                    .await
+                            {
+                                // File bytes never cross a public relay. The
+                                // relay only sees an encrypted stream, so the
+                                // two ends are the ones that hold the rule.
+                                debug!(
+                                    "infer-tunnel: refused a file chunk from {peer}: the connection crosses a relay that carries no transfers"
+                                );
+                                Err((
+                                    infer_tunnel::TRANSFER_ROUTE_REFUSED_STATUS,
+                                    "this connection carries no file transfers".to_string(),
+                                ))
+                            } else if infer_tunnel::is_transfer_data_path(&request.path)
+                                && !infer_tunnel::transfer_chunk_is_bounded(&request.headers)
+                            {
+                                Err((416u16, "a file chunk over the tunnel needs a bounded range".to_string()))
+                            } else if infer_tunnel::gateway_path_is_allowed(&request.path) {
                                 network
                                     .gateway_port
                                     .ok_or((503u16, "no gateway on this node".to_string()))
@@ -2256,33 +2294,22 @@ mod tests {
         );
     }
 
-    /// A member relay only steps in when no dedicated relay is available: right
-    /// away with none configured; after the grace period with one configured;
-    /// never while a dedicated relay holds a live reservation.
+    /// Member relays are kept next to the dedicated ones, up to a cap: a
+    /// public relay carries no file transfer, so it cannot stand in for them.
     #[test]
-    fn member_relays_wait_for_dedicated_relays() {
+    fn member_relays_are_kept_beside_dedicated_ones_up_to_a_cap() {
         let dedicated_peer = PeerId::random();
         let dedicated: HashSet<PeerId> = [dedicated_peer].into_iter().collect();
-        let none = HashSet::new();
 
         let mut policy = RelayPolicy::new();
-        assert!(policy.members_allowed(&none));
-        assert!(
-            !policy.members_allowed(&dedicated),
-            "dedicated grace period"
-        );
-
-        policy.started = std::time::Instant::now() - DEDICATED_RELAY_GRACE;
-        assert!(
-            policy.members_allowed(&dedicated),
-            "dedicated relay never showed up"
-        );
-
+        policy.listeners.insert(dedicated_peer, Vec::new());
         policy.accepted.insert(dedicated_peer);
-        assert!(
-            !policy.members_allowed(&dedicated),
-            "dedicated relay holds a reservation"
-        );
+        assert!(policy.member_slot_free(&dedicated));
+
+        for _ in 0..MEMBER_RELAY_RESERVATIONS {
+            policy.listeners.insert(PeerId::random(), Vec::new());
+        }
+        assert!(!policy.member_slot_free(&dedicated));
     }
 
     /// Closing a relay's last listener ends its reservation.

@@ -278,6 +278,7 @@ mod tests {
                 pubkey: "principal-authority".into(),
                 cluster_id: None,
                 trust_version: None,
+                relay: None,
                 addr: format!("[::1]:{gateway_port}"),
                 addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
                 model: "model".into(),

@@ -351,9 +351,21 @@ struct Args {
     #[arg(long, default_value = "")]
     relay_peers: String,
 
-    /// Run a relay server that accepts circuit connections from other peers (requires public IP).
+    /// Relay for any node of any network: a public relay (requires a public
+    /// IP). Same as `relay.everyone` in the config file. Without it, a node
+    /// with a public address still relays for the members of its own cluster.
     #[arg(long)]
     serve_relay: bool,
+
+    /// Do not relay for the members of this node's cluster either
+    /// (`relay.cluster: false`).
+    #[arg(long)]
+    no_cluster_relay: bool,
+
+    /// Do not let file transfers of the cluster cross this node when it
+    /// relays (`relay.transfers: false`).
+    #[arg(long)]
+    no_relay_transfers: bool,
 
     /// Força o wizard de primeiro acesso mesmo com a máquina configurada: a
     /// configuração atual (pom.json, raiz de confiança e banco local) é movida
@@ -412,6 +424,8 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("public_addr", "PUBLIC_ADDR"),
     ("relay_peers", "RELAY_PEERS"),
     ("serve_relay", "SERVE_RELAY"),
+    ("no_cluster_relay", "NO_CLUSTER_RELAY"),
+    ("no_relay_transfers", "NO_RELAY_TRANSFERS"),
     ("no_default_relays", "NO_DEFAULT_RELAYS"),
     ("no_discovery", "NO_DISCOVERY"),
     ("no_pkarr", "NO_PKARR"),
@@ -843,7 +857,11 @@ async fn async_main(
         merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
         merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
         comma_list(&args.pkarr_peers),
-        args.serve_relay,
+        config::RelayConfig {
+            everyone: app_config.relay.everyone || args.serve_relay,
+            cluster: app_config.relay.cluster && !args.no_cluster_relay,
+            transfers: app_config.relay.transfers && !args.no_relay_transfers,
+        },
         args.advertise_addr.clone(),
         args.public_addr.clone(),
         cluster_logs,
@@ -990,6 +1008,7 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     inference_port: None,
     bootstrap_nodes: vec![],
     relay_peers: vec![],
+    relay: Default::default(),
     advertise_addr: None,
     network: Default::default(),
     api_keys: vec![],
@@ -1260,7 +1279,10 @@ struct P2pStackArgs {
     /// the caller to resolve first would mean loading pkarr twice (once to
     /// resolve, once inside this function) or restructuring who loads it.
     relay_peer_keys: Vec<String>,
-    serve_relay: bool,
+    relay: config::RelayConfig,
+    /// The operator declared a public address (`--public-addr`): the node
+    /// counts as reachable before AutoNAT says anything.
+    public_addr_configured: bool,
     use_default_relays: bool,
     no_discovery: bool,
     /// `--no-pkarr`: no pkarr client is created.
@@ -1387,8 +1409,14 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_advertise_addr(args.advertise_addr)
         .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
+        .with_relay_gate(crate::network::RelayGate::new(
+            args.relay.everyone,
+            args.relay.cluster,
+            args.relay.transfers,
+        ))
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
+    net.relay_gate().set_reachable(args.public_addr_configured);
     net.set_policy_principal_pubkey(primary_authority_pubkey);
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
@@ -1435,7 +1463,6 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         &bootstrap_nodes,
         &resolved_relay_addrs,
         &args.relay_peer_keys,
-        args.serve_relay,
         args.use_default_relays,
         net.clone(),
         libp2p_keypair,
@@ -1573,7 +1600,7 @@ async fn start_node(
     bootstrap_nodes: Vec<String>,
     relay_peer_keys: Vec<String>,
     pkarr_peer_keys: Vec<String>,
-    serve_relay: bool,
+    relay: config::RelayConfig,
     advertise_addr_cli: String,
     public_addr_cli: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
@@ -1640,7 +1667,8 @@ async fn start_node(
         admin_trust: admin_trust.clone(),
         database: database.clone(),
         relay_peer_keys: relay_peer_keys.clone(),
-        serve_relay,
+        relay,
+        public_addr_configured: !public_addr_cli.trim().is_empty(),
         use_default_relays: !no_default_relays,
         no_discovery,
         no_pkarr,
@@ -1684,7 +1712,7 @@ async fn start_node(
             node.clone(),
             Some(gateway_port),
             None,
-            serve_relay,
+            relay.everyone,
             net.clone(),
             app_config.network.geo_label.clone(),
         ))

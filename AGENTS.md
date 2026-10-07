@@ -177,8 +177,8 @@ quebra o produto inteiro.
   node's **only** key:
   the `PeerId`, the pkarr `pk:` key and the authority key all derive from it.
   **An IP is never an identity**: signed documents and screens carry keys, and
-  an address is only resolved at dial time (direct -> dedicated relay with
-  DCuTR -> member relay). → `p2p-network.md`, section 0
+  an address is only resolved at dial time (direct, a dedicated relay with
+  DCuTR, and beside it a member relay). → `p2p-network.md`, section 0
 - **A chave de conexão é a mesma no cluster inteiro** e é a credencial de
   operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e a
   sincronização nó-a-nó. `POST /api/generate` e todas as rotas `/v1/` aceitam
@@ -282,9 +282,13 @@ quebra o produto inteiro.
   repetindo o evento até todos responderem `ready` e replanejando em seguida.
   Não há timer ou `sleep` novo na inferência: a espera só existe enquanto uma
   pipeline ociosa acorda. → `deployment.md`, `p2p-network.md`
-- **Nenhum peso trafega na rede por causa do fatiamento**: cada peer extrai a
-  própria faixa da própria cópia. Transferência de arquivo é ato explícito do
-  operador. → `slicing.md`, `file-transfer.md`
+- **No weight travels the network because of slicing**: each peer extracts
+  its own range from its own copy. A file transfer is an explicit act of the
+  operator, and **a file never crosses a public relay** (one in `relay_peers`,
+  or one that is not a member of the cluster): it goes direct, over a hole
+  punched connection, or through a relay of the cluster itself. A node the
+  internet reaches relays for its own cluster by default; relaying for
+  everyone is an option. → `slicing.md`, `file-transfer.md`, `p2p-network.md`
 - **O nome do produto não é literal em lugar nenhum.** Config, env, chaves,
   metadados GGUF e registro pkarr derivam do `slug` de `brand.json`
   (`brand::config_filename()`, `brand::env_var()`, `brand::gguf_key()`,

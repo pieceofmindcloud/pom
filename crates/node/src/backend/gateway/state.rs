@@ -1418,6 +1418,7 @@ impl GatewayState {
                 pubkey: self.network.pubkey.clone(),
                 cluster_id: self.network.cluster_id(),
                 trust_version: self.network.trust_version(),
+                relay: self.network.relay_gate().offer(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
                 model: local.as_ref().map(|l| l.model.clone()).unwrap_or_default(),

@@ -80,7 +80,10 @@ interface, e num reinício volta pelo journal da fatia (`lastslice`).
 **Flags (clap derive, `Args`):** `-p/--port` (42777), `-b/--bootstrap`,
 `--advertise-addr`, `--ollama-url`, `--gateway-port` (8080),
 `--setup-bind`, `--pkarr-peers`,
-`--public-addr`, `--relay-peers`, `--serve-relay`, `--no-default-relays`,
+`--public-addr`, `--relay-peers`, `--serve-relay` (relay for everyone: a
+public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
+`relay` section of the config file, see `p2p-network.md`),
+`--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
 access).
 `--relay-peers` soma-se a `relay_peers` do `pom.json`

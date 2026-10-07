@@ -314,6 +314,9 @@ pub struct Config {
     /// precisa estar aqui (ver `relay_reservation_addrs` em `discovery.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_peers: Vec<String>,
+    /// Whom this node relays for, and whether file transfers may cross it.
+    #[serde(default, skip_serializing_if = "RelayConfig::is_default")]
+    pub relay: RelayConfig,
     /// Address other nodes should keep for this one, e.g.
     /// `"[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777"` or just the bare IPv6.
     ///
@@ -524,6 +527,48 @@ pub fn validate_gateway_port(port: u16) -> anyhow::Result<()> {
     anyhow::ensure!(port != 0, "a porta da interface deve estar entre 1 e 65535");
     Ok(())
 }
+/// The node as a circuit relay (`"relay"` in the config file).
+///
+/// A relay only moves encrypted bytes between two nodes that cannot reach
+/// each other. `everyone` makes a public relay; without it, a node the
+/// internet reaches still relays for the members of its own cluster unless
+/// `cluster` is turned off.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayConfig {
+    /// Relay for any node, of any network (`--serve-relay`).
+    #[serde(default)]
+    pub everyone: bool,
+    /// Relay for the admitted members of this node's cluster when it has a
+    /// public address.
+    #[serde(default = "default_true")]
+    pub cluster: bool,
+    /// Let file transfers of the cluster cross this node when it relays.
+    /// Never applies to a node other clusters use as a public relay: those
+    /// carry no transfers at all.
+    #[serde(default = "default_true")]
+    pub transfers: bool,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            everyone: false,
+            cluster: true,
+            transfers: true,
+        }
+    }
+}
+
+impl RelayConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn default_p2p_port() -> u16 {
     42777
 }
@@ -1272,6 +1317,7 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
             relay_peers: vec![],
+            relay: Default::default(),
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1379,6 +1425,7 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
             relay_peers: vec![],
+            relay: Default::default(),
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1439,6 +1486,28 @@ mod tests {
             Some(PathBuf::from("/data/shards"))
         );
         assert_eq!(parse_shard_dir(std::ffi::OsStr::new("  ")), None);
+    }
+
+    #[test]
+    fn a_node_relays_for_its_cluster_and_carries_transfers_unless_told_otherwise() {
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert_eq!(
+            cfg.relay,
+            RelayConfig {
+                everyone: false,
+                cluster: true,
+                transfers: true
+            }
+        );
+        assert!(serde_json::to_value(&cfg).unwrap().get("relay").is_none());
+
+        let cfg: Config =
+            serde_json::from_str(r#"{"profile":"node","relay":{"transfers":false}}"#).unwrap();
+        assert!(cfg.relay.cluster && !cfg.relay.transfers && !cfg.relay.everyone);
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap()["relay"]["transfers"],
+            serde_json::json!(false)
+        );
     }
 
     #[test]
@@ -1560,6 +1629,7 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             relay_peers: vec![],
+            relay: Default::default(),
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1775,6 +1845,7 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             relay_peers: vec![],
+            relay: Default::default(),
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![

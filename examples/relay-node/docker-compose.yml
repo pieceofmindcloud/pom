@@ -28,9 +28,10 @@
 # `Pkarr address: pk:...` on start. Put that key in `relay_peers` in the
 # admin's pom.json (or `--relay-peers pk:...`); the trust document then carries
 # it as a relay hint, and every node that joins copies it into its own
-# relay_peers. A node resolves the key through pkarr, reserves a slot here
-# first (a dedicated relay), and only falls back to a cluster member running
-# --serve-relay when no dedicated relay has a reservation.
+# relay_peers. A node resolves the key through pkarr and reserves a slot here
+# (a dedicated relay). A relay configured this way is a public one: it bridges
+# control and inference between nodes behind NAT, and never a file transfer.
+# Files only cross relays that are members of the cluster itself.
 # advertise_addr is a hint that goes first, never the only address announced.
 #
 # Usage:

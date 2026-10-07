@@ -66,6 +66,76 @@ const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
 /// Recusa explícita não usa a folga.
 const ADMISSION_UNREACHABLE_GRACE: Duration = Duration::from_secs(10 * 60);
 
+/// What a node offers as a circuit relay, as it announces it. Present only
+/// while the node accepts reservations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayOffer {
+    /// Whether file transfers of its cluster may cross it.
+    pub transfers: bool,
+}
+
+/// Whom this node relays for, consulted by the relay server on every
+/// reservation request.
+///
+/// A node relays for **everyone** when the operator asked for it
+/// (`serve_relay`): that is a public relay. Otherwise, by default, a node the
+/// internet reaches relays for the admitted members of its own cluster
+/// (`cluster_relay`), and for nobody else.
+#[derive(Debug)]
+pub struct RelayGate {
+    everyone: bool,
+    cluster: bool,
+    transfers: bool,
+    /// AutoNAT confirmed a public address, or the operator configured one.
+    reachable: AtomicBool,
+    /// libp2p PeerIds of the admitted members, refreshed by the swarm loop.
+    members: std::sync::RwLock<std::collections::HashSet<String>>,
+}
+
+impl RelayGate {
+    pub fn new(everyone: bool, cluster: bool, transfers: bool) -> Self {
+        Self {
+            everyone,
+            cluster,
+            transfers,
+            reachable: AtomicBool::new(false),
+            members: std::sync::RwLock::new(Default::default()),
+        }
+    }
+
+    pub fn set_reachable(&self, reachable: bool) {
+        self.reachable.store(reachable, Ordering::Relaxed);
+    }
+
+    pub fn set_members(&self, members: impl IntoIterator<Item = String>) {
+        if let Ok(mut current) = self.members.write() {
+            *current = members.into_iter().collect();
+        }
+    }
+
+    /// Whether this node accepts reservations at all right now.
+    pub fn serving(&self) -> bool {
+        self.everyone || (self.cluster && self.reachable.load(Ordering::Relaxed))
+    }
+
+    /// What goes into the announce.
+    pub fn offer(&self) -> Option<RelayOffer> {
+        self.serving().then_some(RelayOffer {
+            transfers: self.transfers,
+        })
+    }
+
+    /// May `peer` reserve a circuit slot on this node?
+    pub fn allows_reservation(&self, peer: &str) -> bool {
+        self.everyone
+            || (self.serving()
+                && self
+                    .members
+                    .read()
+                    .is_ok_and(|members| members.contains(peer)))
+    }
+}
+
 /// Uma conexão libp2p viva com um par.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Libp2pLink {
@@ -451,6 +521,9 @@ pub enum P2PMessage {
         /// newer chain: the chain itself is fetched and verified.
         #[serde(default)]
         trust_version: Option<String>,
+        /// Present while this node accepts circuit reservations.
+        #[serde(default)]
+        relay: Option<RelayOffer>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -484,6 +557,9 @@ pub struct PeerInfo {
     /// The trust chain version the peer announces; a hint, never proof.
     #[serde(default)]
     pub trust_version: Option<String>,
+    /// What the peer offers as a circuit relay, when it does.
+    #[serde(default)]
+    pub relay: Option<RelayOffer>,
     pub addr: String,
     /// Todos os enderecos em que este peer pode ser encontrado.
     ///
@@ -1112,6 +1188,8 @@ pub struct Network {
     /// PeerIds of the dedicated relays (`relay_peers`). A circuit through any
     /// other relay goes through a member relay - see `discovery::RelayPolicy`.
     dedicated_relays: std::sync::RwLock<std::collections::HashSet<String>>,
+    /// Whom this node relays for.
+    relay_gate: Arc<RelayGate>,
     /// Conexões que o DCuTR anunciou como fruto de hole punch. O evento pode
     /// chegar antes ou depois do `ConnectionEstablished` da mesma conexão,
     /// então a marca fica guardada até a conexão fechar.
@@ -1572,6 +1650,7 @@ impl Network {
             pending_admissions: std::sync::Mutex::new(std::collections::HashSet::new()),
             libp2p_links: std::sync::RwLock::new(HashMap::new()),
             dedicated_relays: std::sync::RwLock::new(Default::default()),
+            relay_gate: Arc::new(RelayGate::new(false, true, true)),
             hole_punched_links: std::sync::Mutex::new(std::collections::HashSet::new()),
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
@@ -1591,6 +1670,16 @@ impl Network {
             traversal: std::sync::RwLock::new(TraversalStatus::new()),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Whom this node relays for - see `RelayGate`.
+    pub fn with_relay_gate(mut self, gate: RelayGate) -> Self {
+        self.relay_gate = Arc::new(gate);
+        self
+    }
+
+    pub fn relay_gate(&self) -> Arc<RelayGate> {
+        self.relay_gate.clone()
     }
 
     /// Label this node carries in its announces.
@@ -2069,6 +2158,7 @@ impl Network {
             pubkey: self.pubkey.clone(),
             cluster_id: self.cluster_id(),
             trust_version: self.trust_version(),
+            relay: self.relay_gate.offer(),
             addr,
             addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
@@ -2944,6 +3034,7 @@ impl Network {
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
+                relay,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -2965,6 +3056,7 @@ impl Network {
                     pubkey,
                     cluster_id,
                     trust_version,
+                    relay,
                     addr: peer_addr.clone(),
                     addr_candidates,
                     model: model.clone(),
@@ -3608,6 +3700,71 @@ impl Network {
             }
         });
         bases
+    }
+
+    /// Whether a circuit through `relay_peer_id` may carry a file transfer.
+    ///
+    /// Never through a public relay: one configured in `relay_peers`, or one
+    /// that is not an admitted member of this cluster. A member relay carries
+    /// transfers unless it announces otherwise (`RelayOffer::transfers`).
+    pub async fn relay_carries_transfers(&self, relay_peer_id: &str) -> bool {
+        if self
+            .dedicated_relays
+            .read()
+            .is_ok_and(|dedicated| dedicated.contains(relay_peer_id))
+        {
+            return false;
+        }
+        self.alive_peers()
+            .await
+            .iter()
+            .find(|peer| peer.libp2p_peer_id.as_deref() == Some(relay_peer_id))
+            .and_then(|peer| peer.relay)
+            .is_some_and(|offer| offer.transfers)
+    }
+
+    async fn link_carries_transfers(&self, link: &Libp2pLink) -> bool {
+        if !link.relayed {
+            return true;
+        }
+        match link.relay_peer_id.as_deref() {
+            Some(relay) => self.relay_carries_transfers(relay).await,
+            None => false,
+        }
+    }
+
+    /// Whether the libp2p connection `id` with `peer` may carry a file
+    /// transfer: a direct one (dialed or hole punched) always, a circuit only
+    /// through a member relay that allows it. An unknown connection may not.
+    pub async fn connection_carries_transfers(
+        &self,
+        peer: &libp2p::PeerId,
+        id: libp2p::swarm::ConnectionId,
+    ) -> bool {
+        let link = self.libp2p_links.read().ok().and_then(|links| {
+            links
+                .get(&peer.to_string())
+                .and_then(|entry| entry.iter().find(|(existing, _)| *existing == id))
+                .map(|(_, link)| link.clone())
+        });
+        match link {
+            Some(link) => self.link_carries_transfers(&link).await,
+            None => false,
+        }
+    }
+
+    /// How many of this node's libp2p connections with `peer_id` may carry a
+    /// file transfer, out of how many are alive. libp2p spreads requests over
+    /// all of them, so the caller knows how often to expect a refusal.
+    pub async fn transfer_links(&self, peer_id: &str) -> (usize, usize) {
+        let links = self.libp2p_links(peer_id);
+        let mut allowed = 0;
+        for link in &links {
+            if self.link_carries_transfers(link).await {
+                allowed += 1;
+            }
+        }
+        (allowed, links.len())
     }
 
     /// A rota em uso para `peer`, na ordem em que o plano de controle a tenta:
@@ -4528,6 +4685,7 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            relay: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -4580,6 +4738,7 @@ mod tests {
             pubkey: "a".repeat(64),
             cluster_id: None,
             trust_version: None,
+            relay: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -4672,6 +4831,7 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            relay: None,
             addr: "192.168.1.9:42777".into(),
             addr_candidates: candidatos.into_iter().map(String::from).collect(),
             model: "qwen35".into(),
@@ -4814,6 +4974,7 @@ mod tests {
                 pubkey: "peer-key".into(),
                 cluster_id: None,
                 trust_version: None,
+                relay: None,
                 addr: stale.into(),
                 addr_candidates: vec![stale.into()],
                 model: "qwen".into(),
@@ -5133,6 +5294,7 @@ mod tests {
             pubkey: "p".into(),
             cluster_id: None,
             trust_version: None,
+            relay: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -5180,6 +5342,7 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             relay_peers: vec![],
+            relay: Default::default(),
             advertise_addr: None,
             network: crate::config::NetworkSettings {
                 visibility,
@@ -5235,6 +5398,7 @@ mod tests {
             pubkey,
             cluster_id: None,
             trust_version: None,
+            relay: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: vec!["127.0.0.1:42777".into()],
             model: String::new(),
@@ -5447,6 +5611,106 @@ mod tests {
 
     /// A rota mostrada é a observada: HTTP que respondeu, depois conexão
     /// libp2p direta, depois o relé - nunca o endereço anunciado.
+    /// The rule of file transfers: a direct connection carries them, a
+    /// circuit only through a member relay that allows it, a public relay
+    /// never - whether it is configured as one or just not a member.
+    #[tokio::test]
+    async fn a_file_crosses_a_member_relay_but_never_a_public_one() {
+        use libp2p::swarm::ConnectionId;
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+            .await
+            .unwrap();
+        let remote = libp2p::PeerId::random();
+        let member_relay = libp2p::PeerId::random();
+        let outside_relay = libp2p::PeerId::random();
+        let circuit = |relay: &libp2p::PeerId| -> libp2p::Multiaddr {
+            format!("/ip4/203.0.113.9/tcp/52777/p2p/{relay}/p2p-circuit/p2p/{remote}")
+                .parse()
+                .unwrap()
+        };
+
+        let mut relay_peer = admission_peer(8080);
+        relay_peer.libp2p_peer_id = Some(member_relay.to_string());
+        relay_peer.relay = Some(RelayOffer { transfers: true });
+        network.insert_peer(relay_peer.clone()).await;
+
+        // A relay that is not a member of this cluster is a public one.
+        let outside = ConnectionId::new_unchecked(1);
+        network.note_libp2p_link(&remote, outside, &circuit(&outside_relay));
+        assert!(!network.connection_carries_transfers(&remote, outside).await);
+        assert_eq!(network.transfer_links(&remote.to_string()).await, (0, 1));
+
+        // A member relay carries the file.
+        let through_member = ConnectionId::new_unchecked(2);
+        network.note_libp2p_link(&remote, through_member, &circuit(&member_relay));
+        assert!(
+            network
+                .connection_carries_transfers(&remote, through_member)
+                .await
+        );
+        assert_eq!(network.transfer_links(&remote.to_string()).await, (1, 2));
+
+        // Unless it says it does not...
+        relay_peer.relay = Some(RelayOffer { transfers: false });
+        network.insert_peer(relay_peer.clone()).await;
+        assert!(
+            !network
+                .connection_carries_transfers(&remote, through_member)
+                .await
+        );
+
+        // ...or it is one of the configured public relays, member or not.
+        relay_peer.relay = Some(RelayOffer { transfers: true });
+        network.insert_peer(relay_peer).await;
+        network.set_dedicated_relays([member_relay.to_string()]);
+        assert!(
+            !network
+                .connection_carries_transfers(&remote, through_member)
+                .await
+        );
+
+        // A direct connection, dialed or hole punched, always does.
+        let direct = ConnectionId::new_unchecked(3);
+        network.note_libp2p_link(
+            &remote,
+            direct,
+            &"/ip4/189.75.167.63/udp/28515/quic-v1".parse().unwrap(),
+        );
+        assert!(network.connection_carries_transfers(&remote, direct).await);
+        // A connection nobody recorded does not.
+        assert!(
+            !network
+                .connection_carries_transfers(&remote, ConnectionId::new_unchecked(99))
+                .await
+        );
+    }
+
+    /// Whom a node relays for: everyone on a public relay; the members of
+    /// its cluster on a node the internet reaches; nobody behind NAT.
+    #[test]
+    fn a_node_relays_for_its_cluster_only_when_the_internet_reaches_it() {
+        let member = "12D3KooWMember".to_string();
+        let gate = RelayGate::new(false, true, true);
+        gate.set_members([member.clone()]);
+        assert!(!gate.serving());
+        assert_eq!(gate.offer(), None);
+        assert!(!gate.allows_reservation(&member), "behind NAT");
+
+        gate.set_reachable(true);
+        assert_eq!(gate.offer(), Some(RelayOffer { transfers: true }));
+        assert!(gate.allows_reservation(&member));
+        assert!(!gate.allows_reservation("12D3KooWStranger"));
+
+        let off = RelayGate::new(false, false, true);
+        off.set_reachable(true);
+        off.set_members([member.clone()]);
+        assert!(!off.allows_reservation(&member), "cluster relay turned off");
+
+        let public = RelayGate::new(true, true, false);
+        assert!(public.allows_reservation("12D3KooWStranger"));
+        assert_eq!(public.offer(), Some(RelayOffer { transfers: false }));
+    }
+
     #[tokio::test]
     async fn peer_route_prefers_http_then_direct_then_relay() {
         use libp2p::swarm::ConnectionId;

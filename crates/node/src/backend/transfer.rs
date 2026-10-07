@@ -765,15 +765,24 @@ async fn download(
     };
     let total = meta.len();
 
-    // "bytes=<start>-" is all the client ever sends; anything else is ignored.
-    let start = headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("bytes="))
-        .and_then(|v| v.split('-').next())
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0)
-        .min(total);
+    // The direct download asks for "bytes=<start>-", to resume. The download
+    // through the libp2p tunnel asks for one closed piece at a time
+    // ("bytes=<first>-<last>"), because the tunnel holds an answer in memory.
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let piece = range.and_then(crate::infer_tunnel::closed_range);
+    let start = match piece {
+        Some((first, _)) => first,
+        None => range
+            .and_then(|v| v.strip_prefix("bytes="))
+            .and_then(|v| v.split('-').next())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0),
+    }
+    .min(total);
+    let remaining = match piece {
+        Some((_, length)) => length.min(total - start),
+        None => total - start,
+    };
 
     let Ok(mut file) = tokio::fs::File::open(&path).await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "não deu para abrir").into_response();
@@ -785,7 +794,23 @@ async fn download(
     // O lado que envia entra na própria lista de transferências. Ele é quem
     // transmite os bytes, então já sabe o progresso: não há relato de volta
     // para se perder, e o número continua certo com a tela do outro fechada.
-    if let Some(job_id) = q.job.as_deref() {
+    // A download in pieces asks many times for the same job: only the first
+    // piece opens it, and a job already closed here (cancelled on this side)
+    // is not reopened by the next piece.
+    let known = match (piece, q.job.as_deref()) {
+        (Some(_), Some(job_id)) => state
+            .transfers
+            .jobs
+            .read()
+            .await
+            .get(job_id)
+            .map(|job| is_finished(&job.state)),
+        _ => None,
+    };
+    if known == Some(true) {
+        return (StatusCode::GONE, "transferência encerrada deste lado").into_response();
+    }
+    if let Some(job_id) = q.job.as_deref().filter(|_| known.is_none()) {
         let peer_host = peer_label(&state, q.peer.as_deref()).await;
         // O `.pom` está ao lado do arquivo: é dele que sai o "qwen3:8b · L0-15"
         // que a tela mostra no lugar do hash.
@@ -806,16 +831,19 @@ async fn download(
             .await;
     }
 
-    let reader = tokio_util::io::ReaderStream::with_capacity(file, CHUNK);
+    use futures::StreamExt;
+    let reader =
+        tokio_util::io::ReaderStream::with_capacity(tokio::io::AsyncReadExt::take(file, remaining), CHUNK)
+            .boxed();
     let body = match q.job.clone() {
         Some(job_id) => {
             Body::from_stream(served_stream(state.clone(), job_id, reader, start, total))
         }
         None => Body::from_stream(reader),
     };
-    let remaining = total - start;
 
-    let status = if start > 0 {
+    let partial = start > 0 || piece.is_some();
+    let status = if partial {
         StatusCode::PARTIAL_CONTENT
     } else {
         StatusCode::OK
@@ -825,10 +853,15 @@ async fn download(
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, remaining.to_string())
         .header(header::ACCEPT_RANGES, "bytes");
-    if start > 0 {
+    if partial {
         resp = resp.header(
             header::CONTENT_RANGE,
-            format!("bytes {}-{}/{}", start, total.saturating_sub(1), total),
+            format!(
+                "bytes {}-{}/{}",
+                start,
+                (start + remaining).saturating_sub(1),
+                total
+            ),
         );
     }
     resp.body(body).unwrap().into_response()
@@ -873,7 +906,7 @@ async fn peer_label(state: &GatewayState, node_id: Option<&str>) -> String {
 fn served_stream(
     state: GatewayState,
     job_id: String,
-    inner: tokio_util::io::ReaderStream<tokio::fs::File>,
+    inner: futures::stream::BoxStream<'static, std::io::Result<axum::body::Bytes>>,
     already: u64,
     total: u64,
 ) -> impl futures::Stream<Item = std::io::Result<axum::body::Bytes>> {
@@ -2227,11 +2260,163 @@ async fn fetch_pom(
         )
         .await
         .ok()?;
-    let resp = request.send().await.ok()?;
+    let resp = match request.send().await {
+        Ok(resp) => resp,
+        Err(error) if error.is_connect() => {
+            let query = [("sha", sha256.to_string())];
+            tunnel_get(state, peer_id, "/api/transfer/pom", &query, None, MANIFEST_TIMEOUT)
+                .await
+                .ok()?
+        }
+        Err(_) => return None,
+    };
     if !resp.status().is_success() {
         return None;
     }
     resp.json().await.ok()
+}
+
+/// The node a file comes from, as the libp2p tunnel addresses it.
+async fn tunnel_peer(
+    state: &GatewayState,
+    peer_id: &str,
+) -> Result<(crate::peer_client::TunnelPeer, String), String> {
+    let peers = state.network.alive_peers().await;
+    let peer = peers
+        .iter()
+        .find(|peer| peer.node_id == peer_id)
+        .ok_or_else(|| "a origem não está na rede".to_string())?;
+    let tunnel = crate::peer_client::TunnelPeer::from_peer(peer)
+        .ok_or_else(|| "a origem não anuncia o túnel libp2p".to_string())?;
+    Ok((tunnel, peer.libp2p_peer_id.clone().unwrap_or_default()))
+}
+
+/// Signed GET to the gateway of the node a file comes from, through the
+/// libp2p tunnel: the path left when no direct address connects.
+async fn tunnel_get(
+    state: &GatewayState,
+    peer_id: &str,
+    path: &str,
+    query: &[(&str, String)],
+    range: Option<String>,
+    timeout: Duration,
+) -> Result<reqwest::Response, String> {
+    let (tunnel, _) = tunnel_peer(state, peer_id).await?;
+    let client = state
+        .peer_http
+        .for_peer(peer_id)
+        .map_err(|e| e.to_string())?;
+    let mut request = state
+        .control_get_request(
+            client
+                .get(format!("http://tunnel.invalid{path}"))
+                .query(query)
+                .timeout(timeout),
+            path,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(range) = range {
+        request = request.header(header::RANGE, range);
+    }
+    crate::peer_client::send_request_via_tunnel(&tunnel, request)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// How long a download waits for a connection that may carry it, after the
+/// tunnel reached the peer: the hole punch runs over the relayed connection
+/// and takes a few seconds to close.
+const TRANSFER_LINK_WAIT: Duration = Duration::from_secs(if cfg!(test) { 0 } else { 12 });
+
+/// Brings a file through the libp2p tunnel, one bounded piece at a time,
+/// appending to `file` from `already`. Returns the bytes on disk.
+///
+/// **Never through a public relay.** A piece only travels over a direct
+/// libp2p connection (dialed or hole punched) or a circuit through a member
+/// relay that allows transfers; the serving node checks the connection each
+/// piece arrives on and answers `TRANSFER_ROUTE_REFUSED_STATUS` otherwise.
+/// libp2p spreads requests over every connection with the peer, so a refusal
+/// is retried while a connection that may carry the file exists.
+#[allow(clippy::too_many_arguments)]
+async fn download_over_tunnel(
+    state: &GatewayState,
+    job_id: &str,
+    peer_id: &str,
+    locator: &[(&str, String)],
+    part: &Path,
+    file: &mut tokio::fs::File,
+    already: u64,
+    total: u64,
+) -> Result<u64, String> {
+    use crate::infer_tunnel::{TRANSFER_CHUNK_BYTES, TRANSFER_ROUTE_REFUSED_STATUS};
+
+    let (_, libp2p_peer) = tunnel_peer(state, peer_id).await?;
+    let no_route = "sem rota direta até a origem: o único caminho passa por um relé público, que não transporta arquivos";
+    let waited = Instant::now();
+    loop {
+        let (allowed, _) = state.network.transfer_links(&libp2p_peer).await;
+        if allowed > 0 {
+            break;
+        }
+        if waited.elapsed() >= TRANSFER_LINK_WAIT {
+            return Err(no_route.to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    info!("{}: sem endereço direto, trazendo pelo túnel libp2p", part.display());
+
+    let mut done = already;
+    let started = Instant::now();
+    let mut last_report = Instant::now();
+    while done < total {
+        if state.transfers.is_cancelled(job_id).await {
+            let _ = tokio::fs::remove_file(part).await;
+            return Err("cancelado".to_string());
+        }
+        let last = (done + TRANSFER_CHUNK_BYTES).min(total) - 1;
+        let mut refusals = 0usize;
+        let piece = loop {
+            let resp = tunnel_get(
+                state,
+                peer_id,
+                "/api/transfer/download",
+                locator,
+                Some(format!("bytes={done}-{last}")),
+                Duration::from_secs(120),
+            )
+            .await?;
+            let status = resp.status();
+            if status.as_u16() == TRANSFER_ROUTE_REFUSED_STATUS {
+                // This request went over a connection that carries no files.
+                let (allowed, links) = state.network.transfer_links(&libp2p_peer).await;
+                refusals += 1;
+                if allowed == 0 || refusals > 4 * links + 4 {
+                    return Err(no_route.to_string());
+                }
+                continue;
+            }
+            let body = resp.bytes().await.map_err(|e| e.to_string())?;
+            if !status.is_success() {
+                let text = String::from_utf8_lossy(&body);
+                return Err(format!("peer respondeu {status}: {}", text.trim()));
+            }
+            break body;
+        };
+        if piece.len() as u64 != last - done + 1 {
+            return Err("a origem interrompeu a transferência".to_string());
+        }
+        file.write_all(&piece).await.map_err(|e| e.to_string())?;
+        done += piece.len() as u64;
+        if last_report.elapsed() >= Duration::from_millis(500) {
+            last_report = Instant::now();
+            state
+                .transfers
+                .progress(job_id, done, done.saturating_sub(already), started.elapsed())
+                .await;
+        }
+    }
+    Ok(done)
 }
 
 /// Etapa corrente de um job, para a tela ter o que dizer enquanto se espera.
@@ -2266,10 +2451,22 @@ async fn fetch_manifest(
         )
         .await
         .map_err(|e| format!("não foi possível assinar a consulta em {from_host}: {e}"))?;
-    let resp = request
-        .send()
+    let resp = match request.send().await {
+        Ok(resp) => resp,
+        // No direct address connects: the question is small and goes through
+        // the tunnel, like the offer does.
+        Err(error) if error.is_connect() => tunnel_get(
+            state,
+            peer_id,
+            "/api/transfer/manifest",
+            locator,
+            None,
+            MANIFEST_TIMEOUT,
+        )
         .await
-        .map_err(|e| format!("não deu para falar com {from_host}: {e}"))?;
+        .map_err(|tunnel| format!("não deu para falar com {from_host}: {error}; {tunnel}"))?,
+        Err(e) => return Err(format!("não deu para falar com {from_host}: {e}")),
+    };
 
     // Conferir o status ANTES de tentar ler JSON. Um erro do gateway costuma
     // vir em texto puro - o 403 da catraca de TLS é literalmente a frase "este
@@ -2356,18 +2553,29 @@ async fn run_download(
         req = req.header(header::RANGE, format!("bytes={already}-"));
     }
 
-    let resp = req.send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        // Junto com o status vai a frase do outro lado: ver a nota gêmea em
-        // `fetch_manifest`.
-        let status = resp.status();
-        let corpo = resp.text().await.unwrap_or_default();
-        let corpo = corpo.trim();
-        return Err(if corpo.is_empty() {
-            format!("peer respondeu {status}")
-        } else {
-            format!("peer respondeu {status}: {corpo}")
-        });
+    // Direct HTTP first. Only when no address connects does the file come
+    // through the libp2p tunnel, and never across a public relay.
+    let direct = match req.send().await {
+        Ok(resp) => Some(resp),
+        Err(error) if error.is_connect() => {
+            info!("{}: nenhum endereço direto conectou ({error})", dest.display());
+            None
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    if let Some(resp) = &direct {
+        if !resp.status().is_success() {
+            // Junto com o status vai a frase do outro lado: ver a nota gêmea em
+            // `fetch_manifest`.
+            let status = resp.status();
+            let corpo = direct.expect("checked above").text().await.unwrap_or_default();
+            let corpo = corpo.trim();
+            return Err(if corpo.is_empty() {
+                format!("peer respondeu {status}")
+            } else {
+                format!("peer respondeu {status}: {corpo}")
+            });
+        }
     }
 
     let mut file = tokio::fs::OpenOptions::new()
@@ -2383,6 +2591,14 @@ async fn run_download(
     let mut done = already;
     let started = Instant::now();
     let mut last_report = Instant::now();
+    let Some(resp) = direct else {
+        done = download_over_tunnel(
+            state, job_id, peer_id, locator, part, &mut file, already, total,
+        )
+        .await?;
+        return finish_download(state, job_id, part, dest, file, done, expected_md5, expected_sha256)
+            .await;
+    };
     let mut stream = resp.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
@@ -2410,6 +2626,21 @@ async fn run_download(
                 .await;
         }
     }
+    finish_download(state, job_id, part, dest, file, done, expected_md5, expected_sha256).await
+}
+
+/// Closes a download whichever way the bytes came: flush, verify, rename.
+#[allow(clippy::too_many_arguments)]
+async fn finish_download(
+    state: &GatewayState,
+    job_id: &str,
+    part: &Path,
+    dest: &Path,
+    mut file: tokio::fs::File,
+    done: u64,
+    expected_md5: &str,
+    expected_sha256: Option<&str>,
+) -> Result<(), String> {
     file.flush().await.map_err(|e| e.to_string())?;
     drop(file);
 
@@ -2487,7 +2718,7 @@ async fn run_download(
     {
         let mut jobs = state.transfers.jobs.write().await;
         if let Some(j) = jobs.get_mut(job_id) {
-            j.bytes_done = total;
+            j.bytes_done = done;
             j.eta_secs = Some(0);
         }
     }
@@ -2888,6 +3119,68 @@ mod offer_latency_tests {
             vec![crate::gateway::testkit::peer("peer-b", "peer-b", peer_port)],
         )
         .await
+    }
+
+    /// The download through the libp2p tunnel asks for one closed piece at a
+    /// time. The sender answers exactly that piece, keeps one job for the
+    /// whole file, and does not reopen a job it already closed.
+    #[tokio::test]
+    async fn a_closed_range_serves_one_piece_and_keeps_one_job() {
+        let state = sender_state(1).await;
+        let dir = std::env::temp_dir().join(format!("pom-piece-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        state.auth.write().await.shard_dir = Some(dir.to_string_lossy().into());
+        // Only a GGUF is served; the magic is all the check reads here.
+        let mut content = b"GGUF".to_vec();
+        content.extend(4..100u8);
+        std::fs::write(dir.join("avulso.gguf"), &content).unwrap();
+
+        let ask = |range: &'static str| {
+            let state = state.clone();
+            async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::RANGE, range.parse().unwrap());
+                let query = PathQuery {
+                    path: Some("avulso.gguf".into()),
+                    grant: None,
+                    sha: None,
+                    job: Some("job-pieces".into()),
+                    peer: None,
+                };
+                download(ConnectionAuth, State(state), headers, Query(query)).await
+            }
+        };
+
+        let first = ask("bytes=0-39").await;
+        assert_eq!(first.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            first.headers().get(header::CONTENT_RANGE).unwrap(),
+            "bytes 0-39/100"
+        );
+        let body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], &content[..40]);
+        assert_eq!(
+            state.transfers.jobs.read().await["job-pieces"].state,
+            TRANSFER_RUNNING
+        );
+
+        // The last piece is shorter than asked and closes the job.
+        let last = ask("bytes=40-999").await;
+        let body = axum::body::to_bytes(last.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], &content[40..]);
+        assert_eq!(
+            state.transfers.jobs.read().await["job-pieces"].state,
+            TRANSFER_DONE
+        );
+
+        // A job closed on this side is not reopened by one more piece.
+        assert_eq!(ask("bytes=0-39").await.status(), StatusCode::GONE);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A oferta é um convite, não a transferência: ela só precisa dizer o que é

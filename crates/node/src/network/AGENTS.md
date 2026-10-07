@@ -32,7 +32,14 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   anuncia essa capability. Se o túnel falhar por transporte, o relay usa o
   cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
   corpo e cabeçalhos, inclusive a `connection_key` e o marcador interno da
-  porta de inferência;
+  porta de inferência. The frame is binary - `[u32][JSON head][u32][raw body]`
+  for a request, `[u16 status][u32][raw body]` for a response - because a JSON
+  array of numbers cost about 3.6 bytes per byte of payload on every relayed
+  frame. `is_transfer_data_path`, `closed_range` and
+  `transfer_chunk_is_bounded` are what the receiving side uses to hold the
+  file rule: a piece of a file is a bounded range, and it is refused
+  (`TRANSFER_ROUTE_REFUSED_STATUS`, 421) on a connection that crosses a public
+  relay;
   `serve_loopback` repassa a chamada para o loopback, sempre em texto claro
   (`serve::plain_allowed` libera loopback mesmo em TLS estrito e o certificado
   do nó não cobre `127.0.0.1`). `TunnelTarget` escolhe **qual** servidor local
@@ -459,9 +466,13 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS discovers on the
   LAN and is always on. Identify does not write `listen_addrs` into the address
   book; a peer announcing `relay::HOP_PROTOCOL_NAME` goes through
-  `reserve_circuit` if it is a dedicated relay or if
-  `RelayPolicy::members_allowed`, otherwise it waits in `pending_members`;
-  AutoNAT `Public` becomes `Swarm::add_external_address`; `ListenerClosed` ends
+  `reserve_circuit` if it is a dedicated relay, a relay outside the network,
+  or a member announcing a relay offer (`member_relay_offer`);
+  AutoNAT `Public` becomes `Swarm::add_external_address` and tells
+  `RelayGate` the node is reachable (`Private` tells it the opposite); a file
+  piece arriving through the tunnel is refused with 421 on a connection that
+  may not carry it (`Network::connection_carries_transfers`) and with 416
+  without a bounded range; `ListenerClosed` ends
   the reservation of the relay owning the listener; requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
@@ -492,13 +503,23 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   de fora; circuito entra sempre, porque o IP ali é o do relé. Chamado em
   `NewListenAddr`, `ExpiredListenAddr`, `ExternalAddrConfirmed`,
   `ExternalAddrExpired`, AutoNAT `Public` e reserva aceita.
-- `RelayPolicy`/`apply_relay_policy` - the relay ladder: dedicated (key in
-  `relay_peers`) first; member (another node with `--serve-relay`) only when no
-  dedicated relay holds a live reservation, and after `DEDICATED_RELAY_GRACE`
-  (15 s) when a dedicated one is configured. Every 5 s the loop reserves on
-  pending members, undoes member reservations when a dedicated relay comes back
-  and asks connected dedicated relays without a reservation again.
-  `Network::set_dedicated_relays` feeds `PeerRoute.relay_kind`.
+- `RelayPolicy`/`apply_relay_policy` - where this node holds reservations:
+  on every dedicated relay (key in `relay_peers`) and, **beside** them, on up
+  to `MEMBER_RELAY_RESERVATIONS` (2) member relays - cluster nodes whose
+  `Announce` carries a relay offer. Every 5 s the loop hands the member list
+  to `RelayGate`, asks connected dedicated relays without a reservation again
+  and reserves on announced members. `Network::set_dedicated_relays` feeds
+  `PeerRoute.relay_kind` and the transfer rule.
+- `network::RelayGate` - whom this node relays for, consulted by the relay
+  server on every reservation (`relay::RateLimiter`): everyone with
+  `relay.everyone`/`--serve-relay`; the admitted members of its cluster when
+  the internet reaches it and `relay.cluster` is on (the default); nobody
+  otherwise. `offer()` is what goes into the `Announce` (`RelayOffer`, with
+  whether transfers may cross it).
+- `Network::relay_carries_transfers`/`connection_carries_transfers`/
+  `transfer_links` - the rule of files and relays: a direct connection carries
+  a file; a circuit only through a member relay that allows it; never a relay
+  in `relay_peers` or one that is not a member.
 - `reserve_circuit` - asks `listen_on(<relay>/p2p-circuit)` and keeps the
   `ListenerId`s in `RelayPolicy::listeners`. Endereço do relé
   vem de `relay_reservation_addrs`: lista configurada, anúncio vivo e, por

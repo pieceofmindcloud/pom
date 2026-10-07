@@ -49,10 +49,10 @@ address, and an IP written into a document goes stale. Therefore:
    circuit right away; when it succeeds, the connection becomes direct and the
    edge is measured again. In libp2p the "relay" and "hole punch" steps cannot
    be separated: the punch is coordinated over the relayed connection.
-3. **Circuit through a member relay** - another cluster node running
-   `--serve-relay`. It only gets a reservation when no dedicated relay holds a
-   live one (see "Circuit reservation"), because it spends the bandwidth of a
-   node that serves inference.
+3. **Circuit through a member relay** - another node of the same cluster that
+   the internet reaches. It is kept **beside** the dedicated relay, not instead
+   of it, because a dedicated relay is a public one and carries no file
+   transfer (see "Who relays for whom").
 
 ## 1. Overview and topology
 
@@ -558,10 +558,10 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   through pkarr, filtering `is_relay`, and dialed again by the cold key dial
   while they do not connect). The setup of a joining node copies the trust
   document's `relay_hints` into `relay_peers`. `--no-default-relays` is still
-  accepted and has no practical effect today. With `--serve-relay` the relay server
-  accepts reservations (128 slots, 4 per peer, 1 h reservation) and circuits of
-  up to 24 h with no byte ceiling (`max_circuit_bytes: 0`); without it,
-  `max_reservations: 0`. Both libp2p limits apply to the whole circuit, not per
+  accepted and has no practical effect today. The relay server always has
+  capacity (128 slots, 4 per peer, 1 h reservation) and circuits of up to 24 h
+  with no byte ceiling (`max_circuit_bytes: 0`); who gets a reservation is
+  decided per request (see "Who relays for whom"). Both libp2p limits apply to the whole circuit, not per
   request: bytes in both directions add up since opening. The old ceiling, the
   size of a prefill frame, and the 120 s deadline dropped the circuit within
   minutes, and a peer only the relay reaches left the table. A dedicated relay
@@ -569,20 +569,35 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   `examples/relay-node/docker-compose.yml` is the example of a dedicated relay,
   outside the network it serves. Nodes behind NAT only need it as a bootstrap:
   the reservation is requested from every connected peer that offers relay.
+- **Who relays for whom:** `network::RelayGate`, consulted by the relay server
+  on every reservation request through a `relay::RateLimiter`. A node relays
+  for **everyone** when the operator asked for it (`--serve-relay`, or
+  `relay.everyone` in the config file): that is a public relay. Otherwise a
+  node the internet reaches (AutoNAT `Public`, or `--public-addr`) relays for
+  the **admitted members of its own cluster** and nobody else; this is on by
+  default and `relay.cluster: false` (`--no-cluster-relay`) turns it off. A
+  node behind NAT relays for nobody. Only the reservation is restricted: the
+  source of a circuit is not, because a candidate that is not a member yet
+  has to reach a principal behind NAT. The member list is refreshed from the
+  peers table every 5 s. While it accepts reservations, a node says so in its
+  `Announce` (`relay`, a `RelayOffer`), together with whether file transfers
+  may cross it (`relay.transfers`, on by default; `--no-relay-transfers`).
 - **Circuit reservation:** `reserve_circuit` asks
-  `listen_on(<relay>/p2p-circuit)` from a peer whose identify announces
-  `relay::HOP_PROTOCOL_NAME`, in ladder order (`discovery::RelayPolicy`):
-  **dedicated relay first** - the one in `relay_peers`, identified by its key
-  (`Discovery::new` receives the keys, and a relay whose pkarr has not resolved
-  yet is still dedicated) - and a **member relay** (another cluster node with
-  `--serve-relay`) only when no dedicated relay holds a live reservation and,
-  when a dedicated one is configured, after a 15 s grace period
-  (`DEDICATED_RELAY_GRACE`). A member seen before that waits in
-  `pending_members`. `apply_relay_policy`, every 5 s in the swarm loop,
-  reserves on pending members once the gap is confirmed, undoes
-  (`remove_listener`) member reservations when a dedicated relay holds one
-  again, and asks connected dedicated relays that lost theirs to reserve again.
-  `ListenerClosed` ends the reservation of the relay owning the listener.
+  `listen_on(<relay>/p2p-circuit)`. A **dedicated relay** - the one in
+  `relay_peers`, identified by its key (`Discovery::new` receives the keys, and
+  a relay whose pkarr has not resolved yet is still dedicated) - is asked as
+  soon as it connects. A **member relay** is a cluster node whose `Announce`
+  carries a relay offer; a node keeps a reservation on up to two of them
+  (`MEMBER_RELAY_RESERVATIONS`) **beside** the dedicated ones. They used to be
+  a fallback, dropped as soon as a dedicated relay held a reservation; a
+  dedicated relay carries no file transfer, so it cannot stand in for them.
+  On identify, a peer offering the hop protocol is asked right away when it is
+  dedicated or not a member (a relay outside the network, reached as a
+  bootstrap); a member is asked only when it announces the offer, and
+  `apply_relay_policy`, every 5 s in the swarm loop, picks up the ones whose
+  announce came later and asks connected dedicated relays that lost their
+  reservation again. `ListenerClosed` ends the reservation of the relay owning
+  the listener.
   `Network::set_dedicated_relays` keeps the dedicated set so `peer_route` can
   mark `relay_kind` (`dedicated`/`member`). The relay's dialable address comes from `relay_reservation_addrs`, in this order:
   the configured list (`--relay-peers`), the live announcement (an admitted
@@ -687,7 +702,8 @@ fits in 900 B (`MAX_RECORD_ADDRS` 4, `MAX_RECORD_RELAYS` 3).
   `/api/public/networks/locate` answers `unresolved`. Paths stay on UDP/mDNS on
   the LAN and on `bootstrap_nodes` (IP or internal DNS name) between segments.
   An internal relay with `--serve-relay` goes in with its key in `relay_peers`
-  (which marks it as dedicated) **and** its address in `bootstrap_nodes` (which
+  (which marks it as dedicated, and so as one that carries no file transfer)
+  **and** its address in `bootstrap_nodes` (which
   makes the dial happen). Without the flag, a failed publication waits twice as
   long after each consecutive failure, from 15 s up to 30 min
   (`gateway::PublishBackoff`), and only the 1st, 2nd, 4th, 8th... becomes a
@@ -845,10 +861,28 @@ and all of them require `InternalNodeAuth`. Without it, a node that only
 reaches the principal through the relay could not even prepare the Chat key
 ("could not prepare the chat key").
 
-What stays outside the tunnel: file transfer (weights do not go through a
-relay; each peer needs its own copy of the model) and the inference server's
-`/health` between peers. None of them takes part in admission, so a peer behind
-NAT already joins the cluster and routes without them.
+**Files and relays.** A file comes by direct HTTP when an address answers.
+When none connects, the download falls back to the tunnel, in bounded pieces,
+and then one rule holds: **a file never crosses a public relay**. A public
+relay is one configured in `relay_peers` (which includes `--relay-peers` and
+the trust document's hints), or any relay that is not an admitted member of
+this cluster. A piece travels only over a direct libp2p connection, dialed or
+hole punched, or over a circuit through a member relay whose announce allows
+transfers (`Network::connection_carries_transfers`). A relay only sees an
+encrypted stream and cannot tell a file from an inference frame, so the rule
+is held by the two ends: the serving node checks the connection every piece
+arrives on and refuses with 421, and the receiving node does not start without
+a connection that may carry the file. See `file-transfer.md`, section 5.0.
+
+**The tunnel frame is binary.** A request is
+`[u32 length][JSON head][u32 length][raw body]` and a response
+`[u16 status][u32 length][raw body]`. The body used to travel as a JSON array
+of numbers, about 3.6 bytes on the wire per byte of payload, paid on every
+frame that crossed a relay.
+
+What stays outside the tunnel: the inference server's `/health` between peers.
+It takes no part in admission, so a peer behind NAT joins the cluster and
+routes without it.
 
 ### Per-edge route plan (`route_plan.rs`)
 

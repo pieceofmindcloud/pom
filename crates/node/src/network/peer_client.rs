@@ -212,7 +212,7 @@ where
 
 /// O mesmo pedido de `build`, levado pelo túnel. A resposta volta como um
 /// `reqwest::Response` comum, para quem chama não precisar saber o caminho.
-async fn send_request_via_tunnel(
+pub(crate) async fn send_request_via_tunnel(
     tunnel: &TunnelPeer,
     build: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response> {

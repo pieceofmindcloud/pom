@@ -130,36 +130,69 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/internal/admin-trust/reconcile"
             | "/api/internal/admin-trust/complete-transfer"
             | "/api/internal/admin-trust/chain"
-            // A oferta de um arquivo: pequena e assinada como as outras. O
-            // download que ela provoca continua sendo HTTP direto.
+            // A file offer: small and signed like the others.
             | "/api/transfer/offer"
+            // The file itself, when no direct address answers. Carried only
+            // over a connection that may carry it - see
+            // `is_transfer_data_path`.
+            | "/api/transfer/download"
+            | "/api/transfer/manifest"
+            | "/api/transfer/pom"
     )
 }
+
+/// The route that carries the bytes of a file. The receiving node refuses it
+/// on a connection that crosses a public relay
+/// (`Network::connection_carries_transfers`), with
+/// `TRANSFER_ROUTE_REFUSED_STATUS`.
+pub fn is_transfer_data_path(path: &str) -> bool {
+    path.split(['?', '#']).next().unwrap_or(path) == "/api/transfer/download"
+}
+
+/// How many bytes of a file one tunnel request asks for.
+pub const TRANSFER_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+/// The most a tunnel request may ask for. The answer is held in memory on
+/// both ends, so a request for a whole file is refused.
+pub const MAX_TRANSFER_CHUNK_BYTES: u64 = 2 * TRANSFER_CHUNK_BYTES;
+
+/// The closed byte range (`bytes=<first>-<last>`) a request asks for, as
+/// `(first, length)`. `None` for an open range or no range at all.
+pub fn closed_range(value: &str) -> Option<(u64, u64)> {
+    let (first, last) = value.trim().strip_prefix("bytes=")?.split_once('-')?;
+    let first: u64 = first.trim().parse().ok()?;
+    let last: u64 = last.trim().parse().ok()?;
+    (last >= first).then(|| (first, last - first + 1))
+}
+
+/// Whether a file chunk request asks for a bounded piece the tunnel can hold.
+pub fn transfer_chunk_is_bounded(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("range"))
+        .and_then(|(_, value)| closed_range(value))
+        .is_some_and(|(_, length)| length <= MAX_TRANSFER_CHUNK_BYTES)
+}
+
+/// "Misdirected request": this connection does not carry file transfers. The
+/// sender may try again, because libp2p spreads requests over every
+/// connection it has with the peer.
+pub const TRANSFER_ROUTE_REFUSED_STATUS: u16 = 421;
 
 /// A single generic inference call, forwarded to the receiving peer's own
 /// loopback server chosen by `target` (`http://127.0.0.1:<porta><path>`)
 /// once it arrives — see `discovery.rs`'s handling of
 /// `DiscBehaviourEvent::InferTunnel`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TunnelRequest {
-    /// Método HTTP a ser usado no loopback do peer. Peers antigos não enviam
-    /// esse campo e continuam sendo tratados como chamadas POST.
-    #[serde(default = "default_method")]
+    /// HTTP method used on the peer's loopback.
     pub method: String,
-    /// Servidor local que atende. Ausente num peer de binário anterior, que só
-    /// sabia falar com o servidor de inferência.
-    #[serde(default)]
+    /// Local server that answers.
     pub target: TunnelTarget,
     pub path: String,
     pub body: Vec<u8>,
     /// Cabeçalhos necessários por rotas que não carregam seu metadado no corpo
     /// (por exemplo, a barreira do reduce TP).
-    #[serde(default)]
     pub headers: Vec<(String, String)>,
-}
-
-fn default_method() -> String {
-    "POST".to_string()
 }
 
 impl TunnelRequest {
@@ -264,43 +297,59 @@ pub struct InferTunnelCodec;
 /// (`crate::wire`), so it must not be allowed to grow past what that frame
 /// format itself already permits — same bound `send_frame` enforces.
 const MAX_TUNNEL_PAYLOAD_BYTES: usize = crate::wire::MAX_FRAME_PAYLOAD_BYTES;
+/// Bound of the JSON head of a request (method, target, path, headers).
+const MAX_TUNNEL_HEAD_BYTES: usize = 64 * 1024;
 
-async fn read_msg<T, R>(io: &mut R) -> io::Result<T>
+/// What a request carries besides its body. The body travels raw after it:
+/// as a JSON array of numbers it cost about 3.6 bytes on the wire per byte,
+/// and a circuit through a relay paid that on every frame.
+#[derive(Serialize, Deserialize)]
+struct RequestHead {
+    method: String,
+    target: TunnelTarget,
+    path: String,
+    headers: Vec<(String, String)>,
+}
+
+fn too_large(what: &str, len: usize, bound: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("tunnel {what} of {len} bytes exceeds the {bound}-byte bound"),
+    )
+}
+
+/// Reads `[u32 length][bytes]`, refusing a declared length past `bound`
+/// before allocating for it.
+async fn read_block<R>(io: &mut R, what: &str, bound: usize) -> io::Result<Vec<u8>>
 where
-    T: serde::de::DeserializeOwned,
     R: AsyncRead + Unpin + Send,
 {
     use futures::AsyncReadExt;
     let mut len_buf = [0u8; 4];
     io.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_TUNNEL_PAYLOAD_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "tunnel frame of {len} bytes exceeds the {MAX_TUNNEL_PAYLOAD_BYTES}-byte bound"
-            ),
-        ));
+    if len > bound {
+        return Err(too_large(what, len, bound));
     }
     let mut data = vec![0u8; len];
     io.read_exact(&mut data).await?;
-    serde_json::from_slice(&data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    Ok(data)
 }
 
-async fn write_msg<T, W>(io: &mut W, msg: &T) -> io::Result<()>
+async fn write_block<W>(io: &mut W, what: &str, bound: usize, data: &[u8]) -> io::Result<()>
 where
-    T: Serialize,
     W: AsyncWrite + Unpin + Send,
 {
     use futures::AsyncWriteExt;
-    let data = serde_json::to_vec(msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if data.len() > bound {
+        return Err(too_large(what, data.len(), bound));
+    }
     io.write_all(&(data.len() as u32).to_be_bytes()).await?;
-    io.write_all(&data).await?;
-    Ok(())
+    io.write_all(data).await
 }
 
+/// Binary framing. A request is `[u32][JSON head][u32][raw body]`; a response
+/// is `[u16 status][u32][raw body]`. Lengths are big-endian.
 #[async_trait]
 impl Codec for InferTunnelCodec {
     type Protocol = StreamProtocol;
@@ -311,7 +360,17 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_msg(io).await
+        let head = read_block(io, "head", MAX_TUNNEL_HEAD_BYTES).await?;
+        let head: RequestHead = serde_json::from_slice(&head)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let body = read_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES).await?;
+        Ok(TunnelRequest {
+            method: head.method,
+            target: head.target,
+            path: head.path,
+            body,
+            headers: head.headers,
+        })
     }
 
     async fn read_response<T>(
@@ -322,7 +381,14 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_msg(io).await
+        use futures::AsyncReadExt;
+        let mut status = [0u8; 2];
+        io.read_exact(&mut status).await?;
+        let body = read_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES).await?;
+        Ok(TunnelResponse {
+            status: u16::from_be_bytes(status),
+            body,
+        })
     }
 
     async fn write_request<T>(
@@ -334,7 +400,15 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_msg(io, &req).await
+        let head = serde_json::to_vec(&RequestHead {
+            method: req.method,
+            target: req.target,
+            path: req.path,
+            headers: req.headers,
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        write_block(io, "head", MAX_TUNNEL_HEAD_BYTES, &head).await?;
+        write_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES, &req.body).await
     }
 
     async fn write_response<T>(
@@ -346,7 +420,9 @@ impl Codec for InferTunnelCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_msg(io, &res).await
+        use futures::AsyncWriteExt;
+        io.write_all(&res.status.to_be_bytes()).await?;
+        write_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES, &res.body).await
     }
 }
 
@@ -638,6 +714,25 @@ mod tests {
         assert!(!gateway_path_is_allowed("/"));
     }
 
+    #[test]
+    fn a_file_chunk_over_the_tunnel_is_a_bounded_range() {
+        let range = |value: &str| vec![("Range".to_string(), value.to_string())];
+        assert_eq!(closed_range("bytes=10-19"), Some((10, 10)));
+        assert_eq!(closed_range("bytes=10-"), None);
+        assert!(transfer_chunk_is_bounded(&range("bytes=0-4194303")));
+        assert!(!transfer_chunk_is_bounded(&range("bytes=0-")));
+        assert!(!transfer_chunk_is_bounded(&range("bytes=0-99999999999")));
+        assert!(!transfer_chunk_is_bounded(&[]));
+    }
+
+    #[test]
+    fn only_the_download_counts_as_file_bytes() {
+        assert!(is_transfer_data_path("/api/transfer/download?grant=abc"));
+        assert!(gateway_path_is_allowed("/api/transfer/download?grant=abc"));
+        assert!(!is_transfer_data_path("/api/transfer/offer"));
+        assert!(!is_transfer_data_path("/api/transfer/downloadx"));
+    }
+
     /// O plano de controle da implantação passa, e só porque o pedido chega
     /// marcado como remoto (ver `serve::request_origin`).
     #[test]
@@ -711,15 +806,6 @@ mod tests {
         assert!(gateway_path_is_allowed("/api/cluster/tls?verbose=1"));
     }
 
-    /// Um peer de binário anterior não manda `target`, e só sabia falar com o
-    /// servidor de inferência.
-    #[test]
-    fn um_pedido_sem_target_vai_para_a_inferencia() {
-        let json = br#"{"path":"/v1/step","body":[]}"#;
-        let request: TunnelRequest = serde_json::from_slice(json).expect("parse");
-        assert_eq!(request.target, TunnelTarget::Inference);
-        assert_eq!(request.method, "POST");
-    }
     use futures::io::Cursor;
 
     /// A request/response has to survive the exact framing a real
@@ -746,6 +832,33 @@ mod tests {
 
         assert_eq!(decoded.path, req.path);
         assert_eq!(decoded.body, req.body);
+    }
+
+    /// The body travels raw: the frame is the body plus a small head, not
+    /// several bytes of JSON per byte of payload.
+    #[tokio::test]
+    async fn the_body_is_not_inflated_on_the_wire() {
+        let mut codec = InferTunnelCodec;
+        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
+        let body = vec![0xffu8; 100_000];
+        let req = TunnelRequest::gateway(
+            "GET",
+            "/api/transfer/download",
+            body.clone(),
+            vec![("range".into(), "bytes=0-99".into())],
+        );
+
+        let mut buf = Vec::new();
+        codec.write_request(&protocol, &mut buf, req).await.unwrap();
+        assert!(buf.len() < body.len() + 512, "frame of {} bytes", buf.len());
+
+        let decoded = codec
+            .read_request(&protocol, &mut Cursor::new(buf))
+            .await
+            .unwrap();
+        assert_eq!(decoded.target, TunnelTarget::Gateway);
+        assert_eq!(decoded.headers, vec![("range".to_string(), "bytes=0-99".to_string())]);
+        assert_eq!(decoded.body, body);
     }
 
     #[tokio::test]
@@ -807,8 +920,10 @@ mod tests {
         let mut codec = InferTunnelCodec;
         let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
 
-        let oversized_len = (MAX_TUNNEL_PAYLOAD_BYTES as u32) + 1;
-        let mut buf = oversized_len.to_be_bytes().to_vec();
+        let head = br#"{"method":"POST","target":"inference","path":"/v1/step","headers":[]}"#;
+        let mut buf = (head.len() as u32).to_be_bytes().to_vec();
+        buf.extend_from_slice(head);
+        buf.extend_from_slice(&((MAX_TUNNEL_PAYLOAD_BYTES as u32) + 1).to_be_bytes());
         buf.extend_from_slice(b"doesn't matter, never read");
 
         let mut cursor = Cursor::new(buf);

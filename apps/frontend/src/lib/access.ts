@@ -28,6 +28,10 @@ import { pluginRouteProfiles } from "./pluginUi";
  * continua protegida, e `/implantar` **não** cobre `/implantarx`.
  */
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
+  // Models, slices and deployments are the work of whoever deploys on the
+  // other machines, which is an admin. A plain node has no entry for them.
+  "/modelos": ["admin"],
+  "/fatias": ["admin"],
   "/implantar": ["admin"],
   "/implantacoes": ["admin"],
   "/config/administracao": ["admin", "node"],

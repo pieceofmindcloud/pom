@@ -9,15 +9,16 @@ describe("canAccessRoute", () => {
   });
 
   it("fecha implantação para o perfil do nó, mas mantém as telas Enterprise navegáveis", () => {
-    for (const path of ["/implantar", "/implantacoes"]) {
+    for (const path of ["/implantar", "/implantacoes", "/modelos", "/modelos/remotos", "/modelos/fatiar", "/fatias"]) {
       expect(canAccessRoute(path, "node")).toBe(false);
+      expect(canAccessRoute(path, "admin")).toBe(true);
     }
     expect(canAccessRoute("/logs", "node")).toBe(true);
     expect(canAccessRoute("/estatisticas", "node")).toBe(true);
   });
 
   it("deixa passar toda rota que ninguém restringiu", () => {
-    for (const path of ["/", "/chat", "/modelos", "/fatias", "/config/rede", "/inexistente"]) {
+    for (const path of ["/", "/chat", "/transferencias", "/config/rede", "/inexistente"]) {
       expect(canAccessRoute(path, "node")).toBe(true);
       expect(canAccessRoute(path, "admin")).toBe(true);
     }
@@ -35,7 +36,7 @@ describe("canAccessRoute", () => {
   });
 
   it("diz que uma rota livre não tem lista de perfis", () => {
-    expect(routeProfiles("/modelos")).toBeNull();
+    expect(routeProfiles("/transferencias")).toBeNull();
     expect(routeProfiles("/implantar")).toEqual(["admin"]);
   });
 

@@ -470,8 +470,10 @@ from the coordinator's tracker.
 
 `src/lib/access.ts` combines the native routes with the profiles from the
 plugin registry (`lib/pluginUi.ts`); a native route missing from the table is
-open to `admin` and `node`. Today `/implantar` and `/implantacoes` are
-administrator only. The native showcases `/logs` and `/estatisticas` stay
+open to `admin` and `node`. Today `/modelos`, `/fatias`, `/implantar` and
+`/implantacoes` are administrator only: models, slices and deployments are the
+work of whoever deploys on the other machines, so a plain node has neither the
+menu entries nor the screens. The native showcases `/logs` and `/estatisticas` stay
 reachable for discovery; plugin screens follow the profiles declared in the
 manifest. For `infer`, the list of allowed and denied native routes lives in
 `INFER_ROUTES` and `INFER_DENIED_ROUTES`. In the Chat, run telemetry and its

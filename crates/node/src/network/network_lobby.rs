@@ -296,6 +296,10 @@ pub struct AdmissionView {
     /// Present only when approved.
     #[serde(default)]
     pub grant: Option<AdmissionGrant>,
+    /// Only when rejected: how many seconds until this machine may ask
+    /// again. Zero or absent means it may ask now.
+    #[serde(default)]
+    pub retry_after_secs: Option<u64>,
 }
 
 /// One admission request as the principal keeps it.
@@ -320,6 +324,24 @@ pub const DEPARTED_HOLD: Duration = Duration::from_secs(10 * 60);
 /// How long a rejected machine waits before it may ask again.
 pub const ADMISSION_RETRY_AFTER_SECS: i64 = 60 * 60;
 
+/// Seconds a rejected record still has to wait before its node may ask
+/// again; `None` when it is not rejected or the wait is over.
+pub fn admission_retry_after(
+    record: &AdmissionRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<u64> {
+    if record.status != AdmissionStatus::Rejected {
+        return None;
+    }
+    let decided = record
+        .decided_at
+        .as_deref()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())?
+        .with_timezone(&chrono::Utc);
+    let remaining = ADMISSION_RETRY_AFTER_SECS - (now - decided).num_seconds();
+    (remaining > 0).then_some(remaining as u64)
+}
+
 /// Applies one request to the list. A pending or approved request is only
 /// refreshed (card, role while pending); a rejected one may be asked again
 /// after [`ADMISSION_RETRY_AFTER_SECS`]. Returns the resulting status.
@@ -338,12 +360,7 @@ pub fn apply_admission_request(
                 record.role = role;
             }
             AdmissionStatus::Rejected => {
-                let decided = record
-                    .decided_at
-                    .as_deref()
-                    .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-                    .map(|at| at.with_timezone(&chrono::Utc));
-                if decided.is_some_and(|at| (now - at).num_seconds() < ADMISSION_RETRY_AFTER_SECS) {
+                if admission_retry_after(record, now).is_some() {
                     return Err("admission_rejected");
                 }
                 record.card = card;
@@ -1630,6 +1647,22 @@ mod tests {
         // A rejection holds for a while, then the machine may ask again.
         records[0].status = AdmissionStatus::Rejected;
         records[0].decided_at = Some(now.to_rfc3339());
+        // The candidate is told how long, counted down from the decision.
+        assert_eq!(
+            admission_retry_after(&records[0], now),
+            Some(ADMISSION_RETRY_AFTER_SECS as u64)
+        );
+        assert_eq!(
+            admission_retry_after(&records[0], now + chrono::Duration::seconds(600)),
+            Some(ADMISSION_RETRY_AFTER_SECS as u64 - 600)
+        );
+        assert_eq!(
+            admission_retry_after(
+                &records[0],
+                now + chrono::Duration::seconds(ADMISSION_RETRY_AFTER_SECS)
+            ),
+            None
+        );
         assert_eq!(
             apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, now),
             Err("admission_rejected")

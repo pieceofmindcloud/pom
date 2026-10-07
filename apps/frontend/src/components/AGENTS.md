@@ -428,7 +428,9 @@ Per-file list:
   approved, joins behind a confirmation (`admissionsApi.join`). A `standing`
   approval - the machine was admitted to that network before - is not an
   answer to anything: the panel says it already holds the credentials and its
-  button switches at once, and the bell does not list it.
+  button switches at once, and the bell does not list it. A declined request
+  shows how many minutes are left before asking again (`retryWaitMinutes`
+  over `retry_at`), and the request form comes back when the wait is over.
   Test: `LobbyChat.test.tsx`.
 - `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
   OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens

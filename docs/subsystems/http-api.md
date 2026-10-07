@@ -105,7 +105,9 @@ last):
   /api/ui/network-chat/lobby/requests` lists this node's requests as `{key,
   name, role, status}` and `POST .../requests/forget` drops one locally; every
   lobby answer carries `admission` with the same shape, plus `standing: true`
-  when the approval was not asked for now (the machine was admitted before). None of them ever
+  when the approval was not asked for now (the machine was admitted before),
+  and `retry_at` (Unix seconds on this node's clock) when it was declined and
+  must still wait before asking again. None of them ever
   returns the grant. `POST /api/ui/network/join` (`{key}`) joins a network that
   approved this machine, replacing the one it is in, and restarts the node
   (`409 not_approved` without a grant, `502 grant_invalid` when the granted

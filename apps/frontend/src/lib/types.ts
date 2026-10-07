@@ -606,6 +606,8 @@ export interface LobbyExchange {
     status: "pending" | "approved" | "rejected";
     /** Approved without having asked now: this machine was admitted before. */
     standing?: boolean;
+    /** When declined: the Unix second from which this machine may ask again. */
+    retry_at?: number | null;
   } | null;
 }
 

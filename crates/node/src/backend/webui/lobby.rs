@@ -64,6 +64,9 @@ struct CandidateRequest {
     /// holding its approval: nothing is waiting for an answer, so there is
     /// no notification, and the lobby offers to switch at once.
     asked: bool,
+    /// When rejected: the Unix second from which this machine may ask again,
+    /// on this node's own clock (now plus what the principal said remains).
+    retry_at: Option<i64>,
 }
 
 impl CandidateRequest {
@@ -80,6 +83,7 @@ impl CandidateRequest {
             "status": self.status,
             "asked": self.asked,
             "standing": self.standing(),
+            "retry_at": self.retry_at,
         })
     }
 }
@@ -119,6 +123,7 @@ fn sync_requests(database: &crate::db::PomDb, changed: bool) {
                 grant: None,
                 // A request kept before this field existed was asked for.
                 asked: value["asked"].as_bool().unwrap_or(true),
+                retry_at: value["retry_at"].as_i64(),
             });
         }
     }
@@ -203,6 +208,7 @@ async fn exchange(
                                     status: view.status,
                                     grant: None,
                                     asked: asking,
+                                    retry_at: None,
                                 }
                             });
                             if asking {
@@ -214,6 +220,10 @@ async fn exchange(
                             entry.role = view.role;
                             entry.status = view.status;
                             entry.grant = view.grant.clone();
+                            entry.retry_at = view
+                                .retry_after_secs
+                                .filter(|secs| *secs > 0)
+                                .map(|secs| chrono::Utc::now().timestamp() + secs as i64);
                         }
                         // The principal no longer has the request.
                         None => {
@@ -823,6 +833,7 @@ mod tests {
             status,
             grant: None,
             asked,
+            retry_at: None,
         };
         use network_lobby::AdmissionStatus::{Approved, Pending, Rejected};
         // Admitted before, left, came back: the approval is still there.

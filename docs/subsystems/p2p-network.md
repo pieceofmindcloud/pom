@@ -1462,7 +1462,11 @@ trust document, the **connection key**, the relay keys and the network's
 current settings - is present only once an admin approved, and it leaves the
 principal only there: in an answer to the node whose signature over the
 transport was just verified, on that Noise connection. A rejected machine may
-ask again after an hour; an approval is never undone by asking again.
+ask again after an hour, and is told how long is left: a rejected `admission`
+carries `retry_after_secs` (`admission_retry_after`, counted from the
+decision on the principal's clock). The candidate turns it into a moment on
+its own clock (`retry_at`), so the screen can count down without the two
+clocks having to agree. An approval is never undone by asking again.
 
 The principal fills two things an admin weighs: `card.relayed`, from the
 connection it actually sees (`Network::libp2p_links`), overwriting whatever

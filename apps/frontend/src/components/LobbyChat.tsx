@@ -7,7 +7,7 @@ import { api } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
 import { useI18n } from "../i18n/provider";
-import { admissionsApi } from "../lib/admissions";
+import { admissionsApi, retryWaitMinutes } from "../lib/admissions";
 import { ENROLLMENT_ROLES } from "../lib/types";
 import type { EnrollmentRole, LobbyExchange } from "../lib/types";
 
@@ -127,6 +127,10 @@ export function LobbyChat({ network, endpoint, onClose }: {
   const acceptedRoles = ENROLLMENT_ROLES.filter((option) => !network?.accepted_enrollments || network.accepted_enrollments.includes(option));
   const askRole = acceptedRoles.includes(role) ? role : acceptedRoles[0];
   const admission = exchange?.admission ?? null;
+  // A decline holds for a while. Once it is over the machine may ask again,
+  // so the form comes back; the lobby poll re-renders this every few seconds.
+  const waitMinutes = admission?.status === "rejected" ? retryWaitMinutes(admission.retry_at) : 0;
+  const mayAsk = !admission || (admission.status === "rejected" && waitMinutes === 0);
 
   async function requestAdmission() {
     if (!key || !askRole || asking) return;
@@ -202,7 +206,8 @@ export function LobbyChat({ network, endpoint, onClose }: {
           {canAsk && exchange && (
             <div className="mt-4 border-t border-line pt-3" data-testid="lobby-admission">
               <p className="eyebrow mb-2">{t("lobby.admission")}</p>
-              {!admission && (acceptedRoles.length === 0 ? (
+              {admission?.status === "rejected" && waitMinutes === 0 && <p className="mb-2 text-xs leading-relaxed text-muted">{t("lobby.admissionRejectedMayAsk")}</p>}
+              {mayAsk && (acceptedRoles.length === 0 ? (
                 <p className="text-xs text-faint">{t("publicNetworks.closedDetail")}</p>
               ) : (
                 <div className="space-y-2">
@@ -214,7 +219,11 @@ export function LobbyChat({ network, endpoint, onClose }: {
                 </div>
               ))}
               {admission?.status === "pending" && <p className="text-xs leading-relaxed text-amber">{t("lobby.admissionPending", { role: t(`network.enrollment.${admission.role}`) })}</p>}
-              {admission?.status === "rejected" && <p className="text-xs leading-relaxed text-rose">{t("lobby.admissionRejected")}</p>}
+              {admission?.status === "rejected" && waitMinutes > 0 && (
+                <p className="text-xs leading-relaxed text-rose" data-testid="lobby-admission-wait">
+                  {t("lobby.admissionRejectedWait", { minutes: waitMinutes })}
+                </p>
+              )}
               {admission?.status === "approved" && !admission.standing && (
                 <div className="space-y-2">
                   <p className="text-xs leading-relaxed text-lime">{t("lobby.admissionApproved", { role: t(`network.enrollment.${admission.role}`) })}</p>

@@ -1834,6 +1834,10 @@ async fn lobby_admission_view(
                 status: record.status,
                 role: record.role,
                 grant,
+                retry_after_secs: crate::network_lobby::admission_retry_after(
+                    &record,
+                    chrono::Utc::now(),
+                ),
             })
         }
         None => None,

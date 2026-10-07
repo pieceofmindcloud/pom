@@ -39,7 +39,7 @@ import {
   markDefaultPasswordNoticeRead,
   useDefaultPasswordNoticeState,
 } from "../lib/defaultPasswordNotice";
-import { admissionsApi, useAdmissionRequests, useAdmissions, type AdmissionRecord } from "../lib/admissions";
+import { admissionsApi, retryWaitMinutes, useAdmissionRequests, useAdmissions, type AdmissionRecord } from "../lib/admissions";
 import { useProfile } from "../lib/profile";
 import { useToast } from "../lib/toast";
 import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
@@ -419,7 +419,13 @@ export function Notifications() {
                   <Row
                     icon={<UserPlus className={clsx("h-3.5 w-3.5", request.status === "approved" ? "text-lime" : "text-rose")} />}
                     title={t(request.status === "approved" ? "notifications.requestApproved" : "notifications.requestRejected", { name: request.name || request.key })}
-                    detail={request.status === "approved" ? t("lobby.joinDetail") : undefined}
+                    detail={
+                      request.status === "approved"
+                        ? t("lobby.joinDetail")
+                        : retryWaitMinutes(request.retry_at) > 0
+                          ? t("lobby.admissionRejectedWait", { minutes: retryWaitMinutes(request.retry_at) })
+                          : t("lobby.admissionRejectedMayAsk")
+                    }
                     footer={
                       <>
                         {request.status === "approved" && (

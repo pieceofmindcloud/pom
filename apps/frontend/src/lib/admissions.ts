@@ -28,6 +28,18 @@ export interface AdmissionRequest {
    * so it is not announced.
    */
   standing?: boolean;
+  /** When declined: the Unix second from which this node may ask again. */
+  retry_at?: number | null;
+}
+
+/**
+ * Whole minutes a declined machine still has to wait, rounded up so that
+ * "1 min" never means "now"; 0 when it may ask again.
+ */
+export function retryWaitMinutes(retryAt: number | null | undefined, nowMs: number = Date.now()): number {
+  if (!retryAt) return 0;
+  const seconds = retryAt - nowMs / 1000;
+  return seconds > 0 ? Math.ceil(seconds / 60) : 0;
 }
 
 /** Requests waiting for this network's admin. Admin-only on the node. */

@@ -191,8 +191,10 @@ the vendored symlink, and an explicit `LLAMA_SOURCE` takes precedence over that
 symlink. That keeps the release's empty named context from being mistaken for
 an incomplete checkout. `POM_LLAMA_CPP_PREBUILT_LIB_DIR` makes
 `vendor/llama-cpp-sys-2/build.rs` validate and copy `libllama.so`,
-`libggml.so`, `libggml-base.so` and `libllama-common.so`, and skip only
-llama.cpp's CMake. The C++ wrapper, mtmd, bindgen and POM's own CUDA MoE
+`libggml.so`, `libggml-base.so` and `libllama-common.so` (on Windows MSVC, the
+`.lib` import libraries of the same four into `lib/` and their `.dll`s into
+`bin/`, which the build copies next to the binary), and skip only llama.cpp's
+CMake. The C++ wrapper, mtmd, bindgen and POM's own CUDA MoE
 kernels stay in the local build. Every cluster machine uses the same `pom` executable,
 built with CUDA and Vulkan; the GGML CPU, Vulkan and CUDA modules sit together
 next to the binary and the runtime picks the backend from the visible devices.
@@ -213,8 +215,9 @@ local sources, including `src/models/` and `build-*` files inside `cmake/` and
 `common/`. The target cache is isolated by that checkout's commit and delta.
 In `source`, the Dockerfile keeps the normal CMake build and picks the CUDA
 `base` image. In `release`, it uses the cache keyed by the tag and the
-`runtime` image. POM's Cargo/GitHub Actions builds still compile the fork from
-source; this prebuilt mode is only for development Docker.
+`runtime` image. Besides development Docker, `release-windows.yml` uses the
+prebuilt mode; the other GitHub Actions builds still compile the fork from
+source.
 `scripts/test-docker-build-mode.sh` tests the selection without real Docker.
 
 ### Measurement on macOS
@@ -990,10 +993,19 @@ with `tar czf`, Windows with `7z`.
 affecting the other two. `release-windows.yml` has two variants (input
 `variantes`), each a matrix job and a package:
 
+- **llama.cpp comes from the fork's release**, not from a source build: the
+  job takes `llama-<tag>-bin-win-cuda-13.4-vulkan-x64.zip` (gpu) or
+  `llama-<tag>-bin-win-cpu-x64.zip` (cpu) from `pieceofmindcloud/llama.cpp`
+  (input `llama_tag`; empty picks the newest release that has the combined
+  CUDA 13.4 + Vulkan package), links the `.lib` import libraries in it
+  (`POM_LLAMA_CPP_PREBUILT_LIB_DIR`) and ships its DLLs next to `pom.exe`,
+  except the llama.cpp tools' `*-impl.dll`. The tag's source archive is
+  `LLAMA_SOURCE`, for the headers.
 - **`gpu`** (default): `--features cuda,vulkan` in the same `pom.exe`, package
-  `pom-<v>-x86_64-pc-windows-msvc-cuda-vulkan.zip`. CUDA for NVIDIA; Vulkan
-  covers NVIDIA, AMD (e.g. RX 7800 XT) and Intel. The job installs only the CUDA
-  components in use (`nvcc`, `cudart`, `cccl`, `cublas`...), downloaded from
+  `pom-<v>-x86_64-pc-windows-msvc-cuda-vulkan.zip`. CUDA 13.4 for NVIDIA, the
+  same as the fork package and the Docker image; Vulkan covers NVIDIA, AMD
+  (e.g. RX 7800 XT) and Intel. The job installs only the CUDA components in
+  use (`nvcc`, `libnvvm`, `cudart`, `cccl`, `cublas`...), downloaded from
   NVIDIA's "redist" archives through the version manifest (`CUDA_VERSION`), and
   LunarG's Vulkan SDK (`VULKAN_VERSION`). It builds with Ninja inside the MSVC
   environment (`ilammy/msvc-dev-cmd`), because CUDA with the Visual Studio
@@ -1003,8 +1015,8 @@ affecting the other two. `release-windows.yml` has two variants (input
   (RTX 3060) and 120 (RTX 5060 Ti), the cluster's cards; when the project goes public,
   switch to `''` for the full list. On Windows CUDA is linked **dynamically**
   (`llama-cpp-sys-2/build.rs`), so the package ships `cudart64_*.dll`,
-  `cublas64_*.dll` and `cublasLt64_*.dll` next to `pom.exe` (redistributable
-  under NVIDIA's license); `vulkan-1.dll` comes with the video driver. The own
+  `cublas64_*.dll` and `cublasLt64_*.dll` from the fork release's cudart
+  package next to `pom.exe` (redistributable under NVIDIA's license); `vulkan-1.dll` comes with the video driver. The own
   MoE kernels (`crates/llama-engine/build.rs`) come out as `pom_moe_cuda.lib`
   through `lib.exe` with `/MD` on MSVC, and as `.a` through `ar` elsewhere.
 - **`cpu`**: no features, package `pom-<v>-x86_64-pc-windows-msvc.zip`.

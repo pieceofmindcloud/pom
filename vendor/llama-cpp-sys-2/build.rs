@@ -16,7 +16,7 @@ use build_support::{
     build_tool_path, clone_destination, destination_can_be_replaced, source_can_be_used_directly,
     source_include_dirs, source_root,
 };
-use prebuilt::prepare_prebuilt_libraries;
+use prebuilt::{prepare_prebuilt_libraries, PrebuiltLayout};
 
 fn cuda_option_enabled(value: Option<&str>) -> bool {
     value.is_some_and(|value| {
@@ -639,8 +639,11 @@ fn main() {
     if prebuilt_lib_dir.is_some() {
         assert!(build_shared_libs, "prebuilt llama.cpp requires shared linking");
         assert!(
-            matches!(&target_os, TargetOs::Linux),
-            "prebuilt llama.cpp is supported only on Linux"
+            matches!(
+                &target_os,
+                TargetOs::Linux | TargetOs::Windows(WindowsVariant::Msvc)
+            ),
+            "prebuilt llama.cpp is supported only on Linux and Windows (MSVC)"
         );
     }
     let profile = env::var("LLAMA_LIB_PROFILE").unwrap_or("Release".to_string());
@@ -1378,7 +1381,12 @@ fn main() {
         .always_configure(true);
 
     let build_dir = if let Some(prebuilt_dir) = prebuilt_lib_dir.as_deref() {
-        prepare_prebuilt_libraries(prebuilt_dir, &out_dir)
+        let layout = if matches!(&target_os, TargetOs::Windows(_)) {
+            PrebuiltLayout::WindowsMsvc
+        } else {
+            PrebuiltLayout::Linux
+        };
+        prepare_prebuilt_libraries(prebuilt_dir, &out_dir, layout)
             .unwrap_or_else(|error| panic!("invalid prebuilt llama.cpp libraries: {error}"));
         out_dir.clone()
     } else {

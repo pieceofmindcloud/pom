@@ -5,7 +5,8 @@ name: Release · Windows
 # Actions".
 #
 # Duas variantes, escolhidas na entrada `variantes`:
-#   gpu  CUDA + Vulkan no mesmo pom.exe (o ggml carrega os dois backends).
+#   gpu  CUDA 13.4 + Vulkan no mesmo pom.exe (o ggml carrega os dois backends),
+#        com o llama.cpp da release do fork pieceofmindcloud/llama.cpp.
 #        CUDA para NVIDIA; Vulkan cobre NVIDIA, AMD (ex. RX 7800 XT) e Intel.
 #   cpu  só CPU, pacote leve.
 # Se falhar, falha sozinho - os workflows de Linux e macOS não dependem deste.
@@ -27,6 +28,11 @@ on:
         required: false
         default: true
         type: boolean
+      llama_tag:
+        description: 'Release do fork pieceofmindcloud/llama.cpp (vazio = a mais recente com o pacote CUDA 13.4 + Vulkan)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -38,8 +44,12 @@ env:
   # pelo Vulkan. Quando o projeto for público, troque por '' (lista completa
   # do llama.cpp, ver "Arquiteturas de GPU").
   POM_WINDOWS_CUDAARCHS: '75;80;86;89;120'
-  CUDA_VERSION: '12.9.1'
+  # A mesma do pacote do fork (cuda-13.4) e da imagem Docker: o CUDA aqui só
+  # compila os kernels MoE do próprio POM, e eles têm que casar com o
+  # ggml-cuda.dll que vem pronto.
+  CUDA_VERSION: '13.4.1'
   VULKAN_VERSION: '1.4.313.2'
+  LLAMA_REPOSITORY: pieceofmindcloud/llama.cpp
 
 jobs:
   # Em `ubuntu-latest` de propósito: a interface é a mesma para os três sistemas
@@ -76,7 +86,6 @@ jobs:
       matrix:
         variante: ${{ fromJSON(inputs.variantes == 'ambos' && '["gpu","cpu"]' || format('["{0}"]', inputs.variantes)) }}
     env:
-      LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
       # Ninja em vez do gerador do Visual Studio: o CUDA com o gerador VS exige
       # a integração MSBuild instalada no Visual Studio; com Ninja basta o
       # nvcc e o cl.exe do ambiente de desenvolvimento.
@@ -84,15 +93,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preparar/cachear checkout do llama.cpp
-        id: llama-cache
-        uses: ./.github/actions/llama-cache
+      # O llama.cpp não é compilado aqui: vem pronto da release do fork, que já
+      # é compilada (e testada) lá. O POM linka as bibliotecas de importação do
+      # pacote e leva as DLLs ao lado do pom.exe; o código-fonte da mesma tag
+      # serve só para os headers (bindgen, mtmd e os kernels MoE).
+      #   gpu  llama-<tag>-bin-win-cuda-13.4-vulkan-x64.zip (CUDA + Vulkan)
+      #   cpu  llama-<tag>-bin-win-cpu-x64.zip
+      - name: Baixar o llama.cpp do fork
+        id: llama
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLAMA_TAG: ${{ inputs.llama_tag }}
+        run: |
+          set -euo pipefail
+          tag="$LLAMA_TAG"
+          if [ -z "$tag" ]; then
+            for candidate in $(gh release list -R "$LLAMA_REPOSITORY" -L 20 --json tagName -q '.[].tagName'); do
+              if gh release view "$candidate" -R "$LLAMA_REPOSITORY" --json assets -q '.assets[].name' \
+                  | grep -qx "llama-${candidate}-bin-win-cuda-13.4-vulkan-x64.zip"; then
+                tag="$candidate"
+                break
+              fi
+            done
+          fi
+          test -n "$tag" || { echo "nenhuma release do fork tem o pacote CUDA 13.4 + Vulkan" >&2; exit 1; }
+          echo "release do fork: $tag"
+          if [ "${{ matrix.variante }}" = gpu ]; then
+            package="llama-${tag}-bin-win-cuda-13.4-vulkan-x64.zip"
+          else
+            package="llama-${tag}-bin-win-cpu-x64.zip"
+          fi
+          root="$RUNNER_TEMP/llama"
+          mkdir -p "$root/prebuilt" "$root/source"
+          gh release download "$tag" -R "$LLAMA_REPOSITORY" -p "$package" -D "$root"
+          unzip -q "$root/$package" -d "$root/prebuilt"
+          if [ "${{ matrix.variante }}" = gpu ]; then
+            gh release download "$tag" -R "$LLAMA_REPOSITORY" -p 'cudart-llama-bin-win-cuda-13.4-x64.zip' -D "$root"
+            mkdir -p "$root/cudart"
+            unzip -q "$root/cudart-llama-bin-win-cuda-13.4-x64.zip" -d "$root/cudart"
+          fi
+          curl -fsSL -o "$root/source.tar.gz" "https://github.com/$LLAMA_REPOSITORY/archive/refs/tags/$tag.tar.gz"
+          tar -xzf "$root/source.tar.gz" --strip-components=1 -C "$root/source"
+          for lib in llama ggml ggml-base llama-common; do
+            test -f "$root/prebuilt/$lib.lib" || { echo "o pacote $package não traz $lib.lib" >&2; exit 1; }
+          done
+          {
+            echo "LLAMA_SOURCE=$(cygpath -w "$root/source")"
+            echo "POM_LLAMA_CPP_PREBUILT_LIB_DIR=$(cygpath -w "$root/prebuilt")"
+            echo "LLAMA_BUILD_SHARED_LIBS=1"
+          } >> "$GITHUB_ENV"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.variante }}-llama-${{ steps.llama-cache.outputs.sha }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.variante }}-llama-${{ steps.llama.outputs.tag }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Validar destino do autoclone no Windows
         shell: pwsh
@@ -133,7 +190,9 @@ jobs:
           $manifest = Invoke-RestMethod "$base/redistrib_$env:CUDA_VERSION.json"
           $cuda = 'C:\cuda'
           New-Item -ItemType Directory -Force $cuda | Out-Null
-          $componentes = 'cuda_nvcc','cuda_cudart','cuda_cccl','cuda_nvrtc','cuda_nvtx',
+          # No CUDA 13 o CCCL virou `cccl` e o NVVM (cicc, que o nvcc chama)
+          # saiu do pacote do nvcc para `libnvvm`.
+          $componentes = 'cuda_nvcc','libnvvm','cuda_cudart','cccl','cuda_nvrtc','cuda_nvtx',
                          'cuda_profiler_api','libcublas','visual_studio_integration','cuda_crt'
           foreach ($c in $componentes) {
             $item = $manifest.$c.'windows-x86_64'
@@ -192,19 +251,28 @@ jobs:
       #
       # No Windows o CUDA é linkado dinamicamente (`llama-cpp-sys-2/build.rs`):
       # o pom.exe precisa de cudart/cublas/cublasLt ao lado, redistribuíveis
-      # pela licença da NVIDIA. vulkan-1.dll vem com o driver de vídeo.
+      # pela licença da NVIDIA; vêm do pacote cudart da mesma release do fork.
+      # vulkan-1.dll vem com o driver de vídeo.
       - name: Montar o pacote
         shell: bash
         run: |
           set -euo pipefail
           nome="pom-${{ inputs.version }}-x86_64-pc-windows-msvc"
+          llama="$RUNNER_TEMP/llama"
+          # As DLLs do llama.cpp da release do fork: llama, ggml, os backends
+          # carregáveis (ggml-cpu-*, e no gpu ggml-cuda e ggml-vulkan) e o
+          # OpenMP. As *-impl.dll são das ferramentas do llama.cpp, não do POM.
+          for dll in "$llama"/prebuilt/*.dll; do
+            case "$(basename "$dll")" in *-impl.dll) continue ;; esac
+            cp "$dll" pacote/
+          done
           if [ "${{ matrix.variante }}" = gpu ]; then
             nome="${nome}-cuda-vulkan"
-            cuda_bin="$(cygpath -u "$CUDA_PATH")/bin"
             for dll in cudart64_ cublas64_ cublasLt64_; do
-              ls "$cuda_bin"/${dll}*.dll >/dev/null
-              cp "$cuda_bin"/${dll}*.dll pacote/
+              ls "$llama"/cudart/${dll}*.dll >/dev/null
+              cp "$llama"/cudart/${dll}*.dll pacote/
             done
+            ls pacote/ggml-cuda.dll pacote/ggml-vulkan.dll >/dev/null
           fi
           cp target/release/pom.exe pacote/
           # Sem o host ao lado do pom.exe nenhum plugin instala

@@ -101,7 +101,7 @@ fn build_moe_cuda(llama_cpp_root: &Path) {
     let ggml_root = llama_cpp_root.join("ggml");
     for include in [ggml_root.join("include"), ggml_root.join("src")] {
         compile.arg("-I");
-        compile.arg(include);
+        compile.arg(without_verbatim_prefix(&include));
     }
     for dependency in [
         "src/ggml-common.h",
@@ -166,4 +166,21 @@ fn build_mtp_shim() {
         .cpp(true)
         .file("src/llama_mtp_shim.cpp")
         .compile("pom_llama_mtp_shim");
+}
+
+/// A Windows path without the `\\?\` verbatim prefix `canonicalize` adds.
+///
+/// The fork's source path reaches this build already canonicalized
+/// (`DEP_LLAMA_LLAMA_SOURCE`), and neither nvcc nor cl.exe understands a
+/// verbatim path in `-I`: the Windows CUDA build failed with "Cannot open
+/// include file: 'ggml-common.h'". Other paths pass through unchanged.
+fn without_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
 }

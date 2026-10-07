@@ -793,7 +793,11 @@ extern "C" int llama_rs_moe_reference_expert(
 
         ggml_cgraph * graph = ggml_new_graph(ctx);
         ggml_build_forward_expand(graph, down_node);
-        ggml_backend_t backend = ggml_backend_cpu_init();
+        // Through the backend registry, not ggml_backend_cpu_init(): with
+        // loadable backends (GGML_BACKEND_DL) the CPU backend lives in its own
+        // module, and the Windows link against the release found no such
+        // symbol.
+        ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
         if (!backend) {
             ggml_free(ctx);
             return 3;

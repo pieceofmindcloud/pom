@@ -156,9 +156,9 @@ export interface LayoutNode {
 }
 
 /**
- * Arruma a rede como o pipeline realmente é: uma coluna por faixa de camadas,
- * da esquerda para a direita, e as réplicas de uma mesma faixa empilhadas
- * dentro da coluna, centradas no mesmo eixo.
+ * Arruma a rede como o pipeline realmente é: uma coluna por estágio, da
+ * esquerda para a direita. Réplicas de uma faixa e faixas alternativas que
+ * começam no mesmo ponto ficam empilhadas na mesma coluna.
  *
  * A grade que existia antes ignorava a topologia, então uma rede de quatro
  * máquinas saía com três em fila e a quarta na linha de baixo, e a aresta que
@@ -176,33 +176,58 @@ export function autoLayout(
 ): Record<string, CanvasPosition> {
   if (nodes.length === 0) return {};
 
-  const colunas = new Map<string, LayoutNode[]>();
-  for (const node of nodes) {
-    const chave = `${node.start_layer}-${node.end_layer}`;
-    const atual = colunas.get(chave);
-    if (atual) atual.push(node);
-    else colunas.set(chave, [node]);
-  }
-
-  const ordenadas = [...colunas.entries()].sort(([, a], [, b]) =>
-    a[0].start_layer - b[0].start_layer || a[0].end_layer - b[0].end_layer,
+  // A coluna é a profundidade no pipeline, não a faixa exata: 16-30 e 16-40
+  // começam no mesmo ponto e são caminhos alternativos, então ficam lado a
+  // lado. A profundidade é a cadeia mais longa de faixas anteriores.
+  const porInicio = [...nodes].sort(
+    (a, b) => a.start_layer - b.start_layer || a.end_layer - b.end_layer || a.id.localeCompare(b.id),
   );
+  const profundidade = new Map<string, number>();
+  for (const node of porInicio) {
+    let nivel = 0;
+    for (const anterior of porInicio) {
+      if (anterior.end_layer < node.start_layer && anterior.end_layer >= anterior.start_layer) {
+        nivel = Math.max(nivel, (profundidade.get(anterior.id) ?? 0) + 1);
+      }
+    }
+    profundidade.set(node.id, nivel);
+  }
+  const colunas = new Map<number, LayoutNode[]>();
+  for (const node of porInicio) {
+    const nivel = profundidade.get(node.id) ?? 0;
+    const atual = colunas.get(nivel);
+    if (atual) atual.push(node);
+    else colunas.set(nivel, [node]);
+  }
+  const ordenadas = [...colunas.entries()].sort(([a], [b]) => a - b);
 
   // Cards minimizados ocupam menos: a coluna tem a largura do seu card mais
   // largo e a pilha soma as alturas reais, então uma rede minimizada cabe
-  // inteira numa tela que a rede aberta não cabia.
+  // inteira numa tela que a rede aberta não cabia. Numa coluna, as réplicas
+  // da primeira faixa ficam centradas no eixo - é o caminho que segue reto -
+  // e as faixas alternativas descem abaixo dela.
   const posicoes: Record<string, CanvasPosition> = {};
   let left = ORIGIN_X;
   ordenadas.forEach(([, coluna]) => {
-    const empilhados = [...coluna].sort((a, b) => a.id.localeCompare(b.id));
-    const tamanhos = empilhados.map((node) => sizeOf(node.id));
+    const faixas = new Map<string, LayoutNode[]>();
+    for (const node of coluna) {
+      const chave = `${node.start_layer}-${node.end_layer}`;
+      const atual = faixas.get(chave);
+      if (atual) atual.push(node);
+      else faixas.set(chave, [node]);
+    }
+    const grupos = [...faixas.values()].map((grupo) => [...grupo].sort((a, b) => a.id.localeCompare(b.id)));
+    const tamanhos = coluna.map((node) => sizeOf(node.id));
     const gap = tamanhos.every((size) => size.height < CARD_HEIGHT) ? GAP_Y / 2 : GAP_Y;
-    const altura = tamanhos.reduce((sum, size) => sum + size.height, 0) + (empilhados.length - 1) * gap;
-    let top = AXIS_Y - altura / 2;
-    empilhados.forEach((node, linha) => {
-      posicoes[node.id] = { left, top };
-      top += tamanhos[linha].height + gap;
-    });
+    const alturaDe = (grupo: LayoutNode[]) =>
+      grupo.reduce((sum, node) => sum + sizeOf(node.id).height, 0) + (grupo.length - 1) * gap;
+    let top = AXIS_Y - alturaDe(grupos[0]) / 2;
+    for (const grupo of grupos) {
+      for (const node of grupo) {
+        posicoes[node.id] = { left, top };
+        top += sizeOf(node.id).height + gap;
+      }
+    }
     left += Math.max(...tamanhos.map((size) => size.width)) + GAP_X;
   });
   return posicoes;

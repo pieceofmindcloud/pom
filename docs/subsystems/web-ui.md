@@ -1161,10 +1161,14 @@ it would say the whole machine runs on the CPU.
 ## The Flow canvas: arrangement by layers
 
 `ModelNetworkCanvas` draws the network, and `lib/networkLayout.ts` decides where
-each card goes. The rule is **one column per layer range, in pipeline order, and
-replicas of the same range stacked inside the column, centered on the same
-axis** (`autoLayout`). That is what makes a fork look like a fork and an edge
-become a short line.
+each card goes. The rule is **one column per pipeline stage, in pipeline order**
+(`autoLayout`). A card's column is the longest chain of ranges that end before
+it starts, so ranges that start at the same layer share a column even when they
+end at different layers: with 0-15, 16-30, 31-40 and 16-40, the column after
+0-15 holds 16-30 and 16-40, and 31-40 comes after it. Inside a column, the
+replicas of the first range (lowest end layer) are centered on the axis - the
+route that goes straight on - and the alternative ranges stack below it. That
+is what makes a fork look like a fork and an edge become a short line.
 
 The precedence is: dragged position > computed arrangement > grid
 (`fallbackPosition`, only left for a card the arrangement does not know).

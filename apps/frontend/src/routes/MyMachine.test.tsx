@@ -30,6 +30,8 @@ const queryMocks = vi.hoisted(() => ({
 vi.mock("../lib/api", () => ({
   api: {
     post: vi.fn(async () => undefined),
+    // The relay panel loads on its own and stays out without an answer.
+    get: vi.fn(async () => { throw new Error("no relay status in this test"); }),
   },
 }));
 vi.mock("../lib/toast", () => ({

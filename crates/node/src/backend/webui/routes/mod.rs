@@ -284,6 +284,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
+    // A relay option is a decision about this machine's own bandwidth: it
+    // belongs to whoever runs the machine, whatever its role in the network.
+    RouteRule {
+        prefix: "/api/ui/network/relay",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
     RouteRule {
         prefix: "/api/ui/network/settings",
         method: Some(Method::POST),
@@ -676,6 +683,10 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/network/advertise-addr"),
+            RouteScope::InferNodeAdmin
+        );
+        assert_eq!(
+            scope_of("/api/ui/network/relay"),
             RouteScope::InferNodeAdmin
         );
         assert_eq!(

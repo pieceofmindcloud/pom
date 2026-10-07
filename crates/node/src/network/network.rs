@@ -83,24 +83,73 @@ pub struct RelayOffer {
 /// (`cluster_relay`), and for nobody else.
 #[derive(Debug)]
 pub struct RelayGate {
-    everyone: bool,
-    cluster: bool,
-    transfers: bool,
+    everyone: AtomicBool,
+    cluster: AtomicBool,
+    transfers: AtomicBool,
+    /// What the command line or the environment decided for this run. It
+    /// wins over the saved configuration, so the screen shows it as fixed.
+    overrides: RelayOverrides,
     /// AutoNAT confirmed a public address, or the operator configured one.
     reachable: AtomicBool,
     /// libp2p PeerIds of the admitted members, refreshed by the swarm loop.
     members: std::sync::RwLock<std::collections::HashSet<String>>,
 }
 
+/// Relay options given on the command line or in the environment
+/// (`--serve-relay`, `--no-cluster-relay`, `--no-relay-transfers`).
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+pub struct RelayOverrides {
+    pub everyone: bool,
+    pub no_cluster: bool,
+    pub no_transfers: bool,
+}
+
+/// The relay options in effect and what this node does with them.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct RelayStatus {
+    pub everyone: bool,
+    pub cluster: bool,
+    pub transfers: bool,
+    /// Which of the three the command line fixed for this run.
+    pub fixed: RelayOverrides,
+    /// The internet reaches this node.
+    pub reachable: bool,
+    /// It accepts reservations right now.
+    pub serving: bool,
+}
+
 impl RelayGate {
     pub fn new(everyone: bool, cluster: bool, transfers: bool) -> Self {
         Self {
-            everyone,
-            cluster,
-            transfers,
+            everyone: AtomicBool::new(everyone),
+            cluster: AtomicBool::new(cluster),
+            transfers: AtomicBool::new(transfers),
+            overrides: RelayOverrides::default(),
             reachable: AtomicBool::new(false),
             members: std::sync::RwLock::new(Default::default()),
         }
+    }
+
+    /// Applies what the command line fixed on top of the saved options.
+    pub fn with_overrides(mut self, overrides: RelayOverrides) -> Self {
+        self.overrides = overrides;
+        self.set(
+            self.everyone.load(Ordering::Relaxed),
+            self.cluster.load(Ordering::Relaxed),
+            self.transfers.load(Ordering::Relaxed),
+        );
+        self
+    }
+
+    /// Changes the options live. A reservation already granted lasts until
+    /// it expires; new ones follow the new options at once.
+    pub fn set(&self, everyone: bool, cluster: bool, transfers: bool) {
+        self.everyone
+            .store(everyone || self.overrides.everyone, Ordering::Relaxed);
+        self.cluster
+            .store(cluster && !self.overrides.no_cluster, Ordering::Relaxed);
+        self.transfers
+            .store(transfers && !self.overrides.no_transfers, Ordering::Relaxed);
     }
 
     pub fn set_reachable(&self, reachable: bool) {
@@ -113,26 +162,43 @@ impl RelayGate {
         }
     }
 
+    /// A public relay: it relays for any node of any network.
+    pub fn everyone(&self) -> bool {
+        self.everyone.load(Ordering::Relaxed)
+    }
+
     /// Whether this node accepts reservations at all right now.
     pub fn serving(&self) -> bool {
-        self.everyone || (self.cluster && self.reachable.load(Ordering::Relaxed))
+        self.everyone()
+            || (self.cluster.load(Ordering::Relaxed) && self.reachable.load(Ordering::Relaxed))
     }
 
     /// What goes into the announce.
     pub fn offer(&self) -> Option<RelayOffer> {
         self.serving().then_some(RelayOffer {
-            transfers: self.transfers,
+            transfers: self.transfers.load(Ordering::Relaxed),
         })
     }
 
     /// May `peer` reserve a circuit slot on this node?
     pub fn allows_reservation(&self, peer: &str) -> bool {
-        self.everyone
+        self.everyone()
             || (self.serving()
                 && self
                     .members
                     .read()
                     .is_ok_and(|members| members.contains(peer)))
+    }
+
+    pub fn status(&self) -> RelayStatus {
+        RelayStatus {
+            everyone: self.everyone(),
+            cluster: self.cluster.load(Ordering::Relaxed),
+            transfers: self.transfers.load(Ordering::Relaxed),
+            fixed: self.overrides,
+            reachable: self.reachable.load(Ordering::Relaxed),
+            serving: self.serving(),
+        }
     }
 }
 
@@ -5709,6 +5775,19 @@ mod tests {
         let public = RelayGate::new(true, true, false);
         assert!(public.allows_reservation("12D3KooWStranger"));
         assert_eq!(public.offer(), Some(RelayOffer { transfers: false }));
+
+        // The screen changes the options live; what the command line fixed
+        // stays whatever is saved.
+        gate.set(false, false, true);
+        assert!(!gate.allows_reservation(&member));
+        let fixed = RelayGate::new(false, true, true).with_overrides(RelayOverrides {
+            everyone: true,
+            no_cluster: false,
+            no_transfers: true,
+        });
+        fixed.set(false, true, true);
+        let status = fixed.status();
+        assert!(status.everyone && !status.transfers && status.fixed.everyone);
     }
 
     #[tokio::test]

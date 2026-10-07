@@ -857,10 +857,10 @@ async fn async_main(
         merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
         merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
         comma_list(&args.pkarr_peers),
-        config::RelayConfig {
-            everyone: app_config.relay.everyone || args.serve_relay,
-            cluster: app_config.relay.cluster && !args.no_cluster_relay,
-            transfers: app_config.relay.transfers && !args.no_relay_transfers,
+        crate::network::RelayOverrides {
+            everyone: args.serve_relay,
+            no_cluster: args.no_cluster_relay,
+            no_transfers: args.no_relay_transfers,
         },
         args.advertise_addr.clone(),
         args.public_addr.clone(),
@@ -1280,6 +1280,7 @@ struct P2pStackArgs {
     /// resolve, once inside this function) or restructuring who loads it.
     relay_peer_keys: Vec<String>,
     relay: config::RelayConfig,
+    relay_overrides: crate::network::RelayOverrides,
     /// The operator declared a public address (`--public-addr`): the node
     /// counts as reachable before AutoNAT says anything.
     public_addr_configured: bool,
@@ -1409,11 +1410,14 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_advertise_addr(args.advertise_addr)
         .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
-        .with_relay_gate(crate::network::RelayGate::new(
-            args.relay.everyone,
-            args.relay.cluster,
-            args.relay.transfers,
-        ))
+        .with_relay_gate(
+            crate::network::RelayGate::new(
+                args.relay.everyone,
+                args.relay.cluster,
+                args.relay.transfers,
+            )
+            .with_overrides(args.relay_overrides),
+        )
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
@@ -1600,7 +1604,7 @@ async fn start_node(
     bootstrap_nodes: Vec<String>,
     relay_peer_keys: Vec<String>,
     pkarr_peer_keys: Vec<String>,
-    relay: config::RelayConfig,
+    relay_overrides: crate::network::RelayOverrides,
     advertise_addr_cli: String,
     public_addr_cli: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
@@ -1667,7 +1671,8 @@ async fn start_node(
         admin_trust: admin_trust.clone(),
         database: database.clone(),
         relay_peer_keys: relay_peer_keys.clone(),
-        relay,
+        relay: app_config.relay,
+        relay_overrides,
         public_addr_configured: !public_addr_cli.trim().is_empty(),
         use_default_relays: !no_default_relays,
         no_discovery,
@@ -1712,7 +1717,6 @@ async fn start_node(
             node.clone(),
             Some(gateway_port),
             None,
-            relay.everyone,
             net.clone(),
             app_config.network.geo_label.clone(),
         ))

@@ -1425,6 +1425,23 @@ network.quicSubtitle,"Prefer HTTP/3 for inference hops while keeping HTTP/HTTPS 
 network.quicTitle,QUIC transport,Transporte QUIC
 network.readOnly,Read-only,Somente leitura
 network.rejoin,Rejoin network,Voltar para a rede
+network.relayCluster,Relay for this network,Servir de relé para esta rede
+network.relayClusterHint,"When the internet reaches this machine, members of this network behind a router can reach each other through it.","Quando a internet alcança esta máquina, membros desta rede atrás de um roteador se alcançam por ela."
+network.relayEveryone,Relay for any network,Servir de relé para qualquer rede
+network.relayEveryoneHint,"Makes this machine a public relay: nodes of other networks may use it too. A public relay never carries file transfers.","Torna esta máquina um relé público: nós de outras redes também podem usá-la. Um relé público nunca transporta arquivos."
+network.relayFixed,Set on the command line for this run,Definido na linha de comando nesta execução
+network.relaySaveFailed,Could not save the relay options,Não foi possível salvar as opções de relé
+network.relaySaved,Relay options saved,Opções de relé salvas
+network.relaySavedDetail,They apply now; no restart is needed.,"Valem a partir de agora, sem reiniciar."
+network.relayStateEveryone,Relaying for any network,Servindo de relé para qualquer rede
+network.relayStateCluster,Relaying for this network,Servindo de relé para esta rede
+network.relayStateOff,Not relaying,Não está servindo de relé
+network.relayStateUnreachable,Not relaying: the internet does not reach this machine,Não está servindo de relé: a internet não alcança esta máquina
+network.relayStatus,Now,Agora
+network.relaySubtitle,"A relay only passes encrypted traffic between two machines that cannot reach each other directly.","Um relé só repassa tráfego cifrado entre duas máquinas que não se alcançam diretamente."
+network.relayTitle,Relay,Relé
+network.relayTransfers,Let file transfers of this network pass,Deixar transferências de arquivo desta rede passarem
+network.relayTransfersHint,"Files are large: turn this off to keep the relay for control and inference only.","Arquivos são grandes: desligue para manter o relé só para controle e inferência."
 network.relinquishNode,Become an infer node,Virar um nó infer
 network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
 network.relinquishNodeFailed,The node could not leave the node role,O nó não conseguiu deixar o papel de node

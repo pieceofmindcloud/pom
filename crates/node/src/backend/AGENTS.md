@@ -74,7 +74,10 @@ total para concluir a geração anterior.
 
 `POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
 somente o endereço anunciado deste processo e não recebe alvo nem repassa a
-chamada. As rotas administrativas com parâmetro de nó usam a sintaxe `:id`
+chamada. `GET`/`POST /api/ui/network/relay` (`catalog.rs::get_relay`,
+`save_relay`) has the same scope for the same reason: the relay options
+decide how this machine's own bandwidth is used. Saving writes
+`Config.relay` and calls `RelayGate::set`, with no restart. As rotas administrativas com parâmetro de nó usam a sintaxe `:id`
 do Axum 0.7. A webapp serve a SPA por um fallback do router, então um handler
 concreto de POST ou DELETE vence e um caminho mutável desconhecido, depois da
 autorização, devolve 404, não o 405 produzido por um wildcard registrado apenas

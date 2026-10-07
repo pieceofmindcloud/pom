@@ -200,6 +200,15 @@ Per-file list:
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
+- `RelayOptions.tsx` - Panel with whom this machine relays for: three
+  checkboxes (this network, file transfers of this network, any network) read
+  from `GET /api/ui/network/relay` and saved one at a time with `POST`, which
+  the node applies live. An option the command line fixed for this run is
+  shown locked, with the reason; file transfers are locked while the machine
+  does not relay for its network. `relayStateKey` turns the answer into one
+  line (relaying for any network, for this network, not relaying, or not
+  reachable from the internet). The panel stays out when the node does not
+  answer. Tests in `RelayOptions.test.tsx`.
 - `ClusterVersion.tsx` - Panel with the trust chain version this node holds
   (`NodeInfo.cluster_version`, formatted by `lib/clusterVersion.ts`), an
   outdated badge with the hosts announcing a newer one, and "Sync now"

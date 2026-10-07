@@ -762,9 +762,9 @@ mod tests {
         }
     }
 
-    /// Reproduz a chamada do navegador no caso que falhava ao vivo: o `infer`
-    /// atravessa o middleware, grava apenas a própria configuração e o próximo
-    /// anúncio já carrega o endereço novo.
+    /// The relay options belong to whoever runs the machine, an `infer`
+    /// included: saving writes this node's own configuration and the next
+    /// announce already carries the new offer.
     #[tokio::test]
     async fn an_infer_node_can_save_its_own_address_and_announce_it_next() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
@@ -847,6 +847,89 @@ mod tests {
                     addr_candidates.contains(&expected_address),
                     "candidatos={addr_candidates:?}"
                 );
+            }
+            other => panic!("esperava Announce, veio {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_relay_options_are_saved_and_applied_without_a_restart() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = testkit::state_with("infer-node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Infer;
+        }
+        struct ConfigPathGuard {
+            previous: Option<std::ffi::OsString>,
+            path: std::path::PathBuf,
+        }
+        impl Drop for ConfigPathGuard {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("POM_CONFIG", previous),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+                std::fs::remove_file(&self.path).ok();
+            }
+        }
+        let config_path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pom-test-relay-{}.json", std::process::id()));
+        std::fs::remove_file(&config_path).ok();
+        let _config_path_guard = ConfigPathGuard {
+            previous: std::env::var_os("POM_CONFIG"),
+            path: config_path.clone(),
+        };
+        std::env::set_var("POM_CONFIG", &config_path);
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+        // The internet reaches this node: by default it relays for its
+        // cluster and lets files cross.
+        state.network.relay_gate().set_reachable(true);
+        assert_eq!(
+            state.network.relay_gate().offer(),
+            Some(crate::network::RelayOffer { transfers: true })
+        );
+
+        let mut request = Request::post("/api/ui/network/relay")
+            .header("authorization", "Bearer connection-secret")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"everyone":false,"cluster":true,"transfers":false}"#,
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "body={}",
+            String::from_utf8_lossy(&body)
+        );
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["transfers"], false);
+        assert_eq!(answer["serving"], true);
+
+        assert!(!state.auth.read().await.relay.transfers);
+        let wire = state.network.gossip_announce_bytes(None).unwrap();
+        match serde_json::from_slice(&wire).unwrap() {
+            crate::network::P2PMessage::Announce { relay, .. } => {
+                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false }));
             }
             other => panic!("esperava Announce, veio {other:?}"),
         }

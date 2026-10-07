@@ -515,7 +515,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   `relay.everyone`/`--serve-relay`; the admitted members of its cluster when
   the internet reaches it and `relay.cluster` is on (the default); nobody
   otherwise. `offer()` is what goes into the `Announce` (`RelayOffer`, with
-  whether transfers may cross it).
+  whether transfers may cross it). The options are atomics: `set` changes
+  them live from the screen, `RelayOverrides` keeps what the command line
+  fixed for the run, and `status()` is what `/api/ui/network/relay` answers.
 - `Network::relay_carries_transfers`/`connection_carries_transfers`/
   `transfer_links` - the rule of files and relays: a direct connection carries
   a file; a circuit only through a member relay that allows it; never a relay

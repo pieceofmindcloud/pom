@@ -582,6 +582,11 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   peers table every 5 s. While it accepts reservations, a node says so in its
   `Announce` (`relay`, a `RelayOffer`), together with whether file transfers
   may cross it (`relay.transfers`, on by default; `--no-relay-transfers`).
+  The three options are also on the My machine screen and change live
+  (`RelayGate::set`): new reservations follow them at once, one already
+  granted lasts until it expires, and the pkarr record's `is_relay` follows
+  `relay.everyone`. An option given on the command line wins over the saved
+  one for that run (`RelayOverrides`), and the screen shows it locked.
 - **Circuit reservation:** `reserve_circuit` asks
   `listen_on(<relay>/p2p-circuit)`. A **dedicated relay** - the one in
   `relay_peers`, identified by its key (`Discovery::new` receives the keys, and

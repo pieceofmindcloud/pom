@@ -149,7 +149,6 @@ pub(crate) struct PkarrPublishHandle {
     node: Arc<crate::pkarr_node::PkarrNode>,
     gateway_port: Option<u16>,
     inference_port: Option<u16>,
-    serve_relay: bool,
     network: Arc<crate::network::Network>,
     geo_label: std::sync::Mutex<String>,
     last: tokio::sync::Mutex<Option<(crate::pkarr_node::PkarrRecord, Instant)>>,
@@ -165,7 +164,6 @@ impl PkarrPublishHandle {
         node: Arc<crate::pkarr_node::PkarrNode>,
         gateway_port: Option<u16>,
         inference_port: Option<u16>,
-        serve_relay: bool,
         network: Arc<crate::network::Network>,
         geo_label: String,
     ) -> Self {
@@ -173,7 +171,6 @@ impl PkarrPublishHandle {
             node,
             gateway_port,
             inference_port,
-            serve_relay,
             network,
             geo_label: std::sync::Mutex::new(geo_label),
             last: tokio::sync::Mutex::new(None),
@@ -193,7 +190,10 @@ impl PkarrPublishHandle {
             relays,
             gateway_port: self.gateway_port,
             inference_port: self.inference_port,
-            is_relay: self.serve_relay,
+            // Only a public relay is one in the DHT: that record is how
+            // other networks find a relay by its key. Read live, because
+            // the option changes from the screen.
+            is_relay: self.network.relay_gate().everyone(),
             geo_label: (!geo_label.trim().is_empty()).then_some(geo_label),
         }
     }

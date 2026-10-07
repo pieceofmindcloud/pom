@@ -194,7 +194,9 @@ Per-file list:
   portas, perfil, autoridade efetiva, e `Sair da rede`/`Voltar para a rede` via
   `POST /api/ui/leave`/`/api/ui/rejoin` - abdicação, não privilégio, disponível
   a todo perfil) e "Endereço anunciado" (`POST /api/ui/network/advertise-addr`,
-  mostra o endereço efetivo usado pelos peers). `Sair da rede` aqui é diferente
+  mostra o endereço efetivo usado pelos peers). Below them it mounts
+  `../components/RelayOptions.tsx`, the relay options of this machine.
+  `Sair da rede` aqui é diferente
   de `Esquecer rede` em `NetworkSettings.tsx`: um desliga a máquina do cluster,
   o outro apaga a configuração local e reinicia no setup.
 

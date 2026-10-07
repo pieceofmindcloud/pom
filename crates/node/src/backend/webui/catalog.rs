@@ -1390,6 +1390,32 @@ pub(super) async fn save_advertise_addr(
     .into_response()
 }
 
+/// The relay options of this machine and what it does with them.
+pub(super) async fn get_relay(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    Json(state.network.relay_gate().status()).into_response()
+}
+
+/// Saves the relay options and applies them live, with no restart: new
+/// reservations follow them at once and the next announce carries the offer.
+/// An option the command line fixed for this run is saved but stays fixed.
+pub(super) async fn save_relay(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<crate::config::RelayConfig>,
+) -> Response {
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.relay = req;
+        if let Err(e) = cfg.save() {
+            return bad_request(format!("não deu para gravar pom.json: {e}"));
+        }
+    }
+    let gate = state.network.relay_gate();
+    gate.set(req.everyone, req.cluster, req.transfers);
+    info!("opções de relé atualizadas pela interface: {req:?}");
+    Json(gate.status()).into_response()
+}
+
 #[derive(Deserialize)]
 pub struct SaveTlsRequest {
     pub tls_required: bool,

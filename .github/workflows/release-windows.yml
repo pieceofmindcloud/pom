@@ -124,7 +124,9 @@ jobs:
           else
             package="llama-${tag}-bin-win-cpu-x64.zip"
           fi
-          root="$RUNNER_TEMP/llama"
+          # Caminho Unix: com `D:\a\_temp` o tar do Git Bash lê o `D:` como
+          # um host remoto ("Cannot connect to D: resolve failed").
+          root="$(cygpath -u "$RUNNER_TEMP")/llama"
           mkdir -p "$root/prebuilt" "$root/source"
           gh release download "$tag" -R "$LLAMA_REPOSITORY" -p "$package" -D "$root"
           unzip -q "$root/$package" -d "$root/prebuilt"
@@ -134,7 +136,7 @@ jobs:
             unzip -q "$root/cudart-llama-bin-win-cuda-13.4-x64.zip" -d "$root/cudart"
           fi
           curl -fsSL -o "$root/source.tar.gz" "https://github.com/$LLAMA_REPOSITORY/archive/refs/tags/$tag.tar.gz"
-          tar -xzf "$root/source.tar.gz" --strip-components=1 -C "$root/source"
+          tar --force-local -xzf "$root/source.tar.gz" --strip-components=1 -C "$root/source"
           for lib in llama ggml ggml-base llama-common; do
             test -f "$root/prebuilt/$lib.lib" || { echo "o pacote $package não traz $lib.lib" >&2; exit 1; }
           done
@@ -258,7 +260,7 @@ jobs:
         run: |
           set -euo pipefail
           nome="pom-${{ inputs.version }}-x86_64-pc-windows-msvc"
-          llama="$RUNNER_TEMP/llama"
+          llama="$(cygpath -u "$RUNNER_TEMP")/llama"
           # As DLLs do llama.cpp da release do fork: llama, ggml, os backends
           # carregáveis (ggml-cpu-*, e no gpu ggml-cuda e ggml-vulkan) e o
           # OpenMP. As *-impl.dll são das ferramentas do llama.cpp, não do POM.

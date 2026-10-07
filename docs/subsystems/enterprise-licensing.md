@@ -355,6 +355,23 @@ the calls few (`plugin_github.rs`):
   limit is reported with its reset time and this hint.
 There is no periodic polling: GitHub is read only on add, refresh and install.
 
+Every stable release of a POM plugin is also published to the license server
+by the plugin repository's workflow, and free plugins (`requires_license =
+false`) are served there publicly (`GET /v1/plugin-releases`,
+`/v1/plugin-releases/{release_id}/download`). That is the fallback when GitHub
+refuses or rate-limits:
+- Adding a repository whose GitHub lookup fails lists it from the license
+  server (`inspect_from_license_server`): `manifest_path = "license-server"`,
+  release IDs prefixed `license-server:`, no preferences or screenshots, and
+  a `check_error` saying where the releases came from. Refreshing such a
+  repository tries GitHub first and falls back again; a repository read from
+  GitHub keeps its saved inspection when GitHub fails, as before.
+- Installing a `license-server:` release downloads it from there. Installing
+  a GitHub release whose download fails takes the same version from the
+  license server. Either way the listing is read again and the bytes are
+  checked against its SHA-256 and size.
+The base is the license server POM already uses (`license_base_url`).
+
 Adding, updating and removing repositories only uses the local routes
 `/api/ui/plugins/github-repositories*`, open to every profile. The list, the
 manifest path and the details read are persisted in

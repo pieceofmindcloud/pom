@@ -111,6 +111,40 @@ pub(crate) struct GithubReleaseClient {
     /// Last body and ETag per API URL. An unchanged answer comes back as 304,
     /// which GitHub does not count against the rate limit.
     etags: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>>,
+    /// The POM license server, where every stable release of a POM plugin is
+    /// also published: the fallback when GitHub refuses or rate-limits a
+    /// lookup or a download (`/v1/plugin-releases`). `None` turns it off.
+    license_base: Option<reqwest::Url>,
+}
+
+/// `release_id` prefix of a release listed by the license server instead of
+/// GitHub (whose release IDs are numbers).
+pub(crate) const LICENSE_RELEASE_PREFIX: &str = "license-server:";
+
+/// `manifest_path` of a repository whose listing came from the license server.
+const LICENSE_MANIFEST_PATH: &str = "license-server";
+
+#[derive(Debug, Deserialize)]
+struct LicensePluginReleases {
+    plugin_code: String,
+    display_name: String,
+    #[serde(default)]
+    description: String,
+    releases: Vec<LicenseRelease>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LicenseRelease {
+    release_id: String,
+    version: String,
+    plugin_abi: u32,
+    size: u64,
+    sha256: String,
+    #[serde(default)]
+    feature_set: Vec<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    download_path: String,
 }
 
 /// An API answer: the status and the body (the cached one on a 304).
@@ -177,7 +211,196 @@ impl GithubReleaseClient {
             api_base,
             token,
             etags: Default::default(),
+            license_base: None,
         })
+    }
+
+    /// Turns on the license-server fallback at `base`.
+    pub(crate) fn with_license_fallback(mut self, base: &str) -> Self {
+        self.license_base = reqwest::Url::parse(base)
+            .ok()
+            .filter(|url| url.scheme() == "https" || cfg!(test));
+        self
+    }
+
+    async fn license_releases(
+        &self,
+        query: &[(&str, &str)],
+    ) -> Result<LicensePluginReleases, String> {
+        let base = self
+            .license_base
+            .as_ref()
+            .ok_or_else(|| "no license-server fallback is configured".to_owned())?;
+        let url = base
+            .join("/v1/plugin-releases")
+            .map_err(|error| error.to_string())?;
+        let response = self
+            .client
+            .get(url)
+            .query(query)
+            .send()
+            .await
+            .map_err(|error| format!("license server lookup failed: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err("the license server does not publish this plugin".into());
+        }
+        if response.status() != StatusCode::OK {
+            return Err(format!("license server answered HTTP {}", response.status()));
+        }
+        let bytes = read_limited(response, MAX_GITHUB_METADATA_BYTES, "license server releases").await?;
+        let listing: LicensePluginReleases = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid license server releases: {error}"))?;
+        if !listing
+            .plugin_code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            || listing.plugin_code.is_empty()
+        {
+            return Err("license server returned an invalid plugin code".into());
+        }
+        Ok(listing)
+    }
+
+    /// The repository as the license server lists it, for when GitHub cannot
+    /// be inspected. Without the repository's own manifest there are no
+    /// preferences or screenshots; the plugin's screens come from the plugin
+    /// itself once it runs.
+    pub(crate) async fn inspect_from_license_server(
+        &self,
+        repository_url: &str,
+        os: &str,
+        arch: &str,
+        github_error: &str,
+    ) -> Result<GithubRepository, String> {
+        let canonical_url = canonical_repository(repository_url)?;
+        let parts = canonical_repository_parts(&canonical_url)?;
+        let repository = format!("{}/{}", parts.owner, parts.repo);
+        let listing = self
+            .license_releases(&[("repository", repository.as_str()), ("os", os), ("arch", arch)])
+            .await?;
+        let latest = listing.releases.first();
+        let target = format!("{os}-{arch}");
+        let releases = listing
+            .releases
+            .iter()
+            .filter(|release| safe_release_id(&release.release_id))
+            .map(|release| GithubRepositoryRelease {
+                release_id: format!("{LICENSE_RELEASE_PREFIX}{}", release.release_id),
+                tag_name: format!("v{}", release.version.trim_start_matches('v')),
+                name: None,
+                changelog: None,
+                published_at: release.published_at.clone(),
+                prerelease: false,
+                asset_name: Some(release.release_id.clone()),
+                asset_size: Some(release.size),
+                available_for_node: release.plugin_abi == enterprise_protocol::PLUGIN_ABI_VERSION,
+            })
+            .collect::<Vec<_>>();
+        let description = Some(listing.description.trim().to_owned()).filter(|text| !text.is_empty());
+        Ok(GithubRepository {
+            id: hex::encode(sha2::Sha256::digest(canonical_url.as_bytes())),
+            repository_url: canonical_url,
+            manifest_path: LICENSE_MANIFEST_PATH.to_owned(),
+            manifest: GithubRepositoryManifest {
+                schema: 1,
+                plugin_code: listing.plugin_code.clone(),
+                display_name: listing.display_name.clone(),
+                description: description.clone(),
+                plugin_abi: latest.map_or(enterprise_protocol::PLUGIN_ABI_VERSION, |release| release.plugin_abi),
+                feature_set: latest.map(|release| release.feature_set.clone()).unwrap_or_default(),
+                artifacts: [(target, LICENSE_MANIFEST_PATH.to_owned())].into_iter().collect(),
+                preferences: None,
+                screenshots: Vec::new(),
+            },
+            ui_manifest: None,
+            releases,
+            description: description.map(|text| [("en".to_owned(), text)].into_iter().collect()).unwrap_or_default(),
+            screenshot_urls: Vec::new(),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+            check_error: Some(format!(
+                "GitHub could not be read ({github_error}); releases come from the POM license server"
+            )),
+        })
+    }
+
+    /// One release from the license server: the listing is read again (never
+    /// trusted from the saved repository), and the bytes are checked against
+    /// its SHA-256 and size. `wanted` is the license server's release ID, or
+    /// a version (`1.0.1` or `v1.0.1`) when GitHub failed for a GitHub release.
+    async fn download_from_license_server(
+        &self,
+        repository: &GithubRepository,
+        wanted: &str,
+        os: &str,
+        arch: &str,
+    ) -> Result<DownloadedRelease, String> {
+        let plugin_code = repository.manifest.plugin_code.as_str();
+        let listing = self
+            .license_releases(&[("plugin", plugin_code), ("os", os), ("arch", arch)])
+            .await?;
+        if listing.plugin_code != plugin_code {
+            return Err("license server returned another plugin".into());
+        }
+        let version = wanted.trim_start_matches('v');
+        let release = listing
+            .releases
+            .iter()
+            .find(|release| release.release_id == wanted || release.version.trim_start_matches('v') == version)
+            .ok_or_else(|| format!("the license server has no release {wanted} of {plugin_code} for {os}-{arch}"))?;
+        if release.size == 0 || release.size > MAX_PLUGIN_BYTES || !valid_sha256(&release.sha256) {
+            return Err("license server release has invalid integrity metadata".into());
+        }
+        let base = self
+            .license_base
+            .as_ref()
+            .ok_or_else(|| "no license-server fallback is configured".to_owned())?;
+        if !release.download_path.starts_with("/v1/plugin-releases/") {
+            return Err("license server download path is invalid".into());
+        }
+        let url = base.join(&release.download_path).map_err(|error| error.to_string())?;
+        let mut response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("license server download failed: {error}"))?;
+        if response.status() != StatusCode::OK {
+            return Err(format!("license server download answered HTTP {}", response.status()));
+        }
+        let mut bytes = Vec::with_capacity(release.size as usize);
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("license server download failed: {error}"))?
+        {
+            if bytes.len() as u64 + chunk.len() as u64 > release.size {
+                return Err("license server artifact exceeds its declared size".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let extension = match os {
+            "windows" => "dll",
+            "macos" => "dylib",
+            _ => "so",
+        };
+        let manifest = GithubPluginManifest {
+            schema: 1,
+            plugin_code: plugin_code.to_owned(),
+            release_id: release.release_id.clone(),
+            version: release.version.clone(),
+            os: os.to_owned(),
+            arch: arch.to_owned(),
+            plugin_abi: release.plugin_abi,
+            asset: format!("{}.{extension}", release.release_id),
+            sha256: format!("sha256:{}", release.sha256.trim_start_matches("sha256:")),
+            size: release.size,
+            feature_set: release.feature_set.clone(),
+            changelog: None,
+            preferences: repository.manifest.preferences.clone(),
+        };
+        validate_manifest(&manifest, plugin_code, &release.release_id, os, arch)?;
+        validate_integrity(&manifest, &bytes, None)?;
+        Ok(DownloadedRelease { manifest, bytes })
     }
 
     /// One GET to the GitHub API: conditional on the last ETag for that URL,
@@ -637,7 +860,41 @@ impl GithubReleaseClient {
         Ok(Some(bytes))
     }
 
+    /// The selected release, from GitHub or, when GitHub fails, the same
+    /// version from the license server.
     pub(crate) async fn download_release(
+        &self,
+        repository: &GithubRepository,
+        release_id: &str,
+        os: &str,
+        arch: &str,
+    ) -> Result<DownloadedRelease, String> {
+        if let Some(license_id) = release_id.strip_prefix(LICENSE_RELEASE_PREFIX) {
+            return self
+                .download_from_license_server(repository, license_id, os, arch)
+                .await;
+        }
+        match self.download_github_release(repository, release_id, os, arch).await {
+            Ok(downloaded) => Ok(downloaded),
+            Err(github_error) if self.license_base.is_some() => {
+                let tag = repository
+                    .releases
+                    .iter()
+                    .find(|release| release.release_id == release_id)
+                    .map(|release| release.tag_name.clone())
+                    .ok_or(github_error.clone())?;
+                tracing::warn!(%github_error, tag, "GitHub refused the plugin release; trying the license server");
+                self.download_from_license_server(repository, &tag, os, arch)
+                    .await
+                    .map_err(|license_error| {
+                        format!("{github_error}; license server fallback: {license_error}")
+                    })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn download_github_release(
         &self,
         repository: &GithubRepository,
         release_id: &str,
@@ -1289,6 +1546,83 @@ fn github_status_error(status: StatusCode, action: &str) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn when_github_refuses_the_license_server_lists_and_serves_the_same_release() {
+        use axum::http::StatusCode as HttpStatus;
+        use axum::routing::get;
+
+        let binary = b"plugin from the license server".to_vec();
+        let sha = hex::encode(sha2::Sha256::digest(&binary));
+        let listing = serde_json::json!({
+            "plugin_code": "acme_plugin",
+            "display_name": "Acme Plugin",
+            "description": "From the license server.",
+            "releases": [{
+                "release_id": "acme_plugin-1.0.1-linux-x86_64",
+                "version": "1.0.1",
+                "plugin_abi": enterprise_protocol::PLUGIN_ABI_VERSION,
+                "size": binary.len(),
+                "sha256": sha,
+                "feature_set": ["acme_plugin.core"],
+                "published_at": "2026-10-07T12:00:00Z",
+                "download_path": "/v1/plugin-releases/acme_plugin-1.0.1-linux-x86_64/download"
+            }]
+        });
+        let served = binary.clone();
+        let app = axum::Router::new()
+            // GitHub: every API call refused, as when the hourly limit runs out.
+            .route("/repos/*rest", get(|| async { HttpStatus::FORBIDDEN }))
+            .route("/v1/plugin-releases", get(move || {
+                let listing = listing.clone();
+                async move { axum::Json(listing) }
+            }))
+            .route(
+                "/v1/plugin-releases/acme_plugin-1.0.1-linux-x86_64/download",
+                get(move || {
+                    let served = served.clone();
+                    async move { served }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = GithubReleaseClient::with_api_base(&base)
+            .unwrap()
+            .with_license_fallback(&base);
+
+        let github_error = client
+            .inspect_repository("https://github.com/acme/new-plugin", "linux", "x86_64")
+            .await
+            .unwrap_err();
+        let repository = client
+            .inspect_from_license_server("https://github.com/acme/new-plugin", "linux", "x86_64", &github_error)
+            .await
+            .unwrap();
+        assert_eq!(repository.manifest.plugin_code, "acme_plugin");
+        assert_eq!(repository.releases.len(), 1);
+        assert_eq!(repository.releases[0].tag_name, "v1.0.1");
+        assert!(repository.releases[0].available_for_node);
+        assert!(repository.check_error.as_deref().unwrap().contains("license server"));
+
+        let downloaded = client
+            .download_release(&repository, &repository.releases[0].release_id, "linux", "x86_64")
+            .await
+            .unwrap();
+        assert_eq!(downloaded.bytes, binary);
+        assert_eq!(downloaded.manifest.version, "1.0.1");
+
+        // A release listed by GitHub earlier: GitHub refuses now, so the same
+        // version comes from the license server.
+        let mut from_github = repository.clone();
+        from_github.manifest_path = "manifest.json".into();
+        from_github.releases[0].release_id = "123".into();
+        let downloaded = client
+            .download_release(&from_github, "123", "linux", "x86_64")
+            .await
+            .unwrap();
+        assert_eq!(downloaded.bytes, binary);
+    }
 
     #[test]
     fn an_exhausted_limit_says_when_it_resets_and_how_to_raise_it() {

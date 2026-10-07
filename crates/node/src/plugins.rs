@@ -2874,7 +2874,7 @@ impl PluginManager {
             fingerprint,
             database,
             restore_on_boot,
-            crate::plugin_github::GithubReleaseClient::new(),
+            crate::plugin_github::GithubReleaseClient::new().with_license_fallback(&license_base_url()),
         )
     }
 
@@ -3239,12 +3239,7 @@ impl PluginManager {
         repository_url: &str,
     ) -> Result<crate::plugin_github::GithubRepository, LicenseClientError> {
         let repository = self
-            .github_client
-            .inspect_repository(
-                repository_url,
-                &self.fingerprint.platform,
-                &self.fingerprint.arch,
-            )
+            .inspect_github_repository(repository_url, true)
             .await
             .map_err(|error| LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, error))?;
         let _guard = self.github_repositories_lock.lock().await;
@@ -3264,6 +3259,25 @@ impl PluginManager {
         Ok(repository)
     }
 
+    /// GitHub's inspection of a repository, or, with `fallback`, the license
+    /// server's listing of the same plugin when GitHub refuses it.
+    async fn inspect_github_repository(
+        &self,
+        repository_url: &str,
+        fallback: bool,
+    ) -> Result<crate::plugin_github::GithubRepository, String> {
+        let (os, arch) = (&self.fingerprint.platform, &self.fingerprint.arch);
+        match self.github_client.inspect_repository(repository_url, os, arch).await {
+            Ok(repository) => Ok(repository),
+            Err(github_error) if fallback => self
+                .github_client
+                .inspect_from_license_server(repository_url, os, arch, &github_error)
+                .await
+                .map_err(|license_error| format!("{github_error}; license server fallback: {license_error}")),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) async fn refresh_github_repository(
         &self,
         id: &str,
@@ -3277,12 +3291,12 @@ impl PluginManager {
             .get(id)
             .cloned()
             .ok_or_else(|| update_unavailable("repositório GitHub desconhecido"))?;
+        // A repository listed by the license server is refreshed from it when
+        // GitHub still fails; one read from GitHub keeps its saved inspection.
         let refreshed = self
-            .github_client
-            .inspect_repository(
+            .inspect_github_repository(
                 &previous.repository_url,
-                &self.fingerprint.platform,
-                &self.fingerprint.arch,
+                previous.manifest_path == "license-server",
             )
             .await;
         let _guard = self.github_repositories_lock.lock().await;

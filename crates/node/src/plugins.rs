@@ -3343,22 +3343,15 @@ impl PluginManager {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let previous = current
+        // The repository as it was inspected when added or refreshed: the
+        // release list the screen offered comes from it. Inspecting it again
+        // here cost several more API calls per install, out of 60 per hour
+        // per IP without a token; the release itself is still read fresh, and
+        // a release no longer published fails there.
+        let repository = current
             .get(id)
             .cloned()
             .ok_or_else(|| update_unavailable("repositório GitHub desconhecido"))?;
-        let repository = self
-            .github_client
-            .inspect_repository(
-                &previous.repository_url,
-                &self.fingerprint.platform,
-                &self.fingerprint.arch,
-            )
-            .await
-            .map_err(|error| LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, error))?;
-        if repository.id != id {
-            return Err(update_unavailable("a URL do repositório GitHub mudou"));
-        }
         let downloaded = self
             .github_client
             .download_release(

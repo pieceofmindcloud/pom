@@ -339,6 +339,22 @@ relative paths to `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>`
 and the browser loads the images straight from GitHub, without going through
 the node or the license server.
 
+GitHub allows 60 API calls per hour per IP without a token, so the node keeps
+the calls few (`plugin_github.rs`):
+- Adding or refreshing a repository inspects it (repository, manifest,
+  release pages). Installing a release reuses that saved inspection and reads
+  only the selected release, fresh.
+- Release assets (manifests and binaries) download from their
+  `browser_download_url`, on GitHub's CDN, which does not count against the
+  API limit; the bytes are still checked against the API's SHA-256 digest.
+- Every API GET carries the last ETag for its URL; an unchanged answer comes
+  back as 304, which GitHub does not count, and the node reuses the cached
+  body.
+- `POM_GITHUB_TOKEN` (optional) authenticates the API calls, sent only to the
+  API host, raising the limit to 5,000 per hour for that token. An exhausted
+  limit is reported with its reset time and this hint.
+There is no periodic polling: GitHub is read only on add, refresh and install.
+
 Adding, updating and removing repositories only uses the local routes
 `/api/ui/plugins/github-repositories*`, open to every profile. The list, the
 manifest path and the details read are persisted in

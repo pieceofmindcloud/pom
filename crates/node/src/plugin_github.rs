@@ -105,6 +105,19 @@ pub(crate) struct DownloadedRelease {
 pub(crate) struct GithubReleaseClient {
     client: reqwest::Client,
     api_base: reqwest::Url,
+    /// `POM_GITHUB_TOKEN`: raises the API limit from 60 calls per hour per IP
+    /// to 5,000 per hour for that token. Sent only to the API host.
+    token: Option<String>,
+    /// Last body and ETag per API URL. An unchanged answer comes back as 304,
+    /// which GitHub does not count against the rate limit.
+    etags: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>>,
+}
+
+/// An API answer: the status and the body (the cached one on a 304).
+struct ApiAnswer {
+    status: StatusCode,
+    body: Vec<u8>,
+    rate_limit: Option<String>,
 }
 
 #[derive(Debug)]
@@ -155,7 +168,73 @@ impl GithubReleaseClient {
             }))
             .build()
             .map_err(|error| error.to_string())?;
-        Ok(Self { client, api_base })
+        let token = crate::brand::env("GITHUB_TOKEN")
+            .ok()
+            .map(|token| token.trim().to_owned())
+            .filter(|token| !token.is_empty());
+        Ok(Self {
+            client,
+            api_base,
+            token,
+            etags: Default::default(),
+        })
+    }
+
+    /// One GET to the GitHub API: conditional on the last ETag for that URL,
+    /// authenticated when a token is configured, and bounded to `max` bytes.
+    async fn api_get(&self, url: &str, max: usize, what: &str) -> Result<ApiAnswer, String> {
+        let mut request = self
+            .client
+            .get(url)
+            .header(header::ACCEPT, "application/vnd.github+json");
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let cached = self
+            .etags
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(url).cloned());
+        if let Some((etag, _)) = &cached {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format!("GitHub {what} lookup failed: {error}"))?;
+        let status = response.status();
+        if status == StatusCode::NOT_MODIFIED {
+            if let Some((_, body)) = cached {
+                return Ok(ApiAnswer {
+                    status: StatusCode::OK,
+                    body,
+                    rate_limit: None,
+                });
+            }
+        }
+        if status != StatusCode::OK {
+            return Ok(ApiAnswer {
+                status,
+                body: Vec::new(),
+                rate_limit: rate_limit_message(response.headers(), self.token.is_some()),
+            });
+        }
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = read_limited(response, max, what).await?;
+        if let Some(etag) = etag {
+            if let Ok(mut cache) = self.etags.lock() {
+                cache.insert(url.to_owned(), (etag, body.clone()));
+            }
+        }
+        Ok(ApiAnswer {
+            status,
+            body,
+            rate_limit: None,
+        })
     }
 
     #[cfg(test)]
@@ -333,24 +412,17 @@ impl GithubReleaseClient {
         let mut seen_release_ids = std::collections::HashSet::new();
         let mut page = 1usize;
         loop {
-            let releases_response = self
-                .client
-                .get(format!(
-                    "{repo_api}/releases?per_page={GITHUB_RELEASES_PER_PAGE}&page={page}"
-                ))
-                .header(header::ACCEPT, "application/vnd.github+json")
-                .send()
-                .await
-                .map_err(|error| format!("GitHub releases lookup failed: {error}"))?;
-            if releases_response.status() != StatusCode::OK {
-                return Err(github_status_error(releases_response.status(), "releases"));
+            let answer = self
+                .api_get(
+                    &format!("{repo_api}/releases?per_page={GITHUB_RELEASES_PER_PAGE}&page={page}"),
+                    MAX_GITHUB_METADATA_BYTES,
+                    "releases",
+                )
+                .await?;
+            if answer.status != StatusCode::OK {
+                return Err(answer.error("releases"));
             }
-            let release_bytes = read_limited(
-                releases_response,
-                MAX_GITHUB_METADATA_BYTES,
-                "release metadata",
-            )
-            .await?;
+            let release_bytes = answer.body;
             total_metadata_bytes = total_metadata_bytes.saturating_add(release_bytes.len());
             if total_metadata_bytes > MAX_GITHUB_RELEASE_METADATA_BYTES {
                 return Err("GitHub release history exceeds the metadata limit".into());
@@ -525,21 +597,20 @@ impl GithubReleaseClient {
         repo_api: &str,
         path: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        let response = self
-            .client
-            .get(format!("{repo_api}/contents/{path}"))
-            .header(header::ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub {path} lookup failed: {error}"))?;
-        if response.status() == StatusCode::NOT_FOUND {
+        let answer = self
+            .api_get(
+                &format!("{repo_api}/contents/{path}"),
+                MAX_MANIFEST_BYTES * 2,
+                path,
+            )
+            .await?;
+        if answer.status == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        if response.status() != StatusCode::OK {
-            return Err(github_status_error(response.status(), path));
+        if answer.status != StatusCode::OK {
+            return Err(answer.error(path));
         }
-        let response_bytes =
-            read_limited(response, MAX_MANIFEST_BYTES * 2, "plugin manifest").await?;
+        let response_bytes = answer.body;
         let contents: GithubContentsFile = serde_json::from_slice(&response_bytes)
             .map_err(|error| format!("invalid GitHub {path} response: {error}"))?;
         if contents.file_type != "file"
@@ -592,17 +663,13 @@ impl GithubReleaseClient {
             parts.owner,
             parts.repo
         );
-        let response = self
-            .client
-            .get(release_api)
-            .header(header::ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub release lookup failed: {error}"))?;
-        if response.status() != StatusCode::OK {
-            return Err(github_status_error(response.status(), "release"));
+        let answer = self
+            .api_get(&release_api, MAX_GITHUB_METADATA_BYTES, "release")
+            .await?;
+        if answer.status != StatusCode::OK {
+            return Err(answer.error("release"));
         }
-        let bytes = read_limited(response, MAX_GITHUB_METADATA_BYTES, "release metadata").await?;
+        let bytes = answer.body;
         let release: GithubRelease = serde_json::from_slice(&bytes)
             .map_err(|error| format!("invalid GitHub release response: {error}"))?;
         if release.id.to_string() != release_id || release.draft {
@@ -688,18 +755,13 @@ impl GithubReleaseClient {
     }
 
     async fn ensure_public_repository(&self, repo_api: &str) -> Result<(), String> {
-        let response = self
-            .client
-            .get(repo_api)
-            .header(header::ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub repository lookup failed: {error}"))?;
-        if response.status() != StatusCode::OK {
-            return Err(github_status_error(response.status(), "repository"));
+        let answer = self
+            .api_get(repo_api, MAX_GITHUB_METADATA_BYTES, "repository")
+            .await?;
+        if answer.status != StatusCode::OK {
+            return Err(answer.error("repository"));
         }
-        let bytes =
-            read_limited(response, MAX_GITHUB_METADATA_BYTES, "repository metadata").await?;
+        let bytes = answer.body;
         let metadata: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("invalid GitHub repository response: {error}"))?;
         if metadata.get("private").and_then(serde_json::Value::as_bool) != Some(false) {
@@ -709,7 +771,12 @@ impl GithubReleaseClient {
     }
 
     async fn download_asset(&self, asset: &GithubAsset) -> Result<Vec<u8>, String> {
-        let url = reqwest::Url::parse(&asset.url)
+        let source = asset
+            .browser_download_url
+            .as_deref()
+            .filter(|url| !url.is_empty())
+            .unwrap_or(&asset.url);
+        let url = reqwest::Url::parse(source)
             .map_err(|_| "GitHub release asset URL is invalid".to_owned())?;
         if (url.scheme() != "https" && !(cfg!(test) && url.scheme() == "http"))
             || !url.username().is_empty()
@@ -909,8 +976,12 @@ struct GithubAsset {
     name: String,
     size: u64,
     /// GitHub's release API returns both `url` (the API asset endpoint) and
-    /// `browser_download_url`; the POM must download through the API endpoint.
+    /// `browser_download_url`. The download goes through the second: the
+    /// CDN does not count against the API's hourly limit, and the bytes are
+    /// still checked against the API's `digest`.
     url: String,
+    #[serde(default)]
+    browser_download_url: Option<String>,
     #[serde(default)]
     digest: Option<String>,
 }
@@ -1173,6 +1244,38 @@ fn safe_release_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
 }
 
+impl ApiAnswer {
+    fn error(&self, action: &str) -> String {
+        self.rate_limit
+            .clone()
+            .unwrap_or_else(|| github_status_error(self.status, action))
+    }
+}
+
+/// The message for an exhausted API limit, with when it resets, or `None`
+/// when the refusal was something else.
+fn rate_limit_message(headers: &reqwest::header::HeaderMap, authenticated: bool) -> Option<String> {
+    let value = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
+    if value("x-ratelimit-remaining") != Some("0") {
+        return None;
+    }
+    let reset = value("x-ratelimit-reset")
+        .and_then(|reset| reset.parse::<i64>().ok())
+        .and_then(|reset| chrono::DateTime::from_timestamp(reset, 0))
+        .map(|reset| format!(" until {} UTC", reset.format("%H:%M")));
+    let limit = value("x-ratelimit-limit").unwrap_or("60");
+    Some(format!(
+        "GitHub API limit reached ({limit} calls per hour{}){}{}",
+        if authenticated { " for this token" } else { " for this IP without a token" },
+        reset.unwrap_or_default(),
+        if authenticated {
+            ""
+        } else {
+            "; set POM_GITHUB_TOKEN to raise it to 5000 per hour"
+        }
+    ))
+}
+
 fn github_status_error(status: StatusCode, action: &str) -> String {
     match status {
         StatusCode::NOT_FOUND => format!("GitHub {action} is not public or does not exist"),
@@ -1186,6 +1289,68 @@ fn github_status_error(status: StatusCode, action: &str) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn an_exhausted_limit_says_when_it_resets_and_how_to_raise_it() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("x-ratelimit-limit", "60".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1791292156".parse().unwrap());
+        let message = rate_limit_message(&headers, false).unwrap();
+        assert!(message.contains("60 calls per hour"), "{message}");
+        assert!(message.contains("until 13:09 UTC"), "{message}");
+        assert!(message.contains("POM_GITHUB_TOKEN"), "{message}");
+        assert!(!rate_limit_message(&headers, true).unwrap().contains("POM_GITHUB_TOKEN"));
+        headers.insert("x-ratelimit-remaining", "12".parse().unwrap());
+        assert!(rate_limit_message(&headers, false).is_none());
+    }
+
+    #[tokio::test]
+    async fn api_answers_are_revalidated_with_their_etag_and_assets_come_from_the_cdn() {
+        use axum::http::{HeaderMap, StatusCode as HttpStatus};
+        use axum::routing::get;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let conditional = Arc::new(AtomicUsize::new(0));
+        let seen = conditional.clone();
+        let app = axum::Router::new()
+            .route(
+                "/repos/acme/plugin",
+                get(move |headers: HeaderMap| {
+                    let seen = seen.clone();
+                    async move {
+                        if headers.get("if-none-match").and_then(|v| v.to_str().ok()) == Some("\"v1\"") {
+                            seen.fetch_add(1, Ordering::SeqCst);
+                            return (HttpStatus::NOT_MODIFIED, [("etag", "\"v1\"")], String::new());
+                        }
+                        (HttpStatus::OK, [("etag", "\"v1\"")], "{\"private\":false}".to_owned())
+                    }
+                }),
+            )
+            .route("/api-asset", get(|| async { HttpStatus::FORBIDDEN }))
+            .route("/cdn-asset", get(|| async { "plugin bytes" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = GithubReleaseClient::with_api_base(&base).unwrap();
+
+        let url = format!("{base}/repos/acme/plugin");
+        let first = client.api_get(&url, 1024, "repository").await.unwrap();
+        let second = client.api_get(&url, 1024, "repository").await.unwrap();
+        assert_eq!(second.status, StatusCode::OK);
+        assert_eq!(second.body, first.body);
+        assert_eq!(conditional.load(Ordering::SeqCst), 1, "the second call carried the ETag");
+
+        let asset = GithubAsset {
+            name: "plugin.so".into(),
+            size: 12,
+            url: format!("{base}/api-asset"),
+            browser_download_url: Some(format!("{base}/cdn-asset")),
+            digest: None,
+        };
+        assert_eq!(client.download_asset(&asset).await.unwrap(), b"plugin bytes");
+    }
 
     #[test]
     fn github_assets_accept_both_api_and_browser_download_urls() {

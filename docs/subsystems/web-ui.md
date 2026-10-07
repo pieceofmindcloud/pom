@@ -48,8 +48,17 @@ the native process for a resizable 1120 x 880 points window, larger than the
 panel on both axes. In a regular browser that button is not rendered.
 
 The bundle also installs the regular macOS application menu in AppKit, with
-About and Quit. Quit calls the standard application termination and ends the
-whole process, including the Tokio service on the background thread.
+About and Quit. The app runs as an accessory (no Dock icon), and an accessory
+shows no menu bar, so Quit is also reachable three other ways:
+- a right click (or Control-click) on the status item opens a menu with
+  "Open in a larger window" and "Quit POM";
+- while the larger window is open the app switches to a regular one, with a
+  Dock icon, its menu bar and Cmd+Q, and goes back to an accessory when the
+  window closes (closing only hides it; the app stays in the menu bar);
+- the `pomQuit` WebKit bridge, behind a power button in the top bar
+  (`QuitNativeAppButton`), rendered only inside the macOS app.
+Quit calls the standard application termination and ends the whole process,
+including the Tokio service on the background thread.
 
 Rust chooses the dimensions and the address (`macos_status.rs`) and hands them
 to Objective-C at startup: the native side does not know the node's

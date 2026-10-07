@@ -13,7 +13,7 @@ import { useI18n } from "../i18n/provider";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
-import { OpenNativeChatWindowButton } from "./OpenNativeChatWindowButton";
+import { OpenNativeChatWindowButton, QuitNativeAppButton } from "./OpenNativeChatWindowButton";
 export { TlsChip } from "./TlsIndicator";
 
 /** One line saying what this node is and whether the pipeline is closed. */
@@ -114,6 +114,7 @@ export function Topbar() {
           <OpenNativeChatWindowButton />
           <ProfileBadge />
           <Notifications />
+          <QuitNativeAppButton />
         </div>
       </header>
 

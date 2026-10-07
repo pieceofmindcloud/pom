@@ -32,6 +32,9 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/implantacoes": ["admin"],
   "/config/administracao": ["admin", "node"],
   "/config/rede/participantes": ["admin", "node"],
+  // The cluster's connection key is the operator's credential: only the
+  // admin sees it.
+  "/config/keys/conexao": ["admin"],
 };
 
 /**
@@ -58,6 +61,12 @@ const INFER_ROUTES = [
 const INFER_DENIED_ROUTES = [
   "/config/rede/participantes",
   "/config/preferencias/admin",
+  // Request logs, deployment logs and statistics are the network's
+  // operation, not an inference node's: hidden even where a plugin claims
+  // the route and before activation.
+  "/logs",
+  "/estatisticas",
+  "/implantacoes",
 ] as const;
 
 /** `/implantarx` não está sob `/implantar`. */
@@ -85,13 +94,11 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 export function canAccessRoute(path: string, profile: Profile): boolean {
   // Rota fornecida por plugin: quem decide são os perfis do manifesto, que
   // valem também para `infer` (a lista reduzida abaixo é só do POM).
+  if (profile === "infer" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
   const pluginProfiles = pluginRouteProfiles(path);
   if (pluginProfiles) return pluginProfiles.includes(profile);
   if (isEnterprisePath(path)) return true;
-  if (profile === "infer") {
-    if (INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
-    return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
-  }
+  if (profile === "infer") return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
   const allowed = routeProfiles(path);
   return allowed === null || allowed.includes(profile);
 }

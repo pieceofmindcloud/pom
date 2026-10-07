@@ -33,6 +33,7 @@ import {
 import { ApiError, api } from "../lib/api";
 import { trustAnchorApi } from "../lib/adminAuthority";
 import { useNode, useTrustAnchor } from "../lib/queries";
+import { useProfile } from "../lib/profile";
 import { Confirm } from "../components/Confirm";
 import { useToast } from "../lib/toast";
 import type { TrustAnchorRefusal, TrustShareView } from "../lib/types";
@@ -102,6 +103,8 @@ export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
   const node = useNode();
   const toast = useToast();
   const canShare = node.data?.authority_level != null;
+  // The cluster's key is the operator's credential; node and infer never see it.
+  const { profile } = useProfile();
   const [trustShare, setTrustShare] = useState<TrustShareView | null>(null);
   const [trustShareLoaded, setTrustShareLoaded] = useState(false);
   const [trustCopied, setTrustCopied] = useState<"document" | "key" | null>(null);
@@ -268,9 +271,9 @@ export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
 
         {canShare && <section id="share" className="scroll-mt-6"><TrustSharePanel share={trustShare} copied={trustCopied} onCopy={copySharedValue} onDownload={downloadSharedValue} t={t} /></section>}
 
-        <section id="keys" className="scroll-mt-6">
+        {profile === "admin" && <section id="keys" className="scroll-mt-6">
           <ConnectionKeyPanel node={node.data} canRotate={canShare} t={t} />
-        </section>
+        </section>}
 
         {!state.anchored && (
           <Panel>

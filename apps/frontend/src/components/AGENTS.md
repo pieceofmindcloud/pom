@@ -128,6 +128,9 @@ Per-file list:
   WebKit `pomOpenWindow` está disponível; fica na toolbar do `Topbar`, não no
   corpo do Chat. É um controle icon-only: o nome completo permanece no nome
   acessível e no tooltip.
+  `QuitNativeAppButton`, in the same file, quits the macOS menu-bar app through
+  the `pomQuit` bridge (the app is an accessory with no visible menu); it sits
+  at the end of the `Topbar` and renders only inside the macOS app.
 - `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
   folhas separadas para requisições e implantação; Network Chat é uma entrada
@@ -145,8 +148,8 @@ Per-file list:
   sequência operacional de consultar eventos antes de seus agregados. A mesma
   tabela marca as entradas que vão para o rodapé do `infer` e promove a rede
   para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
-  projeções. Logs de Requisições e Estatísticas permanecem visíveis para todos
-  os perfis mesmo sem licença, para descoberta do produto. Testes em
+  projeções. Logs de Requisições e Estatísticas permanecem visíveis para admin
+  e node mesmo sem licença, para descoberta do produto; o `infer` não os vê. Testes em
   `nav.test.ts`.
   A seção principal Rede contém Informações, Participantes, Minha Máquina,
   Administradores, Compartilhamento e API Keys. Configurações contém Preferências,

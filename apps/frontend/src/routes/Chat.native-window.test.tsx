@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { OpenNativeChatWindowButton } from "./Chat";
+import { QuitNativeAppButton } from "../components/OpenNativeChatWindowButton";
 
 describe("controle de janela maior do chat nativo", () => {
   it("não aparece no navegador comum sem a ponte WebKit", () => {
@@ -37,5 +38,29 @@ describe("controle de janela maior do chat nativo", () => {
     expect(button.textContent).toBe("");
     fireEvent.click(button);
     expect(postMessage).toHaveBeenCalledWith("open");
+  });
+
+  it("oferece Sair do POM só dentro do app macOS, e manda o pedido à ponte", () => {
+    Object.defineProperty(window, "webkit", { configurable: true, value: undefined });
+    const { unmount } = render(
+      <LocaleProvider initialLocale="pt-BR">
+        <QuitNativeAppButton />
+      </LocaleProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Sair do POM" })).toBeNull();
+    unmount();
+
+    const postMessage = vi.fn();
+    Object.defineProperty(window, "webkit", {
+      configurable: true,
+      value: { messageHandlers: { pomQuit: { postMessage } } },
+    });
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <QuitNativeAppButton />
+      </LocaleProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Sair do POM" }));
+    expect(postMessage).toHaveBeenCalledWith("quit");
   });
 });

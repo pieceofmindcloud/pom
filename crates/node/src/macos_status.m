@@ -43,8 +43,9 @@ static void POMInstallApplicationMenu(void);
 @interface POMScriptHandler : NSObject <WKScriptMessageHandler>
 @end
 
-@interface POMStatusController : NSObject
+@interface POMStatusController : NSObject <NSWindowDelegate>
 - (void)togglePopover:(id)sender;
+- (void)openWindow:(id)sender;
 @end
 
 @interface POMApplicationDelegate : NSObject <NSApplicationDelegate>
@@ -113,13 +114,47 @@ static void POMOpenWindow(void) {
                           defer:NO];
         POMWindow.title = POMLocalized(@"status.windowTitle", @"POM chat");
         POMWindow.minSize = NSMakeSize(640, 480);
+        // Closing hides the window; the app keeps running in the menu bar.
+        POMWindow.releasedWhenClosed = NO;
+        POMWindow.delegate = POMStatusControllerInstance;
         POMWindowWebView = POMMakeWebView(NSMakeRect(0, 0, POMWindowWidth, POMWindowHeight));
         POMWindow.contentView = POMWindowWebView;
         [POMWindow center];
     }
 
+    // While the larger window is open the app is a regular one: it shows in
+    // the Dock and gets its menu bar, with "Quit POM" and Cmd+Q. An accessory
+    // app has no visible menu, so the window used to offer no way to quit.
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [POMWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+}
+
+/// The status item's context menu: open the larger window, or quit. It is the
+/// one place the user can always quit from, window open or not.
+static void POMShowStatusMenu(void) {
+    [POMPopover close];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"POM"];
+    NSMenuItem *open = [[NSMenuItem alloc]
+        initWithTitle:POMLocalized(@"status.openWindow", @"Open in a larger window")
+               action:@selector(openWindow:)
+        keyEquivalent:@""];
+    open.target = POMStatusControllerInstance;
+    [menu addItem:open];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItem:[[NSMenuItem alloc]
+        initWithTitle:POMLocalized(@"status.quit", @"Quit POM")
+               action:@selector(terminate:)
+        keyEquivalent:@"q"]];
+    NSEvent *event = NSApp.currentEvent;
+    NSButton *button = POMStatusItem.button;
+    if (event) {
+        [NSMenu popUpContextMenu:menu withEvent:event forView:button];
+    } else {
+        [menu popUpMenuPositioningItem:nil
+                            atLocation:NSMakePoint(0, NSHeight(button.bounds) + 4)
+                                inView:button];
+    }
 }
 
 static void POMRetryGateway(WKWebView *webView) {
@@ -212,6 +247,8 @@ static WKWebView *POMMakeWebView(NSRect frame) {
                                                              name:@"pomOpenWindow"];
     [configuration.userContentController addScriptMessageHandler:POMScriptHandlerInstance
                                                              name:@"pomRetryGateway"];
+    [configuration.userContentController addScriptMessageHandler:POMScriptHandlerInstance
+                                                             name:@"pomQuit"];
 
     WKWebView *webView = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     webView.navigationDelegate = POMNavigationDelegateInstance;
@@ -239,6 +276,8 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     (void)userContentController;
     if ([message.name isEqualToString:@"pomOpenWindow"]) {
         POMOpenWindow();
+    } else if ([message.name isEqualToString:@"pomQuit"]) {
+        [NSApp terminate:nil];
     } else if ([message.name isEqualToString:@"pomRetryGateway"] &&
                [message.webView isKindOfClass:[WKWebView class]]) {
         POMRetryGateway((WKWebView *)message.webView);
@@ -251,7 +290,27 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 - (void)togglePopover:(id)sender {
     (void)sender;
+    // Right click, or Control-click, opens the menu with "Quit POM"; a plain
+    // click keeps opening the chat.
+    NSEvent *event = NSApp.currentEvent;
+    if (event.type == NSEventTypeRightMouseUp ||
+        (event.modifierFlags & NSEventModifierFlagControl)) {
+        POMShowStatusMenu();
+        return;
+    }
     POMTogglePopover();
+}
+
+- (void)openWindow:(id)sender {
+    (void)sender;
+    POMOpenWindow();
+}
+
+- (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object == POMWindow) {
+        // Back to a menu-bar app: no Dock icon once the window is gone.
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    }
 }
 
 @end
@@ -291,6 +350,7 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     POMStatusItem.button.toolTip = POMLocalized(@"status.itemTooltip", @"Open POM chat");
     POMStatusItem.button.target = POMStatusControllerInstance;
     POMStatusItem.button.action = @selector(togglePopover:);
+    [POMStatusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
 }
 
 @end

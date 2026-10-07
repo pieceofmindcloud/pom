@@ -5,3 +5,4 @@
 "status.itemTooltip" = "Open POM chat";
 "status.windowTitle" = "POM chat";
 "status.quit" = "Quit POM";
+"status.openWindow" = "Open in a larger window";

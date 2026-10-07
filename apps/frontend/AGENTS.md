@@ -90,7 +90,11 @@ Logs/Estatísticas não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/
 entitlement.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
-documentação, API key e a tela de rede local para pedir entrada no processamento. O valor vem
+documentação, API key e a tela de rede local para pedir entrada no processamento.
+It never sees request logs, deployment logs or statistics (denied in
+`lib/access.ts` even where a plugin claims the route), and its preferences hide
+the GPU thermal protection and the Hugging Face token. The cluster's connection
+key shows only to `admin` (`/config/keys/conexao` and the Sharing screen). O valor vem
 de `/api/ui/node`, é propriedade persistida do nó e aparece na toolbar. Isso
 não substitui a autorização do backend: o servidor também limita a resposta da
 rede e as promoções.

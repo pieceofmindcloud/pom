@@ -33,6 +33,7 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
             post(demote_secondary),
         )
         .route("/api/ui/network/admin-authority", get(admin_authority_view))
+        .route("/api/ui/network/trust-sync", post(sync_trust_chain))
         .route("/admin/nodes/:id", delete(remove_node))
         .route("/admin/regenerate-key", post(regenerate_key))
         .route("/admin/api-keys", get(list_api_keys).post(generate_api_key))
@@ -960,6 +961,7 @@ async fn list_nodes(
                 // ele anuncia, e pode ser um endereço que ninguém alcança.
                 "route": (p.node_id != self_id).then(|| state.network.peer_route(p)),
                 "profile": p.profile,
+                "trust_version": p.trust_version,
                 "model": p.model,
                 "start_layer": p.start_layer,
                 "end_layer": p.end_layer,
@@ -1140,6 +1142,7 @@ async fn promote_node_to_admin(
         }
         return (status, body).into_response();
     }
+    publish_chain_version(&state);
     spawn_trust_fanout(&state, Some(node_id.clone()));
     Json(json!({ "profile": "admin", "node_id": node_id })).into_response()
 }
@@ -1152,7 +1155,11 @@ async fn internal_reconcile_admin_trust(
     if !require_signed_admin(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match adopt_trust_chain(&state, document).await {
+    // The principal's own copy settles two copies the counters call equal.
+    let from_principal = auth
+        .principal()
+        .is_some_and(|issuer| issuer.pubkey == state.admin_trust.current_primary().pubkey);
+    match adopt_trust_chain(&state, document, from_principal).await {
         Ok(profile) => {
             Json(json!({ "profile": profile, "node_id": state.network.node_id })).into_response()
         }
@@ -1169,14 +1176,19 @@ async fn internal_reconcile_admin_trust(
 pub(crate) async fn adopt_trust_chain(
     state: &crate::gateway::GatewayState,
     document: AdminTrustDocument,
+    from_principal: bool,
 ) -> Result<NodeProfile, (StatusCode, String)> {
     let mut cfg = state.auth.write().await;
-    state.admin_trust.reconcile(document).map_err(|error| {
-        (
-            StatusCode::FORBIDDEN,
-            format!("cadeia administrativa recusada: {error}"),
-        )
-    })?;
+    state
+        .admin_trust
+        .reconcile_from(document, from_principal)
+        .map_err(|error| {
+            (
+                StatusCode::FORBIDDEN,
+                format!("cadeia administrativa recusada: {error}"),
+            )
+        })?;
+    publish_chain_version(state);
     state
         .network
         .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
@@ -1267,66 +1279,147 @@ fn spawn_trust_fanout(state: &crate::gateway::GatewayState, skip: Option<String>
     });
 }
 
-/// How often a member checks its copy of the chain against the principal's.
-const TRUST_CHAIN_CHECK: Duration = Duration::from_secs(120);
+/// Announces the version of the local chain. Called wherever the chain
+/// changes; the keeper repeats it, so a missed call only delays the news.
+pub(crate) fn publish_chain_version(state: &crate::gateway::GatewayState) {
+    state
+        .network
+        .set_trust_version(state.admin_trust.chain_version());
+}
 
-/// On a member: asks the principal whether the trust chain changed and
-/// adopts the new one. This is what reaches a node that was offline, or
-/// unreachable, when a promotion or demotion was sent around.
+/// How often a node compares its chain with what its peers announce. The
+/// comparison is local; a request is only made when a peer is ahead.
+const TRUST_CHAIN_CHECK: Duration = Duration::from_secs(30);
+/// How many peers one round asks before giving up until the next.
+const TRUST_CHAIN_SOURCES: usize = 3;
+
+/// The peers whose announced chain is worth fetching, best first: any member
+/// ahead of this node by the counters, and the principal whenever its copy
+/// differs at the same counters. The announced version is only a hint of
+/// where to look - what is fetched is verified signature by signature.
+async fn chain_sources(state: &crate::gateway::GatewayState) -> Vec<(crate::network::PeerInfo, bool)> {
+    let mine = state.admin_trust.chain_version();
+    let Some(my_counters) = crate::admin_trust::version_counters(&mine) else {
+        return Vec::new();
+    };
+    let primary = state.admin_trust.current_primary();
+    let mut sources = state
+        .network
+        .alive_peers()
+        .await
+        .into_iter()
+        .filter_map(|peer| {
+            let theirs = peer.trust_version.as_deref()?;
+            if theirs == mine {
+                return None;
+            }
+            let counters = crate::admin_trust::version_counters(theirs)?;
+            let is_principal = peer.pubkey == primary.pubkey;
+            (counters > my_counters || (counters == my_counters && is_principal))
+                .then_some((counters, is_principal, peer))
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    sources
+        .into_iter()
+        .map(|(_, is_principal, peer)| (peer, is_principal))
+        .collect()
+}
+
+/// One round of catching up: asks the best sources in turn until one hands
+/// over a chain this node adopts. `Ok(true)` when the chain changed.
+async fn sync_trust_chain_once(state: &crate::gateway::GatewayState) -> bool {
+    publish_chain_version(state);
+    if state.network.is_detached() {
+        return false;
+    }
+    for (peer, is_principal) in chain_sources(state)
+        .await
+        .into_iter()
+        .take(TRUST_CHAIN_SOURCES)
+    {
+        match refresh_trust_chain(state, &peer, is_principal).await {
+            Ok(true) => {
+                tracing::info!(
+                    node = %peer.node_id,
+                    version = %state.admin_trust.chain_version(),
+                    "cadeia administrativa atualizada a partir de um peer"
+                );
+                return true;
+            }
+            Ok(false) => {}
+            Err(error) => tracing::debug!(
+                node = %peer.node_id,
+                "cadeia administrativa: o peer não entregou uma cadeia mais nova: {error:#}"
+            ),
+        }
+    }
+    false
+}
+
+/// Keeps this node's chain current. A peer that announces a newer version -
+/// the principal or any other member, so it works with the principal offline -
+/// is asked for its copy. This is what reaches a node that was away when a
+/// promotion or demotion was sent around.
 pub(crate) fn spawn_trust_chain_keeper(state: crate::gateway::GatewayState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(TRUST_CHAIN_CHECK);
         loop {
             ticker.tick().await;
-            if state.network.is_detached() {
-                continue;
-            }
-            let primary = state.admin_trust.current_primary();
-            if primary.pubkey == state.authority_principal.pubkey {
-                continue;
-            }
-            let Some(peer) = state
-                .network
-                .alive_peers()
-                .await
-                .into_iter()
-                .find(|peer| peer.node_id == primary.node_id && peer.pubkey == primary.pubkey)
-            else {
-                continue;
-            };
-            if let Err(error) = refresh_trust_chain(&state, &peer).await {
-                tracing::debug!("cadeia administrativa: consulta ao principal falhou: {error:#}");
-            }
+            sync_trust_chain_once(&state).await;
         }
     });
 }
 
-/// One round of the keeper: `Ok(true)` when a newer chain was adopted.
+/// Asks `peer` for its chain and adopts it when it is newer.
 async fn refresh_trust_chain(
     state: &crate::gateway::GatewayState,
-    principal: &crate::network::PeerInfo,
+    peer: &crate::network::PeerInfo,
+    from_principal: bool,
 ) -> anyhow::Result<bool> {
     let response = state
         .control_post_json(
-            principal,
+            peer,
             "/api/internal/admin-trust/chain",
             &json!({ "have": state.admin_trust.chain_version() }),
             SYNC_TIMEOUT,
         )
         .await?;
     if !response.status().is_success() {
-        anyhow::bail!("o principal respondeu {}", response.status());
+        anyhow::bail!("o peer respondeu {}", response.status());
     }
     let body: serde_json::Value = response.json().await?;
     let Some(document) = body.get("document").filter(|value| !value.is_null()) else {
         return Ok(false);
     };
     let document: AdminTrustDocument = serde_json::from_value(document.clone())?;
-    adopt_trust_chain(state, document)
+    let before = state.admin_trust.chain_version();
+    adopt_trust_chain(state, document, from_principal)
         .await
         .map_err(|(_, error)| anyhow::anyhow!(error))?;
-    tracing::info!("cadeia administrativa atualizada a partir do principal");
-    Ok(true)
+    Ok(state.admin_trust.chain_version() != before)
+}
+
+/// What the interface shows about this node's copy of the chain.
+pub(crate) async fn chain_status(state: &crate::gateway::GatewayState) -> serde_json::Value {
+    let sources = chain_sources(state).await;
+    json!({
+        "version": state.admin_trust.chain_version(),
+        "outdated": !sources.is_empty(),
+        "newer_on": sources.iter().map(|(peer, _)| peer.hostname.clone()).collect::<Vec<_>>(),
+    })
+}
+
+/// `POST /api/ui/network/trust-sync`: catch up now instead of waiting for
+/// the keeper. Every profile may ask it of its own node.
+async fn sync_trust_chain(
+    _auth: ConnectionAuth,
+    State(state): State<crate::gateway::GatewayState>,
+) -> axum::response::Response {
+    let updated = sync_trust_chain_once(&state).await;
+    let mut status = chain_status(&state).await;
+    status["updated"] = json!(updated);
+    Json(status).into_response()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1584,6 +1677,7 @@ async fn demote_secondary(
                 .into_response()
         }
     };
+    publish_chain_version(&state);
     spawn_trust_fanout(&state, Some(subject.node_id.clone()));
     let Some(peer) = state
         .network
@@ -2466,13 +2560,13 @@ mod tests {
 
         let chain = lab.trust.document();
         assert_eq!(
-            adopt_trust_chain(&promoted, chain.clone()).await.unwrap(),
+            adopt_trust_chain(&promoted, chain.clone(), true).await.unwrap(),
             NodeProfile::Admin
         );
         assert_eq!(promoted.network.profile(), NodeProfile::Admin);
         // The bystander keeps its role and now accepts the new admin.
         assert_eq!(
-            adopt_trust_chain(&bystander, chain.clone()).await.unwrap(),
+            adopt_trust_chain(&bystander, chain.clone(), false).await.unwrap(),
             NodeProfile::Node
         );
         assert!(crate::admin_trust::control_issuer_is_admin(
@@ -2480,7 +2574,7 @@ mod tests {
             &lab.member.1
         ));
         assert_eq!(
-            adopt_trust_chain(&infer_bystander, chain.clone()).await.unwrap(),
+            adopt_trust_chain(&infer_bystander, chain.clone(), false).await.unwrap(),
             NodeProfile::Infer
         );
 
@@ -2490,16 +2584,16 @@ mod tests {
             .unwrap();
         let demoted = lab.trust.document();
         assert_eq!(
-            adopt_trust_chain(&promoted, demoted.clone()).await.unwrap(),
+            adopt_trust_chain(&promoted, demoted.clone(), true).await.unwrap(),
             NodeProfile::Node
         );
-        adopt_trust_chain(&bystander, demoted).await.unwrap();
+        adopt_trust_chain(&bystander, demoted, false).await.unwrap();
         assert!(!crate::admin_trust::control_issuer_is_admin(
             &bystander.admin_trust.document(),
             &lab.member.1
         ));
         // The copy from before the demotion is older and cannot undo it.
-        let (status, _) = adopt_trust_chain(&bystander, chain).await.unwrap_err();
+        let (status, _) = adopt_trust_chain(&bystander, chain, false).await.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
@@ -2512,7 +2606,7 @@ mod tests {
         let infer = lab.node(&lab.member, NodeProfile::Infer).await;
         lab.promote(&lab.member.1);
         assert_eq!(
-            adopt_trust_chain(&infer, lab.trust.document()).await.unwrap(),
+            adopt_trust_chain(&infer, lab.trust.document(), false).await.unwrap(),
             NodeProfile::Infer
         );
         assert_eq!(infer.auth.read().await.profile, NodeProfile::Infer);
@@ -2583,5 +2677,85 @@ mod tests {
             .network
             .set_policy_principal_pubkey(lab.principal.pubkey.clone());
         assert!(!secondary.network.is_principal());
+    }
+
+    #[tokio::test]
+    async fn a_node_catches_up_from_any_member_ahead_of_it() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lab = chain_lab();
+        // A node that was away holds the chain from before the promotion.
+        let mut away = lab.node(&lab.other, NodeProfile::Node).await;
+        let old = away.admin_trust.chain_version();
+        lab.promote(&lab.member.1);
+        let new = lab.trust.chain_version();
+        assert_ne!(old, new);
+
+        // The principal is offline; another member announces the new version.
+        let announcing = |version: &str| {
+            let mut peer = crate::gateway::testkit::peer("member", "member", 1);
+            peer.pubkey = lab.member.1.pubkey.clone();
+            peer.trust_version = Some(version.to_string());
+            peer
+        };
+        let seen = |peer| async {
+            let mut state = crate::gateway::testkit::state_with("other", vec![peer]).await;
+            state.admin_trust = away.admin_trust.clone();
+            state.authority_principal = lab.other.1.clone();
+            state
+        };
+        let state = seen(announcing(&new)).await;
+        let status = chain_status(&state).await;
+        assert_eq!(status["outdated"], true);
+        assert_eq!(status["newer_on"][0], "member");
+        // A peer at the same version, or behind, is nobody to ask.
+        assert_eq!(chain_status(&seen(announcing(&old)).await).await["outdated"], false);
+        assert_eq!(
+            chain_status(&seen(announcing("not-a-version")).await).await["outdated"],
+            false
+        );
+
+        // Its copy is adopted although it does not come from the principal,
+        // because every signature in it is the principal's.
+        away.auth.write().await.profile = NodeProfile::Node;
+        adopt_trust_chain(&away, lab.trust.document(), false)
+            .await
+            .unwrap();
+        assert_eq!(away.admin_trust.chain_version(), new);
+        assert_eq!(away.network.trust_version().as_deref(), Some(new.as_str()));
+
+        // A forged copy is refused whoever sends it.
+        let mut forged = lab.trust.document();
+        forged.grants.last_mut().unwrap().subject = lab.other.1.clone();
+        assert!(adopt_trust_chain(&away, forged, true).await.is_err());
+    }
+
+    #[test]
+    fn two_copies_with_equal_counters_are_settled_by_the_principal_only() {
+        let lab = chain_lab();
+        let member = crate::admin_trust::AdminTrust::in_memory(lab.trust.document()).unwrap();
+        // The principal grants the same seat twice, in two histories: the
+        // counters match, the content does not.
+        let fork = crate::admin_trust::AdminTrust::in_memory(lab.trust.document()).unwrap();
+        for (trust, subject) in [(&lab.trust, &lab.member.1), (&fork, &lab.other.1)] {
+            let grant = trust
+                .signed_secondary_grant(&lab.principal_key, subject.clone(), "principal")
+                .unwrap();
+            trust.record_secondary_grant(grant, &lab.principal_key).unwrap();
+        }
+        assert_ne!(lab.trust.chain_version(), fork.chain_version());
+        assert_eq!(
+            crate::admin_trust::version_counters(&lab.trust.chain_version()),
+            crate::admin_trust::version_counters(&fork.chain_version())
+        );
+
+        assert!(member.reconcile_from(lab.trust.document(), false).unwrap());
+        // The same copy again is a no-op.
+        assert!(!member.reconcile_from(lab.trust.document(), false).unwrap());
+        // The other history: refused from a member, accepted from the principal.
+        assert!(member.reconcile_from(fork.document(), false).is_err());
+        assert!(member.reconcile_from(fork.document(), true).unwrap());
+        assert_eq!(member.chain_version(), fork.chain_version());
     }
 }

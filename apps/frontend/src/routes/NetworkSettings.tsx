@@ -15,7 +15,9 @@ import {
   Undo2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ClusterVersion } from "../components/ClusterVersion";
 import { Confirm } from "../components/Confirm";
+import { formatClusterVersion } from "../lib/clusterVersion";
 import { MachineIcon } from "../components/MachineIcon";
 import { Markdown } from "../components/Markdown";
 import { MarkdownField } from "../components/MarkdownField";
@@ -193,6 +195,8 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
         )}
 
         {isAdmin && <AdmittedMachines t={t} />}
+
+        <ClusterVersion />
 
         <NetworkMetricsPanel metrics={metrics} t={t} />
 
@@ -383,6 +387,8 @@ function routeAddress(route: PeerRoute | null | undefined, t: (key: string, valu
 }
 
 function ParticipantsPanel({ nodes, cluster, isAdmin, setPending, setBlocked, t }: { nodes: ReturnType<typeof useAdminNodes>; cluster: ClusterView | undefined; isAdmin: boolean; setPending: (value: { id: string; hostname: string } | null) => void; setBlocked: (id: string, blocked: boolean) => Promise<void>; t: (key: string, values?: Record<string, string | number>) => string }) {
+  // The version this node holds; a machine showing another one is out of step.
+  const ownVersion = nodes.data?.find((n) => n.is_self)?.trust_version;
   const systemOf = (id: string) => cluster?.peers.find((peer) => peer.node_id === id)?.node?.system ?? null;
   return (
     <>
@@ -390,7 +396,7 @@ function ParticipantsPanel({ nodes, cluster, isAdmin, setPending, setBlocked, t 
       {nodes.isLoading && <Skeleton className="h-48 w-full" />}
       {nodes.data && <Panel>
         <PanelHeader title={t("network.knownCount", { count: nodes.data.length })} subtitle={t("network.knownDetail")} />
-        {nodes.data.length === 0 ? <Empty icon={<Network className="h-5 w-5" />} title={t("network.noNodes")}>{t("network.noNodesDetail")}</Empty> : <div className="divide-y divide-line">{nodes.data.map((n: AdminNode) => <div key={n.node_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5"><MachineIcon system={systemOf(n.node_id)} size="sm" /><div className="min-w-[12rem] flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{n.hostname || n.short_id}</span>{n.is_self && <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">{t("network.here")}</Badge>}{n.blocked && <Badge tone="rose">{t("network.blockedLabel")}</Badge>}{n.verified && <Badge tone="aqua">{t("network.verified")}</Badge>}{!n.is_self && <RouteBadge route={n.route} t={t} />}</div><p className="mt-0.5 font-mono text-[0.7rem] text-faint" title={n.addr ? t("network.routeAdvertised", { addr: n.addr }) : undefined}>{n.short_id} · {n.is_self ? n.addr || t("network.noAddress") : routeAddress(n.route, t)}</p></div>{n.total_layers ? <Mono className="shrink-0 text-iris">{layerRange(n.start_layer ?? 0, n.end_layer ?? 0)}</Mono> : null}<span className="flex shrink-0 items-center gap-1.5 text-[0.78rem] text-muted"><Dot tone={n.connected ? "aqua" : "neutral"} />{n.connected ? t("network.connected") : t("network.away")}</span>{isAdmin && !n.is_self && <Button size="sm" variant={n.blocked ? "outline" : "danger"} icon={n.blocked ? <Undo2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />} onClick={() => n.blocked ? void setBlocked(n.node_id, false) : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })}>{n.blocked ? t("network.unblock") : t("network.block")}</Button>}</div>)}</div>}
+        {nodes.data.length === 0 ? <Empty icon={<Network className="h-5 w-5" />} title={t("network.noNodes")}>{t("network.noNodesDetail")}</Empty> : <div className="divide-y divide-line">{nodes.data.map((n: AdminNode) => <div key={n.node_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5"><MachineIcon system={systemOf(n.node_id)} size="sm" /><div className="min-w-[12rem] flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{n.hostname || n.short_id}</span>{n.is_self && <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">{t("network.here")}</Badge>}{n.blocked && <Badge tone="rose">{t("network.blockedLabel")}</Badge>}{n.verified && <Badge tone="aqua">{t("network.verified")}</Badge>}{!n.is_self && <RouteBadge route={n.route} t={t} />}</div><p className="mt-0.5 font-mono text-[0.7rem] text-faint" title={n.addr ? t("network.routeAdvertised", { addr: n.addr }) : undefined}>{n.short_id} · {n.is_self ? n.addr || t("network.noAddress") : routeAddress(n.route, t)}{n.trust_version ? <span className={n.trust_version !== ownVersion ? "text-amber" : undefined} title={t(n.trust_version !== ownVersion ? "network.clusterVersionDiffers" : "network.clusterVersionSame")}> · {t("network.clusterVersionShort", { version: formatClusterVersion(n.trust_version) })}</span> : null}</p></div>{n.total_layers ? <Mono className="shrink-0 text-iris">{layerRange(n.start_layer ?? 0, n.end_layer ?? 0)}</Mono> : null}<span className="flex shrink-0 items-center gap-1.5 text-[0.78rem] text-muted"><Dot tone={n.connected ? "aqua" : "neutral"} />{n.connected ? t("network.connected") : t("network.away")}</span>{isAdmin && !n.is_self && <Button size="sm" variant={n.blocked ? "outline" : "danger"} icon={n.blocked ? <Undo2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />} onClick={() => n.blocked ? void setBlocked(n.node_id, false) : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })}>{n.blocked ? t("network.unblock") : t("network.block")}</Button>}</div>)}</div>}
         <Footnote className="border-t border-line px-5 py-3" icon={<ShieldOff className="h-3.5 w-3.5" />}>{t("network.identityNote")}</Footnote>
       </Panel>}
     </>

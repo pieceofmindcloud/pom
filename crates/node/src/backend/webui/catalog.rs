@@ -24,6 +24,9 @@ pub struct NodeInfo {
     /// Name of this node's own network while it is in standby, i.e. while
     /// the node is a member of someone else's. Leaving returns to it.
     pub standby_network: Option<String>,
+    /// This node's copy of the trust chain: `version`, whether a peer
+    /// announces a newer one (`outdated`) and on which hosts (`newer_on`).
+    pub cluster_version: serde_json::Value,
     /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
     /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
     /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
@@ -179,6 +182,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         own_network: state.admin_trust.document().primary.pubkey
             == state.authority_principal.pubkey,
         standby_network: super::standby::standby_name(),
+        cluster_version: crate::admin::chain_status(&state).await,
         connection_key,
         authority_level,
         authority_fingerprint,

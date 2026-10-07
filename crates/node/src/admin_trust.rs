@@ -919,41 +919,52 @@ impl AdminTrust {
         Ok(demotion)
     }
 
-    /// What tells two copies of the chain apart without comparing them:
-    /// every change of authority moves one of these counters.
+    /// The version of this copy of the chain:
+    /// `<epoch>.<grants>.<demotions>.<open transfer>-<content hash>`. The
+    /// counters order two copies (every change of authority moves one); the
+    /// hash tells apart two copies the counters call equal.
     pub(crate) fn chain_version(&self) -> String {
-        let document = self.document();
-        format!(
-            "{}.{}.{}.{}",
-            document.authority_epoch,
-            document.promotion_seq,
-            document.demotions.len(),
-            u8::from(document.pending_transfer.is_some())
-        )
+        chain_version_of(&self.document())
     }
 
+    /// Adopts `incoming` as the principal's own copy would be adopted.
     pub(crate) fn reconcile(&self, incoming: AdminTrustDocument) -> Result<()> {
+        self.reconcile_from(incoming, true).map(|_| ())
+    }
+
+    /// Adopts a copy of the chain that is newer than the local one;
+    /// `Ok(false)` when it is the same copy. Every signature is checked from
+    /// the anchor, so the copy may come from any member, not only from the
+    /// principal - which is what lets a node that was away catch up while the
+    /// principal is offline. Order is decided by the counters. Two different
+    /// copies with equal counters cannot be ordered: only the principal's
+    /// (`authoritative`) replaces the local one then, since it is the only
+    /// writer of the chain.
+    pub(crate) fn reconcile_from(
+        &self,
+        incoming: AdminTrustDocument,
+        authoritative: bool,
+    ) -> Result<bool> {
         validate_document(&incoming)?;
         let mut document = self.state.lock().expect("admin trust lock poisoned");
         if document.anchor != incoming.anchor {
             bail!("a cadeia recebida não corresponde à âncora manual deste nó");
         }
-        if incoming.authority_epoch < document.authority_epoch
-            || incoming.promotion_seq < document.promotion_seq
-        {
-            bail!("a cadeia recebida é anterior ao estado local");
-        }
-        // A demotion does not advance the sequence, so a copy from before it
-        // would otherwise pass as current and give the authority back.
-        if incoming.authority_epoch == document.authority_epoch
-            && incoming.promotion_seq == document.promotion_seq
-            && incoming.demotions.len() < document.demotions.len()
-        {
-            bail!("a cadeia recebida é anterior ao estado local");
+        match chain_counters(&incoming).cmp(&chain_counters(&document)) {
+            std::cmp::Ordering::Less => bail!("a cadeia recebida é anterior ao estado local"),
+            std::cmp::Ordering::Equal => {
+                if chain_version_of(&incoming) == chain_version_of(&document) {
+                    return Ok(false);
+                }
+                if !authoritative {
+                    bail!("same chain version with different content: only the principal's copy decides");
+                }
+            }
+            std::cmp::Ordering::Greater => {}
         }
         persist_document(&incoming, self.path.as_deref())?;
         *document = incoming;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn begin_transfer(
@@ -1345,6 +1356,35 @@ pub(crate) fn control_issuer_is_admin(
                     && demotion.target_grant_hash == grant_hash(grant).unwrap_or_default()
             })
     })
+}
+
+/// The counters that order two copies of a chain: principal transfers,
+/// grants, demotions.
+fn chain_counters(document: &AdminTrustDocument) -> (u64, u64, u64) {
+    (
+        document.authority_epoch,
+        document.promotion_seq,
+        document.demotions.len() as u64,
+    )
+}
+
+pub(crate) fn chain_version_of(document: &AdminTrustDocument) -> String {
+    let (epoch, grants, demotions) = chain_counters(document);
+    let content = serde_json::to_vec(document).unwrap_or_default();
+    let digest = hex::encode(Sha256::digest(&content));
+    format!(
+        "{epoch}.{grants}.{demotions}.{}-{}",
+        u8::from(document.pending_transfer.is_some()),
+        &digest[..16]
+    )
+}
+
+/// The ordering part of a version string, for comparing with a version a
+/// peer announces. `None` for anything that is not a version.
+pub(crate) fn version_counters(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('-').next()?.split('.');
+    let mut next = || parts.next()?.parse::<u64>().ok();
+    Some((next()?, next()?, next()?))
 }
 
 fn sign_bytes(signing_key: &SigningKey, bytes: &[u8]) -> String {

@@ -5,6 +5,7 @@
  * signatures and the initial trust root belong to the node, not to the
  * browser.
  */
+import { ClusterVersion } from "../components/ClusterVersion";
 import { ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { AdminAuthorityPanel, type AdminAuthorityAction } from "../components/AdminAuthorityPanel";
@@ -86,6 +87,9 @@ export function AdminAuthority() {
           </div>
         }
       />
+      <div className="mb-5">
+        <ClusterVersion />
+      </div>
       {nodes.isError && isPrincipal && (
         <div className="mb-5">
           <ErrorState error={nodes.error} onRetry={() => void nodes.refetch()} />

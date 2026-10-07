@@ -446,6 +446,11 @@ pub enum P2PMessage {
         /// O valor sozinho não autentica o peer.
         #[serde(default)]
         cluster_id: Option<String>,
+        /// The version of the trust chain this node holds
+        /// (`AdminTrust::chain_version`). Only a hint of who may have a
+        /// newer chain: the chain itself is fetched and verified.
+        #[serde(default)]
+        trust_version: Option<String>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -476,6 +481,9 @@ pub struct PeerInfo {
     /// de autoridade validada localmente.
     #[serde(default)]
     pub cluster_id: Option<String>,
+    /// The trust chain version the peer announces; a hint, never proof.
+    #[serde(default)]
+    pub trust_version: Option<String>,
     pub addr: String,
     /// Todos os enderecos em que este peer pode ser encontrado.
     ///
@@ -1149,6 +1157,8 @@ pub struct Network {
     /// The profile in an Announce is not enough: a secondary admin also has
     /// `profile: admin`, but must never become a policy source.
     policy_principal_pubkey: std::sync::RwLock<Option<String>>,
+    /// The version of the local trust chain, announced to the peers.
+    trust_version: std::sync::RwLock<Option<String>>,
     /// Evita repetir no gossip um aviso permanente, como o broadcast global
     /// indisponível dentro de um container.
     broadcast_warning_logged: AtomicBool,
@@ -1574,6 +1584,7 @@ impl Network {
             network_settings_probe: std::sync::RwLock::new(None),
             network_settings_sync_needed: AtomicBool::new(true),
             policy_principal_pubkey: std::sync::RwLock::new(None),
+            trust_version: std::sync::RwLock::new(None),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             libp2p_addrs: std::sync::RwLock::new(Vec::new()),
@@ -1658,6 +1669,18 @@ impl Network {
 
     pub fn profile(&self) -> crate::profile::NodeProfile {
         *self.profile.read().expect("profile lock")
+    }
+
+    /// The trust chain version this node announces. Set by whoever changes
+    /// the chain (`admin::publish_chain_version`).
+    pub fn set_trust_version(&self, version: impl Into<String>) {
+        if let Ok(mut current) = self.trust_version.write() {
+            *current = Some(version.into());
+        }
+    }
+
+    pub fn trust_version(&self) -> Option<String> {
+        self.trust_version.read().ok().and_then(|current| current.clone())
     }
 
     /// Whether this node is the network's principal, as opposed to any
@@ -2045,6 +2068,7 @@ impl Network {
             node_id: self.node_id.clone(),
             pubkey: self.pubkey.clone(),
             cluster_id: self.cluster_id(),
+            trust_version: self.trust_version(),
             addr,
             addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
@@ -2919,6 +2943,7 @@ impl Network {
                 idle,
                 network_chat_enabled,
                 cluster_id,
+                trust_version,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -2939,6 +2964,7 @@ impl Network {
                     node_id: node_id.clone(),
                     pubkey,
                     cluster_id,
+                    trust_version,
                     addr: peer_addr.clone(),
                     addr_candidates,
                     model: model.clone(),
@@ -4501,6 +4527,7 @@ mod tests {
             node_id: "n".into(),
             pubkey: "p".into(),
             cluster_id: None,
+            trust_version: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -4552,6 +4579,7 @@ mod tests {
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
             cluster_id: None,
+            trust_version: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -4643,6 +4671,7 @@ mod tests {
             node_id: "n1".into(),
             pubkey: "p".into(),
             cluster_id: None,
+            trust_version: None,
             addr: "192.168.1.9:42777".into(),
             addr_candidates: candidatos.into_iter().map(String::from).collect(),
             model: "qwen35".into(),
@@ -4784,6 +4813,7 @@ mod tests {
                 node_id: "peer".into(),
                 pubkey: "peer-key".into(),
                 cluster_id: None,
+                trust_version: None,
                 addr: stale.into(),
                 addr_candidates: vec![stale.into()],
                 model: "qwen".into(),
@@ -5102,6 +5132,7 @@ mod tests {
             node_id: node_id.into(),
             pubkey: "p".into(),
             cluster_id: None,
+            trust_version: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -5203,6 +5234,7 @@ mod tests {
             node_id,
             pubkey,
             cluster_id: None,
+            trust_version: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: vec!["127.0.0.1:42777".into()],
             model: String::new(),

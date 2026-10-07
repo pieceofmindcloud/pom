@@ -200,6 +200,11 @@ Per-file list:
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
+- `ClusterVersion.tsx` - Panel with the trust chain version this node holds
+  (`NodeInfo.cluster_version`, formatted by `lib/clusterVersion.ts`), an
+  outdated badge with the hosts announcing a newer one, and "Sync now"
+  (`POST /api/ui/network/trust-sync`). When outdated it asks for one sync by
+  itself per version. Mounted on Network settings and Administrators.
 - `AdminAuthorityPanel.tsx` - Readable authority roster for the principal,
   secondary admins and promotion chain. It exposes promotion, demotion and
   succession controls only when the presentation contract says this viewer is

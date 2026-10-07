@@ -543,7 +543,10 @@ when the network admits the machine, so the card only explains that serving
 models takes leaving and asking for admission again as a network node. A
 `node` likewise has no way to step down to `infer` without rejoining. The principal
 administrator can promote a node (never an inference node, which the
-candidate list leaves out) with `POST /admin/nodes/{id}/promote-admin`;
+candidate list leaves out; the "Cluster version" panel on this screen and on
+Administrators shows the trust chain version this node holds, marks it
+outdated when a peer announces a newer one and syncs by itself, and the
+participants list shows each machine's version, amber when it differs) with `POST /admin/nodes/{id}/promote-admin`;
 the gateway requires effective principal authority, and the target validates
 the Ed25519 grant in the chain of trust. The `connection_key` stays only the
 transport credential between nodes.

@@ -1707,6 +1707,7 @@ async fn start_node(
         .effective_authority(&authority_principal, app_config.profile)
         .is_some();
     net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
+    net.set_trust_version(admin_trust.chain_version());
     cluster_logs.set_admin_receiver(local_is_admin);
     audit.set_admin_receiver(local_is_admin);
 

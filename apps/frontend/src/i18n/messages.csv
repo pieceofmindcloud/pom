@@ -1274,6 +1274,19 @@ network.chooseCity,Choose a city,Escolha uma cidade
 network.chooseCountry,Choose a country,Escolha um país
 network.city,City,Cidade
 network.cityRequired,Required for a public network,Obrigatório para uma rede pública
+network.clusterVersionCurrent,Up to date,Atualizada
+network.clusterVersionDiffers,This machine holds a different cluster version than this node,Esta máquina tem uma versão do cluster diferente da deste nó
+network.clusterVersionEyebrow,Trust chain,Cadeia de confiança
+network.clusterVersionNewerOn,Newer version seen on: {hosts},Versão mais nova vista em: {hosts}
+network.clusterVersionNoChange,This node already has the newest version it can reach,Este nó já tem a versão mais nova que consegue alcançar
+network.clusterVersionOutdated,Outdated - syncing,Desatualizada - sincronizando
+network.clusterVersionSame,Same cluster version as this node,Mesma versão do cluster deste nó
+network.clusterVersionShort,version {version},versão {version}
+network.clusterVersionSubtitle,"Which administrators this node knows. It changes when an administrator is added, removed or the network changes hands, and every machine should show the same value.","Quais administradores este nó conhece. Muda quando um administrador entra, sai ou a rede troca de dono, e toda máquina deve mostrar o mesmo valor."
+network.clusterVersionSync,Sync now,Sincronizar agora
+network.clusterVersionSyncFailed,Could not sync the cluster version,Não foi possível sincronizar a versão do cluster
+network.clusterVersionSynced,Cluster version updated,Versão do cluster atualizada
+network.clusterVersionTitle,Cluster version,Versão do cluster
 network.connected,connected,conectado
 network.connectionKey,Connection key,Chave de conexão
 network.copied,Copied,Copiado

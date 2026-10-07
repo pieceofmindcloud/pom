@@ -213,6 +213,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
+    // Catching up with the trust chain is a node acting on itself.
+    RouteRule {
+        prefix: "/api/ui/network/trust-sync",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
     RouteRule {
         prefix: "/api/ui/network/admin-authority",
         method: None,

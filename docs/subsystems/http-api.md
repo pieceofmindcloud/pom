@@ -785,14 +785,31 @@ demotion; if the target does not answer, the answer is 202 with
 node: a member that does not know a secondary admin refuses its commands.
 After a promotion or a demotion the principal posts the chain to each member
 (`POST /api/internal/admin-trust/reconcile`, signed by an admin of the
-receiver's current chain). The receiver adopts it when it is not older than
-its own (`admin_trust::reconcile`; a copy from before a demotion counts as
-older) and sets its profile from it: `admin` while the chain grants it
-authority, `node` when it no longer does, and an inference node stays one. A
-member that missed the delivery asks the principal every two minutes with
-`POST /api/internal/admin-trust/chain` and body `{have: <version>}`; the
-answer is `{current: true}` or `{current: false, document}`
-(`admin.rs::spawn_trust_chain_keeper`). `GET /api/ui/network/admin-authority` is the view of the chain and the
+receiver's current chain). The receiver sets its profile from the chain it
+adopts: `admin` while the chain grants it authority, `node` when it no longer
+does, and an inference node stays one.
+
+**The chain has a version**, `AdminTrust::chain_version`:
+`<transfers>.<grants>.<demotions>.<open transfer>-<hash>`, the hash being the
+first 16 hex digits of the SHA-256 of the document. The three counters order
+two copies; the hash tells apart two copies the counters call equal. A node
+adopts a copy with higher counters **from any member**, because every
+signature in it is checked from the anchor (`admin_trust::reconcile_from`) -
+which is what lets a node that was away catch up while the principal is
+offline. A copy with lower counters is refused. Two different copies with
+equal counters cannot be ordered, and only the principal's replaces the local
+one.
+
+Each node announces its version (`trust_version` in the Announce; a hint,
+never proof). Every 30 s a node compares its own with what its peers announce
+(`admin.rs::spawn_trust_chain_keeper`) and, only when one is ahead, asks up
+to three of them with `POST /api/internal/admin-trust/chain` and body
+`{have: <version>}`; the answer is `{current: true}` or
+`{current: false, document}`. `GET /api/ui/node` reports
+`cluster_version: {version, outdated, newer_on}`, `GET /admin/nodes` carries
+each node's `trust_version`, and `POST /api/ui/network/trust-sync` (every
+profile, on its own node) runs one round at once and answers the same status
+plus `updated`. `GET /api/ui/network/admin-authority` is the view of the chain and the
 members. Resigning is a signed offer to the last active secondary and only the
 acceptance signed by that successor's key changes the principal. A secondary
 can neither promote nor demote another.

@@ -1117,6 +1117,7 @@ async fn handle_event(
                 idle,
                 network_chat_enabled,
                 cluster_id,
+                trust_version,
                 ..
             }) = serde_json::from_slice(&message.data)
             {
@@ -1159,6 +1160,7 @@ async fn handle_event(
                     node_id: node_id.clone(),
                     pubkey: pubkey.clone(),
                     cluster_id,
+                    trust_version,
                     // O caminho do gossipsub nao tem endereco de origem para
                     // reescrever, e o anunciado costuma ser o literal
                     // `0.0.0.0`. Com candidatos ha o que usar: o primeiro

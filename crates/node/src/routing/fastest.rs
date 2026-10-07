@@ -731,6 +731,7 @@ mod tests {
             node_id: node_id.to_string(),
             pubkey: "p".into(),
             cluster_id: None,
+            trust_version: None,
             addr: "10.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "m".into(),

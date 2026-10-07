@@ -367,6 +367,8 @@ export interface NodeInfo {
   own_network?: boolean;
   /** This node's own network, kept aside while it is a member elsewhere. */
   standby_network?: string | null;
+  /** This node's copy of the trust chain and whether a peer has a newer one. */
+  cluster_version?: import("./clusterVersion").ClusterVersionStatus;
   /**
    * A chave de conexão do cluster, que esta interface mostra em "Chave de
    * Conexão" e guarda para autenticar as chamadas que a exigem.
@@ -1555,6 +1557,8 @@ export interface AdminNode {
   role?: string;
   /** The node's role in the network: `admin`, `node` or `infer`. */
   profile?: string;
+  /** The trust chain version the node announces. */
+  trust_version?: string | null;
   model?: string;
   start_layer?: number;
   end_layer?: number;

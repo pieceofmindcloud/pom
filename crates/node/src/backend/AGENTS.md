@@ -585,9 +585,13 @@ profile policy remains the effective authorization boundary.
   an admin; silence leaves the grant standing (202, `pending`).
   `adopt_trust_chain` is how any member takes a newer chain and sets its
   profile from it (an inference node never rises). `spawn_trust_fanout` sends
-  the chain to every member after a promotion or demotion, and
-  `spawn_trust_chain_keeper` is the member's two-minute check against the
-  principal (`POST /api/internal/admin-trust/chain`) for whoever missed it.
+  the chain to every member after a promotion or demotion.
+  `publish_chain_version` announces the local `chain_version` (counters plus
+  content hash); `spawn_trust_chain_keeper` compares it every 30 s with what
+  the peers announce and fetches the chain from whoever is ahead
+  (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
+  it works with the principal offline. `chain_status` feeds
+  `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - `reqlog.rs` - adaptador de auditoria e fallback de migração. Com o plugin
   ativo, o host grava em `enterprise.db`; independentemente desse destino, o
   `AuditLog` do POM replica `begin` e `complete` aos admins efetivos por libp2p.

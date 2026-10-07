@@ -48,6 +48,10 @@ const INFER_ROUTES = [
   "/network-chat",
   "/documentacao",
   "/config/keys/api",
+  // Plugins are local to each machine: an inference node browses the
+  // catalog and installs plugins on itself, and their menus join the list
+  // below its conversations.
+  "/plugins",
   "/config/rede",
   "/config/minha-maquina",
   "/config/compartilhamento",

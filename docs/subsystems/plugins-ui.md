@@ -234,8 +234,8 @@ The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace dire
 the build image to `dev-runtime`; that target includes Rust/Cargo and native
 tools, exposes the toolchain to the non-root node user and sets `CARGO_HOME`
 to a writable cache in the project data volume. The release
-`runtime` image still has no compiler. The panel offers the rebuild block only
-on the `admin` profile when `/api/ui/node` confirms `pom_desenv=true`.
+`runtime` image still has no compiler. The panel offers the rebuild block on every
+profile when `/api/ui/node` confirms `pom_desenv=true`.
 
 The backend discovers direct child directories named `pom-plugin-*` under the
 source mount; a mounted directory is listed only when its Cargo manifest and

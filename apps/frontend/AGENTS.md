@@ -90,7 +90,10 @@ Logs/Estatísticas não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/
 entitlement.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
-documentação, API key e a tela de rede local para pedir entrada no processamento.
+documentação, API key, Plugins (catálogo, instalação e builds locais de
+desenvolvimento nesta máquina) e a tela de rede local para pedir entrada no
+processamento. Plugins e os menus dos plugins instalados ficam na lista abaixo
+das conversas.
 It never sees request logs, deployment logs or statistics (denied in
 `lib/access.ts` even where a plugin claims the route), and its preferences hide
 the GPU thermal protection and the Hugging Face token. The cluster's connection
@@ -158,8 +161,8 @@ desenhado**, porque uma vista só não é uma escolha.
   compatível da tela da raiz de confiança.
 - `/plugins` -> Plugins, lists every plugin in the catalog, active or not, with
   license-key activation that identifies the plugins granted by that key,
-  per-plugin version updates and deactivation. With `admin` and
-  `pom_desenv=true`, it also builds and installs plugins directly from mounted
+  per-plugin version updates and deactivation. With
+  `pom_desenv=true`, on any profile, it also builds and installs plugins directly from mounted
   sources without requiring an active license; local builds grant no licensed
   features and do not change existing entitlement. Updating the `pom` binary
   is handled separately in `/config/sobre`. This replaced the former

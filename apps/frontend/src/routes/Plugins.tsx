@@ -809,7 +809,9 @@ export function Plugins() {
   const catalog = usePublicPluginCatalog();
   const githubRepositories = useGithubRepositories();
   const node = useNode();
-  const developmentEnabled = node.data?.profile === "admin" && node.data?.pom_desenv === true;
+  // Local development builds install on this machine only, so every profile
+  // gets them; `pom_desenv` is what turns them on.
+  const developmentEnabled = node.data?.pom_desenv === true;
   const developmentSources = useDevelopmentPluginSources(developmentEnabled);
   const [tab, setTab] = useState<"catalog" | "develop">("catalog");
   const [search, setSearch] = useState("");

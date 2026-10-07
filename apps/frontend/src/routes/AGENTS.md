@@ -177,8 +177,8 @@ Per-file list:
   node's local route and shows the node's reason on failure.
 
   Updating the `pom` binary is separate in `About.tsx` (see
-  `crates/node/src/pom_core_update.rs`). With profile `admin` and
-  `NodeInfo.pom_desenv=true`, the screen queries local sources and allows
+  `crates/node/src/pom_core_update.rs`). With
+  `NodeInfo.pom_desenv=true`, on any profile, the screen queries local sources and allows
   building and installing even inactive plugins. A local build is separate
   from license state, grants no licensed features and does not activate a
   license; an existing licensed/GitHub installation keeps its entitlement.

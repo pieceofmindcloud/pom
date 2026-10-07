@@ -247,8 +247,10 @@ error keeps the license.
 
 Plugins are local to each node, so activating a license, registering a GitHub
 repository, installing, updating and using a plugin's UI is allowed to the
-`admin`, `node` and `infer` profiles on their own machine; only the
-development rebuild (`/api/ui/plugins/dev-sources*`) stays AdminOnly. The rule
+`admin`, `node` and `infer` profiles on their own machine, including the
+development rebuild (`/api/ui/plugins/dev-sources*`), which also requires
+`POM_DESENV=1`. The `infer` UI lists Plugins and the installed plugins' menus
+below its conversations. The rule
 lives in `ROUTE_RULES` (`backend/webui/routes/mod.rs`).
 
 `GET /api/ui/plugins` is open to every profile. Its `PluginStatus` carries
@@ -386,8 +388,8 @@ already installed by the license mechanism is refused so that host is not
 silently replaced; no license server query is made to decide whether the
 repository needs a license.
 
-The local development build/install is another AdminOnly operation and
-requires `POM_DESENV=1`: the source is picked from an allowlist mounted under
+The local development build/install is open to every profile on its own
+machine and requires `POM_DESENV=1`: the source is picked from an allowlist mounted under
 `/opt/pom/dev-plugins`. It can install a development-only plugin with no prior
 license or GitHub installation, persisting it separately in
 `plugin_dev_install:<code>`; this starts the host but grants no licensed

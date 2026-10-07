@@ -167,6 +167,7 @@ describe("navForProfile", () => {
     expect(navForProfile("infer").map((section) => section.labelKey)).toEqual([
       "nav.publicNetworks",
       "nav.networkChat",
+      "nav.plugins",
       "nav.network",
     ]);
     expect(navFooterForProfile("infer").map((item) => [item.labelKey, item.to])).toEqual([

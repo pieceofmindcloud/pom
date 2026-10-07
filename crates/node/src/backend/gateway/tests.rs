@@ -2767,6 +2767,53 @@ mod replicated_admin_logs_tests {
         assert_eq!(error["manage_url"], "https://pieceofmind.cloud/enterprise");
     }
 
+    /// A node on its own local network hears no announce: the networks it
+    /// lists come from the relays. The locate route has to answer for them,
+    /// and still refuse a key the node never listed.
+    #[tokio::test]
+    async fn a_network_listed_by_a_relay_can_be_located() {
+        let state = testkit::state_with("local-node", vec![]).await;
+        let listed_key = pkarr::Keypair::random().to_uri_string();
+        let stranger_key = pkarr::Keypair::random().to_uri_string();
+        let locate = |key: String| {
+            super::locate_public_network(State(state.clone()), Query(super::LocateQuery { key }))
+        };
+
+        let response = locate(listed_key.clone()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let mut view: PublicNetworkView = serde_json::from_value(serde_json::json!({
+            "cluster_id": "remote",
+            "name": "Rede remota",
+            "fingerprint": "fp-remote",
+            "trust_document": "{}",
+            "organization": "",
+            "description": "",
+            "rules": "",
+            "channels": "",
+            "country_code": "BR",
+            "country_name": "Brasil",
+            "city": "Curitiba",
+            "geo_label": "br.curitiba",
+            "access_policy": "anyone_with_anchor",
+            "location": null,
+            "discovered_via": "node",
+        }))
+        .unwrap();
+        view.publisher_key = listed_key.clone();
+        super::remember_listed_publishers(&[view]);
+
+        // The testkit has no pkarr node, so the answer is "unresolved" - what
+        // matters is that the route answered instead of refusing the key.
+        let response = locate(listed_key).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer: serde_json::Value = body_of(response).await;
+        assert_eq!(answer["reachability"], "unresolved");
+
+        let response = locate(stranger_key).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn a_listed_network_is_accepted_only_when_it_certifies_itself() {
         let state = testkit::state_with("listing-node", vec![]).await;

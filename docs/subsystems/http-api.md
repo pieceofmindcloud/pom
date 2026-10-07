@@ -175,7 +175,10 @@ last):
   /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
   node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
   only accepts keys the node already lists (404 otherwise) and caches the answer
-  for 30 s.
+  for 30 s. "Lists" includes the publishers of the networks the last
+  `GET /api/public/networks` returned, kept for 30 min: a node on its own local
+  network hears no announce, so the networks it shows come from the relays and
+  are known nowhere else.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Typed decisions** (`decisions.rs`): `POST /v1/systemone`, alias

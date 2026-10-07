@@ -141,6 +141,24 @@ describe("PublicNetworks", () => {
     });
   });
 
+  it("does not call a network missing from the DHT when the check itself failed", async () => {
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve(networks);
+      return Promise.reject(new Error("HTTP 404"));
+    });
+    render(
+      <LocaleProvider initialLocale="en">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("public-network-reachability-fingerprint-curitiba").getAttribute("data-reachability")).toBe("unknown");
+    });
+    expect(screen.getAllByText("Could not check").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Not found on the DHT")).toBeNull();
+  });
+
   it("shows reachability by the publisher key, resolved by the node, without an IP", async () => {
     const { container } = render(
       <LocaleProvider initialLocale="pt-BR">

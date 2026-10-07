@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { CircleCheck, CircleX, Globe2, LoaderCircle, LogOut, MessageCircle, RefreshCw, ShieldCheck, Waypoints } from "lucide-react";
+import { CircleCheck, CircleHelp, CircleX, Globe2, LoaderCircle, LogOut, MessageCircle, RefreshCw, ShieldCheck, Waypoints } from "lucide-react";
 import { Confirm, Modal } from "../components/Confirm";
 import { LobbyChat } from "../components/LobbyChat";
 import { Markdown } from "../components/Markdown";
@@ -267,19 +267,25 @@ function ReachabilityIndicator({ id, status, t }: { id: string; status: PublicLo
       ? <Waypoints className="h-4 w-4 shrink-0 text-amber" aria-hidden="true" />
       : status === "unresolved"
         ? <CircleX className="h-4 w-4 shrink-0 text-rose" aria-hidden="true" />
-        : <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-amber" aria-hidden="true" />;
+        : status === "unknown"
+          ? <CircleHelp className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
+          : <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-amber" aria-hidden="true" />;
   const label = status === "direct"
     ? t("publicNetworks.reachDirect")
     : status === "relayed"
       ? t("publicNetworks.reachRelayed")
       : status === "unresolved"
         ? t("publicNetworks.reachUnresolved")
-        : t("publicNetworks.checking");
+        : status === "unknown"
+          ? t("publicNetworks.reachUnknown")
+          : t("publicNetworks.checking");
   const textClass = status === "direct"
     ? "text-[0.68rem] text-lime"
     : status === "unresolved"
       ? "text-[0.68rem] text-rose"
-      : "text-[0.68rem] text-amber";
+      : status === "unknown"
+        ? "text-[0.68rem] text-faint"
+        : "text-[0.68rem] text-amber";
   return <div data-testid={`public-network-reachability-${id}`} data-reachability={status} className="flex min-w-0 items-start gap-2" title={label}><span className="mt-0.5">{content}</span><span className={textClass}>{label}</span></div>;
 }
 

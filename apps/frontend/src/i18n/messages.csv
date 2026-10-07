@@ -1884,6 +1884,7 @@ publicNetworks.publisherKey,Publisher key,Chave do publicador
 publicNetworks.reach,Reachability,Alcance
 publicNetworks.reachDirect,Direct route published,Rota direta publicada
 publicNetworks.reachRelayed,Reachable through a relay,Alcançável por relé
+publicNetworks.reachUnknown,Could not check,Não foi possível verificar
 publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
 publicNetworks.relayHints,Dedicated relays,Relés dedicados

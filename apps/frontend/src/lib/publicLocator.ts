@@ -5,12 +5,14 @@ import { api } from "./api";
  * How a public network can be reached, according to the pkarr record of the
  * publisher's key. The node does the resolving
  * (`GET /api/public/networks/locate`): the browser does not speak libp2p and
- * never receives anyone's IP.
+ * never receives anyone's IP. `unknown` is a check that could not be made (the
+ * node refused the key or did not answer): it says nothing about the network,
+ * so it is never shown as a network missing from the DHT.
  */
-export type PublicLocator = "checking" | "direct" | "relayed" | "unresolved";
+export type PublicLocator = "checking" | "direct" | "relayed" | "unresolved" | "unknown";
 
 interface LocatorResponse {
-  reachability: Exclude<PublicLocator, "checking">;
+  reachability: Exclude<PublicLocator, "checking" | "unknown">;
   relays: number;
 }
 
@@ -37,7 +39,7 @@ export async function fetchPublicLocator(key: string): Promise<Exclude<PublicLoc
     );
     return response.reachability;
   } catch {
-    return "unresolved";
+    return "unknown";
   }
 }
 

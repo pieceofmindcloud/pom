@@ -702,7 +702,9 @@ HTTP probes. The `/redes-publicas` page is full-bleed, like Logs, and shows a
 table with name, organization, country/city, label, nodes, latency, VRAM,
 models and reachability. **No IP is listed**: reachability comes from
 `GET /api/public/networks/locate`, which the node resolves from the publisher's
-key through pkarr (`direct`, `relayed` or `unresolved`); the details show the
+key through pkarr (`direct`, `relayed` or `unresolved`). A check that could not
+be made - the node refused the key or did not answer - shows as "Could not
+check" (`unknown`), never as a network missing from the DHT. The details show the
 publisher key and the dedicated relays (`relay_hints`). The local cluster's metrics are computed from
 `ClusterView` when the network matches; the other fields show as unavailable
 because the current public catalog does not provide them. The trust document

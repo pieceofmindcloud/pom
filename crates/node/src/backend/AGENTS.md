@@ -1205,7 +1205,10 @@ faz o download autenticado do blob persistido.
   `PublicStats` from the cluster view (started in `spawn_gateway_companions`).
   `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
   through pkarr on the node and answers only `direct|relayed|unresolved` plus a
-  relay count (30 s cache; keys the node does not list get 404). `GET/POST
+  relay count (30 s cache; keys the node does not list get 404). The listed
+  keys include the publishers `public_networks` last returned
+  (`remember_listed_publishers`, 30 min, at most 1024), which is what covers a
+  local-network node whose list comes only from the relays. `GET/POST
   /api/public/directory/records` is the federated directory
   ingress: records are checked locally for Ed25519 signature, proof of work,
   trust-root consistency and expiry before entering the bounded SQLite cache.

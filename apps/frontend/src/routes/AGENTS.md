@@ -56,7 +56,9 @@ Per-file list:
   entrada. Usa `/api/public/networks`. **No IP is shown**: reachability comes
   from `usePublicLocator` (`lib/publicLocator.ts`), which asks the node
   (`/api/public/networks/locate?key=<publisher_key>`) whether the publisher key
-  has a direct route, only a relay or no pkarr record at all; the details show
+  has a direct route, only a relay or no pkarr record at all, and reports a
+  check that failed as `unknown` ("Could not check") instead of a missing
+  record; the details show
   the publisher key and the `relay_hints`. Métricas agregadas só aparecem quando o cluster local
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
   Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um

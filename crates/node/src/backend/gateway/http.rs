@@ -761,6 +761,36 @@ fn locate_cache(
     CACHE.get_or_init(Default::default)
 }
 
+/// How long a publisher stays locatable after the networks list showed it.
+const LISTED_PUBLISHER_TTL: Duration = Duration::from_secs(30 * 60);
+const LISTED_PUBLISHERS_MAX: usize = 1024;
+
+fn listed_publishers() -> &'static std::sync::Mutex<std::collections::HashMap<String, Instant>> {
+    static LISTED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Instant>>,
+    > = std::sync::OnceLock::new();
+    LISTED.get_or_init(Default::default)
+}
+
+/// Remembers the publishers of the networks this node has just listed, so the
+/// locate route answers for every row of the screen. A node on its own local
+/// network hears no announce: its list comes from the relays and is stored
+/// nowhere else.
+pub(super) fn remember_listed_publishers(networks: &[PublicNetworkView]) {
+    let now = Instant::now();
+    let mut listed = listed_publishers().lock().expect("listed publishers lock");
+    listed.retain(|_, seen| now.duration_since(*seen) < LISTED_PUBLISHER_TTL);
+    for network in networks {
+        let Ok(key) = pkarr::PublicKey::try_from(network.publisher_key.trim()) else {
+            continue;
+        };
+        let key = key.to_uri_string();
+        if listed.len() < LISTED_PUBLISHERS_MAX || listed.contains_key(&key) {
+            listed.insert(key, now);
+        }
+    }
+}
+
 pub(crate) fn locator_from(record: Option<&crate::pkarr_node::PkarrRecord>) -> NetworkLocator {
     match record {
         None => NetworkLocator {
@@ -807,6 +837,14 @@ async fn locatable_keys(state: &GatewayState) -> std::collections::HashSet<Strin
     keys.extend(
         peers
             .filter_map(|peer| crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&peer.pubkey)),
+    );
+    keys.extend(
+        listed_publishers()
+            .lock()
+            .expect("listed publishers lock")
+            .iter()
+            .filter(|(_, seen)| seen.elapsed() < LISTED_PUBLISHER_TTL)
+            .map(|(key, _)| key.clone()),
     );
     keys
 }
@@ -886,6 +924,7 @@ pub(super) async fn public_networks(
             networks.push(network);
         }
     }
+    remember_listed_publishers(&networks);
     Json(networks)
 }
 

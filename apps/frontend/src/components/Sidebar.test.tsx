@@ -161,10 +161,10 @@ describe("Sidebar", () => {
 
     expect(screen.queryByText("Implantar na rede")).toBeNull();
     expect(screen.queryByText("Implantações")).toBeNull();
-    expect(screen.queryByText("Modelos")).toBeNull();
     expect(screen.getByText("Logs")).toBeTruthy();
     // O que ninguém restringiu continua no lugar.
     expect(screen.getByText("Painel")).toBeTruthy();
+    expect(screen.getByText("Modelos")).toBeTruthy();
     expect(screen.getByText("Configurações")).toBeTruthy();
   });
 

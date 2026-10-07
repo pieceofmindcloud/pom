@@ -342,8 +342,8 @@ describe("guarda de perfil por rota", () => {
 
   it("não mexe nas rotas que ninguém restringiu", async () => {
     pluginUi.plugins = [baseManifest];
-    open("/chat", "node");
-    expect(await screen.findByText("tela-chat")).toBeTruthy();
+    open("/modelos", "node");
+    expect(await screen.findByText("tela-modelos")).toBeTruthy();
   });
 
   it("a tela de modelos ocupa a tela cheia, como Implantações e Painel", async () => {

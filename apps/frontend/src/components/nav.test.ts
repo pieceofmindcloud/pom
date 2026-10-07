@@ -117,21 +117,13 @@ describe("navForProfile", () => {
   });
 
   it("preserva no nó tudo que ninguém restringiu", () => {
-    const labels = navForProfile("node").map((s) => s.labelKey);
+    const sections = navForProfile("node");
+    const labels = sections.map((s) => s.labelKey);
     expect(labels).toContain("nav.dashboard");
     expect(labels).toContain("nav.chat");
-    expect(labels).toContain("nav.transfers");
+    expect(labels).toContain("nav.models");
     expect(labels).toContain("nav.settings");
-  });
-
-  it("shows models and deployments to admins only", () => {
-    const labels = navForProfile("node").map((s) => s.labelKey);
-    expect(labels).not.toContain("nav.models");
-    expect(labels).not.toContain("nav.deployments");
-
-    const admin = navForProfile("admin");
-    expect(admin.map((s) => s.labelKey)).toContain("nav.deployments");
-    const models = admin.find((s) => s.labelKey === "nav.models");
+    const models = sections.find((s) => s.labelKey === "nav.models");
     expect(models?.children?.map((c) => c.to)).toEqual([
       "/modelos/remotos",
       "/modelos",

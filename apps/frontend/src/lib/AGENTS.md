@@ -154,19 +154,18 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `secondary` is true for an `admin` that is not the principal
   (`authority_level === "secondary"`): it deploys models and otherwise sees
   what a node sees, so principal-only controls check `!secondary`.
-- `access.ts` - which route each profile opens. `RESTRICTED` maps a route
-  prefix to the list of profiles: `/modelos`, `/fatias`, `/implantar` and
-  `/implantacoes` are `admin` only, so a plain node has no Models or
-  Deployments entry in the menu. For `infer`, `/chat`, `/network-chat`,
-  `/documentacao`, `/config/keys/api` and `/config/rede` are visible; the
-  list of network participants and the administrative preferences stay closed
-  to it, and in the Chat that profile also hides the summaries and the
-  telemetry panel. `canAccessRoute(path, profile)` is read by the guard in
-  `../App.tsx` **and** by `navForProfile` in `../components/nav.ts`, on
-  purpose: two lists would give a menu that offers what the route refuses.
-  The `/logs` and `/estatisticas` surfaces are discovery exceptions and stay
-  in the menu for every profile; the entitlement is applied by `App` and the
-  backend. Tests in `access.test.ts`.
+- `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
+  para a lista de perfis; para `infer`, `/chat`, `/network-chat`,
+  `/documentacao`, `/config/keys/api` e `/config/rede` são visíveis. A lista de
+  participantes da rede e as preferências administrativas continuam fechadas
+  para infer. No Chat, esse perfil também esconde os resumos e o painel de
+  telemetria.
+  `canAccessRoute(path, profile)` é
+  lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
+  `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
+  a rota recusa. As superfícies `/logs` e `/estatisticas` são exceções de
+  descoberta e permanecem abertas no menu para todos os perfis; o entitlement
+  é aplicado pelo `App` e pelo backend. Testes em `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.

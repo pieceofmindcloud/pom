@@ -96,6 +96,14 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   projetos do usuário e dados dinâmicos de plugins. O campo persistido é
   opcional para configurações antigas e o default é `~/pom_workspace`, sem
   pergunta no wizard e separado das pastas de modelos.
+- `create_default_storage_dirs` creates POM's own default folders when they
+  are the effective ones (`~/.pom/models` among the model folders,
+  `~/.pom/models_sliced`, `~/pom_workspace`), at node start, after setup and
+  after `POST /api/ui/paths`. Setup used to save them without creating them,
+  so a fresh install could not receive a file. A folder the operator typed is
+  never created at start (it may be on an unmounted drive); saving one in
+  Storage does create it, from an absolute path (`check_dir`,
+  `check_workspace_dir` in `backend/webui/catalog.rs`).
 - A configuração não possui teto absoluto de saída. A capacidade efetiva é
   observada no runtime depois do carregamento do modelo e chega ao gateway por
   `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite

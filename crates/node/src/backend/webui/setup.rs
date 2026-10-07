@@ -637,6 +637,9 @@ pub async fn bootstrap_local_network(
         );
     }
     config.save()?;
+    for (dir, error) in config.create_default_storage_dirs() {
+        warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+    }
     if let Err(error) = database.save_network_settings(&config.network) {
         warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
     }
@@ -911,6 +914,11 @@ pub async fn save_setup(
 
     let network_for_db = cfg.network.clone();
     let save_result = cfg.save();
+    if save_result.is_ok() {
+        for (dir, error) in cfg.create_default_storage_dirs() {
+            warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+        }
+    }
     drop(cfg);
     match save_result {
         Ok(()) => {

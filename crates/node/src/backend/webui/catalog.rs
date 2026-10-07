@@ -1066,20 +1066,34 @@ pub struct SavePathsRequest {
     pub shard_max_gb: Option<f64>,
 }
 
-/// Refuse anything that is not a directory sitting on this machine right now.
+/// Creates a folder the operator is saving and that does not exist yet.
 ///
-/// A typo here is not a small thing: the node would advertise a library it does
-/// not have, and the mistake would only surface much later, as a peer that
-/// cannot find the model it was told to slice.
+/// Saving a path that is not there is usually the operator naming the folder
+/// they want, so the screen creates it instead of refusing. Only an absolute
+/// path is created: a relative one would land wherever the process runs.
+fn create_missing_dir(path: &std::path::Path, trimmed: &str, what: &str) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    if !path.is_absolute() {
+        return Err(format!(
+            "{what}: “{trimmed}” não existe; informe o caminho absoluto para criar a pasta."
+        ));
+    }
+    std::fs::create_dir_all(path)
+        .map_err(|error| format!("{what}: não foi possível criar “{trimmed}”: {error}"))?;
+    info!("{what}: pasta criada em {trimmed}");
+    Ok(())
+}
+
+/// Accepts a directory on this machine, creating it when it does not exist.
 pub(super) fn check_dir(raw: &str, what: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(format!("{what}: caminho vazio."));
     }
     let path = std::path::Path::new(trimmed);
-    if !path.exists() {
-        return Err(format!("{what}: “{trimmed}” não existe nesta máquina."));
-    }
+    create_missing_dir(path, trimmed, what)?;
     if !path.is_dir() {
         return Err(format!(
             "{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."
@@ -1100,6 +1114,7 @@ pub(super) fn check_workspace_dir(raw: &str, what: &str) -> Result<String, Strin
     if !path.is_absolute() {
         return Err(format!("{what}: o caminho precisa ser absoluto."));
     }
+    create_missing_dir(path, trimmed, what)?;
     let metadata = std::fs::metadata(path).map_err(|error| {
         format!("{what}: não foi possível acessar “{trimmed}” dentro do container: {error}")
     })?;
@@ -1167,12 +1182,12 @@ pub(super) fn reject_workspace_overlap(
 }
 
 #[test]
-fn workspace_dir_validation_requires_an_absolute_existing_writable_directory() {
+fn workspace_dir_validation_requires_an_absolute_writable_directory_and_creates_a_missing_one() {
     let root = tempfile::tempdir().unwrap();
     assert!(check_workspace_dir("relative", "Workspace").is_err());
-    assert!(
-        check_workspace_dir(&root.path().join("missing").to_string_lossy(), "Workspace").is_err()
-    );
+    let missing = root.path().join("missing").join("nested");
+    assert!(check_workspace_dir(&missing.to_string_lossy(), "Workspace").is_ok());
+    assert!(missing.is_dir());
     let file = root.path().join("file");
     std::fs::write(&file, b"not a directory").unwrap();
     assert!(check_workspace_dir(&file.to_string_lossy(), "Workspace").is_err());
@@ -1180,6 +1195,19 @@ fn workspace_dir_validation_requires_an_absolute_existing_writable_directory() {
         check_workspace_dir(&root.path().to_string_lossy(), "Workspace").unwrap(),
         root.path().to_string_lossy()
     );
+}
+
+#[test]
+fn a_missing_storage_folder_is_created_on_save_but_only_from_an_absolute_path() {
+    let root = tempfile::tempdir().unwrap();
+    let models = root.path().join("new-models");
+    assert!(check_dir(&models.to_string_lossy(), "Pasta de modelos inteiros").is_ok());
+    assert!(models.is_dir());
+    assert!(check_dir("relative-folder-that-should-not-exist", "Pasta").is_err());
+    assert!(!std::path::Path::new("relative-folder-that-should-not-exist").exists());
+    let file = root.path().join("file");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(check_dir(&file.to_string_lossy(), "Pasta").is_err());
 }
 
 pub(super) fn reject_nested_shard_dir(
@@ -1295,6 +1323,10 @@ pub(super) async fn save_paths(
         cfg.shard_max_gb = shard_max_gb;
         if let Err(e) = cfg.save() {
             return bad_request(format!("não deu para gravar pom.json: {e}"));
+        }
+        // An emptied field returns to a default that may not exist yet.
+        for (dir, error) in cfg.create_default_storage_dirs() {
+            tracing::warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
         }
     }
 

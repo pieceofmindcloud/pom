@@ -333,7 +333,8 @@ does not get past that clip. The minimized choice is persisted in the browser.
   (`/config/pastas` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
   sets a folder (`model_dirs_env`/`shard_dir_env` in `/api/ui/paths`), the
   matching field is locked, with the variable's name in a badge and a note:
-  editing there would have no effect. The setup wizard does not show up in the
+  editing there would have no effect. Saving a folder that does not exist yet
+  creates it (absolute paths only); a path to a file is refused. The setup wizard does not show up in the
   menu, although its test route stays available.
 - `*` -> NotFound
 

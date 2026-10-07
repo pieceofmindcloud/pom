@@ -786,6 +786,9 @@ async fn async_main(
         app_config.save()?;
         info!("Generated a local admin credential for the configured node");
     }
+    for (dir, error) in app_config.create_default_storage_dirs() {
+        warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+    }
     log_capture.set_min_level(app_config.cluster_logs_min_level);
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver);
     let audit = reqlog::AuditLog::new(database.clone());

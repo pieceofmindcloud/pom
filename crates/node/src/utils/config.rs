@@ -838,6 +838,51 @@ impl Config {
     /// Shared root for user projects and dynamic plugin state. Relative values
     /// from a hand-edited legacy config are resolved under the project root so
     /// the host contract always receives an absolute path.
+    /// Creates the storage folders that are POM's own defaults when they are
+    /// the effective ones: `~/.pom/models` (when it is among the model
+    /// folders), `~/.pom/models_sliced` and `~/pom_workspace`.
+    ///
+    /// Setup and the local-network bootstrap save these paths without
+    /// creating them, so a fresh install could not receive a file: the
+    /// destination did not exist. A folder the operator typed is never
+    /// created here: it may sit on a drive that is not mounted right now, and
+    /// creating it would write onto the wrong disk. Returns the folders that
+    /// could not be created, for the caller to report.
+    pub fn create_default_storage_dirs(&self) -> Vec<(PathBuf, std::io::Error)> {
+        self.create_storage_dirs_for_defaults(
+            &default_model_dir(),
+            &default_shard_dir(),
+            &default_workspace_root(),
+        )
+    }
+
+    /// `create_default_storage_dirs` with the defaults given, so a test can
+    /// point them at a temporary folder instead of the user's home.
+    fn create_storage_dirs_for_defaults(
+        &self,
+        default_models: &Path,
+        default_shards: &Path,
+        default_workspace: &Path,
+    ) -> Vec<(PathBuf, std::io::Error)> {
+        let mut wanted = Vec::new();
+        if self.model_dir_paths().iter().any(|dir| dir == default_models) {
+            wanted.push(default_models.to_path_buf());
+        }
+        let shard_dir = self.shard_dir_path();
+        if shard_dir == default_shards {
+            wanted.push(shard_dir);
+        }
+        let workspace = self.workspace_root_path();
+        if workspace == default_workspace {
+            wanted.push(workspace);
+        }
+        wanted
+            .into_iter()
+            .filter(|dir| !dir.is_dir())
+            .filter_map(|dir| std::fs::create_dir_all(&dir).err().map(|error| (dir, error)))
+            .collect()
+    }
+
     pub fn workspace_root_path(&self) -> PathBuf {
         let path = match self.workspace_root.as_deref().map(str::trim) {
             Some(path) if !path.is_empty() => PathBuf::from(path),
@@ -1611,6 +1656,37 @@ mod tests {
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
         let cfg: Config = serde_json::from_str(r#"{"profile":"node","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
+    }
+
+    #[test]
+    fn the_default_storage_folders_are_created_but_a_typed_one_is_not() {
+        let root = std::env::temp_dir().join(format!("pom-storage-{}", uuid::Uuid::new_v4().simple()));
+        let models = root.join(".pom").join("models");
+        let shards = root.join(".pom").join("models_sliced");
+        let workspace = root.join("pom_workspace");
+        let typed = root.join("unmounted-drive").join("models");
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "profile": "node",
+            "model_dirs": [models, typed],
+            "shard_dir": shards,
+            "workspace_root": workspace,
+        }))
+        .unwrap();
+
+        assert!(cfg.create_storage_dirs_for_defaults(&models, &shards, &workspace).is_empty());
+        assert!(models.is_dir() && shards.is_dir() && workspace.is_dir());
+        assert!(!typed.exists());
+
+        // A folder the operator chose instead of the default is left alone.
+        let other = root.join("chosen-slices");
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "profile": "node",
+            "shard_dir": other,
+        }))
+        .unwrap();
+        cfg.create_storage_dirs_for_defaults(&models, &shards, &workspace);
+        assert!(!other.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

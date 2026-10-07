@@ -1660,6 +1660,30 @@ impl Network {
         *self.profile.read().expect("profile lock")
     }
 
+    /// Whether this node is the network's principal, as opposed to any
+    /// admin: a secondary admin has the profile but not the principal's
+    /// duties (relaying the chat, answering the lobby, the member list). The
+    /// principal's key comes from the local trust chain; while none is set,
+    /// the profile decides.
+    pub fn is_principal(&self) -> bool {
+        self.profile() == crate::profile::NodeProfile::Admin
+            && self
+                .policy_principal_pubkey
+                .read()
+                .ok()
+                .and_then(|current| current.as_deref().map(|key| key == self.pubkey))
+                .unwrap_or(true)
+    }
+
+    /// Whether `peer` is the principal this node's trust chain names.
+    pub fn peer_is_principal(&self, peer: &PeerInfo) -> bool {
+        self.policy_principal_pubkey
+            .read()
+            .ok()
+            .and_then(|current| current.as_deref().map(|key| key == peer.pubkey))
+            .unwrap_or(peer.profile == crate::profile::NodeProfile::Admin)
+    }
+
     /// Record the libp2p `PeerId` this node's swarm ended up with, so
     /// `self_announce` and `GatewayState::all_peers`'s self-entry can
     /// advertise it. A no-op call (`None`) is valid — it just means this run

@@ -1461,7 +1461,11 @@ network currently accepts. Every answer to that machine's `Post`, `Fetch` and
 trust document, the **connection key**, the relay keys and the network's
 current settings - is present only once an admin approved, and it leaves the
 principal only there: in an answer to the node whose signature over the
-transport was just verified, on that Noise connection. A rejected machine may
+transport was just verified, on that Noise connection. Admission, the member list, key claims, departures and the
+published stats belong to the **principal** alone: a secondary admin has the
+`admin` profile but refuses them (`Network::is_principal` compares this
+node's key with the principal of the local trust chain, and the network chat
+relay uses the same test). A rejected machine may
 ask again after an hour, and is told how long is left: a rejected `admission`
 carries `retry_after_secs` (`admission_retry_after`, counted from the
 decision on the principal's clock). The candidate turns it into a moment on

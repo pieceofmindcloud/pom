@@ -1553,6 +1553,8 @@ export interface AdminNode {
   addr: string;
   route?: PeerRoute | null;
   role?: string;
+  /** The node's role in the network: `admin`, `node` or `infer`. */
+  profile?: string;
   model?: string;
   start_layer?: number;
   end_layer?: number;

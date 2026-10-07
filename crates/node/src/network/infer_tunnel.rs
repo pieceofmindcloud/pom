@@ -129,8 +129,7 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/internal/api-keys/validate"
             | "/api/internal/admin-trust/reconcile"
             | "/api/internal/admin-trust/complete-transfer"
-            | "/api/internal/profile/authorize-node"
-            | "/api/internal/profile/accept-node"
+            | "/api/internal/admin-trust/chain"
             // A oferta de um arquivo: pequena e assinada como as outras. O
             // download que ela provoca continua sendo HTTP direto.
             | "/api/transfer/offer"
@@ -660,8 +659,7 @@ mod tests {
             "/api/internal/api-keys/validate",
             "/api/internal/admin-trust/reconcile",
             "/api/internal/admin-trust/complete-transfer",
-            "/api/internal/profile/authorize-node",
-            "/api/internal/profile/accept-node",
+            "/api/internal/admin-trust/chain",
         ] {
             assert!(gateway_path_is_allowed(path), "{path}");
         }

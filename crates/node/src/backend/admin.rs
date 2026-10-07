@@ -374,6 +374,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(internal_reconcile_admin_trust),
         )
         .route(
+            "/api/internal/admin-trust/chain",
+            post(internal_trust_chain),
+        )
+        .route(
             "/api/internal/admin-trust/complete-transfer",
             post(internal_complete_transfer),
         )
@@ -1045,6 +1049,18 @@ async fn promote_node_to_admin(
         )
             .into_response();
     }
+    // Refused before anything is signed: an inference node's role is set at
+    // admission, and a grant recorded for one would stay in the chain.
+    if crate::gateway::peer_is_infer(&state, &peer) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "an inference node cannot be made an administrator",
+                "reason": "infer_target"
+            })),
+        )
+            .into_response();
+    }
     let subject = AuthorityPrincipal {
         node_id: peer.node_id.clone(),
         peer_id,
@@ -1083,9 +1099,19 @@ async fn promote_node_to_admin(
         SYNC_TIMEOUT,
     )
     .await;
-    match response {
+    // The target answered and did not become an admin: the grant is taken
+    // back with a signed demotion, so the chain never names an admin that
+    // is not one. Silence is different - the grant stands and the target
+    // adopts it when it next asks for the chain.
+    let refusal = match response {
         Ok(response) if response.status().is_success() => {
-            Json(json!({ "profile": "admin", "node_id": node_id })).into_response()
+            let body: serde_json::Value = response.json().await.unwrap_or_default();
+            (body["profile"] != "admin").then(|| {
+                (
+                    StatusCode::CONFLICT,
+                    json!({ "error": "the node did not accept the administrator role" }).to_string(),
+                )
+            })
         }
         Ok(response) => {
             let status = response.status();
@@ -1093,14 +1119,29 @@ async fn promote_node_to_admin(
                 .text()
                 .await
                 .unwrap_or_else(|_| "promoção recusada pelo nó".to_string());
-            (status, body).into_response()
+            Some((status, body))
         }
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("a promoção não chegou ao nó: {error}") })),
-        )
-            .into_response(),
+        Err(error) => {
+            tracing::warn!(node = %node_id, "promoção registrada, ainda não entregue ao nó: {error:#}");
+            spawn_trust_fanout(&state, Some(node_id.clone()));
+            return (
+                StatusCode::ACCEPTED,
+                Json(json!({ "profile": "admin", "node_id": node_id, "pending": true })),
+            )
+                .into_response();
+        }
+    };
+    if let Some((status, body)) = refusal {
+        if let Err(error) = state
+            .admin_trust
+            .demote_secondary(&state.authority_signing_key, grant.subject.clone())
+        {
+            tracing::warn!(node = %node_id, "promoção recusada e não desfeita: {error:#}");
+        }
+        return (status, body).into_response();
     }
+    spawn_trust_fanout(&state, Some(node_id.clone()));
+    Json(json!({ "profile": "admin", "node_id": node_id })).into_response()
 }
 
 async fn internal_reconcile_admin_trust(
@@ -1111,55 +1152,181 @@ async fn internal_reconcile_admin_trust(
     if !require_signed_admin(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
+    match adopt_trust_chain(&state, document).await {
+        Ok(profile) => {
+            Json(json!({ "profile": profile, "node_id": state.network.node_id })).into_response()
+        }
+        Err((status, error)) => (status, Json(json!({ "error": error }))).into_response(),
+    }
+}
+
+/// Takes a newer copy of the trust chain and brings this node in line with
+/// it. Every member receives the chain, not only the node it promotes or
+/// demotes: a member that does not know a secondary admin refuses its
+/// commands. The profile follows the chain - admin while it grants this node
+/// authority, node when it no longer does - except for an inference node,
+/// whose role is set at admission and never raised by a grant.
+pub(crate) async fn adopt_trust_chain(
+    state: &crate::gateway::GatewayState,
+    document: AdminTrustDocument,
+) -> Result<NodeProfile, (StatusCode, String)> {
     let mut cfg = state.auth.write().await;
-    if !document
-        .grants
-        .iter()
-        .any(|grant| grant.subject == state.authority_principal)
-        || !matches!(cfg.profile, NodeProfile::Node | NodeProfile::Admin)
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "a cadeia não é uma concessão para este nó" })),
-        )
-            .into_response();
-    }
-    if let Err(error) = state.admin_trust.reconcile(document) {
-        return (
+    state.admin_trust.reconcile(document).map_err(|error| {
+        (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": format!("cadeia administrativa recusada: {error}") })),
+            format!("cadeia administrativa recusada: {error}"),
         )
-            .into_response();
-    }
+    })?;
     state
         .network
         .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
-    cfg.profile = if state
+    let granted = state
         .admin_trust
         .effective_authority(&state.authority_principal, NodeProfile::Admin)
-        .is_some()
-    {
-        NodeProfile::Admin
-    } else {
-        NodeProfile::Node
+        .is_some();
+    let profile = match cfg.profile {
+        NodeProfile::Infer => NodeProfile::Infer,
+        _ if granted => NodeProfile::Admin,
+        _ => NodeProfile::Node,
     };
-    let profile = cfg.profile;
-    if let Err(error) = cfg.save() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
-        )
-            .into_response();
+    if profile != cfg.profile {
+        cfg.profile = profile;
+        cfg.save().map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("não foi possível salvar o perfil: {error}"),
+            )
+        })?;
     }
     drop(cfg);
-    state
-        .network
-        .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
     state.network.set_profile(profile);
     let admin_receiver = profile == NodeProfile::Admin;
     state.cluster_logs.set_admin_receiver(admin_receiver);
     state.audit.set_admin_receiver(admin_receiver);
-    Json(json!({ "profile": profile, "node_id": state.network.node_id })).into_response()
+    Ok(profile)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TrustChainQuery {
+    #[serde(default)]
+    have: String,
+}
+
+/// The chain a member asks the principal for: the whole document, or only
+/// "you are current" when the caller already has this version. The document
+/// is not a secret - a public network publishes it - and the caller checks
+/// its signatures before adopting it.
+async fn internal_trust_chain(
+    _auth: InternalNodeAuth,
+    State(state): State<crate::gateway::GatewayState>,
+    Json(query): Json<TrustChainQuery>,
+) -> axum::response::Response {
+    if query.have == state.admin_trust.chain_version() {
+        return Json(json!({ "current": true })).into_response();
+    }
+    Json(json!({ "current": false, "document": state.admin_trust.document() })).into_response()
+}
+
+/// Sends the current chain to every member but `skip`, each on its own task:
+/// a promotion or demotion has to be known by all of them, and one slow peer
+/// must not hold the others. A peer that misses it asks later
+/// (`spawn_trust_chain_keeper`).
+fn spawn_trust_fanout(state: &crate::gateway::GatewayState, skip: Option<String>) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let document = state.admin_trust.document();
+        for peer in state.network.alive_peers().await {
+            if peer.node_id == state.network.node_id || skip.as_deref() == Some(&peer.node_id) {
+                continue;
+            }
+            let state = state.clone();
+            let document = document.clone();
+            tokio::spawn(async move {
+                let sent = post_internal_json(
+                    &state,
+                    &peer,
+                    "/api/internal/admin-trust/reconcile",
+                    &document,
+                    SYNC_TIMEOUT,
+                )
+                .await;
+                match sent {
+                    Ok(response) if response.status().is_success() => {}
+                    Ok(response) => tracing::debug!(
+                        node = %peer.node_id,
+                        "cadeia administrativa: o peer respondeu {}",
+                        response.status()
+                    ),
+                    Err(error) => tracing::debug!(
+                        node = %peer.node_id,
+                        "cadeia administrativa não chegou ao peer: {error:#}"
+                    ),
+                }
+            });
+        }
+    });
+}
+
+/// How often a member checks its copy of the chain against the principal's.
+const TRUST_CHAIN_CHECK: Duration = Duration::from_secs(120);
+
+/// On a member: asks the principal whether the trust chain changed and
+/// adopts the new one. This is what reaches a node that was offline, or
+/// unreachable, when a promotion or demotion was sent around.
+pub(crate) fn spawn_trust_chain_keeper(state: crate::gateway::GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(TRUST_CHAIN_CHECK);
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            let primary = state.admin_trust.current_primary();
+            if primary.pubkey == state.authority_principal.pubkey {
+                continue;
+            }
+            let Some(peer) = state
+                .network
+                .alive_peers()
+                .await
+                .into_iter()
+                .find(|peer| peer.node_id == primary.node_id && peer.pubkey == primary.pubkey)
+            else {
+                continue;
+            };
+            if let Err(error) = refresh_trust_chain(&state, &peer).await {
+                tracing::debug!("cadeia administrativa: consulta ao principal falhou: {error:#}");
+            }
+        }
+    });
+}
+
+/// One round of the keeper: `Ok(true)` when a newer chain was adopted.
+async fn refresh_trust_chain(
+    state: &crate::gateway::GatewayState,
+    principal: &crate::network::PeerInfo,
+) -> anyhow::Result<bool> {
+    let response = state
+        .control_post_json(
+            principal,
+            "/api/internal/admin-trust/chain",
+            &json!({ "have": state.admin_trust.chain_version() }),
+            SYNC_TIMEOUT,
+        )
+        .await?;
+    if !response.status().is_success() {
+        anyhow::bail!("o principal respondeu {}", response.status());
+    }
+    let body: serde_json::Value = response.json().await?;
+    let Some(document) = body.get("document").filter(|value| !value.is_null()) else {
+        return Ok(false);
+    };
+    let document: AdminTrustDocument = serde_json::from_value(document.clone())?;
+    adopt_trust_chain(state, document)
+        .await
+        .map_err(|(_, error)| anyhow::anyhow!(error))?;
+    tracing::info!("cadeia administrativa atualizada a partir do principal");
+    Ok(true)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1417,6 +1584,7 @@ async fn demote_secondary(
                 .into_response()
         }
     };
+    spawn_trust_fanout(&state, Some(subject.node_id.clone()));
     let Some(peer) = state
         .network
         .alive_peers()
@@ -2215,4 +2383,205 @@ mod tests {
         ));
     }
 
+
+    /// A principal with its chain, and the keys of two other machines.
+    struct ChainLab {
+        principal_key: ed25519_dalek::SigningKey,
+        principal: AuthorityPrincipal,
+        trust: crate::admin_trust::AdminTrust,
+        member: (ed25519_dalek::SigningKey, AuthorityPrincipal),
+        other: (ed25519_dalek::SigningKey, AuthorityPrincipal),
+    }
+
+    fn chain_lab() -> ChainLab {
+        let principal_key = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let principal =
+            AuthorityPrincipal::from_signing_key("principal", "peer-principal", &principal_key);
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "chain-lab",
+            principal.clone(),
+            &principal_key,
+        )
+        .unwrap();
+        let key = |seed: u8, name: &str| {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let principal =
+                AuthorityPrincipal::from_signing_key(name, format!("peer-{name}"), &key);
+            (key, principal)
+        };
+        ChainLab {
+            principal_key,
+            principal,
+            trust,
+            member: key(22, "member"),
+            other: key(23, "other"),
+        }
+    }
+
+    impl ChainLab {
+        /// A node of this network holding the chain as it is now.
+        async fn node(
+            &self,
+            identity: &(ed25519_dalek::SigningKey, AuthorityPrincipal),
+            profile: NodeProfile,
+        ) -> crate::gateway::GatewayState {
+            let mut state =
+                crate::gateway::testkit::state_with(&identity.1.node_id, vec![]).await;
+            state.auth.write().await.profile = profile;
+            state.network.set_profile(profile);
+            state.admin_trust = std::sync::Arc::new(
+                crate::admin_trust::AdminTrust::in_memory(self.trust.document()).unwrap(),
+            );
+            state.authority_signing_key = std::sync::Arc::new(identity.0.clone());
+            state.authority_principal = identity.1.clone();
+            state
+        }
+
+        fn promote(&self, subject: &AuthorityPrincipal) {
+            let grant = self
+                .trust
+                .signed_secondary_grant(&self.principal_key, subject.clone(), "principal")
+                .unwrap();
+            self.trust
+                .record_secondary_grant(grant, &self.principal_key)
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn every_member_adopts_a_promotion_not_only_the_promoted_node() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lab = chain_lab();
+        let promoted = lab.node(&lab.member, NodeProfile::Node).await;
+        let bystander = lab.node(&lab.other, NodeProfile::Node).await;
+        let infer_bystander = lab.node(&lab.other, NodeProfile::Infer).await;
+        // Before the chain arrives, the bystander does not know the admin.
+        lab.promote(&lab.member.1);
+        assert!(!crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
+        ));
+
+        let chain = lab.trust.document();
+        assert_eq!(
+            adopt_trust_chain(&promoted, chain.clone()).await.unwrap(),
+            NodeProfile::Admin
+        );
+        assert_eq!(promoted.network.profile(), NodeProfile::Admin);
+        // The bystander keeps its role and now accepts the new admin.
+        assert_eq!(
+            adopt_trust_chain(&bystander, chain.clone()).await.unwrap(),
+            NodeProfile::Node
+        );
+        assert!(crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
+        ));
+        assert_eq!(
+            adopt_trust_chain(&infer_bystander, chain.clone()).await.unwrap(),
+            NodeProfile::Infer
+        );
+
+        // A demotion travels the same way and takes the role back.
+        lab.trust
+            .demote_secondary(&lab.principal_key, lab.member.1.clone())
+            .unwrap();
+        let demoted = lab.trust.document();
+        assert_eq!(
+            adopt_trust_chain(&promoted, demoted.clone()).await.unwrap(),
+            NodeProfile::Node
+        );
+        adopt_trust_chain(&bystander, demoted).await.unwrap();
+        assert!(!crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
+        ));
+        // The copy from before the demotion is older and cannot undo it.
+        let (status, _) = adopt_trust_chain(&bystander, chain).await.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_grant_never_raises_an_inference_node() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lab = chain_lab();
+        let infer = lab.node(&lab.member, NodeProfile::Infer).await;
+        lab.promote(&lab.member.1);
+        assert_eq!(
+            adopt_trust_chain(&infer, lab.trust.document()).await.unwrap(),
+            NodeProfile::Infer
+        );
+        assert_eq!(infer.auth.read().await.profile, NodeProfile::Infer);
+    }
+
+    #[tokio::test]
+    async fn the_principal_refuses_to_promote_an_inference_node_before_signing() {
+        let lab = chain_lab();
+        let mut peer = crate::gateway::testkit::peer("member", "member", 1);
+        peer.profile = NodeProfile::Infer;
+        peer.pubkey = lab.member.1.pubkey.clone();
+        peer.libp2p_peer_id = Some(lab.member.1.peer_id.clone());
+        let mut state = crate::gateway::testkit::state_with("principal", vec![peer]).await;
+        state.auth.write().await.profile = NodeProfile::Admin;
+        state.admin_trust = std::sync::Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(lab.trust.document()).unwrap(),
+        );
+        state.authority_signing_key = std::sync::Arc::new(lab.principal_key.clone());
+        state.authority_principal = lab.principal.clone();
+        let before = state.admin_trust.chain_version();
+
+        let response =
+            promote_node_to_admin(ConnectionAuth, State(state.clone()), Path("member".into()))
+                .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            crate::gateway::testkit::body_of(response).await["reason"],
+            "infer_target"
+        );
+        // Nothing was signed: the chain is exactly as it was.
+        assert_eq!(state.admin_trust.chain_version(), before);
+    }
+
+    #[tokio::test]
+    async fn a_member_is_only_sent_the_chain_when_its_copy_differs() {
+        let lab = chain_lab();
+        let principal = lab.node(&(lab.principal_key.clone(), lab.principal.clone()), NodeProfile::Admin).await;
+        let ask = |have: String| {
+            let principal = principal.clone();
+            async move {
+                crate::gateway::testkit::body_of(
+                    internal_trust_chain(
+                        InternalNodeAuth { principal: None },
+                        State(principal),
+                        Json(TrustChainQuery { have }),
+                    )
+                    .await,
+                )
+                .await
+            }
+        };
+        let current = ask(principal.admin_trust.chain_version()).await;
+        assert_eq!(current["current"], true);
+        assert!(current.get("document").is_none());
+        let stale = ask("0.0.0.0-old".into()).await;
+        assert_eq!(stale["current"], false);
+        assert_eq!(stale["document"]["primary"]["node_id"], "principal");
+    }
+
+    #[tokio::test]
+    async fn a_secondary_admin_is_not_the_principal() {
+        let lab = chain_lab();
+        lab.promote(&lab.member.1);
+        let secondary = lab.node(&lab.member, NodeProfile::Admin).await;
+        // With no principal named yet, the profile decides (single-node case).
+        assert!(secondary.network.is_principal());
+        secondary
+            .network
+            .set_policy_principal_pubkey(lab.principal.pubkey.clone());
+        assert!(!secondary.network.is_principal());
+    }
 }

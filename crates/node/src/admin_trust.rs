@@ -919,6 +919,19 @@ impl AdminTrust {
         Ok(demotion)
     }
 
+    /// What tells two copies of the chain apart without comparing them:
+    /// every change of authority moves one of these counters.
+    pub(crate) fn chain_version(&self) -> String {
+        let document = self.document();
+        format!(
+            "{}.{}.{}.{}",
+            document.authority_epoch,
+            document.promotion_seq,
+            document.demotions.len(),
+            u8::from(document.pending_transfer.is_some())
+        )
+    }
+
     pub(crate) fn reconcile(&self, incoming: AdminTrustDocument) -> Result<()> {
         validate_document(&incoming)?;
         let mut document = self.state.lock().expect("admin trust lock poisoned");
@@ -927,6 +940,14 @@ impl AdminTrust {
         }
         if incoming.authority_epoch < document.authority_epoch
             || incoming.promotion_seq < document.promotion_seq
+        {
+            bail!("a cadeia recebida é anterior ao estado local");
+        }
+        // A demotion does not advance the sequence, so a copy from before it
+        // would otherwise pass as current and give the authority back.
+        if incoming.authority_epoch == document.authority_epoch
+            && incoming.promotion_seq == document.promotion_seq
+            && incoming.demotions.len() < document.demotions.len()
         {
             bail!("a cadeia recebida é anterior ao estado local");
         }

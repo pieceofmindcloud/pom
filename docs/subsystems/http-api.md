@@ -294,7 +294,7 @@ and emits a diagnostic at startup.
 
 `GET /api/ui/network/admin-authority` only exposes the presentation view. The
 principal promotes with `POST /admin/nodes/:id/promote-admin`; the delivery
-carries the full signed chain to the target. `POST /admin/authority/resign`
+carries the full signed chain to the target, and then to every other member. `POST /admin/authority/resign`
 opens a signed offer to the last active secondary, and
 `POST /api/transfer/offers/{id}/accept` only completes when the successor
 presents the signed acceptance. `POST /admin/authority/secondaries/:id/demote`
@@ -775,7 +775,24 @@ offers as `GET /api/transfer/offers`). `list_nodes` adds entries for blocked nod
 effective authority in the separate file is `Primary`. The principal signs a
 `secondary` grant with its Ed25519 identity; the target only accepts the change
 after validating the manual anchor and the full chain, while it is still a
-`node`. `GET /api/ui/network/admin-authority` is the view of the chain and the
+`node`. An inference node is refused before anything is signed (409, reason
+`infer_target`): its role is set at admission. If the target answers and does
+not become an admin, the principal takes the grant back with a signed
+demotion; if the target does not answer, the answer is 202 with
+`pending: true` and the grant stands until the target fetches the chain.
+
+**Every member holds the current chain**, not only the promoted or demoted
+node: a member that does not know a secondary admin refuses its commands.
+After a promotion or a demotion the principal posts the chain to each member
+(`POST /api/internal/admin-trust/reconcile`, signed by an admin of the
+receiver's current chain). The receiver adopts it when it is not older than
+its own (`admin_trust::reconcile`; a copy from before a demotion counts as
+older) and sets its profile from it: `admin` while the chain grants it
+authority, `node` when it no longer does, and an inference node stays one. A
+member that missed the delivery asks the principal every two minutes with
+`POST /api/internal/admin-trust/chain` and body `{have: <version>}`; the
+answer is `{current: true}` or `{current: false, document}`
+(`admin.rs::spawn_trust_chain_keeper`). `GET /api/ui/network/admin-authority` is the view of the chain and the
 members. Resigning is a signed offer to the last active secondary and only the
 acceptance signed by that successor's key changes the principal. A secondary
 can neither promote nor demote another.

@@ -150,7 +150,10 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   é o que admite um worker co-locado sem grant. Campo `profile` nunca concede
   acesso. `PeerList` é revalidado, e `connection_verified` só é escrito pelo
   gate local. O perfil anunciado por `with_identity` pode ser
-  atualizado por `set_profile`; a capacidade de admin não vem do anúncio, mas
+  atualizado por `set_profile`; `is_principal` / `peer_is_principal` tell the
+  principal from any admin (a secondary has the profile, not the principal's
+  duties: chat relay, lobby, member list), by the key the local trust chain
+  names; a capacidade de admin não vem do anúncio, mas
   da cadeia em `admin_trust.rs`. O campo `idle` também é anunciado por peer
   para distinguir modelo descarregado de deployment fora do ar; ele não altera
   a regra de liveness.

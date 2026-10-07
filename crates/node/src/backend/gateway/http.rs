@@ -534,7 +534,7 @@ async fn publish_local_directory_record(state: &GatewayState) -> Result<()> {
     if settings.replicas.is_empty() {
         return Ok(());
     }
-    if state.auth.read().await.profile != crate::profile::NodeProfile::Admin {
+    if !state.network.is_principal() {
         return Ok(());
     }
     let Some(local) = local_public_network(state).await else {

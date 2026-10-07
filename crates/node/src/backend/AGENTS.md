@@ -419,9 +419,10 @@ profile policy remains the effective authorization boundary.
   produção a 2026-09-08.
 - `profile.rs` - `NodeProfile` is the durable product profile and the one source
   for network visibility and profile transitions. The web UI serializes it
-  through `GET /api/ui/node`. Infer nodes can read a local-only network view
-  and request node access; any active admin can authorize that signed request.
-  A secondary admin keeps management access but cannot promote another admin.
+  through `GET /api/ui/node`. Infer nodes can read a local-only network view;
+  a role never changes in place. A secondary admin keeps management access
+  but cannot promote another admin, and is not the principal: admission and
+  the member list stay with the principal.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
   transfer offer and acceptance state, and full-chain reconciliation. Consumed
@@ -577,16 +578,16 @@ profile policy remains the effective authorization boundary.
   não fazem parte do contrato do SSE.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
-- `admin.rs` - control plane do operador: nós, bloqueio, chaves e autoridade.
-  O pedido `infer -> node` assina a solicitação no nó requerente, procura um
-  admin vigente e envia `/api/internal/profile/authorize-node`; o admin assina
-  o comando e o envia a `/api/internal/profile/accept-node`. As duas pernas
-  percorrem `PeerInfo::gateway_candidates()` até obter resposta, tratando o
-  primeiro endereço anunciado como cache que pode expirar. A ida usa um prazo
-  maior que uma tentativa de retorno, porque o admin também precisa executar a
-  segunda perna; retries automáticos da mesma mutação assinada são evitados para
-  não transformar timeout em falso replay administrativo. O testkit de admin
-  sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
+- `admin.rs` - the operator's control plane: nodes, blocking, keys and
+  authority. `promote_node_to_admin` refuses an inference target before
+  signing, records the grant, delivers the chain to the target and takes the
+  grant back with a signed demotion when the target answers without becoming
+  an admin; silence leaves the grant standing (202, `pending`).
+  `adopt_trust_chain` is how any member takes a newer chain and sets its
+  profile from it (an inference node never rises). `spawn_trust_fanout` sends
+  the chain to every member after a promotion or demotion, and
+  `spawn_trust_chain_keeper` is the member's two-minute check against the
+  principal (`POST /api/internal/admin-trust/chain`) for whoever missed it.
 - `reqlog.rs` - adaptador de auditoria e fallback de migração. Com o plugin
   ativo, o host grava em `enterprise.db`; independentemente desse destino, o
   `AuditLog` do POM replica `begin` e `complete` aos admins efetivos por libp2p.

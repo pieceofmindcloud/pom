@@ -203,7 +203,8 @@ Per-file list:
 - `AdminAuthorityPanel.tsx` - Readable authority roster for the principal,
   secondary admins and promotion chain. It exposes promotion, demotion and
   succession controls only when the presentation contract says this viewer is
-  the principal; refusal states remain explicit.
+  the principal; refusal states remain explicit. Inference nodes are left out
+  of the promotion candidates (the node refuses them as well).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/rede`; then hostname,
   short_id, peer count, coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela

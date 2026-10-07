@@ -1004,7 +1004,7 @@ impl Discovery {
                         let _ = reply.send(ChatResponse::rejected("network_chat_disabled"));
                         continue;
                     }
-                    if network.profile() == crate::profile::NodeProfile::Admin {
+                    if network.is_principal() {
                         let result = accept_original_chat(
                             &mut swarm,
                             &network,
@@ -1626,9 +1626,7 @@ async fn handle_event(
                                 candidate.libp2p_peer_id.as_deref()
                                     == Some(peer.to_string().as_str())
                             })
-                            .is_some_and(|candidate| {
-                                candidate.profile == crate::profile::NodeProfile::Admin
-                            });
+                            .is_some_and(|candidate| network.peer_is_principal(&candidate));
                         if !source_is_principal || !chat.enabled() {
                             ChatResponse::rejected("relay_not_authorized")
                         } else {
@@ -1772,7 +1770,7 @@ async fn accept_original_chat(
     if !chat.enabled() {
         return ChatResponse::rejected("network_chat_disabled");
     }
-    if source.is_some() && network.profile() != crate::profile::NodeProfile::Admin {
+    if source.is_some() && !network.is_principal() {
         return ChatResponse::rejected("principal_unavailable");
     }
     let transport_node_id = source
@@ -1788,7 +1786,7 @@ async fn accept_original_chat(
     let action = request.action;
     match chat.accept(action.clone()) {
         Ok(true) => {
-            if network.profile() == crate::profile::NodeProfile::Admin {
+            if network.is_principal() {
                 relay_chat(
                     swarm,
                     network,
@@ -1898,7 +1896,7 @@ async fn answer_lobby_request(
         if !chat.directory_board().allow(&caller) {
             return LobbyResponse::rejected("rate_limited");
         }
-        if network.profile() != crate::profile::NodeProfile::Admin {
+        if !network.is_principal() {
             return LobbyResponse::rejected("not_principal");
         }
         let Some(node_id) = identity.verified_node_id(&peer) else {
@@ -1928,7 +1926,7 @@ async fn answer_lobby_request(
         if !chat.directory_board().allow(&caller) {
             return LobbyResponse::rejected("rate_limited");
         }
-        if network.profile() != crate::profile::NodeProfile::Admin {
+        if !network.is_principal() {
             return LobbyResponse::rejected("not_principal");
         }
         let Some(node_id) = identity.verified_node_id(&peer) else {
@@ -1972,7 +1970,7 @@ async fn answer_lobby_request(
     // The published stats answer under their own switch and leave no
     // presence: asking what a network runs is not entering its lobby.
     if matches!(request, LobbyRequest::Info) {
-        if network.profile() != crate::profile::NodeProfile::Admin
+        if !network.is_principal()
             || !chat.public_stats_enabled().await
         {
             return LobbyResponse::rejected("stats_disabled");
@@ -1987,7 +1985,7 @@ async fn answer_lobby_request(
             ..LobbyResponse::default()
         };
     }
-    if network.profile() != crate::profile::NodeProfile::Admin || !chat.lobby_enabled().await {
+    if !network.is_principal() || !chat.lobby_enabled().await {
         return LobbyResponse::rejected("lobby_disabled");
     }
     let proof = match &request {

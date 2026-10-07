@@ -151,6 +151,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (`admin`/`node`/`infer`), o provider e `useProfile()`. Não há setter nem
   `localStorage`: o navegador só apresenta o valor e deriva dele o menu/guarda
   de rota. **Não é autorização** - o backend continua sendo a fronteira.
+  `secondary` is true for an `admin` that is not the principal
+  (`authority_level === "secondary"`): it deploys models and otherwise sees
+  what a node sees, so principal-only controls check `!secondary`.
 - `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
   para a lista de perfis; para `infer`, `/chat`, `/network-chat`,
   `/documentacao`, `/config/keys/api` e `/config/rede` são visíveis. A lista de

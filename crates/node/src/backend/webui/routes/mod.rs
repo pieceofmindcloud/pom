@@ -13,7 +13,14 @@ mod node;
 /// omissão.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteScope {
+    /// The network's principal only. A secondary admin does not reach these:
+    /// everything that governs the network (members, admissions, settings,
+    /// keys, the trust chain) comes from the principal.
     AdminOnly,
+    /// Any admin of the trust chain, principal or secondary: putting models
+    /// in and out of service. It is the one thing a secondary admin may do
+    /// that a node may not.
+    DeployAdmin,
     NodeAdmin,
     InferNodeAdmin,
     CommonOrInternal,
@@ -411,7 +418,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/deploy",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/deployments",
@@ -421,32 +428,32 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/deployments",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/apply",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/launch",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/undeploy",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/stop-inference",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/unload",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     // Emptying a machine's KV cache deletes what its conversations saved.
     RouteRule {
@@ -457,7 +464,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/reconfigure",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::DeployAdmin,
     },
     RouteRule {
         prefix: "/api/ui/release",
@@ -555,7 +562,9 @@ pub(crate) const fn profile_can_access(
     scope: RouteScope,
 ) -> bool {
     match scope {
-        RouteScope::AdminOnly => matches!(profile, crate::profile::NodeProfile::Admin),
+        RouteScope::AdminOnly | RouteScope::DeployAdmin => {
+            matches!(profile, crate::profile::NodeProfile::Admin)
+        }
         RouteScope::NodeAdmin => matches!(
             profile,
             crate::profile::NodeProfile::Node | crate::profile::NodeProfile::Admin
@@ -692,8 +701,24 @@ mod policy_tests {
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);
         assert_eq!(
             route_scope(&Method::POST, "/api/ui/deployments"),
-            RouteScope::AdminOnly
+            RouteScope::DeployAdmin
         );
+        // Deploying is the one admin scope a secondary admin shares; what
+        // governs the network stays with the principal.
+        for path in ["/api/ui/deploy", "/api/ui/undeploy", "/api/ui/apply", "/api/ui/unload"] {
+            assert_eq!(scope_of(path), RouteScope::DeployAdmin, "{path}");
+        }
+        for path in ["/api/ui/network/admissions", "/admin/authority/resign", "/api/ui/release"] {
+            assert_eq!(scope_of(path), RouteScope::AdminOnly, "{path}");
+        }
+        assert!(profile_can_access(
+            crate::profile::NodeProfile::Admin,
+            RouteScope::DeployAdmin
+        ));
+        assert!(!profile_can_access(
+            crate::profile::NodeProfile::Node,
+            RouteScope::DeployAdmin
+        ));
         // Changing a role in place is not a route any more: with no rule,
         // the old paths fall to the closed default.
         assert_eq!(

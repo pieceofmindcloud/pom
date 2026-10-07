@@ -21,10 +21,17 @@ export function isProfile(value: string | null | undefined): value is Profile {
 
 type ProfileContextValue = {
   profile: Profile;
+  /**
+   * An `admin` that is not the network's principal. A secondary admin
+   * deploys and undeploys models and otherwise sees what a node sees:
+   * members, admissions, settings and the trust chain are the principal's.
+   */
+  secondary: boolean;
 };
 
 const ProfileContext = createContext<ProfileContextValue>({
   profile: DEFAULT_PROFILE,
+  secondary: false,
 });
 
 export function ProfileProvider({
@@ -45,7 +52,10 @@ export function ProfileProvider({
 function ProfileFromNode({ children }: { children: ReactNode }) {
   const node = useNode();
   return (
-    <ProfileContextProvider profile={node.data?.profile ?? DEFAULT_PROFILE}>
+    <ProfileContextProvider
+      profile={node.data?.profile ?? DEFAULT_PROFILE}
+      secondary={node.data?.authority_level === "secondary"}
+    >
       {children}
     </ProfileContextProvider>
   );
@@ -54,16 +64,18 @@ function ProfileFromNode({ children }: { children: ReactNode }) {
 function ProfileContextProvider({
   children,
   profile,
+  secondary = false,
 }: {
   children: ReactNode;
   profile: Profile;
+  secondary?: boolean;
 }) {
 
   useEffect(() => {
     document.documentElement.dataset.profile = profile;
   }, [profile]);
 
-  const value = useMemo(() => ({ profile }), [profile]);
+  const value = useMemo(() => ({ profile, secondary }), [profile, secondary]);
 
   return <ProfileContext.Provider value={value}>{children}</ProfileContext.Provider>;
 }

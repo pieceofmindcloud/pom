@@ -91,12 +91,7 @@ pub(crate) async fn save_network_settings(
     State(state): State<GatewayState>,
     Json(settings): Json<NetworkSettings>,
 ) -> Response {
-    let profile = state.auth.read().await.profile;
-    if state
-        .admin_trust
-        .effective_authority(&state.authority_principal, profile)
-        .is_none()
-    {
+    if !super::local_is_primary(&state).await {
         return network_error(
             StatusCode::FORBIDDEN,
             "admin_authority_required",
@@ -533,9 +528,10 @@ pub(crate) async fn internal_network_settings(
     State(state): State<GatewayState>,
     Json(envelope): Json<NetworkSettingsEnvelope>,
 ) -> Response {
-    let is_admin = auth.principal().is_some_and(|issuer| {
-        crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer)
-    });
+    // Network settings come from the principal alone.
+    let is_admin = auth
+        .principal()
+        .is_some_and(|issuer| crate::gateway::issuer_is_principal(&state, issuer));
     if !is_admin {
         return network_error(
             StatusCode::FORBIDDEN,
@@ -689,7 +685,7 @@ async fn network_info_view(state: &GatewayState) -> NetworkInfoView {
     let can_edit = state
         .admin_trust
         .effective_authority(&state.authority_principal, config.profile)
-        .is_some();
+        == Some(crate::admin_trust::EffectiveAuthority::Primary);
     NetworkInfoView { network, can_edit }
 }
 

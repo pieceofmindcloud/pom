@@ -286,7 +286,7 @@ pub(super) async fn leave_network(
 ) -> Response {
     let target = body.and_then(|Json(b)| b.node_id).unwrap_or_default();
     if !target.is_empty() && target != state.network.node_id {
-        if !has_admin_authority(&state).await {
+        if !super::local_is_primary(&state).await {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
@@ -404,16 +404,6 @@ pub(super) async fn leave_network_and_reset(
         tracing::error!("respawn após saída da rede falhou, o nó segue no ar: {error}");
     });
     Json(json!({ "left": true, "restored_own_network": restored, "restart": true })).into_response()
-}
-
-/// Autoridade administrativa efetiva deste nó. `profile: admin` sozinho não
-/// concede capacidade: é a concessão assinada que decide (ver `admin_trust`).
-async fn has_admin_authority(state: &GatewayState) -> bool {
-    let profile = state.auth.read().await.profile;
-    state
-        .admin_trust
-        .effective_authority(&state.authority_principal, profile)
-        .is_some()
 }
 
 /// Prazo de um `/api/ui/apply` encaminhado: o do cliente de peer

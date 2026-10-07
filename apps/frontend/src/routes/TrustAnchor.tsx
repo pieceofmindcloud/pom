@@ -102,7 +102,7 @@ export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
   const anchor = useTrustAnchor();
   const node = useNode();
   const toast = useToast();
-  const canShare = node.data?.authority_level != null;
+  const canShare = node.data?.authority_level === "primary";
   // The cluster's key is the operator's credential; node and infer never see it.
   const { profile } = useProfile();
   const [trustShare, setTrustShare] = useState<TrustShareView | null>(null);

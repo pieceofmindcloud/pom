@@ -200,9 +200,13 @@ quebra o produto inteiro.
   inference node refuses everything that would make it hold or serve a model
   (transfers, slicing, `apply`, being a deploy target), whoever asks, an admin
   included. What one node may ask of another depends on who signed the
-  request: administrative routes take an admin of the trust chain, routes of
-  a serving node take a peer that is not an inference node, and the
-  connection key alone opens neither - every member holds it. The role is
+  request: routes that govern the network take the principal, deploy routes
+  take any admin of the trust chain, routes of a serving node take a peer
+  that is not an inference node, and the connection key alone opens none of
+  them - every member holds it. **A secondary admin deploys and undeploys
+  models and nothing else**: members, admissions, settings, keys and every
+  change to the trust chain come from the principal, on the screen and
+  between nodes. The role is
   granted at admission; on the principal a machine admitted as an inference
   node stays one whatever it announces. → `http-api.md`
 - **Plugins são independentes entre si e são uma fronteira de processo.** O

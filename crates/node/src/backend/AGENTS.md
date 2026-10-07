@@ -1167,6 +1167,9 @@ faz o download autenticado do blob persistido.
   nodes: an inference node refuses the model-bearing routes
   (`routes::infer_node_refuses`) whoever asks, and `caller_may_ask` decides
   what a node-to-node caller may reach from who signed the request.
+  `RouteScope::AdminOnly` means the principal (`issuer_is_principal`, and
+  `EffectiveAuthority::Primary` for the browser); `RouteScope::DeployAdmin`
+  is any admin of the chain and is all a secondary admin has beyond a node.
   `peer_is_infer` is shared with the deploy survey, `launch` and add-node,
   which never target an inference node.
   `webui/standby.rs` keeps the node's own network aside while it is a member

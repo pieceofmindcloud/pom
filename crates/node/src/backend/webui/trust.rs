@@ -265,12 +265,7 @@ pub(super) async fn install_trust_anchor(
 }
 
 pub(crate) async fn trust_share(State(state): State<GatewayState>) -> Response {
-    let profile = state.auth.read().await.profile;
-    if state
-        .admin_trust
-        .effective_authority(&state.authority_principal, profile)
-        .is_none()
-    {
+    if !super::local_is_primary(&state).await {
         return refusal(
             StatusCode::FORBIDDEN,
             "admin_authority_required",

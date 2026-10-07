@@ -39,12 +39,13 @@ function IssuedSecret({ issued, onDone }: { issued: IssuedApiKey | null; onDone:
 
 export function ApiKeysTable() {
   const { t } = useI18n();
-  const { profile } = useProfile();
+  const { profile, secondary } = useProfile();
   const node = useNode();
   const cluster = useCluster();
   const keys = useApiKeys();
   const toast = useToast();
-  const isAdmin = profile === "admin";
+  // Other machines' keys are the principal's to see and issue.
+  const isAdmin = profile === "admin" && !secondary;
   const inference = profile === "infer";
   const ownId = node.data?.node_id;
   const [createOpen, setCreateOpen] = useState(false);

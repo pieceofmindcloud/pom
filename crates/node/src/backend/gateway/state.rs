@@ -823,31 +823,42 @@ pub(crate) fn peer_is_infer(state: &GatewayState, peer: &PeerInfo) -> bool {
 
 /// What a node-to-node request may reach, by the caller's identity.
 ///
-/// - An administrative route (deploy, load, unload, stop, `/admin`) takes a
-///   request **signed by an admin of the trust chain**. The connection key
-///   alone is refused: every member holds it.
+/// - A route that governs the network (`/admin`, settings, admissions) takes
+///   a request **signed by the principal**. A secondary admin is refused.
+/// - A deploy route (deploy, load, unload, stop) takes a request signed by
+///   any admin of the trust chain, principal or secondary.
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
 ///   request from an admin or from a peer that is not an inference node.
 /// - Everything else - inference, the node's own description, the internal
 ///   sync routes - stays as it was.
+///
+/// The connection key alone opens none of the first three: every member
+/// holds it.
 pub(crate) async fn caller_may_ask(
     state: &GatewayState,
     scope: crate::webui::RouteScope,
     issuer: Option<&crate::admin_trust::AuthorityPrincipal>,
 ) -> Result<(), &'static str> {
     use crate::webui::RouteScope;
-    if !matches!(scope, RouteScope::AdminOnly | RouteScope::NodeAdmin) {
+    if !matches!(
+        scope,
+        RouteScope::AdminOnly | RouteScope::DeployAdmin | RouteScope::NodeAdmin
+    ) {
         return Ok(());
     }
     let Some(issuer) = issuer else {
         return Err("signature_required");
     };
-    if issuer == &state.authority_principal
-        || crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer)
-    {
+    if issuer == &state.authority_principal || issuer_is_principal(state, issuer) {
         return Ok(());
     }
     if scope == RouteScope::AdminOnly {
+        return Err("principal_required");
+    }
+    if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer) {
+        return Ok(());
+    }
+    if scope == RouteScope::DeployAdmin {
         return Err("admin_required");
     }
     let peers = state.network.alive_peers().await;
@@ -856,6 +867,16 @@ pub(crate) async fn caller_may_ask(
         Some(_) => Err("infer_caller"),
         None => Err("unknown_caller"),
     }
+}
+
+/// Whether `issuer` is the principal of this node's trust chain.
+pub(crate) fn issuer_is_principal(
+    state: &GatewayState,
+    issuer: &crate::admin_trust::AuthorityPrincipal,
+) -> bool {
+    let document = state.admin_trust.document();
+    issuer == &document.primary
+        && crate::admin_trust::control_issuer_is_admin(&document, issuer)
 }
 
 pub(crate) async fn require_admin_for_surface(
@@ -891,7 +912,21 @@ pub(crate) async fn require_admin_for_surface(
     // connection key says "a member"; it does not say which, and every member
     // holds it, inference nodes included.
     if let Some(auth) = &internal_node {
-        if let Err(reason) = caller_may_ask(&state, scope, auth.principal()).await {
+        // Taking a machine out of the network is the principal's act. The
+        // route is open to every profile because leaving is abdication, so
+        // the scope cannot say it: a leave forwarded by another node has to
+        // carry the principal's signature.
+        let verdict = match auth.principal() {
+            Some(issuer)
+                if path == "/api/ui/leave"
+                    && issuer != &state.authority_principal
+                    && !issuer_is_principal(&state, issuer) =>
+            {
+                Err("principal_required")
+            }
+            issuer => caller_may_ask(&state, scope, issuer).await,
+        };
+        if let Err(reason) = verdict {
             return (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({
@@ -903,14 +938,19 @@ pub(crate) async fn require_admin_for_surface(
                 .into_response();
         }
     }
-    let local_admin_authority = state
+    // The `admin` profile alone grants nothing: the trust chain decides, and
+    // it tells the principal from a secondary admin, who only deploys.
+    let local_authority = state
         .admin_trust
-        .effective_authority(&state.authority_principal, profile)
-        .is_some();
-    let profile_access = crate::webui::profile_can_access(profile, scope)
-        && (scope != crate::webui::RouteScope::AdminOnly
-            || profile != crate::profile::NodeProfile::Admin
-            || local_admin_authority);
+        .effective_authority(&state.authority_principal, profile);
+    let authority_access = match scope {
+        crate::webui::RouteScope::AdminOnly => {
+            local_authority == Some(crate::admin_trust::EffectiveAuthority::Primary)
+        }
+        crate::webui::RouteScope::DeployAdmin => local_authority.is_some(),
+        _ => true,
+    };
+    let profile_access = crate::webui::profile_can_access(profile, scope) && authority_access;
     if !profile_access && !internal_node_request {
         return (
             StatusCode::FORBIDDEN,

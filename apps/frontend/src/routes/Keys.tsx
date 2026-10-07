@@ -88,7 +88,7 @@ export function ConnectionKeys() {
    * os outros nós. Continua sendo `/admin/regenerate-key`, e a autoridade
    * efetiva é o que decide - `profile: admin` sem concessão não a tem.
    */
-  const canRotate = node.data?.authority_level != null;
+  const canRotate = node.data?.authority_level === "primary";
 
   async function regenerate() {
     setBusy(true);

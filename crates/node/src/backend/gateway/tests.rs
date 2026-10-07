@@ -370,7 +370,9 @@ mod tests {
 
     #[tokio::test]
     async fn what_a_node_may_ask_of_another_depends_on_who_it_is() {
-        use crate::webui::RouteScope::{AdminOnly, CommonOrInternal, InferNodeAdmin, NodeAdmin};
+        use crate::webui::RouteScope::{
+            AdminOnly, CommonOrInternal, DeployAdmin, InferNodeAdmin, NodeAdmin,
+        };
         let mut worker = testkit::peer("worker", "worker", 8090);
         worker.profile = crate::profile::NodeProfile::Node;
         let mut infer = testkit::peer("infer", "infer", 8091);
@@ -383,15 +385,22 @@ mod tests {
         };
         let admin = state.authority_principal.clone();
 
-        // Administrative routes: an admin's signature, nothing less.
+        // Routes that govern the network: the principal's signature, nothing less.
         assert_eq!(caller_may_ask(&state, AdminOnly, None).await, Err("signature_required"));
         assert_eq!(caller_may_ask(&state, AdminOnly, Some(&admin)).await, Ok(()));
         assert_eq!(
             caller_may_ask(&state, AdminOnly, Some(&principal_of("worker"))).await,
-            Err("admin_required")
+            Err("principal_required")
         );
         assert_eq!(
             caller_may_ask(&state, AdminOnly, Some(&principal_of("infer"))).await,
+            Err("principal_required")
+        );
+        // Deploy routes: an admin's signature, and a plain member is not one.
+        assert_eq!(caller_may_ask(&state, DeployAdmin, None).await, Err("signature_required"));
+        assert_eq!(caller_may_ask(&state, DeployAdmin, Some(&admin)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&state, DeployAdmin, Some(&principal_of("worker"))).await,
             Err("admin_required")
         );
 
@@ -429,6 +438,79 @@ mod tests {
                 caller_may_ask(&state, scope, Some(&principal_of("infer"))).await,
                 Ok(())
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_secondary_admin_deploys_and_does_nothing_else() {
+        use crate::webui::RouteScope::{AdminOnly, DeployAdmin, NodeAdmin};
+        use axum::http::Method;
+        // A network with a principal and one secondary admin, seen from a
+        // third member that holds the same chain.
+        let secondary_node = testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let chain = secondary_node.admin_trust.document();
+        let secondary = secondary_node.authority_principal.clone();
+        let principal = chain.primary.clone();
+        let mut member = testkit::state_with("member", vec![]).await;
+        member.admin_trust =
+            Arc::new(crate::admin_trust::AdminTrust::in_memory(chain).unwrap());
+
+        // Between nodes: the secondary's signature opens the deploy routes
+        // and a node's routes, and none of the routes that govern the network.
+        assert_eq!(caller_may_ask(&member, DeployAdmin, Some(&secondary)).await, Ok(()));
+        assert_eq!(caller_may_ask(&member, NodeAdmin, Some(&secondary)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&member, AdminOnly, Some(&secondary)).await,
+            Err("principal_required")
+        );
+        assert_eq!(caller_may_ask(&member, AdminOnly, Some(&principal)).await, Ok(()));
+        assert!(issuer_is_principal(&member, &principal));
+        assert!(!issuer_is_principal(&member, &secondary));
+
+        // On its own screen: the same split.
+        let app = Router::new()
+            .route("/api/ui/undeploy", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/api/ui/deploy", axum::routing::post(|| async { StatusCode::OK }))
+            .route(
+                "/api/ui/network/admissions",
+                get(|| async { StatusCode::OK }),
+            )
+            .route("/api/ui/network/settings", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/admin/nodes/x/promote-admin", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/admin/nodes/x/block", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/admin/authority/secondaries/secondary/demote", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/admin/regenerate-key", axum::routing::post(|| async { StatusCode::OK }))
+            .with_state(secondary_node.clone())
+            .layer(middleware::from_fn_with_state(
+                secondary_node.clone(),
+                require_admin_for_surface,
+            ));
+        let ask = |method: Method, path: &'static str| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                request
+                    .extensions_mut()
+                    .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+                app.oneshot(request).await.unwrap().status()
+            }
+        };
+        assert_eq!(ask(Method::POST, "/api/ui/deploy").await, StatusCode::OK);
+        assert_eq!(ask(Method::POST, "/api/ui/undeploy").await, StatusCode::OK);
+        for (method, path) in [
+            (Method::GET, "/api/ui/network/admissions"),
+            (Method::POST, "/api/ui/network/settings"),
+            (Method::POST, "/admin/nodes/x/promote-admin"),
+            (Method::POST, "/admin/nodes/x/block"),
+            // Not even its own demotion: the chain changes by the principal's hand.
+            (Method::POST, "/admin/authority/secondaries/secondary/demote"),
+            (Method::POST, "/admin/regenerate-key"),
+        ] {
+            assert_eq!(ask(method, path).await, StatusCode::FORBIDDEN, "{path}");
         }
     }
 

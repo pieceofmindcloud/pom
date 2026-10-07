@@ -126,10 +126,29 @@ last):
     `/api/ui/slice`, `/api/transfer` - before anything else, so an admin's
     signed request is refused too.
   - **Who the caller is** (`caller_may_ask`). An `AdminOnly` route needs the
-    control envelope signed by an admin of the trust chain (`reason:
-    "signature_required"` for the key alone, `"admin_required"` otherwise). A
+    control envelope signed by the **principal** (`reason:
+    "signature_required"` for the key alone, `"principal_required"`
+    otherwise). A `DeployAdmin` route needs it signed by any admin of the
+    trust chain, principal or secondary (`"admin_required"`). A
     `NodeAdmin` route needs it signed by an admin or by an admitted peer that
-    is not an inference node (`"infer_caller"`, `"unknown_caller"`). Routes of
+    is not an inference node (`"infer_caller"`, `"unknown_caller"`). A
+    forwarded `POST /api/ui/leave` - one node taking another out of the
+    network - also needs the principal's signature, although the route is
+    open to every profile for a node leaving by itself.
+  - **What a secondary admin may do.** `DeployAdmin` is the only scope it
+    has beyond a node's: `/api/ui/deploy/*`, `/api/ui/deployments` (writes),
+    `/api/ui/apply`, `/api/ui/launch`, `/api/ui/undeploy`,
+    `/api/ui/stop-inference`, `/api/ui/unload` and `/api/ui/reconfigure`.
+    Everything else that was `AdminOnly` now needs the principal, in the
+    browser (`require_admin_for_surface` asks for `EffectiveAuthority::Primary`)
+    and between nodes: `/admin/*` (block, remove, promote, demote, resign,
+    regenerate the key, slots), admissions, network settings and their
+    fan-out, TLS/QUIC/logs policy, the trust share, slice release, the KV
+    cache, sidecar links, the cluster log. A secondary cannot demote itself:
+    demotion is a principal route. API keys of other nodes are synced only
+    under the principal's signature (`require_signed_principal`); a node's
+    own chat key is unchanged. The one signature a secondary still gives is
+    its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
   `gateway::peer_is_infer` is the one definition of "inference node": a peer

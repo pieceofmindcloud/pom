@@ -542,7 +542,10 @@ changes a role in place, in the interface or on the node: the role is decided
 when the network admits the machine, so the card only explains that serving
 models takes leaving and asking for admission again as a network node. A
 `node` likewise has no way to step down to `infer` without rejoining. The principal
-administrator can promote a node (never an inference node, which the
+administrator (a secondary admin sees this screen and the rest of the
+interface as a node does, plus the deploy screens: the profile context
+carries `secondary`, and principal-only controls check it) can promote a
+node (never an inference node, which the
 candidate list leaves out; the "Cluster version" panel on this screen and on
 Administrators shows the trust chain version this node holds, marks it
 outdated when a peer announces a newer one and syncs by itself, and the

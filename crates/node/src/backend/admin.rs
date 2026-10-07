@@ -449,6 +449,16 @@ async fn require_signed_admin(
     })
 }
 
+/// A mutation that governs the network is signed by the principal itself. A
+/// secondary admin deploys models and nothing else.
+async fn require_signed_principal(
+    state: &crate::gateway::GatewayState,
+    auth: &InternalNodeAuth,
+) -> bool {
+    auth.principal()
+        .is_some_and(|issuer| crate::gateway::issuer_is_principal(state, issuer))
+}
+
 /// A public-network node may mint exactly one class of key without being an
 /// administrator: its own browser/chat key. The key is still carried over a
 /// signed control request, so the primary can bind it to the authenticated
@@ -685,7 +695,7 @@ async fn internal_upsert_api_key(
     State(state): State<crate::gateway::GatewayState>,
     Json(key): Json<ApiKey>,
 ) -> impl IntoResponse {
-    let admin = require_signed_admin(&state, &auth).await;
+    let admin = require_signed_principal(&state, &auth).await;
     let self_owned_chat_key = auth
         .principal()
         .is_some_and(|issuer| is_self_owned_chat_key(&key, issuer));
@@ -715,7 +725,7 @@ async fn internal_revoke_api_key(
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeRequest>,
 ) -> impl IntoResponse {
-    if !require_signed_admin(&state, &auth).await {
+    if !require_signed_principal(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
@@ -735,7 +745,7 @@ async fn internal_revoke_origin(
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeOriginRequest>,
 ) -> impl IntoResponse {
-    if !require_signed_admin(&state, &auth).await {
+    if !require_signed_principal(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state

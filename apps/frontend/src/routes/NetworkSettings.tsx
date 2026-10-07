@@ -63,7 +63,9 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
    * `profile: admin` sozinho não concede capacidade. Oferecer o botão a quem
    * vai levar 403 é o defeito de menu que esta base já nomeia.
    */
-  const isAdmin = node.data?.authority_level != null;
+  // Members, admissions and settings are the principal's: a secondary admin
+  // reads this screen as a node does.
+  const isAdmin = node.data?.authority_level === "primary";
   const networkEditable = networkInfo.data?.can_edit ?? isAdmin;
   const nodes = useAdminNodes(participantsOnly && node.data !== undefined && !isInfer);
   const toast = useToast();

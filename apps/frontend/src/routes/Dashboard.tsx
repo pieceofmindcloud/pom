@@ -141,8 +141,10 @@ export function Dashboard() {
   const node = useNode();
   const deployments = useDeployments();
   const invalidateAll = useInvalidate();
-  const { profile } = useProfile();
+  const { profile, secondary } = useProfile();
+  // Deploy controls belong to every admin; the cluster log is the principal's.
   const isAdmin = profile === "admin";
+  const isPrincipal = isAdmin && !secondary;
   // The process log is kept by the logs plugin; without it there is no dock.
   const logsPluginActive = useEnterpriseStatus().data.active;
   // Sem os Detalhes sobra o Fluxo, e uma vista só não é uma escolha: o seletor
@@ -343,7 +345,7 @@ export function Dashboard() {
         {/* Keep the former execution-order rail available for a later surface; the
             graph above is now the primary operational view. */}
         <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
-        {isAdmin && logsPluginActive && <DeploymentLogDock />}
+        {isPrincipal && logsPluginActive && <DeploymentLogDock />}
       </div>
 
       {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div><DeploymentInspector value={activeVersion.params} readOnly showInferenceMode pomDesenv={node.data?.pom_desenv === true} showHiddenStateDtype={activeVersion.params.hidden_state_dtype != null} /></aside>}

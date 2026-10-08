@@ -274,9 +274,12 @@ fn canonical_target_directory(
     let canonical_root = build_root
         .canonicalize()
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
+    let canonical_source = source_root
+        .canonicalize()
+        .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
     if !canonical_root.is_dir()
-        || canonical_root.starts_with(source_root)
-        || source_root.starts_with(&canonical_root)
+        || canonical_root.starts_with(&canonical_source)
+        || canonical_source.starts_with(&canonical_root)
     {
         return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
     }

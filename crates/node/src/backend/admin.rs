@@ -2568,7 +2568,7 @@ mod tests {
             .expect("listener infer");
         let infer_port = infer_listener.local_addr().unwrap().port();
 
-        let (admin, infer) = promotion_state_pair(admin_port, infer_port, "[2001:db8::dead]").await;
+        let (admin, infer) = promotion_state_pair(admin_port, infer_port, "[::1]").await;
         {
             let mut peers = infer.network.peers.write().await;
             let admin_peer = peers.get_mut("admin").expect("admin no infer");

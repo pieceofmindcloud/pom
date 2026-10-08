@@ -586,7 +586,9 @@ profile policy remains the effective authorization boundary.
   maior que uma tentativa de retorno, porque o admin também precisa executar a
   segunda perna; retries automáticos da mesma mutação assinada são evitados para
   não transformar timeout em falso replay administrativo. O testkit de admin
-  sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
+  sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta. O
+  candidato obsoleto usa loopback IPv6 recusado (`[::1]`) antes do candidato
+  IPv4 vivo, sem depender de uma rota externa da máquina de teste.
 - `reqlog.rs` - adaptador de auditoria e fallback de migração. Com o plugin
   ativo, o host grava em `enterprise.db`; independentemente desse destino, o
   `AuditLog` do POM replica `begin` e `complete` aos admins efetivos por libp2p.

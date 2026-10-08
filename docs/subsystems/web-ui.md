@@ -47,8 +47,10 @@ that height the panel shrinks to what fits; the 390 width is fixed. The
 the native process for a resizable 1120 x 880 points window, larger than the
 panel on both axes. In a regular browser that button is not rendered.
 
-The bundle also installs the regular macOS application menu in AppKit, with
-About and Quit. The app runs as an accessory (no Dock icon), and an accessory
+The larger window title and its menu-bar tooltip use the display name from
+`brand.json`; the packaged app's Dock label uses the same name. The bundle also
+installs the regular macOS application menu in AppKit, with About and Quit. The
+app runs as an accessory (no Dock icon), and an accessory
 shows no menu bar, so Quit is also reachable three other ways:
 - a right click (or Control-click) on the status item opens a menu with
   "Open in a larger window" and "Quit POM";

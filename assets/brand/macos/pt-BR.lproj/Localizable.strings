@@ -2,7 +2,6 @@
 "status.gatewayUnavailable.title" = "O POM não encontrou o gateway";
 "status.gatewayUnavailable.detail" = "O gateway local ainda não respondeu. Inicie o nó e tente novamente.";
 "status.gatewayUnavailable.retry" = "Tentar novamente";
-"status.itemTooltip" = "Abrir chat do POM";
-"status.windowTitle" = "Chat do POM";
+"status.itemTooltip" = "Abrir %@";
 "status.quit" = "Sair do POM";
 "status.openWindow" = "Abrir numa janela maior";

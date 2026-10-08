@@ -5,6 +5,7 @@
 
 static NSString *POMChatURL;
 static NSString *POMIconPath;
+static NSString *POMApplicationName;
 static NSStatusItem *POMStatusItem;
 static NSPopover *POMPopover;
 static NSWindow *POMWindow;
@@ -112,7 +113,7 @@ static void POMOpenWindow(void) {
                                  NSWindowStyleMaskMiniaturizable)
                         backing:NSBackingStoreBuffered
                           defer:NO];
-        POMWindow.title = POMLocalized(@"status.windowTitle", @"POM chat");
+        POMWindow.title = POMApplicationName;
         POMWindow.minSize = NSMakeSize(640, 480);
         // Closing hides the window; the app keeps running in the menu bar.
         POMWindow.releasedWhenClosed = NO;
@@ -347,7 +348,8 @@ static WKWebView *POMMakeWebView(NSRect frame) {
         // invisível que o utilizador não consegue encontrar na barra.
         POMStatusItem.button.title = @"POM";
     }
-    POMStatusItem.button.toolTip = POMLocalized(@"status.itemTooltip", @"Open POM chat");
+    POMStatusItem.button.toolTip = [NSString stringWithFormat:
+        POMLocalized(@"status.itemTooltip", @"Open %@"), POMApplicationName];
     POMStatusItem.button.target = POMStatusControllerInstance;
     POMStatusItem.button.action = @selector(togglePopover:);
     [POMStatusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
@@ -381,6 +383,7 @@ static void POMInstallApplicationMenu(void) {
 
 int pom_macos_status_run(const char *url,
                          const char *icon_path,
+                         const char *app_name,
                          double popover_width,
                          double popover_height,
                          double window_width,
@@ -396,6 +399,7 @@ int pom_macos_status_run(const char *url,
         atomic_store(&POMUserQuitRequested, false);
         POMChatURL = [NSString stringWithUTF8String:url ?: ""];
         POMIconPath = [NSString stringWithUTF8String:icon_path ?: ""];
+        POMApplicationName = [NSString stringWithUTF8String:app_name ?: ""];
         if (popover_width > 0 && popover_height > 0) {
             POMPopoverWidth = (CGFloat)popover_width;
             POMPopoverHeight = (CGFloat)popover_height;

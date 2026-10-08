@@ -10,7 +10,7 @@ function inactiveEnterpriseStatus() {
     active: false,
     state: "needs_activation",
     features: [] as string[],
-    manage_url: "https://pieceofmind.cloud/enterprise",
+    manage_url: "https://pieceofmind.cloud/plugins/",
     plugin_version: null,
     lease_expires_at: null,
     available_update: null,
@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
       active: false,
       state: "needs_activation",
       features: [] as string[],
-      manage_url: "https://pieceofmind.cloud/enterprise",
+      manage_url: "https://pieceofmind.cloud/plugins/",
       plugin_version: null,
       lease_expires_at: null,
       available_update: null,
@@ -76,7 +76,7 @@ describe("About", () => {
       "https://github.com/pereirajair/rdma-p2p/blob/feat/enterprise/LICENSE",
     );
     expect(screen.getByRole("link", { name: "Site do POM" }).getAttribute("href")).toBe("https://pieceofmind.cloud");
-    expect(screen.getByRole("link", { name: "Contato do POM" }).getAttribute("href")).toBe("https://pieceofmind.cloud/contact.html");
+    expect(screen.getByRole("link", { name: "Contato do POM" }).getAttribute("href")).toBe("https://pieceofmind.cloud/contato/");
     expect(screen.getByRole("link", { name: "Repositório oficial do POM no GitHub" }).getAttribute("href")).toBe("https://github.com/pereirajair/rdma-p2p");
     expect(screen.getByRole("link", { name: "POM Plugin Base" }).getAttribute("href")).toBe("https://github.com/pereirajair/pom-plugin-base");
     expect(screen.getByText("@tanstack/react-query")).toBeTruthy();

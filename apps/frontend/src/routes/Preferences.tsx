@@ -20,6 +20,7 @@ import {
 import { api, clearAdminAccessToken, setAdminAccessToken } from "../lib/api";
 import { useAdminAccessInfo, useEnterpriseStatus, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { useProfile } from "../lib/profile";
 import type { AdminAccessInfo, AdminExposure, ThermalPolicy } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -533,6 +534,10 @@ export function Preferences({ administrative = false }: { administrative?: boole
   // Process-log collection is kept by the logs plugin: the switch exists only
   // on an admin whose machine runs it.
   const logsPlugin = useEnterpriseStatus();
+  // An inference node only talks to the models: GPU thermal protection and
+  // the Hugging Face token are for machines that serve or download them.
+  const { profile } = useProfile();
+  const inferOnly = profile === "infer";
   const toast = useToast();
   const invalidate = useInvalidate();
   const [thermalSaving, setThermalSaving] = useState(false);
@@ -682,8 +687,8 @@ export function Preferences({ administrative = false }: { administrative?: boole
           {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.tls_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>
           <AdminAccessPanel />
-          <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />
-          <HuggingFaceSettingsPanel />
+          {!inferOnly && <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />}
+          {!inferOnly && <HuggingFaceSettingsPanel />}
         </>}
       </div>
     </>

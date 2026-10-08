@@ -1021,8 +1021,14 @@ describe("Plugins", () => {
     expect(alert.textContent).not.toContain("secret build output");
   });
 
-  it("does not offer local rebuilds to non-admin profiles", () => {
-    mocks.node.data = { profile: "node", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+  it("offers local rebuilds to every profile when development mode is on", () => {
+    for (const profile of ["node", "infer"]) {
+      mocks.node.data = { profile, pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+      const { unmount } = renderPage();
+      expect(screen.getByText("Builds locais de desenvolvimento")).toBeTruthy();
+      unmount();
+    }
+    mocks.node.data = { profile: "infer", pom_desenv: false, system: { os: "linux", arch: "x86_64" } };
     renderPage();
     expect(screen.queryByText("Builds locais de desenvolvimento")).toBeNull();
   });

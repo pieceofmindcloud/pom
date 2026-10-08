@@ -47,6 +47,8 @@ struct IpcResponse {
 
 struct HostProcess {
     child: Mutex<Child>,
+    /// The host and everything it starts; dropping it ends the tree (Windows).
+    _tree: Option<crate::process_tree::ProcessTree>,
     ipc: Arc<IpcConnection>,
     lifecycle: RwLock<()>,
 }
@@ -202,16 +204,44 @@ impl IpcConnection {
 impl PluginHost {
     pub(crate) async fn start(plugin_code: &str, plugin: &Path, database: &Path) -> Result<Self> {
         let host = host_executable()?;
-        let mut child = Command::new(&host)
+        let mut command = Command::new(&host);
+        command
             .arg(plugin)
             .arg(plugin_code)
             .env("POM_PLUGIN_DB", database)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .kill_on_drop(true)
+            // Into POM's log, line by line. Inherited, the host's stderr (and
+            // that of the node/npm processes plugins start) went nowhere on
+            // Windows, where pom.exe has no console, and a plugin that failed
+            // there left no trace of why.
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        // `pom.exe` is a GUI program with no console, so Windows opened a
+        // console window for the host and left it on screen. CREATE_NO_WINDOW
+        // gives the host a console without a window, which the processes it
+        // starts (node, npm, code-server) inherit too.
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let mut child = command
             .spawn()
             .with_context(|| format!("iniciar pom-plugin-host em {}", host.display()))?;
+        #[cfg(windows)]
+        let tree = child.raw_handle().and_then(crate::process_tree::ProcessTree::adopt);
+        if let Some(stderr) = child.stderr.take() {
+            let code = plugin_code.to_owned();
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.trim().is_empty() {
+                        tracing::info!(plugin_code = %code, "plugin: {line}");
+                    }
+                }
+            });
+        }
+        #[cfg(not(windows))]
+        let tree = Some(crate::process_tree::ProcessTree);
         let stdin = match child.stdin.take().context("capturar stdin do plugin host") {
             Ok(stdin) => stdin,
             Err(error) => {
@@ -233,6 +263,7 @@ impl PluginHost {
         let supervisor = Self {
             process: Arc::new(HostProcess {
                 child: Mutex::new(child),
+                _tree: tree,
                 ipc: IpcConnection::new(stdout, stdin),
                 lifecycle: RwLock::new(()),
             }),

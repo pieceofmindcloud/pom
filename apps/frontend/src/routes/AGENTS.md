@@ -33,7 +33,19 @@ Per-file list:
   sistema, IP (da LAN, só no wizard local), CPU, RAM e GPU. The admin's
   preferred address is optional and never pre-filled: the network is found by
   the principal's key, and neither the trust root nor joining from Public
-  networks brings an IP bootstrap. Pastas, disco, reservas, senha (`admin`) e
+  networks brings an IP bootstrap. When the wizard was opened from Public
+  networks, `SetupState.joinAccepts` holds that network's
+  `accepted_enrollments` and `StartScreen` disables the `node`/`infer` roles
+  it does not accept (`admin` founds its own network and stays available).
+  `PublicDirectoryPanel`, in the join step, lists public networks from
+  `GET /api/setup/public-networks`. A machine in setup mode has nobody to ask,
+  so the panel has a field (bound to `publicDirectory`) for a relay key
+  (`pk:...`) or a node address to ask, on top of the relays the installation
+  already knows; Enter or Refresh asks again. `directoryReplicas` keeps the
+  keys out of the `public_directory` sent on save: "Join" fills the trust fields like the manual block and clears any
+  connection key, and "Chat" opens `LobbyChat` against `/api/setup/lobby`
+  without a session. A listed network with `public_stats` shows a line with
+  its nodes, VRAM and models (`DirectoryNetworkStats`). Pastas, disco, reservas, senha (`admin`) e
   workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
   com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
   `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
@@ -52,6 +64,23 @@ Per-file list:
   O nome de cada rede abre um `Modal` com todo o registro público, incluindo
   descrição, regras e o campo único de canais Discord ou Telegram renderizados
   como Markdown; a confirmação de entrada continua sendo uma ação separada.
+  The action column depends on membership: the row whose fingerprint matches
+  `/api/public/network` (the network this node is already in) never offers
+  Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
+  confirmation as Forget network in `NetworkSettings.tsx`); the principal
+  (`authority_level === "primary"` from `useNode`) gets no action there.
+  The screen is titled "Networks". For a network this node is not in, the one
+  action opens the lobby window (`LobbyChat`), where admission is requested;
+  without `lobby_chat` the button is disabled ("No lobby"). The old path that
+  left the network and opened the wizard is gone.
+  A network advertising an empty `accepted_enrollments` can still be talked to
+  but offers no admission request; the list (or "Any role" when the record has
+  none) is shown in the details modal and travels to the wizard in the
+  `sessionStorage` handoff. A network with `lobby_chat` also gets "Chat", which
+  opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`. A
+  network with `public_stats` that this node is not in gets its nodes, VRAM and
+  models columns from `usePublicStats` (`../lib/publicStats`); latency stays
+  unavailable for it.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
@@ -61,7 +90,17 @@ Per-file list:
   leitura somente leitura com nome, descrição, regras, organização, canais,
   visibilidade e localização; um administrador autorizado pode editar o bloco
   completo. A edição grava no nó, propaga o envelope assinado aos peers e
-  atualiza a descoberta pública. País e cidade usam a referência de geografia
+  atualiza a descoberta pública. The editable block includes "Accepting new
+  members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
+  `lib/types.ts`); unchecking all of them advertises the network as closed.
+  "Lobby chat" (`lobby_chat`) lets machines that are not members talk to the
+  network; the checkbox is disabled unless the network is public. The leave
+  action ("Return to my own network", `POST /api/ui/network/leave`) is not
+  drawn on the machine's own network (`NodeInfo.own_network` with no
+  `standby_network`): that network is inherent to the machine. An admin also
+  sees `AdmittedMachines`, the approved admission records, with "Revoke"
+  behind a confirmation (`admissionsApi.decide(id, "forget")`). "Published
+  stats" (`public_stats`) follows the same rule. País e cidade usam a referência de geografia
   do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
   `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
   circuitos publicados, reservas de relé e hole punches - porque dois nós atrás
@@ -100,8 +139,10 @@ Per-file list:
   any public entry requiring a license is not active locally, even if another
   plugin already has a license or context. It also appears when local status is
   missing or expired/revoked, and is hidden when all known licensed plugins
-  are active. Purchase redirects licensed plugins to the public store with an
-  encoded `plugin=<code>` parameter via `lib/pluginPurchase.ts`. Cards are
+  are active. Purchase sends licensed plugins to the site's purchase wizard
+  (`/comprar/`) with an encoded `plugin=<code>` parameter via
+  `lib/pluginPurchase.ts`; the wizard asks for the account and billing details
+  before Stripe and shows the license key at the end. Cards are
   compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
   catalog, GitHub repository and local state for the same code share one card.
   The screen has two tabs, on the right side of the title bar
@@ -138,8 +179,8 @@ Per-file list:
   node's local route and shows the node's reason on failure.
 
   Updating the `pom` binary is separate in `About.tsx` (see
-  `crates/node/src/pom_core_update.rs`). With profile `admin` and
-  `NodeInfo.pom_desenv=true`, the screen queries local sources and allows
+  `crates/node/src/pom_core_update.rs`). With
+  `NodeInfo.pom_desenv=true`, on any profile, the screen queries local sources and allows
   building and installing even inactive plugins. A local build is separate
   from license state, grants no licensed features and does not activate a
   license; an existing licensed/GitHub installation keeps its entitlement.
@@ -228,7 +269,11 @@ Per-file list:
   `PageHeader` pattern instead of a rounded outer panel. No
   celular, participantes ficam ocultos até o botão `Ver online` ser acionado;
   a entrada da Sidebar recebe o contador de mensagens não lidas e a abertura
-  da rota marca o snapshot atual como lido.
+  da rota marca o snapshot atual como lido. When the snapshot says
+  `lobbyEnabled`, a tab pair switches between the `network` and `lobby` rooms
+  (`useNetworkChat(room)`). The lobby tab lists the candidates with
+  `LobbyHardwareCard`, sends text with `room_id: "lobby"`, and offers neither
+  files nor typing, because machines that are not members read that room.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

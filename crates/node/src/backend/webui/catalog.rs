@@ -18,6 +18,12 @@ pub struct NodeInfo {
     pub profile: crate::profile::NodeProfile,
     /// Human-facing network name shown by the leave action in the main menu.
     pub network_name: String,
+    /// This node is the principal of the network it is in: its own network,
+    /// which is inherent to the machine and cannot be left.
+    pub own_network: bool,
+    /// Name of this node's own network while it is in standby, i.e. while
+    /// the node is a member of someone else's. Leaving returns to it.
+    pub standby_network: Option<String>,
     /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
     /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
     /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
@@ -170,6 +176,9 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         pom_desenv: crate::pom_desenv_enabled(),
         profile,
         network_name,
+        own_network: state.admin_trust.document().primary.pubkey
+            == state.authority_principal.pubkey,
+        standby_network: super::standby::standby_name(),
         connection_key,
         authority_level,
         authority_fingerprint,
@@ -1057,20 +1066,34 @@ pub struct SavePathsRequest {
     pub shard_max_gb: Option<f64>,
 }
 
-/// Refuse anything that is not a directory sitting on this machine right now.
+/// Creates a folder the operator is saving and that does not exist yet.
 ///
-/// A typo here is not a small thing: the node would advertise a library it does
-/// not have, and the mistake would only surface much later, as a peer that
-/// cannot find the model it was told to slice.
+/// Saving a path that is not there is usually the operator naming the folder
+/// they want, so the screen creates it instead of refusing. Only an absolute
+/// path is created: a relative one would land wherever the process runs.
+fn create_missing_dir(path: &std::path::Path, trimmed: &str, what: &str) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    if !path.is_absolute() {
+        return Err(format!(
+            "{what}: “{trimmed}” não existe; informe o caminho absoluto para criar a pasta."
+        ));
+    }
+    std::fs::create_dir_all(path)
+        .map_err(|error| format!("{what}: não foi possível criar “{trimmed}”: {error}"))?;
+    info!("{what}: pasta criada em {trimmed}");
+    Ok(())
+}
+
+/// Accepts a directory on this machine, creating it when it does not exist.
 pub(super) fn check_dir(raw: &str, what: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(format!("{what}: caminho vazio."));
     }
     let path = std::path::Path::new(trimmed);
-    if !path.exists() {
-        return Err(format!("{what}: “{trimmed}” não existe nesta máquina."));
-    }
+    create_missing_dir(path, trimmed, what)?;
     if !path.is_dir() {
         return Err(format!(
             "{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."
@@ -1091,6 +1114,7 @@ pub(super) fn check_workspace_dir(raw: &str, what: &str) -> Result<String, Strin
     if !path.is_absolute() {
         return Err(format!("{what}: o caminho precisa ser absoluto."));
     }
+    create_missing_dir(path, trimmed, what)?;
     let metadata = std::fs::metadata(path).map_err(|error| {
         format!("{what}: não foi possível acessar “{trimmed}” dentro do container: {error}")
     })?;
@@ -1158,12 +1182,12 @@ pub(super) fn reject_workspace_overlap(
 }
 
 #[test]
-fn workspace_dir_validation_requires_an_absolute_existing_writable_directory() {
+fn workspace_dir_validation_requires_an_absolute_writable_directory_and_creates_a_missing_one() {
     let root = tempfile::tempdir().unwrap();
     assert!(check_workspace_dir("relative", "Workspace").is_err());
-    assert!(
-        check_workspace_dir(&root.path().join("missing").to_string_lossy(), "Workspace").is_err()
-    );
+    let missing = root.path().join("missing").join("nested");
+    assert!(check_workspace_dir(&missing.to_string_lossy(), "Workspace").is_ok());
+    assert!(missing.is_dir());
     let file = root.path().join("file");
     std::fs::write(&file, b"not a directory").unwrap();
     assert!(check_workspace_dir(&file.to_string_lossy(), "Workspace").is_err());
@@ -1171,6 +1195,19 @@ fn workspace_dir_validation_requires_an_absolute_existing_writable_directory() {
         check_workspace_dir(&root.path().to_string_lossy(), "Workspace").unwrap(),
         root.path().to_string_lossy()
     );
+}
+
+#[test]
+fn a_missing_storage_folder_is_created_on_save_but_only_from_an_absolute_path() {
+    let root = tempfile::tempdir().unwrap();
+    let models = root.path().join("new-models");
+    assert!(check_dir(&models.to_string_lossy(), "Pasta de modelos inteiros").is_ok());
+    assert!(models.is_dir());
+    assert!(check_dir("relative-folder-that-should-not-exist", "Pasta").is_err());
+    assert!(!std::path::Path::new("relative-folder-that-should-not-exist").exists());
+    let file = root.path().join("file");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(check_dir(&file.to_string_lossy(), "Pasta").is_err());
 }
 
 pub(super) fn reject_nested_shard_dir(
@@ -1286,6 +1323,10 @@ pub(super) async fn save_paths(
         cfg.shard_max_gb = shard_max_gb;
         if let Err(e) = cfg.save() {
             return bad_request(format!("não deu para gravar pom.json: {e}"));
+        }
+        // An emptied field returns to a default that may not exist yet.
+        for (dir, error) in cfg.create_default_storage_dirs() {
+            tracing::warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
         }
     }
 
@@ -2581,14 +2622,23 @@ pub(super) async fn chat_history(
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct NetworkChatQuery {
+    /// `network` (default) or `lobby`. Any other value reads the main room.
+    #[serde(default)]
+    room: Option<String>,
+}
+
 pub(super) async fn network_chat_snapshot(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
+    Query(query): Query<NetworkChatQuery>,
 ) -> Response {
-    let mut messages = match state
-        .network_chat
-        .history(crate::network_chat::NETWORK_CHAT_ROOM, 100)
-    {
+    let room = match query.room.as_deref() {
+        Some(crate::network_lobby::LOBBY_ROOM) => crate::network_lobby::LOBBY_ROOM,
+        _ => crate::network_chat::NETWORK_CHAT_ROOM,
+    };
+    let mut messages = match state.network_chat.history(room, 100) {
         Ok(messages) => messages,
         Err(error) => {
             tracing::error!("não foi possível ler o Chat da rede: {error:#}");
@@ -2633,6 +2683,16 @@ pub(super) async fn network_chat_snapshot(
         "typing": state.network_chat.typing_snapshot(),
         "notices": state.network_chat.notice_snapshot(),
         "dropped": state.network_chat.dropped(),
+        "room": room,
+        "lobbyEnabled": state.network_chat.lobby_enabled().await,
+        // Candidates talking in the lobby, with the hardware they declared.
+        "lobbyGuests": state
+            .network_chat
+            .lobby_guests()
+            .snapshot()
+            .into_iter()
+            .map(|(node_id, card)| json!({ "nodeId": node_id, "card": card }))
+            .collect::<Vec<_>>(),
     }))
     .into_response()
 }

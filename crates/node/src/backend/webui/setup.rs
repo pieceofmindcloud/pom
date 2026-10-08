@@ -172,7 +172,7 @@ fn trust_metadata_from_network(
     })
 }
 
-fn network_from_trust_metadata(
+pub(super) fn network_from_trust_metadata(
     metadata: &crate::admin_trust::TrustNetworkMetadata,
 ) -> crate::config::NetworkSettings {
     crate::config::NetworkSettings {
@@ -392,9 +392,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
                 document,
                 fingerprint,
                 trust_filename: crate::config::admin_trust_filename(),
-                private_connection_key: (request.visibility
-                    != crate::config::NetworkVisibility::Public)
-                    .then(fresh_connection_key),
+                private_connection_key: (!network.open_admission()).then(fresh_connection_key),
             })
             .into_response(),
             Err(error) => (
@@ -554,6 +552,100 @@ pub struct SaveSetupRequest {
     pub public_directory: Vec<String>,
 }
 
+/// A name a network can carry, from this machine's hostname.
+fn local_network_name(hostname: &str) -> String {
+    let name: String = hostname
+        .trim()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(64)
+        .collect();
+    let name = name.trim();
+    if name.is_empty() {
+        brand_network_fallback()
+    } else {
+        name.to_string()
+    }
+}
+
+fn brand_network_fallback() -> String {
+    format!("{}-local", crate::brand::slug())
+}
+
+/// Gives a machine without a network one of its own, with no question asked:
+/// this node is its admin, the network is named after the host, and
+/// discovery is off (`NetworkVisibility::Local`), so nothing is announced and
+/// no directory lists it. The operator renames it and turns discovery on
+/// later, in Network settings. `config` is either blank or the preference
+/// shell left by leaving a network; machine preferences in it are kept.
+///
+/// It is what the wizard's admin path does, minus the screens. A trust root
+/// already on disk is somebody's decision and is never overwritten: the call
+/// fails and the caller falls back to the wizard.
+pub async fn bootstrap_local_network(
+    mut config: crate::config::Config,
+    database: &crate::db::PomDb,
+) -> anyhow::Result<crate::config::Config> {
+    let trust_path = crate::config::admin_trust_path();
+    if trust_path.exists() {
+        anyhow::bail!(
+            "{} already exists; remove it or run with --setup",
+            trust_path.display()
+        );
+    }
+    let name = match config.node_name.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => local_network_name(name),
+        _ => local_network_name(&sysmon::sample().await.hostname),
+    };
+    let network = crate::config::NetworkSettings {
+        public_name: name.clone(),
+        visibility: crate::config::NetworkVisibility::Local,
+        ..Default::default()
+    };
+    crate::config::validate_network_settings(&network)?;
+    let metadata = trust_metadata_from_network(&network, &[], &[])?;
+    let (document, _fingerprint, _public_key) =
+        crate::admin_trust::local_primary_document(name, Some(metadata))?;
+    let password_hash = tokio::task::spawn_blocking(|| {
+        crate::auth::hash_admin_password(crate::auth::DEFAULT_ADMIN_PASSWORD)
+    })
+    .await
+    .context("hash the default password")??;
+    crate::admin_trust::AdminTrust::install_document(trust_path, document)?;
+
+    config.profile = crate::profile::NodeProfile::Admin;
+    config.setup_pending = false;
+    // Same exposure the wizard leaves: reachable on the network behind the
+    // default password, which the panel asks to change on first use.
+    config.admin_exposure = crate::config::AdminExposure::Network;
+    config.admin_access_token = Some(password_hash);
+    config.admin_password_default = true;
+    config.connection_key = fresh_connection_key();
+    config.bootstrap_nodes.clear();
+    config.advertise_addr = None;
+    config.network = network;
+    if config.model_dirs.is_none() {
+        config.model_dirs = Some(vec![crate::config::default_model_dir()
+            .to_string_lossy()
+            .into_owned()]);
+    }
+    if config.shard_dir.is_none() {
+        config.shard_dir = Some(
+            crate::config::default_shard_dir()
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    config.save()?;
+    for (dir, error) in config.create_default_storage_dirs() {
+        warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+    }
+    if let Err(error) = database.save_network_settings(&config.network) {
+        warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+    }
+    Ok(config)
+}
+
 pub async fn install_setup_trust_anchor(
     Json(body): Json<crate::webui::InstallAnchorRequest>,
 ) -> Response {
@@ -691,8 +783,7 @@ pub async fn save_setup(
         let identity = crate::identity::Identity::load_or_create(&crate::identity::key_path());
         crate::config::geo_network_label(&network.country_code, &network.city, &identity.node_id.0)
     };
-    let visibility = network.visibility;
-    let requires_connection_key = visibility != crate::config::NetworkVisibility::Public;
+    let requires_connection_key = !network.open_admission();
     if profile != crate::profile::NodeProfile::Admin
         && requires_connection_key
         && req.connection_key.trim().is_empty()
@@ -823,6 +914,11 @@ pub async fn save_setup(
 
     let network_for_db = cfg.network.clone();
     let save_result = cfg.save();
+    if save_result.is_ok() {
+        for (dir, error) in cfg.create_default_storage_dirs() {
+            warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+        }
+    }
     drop(cfg);
     match save_result {
         Ok(()) => {

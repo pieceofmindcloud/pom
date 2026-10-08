@@ -23,6 +23,10 @@ const copyUpdates: Record<string, string> = {
     "Controls bytes sent between inference peers. f16 remains the default; f32 preserves the in-memory activation values but doubles payload size. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.",
   "pt-BR:deploy.knob.hidden_state_dtypeHint":
     "Controla os bytes enviados entre peers de inferência. f16 continua como padrão; f32 preserva os valores das ativações em memória, mas dobra o tamanho do payload. f8 e int4 por grupo são formatos com perda opcionais e exigem suporte anunciado por todos os peers selecionados.",
+  "en:paths.validation":
+    "Saving a folder that does not exist yet creates it (only from an absolute path). A path that points to a file is refused.",
+  "pt-BR:paths.validation":
+    "Salvar uma pasta que ainda não existe cria a pasta (só a partir de um caminho absoluto). Um caminho que aponta para um arquivo é recusado.",
   "pt-BR:deploymentLogs.consoleTitle": "Console do cluster",
   "pt-BR:deploymentLogs.subtitle":
     "O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.",

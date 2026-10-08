@@ -128,6 +128,9 @@ Per-file list:
   WebKit `pomOpenWindow` está disponível; fica na toolbar do `Topbar`, não no
   corpo do Chat. É um controle icon-only: o nome completo permanece no nome
   acessível e no tooltip.
+  `QuitNativeAppButton`, in the same file, quits the macOS menu-bar app through
+  the `pomQuit` bridge (the app is an accessory with no visible menu); it sits
+  at the end of the `Topbar` and renders only inside the macOS app.
 - `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
   folhas separadas para requisições e implantação; Network Chat é uma entrada
@@ -145,8 +148,8 @@ Per-file list:
   sequência operacional de consultar eventos antes de seus agregados. A mesma
   tabela marca as entradas que vão para o rodapé do `infer` e promove a rede
   para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
-  projeções. Logs de Requisições e Estatísticas permanecem visíveis para todos
-  os perfis mesmo sem licença, para descoberta do produto. Testes em
+  projeções. Logs de Requisições e Estatísticas permanecem visíveis para admin
+  e node mesmo sem licença, para descoberta do produto; o `infer` não os vê. Testes em
   `nav.test.ts`.
   A seção principal Rede contém Informações, Participantes, Minha Máquina,
   Administradores, Compartilhamento e API Keys. Configurações contém Preferências,
@@ -201,8 +204,9 @@ Per-file list:
   secondary admins and promotion chain. It exposes promotion, demotion and
   succession controls only when the presentation contract says this viewer is
   the principal; refusal states remain explicit.
-- `Topbar.tsx` - Sticky header: `NodeChip` (hostname, short_id, peer count,
-  coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
+- `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
+  from `NodeInfo.network_name` and linking to `/config/rede`; then hostname,
+  short_id, peer count, coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
   maior e o sino (`Notifications`). O botão `Este nó` não é renderizado.
   Mobile drawer renders `SidebarContent` inside an animated
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
@@ -217,7 +221,11 @@ Per-file list:
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
   inside the popover. Offers can be accepted/rejected right there
-  (`POST /api/transfer/offers/:id/accept|reject`). All state is read back from
+  (`POST /api/transfer/offers/:id/accept|reject`). It also lists admission
+  (`lib/admissions.ts`): for the network's admin, each machine asking to join
+  with its role, direct or relayed connection, latency and hardware, and
+  Approve / Decline; for a candidate, the answer to its own requests, with
+  "Join now" when approved. All state is read back from
   the node, so a reload in the middle of a transfer shows the same bar.
   It also renders principal-transfer and infer-to-node offers from the same
   `useOffers()` response, and the pending plugin confirmations
@@ -407,6 +415,25 @@ Per-file list:
   is aborted when the machine changes, and the option select is keyed by kind
   plus `start-end` (`keyOf`), not by array index, so a reordered list cannot
   silently point at another range.
+- `LobbyChat.tsx` - Chat with a network this machine has **not** joined
+  (`docs/subsystems/p2p-network.md`, 6.1). A modal that polls the node every
+  3 s (`GET <endpoint>?key=<publisher_key>`) and posts through it; the browser
+  never talks to the other network. `endpoint` is
+  `/api/ui/network-chat/lobby` on a configured node and `/api/setup/lobby` in
+  the wizard, where requests go without a session. Shows each message as
+  member or candidate, the principal's refusal codes as sentences, and the
+  hardware card the network sees. On a configured node its side panel also
+  requests admission (`POST <endpoint>/admission` with the role, limited to
+  the network's `accepted_enrollments`), shows the request's state and, once
+  approved, joins behind a confirmation (`admissionsApi.join`). A `standing`
+  approval - the machine was admitted to that network before - is not an
+  answer to anything: the panel says it already holds the credentials and its
+  button switches at once, and the bell does not list it.
+  Test: `LobbyChat.test.tsx`.
+- `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
+  OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens
+  with, without live usage, because nobody measures a non-member. Used by
+  `LobbyChat` (own card) and by the lobby tab of `routes/NetworkChat.tsx`.
 - `Confirm.tsx` - Two exports. `Modal` is the shell (veil + panel + header +
   footer) rendered via `createPortal` straight into `document.body`. The portal
   is not preference: `position: fixed` stops being relative to the viewport when

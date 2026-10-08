@@ -41,7 +41,7 @@ remain local until the deploy preflight.
 ## src root
 
 - `index.html` - dark default (`data-theme="dark"`), two pre-paint scripts: theme from `localStorage` `codai.theme` (system preference deliberately does not decide) and `lang` from `codai.locale` / browser locales, so the first paint already matches the app state.
-- `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (basename `/admin-ui`, opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`.
+- `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (basename `/admin-ui`, opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`. Before rendering, an address outside the basename (the node answers any unknown GET with this page, e.g. `/setup`) is replaced by the same path under `/admin-ui`; without that the router renders nothing and the screen is blank.
 - `index.css` - design tokens and global styles (see below).
 - `App.tsx` - shell and route table (see below); after setup detection it probes
   the public administrative exposure and gates the whole shell with the human
@@ -90,7 +90,14 @@ Logs/Estatísticas não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/
 entitlement.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
-documentação, API key e a tela de rede local para pedir entrada no processamento. O valor vem
+documentação, API key, Plugins (catálogo, instalação e builds locais de
+desenvolvimento nesta máquina) e a tela de rede local para pedir entrada no
+processamento. Plugins e os menus dos plugins instalados ficam na lista abaixo
+das conversas.
+It never sees request logs, deployment logs or statistics (denied in
+`lib/access.ts` even where a plugin claims the route), and its preferences hide
+the GPU thermal protection and the Hugging Face token. The cluster's connection
+key shows only to `admin` (`/config/keys/conexao` and the Sharing screen). O valor vem
 de `/api/ui/node`, é propriedade persistida do nó e aparece na toolbar. Isso
 não substitui a autorização do backend: o servidor também limita a resposta da
 rede e as promoções.
@@ -154,8 +161,8 @@ desenhado**, porque uma vista só não é uma escolha.
   compatível da tela da raiz de confiança.
 - `/plugins` -> Plugins, lists every plugin in the catalog, active or not, with
   license-key activation that identifies the plugins granted by that key,
-  per-plugin version updates and deactivation. With `admin` and
-  `pom_desenv=true`, it also builds and installs plugins directly from mounted
+  per-plugin version updates and deactivation. With
+  `pom_desenv=true`, on any profile, it also builds and installs plugins directly from mounted
   sources without requiring an active license; local builds grant no licensed
   features and do not change existing entitlement. Updating the `pom` binary
   is handled separately in `/config/sobre`. This replaced the former

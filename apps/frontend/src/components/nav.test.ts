@@ -102,8 +102,10 @@ describe("navForProfile", () => {
     expect(labels).toContain("nav.statistics");
   });
 
-  it("mantém as superfícies Enterprise em todos os perfis quando a licença está inativa", () => {
-    for (const profile of ["admin", "node", "infer"] as const) {
+  it("mantém as superfícies Enterprise para admin e node quando a licença está inativa", () => {
+    expect(navForProfile("infer", false).map((s) => s.labelKey)).not.toContain("nav.logs");
+    expect(navForProfile("infer", false).map((s) => s.labelKey)).not.toContain("nav.statistics");
+    for (const profile of ["admin", "node"] as const) {
       const sections = navForProfile(profile, false);
       const labels = sections.map((s) => s.labelKey);
       expect(labels, profile).toContain("nav.logs");
@@ -165,8 +167,7 @@ describe("navForProfile", () => {
     expect(navForProfile("infer").map((section) => section.labelKey)).toEqual([
       "nav.publicNetworks",
       "nav.networkChat",
-      "nav.logs",
-      "nav.statistics",
+      "nav.plugins",
       "nav.network",
     ]);
     expect(navFooterForProfile("infer").map((item) => [item.labelKey, item.to])).toEqual([

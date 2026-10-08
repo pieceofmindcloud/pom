@@ -20,10 +20,21 @@ field.
   chains peers with an identical `model` - shards with different labels never
   form a pipeline.
 - **Ports:** UDP P2P `--port` (42777), inference QUIC UDP = P2P + 1000 (43777),
-  gateway QUIC UDP = P2P + 2000 (44777), libp2p TCP = UDP + 10000 (52777), HTTP
-  gateway `--gateway-port` (8080, served by *every* node), inference server on
-  `inference_port` in `pom.json` (8181). Different machines can use the same
-  numbers.
+  gateway QUIC UDP = P2P + 2000 (44777), libp2p TCP/QUIC = UDP + 10000 (52777), HTTP
+  gateway `--gateway-port` (8080, served by *every* node), inference HTTP on
+  `inference_port` in `pom.json` (8181, or gateway + 101 when unset). Different
+  machines can use the same numbers.
+- **Fresh-install port selection:** when `pom.json` does not exist, POM probes
+  the default gateway and P2P port sets before starting the service or native
+  macOS/Windows shell. It keeps free defaults and moves only an implicit default
+  that is occupied, checking the gateway/inference HTTP, P2P UDP, both QUIC UDP
+  ports and the libp2p TCP/QUIC port. The selected `gateway_port` and `p2p_port`
+  are written into the new configuration; an unset inference port continues to
+  follow the gateway at +101. Explicit CLI or environment port choices are not
+  silently changed, and an existing configuration is never rewritten by this
+  first-boot selection. If no compatible free set is found, startup reports an
+  error. This is a bind-time probe, not a reservation against another process
+  taking a port later.
 - **Context per session:** the deployment's `n_ctx` is the full window of each
   session. `max_sessions` (default 1) multiplies the total KV cache capacity
   without shrinking the individual window (`n_ctx_total = n_ctx *
@@ -57,9 +68,11 @@ field.
 ```bash
 # machine A (will be the administrator):
 ./target/release/pom
-# open http://<machine-a>:8080/ - with no pom.json the node is in setup mode;
-# pick the "admin" profile, name the network and keep the invitation
-# (connection key and trust.json).
+# open http://<machine-a>:8080/ - with no pom.json the node creates a local
+# network of its own (admin, named after the host, discovery off) and opens the
+# panel. Rename it and turn discovery on in Network settings; other machines
+# then ask to join from their Networks screen and an admin approves them.
+# The old wizard (profile, invitation, trust.json) only opens with --setup.
 
 # machine B (node):
 ./target/release/pom
@@ -183,8 +196,8 @@ same key and announce the same `node_id` - and the cluster indexes peers by
 B=/path/pom-b
 mkdir -p $B && cd $B
 for f in models apps; do ln -s ../pom/$f $f; done
-# the config is not inherited: without it the node starts in setup mode and
-# loads no model. Copy peer A's, changing gateway_port, p2p_port,
+# the config is not inherited: without it the node creates a local network of
+# its own and loads no model. Copy peer A's, changing gateway_port, p2p_port,
 # inference_port and bootstrap_nodes; each peer's slice comes from the
 # deployment in the UI.
 POM_HOME=$B ../pom/target/release/pom \

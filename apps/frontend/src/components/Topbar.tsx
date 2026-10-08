@@ -1,9 +1,11 @@
 import { motion } from "framer-motion";
 import {
+  Globe2,
   Menu,
   X,
 } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { isServing } from "../lib/format";
 import { useCluster, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
@@ -11,7 +13,7 @@ import { useI18n } from "../i18n/provider";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
-import { OpenNativeChatWindowButton } from "./OpenNativeChatWindowButton";
+import { OpenNativeChatWindowButton, QuitNativeAppButton } from "./OpenNativeChatWindowButton";
 export { TlsChip } from "./TlsIndicator";
 
 /** One line saying what this node is and whether the pipeline is closed. */
@@ -35,6 +37,23 @@ function NodeChip() {
 
   return (
     <div className="flex min-w-0 items-center gap-2">
+      {/* Which network this machine is in, on every screen: a node starts in
+          a network of its own and may later join someone else's, and nothing
+          else on the page says which one it is looking at. */}
+      {n.network_name && (
+        <Link
+          to="/config/rede"
+          data-testid="topbar-network"
+          title={t("topbar.network", { name: n.network_name })}
+          aria-label={t("topbar.network", { name: n.network_name })}
+          className="min-w-0 shrink rounded-full focus-visible:outline-offset-2"
+        >
+          <Badge tone="iris" className="max-w-[14rem]">
+            <Globe2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span className="truncate">{n.network_name}</span>
+          </Badge>
+        </Link>
+      )}
       <Badge tone={serving ? "aqua" : "neutral"}>
         <Dot tone={serving ? "aqua" : "neutral"} pulse={serving} />
         <span className="truncate">{n.hostname}</span>
@@ -95,6 +114,7 @@ export function Topbar() {
           <OpenNativeChatWindowButton />
           <ProfileBadge />
           <Notifications />
+          <QuitNativeAppButton />
         </div>
       </header>
 

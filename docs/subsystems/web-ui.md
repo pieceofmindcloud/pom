@@ -47,9 +47,20 @@ that height the panel shrinks to what fits; the 390 width is fixed. The
 the native process for a resizable 1120 x 880 points window, larger than the
 panel on both axes. In a regular browser that button is not rendered.
 
-The bundle also installs the regular macOS application menu in AppKit, with
-About and Quit. Quit calls the standard application termination and ends the
-whole process, including the Tokio service on the background thread.
+The larger window title and its menu-bar tooltip use the display name from
+`brand.json`; the packaged app's Dock label uses the same name. The bundle also
+installs the regular macOS application menu in AppKit, with About and Quit. The
+app runs as an accessory (no Dock icon), and an accessory
+shows no menu bar, so Quit is also reachable three other ways:
+- a right click (or Control-click) on the status item opens a menu with
+  "Open in a larger window" and "Quit POM";
+- while the larger window is open the app switches to a regular one, with a
+  Dock icon, its menu bar and Cmd+Q, and goes back to an accessory when the
+  window closes (closing only hides it; the app stays in the menu bar);
+- the `pomQuit` WebKit bridge, behind a power button in the top bar
+  (`QuitNativeAppButton`), rendered only inside the macOS app.
+Quit calls the standard application termination and ends the whole process,
+including the Tokio service on the background thread.
 
 Rust chooses the dimensions and the address (`macos_status.rs`) and hands them
 to Objective-C at startup: the native side does not know the node's
@@ -276,9 +287,39 @@ does not get past that clip. The minimized choice is persisted in the browser.
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust
-  screen without a public network secret.
+  screen without a public network secret. On the row of the network this node
+  already belongs to, Join is replaced by "Leave network" for a member and by
+  no action at all for the principal. A network whose `accepted_enrollments`
+  is empty shows a disabled "Closed" button; with a partial list Join stays
+  enabled and the wizard's first screen disables the roles that are not
+  accepted. The principal edits the list in Network settings ("Accepting new
+  members"). A network with `lobby_chat` gets a "Chat" button that opens
+  `components/LobbyChat.tsx`: a conversation with that network's lobby through
+  this node, with the hardware card the network will see. The same component
+  runs in the setup wizard, whose join step lists the federated directory
+  (`PublicDirectoryPanel`), so a machine that has joined nothing can ask first;
+  the list comes from the installation's relays and from the relay key or
+  node address typed in the panel.
+  Members read and answer in the "Lobby" tab of `/network-chat`, which lists
+  each candidate with its declared hardware (`LobbyHardwareCard`). The switch
+  is "Lobby chat" in Network settings. A network with `public_stats` fills the
+  nodes, VRAM and models columns of a row this node is not a member of
+  (`lib/publicStats.ts`, asked from that network's principal through this
+  node); latency stays unavailable there. The switch is "Published stats" in
+  Network settings. The menu entry and the screen are now called "Networks".
+  Joining is asked, not taken: the row's main button opens the lobby window,
+  whose side panel has "Request admission" with the role to join as, shows the
+  request's state, and offers "Join now" (behind a confirmation) once an admin
+  approved. The bell lists machines asking to join this network, with role,
+  direct or relayed connection, latency and hardware, and Approve / Decline;
+  on the candidate it lists the answer, with "Join now" when approved.
+  Network settings calls visibility "Discovery" and offers off or on (listed);
+  the announced-but-not-listed value stays selectable only where already set.
+  It no longer offers the open admission mode.
 - `/setup` -> `Setup`, the real first access wizard, **full screen** and with
-  the access gate's identity (see "First access wizard" below).
+  the access gate's identity (see "First access wizard" below). It is out of
+  the normal path: a node without a network creates a local one and opens the
+  panel, and the wizard only appears when the node was started with `--setup`.
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the
   participant list for `admin` and `node`; `/config/preferencias` ->
   Preferences; `/config/preferencias/admin` -> administrative preferences;
@@ -294,7 +335,8 @@ does not get past that clip. The minimized choice is persisted in the browser.
   (`/config/pastas` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
   sets a folder (`model_dirs_env`/`shard_dir_env` in `/api/ui/paths`), the
   matching field is locked, with the variable's name in a badge and a note:
-  editing there would have no effect. The setup wizard does not show up in the
+  editing there would have no effect. Saving a folder that does not exist yet
+  creates it (absolute paths only); a path to a file is refused. The setup wizard does not show up in the
   menu, although its test route stays available.
 - `*` -> NotFound
 
@@ -1121,10 +1163,14 @@ it would say the whole machine runs on the CPU.
 ## The Flow canvas: arrangement by layers
 
 `ModelNetworkCanvas` draws the network, and `lib/networkLayout.ts` decides where
-each card goes. The rule is **one column per layer range, in pipeline order, and
-replicas of the same range stacked inside the column, centered on the same
-axis** (`autoLayout`). That is what makes a fork look like a fork and an edge
-become a short line.
+each card goes. The rule is **one column per pipeline stage, in pipeline order**
+(`autoLayout`). A card's column is the longest chain of ranges that end before
+it starts, so ranges that start at the same layer share a column even when they
+end at different layers: with 0-15, 16-30, 31-40 and 16-40, the column after
+0-15 holds 16-30 and 16-40, and 31-40 comes after it. Inside a column, the
+replicas of the first range (lowest end layer) are centered on the axis - the
+route that goes straight on - and the alternative ranges stack below it. That
+is what makes a fork look like a fork and an edge become a short line.
 
 The precedence is: dragged position > computed arrangement > grid
 (`fallbackPosition`, only left for a card the arrangement does not know).

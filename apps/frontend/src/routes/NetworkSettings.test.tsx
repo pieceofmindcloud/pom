@@ -50,6 +50,7 @@ const queryMocks = vi.hoisted(() => ({
         geo_label: "com.br.curitiba.node",
         visibility: "private",
         access_policy: "authorized",
+        accepted_enrollments: ["node", "infer"],
         location: { latitude: -25.4, longitude: -49.2 },
       },
       can_edit: false,
@@ -75,6 +76,14 @@ vi.mock("../lib/api", () => ({
 }));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
+}));
+const admissionMocks = vi.hoisted(() => ({
+  admissions: { data: [] as unknown[], refetch: vi.fn() },
+  decide: vi.fn(),
+}));
+vi.mock("../lib/admissions", () => ({
+  useAdmissions: () => admissionMocks.admissions,
+  admissionsApi: { decide: admissionMocks.decide },
 }));
 vi.mock("../lib/queries", () => ({
   useNode: () => queryMocks.node,
@@ -232,6 +241,44 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 
+  it("lets the admin revoke an admitted machine, behind a confirmation", async () => {
+    admissionMocks.admissions.data = [
+      { node_id: "aaaaaaaaaaaa1111", role: "node", status: "approved", requested_at: "", card: { hostname: "forasteiro", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] } },
+      // A request still waiting is decided in the notifications, not here.
+      { node_id: "bbbbbbbbbbbb2222", role: "infer", status: "pending", requested_at: "", card: { hostname: "esperando", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] } },
+    ];
+    admissionMocks.decide.mockResolvedValue([]);
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    const list = screen.getByTestId("admitted-machines");
+    expect(list.textContent).toContain("forasteiro");
+    expect(list.textContent).not.toContain("esperando");
+    fireEvent.click(screen.getByRole("button", { name: "Revogar" }));
+    expect(admissionMocks.decide).not.toHaveBeenCalled();
+    const dialog = screen.getByRole("dialog", { name: "Revogar forasteiro?" });
+    expect(dialog.textContent).toMatch(/nova chave de conexão.*pedir admissão de novo/);
+    const confirm = screen.getAllByRole("button", { name: "Revogar" });
+    fireEvent.click(confirm[confirm.length - 1]);
+    await waitFor(() => expect(admissionMocks.decide).toHaveBeenCalledWith("aaaaaaaaaaaa1111", "forget"));
+    admissionMocks.admissions.data = [];
+  });
+
+  it("offers no way out of the machine's own network", () => {
+    const before = queryMocks.node.data;
+    queryMocks.node.data = { ...before, own_network: true, standby_network: null } as typeof before;
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Voltar para a minha rede" })).toBeNull();
+    queryMocks.node.data = before;
+  });
+
   it("separa esquecer a configuração local (continua aqui) de sair do cluster (agora em Minha Máquina)", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
@@ -245,14 +292,14 @@ describe("NetworkSettings", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Sair da rede" })).toBeNull();
-    const esquecer = screen.getByRole("button", { name: "Esquecer rede" });
+    const esquecer = screen.getByRole("button", { name: "Voltar para a minha rede" });
     fireEvent.click(esquecer);
 
-    const dialog = screen.getByRole("dialog", { name: "Esquecer a configuração local?" });
-    expect(dialog.textContent).toMatch(/apaga a configuração local.*reinicia o nó/i);
+    const dialog = screen.getByRole("dialog", { name: "Sair desta rede?" });
+    expect(dialog.textContent).toMatch(/volta para a rede própria.*nova chave de conexão.*novo pedido de admissão/i);
     expect(vi.mocked(api.post)).not.toHaveBeenCalled();
 
-    const confirma = screen.getAllByRole("button", { name: "Esquecer rede" });
+    const confirma = screen.getAllByRole("button", { name: "Voltar para a minha rede" });
     fireEvent.click(confirma[confirma.length - 1]);
 
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/leave"));

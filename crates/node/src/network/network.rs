@@ -3387,6 +3387,15 @@ impl Network {
     /// A resposta `challenge_required` do handshake já prova a chave
     /// compartilhada; concluir a assinatura do nonce seria uma prova de
     /// identidade adicional, não necessária para a admissão privada atual.
+    /// The network's signed trust document, as an admission grant carries it.
+    pub(crate) fn trust_document_json(&self) -> Option<String> {
+        let admission = self.admission.as_ref()?;
+        if !admission.trust.is_anchored() {
+            return None;
+        }
+        serde_json::to_string(&admission.trust.document()).ok()
+    }
+
     pub(crate) async fn admit_peer(&self, peer: &PeerInfo) -> bool {
         if let Some(allowed) = self.admission_without_probe(peer).await {
             return allowed;
@@ -3394,7 +3403,10 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return true;
         };
-        let connection_key = admission.auth.read().await.connection_key.clone();
+        // The key this node presents now: during a rotation that is still
+        // the old one until every member switches together.
+        let connection_key =
+            crate::auth::outbound_connection_key(&*admission.auth.read().await);
         let cache_key = self.admission_cache_key(peer, &connection_key);
         let probe = self.private_peer_is_admitted(peer, &connection_key).await;
         let Ok(mut cache) = self.admission_cache.write() else {
@@ -3607,15 +3619,30 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return Some(true);
         };
-        let (connection_key, is_public_network, access_policy) = {
+        let (connection_key, open_admission, access_policy) = {
             let config = admission.auth.read().await;
             (
-                config.connection_key.clone(),
-                config.network.visibility == crate::config::NetworkVisibility::Public,
+                crate::auth::outbound_connection_key(&config),
+                config.network.open_admission(),
                 config.network.access_policy,
             )
         };
-        if is_public_network {
+        // A peer that announces another network is not a member, and there is
+        // nothing to probe. All networks share one announce topic, so without
+        // this every announce of every other network cost a `/handshake`
+        // probe, which falls back to a relay circuit for a peer behind NAT -
+        // and it was those circuits, never going to be useful, that used up
+        // the relay. A peer that announces no network is still probed.
+        if let Some(theirs) = peer.cluster_id.as_deref().filter(|id| !id.trim().is_empty()) {
+            if admission.trust.is_anchored() && !admission.trust.anchors_cluster(theirs) {
+                return Some(false);
+            }
+        }
+        // Only a public network left in the open mode admits by the trust
+        // anchor alone. Every other network, listed or not, asks for the
+        // connection key, which reaches a new machine through an admin's
+        // approval of its admission request.
+        if open_admission {
             return Some(Self::public_peer_is_admitted(
                 peer,
                 admission,
@@ -5632,6 +5659,7 @@ mod tests {
         );
         let path =
             std::env::temp_dir().join(format!("pom-admission-{}.json", uuid::Uuid::new_v4()));
+        let principal_copy = principal.clone();
         let trust = crate::admin_trust::AdminTrust::bootstrap_primary(
             &path,
             "cluster",
@@ -5643,17 +5671,54 @@ mod tests {
             .await
             .unwrap()
             .with_admission(
-                admission_config(
+                // The open mode: only a public network left on
+                // `anyone_with_anchor` admits by the trust anchor alone.
+                admission_config_with_policy(
                     "local-admin-credential",
                     crate::config::NetworkVisibility::Public,
+                    crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
                 ),
                 Arc::new(trust),
             );
         peer.pubkey = principal.pubkey;
         peer.libp2p_peer_id = Some(peer_id);
         peer.cluster_id = Some("cluster".into());
-        trusted.insert_peer(peer).await;
+        trusted.insert_peer(peer.clone()).await;
         assert_eq!(trusted.peer_count().await, 1);
+
+        // The same anchored peer on a listed network that requires approval:
+        // the anchor is not enough, the connection key decides, and with no
+        // key in common the peer stays out.
+        let path = std::env::temp_dir()
+            .join(format!("pom-admission-gated-{}.json", uuid::Uuid::new_v4()));
+        let gated_trust = crate::admin_trust::AdminTrust::bootstrap_primary(
+            &path,
+            "cluster",
+            principal_copy,
+            &signing_key,
+        )
+        .unwrap();
+        let gated = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config_with_policy(
+                "",
+                crate::config::NetworkVisibility::Public,
+                crate::config::NetworkAccessPolicy::Authorized,
+            ),
+            Arc::new(gated_trust),
+        );
+        gated.insert_peer(peer).await;
+        assert_eq!(gated.peer_count().await, 0);
+        let _ = std::fs::remove_file(&path);
 
         let _ = std::fs::remove_file(path);
     }

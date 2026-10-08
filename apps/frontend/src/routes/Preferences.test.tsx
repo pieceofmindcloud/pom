@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProfileProvider } from "../lib/profile";
 import { LocaleProvider } from "../i18n/provider";
 import { Preferences, ThermalPanel } from "./Preferences";
 
@@ -85,6 +86,18 @@ describe("Preferences", () => {
     expect(screen.getByText("Proteção térmica da GPU")).toBeTruthy();
     expect(screen.getByText("Hugging Face")).toBeTruthy();
     expect(screen.getByText("••••••••cret")).toBeTruthy();
+  });
+
+  it("no perfil infer, esconde a proteção térmica da GPU e o Hugging Face", () => {
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile="infer">
+          <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Preferences /></MemoryRouter>
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+    expect(screen.queryByText("Proteção térmica da GPU")).toBeNull();
+    expect(screen.queryByText("Hugging Face")).toBeNull();
   });
 
   it("mantém a leitura da política e salva alterações no endpoint térmico", async () => {

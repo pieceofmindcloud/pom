@@ -9,7 +9,7 @@ pub const IPC_PROTOCOL: &str = "pom-enterprise-ipc/v1";
 pub const MAX_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Where a person goes to buy or manage a plugin license. Not specific to any
 /// one plugin_code - it is the storefront for the whole catalog.
-pub const PLUGIN_MANAGE_URL: &str = "https://pieceofmind.cloud/enterprise";
+pub const PLUGIN_MANAGE_URL: &str = "https://pieceofmind.cloud/plugins/";
 pub const FINGERPRINT_SCHEME: &str = "pom-fingerprint-v1";
 pub const PLUGIN_ABI_VERSION: u32 = 1;
 

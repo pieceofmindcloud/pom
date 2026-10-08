@@ -93,6 +93,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/cluster/member-left",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/api/cluster/network-settings",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -145,13 +150,6 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/plugins",
         method: None,
         scope: RouteScope::InferNodeAdmin,
-    },
-    // O rebuild local de desenvolvimento compila fontes montadas no nó e
-    // continua sendo ato de administrador.
-    RouteRule {
-        prefix: "/api/ui/plugins/dev-sources",
-        method: None,
-        scope: RouteScope::AdminOnly,
     },
     // Atualização do binário `pom` em si - fronteira separada dos plugins de
     // propósito, ver `crate::pom_core_update`.
@@ -297,6 +295,19 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/network/leave",
         method: Some(Method::POST),
         scope: RouteScope::InferNodeAdmin,
+    },
+    // Joining replaces the network this machine is in; like leaving, it is
+    // the operator's own machine and no profile needs a licence for it.
+    RouteRule {
+        prefix: "/api/ui/network/join",
+        method: Some(Method::POST),
+        scope: RouteScope::InferNodeAdmin,
+    },
+    // Who gets into the network is an administrator's decision.
+    RouteRule {
+        prefix: "/api/ui/network/admissions",
+        method: None,
+        scope: RouteScope::AdminOnly,
     },
     RouteRule {
         prefix: "/api/ui/plan",
@@ -572,7 +583,7 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/plugins/dev-sources"),
-            RouteScope::AdminOnly
+            RouteScope::InferNodeAdmin
         );
         assert_eq!(
             scope_of("/api/ui/pom-update/status"),
@@ -598,7 +609,6 @@ mod policy_tests {
             assert!(profile_can_access(crate::profile::NodeProfile::Infer, scope));
         }
         for path in [
-            "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
             "/api/ui/pom-update/check",
             "/api/ui/pom-update/apply",
         ] {
@@ -699,8 +709,11 @@ mod policy_tests {
     }
 
     #[test]
-    fn development_plugin_routes_are_administrator_only() {
+    fn development_plugin_routes_are_open_to_every_profile() {
         use crate::profile::NodeProfile::{Admin, Infer, Node};
+
+        // A local build installs on this machine only, like any plugin;
+        // `POM_DESENV` is what turns it on (checked by the handlers).
 
         for (method, path) in [
             (Method::GET, "/api/ui/plugins/dev-sources"),
@@ -710,10 +723,10 @@ mod policy_tests {
             ),
         ] {
             let scope = route_scope(&method, path);
-            assert_eq!(scope, RouteScope::AdminOnly, "{method} {path}");
+            assert_eq!(scope, RouteScope::InferNodeAdmin, "{method} {path}");
             assert!(profile_can_access(Admin, scope));
-            assert!(!profile_can_access(Node, scope));
-            assert!(!profile_can_access(Infer, scope));
+            assert!(profile_can_access(Node, scope));
+            assert!(profile_can_access(Infer, scope));
         }
     }
 

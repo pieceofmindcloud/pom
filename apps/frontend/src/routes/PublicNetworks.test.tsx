@@ -3,20 +3,24 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { resetPublicLocatorCache } from "../lib/publicLocator";
+import { resetPublicStatsCache } from "../lib/publicStats";
 import { PublicNetworks } from "./PublicNetworks";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
+  node: { data: undefined as { authority_level: "primary" | "secondary" | null } | undefined },
 }));
 
 vi.mock("../lib/api", () => ({
-  api: { get: mocks.get },
+  api: { get: mocks.get, post: mocks.post },
 }));
 vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: undefined }),
+  useNode: () => mocks.node,
 }));
 vi.mock("../lib/toast", () => ({
-  useToast: () => ({ fromError: vi.fn() }),
+  useToast: () => ({ fromError: vi.fn(), success: vi.fn() }),
 }));
 
 const networks = [
@@ -78,8 +82,20 @@ const networks = [
 
 const publicHealth = vi.fn();
 
+/** Serves the catalog and, when given, the network this node already belongs to. */
+function serve(local?: (typeof networks)[number]) {
+  mocks.get.mockImplementation((path: string) => {
+    if (path === "/api/public/networks") return Promise.resolve(networks);
+    if (path === "/api/public/network" && local) return Promise.resolve(local);
+    if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+    return Promise.reject(new Error("no local network"));
+  });
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", publicHealth);
+  mocks.node.data = undefined;
+  mocks.post.mockResolvedValue({});
   mocks.get.mockImplementation((path: string) => {
     if (path === "/api/public/networks") return Promise.resolve(networks);
     if (path.startsWith("/api/public/networks/locate?")) {
@@ -94,6 +110,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetPublicLocatorCache();
+  resetPublicStatsCache();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -159,5 +176,119 @@ describe("PublicNetworks", () => {
     expect(within(dialog).getByRole("link", { name: "Discord" })).toBeTruthy();
     expect(within(dialog).getByText("Equipe Sul")).toBeTruthy();
     expect(within(dialog).getByText("fingerprint-curitiba")).toBeTruthy();
+  });
+
+  it("offers Leave instead of Join on the network this node already belongs to", async () => {
+    mocks.node.data = { authority_level: null };
+    serve(networks[0]);
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const row = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    const leave = await within(row).findByRole("button", { name: "Sair da rede" });
+    expect(within(row).queryByRole("button", { name: "Sem lobby" })).toBeNull();
+    const other = screen.getByText("Rede Lisboa").closest("tr")!;
+    expect(within(other).getByRole("button", { name: "Sem lobby" })).toBeTruthy();
+
+    fireEvent.click(leave);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sair da rede" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/leave"));
+  });
+
+  it("offers no action to the principal on its own network", async () => {
+    mocks.node.data = { authority_level: "primary" };
+    serve(networks[0]);
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const other = (await screen.findByText("Rede Lisboa")).closest("tr")!;
+    const row = screen.getByText("Rede Curitiba").closest("tr")!;
+    await waitFor(() => expect(within(row).queryByRole("button", { name: "Sem lobby" })).toBeNull());
+    expect(within(row).queryByRole("button", { name: "Sair da rede" })).toBeNull();
+    expect(within(other).getByRole("button", { name: "Sem lobby" })).toBeTruthy();
+  });
+
+  it("asks for admission through the lobby, and only where a lobby is open", async () => {
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") {
+        return Promise.resolve([
+          { ...networks[0], lobby_chat: true, accepted_enrollments: ["infer"] },
+          { ...networks[1], lobby_chat: true, accepted_enrollments: [] },
+          networks[2],
+        ]);
+      }
+      if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+      if (path.startsWith("/api/ui/network-chat/lobby?")) {
+        return Promise.resolve({ accepted: true, error: null, node_id: "me", card: { hostname: "eu", os: "linux", arch: "x86_64", cpu_count: 4, ram_total_mb: 8192, gpus: [] }, messages: [], admission: null });
+      }
+      return Promise.reject(new Error("no local network"));
+    });
+    mocks.post.mockResolvedValue({
+      accepted: true, error: null, node_id: "me", messages: [],
+      card: { hostname: "eu", os: "linux", arch: "x86_64", cpu_count: 4, ram_total_mb: 8192, gpus: [] },
+      admission: { key: "pk:curitiba", name: "Rede Curitiba", role: "infer", status: "pending" },
+    });
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const open = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    // A network that takes no new member can still be talked to.
+    const closed = screen.getByText("Rede São Paulo").closest("tr")!;
+    expect(within(closed).getByRole("button", { name: "Conversar" })).toBeTruthy();
+    // Without a lobby there is nobody to ask.
+    const silent = screen.getByText("Rede Lisboa").closest("tr")!;
+    expect((within(silent).getByRole("button", { name: "Sem lobby" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(within(open).getByRole("button", { name: "Conversar e pedir para entrar" }));
+    const dialog = await screen.findByRole("dialog", { name: "Lobby de Rede Curitiba" });
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith("/api/ui/network-chat/lobby?key=pk%3Acuritiba", { auth: true }));
+
+    // Only the role the network accepts is offered, and the request goes
+    // through this node with the network's name to label it.
+    const role = await within(dialog).findByRole("combobox", { name: "Entrar como" });
+    expect(within(role).getAllByRole("option").map((option) => option.textContent)).toEqual(["Nós de inferência"]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Pedir admissão" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/network-chat/lobby/admission",
+      { key: "pk:curitiba", role: "infer", name: "Rede Curitiba" },
+    ));
+    expect(await within(dialog).findByText(/Aguardando um administrador/)).toBeTruthy();
+  });
+
+  it("shows models, nodes and VRAM of a network that publishes them, and asks no other", async () => {
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([{ ...networks[0], public_stats: true }, networks[1]]);
+      if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+      if (path === "/api/ui/network-chat/lobby/info?key=pk%3Acuritiba") {
+        return Promise.resolve({ accepted: true, error: null, info: { models: ["gemma", "qwen3"], node_count: 4, vram_total_mb: 49152 } });
+      }
+      return Promise.reject(new Error("no local network"));
+    });
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const row = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    expect(await within(row).findByText("gemma, qwen3")).toBeTruthy();
+    expect(within(row).getByText("4")).toBeTruthy();
+    expect(within(row).getByText("48.0 GB")).toBeTruthy();
+    // Latency to a network that was not joined is not measured by anyone.
+    expect(within(row).getAllByText("Indisponível").length).toBe(1);
+
+    const silent = screen.getByText("Rede São Paulo").closest("tr")!;
+    expect(within(silent).queryByText("gemma, qwen3")).toBeNull();
+    expect(mocks.get.mock.calls.some(([path]) => String(path).includes("lobby/info?key=pk%3Asao-paulo"))).toBe(false);
   });
 });

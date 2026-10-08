@@ -96,6 +96,14 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   projetos do usuário e dados dinâmicos de plugins. O campo persistido é
   opcional para configurações antigas e o default é `~/pom_workspace`, sem
   pergunta no wizard e separado das pastas de modelos.
+- `create_default_storage_dirs` creates POM's own default folders when they
+  are the effective ones (`~/.pom/models` among the model folders,
+  `~/.pom/models_sliced`, `~/pom_workspace`), at node start, after setup and
+  after `POST /api/ui/paths`. Setup used to save them without creating them,
+  so a fresh install could not receive a file. A folder the operator typed is
+  never created at start (it may be on an unmounted drive); saving one in
+  Storage does create it, from an absolute path (`check_dir`,
+  `check_workspace_dir` in `backend/webui/catalog.rs`).
 - A configuração não possui teto absoluto de saída. A capacidade efetiva é
   observada no runtime depois do carregamento do modelo e chega ao gateway por
   `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite
@@ -168,6 +176,25 @@ desconhecida e nunca é convertido em alarme pela proteção térmica.
 de rede. Ela é usada tanto pelo wizard quanto pela edição posterior e exige
 nome público, país e cidade quando a visibilidade é pública; redes locais e
 privadas podem deixar esses campos vazios.
+
+`NetworkSettings.accepted_enrollments` (`AcceptedEnrollments`, a list of
+`EnrollmentRole`: `node`, `infer`) is what the network advertises as open to
+new members. A missing field deserializes to every role, an empty list means
+closed. It is an advertisement for the public directory only: admission
+(`Network::public_peer_is_admitted`) does not read it and current members are
+never affected.
+
+`NetworkSettings.lobby_chat` opens the lobby room of the network Chat to
+machines that are not members (`network/network_lobby.rs`). It is off by
+default and only takes effect on a public network with the network Chat on.
+`NetworkSettings.visibility` is what the interface calls discovery: `local`
+announces nothing (the node runs detached and publishes no pkarr record),
+`private` announces without being listed, `public` is listed.
+`NetworkSettings::open_admission` is the one case where membership needs no
+connection key: a public network left on `anyone_with_anchor`.
+`NetworkSettings.public_stats` publishes the served models, node count and
+total VRAM to non-members, answered live by the principal; off by default and
+public networks only.
 
 ## Ligações
 

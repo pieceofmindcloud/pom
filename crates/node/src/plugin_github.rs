@@ -105,6 +105,53 @@ pub(crate) struct DownloadedRelease {
 pub(crate) struct GithubReleaseClient {
     client: reqwest::Client,
     api_base: reqwest::Url,
+    /// `POM_GITHUB_TOKEN`: raises the API limit from 60 calls per hour per IP
+    /// to 5,000 per hour for that token. Sent only to the API host.
+    token: Option<String>,
+    /// Last body and ETag per API URL. An unchanged answer comes back as 304,
+    /// which GitHub does not count against the rate limit.
+    etags: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>>,
+    /// The POM license server, where every stable release of a POM plugin is
+    /// also published: the fallback when GitHub refuses or rate-limits a
+    /// lookup or a download (`/v1/plugin-releases`). `None` turns it off.
+    license_base: Option<reqwest::Url>,
+}
+
+/// `release_id` prefix of a release listed by the license server instead of
+/// GitHub (whose release IDs are numbers).
+pub(crate) const LICENSE_RELEASE_PREFIX: &str = "license-server:";
+
+/// `manifest_path` of a repository whose listing came from the license server.
+const LICENSE_MANIFEST_PATH: &str = "license-server";
+
+#[derive(Debug, Deserialize)]
+struct LicensePluginReleases {
+    plugin_code: String,
+    display_name: String,
+    #[serde(default)]
+    description: String,
+    releases: Vec<LicenseRelease>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LicenseRelease {
+    release_id: String,
+    version: String,
+    plugin_abi: u32,
+    size: u64,
+    sha256: String,
+    #[serde(default)]
+    feature_set: Vec<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    download_path: String,
+}
+
+/// An API answer: the status and the body (the cached one on a 304).
+struct ApiAnswer {
+    status: StatusCode,
+    body: Vec<u8>,
+    rate_limit: Option<String>,
 }
 
 #[derive(Debug)]
@@ -155,7 +202,262 @@ impl GithubReleaseClient {
             }))
             .build()
             .map_err(|error| error.to_string())?;
-        Ok(Self { client, api_base })
+        let token = crate::brand::env("GITHUB_TOKEN")
+            .ok()
+            .map(|token| token.trim().to_owned())
+            .filter(|token| !token.is_empty());
+        Ok(Self {
+            client,
+            api_base,
+            token,
+            etags: Default::default(),
+            license_base: None,
+        })
+    }
+
+    /// Turns on the license-server fallback at `base`.
+    pub(crate) fn with_license_fallback(mut self, base: &str) -> Self {
+        self.license_base = reqwest::Url::parse(base)
+            .ok()
+            .filter(|url| url.scheme() == "https" || cfg!(test));
+        self
+    }
+
+    async fn license_releases(
+        &self,
+        query: &[(&str, &str)],
+    ) -> Result<LicensePluginReleases, String> {
+        let base = self
+            .license_base
+            .as_ref()
+            .ok_or_else(|| "no license-server fallback is configured".to_owned())?;
+        let url = base
+            .join("/v1/plugin-releases")
+            .map_err(|error| error.to_string())?;
+        let response = self
+            .client
+            .get(url)
+            .query(query)
+            .send()
+            .await
+            .map_err(|error| format!("license server lookup failed: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err("the license server does not publish this plugin".into());
+        }
+        if response.status() != StatusCode::OK {
+            return Err(format!("license server answered HTTP {}", response.status()));
+        }
+        let bytes = read_limited(response, MAX_GITHUB_METADATA_BYTES, "license server releases").await?;
+        let listing: LicensePluginReleases = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid license server releases: {error}"))?;
+        if !listing
+            .plugin_code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            || listing.plugin_code.is_empty()
+        {
+            return Err("license server returned an invalid plugin code".into());
+        }
+        Ok(listing)
+    }
+
+    /// The repository as the license server lists it, for when GitHub cannot
+    /// be inspected. Without the repository's own manifest there are no
+    /// preferences or screenshots; the plugin's screens come from the plugin
+    /// itself once it runs.
+    pub(crate) async fn inspect_from_license_server(
+        &self,
+        repository_url: &str,
+        os: &str,
+        arch: &str,
+        github_error: &str,
+    ) -> Result<GithubRepository, String> {
+        let canonical_url = canonical_repository(repository_url)?;
+        let parts = canonical_repository_parts(&canonical_url)?;
+        let repository = format!("{}/{}", parts.owner, parts.repo);
+        let listing = self
+            .license_releases(&[("repository", repository.as_str()), ("os", os), ("arch", arch)])
+            .await?;
+        let latest = listing.releases.first();
+        let target = format!("{os}-{arch}");
+        let releases = listing
+            .releases
+            .iter()
+            .filter(|release| safe_release_id(&release.release_id))
+            .map(|release| GithubRepositoryRelease {
+                release_id: format!("{LICENSE_RELEASE_PREFIX}{}", release.release_id),
+                tag_name: format!("v{}", release.version.trim_start_matches('v')),
+                name: None,
+                changelog: None,
+                published_at: release.published_at.clone(),
+                prerelease: false,
+                asset_name: Some(release.release_id.clone()),
+                asset_size: Some(release.size),
+                available_for_node: release.plugin_abi == enterprise_protocol::PLUGIN_ABI_VERSION,
+            })
+            .collect::<Vec<_>>();
+        let description = Some(listing.description.trim().to_owned()).filter(|text| !text.is_empty());
+        Ok(GithubRepository {
+            id: hex::encode(sha2::Sha256::digest(canonical_url.as_bytes())),
+            repository_url: canonical_url,
+            manifest_path: LICENSE_MANIFEST_PATH.to_owned(),
+            manifest: GithubRepositoryManifest {
+                schema: 1,
+                plugin_code: listing.plugin_code.clone(),
+                display_name: listing.display_name.clone(),
+                description: description.clone(),
+                plugin_abi: latest.map_or(enterprise_protocol::PLUGIN_ABI_VERSION, |release| release.plugin_abi),
+                feature_set: latest.map(|release| release.feature_set.clone()).unwrap_or_default(),
+                artifacts: [(target, LICENSE_MANIFEST_PATH.to_owned())].into_iter().collect(),
+                preferences: None,
+                screenshots: Vec::new(),
+            },
+            ui_manifest: None,
+            releases,
+            description: description.map(|text| [("en".to_owned(), text)].into_iter().collect()).unwrap_or_default(),
+            screenshot_urls: Vec::new(),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+            check_error: Some(format!(
+                "GitHub could not be read ({github_error}); releases come from the POM license server"
+            )),
+        })
+    }
+
+    /// One release from the license server: the listing is read again (never
+    /// trusted from the saved repository), and the bytes are checked against
+    /// its SHA-256 and size. `wanted` is the license server's release ID, or
+    /// a version (`1.0.1` or `v1.0.1`) when GitHub failed for a GitHub release.
+    async fn download_from_license_server(
+        &self,
+        repository: &GithubRepository,
+        wanted: &str,
+        os: &str,
+        arch: &str,
+    ) -> Result<DownloadedRelease, String> {
+        let plugin_code = repository.manifest.plugin_code.as_str();
+        let listing = self
+            .license_releases(&[("plugin", plugin_code), ("os", os), ("arch", arch)])
+            .await?;
+        if listing.plugin_code != plugin_code {
+            return Err("license server returned another plugin".into());
+        }
+        let version = wanted.trim_start_matches('v');
+        let release = listing
+            .releases
+            .iter()
+            .find(|release| release.release_id == wanted || release.version.trim_start_matches('v') == version)
+            .ok_or_else(|| format!("the license server has no release {wanted} of {plugin_code} for {os}-{arch}"))?;
+        if release.size == 0 || release.size > MAX_PLUGIN_BYTES || !valid_sha256(&release.sha256) {
+            return Err("license server release has invalid integrity metadata".into());
+        }
+        let base = self
+            .license_base
+            .as_ref()
+            .ok_or_else(|| "no license-server fallback is configured".to_owned())?;
+        if !release.download_path.starts_with("/v1/plugin-releases/") {
+            return Err("license server download path is invalid".into());
+        }
+        let url = base.join(&release.download_path).map_err(|error| error.to_string())?;
+        let mut response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("license server download failed: {error}"))?;
+        if response.status() != StatusCode::OK {
+            return Err(format!("license server download answered HTTP {}", response.status()));
+        }
+        let mut bytes = Vec::with_capacity(release.size as usize);
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("license server download failed: {error}"))?
+        {
+            if bytes.len() as u64 + chunk.len() as u64 > release.size {
+                return Err("license server artifact exceeds its declared size".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let extension = match os {
+            "windows" => "dll",
+            "macos" => "dylib",
+            _ => "so",
+        };
+        let manifest = GithubPluginManifest {
+            schema: 1,
+            plugin_code: plugin_code.to_owned(),
+            release_id: release.release_id.clone(),
+            version: release.version.clone(),
+            os: os.to_owned(),
+            arch: arch.to_owned(),
+            plugin_abi: release.plugin_abi,
+            asset: format!("{}.{extension}", release.release_id),
+            sha256: format!("sha256:{}", release.sha256.trim_start_matches("sha256:")),
+            size: release.size,
+            feature_set: release.feature_set.clone(),
+            changelog: None,
+            preferences: repository.manifest.preferences.clone(),
+        };
+        validate_manifest(&manifest, plugin_code, &release.release_id, os, arch)?;
+        validate_integrity(&manifest, &bytes, None)?;
+        Ok(DownloadedRelease { manifest, bytes })
+    }
+
+    /// One GET to the GitHub API: conditional on the last ETag for that URL,
+    /// authenticated when a token is configured, and bounded to `max` bytes.
+    async fn api_get(&self, url: &str, max: usize, what: &str) -> Result<ApiAnswer, String> {
+        let mut request = self
+            .client
+            .get(url)
+            .header(header::ACCEPT, "application/vnd.github+json");
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let cached = self
+            .etags
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(url).cloned());
+        if let Some((etag, _)) = &cached {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format!("GitHub {what} lookup failed: {error}"))?;
+        let status = response.status();
+        if status == StatusCode::NOT_MODIFIED {
+            if let Some((_, body)) = cached {
+                return Ok(ApiAnswer {
+                    status: StatusCode::OK,
+                    body,
+                    rate_limit: None,
+                });
+            }
+        }
+        if status != StatusCode::OK {
+            return Ok(ApiAnswer {
+                status,
+                body: Vec::new(),
+                rate_limit: rate_limit_message(response.headers(), self.token.is_some()),
+            });
+        }
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = read_limited(response, max, what).await?;
+        if let Some(etag) = etag {
+            if let Ok(mut cache) = self.etags.lock() {
+                cache.insert(url.to_owned(), (etag, body.clone()));
+            }
+        }
+        Ok(ApiAnswer {
+            status,
+            body,
+            rate_limit: None,
+        })
     }
 
     #[cfg(test)]
@@ -333,24 +635,17 @@ impl GithubReleaseClient {
         let mut seen_release_ids = std::collections::HashSet::new();
         let mut page = 1usize;
         loop {
-            let releases_response = self
-                .client
-                .get(format!(
-                    "{repo_api}/releases?per_page={GITHUB_RELEASES_PER_PAGE}&page={page}"
-                ))
-                .header(header::ACCEPT, "application/vnd.github+json")
-                .send()
-                .await
-                .map_err(|error| format!("GitHub releases lookup failed: {error}"))?;
-            if releases_response.status() != StatusCode::OK {
-                return Err(github_status_error(releases_response.status(), "releases"));
+            let answer = self
+                .api_get(
+                    &format!("{repo_api}/releases?per_page={GITHUB_RELEASES_PER_PAGE}&page={page}"),
+                    MAX_GITHUB_METADATA_BYTES,
+                    "releases",
+                )
+                .await?;
+            if answer.status != StatusCode::OK {
+                return Err(answer.error("releases"));
             }
-            let release_bytes = read_limited(
-                releases_response,
-                MAX_GITHUB_METADATA_BYTES,
-                "release metadata",
-            )
-            .await?;
+            let release_bytes = answer.body;
             total_metadata_bytes = total_metadata_bytes.saturating_add(release_bytes.len());
             if total_metadata_bytes > MAX_GITHUB_RELEASE_METADATA_BYTES {
                 return Err("GitHub release history exceeds the metadata limit".into());
@@ -525,21 +820,20 @@ impl GithubReleaseClient {
         repo_api: &str,
         path: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        let response = self
-            .client
-            .get(format!("{repo_api}/contents/{path}"))
-            .header(header::ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub {path} lookup failed: {error}"))?;
-        if response.status() == StatusCode::NOT_FOUND {
+        let answer = self
+            .api_get(
+                &format!("{repo_api}/contents/{path}"),
+                MAX_MANIFEST_BYTES * 2,
+                path,
+            )
+            .await?;
+        if answer.status == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        if response.status() != StatusCode::OK {
-            return Err(github_status_error(response.status(), path));
+        if answer.status != StatusCode::OK {
+            return Err(answer.error(path));
         }
-        let response_bytes =
-            read_limited(response, MAX_MANIFEST_BYTES * 2, "plugin manifest").await?;
+        let response_bytes = answer.body;
         let contents: GithubContentsFile = serde_json::from_slice(&response_bytes)
             .map_err(|error| format!("invalid GitHub {path} response: {error}"))?;
         if contents.file_type != "file"
@@ -566,7 +860,41 @@ impl GithubReleaseClient {
         Ok(Some(bytes))
     }
 
+    /// The selected release, from GitHub or, when GitHub fails, the same
+    /// version from the license server.
     pub(crate) async fn download_release(
+        &self,
+        repository: &GithubRepository,
+        release_id: &str,
+        os: &str,
+        arch: &str,
+    ) -> Result<DownloadedRelease, String> {
+        if let Some(license_id) = release_id.strip_prefix(LICENSE_RELEASE_PREFIX) {
+            return self
+                .download_from_license_server(repository, license_id, os, arch)
+                .await;
+        }
+        match self.download_github_release(repository, release_id, os, arch).await {
+            Ok(downloaded) => Ok(downloaded),
+            Err(github_error) if self.license_base.is_some() => {
+                let tag = repository
+                    .releases
+                    .iter()
+                    .find(|release| release.release_id == release_id)
+                    .map(|release| release.tag_name.clone())
+                    .ok_or(github_error.clone())?;
+                tracing::warn!(%github_error, tag, "GitHub refused the plugin release; trying the license server");
+                self.download_from_license_server(repository, &tag, os, arch)
+                    .await
+                    .map_err(|license_error| {
+                        format!("{github_error}; license server fallback: {license_error}")
+                    })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn download_github_release(
         &self,
         repository: &GithubRepository,
         release_id: &str,
@@ -592,17 +920,13 @@ impl GithubReleaseClient {
             parts.owner,
             parts.repo
         );
-        let response = self
-            .client
-            .get(release_api)
-            .header(header::ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub release lookup failed: {error}"))?;
-        if response.status() != StatusCode::OK {
-            return Err(github_status_error(response.status(), "release"));
+        let answer = self
+            .api_get(&release_api, MAX_GITHUB_METADATA_BYTES, "release")
+            .await?;
+        if answer.status != StatusCode::OK {
+            return Err(answer.error("release"));
         }
-        let bytes = read_limited(response, MAX_GITHUB_METADATA_BYTES, "release metadata").await?;
+        let bytes = answer.body;
         let release: GithubRelease = serde_json::from_slice(&bytes)
             .map_err(|error| format!("invalid GitHub release response: {error}"))?;
         if release.id.to_string() != release_id || release.draft {
@@ -688,18 +1012,13 @@ impl GithubReleaseClient {
     }
 
     async fn ensure_public_repository(&self, repo_api: &str) -> Result<(), String> {
-        let response = self
-            .client
-            .get(repo_api)
-            .header(header::ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub repository lookup failed: {error}"))?;
-        if response.status() != StatusCode::OK {
-            return Err(github_status_error(response.status(), "repository"));
+        let answer = self
+            .api_get(repo_api, MAX_GITHUB_METADATA_BYTES, "repository")
+            .await?;
+        if answer.status != StatusCode::OK {
+            return Err(answer.error("repository"));
         }
-        let bytes =
-            read_limited(response, MAX_GITHUB_METADATA_BYTES, "repository metadata").await?;
+        let bytes = answer.body;
         let metadata: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("invalid GitHub repository response: {error}"))?;
         if metadata.get("private").and_then(serde_json::Value::as_bool) != Some(false) {
@@ -709,7 +1028,12 @@ impl GithubReleaseClient {
     }
 
     async fn download_asset(&self, asset: &GithubAsset) -> Result<Vec<u8>, String> {
-        let url = reqwest::Url::parse(&asset.url)
+        let source = asset
+            .browser_download_url
+            .as_deref()
+            .filter(|url| !url.is_empty())
+            .unwrap_or(&asset.url);
+        let url = reqwest::Url::parse(source)
             .map_err(|_| "GitHub release asset URL is invalid".to_owned())?;
         if (url.scheme() != "https" && !(cfg!(test) && url.scheme() == "http"))
             || !url.username().is_empty()
@@ -909,8 +1233,12 @@ struct GithubAsset {
     name: String,
     size: u64,
     /// GitHub's release API returns both `url` (the API asset endpoint) and
-    /// `browser_download_url`; the POM must download through the API endpoint.
+    /// `browser_download_url`. The download goes through the second: the
+    /// CDN does not count against the API's hourly limit, and the bytes are
+    /// still checked against the API's `digest`.
     url: String,
+    #[serde(default)]
+    browser_download_url: Option<String>,
     #[serde(default)]
     digest: Option<String>,
 }
@@ -1173,6 +1501,38 @@ fn safe_release_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
 }
 
+impl ApiAnswer {
+    fn error(&self, action: &str) -> String {
+        self.rate_limit
+            .clone()
+            .unwrap_or_else(|| github_status_error(self.status, action))
+    }
+}
+
+/// The message for an exhausted API limit, with when it resets, or `None`
+/// when the refusal was something else.
+fn rate_limit_message(headers: &reqwest::header::HeaderMap, authenticated: bool) -> Option<String> {
+    let value = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
+    if value("x-ratelimit-remaining") != Some("0") {
+        return None;
+    }
+    let reset = value("x-ratelimit-reset")
+        .and_then(|reset| reset.parse::<i64>().ok())
+        .and_then(|reset| chrono::DateTime::from_timestamp(reset, 0))
+        .map(|reset| format!(" until {} UTC", reset.format("%H:%M")));
+    let limit = value("x-ratelimit-limit").unwrap_or("60");
+    Some(format!(
+        "GitHub API limit reached ({limit} calls per hour{}){}{}",
+        if authenticated { " for this token" } else { " for this IP without a token" },
+        reset.unwrap_or_default(),
+        if authenticated {
+            ""
+        } else {
+            "; set POM_GITHUB_TOKEN to raise it to 5000 per hour"
+        }
+    ))
+}
+
 fn github_status_error(status: StatusCode, action: &str) -> String {
     match status {
         StatusCode::NOT_FOUND => format!("GitHub {action} is not public or does not exist"),
@@ -1186,6 +1546,145 @@ fn github_status_error(status: StatusCode, action: &str) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn when_github_refuses_the_license_server_lists_and_serves_the_same_release() {
+        use axum::http::StatusCode as HttpStatus;
+        use axum::routing::get;
+
+        let binary = b"plugin from the license server".to_vec();
+        let sha = hex::encode(sha2::Sha256::digest(&binary));
+        let listing = serde_json::json!({
+            "plugin_code": "acme_plugin",
+            "display_name": "Acme Plugin",
+            "description": "From the license server.",
+            "releases": [{
+                "release_id": "acme_plugin-1.0.1-linux-x86_64",
+                "version": "1.0.1",
+                "plugin_abi": enterprise_protocol::PLUGIN_ABI_VERSION,
+                "size": binary.len(),
+                "sha256": sha,
+                "feature_set": ["acme_plugin.core"],
+                "published_at": "2026-10-07T12:00:00Z",
+                "download_path": "/v1/plugin-releases/acme_plugin-1.0.1-linux-x86_64/download"
+            }]
+        });
+        let served = binary.clone();
+        let app = axum::Router::new()
+            // GitHub: every API call refused, as when the hourly limit runs out.
+            .route("/repos/*rest", get(|| async { HttpStatus::FORBIDDEN }))
+            .route("/v1/plugin-releases", get(move || {
+                let listing = listing.clone();
+                async move { axum::Json(listing) }
+            }))
+            .route(
+                "/v1/plugin-releases/acme_plugin-1.0.1-linux-x86_64/download",
+                get(move || {
+                    let served = served.clone();
+                    async move { served }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = GithubReleaseClient::with_api_base(&base)
+            .unwrap()
+            .with_license_fallback(&base);
+
+        let github_error = client
+            .inspect_repository("https://github.com/acme/new-plugin", "linux", "x86_64")
+            .await
+            .unwrap_err();
+        let repository = client
+            .inspect_from_license_server("https://github.com/acme/new-plugin", "linux", "x86_64", &github_error)
+            .await
+            .unwrap();
+        assert_eq!(repository.manifest.plugin_code, "acme_plugin");
+        assert_eq!(repository.releases.len(), 1);
+        assert_eq!(repository.releases[0].tag_name, "v1.0.1");
+        assert!(repository.releases[0].available_for_node);
+        assert!(repository.check_error.as_deref().unwrap().contains("license server"));
+
+        let downloaded = client
+            .download_release(&repository, &repository.releases[0].release_id, "linux", "x86_64")
+            .await
+            .unwrap();
+        assert_eq!(downloaded.bytes, binary);
+        assert_eq!(downloaded.manifest.version, "1.0.1");
+
+        // A release listed by GitHub earlier: GitHub refuses now, so the same
+        // version comes from the license server.
+        let mut from_github = repository.clone();
+        from_github.manifest_path = "manifest.json".into();
+        from_github.releases[0].release_id = "123".into();
+        let downloaded = client
+            .download_release(&from_github, "123", "linux", "x86_64")
+            .await
+            .unwrap();
+        assert_eq!(downloaded.bytes, binary);
+    }
+
+    #[test]
+    fn an_exhausted_limit_says_when_it_resets_and_how_to_raise_it() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("x-ratelimit-limit", "60".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1791292156".parse().unwrap());
+        let message = rate_limit_message(&headers, false).unwrap();
+        assert!(message.contains("60 calls per hour"), "{message}");
+        assert!(message.contains("until 13:09 UTC"), "{message}");
+        assert!(message.contains("POM_GITHUB_TOKEN"), "{message}");
+        assert!(!rate_limit_message(&headers, true).unwrap().contains("POM_GITHUB_TOKEN"));
+        headers.insert("x-ratelimit-remaining", "12".parse().unwrap());
+        assert!(rate_limit_message(&headers, false).is_none());
+    }
+
+    #[tokio::test]
+    async fn api_answers_are_revalidated_with_their_etag_and_assets_come_from_the_cdn() {
+        use axum::http::{HeaderMap, StatusCode as HttpStatus};
+        use axum::routing::get;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let conditional = Arc::new(AtomicUsize::new(0));
+        let seen = conditional.clone();
+        let app = axum::Router::new()
+            .route(
+                "/repos/acme/plugin",
+                get(move |headers: HeaderMap| {
+                    let seen = seen.clone();
+                    async move {
+                        if headers.get("if-none-match").and_then(|v| v.to_str().ok()) == Some("\"v1\"") {
+                            seen.fetch_add(1, Ordering::SeqCst);
+                            return (HttpStatus::NOT_MODIFIED, [("etag", "\"v1\"")], String::new());
+                        }
+                        (HttpStatus::OK, [("etag", "\"v1\"")], "{\"private\":false}".to_owned())
+                    }
+                }),
+            )
+            .route("/api-asset", get(|| async { HttpStatus::FORBIDDEN }))
+            .route("/cdn-asset", get(|| async { "plugin bytes" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = GithubReleaseClient::with_api_base(&base).unwrap();
+
+        let url = format!("{base}/repos/acme/plugin");
+        let first = client.api_get(&url, 1024, "repository").await.unwrap();
+        let second = client.api_get(&url, 1024, "repository").await.unwrap();
+        assert_eq!(second.status, StatusCode::OK);
+        assert_eq!(second.body, first.body);
+        assert_eq!(conditional.load(Ordering::SeqCst), 1, "the second call carried the ETag");
+
+        let asset = GithubAsset {
+            name: "plugin.so".into(),
+            size: 12,
+            url: format!("{base}/api-asset"),
+            browser_download_url: Some(format!("{base}/cdn-asset")),
+            digest: None,
+        };
+        assert_eq!(client.download_asset(&asset).await.unwrap(), b"plugin bytes");
+    }
 
     #[test]
     fn github_assets_accept_both_api_and_browser_download_urls() {

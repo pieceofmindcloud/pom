@@ -2441,7 +2441,7 @@ mod replicated_admin_logs_tests {
         assert_eq!(logs["state"], "needs_activation");
         assert_eq!(
             logs["manage_url"],
-            "https://pieceofmind.cloud/enterprise"
+            "https://pieceofmind.cloud/plugins/"
         );
 
         let check = app
@@ -2484,7 +2484,63 @@ mod replicated_admin_logs_tests {
         assert_eq!(statistics.status(), StatusCode::FORBIDDEN);
         let error: serde_json::Value = body_of(statistics).await;
         assert_eq!(error["code"], "enterprise_required");
-        assert_eq!(error["manage_url"], "https://pieceofmind.cloud/enterprise");
+        assert_eq!(error["manage_url"], "https://pieceofmind.cloud/plugins/");
+    }
+
+    #[tokio::test]
+    async fn a_listed_network_is_accepted_only_when_it_certifies_itself() {
+        let state = testkit::state_with("listing-node", vec![]).await;
+        let document = state.admin_trust.document();
+        let view = |fingerprint: String, publisher_key: &str| super::PublicNetworkView {
+            cluster_id: document.anchor.cluster_id.clone(),
+            name: "Rede listada".into(),
+            fingerprint,
+            publisher_key: publisher_key.into(),
+            relay_hints: Vec::new(),
+            trust_document: serde_json::to_string(&document).unwrap(),
+            organization: String::new(),
+            description: String::new(),
+            rules: String::new(),
+            channels: String::new(),
+            country_code: "BR".into(),
+            country_name: "Brasil".into(),
+            city: "Curitiba".into(),
+            geo_label: "br.curitiba".into(),
+            access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            accepted_enrollments: Default::default(),
+            lobby_chat: true,
+            public_stats: false,
+            location: None,
+            discovered_via: "pkarr".into(),
+            directory_replicas: Vec::new(),
+        };
+        let fingerprint = crate::admin_trust::anchor_fingerprint(&document);
+        let expected_key =
+            crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&document.primary.pubkey)
+                .unwrap();
+
+        // The key in the listing is ignored: it comes from the trust document.
+        let accepted =
+            super::validated_listed_network(view(fingerprint.clone(), "pk:someone-else")).unwrap();
+        assert_eq!(accepted.publisher_key, expected_key);
+        assert_eq!(accepted.discovered_via, "node");
+        assert!(accepted.lobby_chat);
+
+        assert!(super::validated_listed_network(view("not-the-fingerprint".into(), "")).is_none());
+        // A relay keeps a publication only from the network's own principal.
+        let published = super::validated_publication(
+            view(fingerprint.clone(), ""),
+            &document.primary.pubkey,
+        )
+        .unwrap();
+        assert_eq!(published.discovered_via, "published");
+        assert_eq!(published.publisher_key, expected_key);
+        let stranger = crate::identity::Identity::generate().public_key_hex();
+        assert!(super::validated_publication(view(fingerprint.clone(), ""), &stranger).is_none());
+
+        let mut broken = view(fingerprint, "");
+        broken.trust_document = "{}".into();
+        assert!(super::validated_listed_network(broken).is_none());
     }
 
     #[tokio::test]
@@ -2507,6 +2563,9 @@ mod replicated_admin_logs_tests {
             city: "Curitiba".into(),
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            accepted_enrollments: Default::default(),
+            lobby_chat: false,
+            public_stats: false,
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: Vec::new(),

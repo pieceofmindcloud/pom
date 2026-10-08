@@ -84,6 +84,41 @@ impl Default for NetworkAccessPolicy {
     }
 }
 
+/// A role a new machine can enroll with. `admin` is absent on purpose: it is
+/// never an enrollment, administrative authority comes from the grant chain.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum EnrollmentRole {
+    Node,
+    Infer,
+}
+
+/// The enrollment roles a network currently advertises as open. Empty means
+/// the network is not accepting new members. The default is every role, so a
+/// config written before the field existed stays open.
+///
+/// This is an advertisement read by the public directory, not admission:
+/// `Network::public_peer_is_admitted` does not consult it, and members that
+/// already joined are never affected by a change here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct AcceptedEnrollments(pub Vec<EnrollmentRole>);
+
+impl Default for AcceptedEnrollments {
+    fn default() -> Self {
+        Self(vec![EnrollmentRole::Node, EnrollmentRole::Infer])
+    }
+}
+
+impl AcceptedEnrollments {
+    /// Sorted and without repeats, so equal sets serialize (and sign) equally.
+    pub fn normalized(mut self) -> Self {
+        self.0.sort();
+        self.0.dedup();
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkLocation {
     pub latitude: f64,
@@ -121,8 +156,36 @@ pub struct NetworkSettings {
     pub visibility: NetworkVisibility,
     #[serde(default)]
     pub access_policy: NetworkAccessPolicy,
+    /// Which enrollment roles the network advertises as open right now.
+    #[serde(default)]
+    pub accepted_enrollments: AcceptedEnrollments,
+    /// Opens the `lobby` room of the network Chat to machines that are not
+    /// members, so an admin can talk to a candidate before admitting it
+    /// (`network/network_lobby.rs`). Only takes effect on a public network
+    /// with the network Chat on.
+    #[serde(default)]
+    pub lobby_chat: bool,
+    /// Publishes the served models, the node count and the total VRAM to
+    /// machines that are not members, answered live by the principal
+    /// (`network_lobby::PublicStats`). Only takes effect on a public network.
+    #[serde(default)]
+    pub public_stats: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<NetworkLocation>,
+}
+
+impl NetworkSettings {
+    /// Whether membership is open to anyone holding the trust document, with
+    /// no connection key: a public network left on `anyone_with_anchor`.
+    ///
+    /// Every other network is gated by the connection key, which an admin
+    /// hands over by approving an admission request (`network_lobby.rs`). The
+    /// open mode is what networks created before admission requests use; the
+    /// interface no longer offers it.
+    pub fn open_admission(&self) -> bool {
+        self.visibility == NetworkVisibility::Public
+            && self.access_policy == NetworkAccessPolicy::AnyoneWithAnchor
+    }
 }
 
 /// Validate the network block wherever it is edited, not only during setup.
@@ -775,6 +838,51 @@ impl Config {
     /// Shared root for user projects and dynamic plugin state. Relative values
     /// from a hand-edited legacy config are resolved under the project root so
     /// the host contract always receives an absolute path.
+    /// Creates the storage folders that are POM's own defaults when they are
+    /// the effective ones: `~/.pom/models` (when it is among the model
+    /// folders), `~/.pom/models_sliced` and `~/pom_workspace`.
+    ///
+    /// Setup and the local-network bootstrap save these paths without
+    /// creating them, so a fresh install could not receive a file: the
+    /// destination did not exist. A folder the operator typed is never
+    /// created here: it may sit on a drive that is not mounted right now, and
+    /// creating it would write onto the wrong disk. Returns the folders that
+    /// could not be created, for the caller to report.
+    pub fn create_default_storage_dirs(&self) -> Vec<(PathBuf, std::io::Error)> {
+        self.create_storage_dirs_for_defaults(
+            &default_model_dir(),
+            &default_shard_dir(),
+            &default_workspace_root(),
+        )
+    }
+
+    /// `create_default_storage_dirs` with the defaults given, so a test can
+    /// point them at a temporary folder instead of the user's home.
+    fn create_storage_dirs_for_defaults(
+        &self,
+        default_models: &Path,
+        default_shards: &Path,
+        default_workspace: &Path,
+    ) -> Vec<(PathBuf, std::io::Error)> {
+        let mut wanted = Vec::new();
+        if self.model_dir_paths().iter().any(|dir| dir == default_models) {
+            wanted.push(default_models.to_path_buf());
+        }
+        let shard_dir = self.shard_dir_path();
+        if shard_dir == default_shards {
+            wanted.push(shard_dir);
+        }
+        let workspace = self.workspace_root_path();
+        if workspace == default_workspace {
+            wanted.push(workspace);
+        }
+        wanted
+            .into_iter()
+            .filter(|dir| !dir.is_dir())
+            .filter_map(|dir| std::fs::create_dir_all(&dir).err().map(|error| (dir, error)))
+            .collect()
+    }
+
     pub fn workspace_root_path(&self) -> PathBuf {
         let path = match self.workspace_root.as_deref().map(str::trim) {
             Some(path) if !path.is_empty() => PathBuf::from(path),
@@ -1375,6 +1483,29 @@ mod tests {
     }
 
     #[test]
+    fn accepted_enrollments_default_to_open_and_an_empty_list_closes_the_network() {
+        let untouched: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            untouched.accepted_enrollments.0,
+            vec![EnrollmentRole::Node, EnrollmentRole::Infer]
+        );
+
+        let closed: NetworkSettings =
+            serde_json::from_str(r#"{"accepted_enrollments":[]}"#).unwrap();
+        assert!(closed.accepted_enrollments.0.is_empty());
+
+        let only_infer = AcceptedEnrollments(vec![
+            EnrollmentRole::Infer,
+            EnrollmentRole::Infer,
+        ])
+        .normalized();
+        assert_eq!(
+            serde_json::to_value(&only_infer).unwrap(),
+            serde_json::json!(["infer"])
+        );
+    }
+
+    #[test]
     fn cache_types_are_persisted_as_installation_settings() {
         let cfg: Config = serde_json::from_str(
             r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#,
@@ -1525,6 +1656,37 @@ mod tests {
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
         let cfg: Config = serde_json::from_str(r#"{"profile":"node","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
+    }
+
+    #[test]
+    fn the_default_storage_folders_are_created_but_a_typed_one_is_not() {
+        let root = std::env::temp_dir().join(format!("pom-storage-{}", uuid::Uuid::new_v4().simple()));
+        let models = root.join(".pom").join("models");
+        let shards = root.join(".pom").join("models_sliced");
+        let workspace = root.join("pom_workspace");
+        let typed = root.join("unmounted-drive").join("models");
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "profile": "node",
+            "model_dirs": [models, typed],
+            "shard_dir": shards,
+            "workspace_root": workspace,
+        }))
+        .unwrap();
+
+        assert!(cfg.create_storage_dirs_for_defaults(&models, &shards, &workspace).is_empty());
+        assert!(models.is_dir() && shards.is_dir() && workspace.is_dir());
+        assert!(!typed.exists());
+
+        // A folder the operator chose instead of the default is left alone.
+        let other = root.join("chosen-slices");
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "profile": "node",
+            "shard_dir": other,
+        }))
+        .unwrap();
+        cfg.create_storage_dirs_for_defaults(&models, &shards, &workspace);
+        assert!(!other.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -578,6 +578,7 @@ struct DiscBehaviour {
     infer_tunnel: request_response::Behaviour<InferTunnelCodec>,
     cluster_logs: request_response::Behaviour<ClusterLogsCodec>,
     network_chat: request_response::Behaviour<NetworkChatCodec>,
+    network_lobby: request_response::Behaviour<crate::network_lobby::LobbyCodec>,
     audit: request_response::Behaviour<AuditCodec>,
 }
 
@@ -739,6 +740,14 @@ impl Discovery {
                         // reserva continua renovando a cada hora.
                         max_circuit_duration: Duration::from_secs(24 * 60 * 60),
                         max_circuit_bytes: 0,
+                        // libp2p's defaults are 16 circuits in total and 4 per
+                        // peer. Circuits here live for a day, so a handful of
+                        // nodes behind NAT filled them and every later dial
+                        // through the relay - a member reaching a member, a
+                        // candidate reaching a lobby - was refused with
+                        // "resource limit exceeded".
+                        max_circuits: 1024,
+                        max_circuits_per_peer: 32,
                         ..relay::Config::default()
                     }
                 } else {
@@ -753,6 +762,7 @@ impl Discovery {
                 let infer_tunnel = infer_tunnel::infer_tunnel_behaviour();
                 let cluster_logs = cluster_logs::cluster_logs_behaviour();
                 let network_chat = network_chat::network_chat_behaviour();
+                let network_lobby = crate::network_lobby::network_lobby_behaviour();
                 let audit = reqlog::audit_behaviour();
 
                 DiscBehaviour {
@@ -767,6 +777,7 @@ impl Discovery {
                     infer_tunnel,
                     cluster_logs,
                     network_chat,
+                    network_lobby,
                     audit,
                 }
             })?
@@ -1060,6 +1071,15 @@ async fn handle_event(
             message,
             ..
         })) => {
+            // Off the network (discovery off, or taken off by its operator):
+            // nothing a peer says is heard. Without this the swarm, which is
+            // still connected to its relays, took every announce on the shared
+            // topic and dialed its sender - through relay circuits, over and
+            // over - so a node that was supposed to be silent kept knocking
+            // on every cluster's door and loading the relay.
+            if network.is_detached() {
+                return;
+            }
             let Some(source) = message.source else {
                 warn!("libp2p: descartei Announce sem peer de origem assinado");
                 return;
@@ -1569,6 +1589,28 @@ async fn handle_event(
             request_response::Event::ResponseSent { .. } => {}
         },
 
+        // ── Lobby: non-members talking to the principal ───────────────────
+        SwarmEvent::Behaviour(DiscBehaviourEvent::NetworkLobby(event)) => match event {
+            request_response::Event::Message {
+                peer,
+                message:
+                    request_response::Message::Request {
+                        request, channel, ..
+                    },
+                ..
+            } => {
+                let response = answer_lobby_request(swarm, network, chat, peer, request).await;
+                let _ = swarm
+                    .behaviour_mut()
+                    .network_lobby
+                    .send_response(channel, response);
+            }
+            request_response::Event::InboundFailure { peer, error, .. } => {
+                debug!("network-lobby: pedido de {peer} falhou: {error:?}");
+            }
+            _ => {}
+        },
+
         // ── Chat da rede: o principal valida e retransmite ────────────────
         SwarmEvent::Behaviour(DiscBehaviourEvent::NetworkChat(event)) => match event {
             request_response::Event::Message { peer, message, .. } => match message {
@@ -1760,6 +1802,327 @@ async fn accept_original_chat(
         }
         Ok(false) => ChatResponse::rejected("network_chat_disabled"),
         Err(error) => ChatResponse::rejected(error.to_string()),
+    }
+}
+
+/// A node's admission record as it is answered to that node, with the grant
+/// when it is approved.
+async fn lobby_admission_view(
+    network: &Network,
+    chat: &Arc<NetworkChat>,
+    node_id: &str,
+) -> Option<crate::network_lobby::AdmissionView> {
+    // The caller's own request, and the grant once an admin approved it. The
+    // grant leaves only here: to the node whose signature was just verified,
+    // on the connection it was verified on.
+    match chat.admission_of(node_id) {
+        Some(record) => {
+            let grant = if record.status == crate::network_lobby::AdmissionStatus::Approved {
+                let (connection_key, relay_peers, settings) = chat.grant_secrets().await;
+                network
+                    .trust_document_json()
+                    .map(|trust_document| crate::network_lobby::AdmissionGrant {
+                        trust_document,
+                        connection_key,
+                        relay_peers,
+                        network: Some(settings),
+                    })
+            } else {
+                None
+            };
+            Some(crate::network_lobby::AdmissionView {
+                status: record.status,
+                role: record.role,
+                grant,
+            })
+        }
+        None => None,
+    }
+}
+
+/// Answers one lobby request from a machine that is not a member.
+///
+/// Nothing in the frame identifies the sender: `node_id` comes from the
+/// `PeerId` the Noise handshake proved. A text becomes an ordinary `lobby`
+/// room message and is relayed to the members through the star; the answer is
+/// the recent history of that room, which is public by definition.
+async fn answer_lobby_request(
+    swarm: &mut Swarm<DiscBehaviour>,
+    network: &Network,
+    chat: &Arc<NetworkChat>,
+    peer: PeerId,
+    request: crate::network_lobby::LobbyRequest,
+) -> crate::network_lobby::LobbyResponse {
+    use crate::network_lobby::{
+        GuestSeen, LobbyLimits, LobbyMessage, LobbyRequest, LobbyResponse, LOBBY_ROOM,
+    };
+    // A chat request names its sender with the node key's signature over this
+    // transport. The public reads carry no identity: they are rate limited by
+    // the transport peer and say nothing about who asked.
+    let caller = peer.to_string();
+    // What a node tells about public networks is public data and has nothing
+    // to do with the lobby or with being the principal: any node answers,
+    // from the board the gateway keeps.
+    // A principal telling a relay about its own network. The relay keeps it
+    // only when the node key that signed for this transport is the primary
+    // of the trust document being published.
+    if let LobbyRequest::Publish { identity, network: listed } = &request {
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        if identity.verified_node_id(&peer).is_none() {
+            return LobbyResponse::rejected("identity_invalid");
+        }
+        let Some(listed) =
+            crate::gateway::validated_publication(listed.clone(), &identity.pubkey)
+        else {
+            return LobbyResponse::rejected("publication_invalid");
+        };
+        return if chat.directory_board().accept_publication(listed) {
+            LobbyResponse {
+                accepted: true,
+                ..LobbyResponse::default()
+            }
+        } else {
+            LobbyResponse::rejected("directory_disabled")
+        };
+    }
+    // A node saying it is leaving, over the lobby connection. Acted on only
+    // for the node whose signature over this transport verifies, and only
+    // when the principal knows it: on the member list, or currently admitted.
+    if let LobbyRequest::Leave { identity } = &request {
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        if network.profile() != crate::profile::NodeProfile::Admin {
+            return LobbyResponse::rejected("not_principal");
+        }
+        let Some(node_id) = identity.verified_node_id(&peer) else {
+            return LobbyResponse::rejected("identity_invalid");
+        };
+        let known = chat.admission_of(&node_id).is_some()
+            || network
+                .alive_peers()
+                .await
+                .iter()
+                .any(|member| member.node_id == node_id);
+        if !known {
+            return LobbyResponse::rejected("not_a_member");
+        }
+        chat.member_departed(&node_id);
+        chat.request_rotation(&node_id);
+        return LobbyResponse {
+            accepted: true,
+            node_id,
+            ..LobbyResponse::default()
+        };
+    }
+    // A member that missed a key rotation asks for the current key. The
+    // answer is the same grant an approval carries, and it goes only to a
+    // node on the member list whose signature over this transport verifies.
+    if let LobbyRequest::ClaimKey { identity } = &request {
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        if network.profile() != crate::profile::NodeProfile::Admin {
+            return LobbyResponse::rejected("not_principal");
+        }
+        let Some(node_id) = identity.verified_node_id(&peer) else {
+            return LobbyResponse::rejected("identity_invalid");
+        };
+        if chat.node_is_blocked(&node_id).await {
+            return LobbyResponse::rejected("node_blocked");
+        }
+        let admission = lobby_admission_view(network, chat, &node_id).await;
+        return LobbyResponse {
+            accepted: true,
+            node_id,
+            admission,
+            ..LobbyResponse::default()
+        };
+    }
+    if matches!(request, LobbyRequest::Describe | LobbyRequest::Directory) {
+        use crate::network_lobby::BoardAnswer;
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        let answer = if matches!(request, LobbyRequest::Describe) {
+            chat.directory_board().own()
+        } else {
+            chat.directory_board().known()
+        };
+        return match answer {
+            BoardAnswer::Ready(networks) => LobbyResponse {
+                accepted: true,
+                networks,
+                ..LobbyResponse::default()
+            },
+            BoardAnswer::Pending => LobbyResponse {
+                accepted: true,
+                pending: true,
+                ..LobbyResponse::default()
+            },
+            BoardAnswer::Disabled => LobbyResponse::rejected("directory_disabled"),
+        };
+    }
+    // The published stats answer under their own switch and leave no
+    // presence: asking what a network runs is not entering its lobby.
+    if matches!(request, LobbyRequest::Info) {
+        if network.profile() != crate::profile::NodeProfile::Admin
+            || !chat.public_stats_enabled().await
+        {
+            return LobbyResponse::rejected("stats_disabled");
+        }
+        if !chat.public_stats().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        return LobbyResponse {
+            accepted: true,
+            error: None,
+            info: chat.public_stats().current(),
+            ..LobbyResponse::default()
+        };
+    }
+    if network.profile() != crate::profile::NodeProfile::Admin || !chat.lobby_enabled().await {
+        return LobbyResponse::rejected("lobby_disabled");
+    }
+    let proof = match &request {
+        LobbyRequest::Post { identity, .. }
+        | LobbyRequest::Fetch { identity, .. }
+        | LobbyRequest::Admission { identity, .. } => identity,
+        LobbyRequest::Info
+        | LobbyRequest::Describe
+        | LobbyRequest::Directory
+        | LobbyRequest::ClaimKey { .. }
+        | LobbyRequest::Leave { .. }
+        | LobbyRequest::Publish { .. } => {
+            unreachable!("answered above")
+        }
+    };
+    let Some(node_id) = proof.verified_node_id(&peer) else {
+        return LobbyResponse::rejected("identity_invalid");
+    };
+    if chat.node_is_blocked(&node_id).await {
+        return LobbyResponse::rejected("node_blocked");
+    }
+    let peers = network.alive_peers().await;
+    // A member has the authenticated room; the lobby path is for outsiders.
+    if node_id == network.node_id || peers.iter().any(|member| member.node_id == node_id) {
+        return LobbyResponse::rejected("already_member");
+    }
+    let mut card = match &request {
+        LobbyRequest::Post { card, .. }
+        | LobbyRequest::Fetch { card, .. }
+        | LobbyRequest::Admission { card, .. } => card.clone().sanitized(),
+        LobbyRequest::Info
+        | LobbyRequest::Describe
+        | LobbyRequest::Directory
+        | LobbyRequest::ClaimKey { .. }
+        | LobbyRequest::Leave { .. }
+        | LobbyRequest::Publish { .. } => {
+            unreachable!("answered above")
+        }
+    };
+    // How the candidate reaches this node is what this node sees, never what
+    // the candidate says: an admin weighs it when deciding on admission.
+    let links = network.libp2p_links(&peer.to_string());
+    card.relayed = (!links.is_empty()).then(|| links.iter().all(|link| link.relayed));
+    let is_post = matches!(
+        request,
+        LobbyRequest::Post { .. } | LobbyRequest::Admission { .. }
+    );
+    let seen = match chat.lobby_guests().admit(&node_id, &card, is_post) {
+        Ok(seen) => seen,
+        Err(error) => return LobbyResponse::rejected(error),
+    };
+    if seen == GuestSeen::Announce {
+        let presence = network_chat::ChatAction::LobbyPresence {
+            message_id: uuid::Uuid::new_v4().simple().to_string(),
+            room_id: LOBBY_ROOM.to_string(),
+            sender_node_id: node_id.clone(),
+            recipient_node_id: None,
+            card: card.clone(),
+            sent_at: chrono::Utc::now(),
+        };
+        relay_chat(swarm, network, chat, presence, None).await;
+    }
+    if let LobbyRequest::Admission { role, .. } = &request {
+        if !chat.accepts_role(*role).await {
+            return LobbyResponse::rejected("role_not_accepted");
+        }
+        if let Err(error) = chat.request_admission(&node_id, card.clone(), *role) {
+            return LobbyResponse::rejected(error);
+        }
+    }
+    let admission = lobby_admission_view(network, chat, &node_id).await;
+    if let LobbyRequest::Post {
+        message_id, text, ..
+    } = request
+    {
+        let text = text.trim().to_string();
+        if text.is_empty() || text.len() > LobbyLimits::TEXT_BYTES {
+            return LobbyResponse::rejected("text_invalid");
+        }
+        if message_id.is_empty()
+            || message_id.len() > LobbyLimits::MESSAGE_ID_BYTES
+            || !message_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return LobbyResponse::rejected("message_id_invalid");
+        }
+        // Namespaced by the sender so a candidate cannot shadow (the insert
+        // ignores a repeated id) a message someone else is about to send.
+        let action = network_chat::ChatAction::Text {
+            message_id: format!("lobby-{}-{message_id}", &node_id[..node_id.len().min(16)]),
+            room_id: LOBBY_ROOM.to_string(),
+            sender_node_id: node_id.clone(),
+            recipient_node_id: None,
+            text,
+            // The principal's clock: a candidate does not order the room.
+            sent_at: chrono::Utc::now(),
+        };
+        match chat.accept(action.clone()) {
+            Ok(true) => relay_chat(swarm, network, chat, action, None).await,
+            Ok(false) => return LobbyResponse::rejected("lobby_disabled"),
+            Err(error) => return LobbyResponse::rejected(error.to_string()),
+        }
+    }
+    let history = match chat.history(LOBBY_ROOM, LobbyLimits::HISTORY) {
+        Ok(history) => history,
+        Err(error) => return LobbyResponse::rejected(error.to_string()),
+    };
+    let messages = history
+        .into_iter()
+        .filter(|event| event.kind == "text" && event.recipient_node_id.is_none())
+        .map(|event| {
+            let member = if event.sender_node_id == network.node_id {
+                Some(network.hostname.clone())
+            } else {
+                peers
+                    .iter()
+                    .find(|member| member.node_id == event.sender_node_id)
+                    .map(|member| member.hostname.clone())
+            };
+            let sender_name = member
+                .clone()
+                .or_else(|| chat.lobby_guests().hostname(&event.sender_node_id))
+                .unwrap_or_default();
+            LobbyMessage {
+                message_id: event.message_id,
+                sender_node_id: event.sender_node_id,
+                sender_name,
+                member: member.is_some(),
+                text: event.text.unwrap_or_default(),
+                sent_at: event.sent_at,
+            }
+        })
+        .collect();
+    LobbyResponse {
+        accepted: true,
+        error: None,
+        node_id,
+        messages,
+        admission,
+        ..LobbyResponse::default()
     }
 }
 

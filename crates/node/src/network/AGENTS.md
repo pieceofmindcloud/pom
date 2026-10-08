@@ -80,6 +80,41 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   `scope: "network"`): mesmo caminho autenticado e mesmo limite de taxa das
   mensagens, mas guardado só em memória (50 avisos, 24 h, `notice_snapshot`),
   nunca em `network_chat_messages`.
+- `network_lobby.rs` - the lobby: the `/pom/network-lobby/1.0.0` protocol a
+  machine that is **not** a member uses to talk to a public network's principal
+  before joining (`docs/subsystems/p2p-network.md`, 6.1). Holds the frame types
+  and bounds (`LobbyLimits`), the self-declared hardware card (`LobbyCard`,
+  clamped by `sanitized`), `transport_keypair` and `LobbyIdentity` (the lobby connects
+  under a key derived from the node key and proves the node with a signature
+  over that transport `PeerId`; it must never share the cluster swarm's
+  `PeerId`), `LobbyGuests` (presence plus the
+  per-candidate rate, used by the principal and, fed by relayed frames, by
+  every member) and `LobbyClient`, the candidate's dial-only swarm that also
+  runs in setup mode. The principal's handler is
+  `discovery.rs::answer_lobby_request`; inside the network the lobby is the
+  `lobby` room of `network_chat.rs`, which gained `ChatAction::LobbyPresence`
+  and `NetworkChat::{lobby_guests, lobby_enabled}`. The `Info` request and
+  `PublicStats` publish models, node count and VRAM under a separate switch
+  (`NetworkChat::{public_stats, public_stats_enabled}`); the slot is filled by
+  `webui::spawn_public_stats_publisher`, never by the swarm loop.
+  `Describe` and `Directory` are answered by any node from `DirectoryBoard`
+  (own public network; known public networks when the node is a relay or in a
+  public network), filled by `gateway::spawn_directory_board_publisher`.
+  `Publish` lets a network's principal hand its description to a relay over a
+  direct dial (`DirectoryBoard::accept_publication`), the listing path that
+  needs no circuit. `default_directory_relays` is the list of relay keys a fresh installation
+  asks (`DEFAULT_DIRECTORY_RELAYS` plus `POM_DIRECTORY_RELAYS`).
+  Admission requests live here too: `LobbyRequest::Admission`,
+  `AdmissionRecord` / `AdmissionView` / `AdmissionGrant` and
+  `apply_admission_request` (pending is refreshed, approved is kept, rejected
+  waits an hour); the principal's store is `NetworkChat::{request_admission,
+  admission_of, admissions, decide_admission}`. `network.rs` gates membership
+  by the connection key unless `NetworkSettings::open_admission`, and starts
+  detached when the network's visibility is `local`. `LobbyRequest::ClaimKey` hands the
+  current key to a node on the member list (`NetworkChat::record_member` /
+  `member_departed` keep it). `infer_tunnel.rs` lets
+  `/api/cluster/member-left` through the tunnel, the only way a member behind
+  NAT reaches its principal to say it is leaving.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
   response próprio, limites de texto/arquivo, fila limitada, rate limit e
   writer de persistência fora do loop do swarm. A ação original leva a API key;
@@ -212,7 +247,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   configuráveis e não autoridade. O registro assinado inclui descrição,
   regras e canais em Markdown junto do convite, e `relay_hints` (`pk:` keys
   only). The record carries no address: the network is found by the
-  publisher's key. Um nó privado consulta esses ingressos por saída, mas não usa seu
+  publisher's key. It also carries `accepted_enrollments`, the enrollment roles
+  the publisher advertises as open (empty = not accepting new members); the
+  field is signed with the rest of the record. Um nó privado consulta esses ingressos por saída, mas não usa seu
   swarm privado como descoberta pública.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
   `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o

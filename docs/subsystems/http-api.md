@@ -61,7 +61,76 @@ last):
 - **Public networks** (`gateway/http.rs`, no authentication): `GET
   /api/public/network` (the local network, when public) and `GET
   /api/public/networks` (local, directory and pkarr candidates) return
-  `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. `GET
+  `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. The
+  view includes `accepted_enrollments`, the list of enrollment roles (`node`,
+  `infer`) the network advertises as open; an empty list means it is not
+  accepting new members. It is edited by the principal through `POST
+  /api/ui/network/settings` and is advisory - no route enforces it. `lobby_chat`
+  is `true` while the network answers lobby chat from non-members (the
+  `network.lobby_chat` switch and the network Chat are both on), and
+  `public_stats` says it publishes models, node count and VRAM.
+- **Lobby, candidate side** (`webui/lobby.rs`): `GET
+  /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`
+  (`{key, message_id, text}`) make this node talk to **another** network's
+  principal before joining it (`p2p-network.md`, 6.1). Both answer
+  `{accepted, error, node_id, card, messages}`: a refusal by the principal is
+  `accepted: false` with its code, and a transport failure is `502`. They sit
+  under the `/api/ui/network-chat` scope. The setup router serves the same
+  handlers at `GET|POST /api/setup/lobby`, plus `GET
+  /api/setup/public-networks?replicas=<csv>`. Setup mode has no cluster and no
+  pkarr discovery, so it asks the given addresses (plus the installation's
+  configured replicas), each in two ways: as a directory replica (signed
+  records, merged with the cache) and as a node (`GET
+  <address>/api/public/networks`, the networks that node lists). A listed
+  network is accepted only when its trust document matches its fingerprint and
+  `cluster_id`, and its publisher key is derived from that document
+  (`gateway::validated_listed_network`). Entries of `replicas` that start with
+  `pk:` are relay keys instead: together with `POM_DIRECTORY_RELAYS`, the
+  built-in list and the config's `relay_peers`, each is asked for its
+  directory over the lobby protocol (`p2p-network.md`, 6.1) under the same
+  validation. With no relay and no address the list is empty.
+  `GET /api/public/networks` on a node that serves as a relay now lists the
+  networks it hears through gossip even when its own network is not public.
+  On every node that route also merges what its relays answer to `Directory`,
+  which is the only source for a node with discovery off.
+- **Published stats of another network**: `GET
+  /api/ui/network-chat/lobby/info?key=pk:...` (and `GET /api/setup/lobby/info`
+  in setup mode) asks that network's principal for `{models, node_count,
+  vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with
+  `accepted: true` means the principal is still computing; ask again in a few
+  seconds. Only meaningful for networks whose view has `public_stats: true`.
+- **Admission** (`webui/lobby.rs`, `p2p-network.md` 6.1). On the candidate:
+  `POST /api/ui/network-chat/lobby/admission` (`{key, role, name}`) asks the
+  network under `key` to admit this machine; `GET
+  /api/ui/network-chat/lobby/requests` lists this node's requests as `{key,
+  name, role, status}` and `POST .../requests/forget` drops one locally; every
+  lobby answer carries `admission` with the same shape, plus `standing: true`
+  when the approval was not asked for now (the machine was admitted before). None of them ever
+  returns the grant. `POST /api/ui/network/join` (`{key}`) joins a network that
+  approved this machine, replacing the one it is in, and restarts the node
+  (`409 not_approved` without a grant, `502 grant_invalid` when the granted
+  trust document is not that key's). On the network's principal, AdminOnly:
+  `GET /api/ui/network/admissions` lists the requests with each candidate's
+  declared hardware, measured latency and whether it connects through a relay,
+  and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
+  `reject` or `forget`) decides one.
+- **Leaving and the own network** (`p2p-network.md` 6.1). `POST
+  /api/ui/network/leave` leaves a network this node joined and restores its
+  own from standby (`restored_own_network` in the answer); on the node's own
+  network it answers `409` with `reason: "own_network"`. `GET /api/ui/node`
+  carries `own_network` (this node is the principal of the network it is in)
+  and `standby_network` (the name of its own network while it is a member
+  elsewhere). `POST /api/cluster/member-left` (`{node_id}`) is node-to-node:
+  the leaving member, signed, to the principal, which forgets its admission
+  and replaces the connection key; `403` unless the signer is that member
+  (a live peer or a node on the member list). Forgetting an **approved**
+  record through `POST /api/ui/network/admissions` revokes that machine and
+  rotates the key as well.
+- **Lobby, member side**: `GET /api/ui/network-chat?room=lobby` reads the lobby
+  room instead of the main one. Every snapshot also carries `room`,
+  `lobbyEnabled` and `lobbyGuests` (`[{nodeId, card}]`, the candidates present
+  and their declared hardware). A member posts to the lobby with the ordinary
+  `POST /api/ui/network-chat` and `room_id: "lobby"`. `GET
   /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
   node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
   only accepts keys the node already lists (404 otherwise) and caches the answer
@@ -165,7 +234,8 @@ that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/models`, `/api/setup/admin-anchor/preview`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
 `/api/setup/auto-discovery/status`, `/api/setup/auto-discovery/start`,
-`/api/setup/auto-discovery/search` and `/api/setup/save` only exist in the
+`/api/setup/auto-discovery/search`, `/api/setup/public-networks`,
+`/api/setup/lobby`, `/api/setup/lobby/info` and `/api/setup/save` only exist in the
 first access router; `/api/setup/save` installs the root and `pom.json` before
 restarting. The routes of port 8181 (`/v1/prefill`, `/v1/step`,
 `/v1/step-stream`, `/v1/link`, `/v1/session/*`, `/v1/tp/reduce`, `/health`) are

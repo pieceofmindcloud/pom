@@ -70,8 +70,17 @@ describe("canAccessRoute", () => {
     for (const path of ["/", "/modelos", "/implantar", "/config/keys/conexao", "/config/rede/participantes", "/config/preferencias/admin"]) {
       expect(canAccessRoute(path, "infer")).toBe(false);
     }
-    expect(canAccessRoute("/logs", "infer")).toBe(true);
-    expect(canAccessRoute("/estatisticas", "infer")).toBe(true);
+    // Logs (requests and deployment) and statistics are the network's
+    // operation: never offered to an inference node.
+    for (const path of ["/logs", "/logs/qualquer-filha", "/estatisticas", "/implantacoes/logs"]) {
+      expect(canAccessRoute(path, "infer"), path).toBe(false);
+    }
+  });
+
+  it("mostra a chave do cluster só ao admin", () => {
+    expect(canAccessRoute("/config/keys/conexao", "admin")).toBe(true);
+    expect(canAccessRoute("/config/keys/conexao", "node")).toBe(false);
+    expect(canAccessRoute("/config/keys/conexao", "infer")).toBe(false);
   });
 
   it("mantém participantes e preferências administrativas nos perfis atuais", () => {

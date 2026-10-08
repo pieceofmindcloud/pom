@@ -134,6 +134,14 @@ boundary before and still is).
   instance per active plugin without them stepping on each other. The active
   path sends neutral events to the host; the legacy `pom.db` is a transitional
   fallback for tests, migration and plugin failure.
+- How POM starts the host (`plugin_host.rs`): the host's stderr, and that of
+  the processes a plugin starts (node, npm, code-server), is read line by line
+  into POM's log with the `plugin_code`. On Windows, where `pom.exe` has no
+  console, the host starts with `CREATE_NO_WINDOW` (no console window, for it
+  or for the processes it starts), and goes into its own kill-on-close Job
+  Object (`process_tree.rs`): stopping the host, or POM exiting, ends the host
+  and everything it started. Inherited pipes in those children used to keep
+  the host from ever seeing its input close.
 - The Docker image copies `pom-plugin-host` to `/usr/local/bin` next to `pom`.
   The entrypoint validates both, and `pom` only starts the host after
   activation, with the absolute path of the downloaded plugin and stdin/stdout
@@ -239,8 +247,10 @@ error keeps the license.
 
 Plugins are local to each node, so activating a license, registering a GitHub
 repository, installing, updating and using a plugin's UI is allowed to the
-`admin`, `node` and `infer` profiles on their own machine; only the
-development rebuild (`/api/ui/plugins/dev-sources*`) stays AdminOnly. The rule
+`admin`, `node` and `infer` profiles on their own machine, including the
+development rebuild (`/api/ui/plugins/dev-sources*`), which also requires
+`POM_DESENV=1`. The `infer` UI lists Plugins and the installed plugins' menus
+below its conversations. The rule
 lives in `ROUTE_RULES` (`backend/webui/routes/mod.rs`).
 
 `GET /api/ui/plugins` is open to every profile. Its `PluginStatus` carries
@@ -331,6 +341,39 @@ relative paths to `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>`
 and the browser loads the images straight from GitHub, without going through
 the node or the license server.
 
+GitHub allows 60 API calls per hour per IP without a token, so the node keeps
+the calls few (`plugin_github.rs`):
+- Adding or refreshing a repository inspects it (repository, manifest,
+  release pages). Installing a release reuses that saved inspection and reads
+  only the selected release, fresh.
+- Release assets (manifests and binaries) download from their
+  `browser_download_url`, on GitHub's CDN, which does not count against the
+  API limit; the bytes are still checked against the API's SHA-256 digest.
+- Every API GET carries the last ETag for its URL; an unchanged answer comes
+  back as 304, which GitHub does not count, and the node reuses the cached
+  body.
+- `POM_GITHUB_TOKEN` (optional) authenticates the API calls, sent only to the
+  API host, raising the limit to 5,000 per hour for that token. An exhausted
+  limit is reported with its reset time and this hint.
+There is no periodic polling: GitHub is read only on add, refresh and install.
+
+Every stable release of a POM plugin is also published to the license server
+by the plugin repository's workflow, and free plugins (`requires_license =
+false`) are served there publicly (`GET /v1/plugin-releases`,
+`/v1/plugin-releases/{release_id}/download`). That is the fallback when GitHub
+refuses or rate-limits:
+- Adding a repository whose GitHub lookup fails lists it from the license
+  server (`inspect_from_license_server`): `manifest_path = "license-server"`,
+  release IDs prefixed `license-server:`, no preferences or screenshots, and
+  a `check_error` saying where the releases came from. Refreshing such a
+  repository tries GitHub first and falls back again; a repository read from
+  GitHub keeps its saved inspection when GitHub fails, as before.
+- Installing a `license-server:` release downloads it from there. Installing
+  a GitHub release whose download fails takes the same version from the
+  license server. Either way the listing is read again and the bytes are
+  checked against its SHA-256 and size.
+The base is the license server POM already uses (`license_base_url`).
+
 Adding, updating and removing repositories only uses the local routes
 `/api/ui/plugins/github-repositories*`, open to every profile. The list, the
 manifest path and the details read are persisted in
@@ -345,8 +388,8 @@ already installed by the license mechanism is refused so that host is not
 silently replaced; no license server query is made to decide whether the
 repository needs a license.
 
-The local development build/install is another AdminOnly operation and
-requires `POM_DESENV=1`: the source is picked from an allowlist mounted under
+The local development build/install is open to every profile on its own
+machine and requires `POM_DESENV=1`: the source is picked from an allowlist mounted under
 `/opt/pom/dev-plugins`. It can install a development-only plugin with no prior
 license or GitHub installation, persisting it separately in
 `plugin_dev_install:<code>`; this starts the host but grants no licensed

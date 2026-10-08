@@ -115,6 +115,23 @@ describe("autoLayout", () => {
     expect(Math.abs(posicoes.salem.top - posicoes.salem2.top)).toBeGreaterThanOrEqual(202);
   });
 
+  /** Duas rotas alternativas: 16-30 seguido de 31-40, ou 16-40 direto. As
+   * faixas que começam em 16 dividem a coluna, e a rota de dois estágios
+   * segue reta na linha da primeira. */
+  it("põe faixas alternativas que começam no mesmo ponto na mesma coluna", () => {
+    const head = { id: "ksia-gpu2", start_layer: 0, end_layer: 15 };
+    const curta = { id: "salem-gpu1", start_layer: 16, end_layer: 30 };
+    const longa = { id: "ksia-gpu1", start_layer: 16, end_layer: 40 };
+    const cauda = { id: "salem-gpu2", start_layer: 31, end_layer: 40 };
+    const posicoes = autoLayout([longa, cauda, head, curta]);
+    expect(posicoes["salem-gpu1"].left).toBe(posicoes["ksia-gpu1"].left);
+    expect(posicoes["ksia-gpu2"].left).toBeLessThan(posicoes["salem-gpu1"].left);
+    expect(posicoes["salem-gpu1"].left).toBeLessThan(posicoes["salem-gpu2"].left);
+    expect(posicoes["salem-gpu1"].top).toBe(posicoes["ksia-gpu2"].top);
+    expect(posicoes["salem-gpu2"].top).toBe(posicoes["ksia-gpu2"].top);
+    expect(posicoes["ksia-gpu1"].top).toBeGreaterThan(posicoes["salem-gpu1"].top);
+  });
+
   it("uma lista vazia não quebra", () => {
     expect(autoLayout([])).toEqual({});
   });

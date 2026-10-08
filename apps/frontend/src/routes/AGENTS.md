@@ -159,8 +159,10 @@ Per-file list:
   any public entry requiring a license is not active locally, even if another
   plugin already has a license or context. It also appears when local status is
   missing or expired/revoked, and is hidden when all known licensed plugins
-  are active. Purchase redirects licensed plugins to the public store with an
-  encoded `plugin=<code>` parameter via `lib/pluginPurchase.ts`. Cards are
+  are active. Purchase sends licensed plugins to the site's purchase wizard
+  (`/comprar/`) with an encoded `plugin=<code>` parameter via
+  `lib/pluginPurchase.ts`; the wizard asks for the account and billing details
+  before Stripe and shows the license key at the end. Cards are
   compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
   catalog, GitHub repository and local state for the same code share one card.
   The screen has two tabs, on the right side of the title bar

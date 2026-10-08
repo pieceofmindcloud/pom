@@ -29,7 +29,7 @@ export function About() {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const enterpriseActive = Boolean(enterpriseStatus.data?.active);
   const enterpriseState = enterpriseStatus.data?.state ?? "unavailable";
-  const manageUrl = enterpriseStatus.data?.manage_url ?? "https://pieceofmind.cloud/enterprise";
+  const manageUrl = enterpriseStatus.data?.manage_url ?? "https://pieceofmind.cloud/plugins/";
   const coreUpdate = pomUpdate.data?.core_update ?? null;
   const filteredEntries = useMemo(
     () => THIRD_PARTY_LICENSES.filter((entry) => {
@@ -97,7 +97,7 @@ export function About() {
             <p className="font-medium text-fg">{t("about.safetyWarning")}</p>
             <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-line pt-3">
               <a href="https://pieceofmind.cloud" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.websiteLink")}</a>
-              <a href="https://pieceofmind.cloud/contact.html" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.contactLink")}</a>
+              <a href="https://pieceofmind.cloud/contato/" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.contactLink")}</a>
               <a href="https://github.com/pereirajair/rdma-p2p" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.repositoryLink")}</a>
               <a href="https://github.com/pereirajair/pom-plugin-base" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.pluginBaseLink")}</a>
             </div>

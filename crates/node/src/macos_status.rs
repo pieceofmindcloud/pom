@@ -33,6 +33,7 @@ unsafe extern "C" {
     fn pom_macos_status_run(
         url: *const c_char,
         icon_path: *const c_char,
+        app_name: *const c_char,
         popover_width: f64,
         popover_height: f64,
         window_width: f64,
@@ -84,10 +85,12 @@ where
     });
     let url = CString::new(chat_url(port))?;
     let icon = CString::new(icon_path().to_string_lossy().as_bytes())?;
+    let app_name = CString::new(crate::brand::name())?;
     let user_quit = unsafe {
         pom_macos_status_run(
             url.as_ptr(),
             icon.as_ptr(),
+            app_name.as_ptr(),
             POPOVER_SIZE.0,
             POPOVER_SIZE.1,
             WINDOW_SIZE.0,

@@ -103,6 +103,8 @@ mod identity;
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;
+#[path = "initial_ports.rs"]
+mod initial_ports;
 #[path = "models/lastslice.rs"]
 mod lastslice;
 #[path = "inference/link.rs"]
@@ -302,7 +304,7 @@ struct Args {
 
     /// UDP port for P2P communication.
     /// Use different ports to run multiple nodes on the same machine.
-    #[arg(long, short = 'p', default_value = "42777")]
+    #[arg(long, short = 'p', default_value_t = network::DISCOVERY_PORT)]
     port: u16,
 
     /// Bootstrap node address(es), comma-separated (e.g. 127.0.0.1:42777).
@@ -322,7 +324,7 @@ struct Args {
     ollama_url: String,
 
     /// HTTP port for the gateway/API server (served by every node)
-    #[arg(long, default_value = "8080")]
+    #[arg(long, default_value_t = initial_ports::DEFAULT_GATEWAY_PORT)]
     gateway_port: u16,
 
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
@@ -391,6 +393,14 @@ struct Args {
     /// `--gateway-port` veio da variável de ambiente. Ver `port_from_env`.
     #[arg(skip)]
     gateway_port_from_env: bool,
+
+    /// `--port` foi informado explicitamente na linha de comando.
+    #[arg(skip)]
+    port_from_cli: bool,
+
+    /// `--gateway-port` foi informado explicitamente na linha de comando.
+    #[arg(skip)]
+    gateway_port_from_cli: bool,
 }
 
 /// Variável de ambiente de cada opção da linha de comando, pelo id do clap.
@@ -437,10 +447,14 @@ fn parse_args() -> Args {
     let matches = cli_command().get_matches();
     let from_env =
         |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::EnvVariable);
+    let from_cli =
+        |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
     let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches)
         .unwrap_or_else(|error| error.exit());
     args.port_from_env = from_env("port");
     args.gateway_port_from_env = from_env("gateway_port");
+    args.port_from_cli = from_cli("port");
+    args.gateway_port_from_cli = from_cli("gateway_port");
     args
 }
 
@@ -509,7 +523,7 @@ fn main() -> Result<()> {
     sysmon::set_disk_root(config::project_root());
     tp::install_probe();
 
-    let args = parse_args();
+    let mut args = parse_args();
     #[cfg(windows)]
     if let Some(port) = args.windows_firewall_helper {
         return windows_firewall::run_elevated_helper(port);
@@ -518,6 +532,27 @@ fn main() -> Result<()> {
         return run_command(command);
     }
 
+    if !config::Config::exists() {
+        let gateway_was_default = args.gateway_port == initial_ports::DEFAULT_GATEWAY_PORT
+            && !args.gateway_port_from_env
+            && !args.gateway_port_from_cli;
+        let p2p_was_default =
+            args.port == network::DISCOVERY_PORT && !args.port_from_env && !args.port_from_cli;
+        let selected = initial_ports::select(
+            args.gateway_port,
+            args.port,
+            gateway_was_default,
+            p2p_was_default,
+        )?;
+        if selected.gateway != args.gateway_port || selected.p2p != args.port {
+            info!(
+                "first boot found occupied default ports; selected gateway {} and P2P {}",
+                selected.gateway, selected.p2p
+            );
+            args.gateway_port = selected.gateway;
+            args.port = selected.p2p;
+        }
+    }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
 

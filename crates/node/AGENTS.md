@@ -109,20 +109,28 @@ peers vivos; `max_new_tokens` continua sendo apenas o tamanho de uma perna.
 Consulte `/v1/models` depois de todos os peers confirmarem o runtime. O passo
 operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
 
-**Fluxo (`main`):**
+**Startup flow (`main`):**
+
+Before the UI or service starts, if no `pom.json` exists, `initial_ports::select`
+probes the implicit default gateway/P2P port set. It checks the HTTP gateway and
+its derived inference port, P2P UDP, both QUIC UDP ports, and the libp2p TCP/QUIC
+port. Occupied implicit defaults move to available ports; CLI/environment
+choices stay fixed, and existing configuration is never rewritten. The new
+values flow into local-network creation or setup and are persisted with the
+new configuration.
+
 1. `respawn::remember_argv` + tracing.
 2. Without `pom.json`, or with `Config.setup_pending` (the preference shell
    left by leaving a network), `webui::bootstrap_local_network` creates a
    local network and the node goes on as a configured one. A failure there is
    a startup error. When there was no config at all, `first_run_guide` is set
-   so the interface shows its first run hints. Without a config the ports come from `--port` and
-   `--gateway-port`, which lets a second local node be isolated.
-   **The setup wizard is deprecated and unreachable.** `start_setup_mode`
-   (the router carrying only `/api/setup/*`), `force_setup_if_requested`,
-   `force_setup_mode` and `WIZARD_FORCED` stay in `main.rs` under
-   `#[allow(dead_code)]` and nothing calls them; `--setup`, `--wizard`,
-   `--setup-bind`, `POM_FORCE_SETUP` and `POM_SETUP_BIND` no longer exist. Do
-   not wire them back.
+   so the interface shows its first run hints. Without a config the ports come
+   from `--port` and `--gateway-port`, which lets a second local node be
+   isolated. **The setup wizard is deprecated and unreachable.**
+   `start_setup_mode`, `force_setup_if_requested`, `force_setup_mode` and
+   `WIZARD_FORCED` stay in `main.rs` under `#[allow(dead_code)]` and nothing
+   calls them; `--setup`, `--wizard`, `--setup-bind`, `POM_FORCE_SETUP` and
+   `POM_SETUP_BIND` no longer exist. Do not wire them back.
 3. Com config: valida a porta da interface e faz o preflight de
    disponibilidade; portas P2P, HTTP e de inferência vêm da config.
 4. `start_node`, o único caminho de um nó configurado:
@@ -178,13 +186,13 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
      cooldown configurado. Lock, fit ou carga de modelo não podem fechar a
      porta de controle.
 
-No macOS, `main` resolve a porta persistida do gateway, move o serviço Tokio
-para uma thread de fundo e entrega a thread principal ao item de status
-(`macos_status.rs` + `macos_status.m`) - `NSApplication` só aceita ser
-conduzida da thread principal. O item abre o `/admin-ui/chat` num painel de
-390 x 844 points e numa janela de 1120 x 880 points; as medidas e o endereço
-saem do Rust pela ABI, não são duplicados no Objective-C. Os dois WebViews
-usam o data store padrão do WebKit e, portanto, a mesma sessão do frontend.
+On macOS, `main` resolves the gateway port, moves the Tokio service to a
+background thread, and gives the main thread to the status item (`macos_status.rs`
++ `macos_status.m`), because `NSApplication` must run there. The item opens
+`/admin-ui/chat` in a 390 x 844 point popover and a 1120 x 880 point window;
+Rust passes dimensions, URL, and `brand::name()` through the ABI instead of
+hardcoding them in Objective-C. Both WebViews use WebKit's default data store
+and therefore share the frontend session.
 O menu de aplicativo do AppKit contém Sobre e Sair. Sair usa a ação padrão
 `terminate:` e encerra o processo depois que o laço de eventos volta, porque o
 serviço Tokio de longa duração ainda não tem um canal de cancelamento
@@ -221,7 +229,9 @@ automáticas de uma implantação problemática.
 
 ## src/ subpastas
 
-- `network/` - P2P UDP + libp2p/pkarr. Ver `crates/node/src/network/AGENTS.md`.
+- `initial_ports.rs` - first-boot selection of available gateway, inference,
+  P2P, QUIC and libp2p ports when `pom.json` is absent.
+- `network/` - P2P UDP + libp2p/pkarr. See `crates/node/src/network/AGENTS.md`.
 - `routing/` - planejador do pipeline. Ver `crates/node/src/routing/AGENTS.md`.
 - `utils/` - config, respawn, sysmon. Ver `crates/node/src/utils/AGENTS.md`.
 - `models/` - perfis de modelo e catálogo de GGUFs: `model.rs`
@@ -328,8 +338,10 @@ host seja substituído silenciosamente.
 `src/plugin_dev.rs` discovers direct child sources under
 `/opt/pom/dev-plugins` whose names match `pom-plugin-*`; it derives each
 `plugin_code` from valid, agreeing root/UI manifests and rejects unsafe codes.
-It validates canonical source paths and the package's single `cdylib`, then runs
-fixed `cargo metadata`/`cargo build` arguments. Cargo artifacts go to
+It canonicalizes source and build roots before checking that neither contains
+the other, including macOS paths that resolve through `/private`. It validates
+the package's single `cdylib`, then runs fixed `cargo metadata`/`cargo build`
+arguments. Cargo artifacts go to
 `<project_root>/.pom-dev-plugin-builds/<repository>`, outside the source mount,
 so read-only source binds work. The cluster development image exposes Cargo to
 its non-root node user and points `CARGO_HOME` to a writable cache in the

@@ -145,7 +145,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useClusterLogs` lê o log de processo da réplica local do admin,
   opcionalmente filtrado por `deploy_id`, e atualiza a consola a cada segundo.
   The city lookups of the location editor are not hooks: see `geo.ts`.
-  `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
+  `useAdminSurface` is the one-shot shell probe: it distinguishes
   available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
   values remain unchanged. It prevents effects that capture `useQueries` data
@@ -404,7 +404,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### queries.ts
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
-  404 means setup, a valid server session means available, a localhost policy
+  a valid server session means available, a localhost policy
   refusal means the local-only state, and other refusals keep the token gate.
   It subscribes to `onAdminSessionLost` and re-probes: the administrative
   session lives in the node's memory, so a restart or the 8h expiry kills it
@@ -414,7 +414,6 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   probe's own 401 also signals "session lost", and invalidating an in-flight
   probe cancels and restarts it - thousands of probes a minute, the tab stuck
   on the dashboard.
-- `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useAdminAccess()` - public one-shot metadata for the administrative password
   gate; it never receives the password.
 - `useAdminAccessInfo()` - authenticated administrative settings, exposing only

@@ -571,20 +571,16 @@ fn brand_network_fallback() -> String {
 /// later, in Network settings. `config` is either blank or the preference
 /// shell left by leaving a network; machine preferences in it are kept.
 ///
-/// It is what the wizard's admin path does, minus the screens. A trust root
-/// already on disk is somebody's decision and is never overwritten: the call
-/// fails and the caller falls back to the wizard.
+/// A trust root found on disk here belongs to a network whose configuration is
+/// gone, so this node can no longer take part in it. It is never overwritten
+/// or deleted: it is moved to `setup-backups/<date>/` and the node goes on
+/// with a network of its own.
 pub async fn bootstrap_local_network(
     mut config: crate::config::Config,
     database: &crate::db::PomDb,
 ) -> anyhow::Result<crate::config::Config> {
     let trust_path = crate::config::admin_trust_path();
-    if trust_path.exists() {
-        anyhow::bail!(
-            "{} already exists; remove it or run with --setup",
-            trust_path.display()
-        );
-    }
+    set_aside_orphan_trust(&trust_path)?;
     let name = match config.node_name.as_deref().map(str::trim) {
         Some(name) if !name.is_empty() => local_network_name(name),
         _ => local_network_name(&sysmon::sample().await.hostname),
@@ -636,6 +632,37 @@ pub async fn bootstrap_local_network(
         warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
     }
     Ok(config)
+}
+
+/// Moves a trust root left without its configuration, and its replay file,
+/// into `setup-backups/<date>/`.
+fn set_aside_orphan_trust(trust_path: &std::path::Path) -> anyhow::Result<()> {
+    let present: Vec<_> = [
+        trust_path.to_path_buf(),
+        crate::admin_trust::replay_path_for(trust_path),
+    ]
+    .into_iter()
+    .filter(|path| path.exists())
+    .collect();
+    if present.is_empty() {
+        return Ok(());
+    }
+    let backup = crate::config::project_root()
+        .join("setup-backups")
+        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    std::fs::create_dir_all(&backup)?;
+    for path in &present {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        std::fs::rename(path, backup.join(name))
+            .with_context(|| format!("could not set aside {}", path.display()))?;
+    }
+    warn!(
+        "a trust root without its network configuration was moved to {}",
+        backup.display()
+    );
+    Ok(())
 }
 
 pub async fn install_setup_trust_anchor(

@@ -7,7 +7,7 @@ import { LocaleProvider } from "./i18n/provider";
 import { ProfileProvider, type Profile } from "./lib/profile";
 
 const adminSurface = vi.hoisted(() => ({
-  value: "available" as "setup" | "available" | "requires-password" | "local-only",
+  value: "available" as "available" | "requires-password" | "local-only",
 }));
 const pluginUi = vi.hoisted(() => ({ plugins: [] as unknown[] }));
 
@@ -358,9 +358,10 @@ describe("guarda de perfil por rota", () => {
     expect(await screen.findByText("tela-preferencias")).toBeTruthy();
   });
 
-  it("mantém o wizard acessível depois do primeiro acesso", async () => {
+  it("has no screen for the deprecated wizard", async () => {
     open("/setup", "admin");
-    expect(await screen.findByText("tela-wizard")).toBeTruthy();
+    await screen.findByTestId("admin-sidebar");
+    expect(screen.queryByText("tela-wizard")).toBeNull();
   });
 
   /**

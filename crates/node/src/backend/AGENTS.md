@@ -962,8 +962,8 @@ faz o download autenticado do blob persistido.
   `pom_id`, and invalidates the catalog),
   `run_apply`/`run_slice`/`release_slice`, and the setup handlers for hardware,
   models, trust-anchor, health and save, which are deliberately NOT registered
-  here - the setup mode router in `main.rs` serves them only while there is no
-  `pom.json`.
+  here - they belong to the deprecated wizard's router in `main.rs`
+  (`start_setup_mode`), which nothing starts any more.
   Os testes que chamam `apply_cluster_policy` também seguram
   `peer_client::POLITICA_GLOBAL`, porque o esquema TLS global é compartilhado
   por toda a suíte.
@@ -1133,7 +1133,10 @@ faz o download autenticado do blob persistido.
   and gives each remote peer a `route` (`Network::peer_route`): the path this
   node actually uses to reach it - direct HTTP, direct libp2p (maybe hole
   punched) or relayed - as opposed to `addr`, which is only what it advertises.
-  Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
+  **The wizard is deprecated and unreachable**: nothing starts its router, so
+  none of the `/api/setup/*` routes below is served. The handlers are kept
+  until the wizard is removed for good; what follows describes that dormant
+  code. Setup mode exposed `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/geo/{countries,cities,nearest}`,
   `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,
   `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
@@ -1212,7 +1215,10 @@ faz o download autenticado do blob persistido.
   `session.rs` - accepts the key being replaced while its grace lasts, and
   every sender goes through `internal_node_token`.
   `webui/setup.rs::bootstrap_local_network` is what a node without a network
-  runs at startup instead of the wizard (`main.rs`, unless `--setup`).
+  runs at startup (`main.rs`); there is no other way to start. A trust root
+  found without its configuration is moved to `setup-backups/<date>/`
+  (`set_aside_orphan_trust`), never overwritten, and the local network is
+  created all the same.
   The same file has `lobby_latency` (`GET
   /api/ui/network-chat/lobby/latency`: two `Describe` round trips to a
   publisher key, the smaller one answered as `rtt_ms`, 60 s cache) and
@@ -1360,7 +1366,7 @@ faz o download autenticado do blob persistido.
   `peer_without_sliced_mtp_wire` when a peer lacks the MTP wire capability.
   `routing_contract` capability types.
 - Who calls it: `crate::main` (`start_gateway_with_ready` spawns the router, `warm_catalog`
-  runs at startup, setup mode mounts only the dedicated `/api/setup/*` handlers);
+  runs at startup);
   the frontend bundle in `apps/frontend/dist` hits `/api/ui/*`; harnesses hit
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
   gateway HTTP for transfers, deploy forwarding, and cancel notices.

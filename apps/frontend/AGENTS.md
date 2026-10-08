@@ -43,7 +43,7 @@ remain local until the deploy preflight.
 - `index.html` - dark default (`data-theme="dark"`), two pre-paint scripts: theme from `localStorage` `codai.theme` (system preference deliberately does not decide) and `lang` from `codai.locale` / browser locales, so the first paint already matches the app state.
 - `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (basename `/admin-ui`, opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`. Before rendering, an address outside the basename (the node answers any unknown GET with this page, e.g. `/setup`) is replaced by the same path under `/admin-ui`; without that the router renders nothing and the screen is blank.
 - `index.css` - design tokens and global styles (see below).
-- `App.tsx` - shell and route table (see below); after setup detection it probes
+- `App.tsx` - shell and route table (see below); it probes
   the public administrative exposure and gates the whole shell with the human
   access password only when needed. The real login is a browser-recognized form
   that asks only for the password, drawn like the pieceofmind.cloud home (dark
@@ -54,10 +54,10 @@ remain local until the deploy preflight.
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.
 
-  The real first-access route is `/setup` and uses `routes/Setup.tsx` with the
-  loopback `/api/setup/*` backend, in the same visual identity as the login
-  (see `src/routes/AGENTS.md`). `routes/SetupWizard.tsx` and
-  `components/setup-wizard/*` are visual mock references only. After setup the
+  The first access wizard is deprecated and unreachable: `routes/Setup.tsx`,
+  `routes/SetupWizard.tsx` and `components/setup-wizard/*` are kept in the
+  source but `App.tsx` neither imports nor routes them (see
+  `docs/subsystems/web-ui.md`, "First access wizard"). On a new node the
   panel password is `admin`: while `/api/access` reports `default_password`,
   `useAdminSurface` enters with it instead of showing the gate, and the bell
   shows a notice asking to change it, once per start of the node
@@ -65,7 +65,7 @@ remain local until the deploy preflight.
 
 ### App.tsx route table
 
-`App` first decides setup vs dashboard: `useAdminSurface()` probes `/api/ui/node` with `auth: false`; a 404 means the node runs only the `/api/setup/*` router and `Setup` renders instead, while a local-only refusal renders the server-equivalent bilingual no-navigation state (the probe never hits `/api/setup/key` because that route mints a connection key). Both Sidebar and Topbar sit in their own `ErrorBoundary` so a chrome crash cannot blank the menu.
+`App` first asks which shell is safe: `useAdminSurface()` probes `/api/ui/node` with `auth: false`; there is no setup answer, and a local-only refusal renders the server-equivalent bilingual no-navigation state (the probe never hits `/api/setup/key` because that route mints a connection key). Both Sidebar and Topbar sit in their own `ErrorBoundary` so a chrome crash cannot blank the menu.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
@@ -142,9 +142,7 @@ desenhado**, porque uma vista só não é uma escolha.
   leitura, com os parâmetros da versão escolhida
 - `/implantacoes/logs` -> DeploymentLogs, consola terminal dos logs de processo
   do cluster, em ordem de chegada no principal e filtrável por `deploy_id`
-- `/setup` -> Setup, o wizard real de primeiro arranque, **fora da moldura**:
-  sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
-  mock, não a tela usada quando o nó está em modo setup.
+- `/setup` is not a route: the deprecated wizard has no path.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - Rotas de plugin -> `PluginScreen` sob `/<plugin_code>/<rota do manifesto>`,
   fora do `<Routes>` e antes da tabela nativa. O basename transforma, por

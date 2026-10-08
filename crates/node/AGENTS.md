@@ -79,7 +79,7 @@ interface, e num reinício volta pelo journal da fatia (`lastslice`).
 
 **Flags (clap derive, `Args`):** `-p/--port` (42777), `-b/--bootstrap`,
 `--advertise-addr`, `--ollama-url`, `--gateway-port` (8080),
-`--setup-bind`, `--pkarr-peers`,
+`--pkarr-peers`,
 `--public-addr`, `--relay-peers`, `--serve-relay` (relay for everyone: a
 public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `relay` section of the config file, see `p2p-network.md`),
@@ -100,10 +100,8 @@ vence a variável, que vence o padrão; as booleanas usam `BoolishValueParser`.
 A variável vence o `pom.json`: `apply_env_overrides` troca `p2p_port` e
 `gateway_port` gravados quando `parse_args` viu o valor vir do ambiente
 (`ValueSource::EnvVariable`). Na linha de comando essas duas continuam cedendo à
-config - só valem no modo setup, e é isso que mantém uma troca de porta feita
-pela interface depois do respawn, que repete o argv. A variável manual
-`POM_FORCE_SETUP` é tratada por `force_setup_if_requested`; a lista que a isola
-na prova de cobertura de flags é compilada somente em testes.
+config - só valem enquanto não há `pom.json`, e é isso que mantém uma troca de
+porta feita pela interface depois do respawn, que repete o argv.
 
 Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
 derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os
@@ -113,18 +111,17 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
 
 **Fluxo (`main`):**
 1. `respawn::remember_argv` + tracing.
-2. Sem `pom.json`, ou com `Config.setup_pending`, → `start_setup_mode`: serve
-   somente `/api/setup/*` para hardware, modelos, referência geo, raiz de
-   confiança, verificações e save, além da UI (`webapp::routes`); gravar a
-   config respawna o processo. Sem config, a porta P2P do setup segue
-   `--port`, o que permite isolar um segundo nó local; com config pendente, a
-   porta persistida continua sendo a autoridade. O modo setup preserva
-   preferências locais após sair da rede. O listener HTTP do setup não tem
-   autenticação e liga em `0.0.0.0` por padrão, para o primeiro acesso
-   alcançar um nó novo (inclusive num container com porta publicada); o
-   endurecimento é escolhido no próprio setup. `--setup-bind <IP>` troca o IP
-   (`127.0.0.1` mantém o setup só local). A flag não
-   afeta o gateway configurado, que sempre liga em `[::]` dual-stack.
+2. Without `pom.json`, or with `Config.setup_pending` (the preference shell
+   left by leaving a network), `webui::bootstrap_local_network` creates a
+   local network and the node goes on as a configured one. A failure there is
+   a startup error. Without a config the ports come from `--port` and
+   `--gateway-port`, which lets a second local node be isolated.
+   **The setup wizard is deprecated and unreachable.** `start_setup_mode`
+   (the router carrying only `/api/setup/*`), `force_setup_if_requested`,
+   `force_setup_mode` and `WIZARD_FORCED` stay in `main.rs` under
+   `#[allow(dead_code)]` and nothing calls them; `--setup`, `--wizard`,
+   `--setup-bind`, `POM_FORCE_SETUP` and `POM_SETUP_BIND` no longer exist. Do
+   not wire them back.
 3. Com config: valida a porta da interface e faz o preflight de
    disponibilidade; portas P2P, HTTP e de inferência vêm da config.
 4. `start_node`, o único caminho de um nó configurado:
@@ -212,7 +209,7 @@ O servidor QUIC mantém o bind em `[::]`, mas cria o `UdpSocket` com
 mesmo endpoint aceita IPv4 e IPv6 no Windows, Linux e macOS; o construtor de
 cliente do Quinn já aplica a mesma opção.
 
-`start_setup_mode` e `start_node` estão em `main.rs` (não num módulo
+`start_setup_mode` (dead code, see above) e `start_node` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
 `--ollama-url` e a anuncia **sempre**.
 

@@ -192,8 +192,9 @@ quebra o produto inteiro.
   mesma fronteira cobre os ficheiros estáticos, mas nunca as rotas da pipeline.
   Without `pom.json` the node creates a **local network of its own** and goes
   straight to the interface: profile `admin`, named after the host, discovery
-  off (`webui::bootstrap_local_network`). The setup wizard is only reached
-  with `--setup`. Joining another network is asked from the Networks screen
+  off (`webui::bootstrap_local_network`). The setup wizard is deprecated and
+  unreachable: its code is kept, but no flag, route or screen leads to it.
+  Joining another network is asked from the Networks screen
   and approved by that network's admin, who is the only one that hands over
   its connection key. **That own network is never dropped**: joining puts it
   in standby and leaving brings it back as it was (`webui/standby.rs`), and

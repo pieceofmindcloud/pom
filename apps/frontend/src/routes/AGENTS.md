@@ -10,16 +10,16 @@ writes as translation keys.
 
 Per-file list:
 
-- `SetupWizard.tsx` - Protótipo navegável do primeiro acesso, mantido na rota
-  `/setup` mesmo depois da configuração inicial. Renderiza **fora da moldura**,
-  como o `Setup.tsx` do primeiro arranque: sem Sidebar e sem Topbar (o
-  `isWizard` do `App.tsx` devolve antes do shell). O assistente guia a
-  configuração do zero, e o menu ao lado convidava a sair pelo meio para uma
-  tela que ainda não faz sentido. Usa `setupWizardTypes.ts` para
+- **`SetupWizard.tsx` and `Setup.tsx` are deprecated and unreachable.**
+  `App.tsx` neither imports nor routes them, there is no `/setup` path and the
+  node does not serve `/api/setup/*`. The files and their tests are kept until
+  the wizard is removed for good; the two entries below describe that dormant
+  code. Do not link to it.
+
+- `SetupWizard.tsx` - Protótipo navegável do primeiro acesso. Usa `setupWizardTypes.ts` para
   o estado central e `setupWizardMocks.ts` para hardware, nós, modelos,
   capabilities, redes públicas e saúde simulados; os seis caminhos terminam
-  no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22. O `Setup.tsx` continua
-  sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
+  no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22.
 
 - `Setup.tsx` - Wizard real de primeiro acesso, na identidade do portão de
   acesso (painel escuro com a marca e a trilha de passos animada como os nós

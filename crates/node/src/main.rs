@@ -325,15 +325,6 @@ struct Args {
     #[arg(long, default_value = "8080")]
     gateway_port: u16,
 
-    /// IP the setup page listens on while the node has no pom.json. Defaults to
-    /// every interface so a fresh node (including one in a container with a
-    /// published port) is reachable for first access; hardening happens in the
-    /// setup itself. Pass 127.0.0.1 to keep the unauthenticated setup local.
-    /// The configured gateway always listens on every interface and ignores
-    /// this flag.
-    #[arg(long, default_value = "0.0.0.0")]
-    setup_bind: std::net::IpAddr,
-
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
     #[arg(long, default_value = "")]
     pkarr_peers: String,
@@ -368,14 +359,6 @@ struct Args {
     /// relays (`relay.transfers: false`).
     #[arg(long)]
     no_relay_transfers: bool,
-
-    /// Força o wizard de primeiro acesso mesmo com a máquina configurada: a
-    /// configuração atual (pom.json, raiz de confiança e banco local) é movida
-    /// para `setup-backups/<data>` e o nó sobe em modo setup. Para testar o
-    /// wizard; a identidade (`.pom-node.key`) é mantida. Por variável, use
-    /// `POM_FORCE_SETUP=<token>` (ver `force_setup_if_requested`).
-    #[arg(long, alias = "wizard")]
-    setup: bool,
 
     /// Disable the built-in public IPFS relay nodes.
     #[arg(long)]
@@ -421,7 +404,6 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("advertise_addr", "ADVERTISE_ADDR"),
     ("ollama_url", "OLLAMA_URL"),
     ("gateway_port", "GATEWAY_PORT"),
-    ("setup_bind", "SETUP_BIND"),
     ("pkarr_peers", "PKARR_PEERS"),
     ("public_addr", "PUBLIC_ADDR"),
     ("relay_peers", "RELAY_PEERS"),
@@ -432,12 +414,6 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("no_discovery", "NO_DISCOVERY"),
     ("no_pkarr", "NO_PKARR"),
 ];
-
-/// Opções cuja variável não é o mesmo valor da flag e por isso não passa pelo
-/// clap: `--setup` é booleana, e `POM_FORCE_SETUP` é um token lido em
-/// `force_setup_if_requested`, que força o wizard uma vez por valor.
-#[cfg(test)]
-const MANUAL_ARG_ENV: &[(&str, &str)] = &[("setup", "FORCE_SETUP")];
 
 /// A linha de comando com as variáveis de `ARG_ENV`. As flags booleanas leem a
 /// variável como `1/0`, `true/false`, `yes/no` ou `on/off`, como as outras
@@ -541,8 +517,6 @@ fn main() -> Result<()> {
     if let Some(command) = args.command.as_ref() {
         return run_command(command);
     }
-
-    force_setup_if_requested(args.setup)?;
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
@@ -733,10 +707,13 @@ async fn async_main(
     let database = Arc::new(db::PomDb::open(config::database_path())?);
     info!("Local database: {}", database.path().display());
 
-    // ── Setup flow: a fresh node and a node that just left a network both
-    // serve only the setup page. The latter keeps pom.json as a local
-    // preference shell, so checking only for file existence would boot the old
-    // network again.
+    // A machine without a network makes a local one and goes straight to the
+    // interface: admin, named after the host, discovery off. Joining someone
+    // else's network comes later, from the Networks screen. `setup_pending`
+    // marks a pom.json that is only a preference shell, so checking only for
+    // file existence would boot a network that is gone. There is no other way
+    // to start: the setup wizard is not reachable, and a local network that
+    // cannot be created is a startup error.
     let mut existing_config = if config::Config::exists() {
         Some(config::Config::load()?)
     } else {
@@ -745,55 +722,22 @@ async fn async_main(
     if let Some(config) = existing_config.as_mut() {
         apply_env_overrides(config, &args);
     }
-    // A machine without a network makes a local one and goes straight to the
-    // interface: admin, named after the host, discovery off. Joining someone
-    // else's network comes later, from the Networks screen. The wizard is only
-    // reached when asked for explicitly.
     if existing_config
         .as_ref()
         .is_none_or(|config| config.setup_pending)
-        && !WIZARD_FORCED.load(std::sync::atomic::Ordering::Relaxed)
     {
         let base = existing_config
             .take()
             .unwrap_or_else(|| blank_config(args.gateway_port, args.port));
-        match webui::bootstrap_local_network(base.clone(), &database).await {
-            Ok(mut created) => {
-                info!(
-                    "No network configured - created the local network \"{}\"",
-                    created.network.public_name
-                );
-                apply_env_overrides(&mut created, &args);
-                existing_config = Some(created);
-            }
-            Err(error) => {
-                warn!("could not create a local network, falling back to setup: {error:#}");
-                existing_config = base.setup_pending.then_some(base);
-            }
-        }
-    }
-    if existing_config
-        .as_ref()
-        .is_none_or(|config| config.setup_pending)
-    {
-        if existing_config.is_some() {
-            info!("Setup pending — starting in setup mode");
-        } else {
-            info!("No config found — starting in setup mode");
-        }
-        let gateway_port = existing_config
-            .as_ref()
-            .map_or(args.gateway_port, |config| config.gateway_port);
-        start_setup_mode(
-            args.setup_bind,
-            gateway_port,
-            args.port,
-            existing_config,
-            database.clone(),
-            gateway_ready,
-        )
-        .await?;
-        return Ok(());
+        let mut created = webui::bootstrap_local_network(base, &database)
+            .await
+            .context("could not create the local network")?;
+        info!(
+            "No network configured - created the local network \"{}\"",
+            created.network.public_name
+        );
+        apply_env_overrides(&mut created, &args);
+        existing_config = Some(created);
     }
 
     // ── Load existing config ─────────────────────────────────────────────────
@@ -892,6 +836,7 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
 }
 
 /// Onde o último `POM_FORCE_SETUP` consumido fica gravado.
+#[allow(dead_code)]
 fn forced_setup_marker() -> std::path::PathBuf {
     config::project_root().join(format!(".{}-setup-forced", crate::brand::slug()))
 }
@@ -908,6 +853,7 @@ fn forced_setup_marker() -> std::path::PathBuf {
 ///   container sobe com o ambiente do compose, sem marca nenhuma. O token
 ///   consumido fica num arquivo do project root; o mesmo token não força de
 ///   novo. `up.sh <cluster> --wizard` (repositório `pom-cluster-config`) gera um token novo por chamada.
+#[allow(dead_code)]
 fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
     if cli_flag {
         let consumed = crate::brand::env_var("SETUP_FORCED");
@@ -938,6 +884,7 @@ fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
 
 /// Guarda a configuração atual e deixa o nó sem ela, para subir no wizard.
 /// Roda antes de abrir o banco.
+#[allow(dead_code)]
 fn force_setup_mode() -> anyhow::Result<()> {
     WIZARD_FORCED.store(true, std::sync::atomic::Ordering::Relaxed);
     let database = config::database_path();
@@ -1033,11 +980,15 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
 }
 }
 
-/// Set when `--setup` (or its environment token) asked for the wizard in this
-/// process. It is the only way into the wizard: a machine without a network
-/// otherwise creates a local one by itself (`webui::bootstrap_local_network`).
+/// Part of the deprecated wizard (see `start_setup_mode`): nothing sets it.
+#[allow(dead_code)]
 static WIZARD_FORCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The deprecated setup wizard's server: a router carrying only
+/// `/api/setup/*`. **Nothing calls it** - no flag, variable or startup failure
+/// leads here, and the interface has no screen for it. The code is kept until
+/// the wizard is removed for good; do not wire it back.
+#[allow(dead_code)]
 async fn start_setup_mode(
     bind_ip: std::net::IpAddr,
     gateway_port: u16,
@@ -2089,9 +2040,6 @@ mod main_tests {
                 continue;
             }
             let id = arg.get_id().as_str();
-            if MANUAL_ARG_ENV.iter().any(|(arg_id, _)| *arg_id == id) {
-                continue;
-            }
             let (_, suffix) = ARG_ENV
                 .iter()
                 .find(|(arg_id, _)| *arg_id == id)
@@ -2153,13 +2101,6 @@ mod main_tests {
     /// Todo nó anuncia a porta do Ollama da URL configurada, sem flag nenhuma:
     /// quando o anúncio dependia de uma flag, um nó sem ela servia o Ollama
     /// local sem que nenhum peer soubesse.
-    #[test]
-    fn wizard_is_an_alias_of_setup_and_defaults_off() {
-        assert!(!Args::parse_from(["pom"]).setup);
-        assert!(Args::parse_from(["pom", "--setup"]).setup);
-        assert!(Args::parse_from(["pom", "--wizard"]).setup);
-    }
-
     #[test]
     fn every_node_advertises_the_ollama_port() {
         let args = Args::parse_from(["pom"]);

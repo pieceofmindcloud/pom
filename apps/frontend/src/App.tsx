@@ -149,8 +149,6 @@ function AdminAccessUnavailable() {
  * screen, editor and visualization before the operator opens it.
  */
 export const routeLoaders = {
-  setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
-  setupWizard: () => import("./routes/SetupWizard").then(({ SetupWizard }) => SetupWizard),
   publicNetworks: () => import("./routes/PublicNetworks").then(({ PublicNetworks }) => PublicNetworks),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
@@ -185,8 +183,6 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
   return lazy(() => loader().then((Component) => ({ default: Component })));
 }
 
-const Setup = lazyRoute(routeLoaders.setup);
-const SetupWizard = lazyRoute(routeLoaders.setupWizard);
 const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
@@ -302,22 +298,6 @@ export default function App() {
       location.pathname === "/fatias" ||
       location.pathname === "/transferencias" ||
       location.pathname === "/transferencias/enviar");
-  /*
-   * O assistente é a única tela que sai da moldura inteira: ele guia a
-   * configuração do zero, com barra de progresso e uma pergunta por vez, e o
-   * menu ao lado convida a sair pelo meio para uma tela que ainda não faz
-   * sentido. Renderiza como o `Setup` do primeiro arranque - sem Sidebar, sem
-   * Topbar -, e não só sem enchimento como as outras de tela cheia.
-   */
-  const isWizard = allowed && location.pathname === "/setup";
-  /*
-   * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
-   * so `/api/ui/node` answers 404. That miss is the signal.
-   *
-   * Deliberately not probed with a setup mutation endpoint. Setup mode is
-   * detected by the normal surface probe, while `/api/setup/*` is reserved for
-   * the real first-access wizard.
-   */
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
 
@@ -334,16 +314,6 @@ export default function App() {
   // a guess flashes the wrong screen, so hold the paint for one request.
   if (adminSurface.isLoading) return <div className="h-full bg-ink" />;
   if (adminSurface.isError || !adminSurface.data) return <AdminAccessUnavailable />;
-  if (adminSurface.data === "setup") {
-    return (
-      <ErrorBoundary>
-        <Suspense fallback={<RouteFallback fullScreen />}>
-          <Setup />
-        </Suspense>
-      </ErrorBoundary>
-    );
-  }
-
   if (adminSurface.data === "local-only") return <AdminLocalOnly />;
   if (adminSurface.data === "requires-password" && !adminReady) {
     return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
@@ -365,16 +335,6 @@ export default function App() {
           <div className="h-full min-h-0 w-full overflow-hidden bg-ink">
             <Chat />
           </div>
-        </Suspense>
-      </ErrorBoundary>
-    );
-  }
-
-  if (isWizard) {
-    return (
-      <ErrorBoundary>
-        <Suspense fallback={<RouteFallback fullScreen />}>
-          <SetupWizard />
         </Suspense>
       </ErrorBoundary>
     );

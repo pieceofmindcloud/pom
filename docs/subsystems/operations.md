@@ -61,16 +61,15 @@ field.
 # network of its own (admin, named after the host, discovery off) and opens the
 # panel. Rename it and turn discovery on in Network settings; other machines
 # then ask to join from their Networks screen and an admin approves them.
-# The old wizard (profile, invitation, trust.json) only opens with --setup.
 
 # machine B (node):
 ./target/release/pom
-# open http://<machine-b>:8080/, pick "node" and join: the wizard finds the
-# administrator through local discovery, or takes the pasted trust.json and key.
-# On another network, start B with --bootstrap <machine-a>:42777.
+# open http://<machine-b>:8080/ - B also starts with a local network of its
+# own. On its Networks screen, ask to join A's network; an admin of A approves.
 ```
 
-The first access wizard is described in `web-ui.md` ("First access wizard").
+There is no first access wizard: it is deprecated and unreachable (see
+`web-ui.md`, "First access wizard").
 The model never comes from the command line: once both machines are in the
 network, the model is sliced and deployed from the UI (Deploy screen, see
 `deployment.md`).

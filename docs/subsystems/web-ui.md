@@ -178,8 +178,9 @@ leaf navigates to its route. In the minimized state, navigation uses
 `overflow-visible` without `overflow-y-auto`, because that combination makes the
 browser compute horizontal overflow as auto and clips the submenus; `z-index`
 does not get past that clip. The minimized choice is persisted in the browser.
-`App` decides setup vs panel with `useIsSetupMode()` (a probe of
-`/api/ui/node` with `auth: false`; 404 = only the setup router exists). Routes:
+`App` has no setup branch: `useAdminSurface()` probes `/api/ui/node` with
+`auth: false` and only chooses between the panel, the password gate and the
+local-only notice. Routes:
 
 - `/` -> Dashboard; `/chat` -> Chat (outside `<Routes>`/the transition because
   it owns a live stream and the scroll; unmounting it to animate would drop
@@ -289,12 +290,12 @@ does not get past that clip. The minimized choice is persisted in the browser.
   already belongs to, Join is replaced by "Leave network" for a member and by
   no action at all for the principal. A network whose `accepted_enrollments`
   is empty shows a disabled "Closed" button; with a partial list Join stays
-  enabled and the wizard's first screen disables the roles that are not
+  enabled and the join dialog disables the roles that are not
   accepted. The principal edits the list in Network settings ("Accepting new
   members"). A network with `lobby_chat` gets a "Chat" button that opens
   `components/LobbyChat.tsx`: a conversation with that network's lobby through
   this node, with the hardware card the network will see. The same component
-  runs in the setup wizard, whose join step lists the federated directory
+  is used by the deprecated setup wizard, whose join step lists the federated directory
   (`PublicDirectoryPanel`), so a machine that has joined nothing can ask first;
   the list comes from the installation's relays and from the relay key or
   node address typed in the panel.
@@ -314,10 +315,8 @@ does not get past that clip. The minimized choice is persisted in the browser.
   Network settings calls visibility "Discovery" and offers off or on (listed);
   the announced-but-not-listed value stays selectable only where already set.
   It no longer offers the open admission mode.
-- `/setup` -> `Setup`, the real first access wizard, **full screen** and with
-  the access gate's identity (see "First access wizard" below). It is out of
-  the normal path: a node without a network creates a local one and opens the
-  panel, and the wizard only appears when the node was started with `--setup`.
+- There is no `/setup` route: the address falls to the not-found page. See
+  "First access wizard" below.
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the
   participant list for `admin` and `node`; `/config/preferencias` ->
   Preferences; `/config/preferencias/admin` -> administrative preferences;
@@ -359,7 +358,15 @@ the normal `NAV` projection.
 
 ### First access wizard
 
-`routes/Setup.tsx` is the real wizard, served by the loopback router
+**The wizard is deprecated and unreachable.** A node without a network
+creates a local one and opens the panel, and that is the only way to start.
+`App.tsx` neither imports nor routes `routes/Setup.tsx` or
+`routes/SetupWizard.tsx`, the shell probe has no "setup" answer, and the node
+never starts the `/api/setup/*` router (`http-api.md`, "Setup routes are not
+served"). The files and their tests are kept until the wizard is removed for
+good; the rest of this section describes that dormant code. Do not link to it.
+
+`routes/Setup.tsx` was the real wizard, served by the loopback router
 `/api/setup/*`. It only asks what cannot be decided later
 (`routes/setupWizardFlow.ts`):
 
@@ -1522,8 +1529,8 @@ these calls.
 
 The panel also exposes `Forget network`, with a destructive confirmation. That
 action calls `POST /api/ui/network/leave`, which revokes the local trust,
-prepares `pom.json` for setup and restarts this node; then the UI goes back to
-`/setup`. It is deliberately different from `Leave network`, in the
+empties `pom.json` of the network and restarts this node, which comes back in
+its own network (restored from standby, or a fresh local one). It is deliberately different from `Leave network`, in the
 `This machine` panel, which calls `POST /api/ui/leave` and only takes the
 machine out of the cluster without erasing its local configuration. That action
 is also available to a node profile without administrative authority and does

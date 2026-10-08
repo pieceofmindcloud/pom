@@ -75,9 +75,10 @@ last):
   principal before joining it (`p2p-network.md`, 6.1). Both answer
   `{accepted, error, node_id, card, messages}`: a refusal by the principal is
   `accepted: false` with its code, and a transport failure is `502`. They sit
-  under the `/api/ui/network-chat` scope. The setup router serves the same
+  under the `/api/ui/network-chat` scope. The deprecated setup router (not
+  served, see "Setup routes are not served") had the same
   handlers at `GET|POST /api/setup/lobby`, plus `GET
-  /api/setup/public-networks?replicas=<csv>`. Setup mode has no cluster and no
+  /api/setup/public-networks?replicas=<csv>`. Setup mode had no cluster and no
   pkarr discovery, so it asks the given addresses (plus the installation's
   configured replicas), each in two ways: as a directory replica (signed
   records, merged with the cache) and as a node (`GET
@@ -94,8 +95,7 @@ last):
   On every node that route also merges what its relays answer to `Directory`,
   which is the only source for a node with discovery off.
 - **Published stats of another network**: `GET
-  /api/ui/network-chat/lobby/info?key=pk:...` (and `GET /api/setup/lobby/info`
-  in setup mode) asks that network's principal for `{models, node_count,
+  /api/ui/network-chat/lobby/info?key=pk:...` asks that network's principal for `{models, node_count,
   vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with
   `accepted: true` means the principal is still computing; ask again in a few
   seconds. Only meaningful for networks whose view has `public_stats: true`.
@@ -294,9 +294,9 @@ that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
 `/api/setup/auto-discovery/status`, `/api/setup/auto-discovery/start`,
 `/api/setup/auto-discovery/search`, `/api/setup/public-networks`,
-`/api/setup/lobby`, `/api/setup/lobby/info` and `/api/setup/save` only exist in the
-first access router; `/api/setup/save` installs the root and `pom.json` before
-restarting. The routes of port 8181 (`/v1/prefill`, `/v1/step`,
+`/api/setup/lobby`, `/api/setup/lobby/info` and `/api/setup/save` only existed in the
+first access router, which is no longer started (see "Setup routes are not
+served"). The routes of port 8181 (`/v1/prefill`, `/v1/step`,
 `/v1/step-stream`, `/v1/link`, `/v1/session/*`, `/v1/tp/reduce`, `/health`) are
 explicitly out of this policy's scope.
 
@@ -443,16 +443,19 @@ password is needed, the port, `boot_id` (random per run of the process, which
 is how the interface repeats a notice once per start) and `default_password` - the password in effect
 is still the first access default (`admin`, `auth::DEFAULT_ADMIN_PASSWORD`). It
 is a flag written in `pom.json` (`admin_password_default`) next to the hash, so
-this public route never runs Argon2; `POST /api/setup/save` sets it (the UI
-leaves setup in `network` mode with that password) and `POST /api/ui/access`
+this public route never runs Argon2; creating the local network at first run
+sets it (in `network` mode with that password) and `POST /api/ui/access`
 updates it on every password change.
 
-In **setup mode** (no `pom.json`), `main.rs` mounts a smaller router: the routes
-`/api/setup/hardware`, `/api/setup/models`, `/api/setup/geo/*`,
-`/api/setup/admin-anchor/preview`,
-`/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` and the UI.
-They are not in the main router and only exist before the initial
-configuration.
+### Setup routes are not served
+
+The first access wizard is deprecated. A node without `pom.json` creates a
+local network and starts the main router, so the wizard's smaller router
+(`start_setup_mode` in `main.rs`, with every `/api/setup/*` route) is never
+started and those routes answer 404. No flag, variable or startup failure
+leads to it. The handlers are kept in the source until the wizard is removed
+for good, and the passages of this document that describe `/api/setup/*`
+describe that dormant code.
 
 ## 2. Routes by group
 
@@ -1363,7 +1366,7 @@ transport guard. The receiver checks the sender's authority before persisting.
 
 The location editor reads the offline city database embedded in the node
 through three `GET` routes, open to every profile (`InferNodeAdmin`) and
-mirrored for the wizard under `/api/setup/geo/`:
+mirrored under `/api/setup/geo/` in the dormant wizard router:
 
 | Route | Answer |
 |---|---|
@@ -1385,7 +1388,7 @@ from `pom.json` and the directory ingresses from `pom.db`, signs and persists
 the block before returning it. If the local authority cannot rebuild the data,
 the download fails instead of delivering an incomplete root.
 
-Setup exposes local discovery on the same loopback listener, without requiring
+The dormant wizard router exposes local discovery on its own listener, without requiring
 a session: `GET /api/setup/auto-discovery/status` reads the step's state, while
 the admin uses `POST /api/setup/auto-discovery/start` to keep the initial
 listening and node or infer uses `POST /api/setup/auto-discovery/search`

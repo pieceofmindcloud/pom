@@ -28,6 +28,13 @@ pub struct RuntimeParams {
     /// deixa um pedido explícito escolher pela metadata GGUF real.
     #[serde(default)]
     pub inference_mode: InferenceMode,
+    /// Who runs the model. `None` is the POM's own engine (llama.cpp, the
+    /// distributed pipeline). A plugin code (`"strata"`) is a whole-model
+    /// inference service that plugin offers: the target machine asks the
+    /// plugin to load the model instead of starting llama.cpp, and the
+    /// gateway sends it the rendered prompt. See `crate::plugin_engine`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_service: Option<String>,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
@@ -269,6 +276,7 @@ impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
             inference_mode: InferenceMode::Dense,
+            inference_service: None,
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -328,6 +336,7 @@ impl From<&NodeConfig> for RuntimeParams {
     fn from(c: &NodeConfig) -> Self {
         Self {
             inference_mode: c.inference_mode,
+            inference_service: c.inference_service.clone(),
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,

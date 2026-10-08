@@ -163,6 +163,8 @@ mod plugins;
 mod pom;
 #[path = "pom_core_update.rs"]
 mod pom_core_update;
+#[path = "inference/plugin_engine.rs"]
+mod plugin_engine;
 #[path = "inference/prefill/mod.rs"]
 mod prefill;
 #[path = "inference/prefix_cache.rs"]
@@ -1619,6 +1621,7 @@ async fn start_node(
         Err(error) => warn!("não foi possível revogar chaves internas substituídas: {error:#}"),
     }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
+    plugin_engine::install(plugins.clone());
 
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,

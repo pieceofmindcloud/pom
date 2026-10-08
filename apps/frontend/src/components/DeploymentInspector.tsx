@@ -374,6 +374,7 @@ export function DeploymentInspector({
   /** A precisão do estado oculto só existe quando o pipeline cruza máquinas. */
   showHiddenStateDtype = false,
   pomDesenv = false,
+  inferenceService,
 }: {
   value: RuntimeParams;
   onChange?: (next: RuntimeParams) => void;
@@ -387,6 +388,10 @@ export function DeploymentInspector({
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
   pomDesenv?: boolean;
+  /** A plugin's inference service runs the whole model (Strata): only the
+   *  settings that engine reads are shown - the context, the concurrent
+   *  requests and idle unloading. The llama.cpp knobs do not reach it. */
+  inferenceService?: { name: string };
 }) {
   const { t } = useI18n();
   /*
@@ -528,6 +533,27 @@ export function DeploymentInspector({
   const speculationAlert = chosenCapability?.state === "unknown"
     ? `${t("inspector.capabilityUnknown")} ${chosenCapability.reason}`
     : chosenCapability?.warning || undefined;
+
+  if (inferenceService) {
+    return (
+      <Section title={t("inspector.sectionInferenceService", { name: inferenceService.name })} tone="iris">
+        <p className="px-0.5 pb-1 text-[0.6rem] leading-relaxed text-muted">
+          {t("inspector.inferenceServiceNote", { name: inferenceService.name })}
+        </p>
+        {numeric("n_ctx")}
+        {numeric("max_sessions")}
+        {toggle({
+          key: "unload_if_idle",
+          label: t("deploy.unloadIfIdle"),
+          alwaysVisible: true,
+          checked: value.unload_if_idle ?? false,
+          onToggle: (next) => set({ unload_if_idle: next }),
+          tip: t("deploy.unloadIfIdleHint"),
+        })}
+        {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
+      </Section>
+    );
+  }
 
   return (
     <>

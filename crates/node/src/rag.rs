@@ -1120,6 +1120,7 @@ mod tests {
             status: status.into(),
             version: None,
             detail: None,
+            architectures: Vec::new(),
         };
         assert_eq!(rag_plugin(&[service("rag", "ready")]), Some("qdrant"));
         assert_eq!(rag_plugin(&[service("rag", "starting")]), None);

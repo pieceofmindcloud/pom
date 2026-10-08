@@ -524,6 +524,9 @@ deploy.include,Include {range},Incluir {range}
 deploy.included,Included,Entra
 deploy.incomplete,The selected shards do not cover the full model,As fatias escolhidas não cobrem o modelo inteiro
 deploy.incompleteDetail,"It can start this way, but the planner rejects a pipeline with a gap. The network does not serve until coverage is complete.","Dá para subir assim, mas o planejador recusa pipeline com buraco. A rede não atende até a cobertura fechar."
+deploy.inferenceService,Inference service,Serviço de inferência
+deploy.inferenceServiceHint,"Who runs the model: llama.cpp (the POM pipeline) or the engine of a plugin, which serves the whole model on one machine.","Quem roda o modelo: o llama.cpp (a pipeline do POM) ou o motor de um plugin, que serve o modelo inteiro numa máquina."
+deploy.inferenceServiceLlama,llama.cpp (POM),llama.cpp (POM)
 deploy.inferred,(inferred),(deduzidas)
 deploy.inferredDetail,The total was inferred from shard coverage: {count} layers.,O total foi deduzido da cobertura das fatias: {count} camadas.
 deploy.inferredTitle,Shards do not state the model size,As fatias não dizem de que tamanho é o modelo
@@ -1009,6 +1012,7 @@ inspector.guideBack,Back to the guide,Voltar ao guia
 inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}
 inspector.inferenceMode,Inference engine,Motor de inferência
 inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
+inspector.inferenceServiceNote,"{name} runs the whole model on the chosen machine, on all of its NVIDIA cards. The context and the concurrent requests are passed to it; the llama.cpp settings do not apply.","O {name} roda o modelo inteiro na máquina escolhida, em todas as placas NVIDIA dela. O contexto e as requisições simultâneas são repassados a ele; as configurações do llama.cpp não se aplicam."
 inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
 inspector.knob.dry_base,DRY base,DRY: base
 inspector.knob.dry_multiplier,DRY multiplier,DRY: multiplicador
@@ -1042,6 +1046,7 @@ inspector.noThinking,Disable thinking,Desativar thinking
 inspector.readOnly,Read only,Somente leitura
 inspector.sectionBeta,Beta,Beta
 inspector.sectionDefaults,Default settings,Configurações padrões
+inspector.sectionInferenceService,{name} settings,Configurações do {name}
 inspector.sectionPom,POM settings,Configurações POM
 inspector.sectionPomDev,POM settings (DEV),Configurações POM (DESENV)
 jobs.emptyDetail,"Slicing and model-assignment jobs appear here while running, and for ten minutes after they finish.",Fatiamentos e atribuições de modelo aparecem aqui enquanto rodam e por dez minutos depois de terminarem.

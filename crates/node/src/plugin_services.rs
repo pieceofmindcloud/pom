@@ -46,7 +46,14 @@ pub(crate) struct PluginService {
     pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// For a service of kind `inference`: the GGUF architectures its engine
+    /// runs (`general.architecture`), which the deploy screen uses to offer
+    /// only the models that engine can serve.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub architectures: Vec<String>,
 }
+
+const MAX_ARCHITECTURES: usize = 16;
 
 const STATUSES: [&str; 5] = ["ready", "starting", "installing", "waiting", "error"];
 
@@ -99,6 +106,10 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             status: status.to_owned(),
             version: text(&entry["version"]),
             detail: text(&entry["detail"]),
+            architectures: entry["architectures"]
+                .as_array()
+                .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
+                .unwrap_or_default(),
         });
     }
     services
@@ -235,10 +246,25 @@ mod tests {
         assert_eq!(services[0].detail.as_deref(), Some("2 collections"));
         assert_eq!(services[1].id, "plain");
         assert_eq!(services[1].version, None);
+        assert!(services[0].architectures.is_empty());
         assert!(serde_json::to_value(&services[1])
             .unwrap()
             .get("version")
             .is_none());
+    }
+
+    #[test]
+    fn an_inference_service_names_the_architectures_it_runs() {
+        let answer = json!({"services": [
+            {"id": "strata", "kind": "inference", "name": "Strata", "status": "ready",
+             "architectures": ["qwen4exp", "Bad Arch", 7]}
+        ]});
+        let services = parse_services("strata", &answer);
+        assert_eq!(services[0].architectures, vec!["qwen4exp".to_string()]);
+        assert_eq!(
+            serde_json::to_value(&services[0]).unwrap()["architectures"],
+            json!(["qwen4exp"])
+        );
     }
 
     #[test]

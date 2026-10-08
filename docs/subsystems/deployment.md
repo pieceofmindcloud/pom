@@ -306,6 +306,27 @@ generation and keeps the handle for a later attempt, avoiding overlapping
 native resources. The immediate range announcement is best-effort with a 1 s
 ceiling, without delaying the local start when DNS or UDP do not answer.
 
+## 1.6 A plugin's inference service
+
+`RuntimeParams.inference_service` names the plugin whose inference service
+runs the model instead of llama.cpp (the Strata plugin publishes `"strata"`).
+The deploy screen offers it as "Inference service" next to llama.cpp when any
+machine publishes a service of kind `inference`; choosing it fixes the kind to
+`whole`, lists only the whole models whose GGUF `architecture` the service
+declares, and keeps only the machines that run it in the peer strip. Its
+inspector shows the settings the engine reads (context, concurrent requests,
+idle unloading).
+
+`POST /api/ui/deploy` (and the preview, when the screen sends the service in
+`params`) refuses such a deployment unless it is a whole model on exactly one
+machine whose plugin publishes that `inference` service in a state other than
+`error` or `waiting` (`plugin_engine::deploy_block`, which asks the machine for
+its services). Everything after that is the whole-model path of section 1.1:
+the same survey, copy, `launch`, `apply`, journal, versions and undeploy. The
+difference is on the target, where the runtime asks the plugin to load the
+model instead of starting llama.cpp (`inference.md`, section 7.1); undeploying
+or removing the machine stops the runtime, which asks the plugin to unload.
+
 ## 2. The survey (`survey`)
 
 `survey` gathers, for each machine in the cluster, `GET /api/ui/models`

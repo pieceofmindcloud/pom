@@ -2436,6 +2436,57 @@ without a valid pipeline does **not** fall to the local Ollama nor to a peer's -
 the request fails. (Old documentation described a three-level fallback; that
 was an earlier state of the code, corrected on 2026-08-15.)
 
+## 7.1 Plugin inference services
+
+A deployment may name a plugin's inference service instead of POM's own
+engine (`RuntimeParams::inference_service`, for example `"strata"`). That is
+an explicit, separate deployment class, never a fallback: the plan for such a
+model is one step on one machine, and the gateway runs it through that plugin
+or fails. `crates/node/src/inference/plugin_engine.rs` holds the three pieces.
+
+- **Target node.** The runtime supervisor calls `plugin_engine::run` instead
+  of `infer_server::run`. It binds the inference port first, asks the plugin
+  to load the model through the local plugin host (`engine.load` with
+  `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv` and the NVIDIA
+  GPU indices of the machine), reads `engine.status` every 2 s and answers
+  `/health` with the fields the llama.cpp server publishes: `model_loaded`
+  only once the plugin is `ready`, the layer range, `n_ctx_per_session` (the
+  whole window: the engine gives it to every request) and
+  `capabilities: ["engine/plugin-v1:<code>"]`. The health watcher, the slice
+  journal, the restart budget, idle unloading and `/v1/models` therefore work
+  unchanged. When the generation ends (undeploy, redeploy, stop) it calls
+  `engine.unload`; an `error` state, or `idle` after the engine had served,
+  ends the generation with the plugin's reason and the supervisor restarts it
+  within its budget. While a plugin engine serves, the node announces
+  `engine/plugin-v1:<code>` (and the libp2p tunnel capability) instead of the
+  frame, relay and speculation capabilities, so no gateway can plan it as a
+  hidden-state hop.
+- **Gateway.** After planning, `generate_stream_inner` checks
+  `plugin_of_plan`: a single step that announces `engine/plugin-v1:<code>` is
+  run by `plugin_engine::generate`. It sends the prompt the protocol adapter
+  already rendered, with the same `chat_template` and thinking flags a
+  llama.cpp head receives, plus the client's `max_tokens`, stop sequences and
+  numeric sampling fields (`temperature`, `top_p`, `top_k`, `min_p`,
+  `presence_penalty`, `frequency_penalty`). The generation route answers one
+  JSON object per line - `{"t"}` text, `{"p"}` prompt progress, `{"done"}`
+  with finish, prompt, completion and cached tokens, or `{"error"}` - and the
+  text becomes `GenEvent::Token`; reasoning comes back inside `<think>` tags,
+  as a llama.cpp pipeline returns it. The summary's `source` is
+  `plugin:<code>@<node_id>` and has no `RequestTrace`. Images and typed
+  decisions (`/v1/systemone` labels) are refused for this class; the retain
+  boundary of retrieval is only a cache hint and is ignored.
+- **Between nodes.** When the gateway is another machine it posts to
+  `POST /api/internal/plugins/:code/engine/generate` on the target (signed
+  control envelope, live peer, body up to 32 MiB). The target checks that its
+  runtime serves that inference service, takes the plugin's loopback
+  generation server from `engine.upstream` (`{status, port, token}`) and
+  streams the answer back unchanged. The plugin's server never listens beyond
+  loopback.
+
+The hidden-state boundary is untouched: a plugin engine is a whole model on one
+machine. Splitting a model between plugin engines would need the engine to
+implement the hop protocol of section 2.
+
 ## 8. direct_lab.rs - the "law"
 
 `direct_lab.rs` (cfg(test)) keeps the whole fix, measured: **the cost per token

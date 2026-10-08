@@ -669,6 +669,10 @@ confirms the model is loaded; during a restart, the previous announcement is
 withdrawn. An idle peer chosen by the plan is woken by `reload_model` before
 generation and the request waits for its `/health`; the planned idle peers are
 woken in parallel, with a 15-minute ceiling for the barrier.
+A model served by a plugin's inference service (`inference.md`, section 7.1)
+runs through `POST /api/internal/plugins/:code/engine/generate` on the machine
+that serves it: a signed call from a live peer, whose NDJSON answer streams
+back from the plugin's loopback generation server.
 `POST /api/internal/reload_model` answers at once with `state: "loading"` or
 `"ready"` (503 with `error` when the load cannot happen) and the gateway
 repeats it until every peer is ready. A live peer on an

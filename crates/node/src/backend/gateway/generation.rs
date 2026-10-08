@@ -673,7 +673,7 @@ pub(super) async fn generate_stream_inner(
         stops,
         cache_key,
         preferred_head,
-        request_details: _,
+        request_details,
         probe,
     } = input;
     let mut budget = budget.normalized();
@@ -872,6 +872,43 @@ pub(super) async fn generate_stream_inner(
     } else {
         session_window
     };
+
+    // A whole model served by a plugin's inference service takes the prompt
+    // this gateway rendered, not hidden states. There is no fallback to the
+    // pipeline: the plan said who serves this model. See `plugin_engine`.
+    if let Some(code) = crate::plugin_engine::plugin_of_plan(&plan) {
+        let refusal = if !images.is_empty() {
+            Some("este serviço de inferência não recebe imagens")
+        } else if probe.as_ref().is_some_and(|probe| !probe.labels.is_empty()) {
+            Some("este serviço de inferência não responde decisões tipadas")
+        } else {
+            None
+        };
+        if let Some(error) = refusal {
+            log_early_outcome("recusado", error);
+            let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+            return;
+        }
+        let node_id = plan.steps[0].node_id.clone();
+        crate::plugin_engine::generate(
+            &state,
+            &node_id,
+            &code,
+            crate::plugin_engine::EngineRequest {
+                prompt,
+                chat_template,
+                thinking_enabled,
+                max_tokens: budget.total,
+                stops,
+                request_details,
+            },
+            &tx,
+            &cancellation,
+            request_started,
+        )
+        .await;
+        return;
+    }
 
     // The gateway may be a middle or tail peer. Vision is an admission fact
     // of the selected head, so only reject here when this process owns that

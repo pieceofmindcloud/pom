@@ -659,6 +659,25 @@ visibilidade dos controles de implantação na UI local.
   seleciona o runtime próprio por dtype. `ExecutionEngine` é a fonte única do
   rótulo que sai na telemetria; ausente em peer antigo vira desconhecido na
   interface.
+- `plugin_engine.rs` - whole-model inference by a plugin's inference service
+  (`RuntimeParams::inference_service`, for example `"strata"`). On the target
+  node, `run` replaces `infer_server::run` inside the runtime supervisor: it
+  binds the inference port, asks the plugin to load the model
+  (`engine.load`, with the NVIDIA GPU indices `sysmon` reports), answers
+  `/health` from `engine.status` with the same fields the llama.cpp server
+  publishes (`model_loaded` only when the plugin is `ready`) and asks
+  `engine.unload` when the generation ends; an `error` state, or `idle` after
+  having served, ends the generation so the supervisor restarts it within its
+  budget. While it runs, `Network::set_external_engine` makes the announce
+  carry only `engine/plugin-v1:<code>` (plus the tunnel capability), never the
+  hidden-state capabilities. On the gateway, `plugin_of_plan` recognises a
+  one-step plan served that way and `generate` posts the rendered prompt to the
+  plugin's generation route (locally through `engine.upstream`, remotely
+  through `POST /api/internal/plugins/:code/engine/generate`, which
+  `engine_generate_route` serves) and turns its NDJSON stream into `GenEvent`s.
+  `deploy_block` is the deployment check: whole model, one machine, which runs
+  the plugin's `inference` service. See `docs/subsystems/inference.md`,
+  "Plugin inference services".
 - `relay.rs` - `BatchCoordinator` agenda o flush imediatamente e ainda agrupa
   chamadas concorrentes para o mesmo próximo hop no mesmo ciclo do executor;
   envia um frame único e distribui respostas por `item_id`. QUIC também
@@ -689,6 +708,9 @@ visibilidade dos controles de implantação na UI local.
   `start_layer`, `end_layer` e `total_layers`. O gateway usa esses campos como
   a fotografia executável mais recente durante a admissão, corrigindo uma
   cobertura P2P atrasada antes de chamar o planejador.
+  With `NodeConfig.inference_service` set, the supervisor runs
+  `plugin_engine::run` instead of `infer_server::run`; the health watcher, the
+  journal and the restart budget are the same.
   Os testes de `runtime.rs` usam `Network::testkit`, com socket e destino UDP
   presos à loopback, para que anúncios de readiness nunca alcancem a LAN.
 - `spec_lab.rs` (614, `#![cfg(test)]`) - a bancada da especulação:

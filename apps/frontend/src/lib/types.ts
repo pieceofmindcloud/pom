@@ -738,6 +738,8 @@ export interface PluginService {
   status: "ready" | "starting" | "installing" | "waiting" | "error";
   version?: string;
   detail?: string;
+  /** Kind `inference`: the GGUF architectures its engine runs. */
+  architectures?: string[];
 }
 
 /** O diretório de snapshots de KV de uma máquina, medido pelo próprio nó. */
@@ -1990,6 +1992,9 @@ export type MtpPlacement = "auto" | "vram" | "ram";
 export interface RuntimeParams {
   /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
   inference_mode: InferenceMode;
+  /** The plugin whose inference service runs the whole model instead of
+   *  llama.cpp (`"strata"`); absent is POM's own engine. */
+  inference_service?: string | null;
   /** Formato negociado para o estado oculto entre peers; ausente em config antiga = f16. */
   hidden_state_dtype?: WireDtype;
   n_gpu_layers: number;

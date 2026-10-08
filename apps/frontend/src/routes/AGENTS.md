@@ -476,6 +476,15 @@ Per-file list:
   models hide it. A MoE Tensor Parallelism plan keeps the selector visible but
   is blocked with the backend's explicit unsupported reason, so the UI cannot
   imply that the request will use another engine silently.
+- `DeployModel.tsx` - "Inference service": when a machine publishes a plugin
+  service of kind `inference` (`lib/inferenceServices.ts`), a select next to
+  the mode bar offers it beside llama.cpp. Choosing it fixes the whole-model
+  mode, lists only the whole models of the architectures the service declares,
+  keeps only the machines running it in the peer strip, sends
+  `params.inference_service` with the plan and the deploy, and reduces the
+  Globais inspector to the settings the engine reads
+  (`DeploymentInspector.inferenceService`). Deploy memory is keyed per
+  service. Test: `DeployModel.service.test.tsx`.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,

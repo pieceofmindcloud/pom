@@ -296,7 +296,8 @@ reachable without the node knowing any plugin.
 ```
 
 `id` and `kind` are lowercase slugs, `name` and the optional `version` and
-`detail` are short single-line texts, and `status` is one of `ready`,
+`detail` are short single-line texts, `architectures` is an optional list of
+GGUF architecture slugs (up to 16, meaningful for kind `inference`), and `status` is one of `ready`,
 `starting`, `installing`, `waiting` or `error`. The node drops an entry that
 does not follow the contract (at most 8 per plugin), asks the plugins at most
 every 5 s and publishes the result in `plugin_services` of `GET /api/ui/node`.
@@ -324,6 +325,18 @@ its port and API key only when `caller.head` is true. The body is capped at
 
 `GET /api/internal/plugins/services` (signed or key-authenticated peer call)
 returns the same service list, so a peer can find which machine serves what.
+
+**Inference services.** A service of kind `inference` runs whole models in
+place of llama.cpp and lists the GGUF `architectures` its engine runs. Such a
+plugin implements four operations the node calls through its own local host,
+never from another machine or a browser: `engine.load` (`params`:
+`model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`),
+`engine.unload`, `engine.status` (`state` among `idle`, `installing`,
+`preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
+`busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback
+server whose `POST /pom/generate` takes the rendered prompt and streams NDJSON).
+The deployment and generation contract is in `inference.md`, section 7.1, and
+`deployment.md`, section 1.6.
 
 ## Transparent retrieval (RAG)
 

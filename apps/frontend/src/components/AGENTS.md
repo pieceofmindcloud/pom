@@ -204,11 +204,18 @@ Per-file list:
   the shell (`App.tsx`, `admin` profile only). Shows one balloon for the
   current step of `lib/guide.ts`: beside the menu entry that leads to the
   step (`[data-guide-nav="<path>"]`, else `[data-guide-section="<labelKey>"]`,
-  both set by `Sidebar.tsx`), or under the field on the step's own screen
-  (`[data-guide="network-name" | "machine-name" | "network-join"]`). It
+  both set by `Sidebar.tsx`), or under a control on the step's own screen
+  (`[data-guide=...]`). A step has an ordered list of targets, last click
+  first, and the first visible one wins and may bring its own text
+  (`hint`), which is how the balloon follows the download and deploy steps.
+  The steps without a save end by themselves: `DownloadWatcher` (catalog or
+  finished download job of `GUIDE_MODEL_REPO`), `DeployWatcher`
+  (`ClusterView.active_model`) and `ChatWatcher` (`lastStreamResult`), each
+  mounted only while its step is current. On arriving at the download screen
+  it puts the repository in `?q=` once. It
   re-measures the target every 200 ms and on scroll/resize, draws through a
   portal above dialogs, and falls back to a corner card when there is no
-  target. `PLAN` maps each step to its path, section and target; adding a
+  target. `PLAN` maps each step to its path, section and targets; adding a
   step means a new entry there, in `MESSAGES`, in `guide.*` messages and in
   `GUIDE_STEPS` on the node. Styles: `.tour-float`, `.tour-ring` in
   `index.css`.

@@ -1228,6 +1228,7 @@ function ChatScreen() {
               </div>
               <textarea
                 ref={composer}
+                data-guide="chat-input"
                 rows={1}
                 value={draft}
                 placeholder={t("chat.placeholder")}

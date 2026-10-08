@@ -1228,6 +1228,7 @@ export function DeployModel() {
                   role="radio"
                   aria-label={value === "whole" ? "Um modelo inteiro" : label}
                   aria-checked={kind === value}
+                  data-guide={value === "whole" && kind !== "whole" ? "deploy-whole" : undefined}
                   onClick={() => selectKind(value)}
                   className={`rounded-md px-3 py-1.5 text-[0.72rem] font-medium transition-colors ${
                     kind === value ? "bg-iris text-white" : "text-muted hover:text-fg"
@@ -1318,6 +1319,7 @@ export function DeployModel() {
               icon={<Rocket className="h-3.5 w-3.5" />}
               loading={running}
               disabled={!canDeploy}
+              data-guide={running ? "deploy-running" : canDeploy ? "deploy-run" : undefined}
               onClick={attemptDeploy}
             >
               Implantar
@@ -1665,7 +1667,7 @@ export function DeployModel() {
           <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto">
             <span className="mr-1 shrink-0 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Peers</span>
             {bottomMachines.map((machine) => (
-              <button key={machine.node_id} type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-pom-node", machine.node_id)} onClick={() => addPeerToDeployment(machine.node_id)} onDoubleClick={() => addPeerToDeployment(machine.node_id)} className="flex min-w-[8rem] shrink-0 items-center gap-1.5 rounded-md border border-line bg-ink px-2 py-1 text-left hover:border-iris/60">
+              <button key={machine.node_id} type="button" data-guide="deploy-peer" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-pom-node", machine.node_id)} onClick={() => addPeerToDeployment(machine.node_id)} onDoubleClick={() => addPeerToDeployment(machine.node_id)} className="flex min-w-[8rem] shrink-0 items-center gap-1.5 rounded-md border border-line bg-ink px-2 py-1 text-left hover:border-iris/60">
                 <ServerCog className="h-3 w-3 shrink-0 text-faint" />
                 <span className="min-w-0"><span className="block truncate text-[0.62rem] text-fg">{machine.label}</span><span className="block font-mono text-[0.54rem] text-faint">{machine.rtt_ms == null ? "RTT -" : `${machine.rtt_ms.toFixed(1)} ms`} · {machine.load == null ? t("dashboard.inFlightUnavailable") : t("canvas.inFlight", { count: machine.load })}</span></span>
               </button>

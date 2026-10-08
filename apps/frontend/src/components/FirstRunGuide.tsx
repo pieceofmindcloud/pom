@@ -1,28 +1,69 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useI18n } from "../i18n/provider";
-import { currentGuideStep, useGuide, useGuideActions, type GuideStepId } from "../lib/guide";
+import { useOptionalChatSessionController } from "../lib/chatStore";
+import { currentGuideStep, GUIDE_MODEL_REPO, useGuide, useGuideActions, type GuideStepId } from "../lib/guide";
+import { useCluster, useLocalCatalog, useModelDownloads } from "../lib/queries";
+
+interface StepTarget {
+  selector: string;
+  /** Message key (`guide.<hint>`) shown while this is what the balloon points at. */
+  hint?: string;
+}
 
 interface StepPlan {
   /** Screen where the step is carried out. */
   path: string;
   /** Menu section that holds the link, when it sits inside one. */
   section?: string;
-  /** What to point at once the operator is on the screen. */
-  target: string;
+  /**
+   * What to point at once the operator is on the screen, the furthest point
+   * of the step first: the first one on screen wins, so the balloon follows
+   * the operator through a step that takes several clicks.
+   */
+  targets: StepTarget[];
 }
 
+const REPO = GUIDE_MODEL_REPO.toLowerCase();
+/** What a file of the guide's model is called, whatever its quantization. */
+const MODEL_FILE = /qwen2\.5-0\.5b-instruct/i;
+
 const PLAN: Record<GuideStepId, StepPlan> = {
-  network_name: { path: "/config/rede", section: "nav.network", target: '[data-guide="network-name"]' },
-  machine_name: { path: "/config/minha-maquina", section: "nav.network", target: '[data-guide="machine-name"]' },
-  join: { path: "/redes-publicas", target: '[data-guide="network-join"]' },
+  network_name: { path: "/config/rede", section: "nav.network", targets: [{ selector: '[data-guide="network-name"]' }] },
+  machine_name: { path: "/config/minha-maquina", section: "nav.network", targets: [{ selector: '[data-guide="machine-name"]' }] },
+  download_model: {
+    path: "/modelos/remotos",
+    section: "nav.models",
+    targets: [
+      { selector: '[data-guide="model-download-confirm"]', hint: "downloadConfirm" },
+      { selector: '[data-guide="model-file"][data-guide-quantization="q4_k_m"]', hint: "downloadFile" },
+      { selector: '[data-guide="model-file"]', hint: "downloadFile" },
+      { selector: `[data-guide-repo="${REPO}"]`, hint: "downloadOpen" },
+      { selector: '[data-guide="model-search"]' },
+    ],
+  },
+  deploy_model: {
+    path: "/implantar",
+    section: "nav.deployments",
+    targets: [
+      { selector: '[data-guide="deploy-running"]', hint: "deployWait" },
+      { selector: '[data-guide="deploy-run"]', hint: "deployRun" },
+      { selector: '[data-guide="deploy-whole"]', hint: "deployWhole" },
+      { selector: '[data-guide="deploy-peer"]', hint: "deployPeer" },
+    ],
+  },
+  chat: { path: "/chat", targets: [{ selector: '[data-guide="chat-input"]' }] },
+  join: { path: "/redes-publicas", targets: [{ selector: '[data-guide="network-join"]' }] },
 };
 
 /** The message keys of each step: `guide.<name>Title`, `Go` and `Here`. */
 const MESSAGES: Record<GuideStepId, string> = {
   network_name: "network",
   machine_name: "machine",
+  download_model: "download",
+  deploy_model: "deploy",
+  chat: "chat",
   join: "join",
 };
 
@@ -40,16 +81,19 @@ function visible(element: Element | null): element is HTMLElement {
  * What the balloon points at: the field on the step's own screen, or the menu
  * entry that leads there - the link itself, or the section that hides it.
  */
-function findTarget(plan: StepPlan, onScreen: boolean): HTMLElement | null {
+function findTarget(plan: StepPlan, onScreen: boolean): { element: HTMLElement; hint?: string } | null {
   if (onScreen) {
-    const field = document.querySelector(plan.target);
-    return visible(field) ? field : null;
+    for (const target of plan.targets) {
+      const element = document.querySelector(target.selector);
+      if (visible(element)) return { element, hint: target.hint };
+    }
+    return null;
   }
   const link = document.querySelector(`[data-guide-nav="${plan.path}"]`);
-  if (visible(link)) return link;
+  if (visible(link)) return { element: link };
   if (!plan.section) return null;
   const section = document.querySelector(`[data-guide-section="${plan.section}"]`);
-  return visible(section) ? section : null;
+  return visible(section) ? { element: section } : null;
 }
 
 interface Anchor {
@@ -57,11 +101,51 @@ interface Anchor {
   top: number;
   width: number;
   height: number;
+  hint?: string;
 }
 
 function sameAnchor(a: Anchor | null, b: Anchor | null): boolean {
   if (!a || !b) return a === b;
-  return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+  return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height && a.hint === b.hint;
+}
+
+/**
+ * Steps that end by themselves: nobody presses "save" after a download, a
+ * deployment or an answer, so each one watches the node for its outcome.
+ * Mounted only while its step is the current one.
+ */
+function DownloadWatcher({ onDone, onRunning }: { onDone: () => void; onRunning: (running: boolean) => void }) {
+  const catalog = useLocalCatalog();
+  const downloads = useModelDownloads();
+  const running = downloads.data.some((job) => job.state === "running" && job.repo_id?.toLowerCase() === REPO);
+  useEffect(() => {
+    onRunning(running);
+    return () => onRunning(false);
+  }, [running]);
+  const present =
+    (catalog.data?.models ?? []).some((model) => MODEL_FILE.test(model.name) || MODEL_FILE.test(model.path)) ||
+    downloads.data.some((job) => job.state === "done" && job.repo_id?.toLowerCase() === REPO);
+  useEffect(() => {
+    if (present) onDone();
+  }, [present]);
+  return null;
+}
+
+function DeployWatcher({ onDone }: { onDone: () => void }) {
+  const cluster = useCluster();
+  const serving = Boolean(cluster.data?.active_model);
+  useEffect(() => {
+    if (serving) onDone();
+  }, [serving]);
+  return null;
+}
+
+function ChatWatcher({ onDone }: { onDone: () => void }) {
+  const answered = Boolean(useOptionalChatSessionController()?.lastStreamResult);
+  useEffect(() => {
+    if (answered) onDone();
+  }, [answered]);
+  return null;
 }
 
 /**
@@ -74,6 +158,7 @@ function sameAnchor(a: Anchor | null, b: Anchor | null): boolean {
 export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
   const { t } = useI18n();
   const location = useLocation();
+  const navigate = useNavigate();
   const guide = useGuide(enabled);
   const actions = useGuideActions();
   const step = enabled ? currentGuideStep(guide.data) : null;
@@ -82,19 +167,23 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const balloon = useRef<HTMLDivElement>(null);
   const [balloonHeight, setBalloonHeight] = useState(0);
+  // While the model downloads there is nothing left to click: the balloon
+  // stops pointing and says to wait.
+  const [downloading, setDownloading] = useState(false);
+  const waiting = step === "download_model" && downloading;
 
   // The target moves with scrolling, the menu opening and the screen
   // loading, and none of those tells us: follow it by looking again.
   useEffect(() => {
-    if (!plan) {
+    if (!plan || waiting) {
       setAnchor(null);
       return;
     }
     const measure = () => {
       const target = findTarget(plan, onScreen);
-      const rect = target?.getBoundingClientRect();
+      const rect = target?.element.getBoundingClientRect();
       const next = rect
-        ? { left: Math.round(rect.left), top: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) }
+        ? { left: Math.round(rect.left), top: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height), hint: target?.hint }
         : null;
       setAnchor((previous) => (sameAnchor(previous, next) ? previous : next));
     };
@@ -107,7 +196,18 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };
-  }, [plan, onScreen]);
+  }, [plan, onScreen, waiting]);
+
+  // The model to download is a search away: fill the search in once, when
+  // the operator arrives, and leave it alone afterwards.
+  const searched = useRef(false);
+  useEffect(() => {
+    if (step !== "download_model" || !onScreen || searched.current) return;
+    searched.current = true;
+    if (!new URLSearchParams(location.search).get("q")) {
+      navigate(`${location.pathname}?q=${encodeURIComponent(GUIDE_MODEL_REPO)}`, { replace: true });
+    }
+  }, [step, onScreen]);
 
   useLayoutEffect(() => {
     const height = balloon.current?.offsetHeight ?? 0;
@@ -119,7 +219,11 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
   const index = guide.data.steps.indexOf(step);
   const total = guide.data.steps.length;
   const last = index === total - 1;
-  const body = t(`guide.${MESSAGES[step]}${onScreen ? "Here" : "Go"}`);
+  const body = t(
+    waiting ? "guide.downloadWait" : onScreen && anchor?.hint ? `guide.${anchor.hint}` : `guide.${MESSAGES[step]}${onScreen ? "Here" : "Go"}`,
+    { model: GUIDE_MODEL_REPO },
+  );
+  const complete = () => void actions.complete(step);
 
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
@@ -151,10 +255,13 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
 
   return createPortal(
     <>
+      {step === "download_model" && <DownloadWatcher onDone={complete} onRunning={setDownloading} />}
+      {step === "deploy_model" && <DeployWatcher onDone={complete} />}
+      {step === "chat" && <ChatWatcher onDone={complete} />}
       {anchor && (
         <div
           aria-hidden
-          className="tour-ring pointer-events-none fixed z-[70] rounded-lg"
+          className="tour-ring pointer-events-none fixed z-[71] rounded-lg"
           style={{ left: anchor.left - 4, top: anchor.top - 4, width: anchor.width + 8, height: anchor.height + 8 }}
         />
       )}
@@ -163,7 +270,7 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
         role="status"
         data-testid="first-run-guide"
         data-guide-step={step}
-        className={`fixed z-[71] rounded-xl border border-iris/60 bg-raised p-3.5 text-fg shadow-2xl ${anchor ? "tour-float" : ""}`}
+        className={`fixed z-[72] rounded-xl border border-iris/60 bg-raised p-3.5 text-fg shadow-2xl ${anchor ? "tour-float" : ""}`}
         style={style}
       >
         {arrow && (
@@ -196,7 +303,7 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
             type="button"
             className="rounded-md border border-line px-2 py-1 text-muted hover:border-line-strong hover:text-fg"
             data-testid="first-run-guide-skip"
-            onClick={() => void actions.complete(step)}
+            onClick={complete}
           >
             {t(last ? "guide.finish" : "guide.skip")}
           </button>

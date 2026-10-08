@@ -6,7 +6,16 @@ import { api } from "./api";
  * network has been walked through, so the hints follow the machine and not
  * the browser (`webui/guide.rs`).
  */
-export type GuideStepId = "network_name" | "machine_name" | "join";
+export type GuideStepId =
+  | "network_name"
+  | "machine_name"
+  | "download_model"
+  | "deploy_model"
+  | "chat"
+  | "join";
+
+/** The small model the guide has a new machine download, deploy and talk to. */
+export const GUIDE_MODEL_REPO = "Qwen/Qwen2.5-0.5B-Instruct-GGUF";
 
 export interface GuideState {
   /** False once the guide ended or was hidden; it never comes back. */

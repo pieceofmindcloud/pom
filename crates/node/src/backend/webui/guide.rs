@@ -10,7 +10,14 @@
 use super::*;
 
 /// The steps, in the order the interface walks them.
-pub(crate) const GUIDE_STEPS: [&str; 3] = ["network_name", "machine_name", "join"];
+pub(crate) const GUIDE_STEPS: [&str; 6] = [
+    "network_name",
+    "machine_name",
+    "download_model",
+    "deploy_model",
+    "chat",
+    "join",
+];
 
 #[derive(Debug, Deserialize)]
 pub struct GuideUpdate {
@@ -97,14 +104,15 @@ mod tests {
     #[test]
     fn the_guide_ends_with_its_last_step_and_never_restarts() {
         let mut progress = Some(Vec::new());
-        for step in &GUIDE_STEPS[..2] {
+        let (last, before) = GUIDE_STEPS.split_last().unwrap();
+        for step in before {
             progress = advance_guide(progress, &done(step)).unwrap();
             assert!(progress.is_some());
         }
         // Repeating a step neither duplicates it nor ends the guide.
         progress = advance_guide(progress, &done(GUIDE_STEPS[0])).unwrap();
-        assert_eq!(progress.as_ref().map(Vec::len), Some(2));
-        progress = advance_guide(progress, &done(GUIDE_STEPS[2])).unwrap();
+        assert_eq!(progress.as_ref().map(Vec::len), Some(before.len()));
+        progress = advance_guide(progress, &done(last)).unwrap();
         assert_eq!(progress, None);
         assert_eq!(advance_guide(None, &done(GUIDE_STEPS[0])).unwrap(), None);
     }

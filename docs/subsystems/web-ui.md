@@ -1541,24 +1541,46 @@ clears the deployment journal and unannounces the machine before answering.
 
 A machine that starts with no configuration creates its local network and
 opens the panel with nothing explained, so the interface walks its operator
-through the first three things to do, one hint at a time
+through the first things to do, one hint at a time
 (`components/FirstRunGuide.tsx`):
 
 1. **Name the network** - Network information, the "Public name" field. Done
    when the network details are saved.
 2. **Name the machine** - My machine, the "Machine name" field. Done when the
    name is saved.
-3. **Join another network** - the Networks screen, pointing at the first Join
+3. **Download a small model** - Find HF models. The guide fills the search
+   with `Qwen/Qwen2.5-0.5B-Instruct-GGUF` (`GUIDE_MODEL_REPO` in
+   `lib/guide.ts`) once, on arrival, and the balloon follows the clicks: the
+   result row, a file in the details window (Q4_K_M when listed), then the
+   confirmation. While the download runs the balloon moves to the corner and
+   says to wait. Done when a download of that repository finishes or the
+   local catalog holds a file of that model.
+4. **Deploy the model** - Deploy to network: "Whole model", then this machine
+   in the peer strip, then the Deploy button once it is enabled (and a "loading"
+   text while the job runs). Done when the
+   cluster reports an active model.
+5. **Send a first prompt** - Chat, the message field. Done when an answer
+   finishes streaming.
+6. **Join another network** - the Networks screen, pointing at the first Join
    button. Joining ends the guide; so does "Finish", because staying on the
    machine's own network is a valid choice.
+
+Steps 3 to 5 have no save to report them, so the guide watches the node for
+their outcome while each is the current step (`DownloadWatcher`,
+`DeployWatcher`, `ChatWatcher`). A machine that already has the model, a
+deployment or an answer passes the step at once. The download needs the
+Hugging Face CLI on the node, like every download on that screen; without it
+the search does not run and the step can only be skipped.
 
 Each hint is a balloon that floats beside its target, with a ring around the
 target. While the operator is on another screen it points at the menu entry
 that leads to the step (the link, or the section that hides it); on the
-step's own screen it points at the field. The target is found by attribute -
-`data-guide-nav` and `data-guide-section` in the Sidebar, `data-guide` on the
-fields - and looked up again five times a second, since scrolling and menus
-move it. With nothing to point at (a narrow screen with the menu closed, an
+step's own screen it points at the control. A step lists its targets from the
+last click to the first, and the first one on screen wins, each with its own
+text. The target is found by attribute -
+`data-guide-nav` and `data-guide-section` in the Sidebar, `data-guide` (and
+`data-guide-repo` on a search result) on the controls - and looked up again
+five times a second, since scrolling, menus and windows move it. With nothing to point at (a narrow screen with the menu closed, an
 empty list) the same text sits in the bottom right corner. Every balloon
 offers "Skip this step" and "Hide these hints", and motion stops under
 `prefers-reduced-motion`.

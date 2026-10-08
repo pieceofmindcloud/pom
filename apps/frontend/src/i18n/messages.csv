@@ -949,6 +949,23 @@ firstRun.stepStart,Start,Início
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil
+guide.chatGo,Open Chat to talk to the model you deployed.,Abra o Chat para conversar com o modelo que você implantou.
+guide.chatHere,"Type a short message, like ""Say hello in five words"", and send it. The answer comes from your own machine.","Digite uma mensagem curta, como ""Diga olá em cinco palavras"", e envie. A resposta vem da sua própria máquina."
+guide.chatTitle,Send a first prompt,Envie um primeiro prompt
+guide.deployGo,"Open Deployments, then Deploy to network.","Abra Implantações e depois Implantar na rede."
+guide.deployHere,"Choose Whole model, pick the Qwen model, add this machine to the map and press Deploy.","Escolha Modelo inteiro, selecione o modelo Qwen, adicione esta máquina ao mapa e pressione Implantar."
+guide.deployPeer,"Pick the Qwen model in the list above, then click this machine to add it to the map.","Selecione o modelo Qwen na lista acima e clique nesta máquina para adicioná-la ao mapa."
+guide.deployRun,Everything is in place. Press Deploy and wait for the model to load.,Está tudo pronto. Pressione Implantar e aguarde o modelo carregar.
+guide.deployTitle,Deploy the model,Implante o modelo
+guide.deployWait,The model is loading. This step ends by itself once it is serving.,O modelo está carregando. Este passo se encerra sozinho quando ele estiver servindo.
+guide.deployWhole,This model is small enough to run whole on one machine: choose Whole model.,Este modelo é pequeno o bastante para rodar inteiro em uma máquina: escolha Modelo inteiro.
+guide.downloadConfirm,Confirm the download and wait for it to finish; this step ends by itself.,Confirme o download e aguarde o término; este passo se encerra sozinho.
+guide.downloadFile,"Pick a file to download. Q4_K_M is a good default, under 500 MB.","Escolha um arquivo para baixar. Q4_K_M é uma boa opção, com menos de 500 MB."
+guide.downloadGo,"Open Models, then Find HF models, to download a small model from Hugging Face.","Abra Modelos e depois Encontrar Modelos HF para baixar um modelo pequeno do Hugging Face."
+guide.downloadHere,Search for {model} and open it.,Busque por {model} e abra-o.
+guide.downloadOpen,This is the one: open {model} to see its files.,É este: abra {model} para ver os arquivos.
+guide.downloadTitle,Download a small model,Baixe um modelo pequeno
+guide.downloadWait,The model is downloading. Wait for it to finish; this step ends by itself.,O modelo está sendo baixado. Aguarde o término; este passo se encerra sozinho.
 guide.finish,Finish,Concluir
 guide.hide,Hide these hints,Ocultar estas dicas
 guide.joinGo,Open Networks to see the networks you can join.,Abra Redes para ver as redes em que você pode entrar.

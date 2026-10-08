@@ -619,6 +619,7 @@ would go.
   `useGuideActions()` gives `complete(step)` and `dismiss()`: a screen calls
   `complete` after its own save succeeded. Both are no-ops once the guide
   ended and never throw, so they cannot disturb the save that triggered them.
+  `GUIDE_MODEL_REPO` is the model the guide has a new machine download.
 
 ### chatScroll.ts
 - `isNearBottom(metrics, threshold = 32)` - decides whether streaming keeps the chat pinned to the bottom.

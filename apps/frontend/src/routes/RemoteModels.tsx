@@ -41,6 +41,7 @@ function ResultRow({ model, onOpen }: { model: RemoteModelSummary; onOpen: (mode
       <td className="min-w-[16rem] px-5 py-3.5">
         <button
           type="button"
+          data-guide-repo={model.repo_id.toLowerCase()}
           className="min-w-0 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-iris/50"
           onClick={() => onOpen(model)}
         >
@@ -209,6 +210,7 @@ export function RemoteModels() {
                     }
                   }}
                   className={providerStatus.data?.cli.authenticated ? "pl-9" : "pl-9 pr-48"}
+                  data-guide="model-search"
                   placeholder={t("remoteModels.searchPlaceholder")}
                   aria-label={t("remoteModels.searchAria")}
                 />

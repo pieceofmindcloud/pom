@@ -1481,7 +1481,12 @@ clears the deployment journal and unannounces the machine before answering.
 ## A machine has a single name
 
 `node_name` in `pom.json` is how the operator names the machine, and it is the
-name the node announces to peers (`network.hostname`). Every screen reads that
+name the node announces to peers (`Network::hostname()`). The operator sets it
+on the My machine screen ("Machine name", `POST /api/ui/network/node-name`),
+with no restart: the next announce carries it. That screen is the only place
+left to do it, because a network created at first run never shows the setup
+wizard. Without a `node_name` the machine goes by the system hostname. Every
+screen reads that
 name; the "Send to..." selector of `/fatias` used to read `sysmon`, the
 operating system's raw hostname, and was the only place in the app that called
 the machine by another name. On a machine with two nodes it was worse: both

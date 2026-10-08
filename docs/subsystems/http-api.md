@@ -225,7 +225,8 @@ source of the scope the gateway enforces:
 - `infer+node+admin`: generation, the `/v1` API, chat history, the infer to
   node entry request, the API keys (`/admin/api-keys`, the credential of whoever
   serves `/v1`, and every profile serves), correcting this machine's own
-  advertised address (`POST /api/ui/network/advertise-addr`), its own relay
+  advertised address (`POST /api/ui/network/advertise-addr`), its own name
+  (`POST /api/ui/network/node-name`), its own relay
   options (`GET`/`POST /api/ui/network/relay`), leaving/rejoining
   the network (`/api/ui/leave`, `/api/ui/rejoin`) and the node's local plugins
   (`/api/ui/plugins*`: activating licenses, GitHub repositories, installing,
@@ -891,7 +892,10 @@ directional probe; the gateway's and peers' probes stay as a fallback and cover
 a single head with no edge in the graph. The run RTT with remote processing
 stays in the trace), `chat/history` (authenticated GET/POST/DELETE for the
 durable conversation history), `dev/update` + `dev/restart`,
-`network/advertise-addr`, `network/relay` (GET answers the relay options in
+`network/advertise-addr`, `network/node-name` (POST `{node_name}`, at most 64
+characters and no control characters; empty goes back to the system hostname;
+it writes `node_name` to the config and renames the node live, answering
+`{node_name, hostname}`), `network/relay` (GET answers the relay options in
 effect, which of them the command line fixed, whether the internet reaches the
 node and whether it accepts reservations now; POST takes
 `{everyone, cluster, transfers}`, writes the `relay` section of the config

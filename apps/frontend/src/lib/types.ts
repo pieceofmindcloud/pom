@@ -406,6 +406,8 @@ export interface NodeInfo {
   dev_update: boolean;
   /** Se os controles POM exclusivos de desenvolvimento estão expostos. */
   pom_desenv: boolean;
+  /** The name the operator gave this machine; `null` means the system hostname. */
+  node_name: string | null;
   /** Endereço fixado pelo operador. `null` quando nada foi fixado. */
   advertise_addr: string | null;
   /** O que este nó anuncia agora de fato (fixado, observado, ou o sentinela). */

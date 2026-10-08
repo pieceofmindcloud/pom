@@ -1595,7 +1595,7 @@ async fn cancel_job(
         by: None,
         from_peer: false,
     });
-    let by = req.by.unwrap_or_else(|| state.network.hostname.clone());
+    let by = req.by.unwrap_or_else(|| state.network.hostname());
 
     let peer_host = state
         .transfers
@@ -1828,7 +1828,7 @@ async fn send_to_peer(
 
     // Where the peer should come and fetch it from — our own gateway, on the
     // address the peer already reaches us at.
-    let my_host = state.network.hostname.clone();
+    let my_host = state.network.hostname();
 
     // The peer fetches by grant id, never by path: that is what lets this file
     // sit outside `models/` without opening the disk to whoever holds the key.

@@ -284,6 +284,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
+    // The machine's own name: its operator's to choose, whatever its role.
+    RouteRule {
+        prefix: "/api/ui/network/node-name",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
     // A relay option is a decision about this machine's own bandwidth: it
     // belongs to whoever runs the machine, whatever its role in the network.
     RouteRule {

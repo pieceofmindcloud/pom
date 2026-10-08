@@ -157,7 +157,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   é o que admite um worker co-locado sem grant. Campo `profile` nunca concede
   acesso. `PeerList` é revalidado, e `connection_verified` só é escrito pelo
   gate local. O perfil anunciado por `with_identity` pode ser
-  atualizado por `set_profile`; `trust_version` is the trust chain version
+  atualizado por `set_profile`, and the announced name the same way: it is
+  read with `hostname()` and changed live with `set_hostname` (the My machine
+  screen), never through the field; `trust_version` is the trust chain version
   each node announces (`set_trust_version`), a hint of who has a newer chain
   and never proof; `is_principal` / `peer_is_principal` tell the
   principal from any admin (a secondary has the profile, not the principal's

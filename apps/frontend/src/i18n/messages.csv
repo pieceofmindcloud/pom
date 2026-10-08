@@ -1178,6 +1178,13 @@ models.sendAria,Send {name},Enviar {name}
 models.size,Size,Tamanho
 models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
+myMachine.nameHint,"Leave it empty to go by the system's hostname. The name is only a label: the machine's identity is its key.","Deixe vazio para usar o hostname do sistema. O nome é só um rótulo: a identidade da máquina é a chave dela."
+myMachine.nameLabel,Name,Nome
+myMachine.nameSaveFailed,Could not save the name,Não foi possível salvar o nome
+myMachine.nameSaved,Name updated,Nome atualizado
+myMachine.nameSavedDetail,The other machines see it within seconds; no restart is needed.,"As outras máquinas o veem em segundos, sem reiniciar."
+myMachine.nameSubtitle,How this machine appears to the others in the network.,Como esta máquina aparece para as outras na rede.
+myMachine.nameTitle,Machine name,Nome da máquina
 myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
 myMachine.title,My machine,Minha máquina
 nav.about,About,Sobre

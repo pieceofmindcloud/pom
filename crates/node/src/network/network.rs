@@ -1166,7 +1166,10 @@ pub struct Network {
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
     pub profile: Arc<std::sync::RwLock<crate::profile::NodeProfile>>,
-    pub hostname: String,
+    /// The name this machine goes by: `node_name` from the config, or the
+    /// system hostname. Read with `hostname()`; the operator renames the
+    /// machine live with `set_hostname`.
+    hostname: std::sync::RwLock<String>,
     /// Address peers should keep for this node, already `host:port`.
     ///
     /// `None` means "work it out from where my packets came from", which is
@@ -1695,7 +1698,7 @@ impl Network {
             gateway_quic_port: init.gateway_quic_port,
             public_discovery: Arc::new(RwLock::new(HashMap::new())),
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Node)),
-            hostname: String::new(),
+            hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
@@ -1749,10 +1752,20 @@ impl Network {
     }
 
     /// Label this node carries in its announces.
-    pub fn with_identity(mut self, profile: crate::profile::NodeProfile, hostname: String) -> Self {
+    pub fn with_identity(self, profile: crate::profile::NodeProfile, hostname: String) -> Self {
         *self.profile.write().expect("profile lock") = profile;
-        self.hostname = hostname;
+        self.set_hostname(hostname);
         self
+    }
+
+    /// The name this machine announces and every screen shows for it.
+    pub fn hostname(&self) -> String {
+        self.hostname.read().expect("hostname lock").clone()
+    }
+
+    /// Renames this machine live: the next announce carries the new name.
+    pub fn set_hostname(&self, hostname: String) {
+        *self.hostname.write().expect("hostname lock") = hostname;
     }
 
     /// Configura a prova de pertencimento antes de iniciar as tasks de
@@ -1807,7 +1820,7 @@ impl Network {
             .begin_search(Some(
                 crate::local_discovery::DiscoveredMachine::from_system(
                     &crate::sysmon::sample().await,
-                    Some(self.hostname.clone()),
+                    Some(self.hostname()),
                 ),
             ))
             .await
@@ -2279,7 +2292,7 @@ impl Network {
             profile: self.profile(),
             tls: self.tls_enabled(),
             quic: crate::peer_client::quic_ativo(),
-            hostname: self.hostname.clone(),
+            hostname: self.hostname(),
             capabilities: assignment
                 .map(|a| {
                     vec![ModelCapability {

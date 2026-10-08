@@ -739,6 +739,8 @@ mod tests {
                 "/api/ui/network/advertise-addr",
                 &[Infer, Node, Admin],
             ),
+            // E o nome dela também.
+            ("POST", "/api/ui/network/node-name", &[Infer, Node, Admin]),
             // O que não foi tocado continua onde estava.
             ("GET", "/api/ui/deployments", &[Node, Admin]),
             ("GET", "/api/ui/models", &[Node, Admin]),
@@ -850,6 +852,97 @@ mod tests {
             }
             other => panic!("esperava Announce, veio {other:?}"),
         }
+    }
+
+    /// A network created at first run never shows the setup wizard, so the
+    /// My machine screen is where the operator names the machine.
+    #[tokio::test]
+    async fn the_machine_is_renamed_from_the_screen_without_a_restart() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = testkit::state_with("infer-node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Infer;
+        }
+        struct ConfigPathGuard {
+            previous: Option<std::ffi::OsString>,
+            path: std::path::PathBuf,
+        }
+        impl Drop for ConfigPathGuard {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("POM_CONFIG", previous),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+                std::fs::remove_file(&self.path).ok();
+            }
+        }
+        let config_path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pom-test-node-name-{}.json", std::process::id()));
+        std::fs::remove_file(&config_path).ok();
+        let _config_path_guard = ConfigPathGuard {
+            previous: std::env::var_os("POM_CONFIG"),
+            path: config_path.clone(),
+        };
+        std::env::set_var("POM_CONFIG", &config_path);
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+        let rename = |name: String| {
+            let mut request = Request::post("/api/ui/network/node-name")
+                .header("authorization", "Bearer connection-secret")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "node_name": name }).to_string(),
+                ))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+            app.clone().oneshot(request)
+        };
+
+        let response = rename("  Mesa do laboratório  ".into()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["hostname"], "Mesa do laboratório");
+        assert_eq!(
+            state.auth.read().await.node_name.as_deref(),
+            Some("Mesa do laboratório")
+        );
+        // The peers learn it from the next announce.
+        let wire = state.network.gossip_announce_bytes(None).unwrap();
+        let announce: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(announce["hostname"], "Mesa do laboratório");
+
+        let response = rename("x".repeat(65)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(state.network.hostname(), "Mesa do laboratório");
+
+        // An empty name gives the machine its system hostname back.
+        let response = rename(String::new()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(answer["node_name"].is_null());
+        assert_eq!(state.auth.read().await.node_name, None);
+        assert_eq!(
+            state.network.hostname(),
+            crate::sysmon::sample().await.hostname
+        );
     }
 
     #[tokio::test]

@@ -2137,7 +2137,7 @@ async fn answer_lobby_request(
         .filter(|event| event.kind == "text" && event.recipient_node_id.is_none())
         .map(|event| {
             let member = if event.sender_node_id == network.node_id {
-                Some(network.hostname.clone())
+                Some(network.hostname())
             } else {
                 peers
                     .iter()

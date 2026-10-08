@@ -21,6 +21,7 @@ const queryMocks = vi.hoisted(() => ({
       profile: "node",
       authority_level: "primary" as "primary" | null,
       detached: false,
+      node_name: null as string | null,
       advertise_addr: null,
       effective_address: "127.0.0.1:42777",
     },
@@ -62,6 +63,26 @@ describe("MyMachine", () => {
     expect(screen.getByText("infer-box")).toBeTruthy();
     expect(screen.getByText("Endereço anunciado")).toBeTruthy();
     expect(screen.getByText("127.0.0.1:42777")).toBeTruthy();
+  });
+
+  it("lets the operator name the machine, which the setup wizard is no longer there to do", async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({ node_name: "Mesa do laboratório", hostname: "Mesa do laboratório" });
+    mount();
+
+    const input = screen.getByTestId("node-name") as HTMLInputElement;
+    // Nothing chosen yet: the field is empty and shows the hostname in use.
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("infer-box");
+
+    fireEvent.change(input, { target: { value: "  Mesa do laboratório " } });
+    fireEvent.click(screen.getByTestId("node-name-save"));
+
+    await waitFor(() =>
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/node-name", {
+        node_name: "Mesa do laboratório",
+      }),
+    );
+    await waitFor(() => expect(input.value).toBe("Mesa do laboratório"));
   });
 
   it("mantém Sair da rede como saída da máquina do cluster", async () => {

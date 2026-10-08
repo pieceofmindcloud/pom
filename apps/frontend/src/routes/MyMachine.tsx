@@ -23,11 +23,14 @@ export function MyMachine() {
   const [advertiseAddr, setAdvertiseAddr] = useState("");
   const [addrSaving, setAddrSaving] = useState(false);
   const [addrLoaded, setAddrLoaded] = useState(false);
+  const [nodeName, setNodeName] = useState("");
+  const [nameSaving, setNameSaving] = useState(false);
 
   // Load once: re-syncing on every poll would fight the operator's typing.
   useEffect(() => {
     if (addrLoaded || !node.data) return;
     setAdvertiseAddr(node.data.advertise_addr ?? "");
+    setNodeName(node.data.node_name ?? "");
     setAddrLoaded(true);
   }, [node.data, addrLoaded]);
 
@@ -60,6 +63,23 @@ export function MyMachine() {
       toast.fromError(t("network.addrSaveFailed"), e);
     } finally {
       setAddrSaving(false);
+    }
+  }
+
+  async function saveNodeName() {
+    setNameSaving(true);
+    try {
+      const saved = await api.post<Pick<NodeInfo, "node_name" | "hostname">>(
+        "/api/ui/network/node-name",
+        { node_name: nodeName.trim() },
+      );
+      setNodeName(saved.node_name ?? "");
+      toast.success(t("myMachine.nameSaved"), t("myMachine.nameSavedDetail"));
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("myMachine.nameSaveFailed"), e);
+    } finally {
+      setNameSaving(false);
     }
   }
 
@@ -113,6 +133,36 @@ export function MyMachine() {
               </KeyValue>
             </dl>
           )}
+        </Panel>
+
+        <Panel>
+          <PanelHeader
+            title={t("myMachine.nameTitle")}
+            subtitle={t("myMachine.nameSubtitle")}
+            actions={
+              <Button
+                variant="primary"
+                icon={<Save className="h-3.5 w-3.5" />}
+                loading={nameSaving}
+                data-testid="node-name-save"
+                onClick={() => void saveNodeName()}
+                disabled={!addrLoaded}
+              >
+                {t("network.addrSave")}
+              </Button>
+            }
+          />
+          <div className="px-5 py-4">
+            <Field label={t("myMachine.nameLabel")} hint={t("myMachine.nameHint")}>
+              <Input
+                data-testid="node-name"
+                value={nodeName}
+                maxLength={64}
+                placeholder={node.data?.node_name ? "" : node.data?.hostname ?? ""}
+                onChange={(e) => setNodeName(e.target.value)}
+              />
+            </Field>
+          </div>
         </Panel>
 
         <Panel>

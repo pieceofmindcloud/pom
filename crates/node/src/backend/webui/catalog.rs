@@ -63,6 +63,9 @@ pub struct NodeInfo {
     pub active_deployment: String,
     /// True while the operator has taken this node off the network.
     pub detached: bool,
+    /// The name the operator gave this machine (`Config.node_name`); `None`
+    /// means it goes by the system hostname, which `hostname` then carries.
+    pub node_name: Option<String>,
     /// Raw operator-pinned address (`Config.advertise_addr`), for pre-filling
     /// the edit form — `None` means "nothing pinned," not "unknown."
     pub advertise_addr: Option<String>,
@@ -106,6 +109,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         connection_key,
         authority_level,
         authority_fingerprint,
+        node_name,
         advertise_addr,
         tls_required,
         quic_enabled,
@@ -135,6 +139,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 }),
             (cfg.profile == crate::profile::NodeProfile::Admin)
                 .then(|| crate::admin_trust::fingerprint_of(&state.authority_principal.pubkey)),
+            cfg.node_name.clone(),
             cfg.advertise_addr.clone(),
             cfg.tls_required,
             cfg.quic_enabled,
@@ -173,7 +178,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         // `node_name` from pom.json. `network.hostname` is what
         // `with_identity` (main.rs) actually announces to peers — the same
         // value `/admin/nodes` already shows correctly on the Network tab.
-        hostname: state.network.hostname.clone(),
+        hostname: state.network.hostname(),
         build_commit: crate::build_commit(),
         dev_update: crate::devupdate::enabled(),
         pom_desenv: crate::pom_desenv_enabled(),
@@ -227,6 +232,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         active_model: state.active_model().await,
         active_deployment,
         detached: state.network.is_detached(),
+        node_name,
         advertise_addr,
         effective_address: state.network.announce_addr(),
         tls_required,
@@ -1390,6 +1396,57 @@ pub(super) async fn save_advertise_addr(
     .into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SaveNodeNameRequest {
+    /// Empty means "go by the system hostname again".
+    #[serde(default)]
+    pub node_name: String,
+}
+
+/// Longest name a machine may take: what the discovery card already keeps.
+const NODE_NAME_MAX_CHARS: usize = 64;
+
+/// Renames this machine and applies it live, with no restart: the next
+/// announce carries the new name, so every peer and screen follows. It is
+/// only a label - the machine's identity is its key (`node_id`), which a new
+/// name does not touch.
+pub(super) async fn save_node_name(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveNodeNameRequest>,
+) -> Response {
+    let name = req.node_name.trim();
+    if name.chars().count() > NODE_NAME_MAX_CHARS {
+        return bad_request(format!(
+            "o nome da máquina tem no máximo {NODE_NAME_MAX_CHARS} caracteres."
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return bad_request("o nome da máquina não pode ter caracteres de controle.".to_string());
+    }
+    let node_name = (!name.is_empty()).then(|| name.to_string());
+
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.node_name = node_name.clone();
+        if let Err(e) = cfg.save() {
+            return bad_request(format!("não deu para gravar pom.json: {e}"));
+        }
+    }
+
+    let hostname = match node_name.clone() {
+        Some(name) => name,
+        None => sysmon::sample().await.hostname,
+    };
+    state.network.set_hostname(hostname.clone());
+    state
+        .cluster_logs
+        .set_identity(state.network.node_id.clone(), hostname.clone());
+    info!("nome da máquina atualizado pela interface: {hostname}");
+
+    Json(json!({ "node_name": node_name, "hostname": hostname })).into_response()
+}
+
 /// The relay options of this machine and what it does with them.
 pub(super) async fn get_relay(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
     Json(state.network.relay_gate().status()).into_response()
@@ -1663,7 +1720,7 @@ pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoRespon
         // nota gêmea em `node_info`. Quem lia daqui era o seletor "Enviar
         // para..." da tela de fatias, e ele era o único lugar do aplicativo
         // que chamava a máquina por outro nome.
-        "hostname": state.network.hostname,
+        "hostname": state.network.hostname(),
         "node_id": state.network.node_id,
         "models": catalog.models,
         "shard_sets": catalog.shard_sets,
@@ -2684,7 +2741,7 @@ pub(super) async fn network_chat_snapshot(
     }
     let mut participants = vec![json!({
         "nodeId": state.network.node_id,
-        "hostname": state.network.hostname,
+        "hostname": state.network.hostname(),
         "online": true,
         "profile": format!("{:?}", state.network.profile()),
     })];

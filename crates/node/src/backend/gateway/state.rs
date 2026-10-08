@@ -1463,7 +1463,7 @@ impl GatewayState {
                 gateway_port: Some(self.gateway_port),
                 gateway_quic_port: self.network.gateway_quic_port,
                 profile: self.network.profile(),
-                hostname: self.network.hostname.clone(),
+                hostname: self.network.hostname(),
                 capabilities: local
                     .as_ref()
                     .map(|l| {

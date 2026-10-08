@@ -1001,7 +1001,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         .collect::<Vec<_>>();
     let local = local_catalog(&state).await;
     // O nome que este nó anuncia, não o hostname cru do SO. Ver `models`.
-    let local_host = state.network.hostname.clone();
+    let local_host = state.network.hostname();
 
     let peer_state = state.clone();
     let futures: Vec<_> = peers

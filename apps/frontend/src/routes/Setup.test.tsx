@@ -38,10 +38,13 @@ const base: SetupState = {
     channels: "",
     visibility: "private",
     access_policy: "anyone_with_anchor",
+    city_id: null,
     country_code: "",
     country_name: "",
+    state: "",
     city: "",
     geo_label: "",
+    location_precision: "approximate",
     location: null,
   },
   ramReservePct: 20,
@@ -100,10 +103,12 @@ describe("what the wizard requires", () => {
     expect(isReadyToSave(admin)).toBe(true);
   });
 
-  it("asks a public admin network for country and city, for the pkarr record", () => {
+  it("asks a public admin network for a city of the node's database", () => {
     const admin: SetupState = { ...base, ...trusted, profile: "admin", network: { ...base.network, public_name: "POM-1", visibility: "public" } };
     expect(canContinue("setup-network", admin)).toBe(false);
-    const located = { ...admin, network: { ...admin.network, country_code: "BR", city: "Curitiba" } };
+    const located = { ...admin, network: { ...admin.network, city_id: 1, country_code: "BR", city: "Curitiba" } };
+    // A typed name is not a city: only a row of the database counts.
+    expect(canContinue("setup-network", { ...admin, network: { ...admin.network, country_code: "BR", city: "Curitiba" } })).toBe(false);
     expect(canContinue("setup-network", located)).toBe(true);
   });
 
@@ -142,7 +147,6 @@ describe("NetworkScreen", () => {
       <NetworkScreen
         setup={setup}
         hardware={null}
-        countries={[{ code: "BR", name: "Brasil", cities: [{ id: "cwb", name: "Curitiba" }] }]}
         update={(patch) => setSetup((current) => ({ ...current, ...patch }))}
         updateNetwork={(patch) => setSetup((current) => ({ ...current, network: { ...current.network, ...patch } }))}
         t={t}
@@ -154,9 +158,9 @@ describe("NetworkScreen", () => {
     wrap(<Harness />);
     expect(screen.getAllByRole("radio")).toHaveLength(2);
     expect(screen.queryByText("setupWizard.accessPolicy")).toBeNull();
-    expect(screen.queryByText("setupWizard.country")).toBeNull();
+    expect(screen.queryByTestId("location-editor")).toBeNull();
     fireEvent.click(screen.getByText("firstRun.public"));
-    await waitFor(() => expect(screen.getByText("setupWizard.country")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("location-editor")).toBeTruthy());
   });
 });
 

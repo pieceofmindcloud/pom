@@ -36,7 +36,7 @@ remain local until the deploy preflight.
 - `test` - `vitest run`.
 - `licenses` - `node scripts/build-licenses.mjs` (atualiza o catálogo de dependências e licenças usado por Sobre).
 - `predev`/`prebuild`/`pretest` - `node scripts/build-docs.mjs` (regenerate `src/docs/` so the embedded documentation is fresh for the dev server, the build and the tests).
-- Dependencies: `@tanstack/react-query`, `react-router-dom` (v6 with v7 future flags), `framer-motion`, `react-markdown` + `remark-gfm` + `rehype-highlight`, `@uiw/react-md-editor` + `@uiw/react-markdown-preview` + `rehype-sanitize` for trusted read-only Markdown surfaces, `highlight.js`, `lucide-react`, `recharts`, `clsx`, fontsource font packages.
+- Dependencies: `leaflet` (the map of the network location dialog, lazy chunk), `@tanstack/react-query`, `react-router-dom` (v6 with v7 future flags), `framer-motion`, `react-markdown` + `remark-gfm` + `rehype-highlight`, `@uiw/react-md-editor` + `@uiw/react-markdown-preview` + `rehype-sanitize` for trusted read-only Markdown surfaces, `highlight.js`, `lucide-react`, `recharts`, `clsx`, fontsource font packages.
 
 ## src root
 
@@ -220,7 +220,7 @@ sessão P2P por processo.
 
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, plugins list/activate/refresh/deactivate/update, pom-update status/check/apply, network/info, network/geo-reference, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, plugins list/activate/refresh/deactivate/update, pom-update status/check/apply, network/info, network/geo/*, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
 - Auth: `api.ts` sends same-origin credentials so the gateway can use its
   `HttpOnly` admin session. Administrative requests use the cluster connection
   key, while `/v1/*` chat requests use the dedicated `pom-[node_id]` API key

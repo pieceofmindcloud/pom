@@ -364,8 +364,8 @@ the normal `NAV` projection.
 (`routes/setupWizardFlow.ts`):
 
 - **Administrator, 3 steps:** Start (role and machine name, with a hardware
-  summary), Network (name and **Private** or **Public**; country and city only
-  for public, because they go to pkarr and the directory) and Invitation
+  summary), Network (name and **Private** or **Public**; the location only
+  for public, because it goes to pkarr and the directory) and Invitation
   (connection key, when private, and the `trust.json` to download or copy). The
   preferred address is optional, starts empty under "Advanced" and is only a
   hint (IP or DNS name); `trust.json` carries no IP - a joining node finds the
@@ -867,10 +867,48 @@ operator does not need to infer the degradation from missing logs.
 
 `/config/rede` gathers the Network Information: public name, organization,
 description, rules, channels, visibility and location. Node and infer get read
-only, while admin can edit. Country and city are selects fed by
-`GET /api/ui/network/geo-reference`, which reads the local `geo_countries` and
-`geo_cities` tables; the country code is not shown. The same screen computes
-nodes, average latency, known VRAM and models from `ClusterView`.
+only, while admin can edit. The same screen computes nodes, average latency, known VRAM and models from
+`ClusterView`.
+
+### Network location
+
+A network declares where it is so the Networks screen can sort by distance.
+The declaration is the principal's, made in `LocationEditor` (Network settings
+and the setup wizard), and it follows four rules:
+
+- **The browser's location is asked only on request.** The dialog has a "Use
+  my browser's location" button; nothing calls `navigator.geolocation` before
+  it is pressed. Browsers share a location only on HTTPS or on localhost, so
+  on a plain `http://<address>` panel the button explains that and the
+  administrator places the point on the map or picks a city by name.
+- **The city is never typed.** It is a row of the offline database embedded
+  in the node (`crates/node/src/utils/geo.rs`, the unmodified cities export
+  of the Countries States Cities Database, ODbL 1.0, about 150 thousand
+  places). Placing a point asks `GET /api/ui/network/geo/nearest`, which
+  answers the closest cities by distance to each city's reference point (not
+  by boundary, so the administrator chooses among the nearest); the search
+  asks `/geo/cities?country=&q=`. The settings carry the row's `city_id`, and
+  the node rewrites country, state and city names from that row on every save.
+- **The administrator chooses what is published** (`location_precision`):
+  `approximate` (default) snaps the point to a grid of about 10 km and
+  declares `accuracy_m` 10000, `city` publishes the city's reference point,
+  `exact` publishes the point as placed. The node applies this before storing
+  anything: a more exact point than the chosen one is never written to
+  `pom.json`, sent to members or published. The point reaches the node in the
+  save and in the nearest-city lookup, which stores nothing.
+- **The location is not part of the trust document.** Country, city,
+  coordinates and the discovery label are settings the principal changes at
+  any time; they travel to members with the other network settings and to
+  everyone else in the signed directory record. The location is declared, not
+  verified: nothing proves a network is where it says.
+
+The map is Leaflet with OpenStreetMap tiles, loaded only while the dialog is
+open; those tile requests are the one thing in this flow that leaves the node,
+and the dialog says so. Without internet the map stays empty and the button
+and the search still work. The Networks screen computes distances in the
+viewer's browser, never sends the viewer's position anywhere, and writes
+"about N km" for a network whose `accuracy_m` is a kilometre or more. The
+About screen credits both data sources.
 `/config/rede/participantes` reuses the known nodes card and is available to
 admin and node. Each peer shows the **route in use**, not the address it
 announces: a badge (Direct, Direct (P2P), Direct (hole punch), Via relay, No

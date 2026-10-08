@@ -41,12 +41,13 @@ import {
 import { api } from "../lib/api";
 import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useWindowsFirewall } from "../lib/queries";
-import { useGeoReference } from "../lib/queries";
+import { LocationEditor } from "../components/LocationEditor";
+import { NETWORK_GEO, placeLabel } from "../lib/geo";
 import { networkStats } from "../lib/networkStats";
 import { admissionsApi, useAdmissions } from "../lib/admissions";
 import { useToast } from "../lib/toast";
 import { ENROLLMENT_ROLES } from "../lib/types";
-import type { AdminNode, ClusterView, EnrollmentRole, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
+import type { AdminNode, ClusterView, EnrollmentRole, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings({ participantsOnly = false }: { participantsOnly?: boolean }) {
@@ -55,7 +56,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const cluster = useCluster();
   const networkInfo = useNetworkInfo(Boolean(node.data));
   const firewall = useWindowsFirewall(Boolean(node.data));
-  const geoReference = useGeoReference(Boolean(node.data));
   const isInfer = node.data?.profile === "infer";
   /*
    * Ler o retrato da rede é de `node` e de `admin`; bloquear e desbloquear
@@ -183,7 +183,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
           <NetworkInfoPanel
             info={networkInfo.data}
             draft={networkDraft}
-            geo={geoReference.data}
             editable={networkEditable}
             saving={networkSaving}
             forgetting={forgettingNetwork}
@@ -411,7 +410,6 @@ function NetworkInfoPanel({
   editable,
   saving,
   forgetting,
-  geo,
   onChange,
   onSave,
   onForgetNetwork,
@@ -422,7 +420,6 @@ function NetworkInfoPanel({
   editable: boolean;
   saving: boolean;
   forgetting: boolean;
-  geo: GeoReferenceResponse | undefined;
   onChange: (next: NetworkSettingsData) => void;
   onSave: () => void;
   onForgetNetwork?: () => void;
@@ -430,9 +427,6 @@ function NetworkInfoPanel({
 }) {
   const update = (patch: Partial<NetworkSettingsData>) => onChange({ ...draft, ...patch });
   const publicNetwork = draft.visibility === "public";
-  const selectedCountry = geo?.countries.find((country) => country.code === draft.country_code);
-  const selectedCities = selectedCountry?.cities ?? [];
-  const currentCountryOption = draft.country_code && !selectedCountry ? <option value={draft.country_code}>{draft.country_name || t("network.notProvided")}</option> : null;
   return (
     <Panel>
       <PanelHeader
@@ -528,30 +522,11 @@ function NetworkInfoPanel({
               {t("network.publicStatsEnable")}
             </label>
           </Field>
-          <Field label={t("network.country")} hint={publicNetwork ? t("network.countryRequired") : undefined}>
-            <Select required={publicNetwork} value={draft.country_code} onChange={(event) => {
-              const country = geo?.countries.find((item) => item.code === event.target.value);
-              const city = country?.cities[0];
-              update({ country_code: event.target.value, country_name: country?.name ?? draft.country_name, city: city?.name ?? "", location: city ? { latitude: city.latitude, longitude: city.longitude } : null });
-            }}>
-              <option value="">{t("network.chooseCountry")}</option>
-              {currentCountryOption}
-              {(geo?.countries ?? []).map((country) => <option key={country.code} value={country.code}>{country.name}</option>)}
-            </Select>
-          </Field>
-          <Field label={t("network.city")} hint={publicNetwork ? t("network.cityRequired") : undefined}>
-            <Select required={publicNetwork} value={draft.city} onChange={(event) => {
-              const city = selectedCities.find((item) => item.name === event.target.value);
-              update({ city: event.target.value, location: city ? { latitude: city.latitude, longitude: city.longitude } : draft.location });
-            }}>
-              <option value="">{t("network.chooseCity")}</option>
-              {draft.city && !selectedCities.some((city) => city.name === draft.city) && <option value={draft.city}>{draft.city}</option>}
-              {selectedCities.map((city) => <option key={city.id} value={city.name}>{city.name}</option>)}
-            </Select>
-          </Field>
+          <div className="min-w-0 md:col-span-2">
+            <LocationEditor value={draft} source={NETWORK_GEO} required={publicNetwork} t={t} onChange={(place) => update(place)} />
+          </div>
           <div className="min-w-0 md:col-span-2">
             <KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue>
-            {draft.location && <p className="mt-3 text-xs text-faint">{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</p>}
           </div>
         </div>
       ) : (
@@ -566,8 +541,7 @@ function NetworkInfoPanel({
           <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>
           <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats && publicNetwork ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>
           <KeyValue label={t("network.lobbyChat")}><span>{t(draft.lobby_chat && publicNetwork ? "network.lobbyChatOn" : "network.lobbyChatOff")}</span></KeyValue>
-          <KeyValue label={t("network.country")}><span>{draft.country_name || t("network.notProvided")}</span></KeyValue>
-          <KeyValue label={t("network.city")}><span>{draft.city || t("network.notProvided")}</span></KeyValue>
+          <KeyValue label={t("location.title")}><span className="break-words">{placeLabel(draft) || t("network.notProvided")}</span></KeyValue>
           {draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
         </dl>
       )}

@@ -139,8 +139,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   entry the Sidebar counter and the plugin bridge share.
   `useClusterLogs` lê o log de processo da réplica local do admin,
   opcionalmente filtrado por `deploy_id`, e atualiza a consola a cada segundo.
-  `useGeoReference` consulta `/api/ui/network/geo-reference` para preencher os
-  selects de país e cidade da tela de Informações da Rede.
+  The city lookups of the location editor are not hooks: see `geo.ts`.
   `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
   available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
@@ -558,8 +557,12 @@ ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber
 `types.ts` define o retrato compartilhado `NetworkSettings` e o envelope de
 leitura `NetworkInfoView`. `useNetworkInfo` em `queries.ts` consulta
 `/api/ui/network/info` para todos os perfis e `invalidateAfterAction` invalida
-esse retrato após mutações de configuração. `useGeoReference` lê a referência
-SQLite de países e cidades para os selects da tela. A UI nunca guarda a chave
+esse retrato após mutações de configuração. `geo.ts` is the client of the node's
+offline city database: `geoCountries`, `geoCities` and `geoNearest` against a
+`GeoSource` (`NETWORK_GEO` for the operator routes, `SETUP_GEO` for the
+wizard), `NetworkPlace` (the location fields of `NetworkSettings`),
+`publishedPoint` (a preview of what the node will publish for the chosen
+precision; the node applies the rule again) and `placeLabel`. A UI nunca guarda a chave
 de conexão no cache: os materiais de compartilhamento são buscados pelo admin
 somente em `/api/ui/network/trust-share`.
 
@@ -624,7 +627,7 @@ would go.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
-- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo-reference`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`. As consultas aceitam `user` e `model` além dos filtros de período e identidade.
+- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo/*`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`. As consultas aceitam `user` e `model` além dos filtros de período e identidade.
 - O Chat de qualquer perfil que tenha um modelo selecionado lê
   `/api/ui/infer/heads?model=...`, que é autorizado por `InferNodeAdmin` e
   devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT

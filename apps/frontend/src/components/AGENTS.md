@@ -200,6 +200,21 @@ Per-file list:
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
+- `LocationEditor.tsx` - Where a network is, used by Network settings and by
+  the setup wizard. Inline it shows the chosen city, the precision select
+  (approximate, city centre, exact) and a preview of the point the node will
+  publish. Its dialog has the map (`LocationMap.tsx`), a "Use my browser's
+  location" button, the cities around the placed point and a search by country
+  and name. Three rules: `navigator.geolocation` runs only on that button
+  (and needs HTTPS or localhost, which the dialog says when it is missing);
+  the city is always a row returned by the node (`lib/geo.ts`), there is no
+  field to type one; and the pin is what is sent, the node reduces it to the
+  chosen precision. Tests in `LocationEditor.test.tsx`, with the map mocked.
+- `LocationMap.tsx` - Leaflet map with OpenStreetMap tiles and one draggable
+  pin; a click or a drag reports the point. Loaded with `React.lazy`, so
+  Leaflet is its own chunk and the tiles (the only third-party request of the
+  admin UI's location flow) are fetched only while the dialog is open. A tile
+  error is reported so the dialog can say the map is unavailable.
 - `RelayOptions.tsx` - Panel with whom this machine relays for: three
   checkboxes (this network, file transfers of this network, any network) read
   from `GET /api/ui/network/relay` and saved one at a time with `POST`, which

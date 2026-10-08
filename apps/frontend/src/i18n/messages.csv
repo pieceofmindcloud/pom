@@ -1,5 +1,9 @@
 key,en,pt-BR
 about.contactLink,Contact POM,Contato do POM
+about.dataCities,"the countries, states and cities built into the node, unmodified, under the Open Database License 1.0.","os países, estados e cidades embutidos no nó, sem modificação, sob a Open Database License 1.0."
+about.dataMap,"the map images of the network location dialog, loaded from its servers only while that dialog is open.","as imagens do mapa do diálogo de localização da rede, carregadas dos servidores dele somente enquanto o diálogo está aberto."
+about.dataSubtitle,"Data that ships with POM or is shown by it, and its terms.","Dados que acompanham o POM ou são exibidos por ele, e seus termos."
+about.dataTitle,Third-party data,Dados de terceiros
 about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
 about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
 about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
@@ -1146,6 +1150,39 @@ lobby.unifiedMemory,unified memory,memória unificada
 lobby.unknown,Not informed,Não informado
 lobby.you,(you),(você)
 lobby.yourCard,What the network sees,O que a rede vê
+location.attribution,"City data: Countries States Cities Database, under the Open Database License.","Dados de cidades: Countries States Cities Database, sob a Open Database License."
+location.browserDenied,The browser did not share its location. Place the point on the map or pick a city by name.,O navegador não compartilhou a localização. Marque o ponto no mapa ou escolha uma cidade pelo nome.
+location.browserUnavailable,The browser only shares its location on HTTPS or on localhost. Place the point on the map or pick a city by name.,O navegador só compartilha a localização em HTTPS ou em localhost. Marque o ponto no mapa ou escolha uma cidade pelo nome.
+location.change,Change location,Alterar localização
+location.choose,Choose location,Escolher localização
+location.confirm,Use this location,Usar esta localização
+location.dialogIntro,Place the point on the map or pick a city. The city always comes from the list built into this node; it cannot be typed freely.,Marque o ponto no mapa ou escolha uma cidade. A cidade sempre vem da lista embutida neste nó; não é possível digitá-la livremente.
+location.dialogTitle,Where is this network?,Onde fica esta rede?
+location.distance,{value} km,{value} km
+location.locating,Locating...,Localizando...
+location.lookupFailed,The node's city list could not be read.,Não foi possível ler a lista de cidades do nó.
+location.mapLabel,Map to place the network,Mapa para posicionar a rede
+location.mapUnavailable,The map images could not be loaded. You can still use the browser's location or pick a city by name.,As imagens do mapa não puderam ser carregadas. Ainda é possível usar a localização do navegador ou escolher uma cidade pelo nome.
+location.nearest,Cities near the point,Cidades perto do ponto
+location.nearestEmpty,Place a point to see the cities around it.,Marque um ponto para ver as cidades ao redor.
+location.none,No city chosen,Nenhuma cidade escolhida
+location.precision,What the network publishes,O que a rede publica
+location.precisionApproximate,Approximate area (about 10 km),Área aproximada (cerca de 10 km)
+location.precisionApproximateHint,The point is moved to a grid of about 10 km before it is saved. The exact point is not kept.,O ponto é deslocado para uma grade de cerca de 10 km antes de ser salvo. O ponto exato não é guardado.
+location.precisionCity,City centre only,Somente o centro da cidade
+location.precisionCityHint,"Only the centre of the chosen city is published, wherever the point was placed.","Somente o centro da cidade escolhida é publicado, onde quer que o ponto tenha sido marcado."
+location.precisionExact,Exact point,Ponto exato
+location.precisionExactHint,The public directory shows the point exactly where it was placed.,O diretório público mostra o ponto exatamente onde foi marcado.
+location.privacyNote,"The map images are loaded from OpenStreetMap, which sees your IP address and the area you look at. The point you place is sent to this node to find the nearest city. Nothing is published until you save the network settings.","As imagens do mapa são carregadas do OpenStreetMap, que vê o seu endereço IP e a área que você observa. O ponto marcado é enviado a este nó para encontrar a cidade mais próxima. Nada é publicado até você salvar as configurações da rede."
+location.published,"Published point: {latitude}, {longitude}","Ponto publicado: {latitude}, {longitude}"
+location.publishedCity,Published point: the centre of {city},Ponto publicado: o centro de {city}
+location.required,Required for a public network,Obrigatório para uma rede pública
+location.searchCity,City name,Nome da cidade
+location.searchCountry,Country,País
+location.searchEmpty,No city with that name in this country.,Nenhuma cidade com esse nome neste país.
+location.searchTitle,Or pick a city by name,Ou escolha uma cidade pelo nome
+location.title,Location,Localização
+location.useBrowser,Use my browser's location,Usar a localização do meu navegador
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas
 models.columnActions,Actions,Ações
@@ -1864,6 +1901,7 @@ publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is con
 publicNetworks.discoveredTitle,Networks found,Redes encontradas
 publicNetworks.discoveredVia,Discovered via,Descoberta via
 publicNetworks.distance,{value} km away,{value} km de distância
+publicNetworks.distanceApproximate,about {value} km,cerca de {value} km
 publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
 publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
 publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes

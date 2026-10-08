@@ -43,6 +43,10 @@ chaves de identidade, metadados GGUF e o registro pkarr. O binário o embute em
 tempo de compilação (`utils/brand.rs`) e a interface o copia para o bundle
 (`apps/frontend/scripts/build-brand.mjs`). As imagens ficam em `assets/brand/`.
 
+`assets/geo/` holds the offline city database the binary embeds
+(`crates/node/src/utils/geo.rs`); its `README.md` has the source, license and
+update procedure.
+
 **Não é fonte de verdade para arquitetura:** o `README.md` da raiz (é
 apresentação).
 

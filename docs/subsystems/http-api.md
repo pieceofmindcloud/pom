@@ -435,7 +435,8 @@ leaves setup in `network` mode with that password) and `POST /api/ui/access`
 updates it on every password change.
 
 In **setup mode** (no `pom.json`), `main.rs` mounts a smaller router: the routes
-`/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
+`/api/setup/hardware`, `/api/setup/models`, `/api/setup/geo/*`,
+`/api/setup/admin-anchor/preview`,
 `/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` and the UI.
 They are not in the main router and only exist before the initial
 configuration.
@@ -1337,11 +1338,29 @@ an effective administrative authority. Node and infer use that snapshot as
 read-only information.
 
 `POST /api/ui/network/settings` is an administrative mutation. The server
-normalizes and validates name, visibility, country and city, writes the block
+normalizes and validates name, visibility and location (`geo::apply_location`:
+the `city_id` must exist in the offline city database, the country, state and
+city names are rewritten from it, and `location` is reduced to
+`location_precision` - `exact`, `approximate` or `city` - before anything is
+stored), writes the block
 to `pom.json` and SQLite, republishes the geo label in the pkarr record and
 sends the same configuration to each peer. The call between nodes uses the
 signed control envelope; a private network adds the `connection_key` only as a
 transport guard. The receiver checks the sender's authority before persisting.
+
+The location editor reads the offline city database embedded in the node
+through three `GET` routes, open to every profile (`InferNodeAdmin`) and
+mirrored for the wizard under `/api/setup/geo/`:
+
+| Route | Answer |
+|---|---|
+| `/api/ui/network/geo/countries` | `{countries: [{code, name}], release}`, ordered by name |
+| `/api/ui/network/geo/cities?country=BR&q=cur&limit=12` | `{cities}` of that country whose name matches, names that start with the text first, accents folded |
+| `/api/ui/network/geo/nearest?latitude=&longitude=&limit=6` | `{cities}` closest to the coordinate, each with `distance_km` to the city's reference point |
+
+A city is `{id, name, state, country_code, country_name, latitude,
+longitude}`; `limit` is clamped to 1..50. They answer from memory, store
+nothing and contact nobody. See `web-ui.md`, "Network location".
 
 `GET /api/ui/network/trust-share` is only for the authorized administrator. It
 returns the root document with the real file name for download and includes

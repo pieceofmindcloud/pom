@@ -50,7 +50,9 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/network/firewall/retry",
             post(crate::windows_firewall::retry),
         )
-        .route("/api/ui/network/geo-reference", get(geo_reference))
+        .route("/api/ui/network/geo/countries", get(geo_countries))
+        .route("/api/ui/network/geo/cities", get(geo_cities))
+        .route("/api/ui/network/geo/nearest", get(geo_nearest))
         .route("/api/ui/chat/telemetry", post(chat_telemetry))
         .route(
             "/api/ui/network-chat",

@@ -196,7 +196,7 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
-        prefix: "/api/ui/network/geo-reference",
+        prefix: "/api/ui/network/geo/",
         method: Some(Method::GET),
         scope: RouteScope::InferNodeAdmin,
     },
@@ -704,7 +704,7 @@ mod policy_tests {
             RouteScope::CommonOrInternal
         );
         assert_eq!(
-            scope_of("/api/ui/network/geo-reference"),
+            scope_of("/api/ui/network/geo/nearest"),
             RouteScope::InferNodeAdmin
         );
         assert_eq!(

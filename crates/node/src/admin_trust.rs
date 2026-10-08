@@ -150,14 +150,6 @@ pub(crate) struct TrustNetworkMetadata {
     pub(crate) organization: String,
     pub(crate) visibility: crate::config::NetworkVisibility,
     pub(crate) access_policy: crate::config::NetworkAccessPolicy,
-    #[serde(default)]
-    pub(crate) country_code: String,
-    #[serde(default)]
-    pub(crate) country_name: String,
-    #[serde(default)]
-    pub(crate) city: String,
-    #[serde(default)]
-    pub(crate) geo_label: String,
     /// `pk:` keys of the dedicated relays the network uses. A key, never an
     /// address: the document carries nobody's IP. A joining node resolves the
     /// principal (and these relays) through pkarr at dial time.
@@ -1962,10 +1954,6 @@ mod tests {
             organization: String::new(),
             visibility: crate::config::NetworkVisibility::Private,
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
-            country_code: String::new(),
-            country_name: String::new(),
-            city: String::new(),
-            geo_label: String::new(),
             relay_hints: Vec::new(),
             directory_replicas: Vec::new(),
         });

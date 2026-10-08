@@ -15,11 +15,6 @@ impl axum::extract::FromRef<SetupState> for AuthState {
 }
 
 #[derive(Debug, Serialize)]
-pub struct SetupGeoResponse {
-    pub countries: Vec<crate::db::GeoCountryReference>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct SetupHardwareResponse {
     pub system: SystemLoad,
     pub gpu_detected: bool,
@@ -163,10 +158,6 @@ fn trust_metadata_from_network(
         organization: network.organization.trim().to_string(),
         visibility: network.visibility,
         access_policy: network.access_policy,
-        country_code: network.country_code.trim().to_ascii_uppercase(),
-        country_name: network.country_name.trim().to_string(),
-        city: network.city.trim().to_string(),
-        geo_label: network.geo_label.trim().to_string(),
         relay_hints: super::trust::relay_hint_keys(relay_peers),
         directory_replicas: directory.replicas,
     })
@@ -178,10 +169,6 @@ pub(super) fn network_from_trust_metadata(
     crate::config::NetworkSettings {
         public_name: metadata.public_name.clone(),
         organization: metadata.organization.clone(),
-        country_code: metadata.country_code.clone(),
-        country_name: metadata.country_name.clone(),
-        city: metadata.city.clone(),
-        geo_label: metadata.geo_label.clone(),
         visibility: metadata.visibility,
         access_policy: metadata.access_policy,
         ..Default::default()
@@ -269,15 +256,20 @@ pub async fn get_setup_hardware(State(state): State<SetupState>) -> impl IntoRes
     Json(setup_hardware(state.config, public_directory).await)
 }
 
-pub async fn get_setup_geo_reference(State(state): State<SetupState>) -> Response {
-    match state.database.geo_reference() {
-        Ok(countries) => Json(SetupGeoResponse { countries }).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível ler a referência geográfica: {error:#}") })),
-        )
-            .into_response(),
-    }
+/// The wizard's reads of the offline city database; same answers as the
+/// operator routes in `network.rs`.
+pub async fn get_setup_geo_countries() -> Response {
+    super::network::geo_countries_response()
+}
+
+pub async fn get_setup_geo_cities(Query(query): Query<super::network::GeoCitiesQuery>) -> Response {
+    super::network::geo_cities_response(query)
+}
+
+pub async fn get_setup_geo_nearest(
+    Query(query): Query<super::network::GeoNearestQuery>,
+) -> Response {
+    super::network::geo_nearest_response(query)
 }
 
 pub fn reference_models() -> Vec<SetupModel> {
@@ -753,15 +745,19 @@ pub async fn save_setup(
     let bootstrap = req.bootstrap.trim().to_string();
     let advertise_addr = req.advertise_addr.clone();
     network.public_name = network.public_name.trim().to_string();
-    network.country_code = network.country_code.trim().to_ascii_uppercase();
-    network.country_name = network.country_name.trim().to_string();
-    network.city = network.city.trim().to_string();
-    if let Err(error) = crate::config::validate_network_settings(&network) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": error.to_string() })),
-        )
-            .into_response();
+    // Only the machine that creates the network decides its location. A
+    // joining node starts from the signed descriptor, which carries none, and
+    // adopts the rest of the settings from the principal after its first
+    // authenticated announce.
+    if profile == crate::profile::NodeProfile::Admin {
+        if let Err(error) = crate::geo::apply_location(&mut network)
+            .and_then(|()| {
+                crate::config::validate_network_settings(&network)
+                    .map_err(|error| error.to_string())
+            })
+        {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
+        }
     }
     let public_directory = match crate::public_directory::PublicDirectorySettings::from_urls(
         directory_inputs.iter(),

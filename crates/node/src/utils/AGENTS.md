@@ -32,6 +32,8 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   `cluster_logs_min_level` também vive no JSON, aceita
   `trace`, `debug`, `info`, `warn` e `error`, e assume `info` quando ausente;
   ele só controla o que `CaptureLayer` enfileira.
+- `geo.rs` - offline city database and the rule that turns a pinned point
+  into a network's published location (see below).
 - `crash.rs` - native crash report, installed first thing in `main`: on
   SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT it writes the signal, the faulting
   address, the thread and the native stack as `binary(+offset)` to stderr
@@ -172,10 +174,25 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
 GPU unificada fica explicitamente sem leitura. `None` significa temperatura
 desconhecida e nunca é convertido em alarme pela proteção térmica.
 
-`config.rs` mantém `validate_network_settings` como a validação única do bloco
-de rede. Ela é usada tanto pelo wizard quanto pela edição posterior e exige
-nome público, país e cidade quando a visibilidade é pública; redes locais e
-privadas podem deixar esses campos vazios.
+`config.rs` keeps `validate_network_settings` as the single validation of the
+network block. The wizard and the later editing both use it, and it requires a
+public name and a city (`city_id`) when the visibility is public; local and
+private networks may leave the location empty.
+
+`geo.rs` is the offline database of countries, states and cities: the
+unmodified `assets/geo/csv-cities.csv.gz` (Countries States Cities Database,
+ODbL 1.0, pinned by `RELEASE` and a checksum test) embedded in the binary and
+decoded on first use. `GeoDatabase::nearest` answers the cities around a
+coordinate, `search` the cities of a country by name (accents folded), `city`
+one row by id. `apply_location` is the only writer of a network's location:
+`NetworkSettings.city_id` must be a row of the database, the country, state
+and city names are copied from that row (never the operator's text), and
+`location` is reduced to `location_precision` before it is stored - `exact`
+keeps the pin, `approximate` (the default) snaps it to a 0.1 degree grid with
+`accuracy_m` 10000, `city` stores the city's reference point. A pin more than
+200 km from the chosen city is refused. The result is stable under
+reapplication, which is what lets every member apply the settings the
+principal sends. See `assets/geo/README.md` for the update procedure.
 
 `NetworkSettings.accepted_enrollments` (`AcceptedEnrollments`, a list of
 `EnrollmentRole`: `node`, `infer`) is what the network advertises as open to

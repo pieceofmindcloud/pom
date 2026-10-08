@@ -70,6 +70,8 @@ hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tower = { version = "0.5", features = ["util"] }
 md-5 = "0.10"
+# Decodes the embedded city database (`utils/geo.rs`).
+flate2 = "1"
 memmap2 = "0.9"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }

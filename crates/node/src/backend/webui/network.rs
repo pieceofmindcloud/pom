@@ -70,20 +70,77 @@ pub(crate) async fn network_settings_policy(
     .into_response()
 }
 
-/// A referência geográfica do setup também é necessária ao editor autenticado
-/// da rede, que usa a mesma tabela SQLite para evitar nomes livres divergentes.
-pub(crate) async fn geo_reference(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
-    match state.database.geo_reference() {
-        Ok(countries) => Json(json!({ "countries": countries })).into_response(),
-        Err(error) => network_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "geo_reference_failed",
-            &format!("ler referência geográfica: {error:#}"),
-        ),
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct GeoCitiesQuery {
+    country: String,
+    #[serde(default)]
+    q: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct GeoNearestQuery {
+    latitude: f64,
+    longitude: f64,
+    limit: Option<usize>,
+}
+
+fn geo_unavailable(error: String) -> Response {
+    network_error(StatusCode::INTERNAL_SERVER_ERROR, "geo_database_failed", &error)
+}
+
+pub(super) fn geo_countries_response() -> Response {
+    match crate::geo::database() {
+        Ok(database) => Json(json!({
+            "countries": database.countries(),
+            "release": crate::geo::RELEASE,
+        }))
+        .into_response(),
+        Err(error) => geo_unavailable(error),
     }
+}
+
+pub(super) fn geo_cities_response(query: GeoCitiesQuery) -> Response {
+    match crate::geo::database() {
+        Ok(database) => Json(json!({
+            "cities": database.search(&query.country, &query.q, query.limit),
+        }))
+        .into_response(),
+        Err(error) => geo_unavailable(error),
+    }
+}
+
+pub(super) fn geo_nearest_response(query: GeoNearestQuery) -> Response {
+    match crate::geo::database() {
+        Ok(database) => Json(json!({
+            "cities": database.nearest(query.latitude, query.longitude, query.limit),
+        }))
+        .into_response(),
+        Err(error) => geo_unavailable(error),
+    }
+}
+
+/// Reads of the offline city database (`geo.rs`) for the location editor.
+/// They answer from the binary: nothing is looked up on the internet and
+/// nothing is stored.
+pub(crate) async fn geo_countries(_auth: ConnectionAuth) -> Response {
+    geo_countries_response()
+}
+
+/// Cities of one country matching the typed text.
+pub(crate) async fn geo_cities(
+    _auth: ConnectionAuth,
+    axum::extract::Query(query): axum::extract::Query<GeoCitiesQuery>,
+) -> Response {
+    geo_cities_response(query)
+}
+
+/// The cities closest to a coordinate, which is how a pin becomes a city.
+pub(crate) async fn geo_nearest(
+    _auth: ConnectionAuth,
+    axum::extract::Query(query): axum::extract::Query<GeoNearestQuery>,
+) -> Response {
+    geo_nearest_response(query)
 }
 
 pub(crate) async fn save_network_settings(
@@ -125,9 +182,7 @@ async fn apply_network_settings_with_key(
     settings.description = settings.description.trim().to_string();
     settings.rules = settings.rules.trim().to_string();
     settings.channels = settings.channels.trim().to_string();
-    settings.country_code = settings.country_code.trim().to_ascii_uppercase();
-    settings.country_name = settings.country_name.trim().to_string();
-    settings.city = settings.city.trim().to_string();
+    crate::geo::apply_location(&mut settings)?;
     settings.accepted_enrollments = settings.accepted_enrollments.normalized();
     let discovery_before = state.auth.read().await.network.visibility != NetworkVisibility::Local;
     let discovery_after = settings.visibility != NetworkVisibility::Local;
@@ -807,6 +862,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pin_is_answered_with_the_cities_around_it() {
+        let response = geo_nearest_response(GeoNearestQuery {
+            latitude: -25.43,
+            longitude: -49.27,
+            limit: Some(2),
+        });
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let cities = body["cities"].as_array().unwrap();
+        assert_eq!(cities.len(), 2);
+        assert_eq!(cities[0]["name"], "Curitiba");
+        assert_eq!(cities[0]["country_code"], "BR");
+        assert!(cities[0]["distance_km"].as_f64().unwrap() < 5.0);
+
+        let response = geo_cities_response(GeoCitiesQuery {
+            country: "br".into(),
+            q: "curitib".into(),
+            limit: None,
+        });
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["cities"][0]["name"], "Curitiba");
+    }
+
+    #[tokio::test]
     async fn changing_visibility_preserves_the_internal_credential() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
             .lock()
@@ -840,9 +925,7 @@ mod tests {
         assert_eq!(state.auth.read().await.connection_key, "chave");
 
         let public = NetworkSettings {
-            country_code: "BR".into(),
-            country_name: "Brasil".into(),
-            city: "Curitiba".into(),
+            city_id: Some(crate::geo::test_city_id()),
             visibility: NetworkVisibility::Public,
             ..private.clone()
         };

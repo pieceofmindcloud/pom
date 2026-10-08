@@ -165,10 +165,6 @@ pub(crate) async fn setup_metadata_from_local_configuration(
         organization: network.organization.trim().to_string(),
         visibility: network.visibility,
         access_policy: network.access_policy,
-        country_code: network.country_code.trim().to_ascii_uppercase(),
-        country_name: network.country_name.trim().to_string(),
-        city: network.city.trim().to_string(),
-        geo_label: network.geo_label.trim().to_string(),
         relay_hints,
         directory_replicas,
     }))

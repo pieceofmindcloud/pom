@@ -20,9 +20,11 @@ import { usePublicStats } from "../lib/publicStats";
 import type { EnrollmentRole } from "../lib/types";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
-import { Field, Input, Select } from "../components/ui";
+import { Field, Input } from "../components/ui";
 import { BrandLanguageSwitch } from "../components/BrandLanguageSwitch";
 import { LobbyChat } from "../components/LobbyChat";
+import { LocationEditor } from "../components/LocationEditor";
+import { SETUP_GEO, type LocationPrecision } from "../lib/geo";
 import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 import pomMark from "../assets/pom-mark-dark.png";
 
@@ -63,21 +65,6 @@ interface HardwareResponse {
   public_directory: string[];
 }
 
-interface GeoCityReference {
-  id: string;
-  name: string;
-}
-
-interface GeoCountryReference {
-  code: string;
-  name: string;
-  cities: GeoCityReference[];
-}
-
-interface GeoReferenceResponse {
-  countries: GeoCountryReference[];
-}
-
 interface PublicJoinPayload {
   name?: string;
   cluster_id?: string;
@@ -100,10 +87,6 @@ interface TrustNetworkMetadata {
   organization?: string;
   visibility?: NetworkVisibility;
   access_policy?: AccessPolicy;
-  country_code?: string;
-  country_name?: string;
-  city?: string;
-  geo_label?: string;
   /** Chaves `pk:` dos relés dedicados. O documento não carrega IP de ninguém. */
   relay_hints?: string[];
   directory_replicas?: string[];
@@ -165,11 +148,14 @@ export interface SetupState {
     channels: string;
     visibility: NetworkVisibility;
     access_policy: AccessPolicy;
+    city_id: number | null;
     country_code: string;
     country_name: string;
+    state: string;
     city: string;
     geo_label: string;
-    location: { latitude: number; longitude: number; accuracy_m?: number } | null;
+    location_precision: LocationPrecision;
+    location: { latitude: number; longitude: number; accuracy_m?: number | null } | null;
   };
   ramReservePct: number;
   cpuReservePct: number;
@@ -241,10 +227,13 @@ const INITIAL: SetupState = {
     channels: "",
     visibility: "private",
     access_policy: "anyone_with_anchor",
+    city_id: null,
     country_code: "",
     country_name: "",
+    state: "",
     city: "",
     geo_label: "",
+    location_precision: "approximate",
     location: null,
   },
   ramReservePct: 20,
@@ -261,7 +250,6 @@ export function Setup() {
   const [setup, setSetup] = useState<SetupState>(INITIAL);
   const [stage, setStage] = useState<WizardStage>("setup-profile");
   const [hardware, setHardware] = useState<HardwareResponse | null>(null);
-  const [geoReference, setGeoReference] = useState<GeoReferenceResponse | null>(null);
   const [anchor, setAnchor] = useState<AnchorPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -269,14 +257,10 @@ export function Setup() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      api.get<HardwareResponse>("/api/setup/hardware", { auth: false }),
-      api.get<GeoReferenceResponse>("/api/setup/geo-reference", { auth: false }),
-    ])
-      .then(([detected, geo]) => {
+    api.get<HardwareResponse>("/api/setup/hardware", { auth: false })
+      .then((detected) => {
         if (cancelled) return;
         setHardware(detected);
-        setGeoReference(geo);
         setSetup((current) => ({
           ...current,
           // Pastas, disco, reservas e limite térmico ficam nos padrões da
@@ -431,7 +415,7 @@ export function Setup() {
       t={t}
     >
       {loading ? <LoadingScreen /> : (
-        <Screen stage={stage} setup={setup} hardware={hardware} geoReference={geoReference} anchor={anchor} update={update} updateNetwork={updateNetwork} t={t} />
+        <Screen stage={stage} setup={setup} hardware={hardware} anchor={anchor} update={update} updateNetwork={updateNetwork} t={t} />
       )}
     </FirstRunShell>
   );
@@ -504,11 +488,10 @@ function StepTrail({ steps, stage, t }: { steps: WizardStep[]; stage: WizardStag
   );
 }
 
-function Screen({ stage, setup, hardware, geoReference, anchor, update, updateNetwork, t }: {
+function Screen({ stage, setup, hardware, anchor, update, updateNetwork, t }: {
   stage: WizardStage;
   setup: SetupState;
   hardware: HardwareResponse | null;
-  geoReference: GeoReferenceResponse | null;
   anchor: AnchorPreview | null;
   update: (patch: Partial<SetupState>) => void;
   updateNetwork: (patch: Partial<SetupState["network"]>) => void;
@@ -516,7 +499,7 @@ function Screen({ stage, setup, hardware, geoReference, anchor, update, updateNe
 }) {
   switch (stage) {
     case "setup-profile": return <StartScreen setup={setup} hardware={hardware} update={update} t={t} />;
-    case "setup-network": return <NetworkScreen setup={setup} hardware={hardware} countries={geoReference?.countries ?? []} update={update} updateNetwork={updateNetwork} t={t} />;
+    case "setup-network": return <NetworkScreen setup={setup} hardware={hardware} update={update} updateNetwork={updateNetwork} t={t} />;
     case "setup-invite": return <InviteScreen setup={setup} anchor={anchor} t={t} />;
     case "setup-join": return <JoinScreen setup={setup} update={update} updateNetwork={updateNetwork} t={t} />;
     case "setup-saved": return <SavedScreen t={t} />;
@@ -592,11 +575,9 @@ function Chip({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return <span className="pom-setup-chip">{icon}<span className="truncate">{children}</span></span>;
 }
 
-export function NetworkScreen({ setup, hardware, countries, update, updateNetwork, t }: { setup: SetupState; hardware: HardwareResponse | null; countries: GeoCountryReference[]; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: Translate }) {
+export function NetworkScreen({ setup, hardware, update, updateNetwork, t }: { setup: SetupState; hardware: HardwareResponse | null; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: Translate }) {
   const publicNetwork = setup.network.visibility === "public";
   const p2pPort = hardware?.p2p_port ?? 0;
-  const selectedCountry = countries.find((country) => country.code === setup.network.country_code);
-  const cityIsReference = selectedCountry?.cities.some((city) => city.name === setup.network.city) ?? false;
   const options: { id: "private" | "public"; title: string; detail: string }[] = [
     { id: "private", title: t("firstRun.private"), detail: t("firstRun.privateDetail") },
     { id: "public", title: t("firstRun.public"), detail: t("firstRun.publicDetail") },
@@ -619,25 +600,8 @@ export function NetworkScreen({ setup, hardware, countries, update, updateNetwor
         {publicNetwork && (
           <motion.div key="geo" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
             <p className="mt-5 text-xs leading-relaxed text-muted">{t("firstRun.publicLocationDetail")}</p>
-            <div className="mt-3 grid gap-4 sm:grid-cols-2">
-              <Field label={t("setupWizard.country")}>
-                <Select value={setup.network.country_code} onChange={(event) => { const country = countries.find((candidate) => candidate.code === event.target.value); updateNetwork({ country_code: country?.code ?? "", country_name: country?.name ?? "", city: "" }); }}>
-                  <option value="">{t("setupWizard.chooseCountry")}</option>
-                  {countries.map((country) => <option key={country.code} value={country.code}>{country.name}</option>)}
-                </Select>
-              </Field>
-              <Field label={t("setupWizard.city")}>
-                <Select value={cityIsReference ? setup.network.city : setup.network.city ? "__manual__" : ""} disabled={!selectedCountry} onChange={(event) => updateNetwork({ city: event.target.value === "__manual__" ? "" : event.target.value })}>
-                  <option value="">{t("setupWizard.chooseCity")}</option>
-                  {selectedCountry?.cities.map((city) => <option key={city.id} value={city.name}>{city.name}</option>)}
-                  <option value="__manual__">{t("setupWizard.otherCity")}</option>
-                </Select>
-              </Field>
-              {selectedCountry && !cityIsReference && (
-                <Field label={t("setupWizard.manualCity")}>
-                  <Input value={setup.network.city} onChange={(event) => updateNetwork({ city: event.target.value })} />
-                </Field>
-              )}
+            <div className="mt-3">
+              <LocationEditor value={setup.network} source={SETUP_GEO} required t={t} onChange={(place) => updateNetwork({ city_id: place.city_id ?? null, country_code: place.country_code, country_name: place.country_name, state: place.state ?? "", city: place.city, location_precision: place.location_precision ?? "approximate", location: place.location })} />
             </div>
           </motion.div>
         )}
@@ -973,10 +937,6 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
       organization: metadata.organization ?? "",
       visibility: metadata.visibility ?? "private",
       access_policy: metadata.access_policy ?? "anyone_with_anchor",
-      country_code: metadata.country_code ?? "",
-      country_name: metadata.country_name ?? "",
-      city: metadata.city ?? "",
-      geo_label: metadata.geo_label ?? "",
     });
     update({
       publicDirectory: metadata.directory_replicas?.join(", ") ?? "",
@@ -1137,7 +1097,7 @@ export function isReadyToSave(setup: SetupState): boolean {
   const publicNetwork = setup.network.visibility === "public";
   if (setup.profile !== "admin") return publicNetwork || Boolean(setup.connectionKey.trim());
   if (!setup.network.public_name.trim()) return false;
-  if (publicNetwork && (!setup.network.country_code.trim() || !setup.network.city.trim())) return false;
+  if (publicNetwork && setup.network.city_id == null) return false;
   return true;
 }
 
@@ -1147,7 +1107,7 @@ export function canContinue(stage: WizardStage, setup: SetupState): boolean {
     const publicNetwork = setup.network.visibility === "public";
     return Boolean(
       setup.network.public_name.trim()
-      && (!publicNetwork || (setup.network.country_code.trim() && setup.network.city.trim())),
+      && (!publicNetwork || setup.network.city_id != null),
     );
   }
   if (stage === "setup-invite" || stage === "setup-join") return isReadyToSave(setup);

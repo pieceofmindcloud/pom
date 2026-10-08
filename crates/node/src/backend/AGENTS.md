@@ -230,9 +230,10 @@ profile policy remains the effective authorization boundary.
   downloading the release and restarting. The cluster view transports
   `SystemLoad.gpus[].power_watts` as optional telemetry and keeps it `null`
   when the system does not report board power. The
-  `/api/ui/network/geo-reference` route returns the SQLite country and city
-  reference for UI selectors and uses `InferNodeAdmin`; it does not create or
-  change network data. `GET /api/ui/deployments` é `NodeAdmin` para permitir
+  `/api/ui/network/geo/{countries,cities,nearest}` routes read the offline
+  city database embedded in the binary (`utils/geo.rs`) for the location
+  editor and use `InferNodeAdmin`; they do not create or change network data
+  and look nothing up on the internet. `GET /api/ui/deployments` é `NodeAdmin` para permitir
   que node veja o inspetor somente leitura, enquanto mutações e ações de
   implantação continuam sob a política administrativa existente.
   superfície de autoridade expõe o contrato de apresentação em
@@ -448,9 +449,11 @@ profile policy remains the effective authorization boundary.
   already has one, because replacing a root is manual re-anchoring on the
   machine (`--replace`), not an interface gesture. A chain created by first
   access also carries a signed `setup` block with the network name, visibility,
-  access policy, geographic label, `relay_hints` (dedicated relay `pk:` keys,
-  never addresses) and federated-directory replicas, so a joining node does not
-  retype network identity data. The block carries no IP: a joining node finds
+  access policy, `relay_hints` (dedicated relay `pk:` keys, never addresses)
+  and federated-directory replicas, so a joining node does not retype network
+  identity data. The network's location is not in it: country, city,
+  coordinates and the discovery label are settings the principal changes at
+  any time and advertises in the directory record. The block carries no IP: a joining node finds
   the principal by its key through pkarr (`main::spawn_pkarr_bootstrap`), and
   setup copies `relay_hints` into its `relay_peers`. `ensure_setup_metadata` repairs only a missing setup block
   from the local administrator configuration, and only when the local
@@ -1131,7 +1134,7 @@ faz o download autenticado do blob persistido.
   node actually uses to reach it - direct HTTP, direct libp2p (maybe hole
   punched) or relayed - as opposed to `addr`, which is only what it advertises.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
-  `/api/setup/geo-reference`,
+  `/api/setup/geo/{countries,cities,nearest}`,
   `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,
   `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
   installs the trust document, persists network details in both `pom.json` and
@@ -1249,8 +1252,12 @@ faz o download autenticado do blob persistido.
   exige a assinatura da autoridade. `GET
   /api/ui/network/trust-share` entrega ao administrador a raiz de confiança
   para cópia ou download e, quando aplicável, a chave de conexão. `GET
-  /api/ui/network/geo-reference` entrega países e cidades da referência local
-  para os selects da tela, sem expor uma mutação de banco.
+  /api/ui/network/geo/countries`, `/geo/cities?country=&q=` and
+  `/geo/nearest?latitude=&longitude=` answer from the offline city database.
+  Saving runs `geo::apply_location` first: the city must be a row of that
+  database, its names replace whatever the request carried, and the point is
+  reduced to `location_precision` before it is stored, fanned out or
+  published.
 - `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=
   POM_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
   when closed. Routes `POST /api/ui/dev/update` (preflight: refuses non-main

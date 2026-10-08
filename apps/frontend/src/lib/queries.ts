@@ -53,7 +53,6 @@ import type {
   NetworkInfoView,
   NetworkChatRoom,
   NetworkChatSnapshot,
-  GeoReferenceResponse,
   NetworkOffer,
   PathsResponse,
   PeerCatalog,
@@ -103,7 +102,6 @@ export const keys = {
   networkInfo: ["network-info"] as const,
   windowsFirewall: ["windows-firewall"] as const,
   networkChat: ["network-chat"] as const,
-  geoReference: ["geo-reference"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   plugins: ["plugins"] as const,
@@ -706,15 +704,6 @@ export function useWindowsFirewall(enabled = true) {
     queryFn: () => api.get<WindowsFirewallStatus>("/api/ui/network/firewall"),
     enabled,
     refetchInterval: 5000,
-  });
-}
-
-export function useGeoReference(enabled = true) {
-  return useQuery({
-    queryKey: keys.geoReference,
-    queryFn: () => api.get<GeoReferenceResponse>("/api/ui/network/geo-reference"),
-    enabled,
-    staleTime: Infinity,
   });
 }
 

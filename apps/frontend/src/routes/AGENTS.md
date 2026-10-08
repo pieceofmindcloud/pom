@@ -26,7 +26,7 @@ Per-file list:
   do site). Três passos para o administrador (Início, Rede, Convite) e dois
   para nó e inferência (Início, Entrar), definidos em `setupWizardFlow.ts`.
   Pergunta só papel, nome da máquina, nome e visibilidade da rede (privada ou
-  pública; país e cidade só na pública) e, para quem entra, a raiz e a chave -
+  pública; a localização, pelo `LocationEditor`, só na pública) e, para quem entra, a raiz e a chave -
   trazidas pela descoberta local (`LocalDiscoveryPanel`) ou coladas em
   `TrustFields`, que só monta quando o bloco manual é aberto. No convite, cada
   computador que procura a rede aparece em `DiscoveredMachineCard` com nome,
@@ -102,8 +102,10 @@ Per-file list:
   `standby_network`): that network is inherent to the machine. An admin also
   sees `AdmittedMachines`, the approved admission records, with "Revoke"
   behind a confirmation (`admissionsApi.decide(id, "forget")`). "Published
-  stats" (`public_stats`) follows the same rule. País e cidade usam a referência de geografia
-  do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
+  stats" (`public_stats`) follows the same rule. The location is edited with
+  `../components/LocationEditor` (map, browser location on request, city from
+  the node's offline database, and what the network publishes); the discovery
+  label is shown read-only below it. `TraversalPanel` mostra o campo
   `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
   circuitos publicados, reservas de relé e hole punches - porque dois nós atrás
   de NAT que não se enxergam falham num de três degraus e antes disso descobrir

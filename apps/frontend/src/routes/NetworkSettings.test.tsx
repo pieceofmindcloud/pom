@@ -89,7 +89,6 @@ vi.mock("../lib/queries", () => ({
   useNode: () => queryMocks.node,
   useCluster: () => queryMocks.cluster,
   useNetworkInfo: () => queryMocks.networkInfo,
-  useGeoReference: () => ({ data: { countries: [] } }),
   useWindowsFirewall: () => queryMocks.firewall,
   useAdminNodes: (enabled = true) => (enabled ? queryMocks.nodes : { data: undefined }),
   useInvalidate: () => vi.fn(),

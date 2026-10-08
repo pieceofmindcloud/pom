@@ -450,10 +450,15 @@ export interface NetworkSettings {
   description: string;
   rules: string;
   channels: string;
+  /** The network's city: a row of the node's offline city database. */
+  city_id?: number | null;
   country_code: string;
   country_name: string;
+  state?: string;
   city: string;
   geo_label: string;
+  /** How much of the placed point the network publishes. */
+  location_precision?: "exact" | "approximate" | "city";
   visibility: NetworkVisibility;
   access_policy: NetworkAccessPolicy;
   /** Roles the network advertises as open to new members; empty means closed. */
@@ -488,23 +493,6 @@ export interface WindowsFirewallStatus {
   can_retry: boolean;
   last_error: string | null;
   in_progress: boolean;
-}
-
-export interface GeoCityReference {
-  id: string;
-  name: string;
-  latitude: number;
-  longitude: number;
-}
-
-export interface GeoCountryReference {
-  code: string;
-  name: string;
-  cities: GeoCityReference[];
-}
-
-export interface GeoReferenceResponse {
-  countries: GeoCountryReference[];
 }
 
 export interface TrustShareView {

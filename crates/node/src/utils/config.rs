@@ -127,6 +127,19 @@ pub struct NetworkLocation {
     pub accuracy_m: Option<f64>,
 }
 
+/// How much of the place the operator pinned a network publishes.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationPrecision {
+    /// The pin as placed.
+    Exact,
+    /// The pin snapped to a grid of about 10 km.
+    #[default]
+    Approximate,
+    /// The reference point of the city, whatever the pin.
+    City,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NetworkSettings {
     #[serde(default)]
@@ -139,13 +152,17 @@ pub struct NetworkSettings {
     pub rules: String,
     #[serde(default)]
     pub channels: String,
-    /// Reference-country code selected in the first-access location step.
+    /// The network's city: a row of the offline city database (`geo.rs`).
+    /// The country, state and city names below are copied from that row by
+    /// `geo::apply_location` and are never the operator's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city_id: Option<u32>,
     #[serde(default)]
     pub country_code: String,
-    /// Human-readable country name from the local reference table.
     #[serde(default)]
     pub country_name: String,
-    /// Reference-table city or an operator-entered manual city.
+    #[serde(default)]
+    pub state: String,
     #[serde(default)]
     pub city: String,
     /// Public discovery index label. This is metadata in the pkarr record, not
@@ -170,6 +187,11 @@ pub struct NetworkSettings {
     /// (`network_lobby::PublicStats`). Only takes effect on a public network.
     #[serde(default)]
     pub public_stats: bool,
+    /// How much of `location` is published; applied before it is stored.
+    #[serde(default)]
+    pub location_precision: LocationPrecision,
+    /// The point the network publishes, already reduced to
+    /// `location_precision`. A more exact point is never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<NetworkLocation>,
 }
@@ -196,8 +218,8 @@ pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
         if settings.public_name.trim().is_empty() {
             anyhow::bail!("redes públicas precisam de um nome público");
         }
-        if settings.country_code.trim().is_empty() || settings.city.trim().is_empty() {
-            anyhow::bail!("redes públicas precisam de país e cidade");
+        if settings.city_id.is_none() {
+            anyhow::bail!("redes públicas precisam de uma cidade");
         }
     }
     Ok(())
@@ -1548,7 +1570,7 @@ mod tests {
 
         let error = validate_network_settings(&settings)
             .expect_err("uma rede pública sem localização não deve ser salva");
-        assert!(error.to_string().contains("país e cidade"));
+        assert!(error.to_string().contains("cidade"));
     }
 
     #[test]

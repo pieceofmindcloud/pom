@@ -93,6 +93,8 @@ mod executor;
 pub mod fastest;
 #[path = "backend/gateway/mod.rs"]
 mod gateway;
+#[path = "utils/geo.rs"]
+mod geo;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
@@ -1081,10 +1083,9 @@ async fn start_setup_mode(
     let app = Router::new()
         .route("/api/setup/hardware", get(webui::get_setup_hardware))
         .route("/api/setup/models", get(webui::get_setup_models))
-        .route(
-            "/api/setup/geo-reference",
-            get(webui::get_setup_geo_reference),
-        )
+        .route("/api/setup/geo/countries", get(webui::get_setup_geo_countries))
+        .route("/api/setup/geo/cities", get(webui::get_setup_geo_cities))
+        .route("/api/setup/geo/nearest", get(webui::get_setup_geo_nearest))
         .route(
             "/api/setup/admin-anchor/preview",
             axum::routing::post(webui::preview_setup_anchor),

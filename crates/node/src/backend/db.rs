@@ -20,21 +20,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub const DATABASE_FILENAME: &str = "pom.db";
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct GeoCityReference {
-    pub id: String,
-    pub name: String,
-    pub latitude: f64,
-    pub longitude: f64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct GeoCountryReference {
-    pub code: String,
-    pub name: String,
-    pub cities: Vec<GeoCityReference>,
-}
-
 /// Last geo label observed for a public network peer. This tiny local index is
 /// what lets a prefix/suffix search choose candidates before opening HTTP
 /// probes; the signed pkarr record remains the source of the label itself.
@@ -45,38 +30,6 @@ pub struct PublicNetworkGeoCacheEntry {
     pub fingerprint: String,
     pub observed_at: String,
 }
-
-/// Small offline reference catalog used by setup. Operators can still enter
-/// "outra" manually when their city is not in this starter list.
-const GEO_REFERENCE: &[(&str, &str, &str, f64, f64)] = &[
-    ("AR", "Argentina", "Buenos Aires", -34.6037, -58.3816),
-    ("AR", "Argentina", "Córdoba", -31.4201, -64.1888),
-    ("AU", "Austrália", "Sydney", -33.8688, 151.2093),
-    ("AU", "Austrália", "Melbourne", -37.8136, 144.9631),
-    ("BR", "Brasil", "São Paulo", -23.5505, -46.6333),
-    ("BR", "Brasil", "Rio de Janeiro", -22.9068, -43.1729),
-    ("BR", "Brasil", "Curitiba", -25.4284, -49.2733),
-    ("BR", "Brasil", "Brasília", -15.7975, -47.8919),
-    ("CA", "Canadá", "Toronto", 43.6532, -79.3832),
-    ("CA", "Canadá", "Vancouver", 49.2827, -123.1207),
-    ("CL", "Chile", "Santiago", -33.4489, -70.6693),
-    ("CN", "China", "Xangai", 31.2304, 121.4737),
-    ("DE", "Alemanha", "Berlim", 52.5200, 13.4050),
-    ("ES", "Espanha", "Madrid", 40.4168, -3.7038),
-    ("FR", "França", "Paris", 48.8566, 2.3522),
-    ("GB", "Reino Unido", "Londres", 51.5074, -0.1278),
-    ("IN", "Índia", "Bangalore", 12.9716, 77.5946),
-    ("IT", "Itália", "Roma", 41.9028, 12.4964),
-    ("JP", "Japão", "Tóquio", 35.6762, 139.6503),
-    ("MX", "México", "Cidade do México", 19.4326, -99.1332),
-    ("NL", "Países Baixos", "Amsterdã", 52.3676, 4.9041),
-    ("NZ", "Nova Zelândia", "Auckland", -36.8509, 174.7645),
-    ("PT", "Portugal", "Lisboa", 38.7223, -9.1393),
-    ("SG", "Singapura", "Singapura", 1.3521, 103.8198),
-    ("US", "Estados Unidos", "Nova York", 40.7128, -74.0060),
-    ("US", "Estados Unidos", "São Francisco", 37.7749, -122.4194),
-    ("US", "Estados Unidos", "Seattle", 47.6062, -122.3321),
-];
 
 /// Durable transcript accepted by the authenticated UI history API.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -869,40 +822,6 @@ impl PomDb {
         self.save_setting("public_network_geo_cache", &entries.to_vec())
     }
 
-    /// Read the offline country/city reference used by the setup location
-    /// picker. It lives in SQLite so every node has the same queryable source,
-    /// while the seed stays deliberately small and can be extended later.
-    pub fn geo_reference(&self) -> Result<Vec<GeoCountryReference>> {
-        self.with_read("ler referência de países e cidades", |connection| {
-            let mut countries_statement =
-                connection.prepare("SELECT code, name FROM geo_countries ORDER BY name")?;
-            let countries = countries_statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut result = Vec::with_capacity(countries.len());
-            for (code, name) in countries {
-                let mut cities_statement = connection.prepare(
-                    "SELECT id, name, latitude, longitude
-                     FROM geo_cities WHERE country_code = ? ORDER BY name",
-                )?;
-                let cities = cities_statement
-                    .query_map(params![&code], |row| {
-                        Ok(GeoCityReference {
-                            id: row.get(0)?,
-                            name: row.get(1)?,
-                            latitude: row.get(2)?,
-                            longitude: row.get(3)?,
-                        })
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                result.push(GeoCountryReference { code, name, cities });
-            }
-            Ok(result)
-        })
-    }
-
     /// Read the stored credential without logging, formatting or returning it
     /// from an HTTP handler. The database file is restricted to its owner.
     pub fn huggingface_token(&self) -> Result<Option<String>> {
@@ -1643,20 +1562,6 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             secret_key TEXT PRIMARY KEY,
             value_text TEXT
         );
-        CREATE TABLE IF NOT EXISTS geo_countries (
-            code TEXT PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS geo_cities (
-            id TEXT PRIMARY KEY,
-            country_code TEXT NOT NULL REFERENCES geo_countries(code),
-            name TEXT NOT NULL,
-            latitude REAL NOT NULL,
-            longitude REAL NOT NULL,
-            UNIQUE(country_code, name)
-        );
-        CREATE INDEX IF NOT EXISTS geo_cities_country_idx
-            ON geo_cities(country_code, name);
         CREATE TABLE IF NOT EXISTS chat_conversations (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
@@ -1754,6 +1659,8 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         -- Process logs belong to the logs plugin's own database now.
         DROP TABLE IF EXISTS cluster_logs;
         DROP TABLE IF EXISTS cluster_log_counters;
+        DROP TABLE IF EXISTS geo_cities;
+        DROP TABLE IF EXISTS geo_countries;
         PRAGMA user_version = 1;",
     )?;
     let has_origin_node_id = connection
@@ -1773,7 +1680,6 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         )?;
     }
     migrate_api_key_secrets(connection)?;
-    seed_geo_reference(connection)?;
     Ok(())
 }
 
@@ -1827,28 +1733,6 @@ fn migrate_api_key_secrets(connection: &Connection) -> Result<()> {
         "API keys migradas para hash: {} chave(s), tracking ids preservados",
         secrets.len()
     );
-    Ok(())
-}
-
-fn seed_geo_reference(connection: &Connection) -> Result<()> {
-    for (code, country, city, latitude, longitude) in GEO_REFERENCE {
-        connection.execute(
-            "INSERT INTO geo_countries (code, name) VALUES (?, ?)
-             ON CONFLICT(code) DO UPDATE SET name = excluded.name",
-            params![code, country],
-        )?;
-        let city_id = format!("{code}:{}", city.to_ascii_lowercase().replace(' ', "-"));
-        connection.execute(
-            "INSERT INTO geo_cities (id, country_code, name, latitude, longitude)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-                 country_code = excluded.country_code,
-                 name = excluded.name,
-                 latitude = excluded.latitude,
-                 longitude = excluded.longitude",
-            params![city_id, code, city, latitude, longitude],
-        )?;
-    }
     Ok(())
 }
 
@@ -2098,19 +1982,6 @@ mod tests {
         }
 
         assert_eq!(db.setup_count(), 1);
-        remove_database(&path);
-    }
-
-    #[test]
-    fn geo_reference_contains_countries_and_cities() {
-        let path = temporary_path("geo-reference");
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        let countries = db.geo_reference().expect("ler referência geográfica");
-        let brazil = countries
-            .iter()
-            .find(|country| country.code == "BR")
-            .expect("Brasil na referência");
-        assert!(brazil.cities.iter().any(|city| city.name == "Curitiba"));
         remove_database(&path);
     }
 

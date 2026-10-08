@@ -3716,6 +3716,7 @@ dependencies = [
  "clap",
  "ed25519-dalek 2.2.0",
  "enterprise-protocol",
+ "flate2",
  "futures",
  "h3",
  "h3-quinn",

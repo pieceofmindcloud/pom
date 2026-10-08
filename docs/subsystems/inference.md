@@ -2460,7 +2460,9 @@ or fails. `crates/node/src/inference/plugin_engine.rs` holds the three pieces.
   within its budget. While a plugin engine serves, the node announces
   `engine/plugin-v1:<code>` (and the libp2p tunnel capability) instead of the
   frame, relay and speculation capabilities, so no gateway can plan it as a
-  hidden-state hop.
+  hidden-state hop. `Network::plugin_engine_capabilities` is that rule, and
+  every builder of the node's capabilities uses it: the announce, the
+  gateway's own peer entry and `/api/ui/node`.
 - **Gateway.** After planning, `generate_stream_inner` checks
   `plugin_of_plan`: a single step that announces `engine/plugin-v1:<code>` is
   run by `plugin_engine::generate`. It sends the prompt the protocol adapter
@@ -2471,8 +2473,13 @@ or fails. `crates/node/src/inference/plugin_engine.rs` holds the three pieces.
   JSON object per line - `{"t"}` text, `{"p"}` prompt progress, `{"done"}`
   with finish, prompt, completion and cached tokens, or `{"error"}` - and the
   text becomes `GenEvent::Token`; reasoning comes back inside `<think>` tags,
-  as a llama.cpp pipeline returns it. The summary's `source` is
-  `plugin:<code>@<node_id>` and has no `RequestTrace`. Images and typed
+  as a llama.cpp pipeline returns it. The summary is the one a one-hop
+  pipeline leaves: `source` is `pipeline:<node>` and its `RequestTrace` carries
+  the real prompt, cached and generated tokens and the engine's prompt time,
+  so the request audit, the statistics and the process log the admins receive
+  are the same whatever the engine. The target node logs every change of the
+  engine's state, and the plugin's own output reaches the node's log through
+  the plugin host's stderr. Images and typed
   decisions (`/v1/systemone` labels) are refused for this class; the retain
   boundary of retrieval is only a cache hint and is ignored.
 - **Between nodes.** When the gateway is another machine it posts to

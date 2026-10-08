@@ -2441,7 +2441,7 @@ mod replicated_admin_logs_tests {
         assert_eq!(logs["state"], "needs_activation");
         assert_eq!(
             logs["manage_url"],
-            "https://pieceofmind.cloud/enterprise"
+            "https://pieceofmind.cloud/plugins/"
         );
 
         let check = app
@@ -2484,7 +2484,7 @@ mod replicated_admin_logs_tests {
         assert_eq!(statistics.status(), StatusCode::FORBIDDEN);
         let error: serde_json::Value = body_of(statistics).await;
         assert_eq!(error["code"], "enterprise_required");
-        assert_eq!(error["manage_url"], "https://pieceofmind.cloud/enterprise");
+        assert_eq!(error["manage_url"], "https://pieceofmind.cloud/plugins/");
     }
 
     #[tokio::test]

@@ -18,9 +18,10 @@ import { api, ApiError } from "../lib/api";
 import { usePublicPluginCatalog } from "../lib/queries";
 import type { PublicPluginPrice } from "../lib/pluginCatalog";
 import { useI18n } from "../i18n/provider";
+import { publicPluginPurchaseUrl } from "../lib/pluginPurchase";
 
 const PLUGIN_CODE = "logs";
-const STORE_URL = "https://pieceofmind.cloud/plugins/index.html?plugin=logs";
+const STORE_URL = publicPluginPurchaseUrl(PLUGIN_CODE);
 
 type ShowcaseKind = "logs" | "statistics";
 type Interval = "month" | "year";

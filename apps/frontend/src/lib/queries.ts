@@ -235,7 +235,7 @@ function inactivePlugin(code: string): PluginStatus {
     development_install: false,
     state: "needs_activation",
     features: [],
-    manage_url: "https://pieceofmind.cloud/enterprise",
+    manage_url: "https://pieceofmind.cloud/plugins/",
     plugin_version: null,
     lease_expires_at: null,
     license_expires_at: null,

@@ -238,8 +238,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `description_pt_br` values are validated too. License state, activation
   candidates and usage by `plugin_code` come from the node's authenticated API
   (`PluginStatus`), never from the public catalog.
-  `pluginPurchase.ts` builds a public-store URL with an encoded `plugin_code`
-  and sends no credentials. `usePublicPluginCatalog` in `queries.ts` manages
+  `pluginPurchase.ts` builds the site's purchase-wizard URL
+  (`pieceofmind.cloud/comprar/?plugin=<code>`: account, billing details,
+  Stripe, then the license key) and sends no credentials. `usePublicPluginCatalog` in `queries.ts` manages
   loading, errors and periodic refreshes. `useGithubRepositories` reads
   `/api/ui/plugins/github-repositories`, an authenticated local list that does
   not depend on the commercial catalog. Each source reports `manifest_path`

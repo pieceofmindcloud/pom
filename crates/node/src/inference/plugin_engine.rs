@@ -219,9 +219,21 @@ pub(crate) async fn run(
     let poller = tokio::spawn(async move {
         let mut failed_tx = Some(failed_tx);
         let mut ready_seen = false;
+        let mut last_state = String::new();
         loop {
             if let Some(current) = query(&poll_code, "engine.status", json!({})).await {
                 let state = current["state"].as_str().unwrap_or_default().to_owned();
+                // Each change of the engine's state is a line of this node's
+                // process log, which reaches the admins like llama.cpp's.
+                if state != last_state {
+                    let detail = current["detail"].as_str().unwrap_or_default();
+                    if state == "error" {
+                        warn!(plugin = %poll_code, state = %state, detail, "motor do plugin");
+                    } else {
+                        info!(plugin = %poll_code, state = %state, detail, "motor do plugin");
+                    }
+                    last_state = state.clone();
+                }
                 *poll_status
                     .lock()
                     .unwrap_or_else(|error| error.into_inner()) = current.clone();
@@ -447,15 +459,23 @@ fn finish_reason(finish: &str) -> &'static str {
 
 /// Runs one generation on the plugin engine of `node_id` and reports it as
 /// the pipeline does.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn generate(
     state: &GatewayState,
-    node_id: &str,
+    plan: &crate::pipeline::PipelinePlan,
     code: &str,
+    model: &str,
+    trace_id: Option<String>,
     request: EngineRequest,
     tx: &mpsc::Sender<GenEvent>,
     cancellation: &crate::prefill::Cancellation,
     request_started: Instant,
 ) {
+    let Some(step) = plan.steps.first() else {
+        let _ = tx.send(GenEvent::Failed("empty plan".into())).await;
+        return;
+    };
+    let node_id = step.node_id.as_str();
     let body = generation_body(&request);
     let response = match open_stream(state, node_id, code, &body).await {
         Ok(response) => response,
@@ -507,6 +527,11 @@ pub(crate) async fn generate(
                 }
             } else if let Some(done) = event.get("done") {
                 let total_ms = request_started.elapsed().as_millis() as u64;
+                // The engine's own prompt time, when it reports one (the
+                // llama.cpp-style `timings` of Strata's server).
+                let engine_prefill_ms = done["timings"]["prompt_ms"]
+                    .as_f64()
+                    .map(|ms| ms.round() as u64);
                 let first = first_token_at.unwrap_or_else(Instant::now);
                 let ttft_ms = first.saturating_duration_since(request_started).as_millis() as u64;
                 let generated = done["completion_tokens"]
@@ -515,17 +540,48 @@ pub(crate) async fn generate(
                     .unwrap_or(pieces);
                 let prompt_tokens = done["prompt_tokens"].as_u64().unwrap_or(0) as u32;
                 let cached_tokens = done["cached_tokens"].as_u64().unwrap_or(0) as u32;
+                let prefill_ms = engine_prefill_ms.unwrap_or(ttft_ms);
                 let mut timings = crate::gateway::timing_metrics(
                     total_ms,
                     ttft_ms,
-                    ttft_ms,
+                    prefill_ms,
                     prompt_tokens.saturating_sub(cached_tokens),
                     generated,
                 );
                 timings.server_ttft_ms = Some(ttft_ms);
+                timings.engine_ttft_ms = engine_prefill_ms;
                 let finish = done["finish"].as_str().unwrap_or("stop");
+                // The same record a one-hop llama.cpp pipeline leaves: the
+                // request audit, the statistics and the logs the admins
+                // receive read the source and this trace, whatever the engine.
+                let mut trace = crate::prefill::RequestTrace::new_with_trace_id(
+                    trace_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
+                    model,
+                    &[(node_id, step.start_layer, step.end_layer)],
+                );
+                trace.input_tokens = prompt_tokens;
+                trace.cached_tokens = cached_tokens;
+                trace.prefill_ms = prefill_ms;
+                trace.server_ttft_ms = Some(ttft_ms);
+                trace.engine_ttft_ms = engine_prefill_ms;
+                trace.output_tokens = generated;
+                trace.set_generated_tokens(generated);
+                trace.complete = true;
+                trace.refresh_telemetry(total_ms);
+                info!(
+                    plugin = %code,
+                    node_id = %node_id,
+                    prompt_tokens,
+                    cached_tokens,
+                    generated,
+                    total_ms,
+                    finish,
+                    "geração concluída pelo serviço de inferência do plugin"
+                );
                 let summary = GenSummary {
-                    source: format!("plugin:{code}@{node_id}"),
+                    source: format!("pipeline:{}", plan.hop_chain()),
                     tokens_generated: generated,
                     tokens_per_sec: timings.generation_tokens_per_sec.unwrap_or(0.0),
                     duration_ms: total_ms,
@@ -534,7 +590,7 @@ pub(crate) async fn generate(
                     finish_reason: Some(finish_reason(finish).to_owned()),
                     stop_sequence: None,
                     legs: 1,
-                    trace: None,
+                    trace: Some(trace),
                 };
                 let _ = tx.send(GenEvent::Done(summary)).await;
                 return;

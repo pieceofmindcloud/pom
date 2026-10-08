@@ -889,11 +889,12 @@ pub(super) async fn generate_stream_inner(
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
             return;
         }
-        let node_id = plan.steps[0].node_id.clone();
         crate::plugin_engine::generate(
             &state,
-            &node_id,
+            &plan,
             &code,
+            model,
+            trace_id.clone(),
             crate::plugin_engine::EngineRequest {
                 prompt,
                 chat_template,

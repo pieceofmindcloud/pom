@@ -590,18 +590,22 @@ async fn admin_authority_view(
         &local_hostname,
         &peers,
     );
-    let secondary_principals = document
+    // A node promoted again after a demotion has two grants and is one admin.
+    let mut secondary_principals: Vec<crate::admin_trust::AuthorityPrincipal> = Vec::new();
+    for grant in document
         .grants
         .iter()
         .filter(|grant| grant.level == crate::admin_trust::AdminLevel::Secondary)
-        .map(|grant| grant.subject.clone())
-        .filter(|subject| {
-            state
+    {
+        if !secondary_principals.contains(&grant.subject)
+            && state
                 .admin_trust
-                .effective_authority(subject, NodeProfile::Admin)
+                .effective_authority(&grant.subject, NodeProfile::Admin)
                 == Some(EffectiveAuthority::Secondary)
-        })
-        .collect::<Vec<_>>();
+        {
+            secondary_principals.push(grant.subject.clone());
+        }
+    }
     let secondary = secondary_principals
         .iter()
         .map(|subject| member_view(subject, &state.network.node_id, &local_hostname, &peers))
@@ -2605,6 +2609,19 @@ mod tests {
         // The copy from before the demotion is older and cannot undo it.
         let (status, _) = adopt_trust_chain(&bystander, chain, false).await.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Promoting the same node again is a new grant every member adopts.
+        lab.promote(&lab.member.1);
+        let again = lab.trust.document();
+        assert_eq!(
+            adopt_trust_chain(&promoted, again.clone(), true).await.unwrap(),
+            NodeProfile::Admin
+        );
+        adopt_trust_chain(&bystander, again, false).await.unwrap();
+        assert!(crate::admin_trust::control_issuer_is_admin(
+            &bystander.admin_trust.document(),
+            &lab.member.1
+        ));
     }
 
     #[tokio::test]

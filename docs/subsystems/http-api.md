@@ -312,6 +312,11 @@ anchor, the root grant, the chain of secondary grants, demotions and
 succession. Consumed nonces are **not** kept in that document, which is shared
 and replaced wholesale by `reconcile`: they live in the local replay ledger next
 to it (`<chain>.replay.json`, also 0600), state of a single node.
+A node holds at most one grant in force: it can be promoted again only after
+its earlier grant was demoted, and the new promotion is a new grant in the
+chain. Every change to the chain is validated and written to disk on a copy
+before it replaces the one in memory (`AdminTrust::commit`), so a refused
+change leaves the node anchored and at the version it had.
 `profile: admin` alone creates no capability:
 without a valid chain the node stays without access to the `admin-only` routes
 and emits a diagnostic at startup.

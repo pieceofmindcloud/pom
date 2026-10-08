@@ -519,10 +519,10 @@ impl AdminTrust {
         if principal.verifying_key()? != signing_key.verifying_key() {
             bail!("a chave local não corresponde ao principal vigente");
         }
-        current.setup = Some(setup);
-        current.setup_signature = sign_bytes(signing_key, &setup_message(&current));
-        validate_document(&current)?;
-        persist_document(&current, self.path.as_deref())?;
+        let mut document = current.clone();
+        document.setup = Some(setup);
+        document.setup_signature = sign_bytes(signing_key, &setup_message(&document));
+        self.commit(&mut current, document)?;
         Ok(current.clone())
     }
 
@@ -805,8 +805,9 @@ impl AdminTrust {
         grant: AdminGrant,
         signing_key: &SigningKey,
     ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.is_some() {
             bail!("não é possível promover enquanto há transferência aberta");
         }
@@ -827,8 +828,7 @@ impl AdminTrust {
         self.consume_admin_replay(&grant.nonce, &grant.command_id, None)?;
         document.promotion_seq = grant.promotion_seq;
         document.grants.push(grant);
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(())
     }
 
@@ -839,8 +839,9 @@ impl AdminTrust {
         local_subject: &AuthorityPrincipal,
         target_profile: NodeProfile,
     ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.is_some() {
             bail!("não é possível aplicar concessão enquanto há transferência aberta");
         }
@@ -864,8 +865,7 @@ impl AdminTrust {
         self.consume_admin_replay(&grant.nonce, &grant.command_id, None)?;
         document.promotion_seq = grant.promotion_seq;
         document.grants.push(grant);
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(())
     }
 
@@ -874,8 +874,9 @@ impl AdminTrust {
         signing_key: &SigningKey,
         subject: AuthorityPrincipal,
     ) -> Result<AdminDemotion> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.is_some() {
             bail!("não é possível despromover enquanto há transferência aberta");
         }
@@ -914,8 +915,7 @@ impl AdminTrust {
         demotion.signature = sign_bytes(signing_key, &demotion_message(&demotion));
         self.consume_admin_replay(&demotion.nonce, &demotion.command_id, None)?;
         document.demotions.push(demotion.clone());
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(demotion)
     }
 
@@ -973,8 +973,9 @@ impl AdminTrust {
         successor: AuthorityPrincipal,
         successor_is_active: bool,
     ) -> Result<AdminTransferOffer> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.primary.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
             bail!("a chave emissora não é a do principal vigente");
         }
@@ -1009,7 +1010,7 @@ impl AdminTrust {
         offer.signature = sign_bytes(signing_key, &offer_message(&offer));
         self.consume_admin_replay(&offer.nonce, &offer.command_id, Some(&offer.offer_id))?;
         document.pending_transfer = Some(offer.clone());
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
         Ok(offer)
     }
 
@@ -1019,8 +1020,9 @@ impl AdminTrust {
         signing_key: &SigningKey,
         successor: AuthorityPrincipal,
     ) -> Result<AdminTransferAcceptance> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         let pending = document
             .pending_transfer
             .as_ref()
@@ -1058,8 +1060,7 @@ impl AdminTrust {
         document
             .completed_transfers
             .push(CompletedTransfer { offer, acceptance });
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document.clone())?;
         Ok(document
             .completed_transfers
             .last()
@@ -1073,8 +1074,9 @@ impl AdminTrust {
         offer: AdminTransferOffer,
         acceptance: AdminTransferAcceptance,
     ) -> Result<()> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        validate_document(&current)?;
+        let mut document = current.clone();
         if document.pending_transfer.as_ref() != Some(&offer)
             || acceptance.offer_id != offer.offer_id
             || acceptance.successor != offer.successor
@@ -1095,8 +1097,23 @@ impl AdminTrust {
         document
             .completed_transfers
             .push(CompletedTransfer { offer, acceptance });
-        validate_document(&document)?;
-        persist_document(&document, self.path.as_deref())?;
+        self.commit(&mut current, document)?;
+        Ok(())
+    }
+
+    /// Replaces the chain with `next` only once it validates and is on disk.
+    ///
+    /// Every change goes through here on a copy. A change that fails must
+    /// leave the chain in memory as it was: a half applied one made the node
+    /// count as not anchored and announce a version no peer could adopt.
+    fn commit(
+        &self,
+        current: &mut std::sync::MutexGuard<'_, AdminTrustDocument>,
+        next: AdminTrustDocument,
+    ) -> Result<()> {
+        validate_document(&next)?;
+        persist_document(&next, self.path.as_deref())?;
+        **current = next;
         Ok(())
     }
 
@@ -1650,8 +1667,7 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
     verify_grant_signature(root)?;
     let mut previous_hash = Some(grant_hash(root)?);
     let mut expected_promotion_seq: u64 = 0;
-    let mut seen_subjects = vec![root.subject.clone()];
-    for grant in document.grants.iter().skip(1) {
+    for (index, grant) in document.grants.iter().enumerate().skip(1) {
         expected_promotion_seq = expected_promotion_seq.saturating_add(1);
         let issuer_epoch = document
             .primary_history
@@ -1666,12 +1682,25 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
             || grant.authority_epoch != issuer_epoch.unwrap_or(u64::MAX)
             || grant.promotion_seq != expected_promotion_seq
             || grant.previous_grant_hash != previous_hash
-            || seen_subjects.contains(&grant.subject)
         {
             bail!("concessão secundária não foi emitida por um principal válido");
         }
+        // A node is promoted again only after its earlier grant was revoked:
+        // it never holds two grants at once, and the principal's own root
+        // grant cannot be revoked at all.
+        for earlier in document.grants[..index]
+            .iter()
+            .filter(|earlier| earlier.subject == grant.subject)
+        {
+            let earlier_hash = grant_hash(earlier)?;
+            if !document.demotions.iter().any(|demotion| {
+                demotion.target_grant_hash == earlier_hash
+                    && demotion.promotion_seq < grant.promotion_seq
+            }) {
+                bail!("o nó já tem uma concessão administrativa em vigor");
+            }
+        }
         verify_grant_signature(grant)?;
-        seen_subjects.push(grant.subject.clone());
         previous_hash = Some(grant_hash(grant)?);
     }
     if document.promotion_seq != expected_promotion_seq {
@@ -1722,7 +1751,9 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
             || !target_grant.is_some_and(|grant| {
                 grant.subject == demotion.subject
                     && grant.level == AdminLevel::Secondary
-                    && grant.promotion_seq == demotion.promotion_seq
+                    // The counter at the time of the demotion: other nodes
+                    // may have been promoted since the grant it revokes.
+                    && grant.promotion_seq <= demotion.promotion_seq
             })
         {
             bail!("despromoção administrativa inconsistente");
@@ -2110,6 +2141,82 @@ mod tests {
             reloaded.effective_authority(&secondary, NodeProfile::Admin),
             None
         );
+    }
+
+    /// Promote, demote, promote again: the second grant is a new one and the
+    /// node is a secondary admin again, on this copy and on a reloaded one.
+    #[test]
+    fn a_demoted_node_can_be_promoted_again() {
+        let dir = TempDir::new();
+        let path = dir.path().join("trust.json");
+        let (trust, root_key, _root) = boot(&path);
+        let secondary = principal(2, "secondary", "peer-secondary");
+        let other = principal(3, "other", "peer-other");
+        let promote = |subject: &AuthorityPrincipal| {
+            let grant = trust.signed_secondary_grant(&root_key, subject.clone(), "root")?;
+            trust.record_secondary_grant(grant, &root_key)
+        };
+
+        promote(&secondary).unwrap();
+        // Another promotion in between moves the counter past the grant the
+        // demotion revokes.
+        promote(&other).unwrap();
+        trust
+            .demote_secondary(&root_key, secondary.clone())
+            .unwrap();
+        assert_eq!(
+            trust.effective_authority(&secondary, NodeProfile::Admin),
+            None
+        );
+
+        promote(&secondary).unwrap();
+        assert!(trust.is_anchored());
+        let reloaded = AdminTrust::load(&path).unwrap();
+        for copy in [&trust, &reloaded] {
+            assert_eq!(
+                copy.effective_authority(&secondary, NodeProfile::Admin),
+                Some(EffectiveAuthority::Secondary)
+            );
+        }
+
+        // And the new grant is revoked like any other.
+        trust
+            .demote_secondary(&root_key, secondary.clone())
+            .unwrap();
+        assert_eq!(
+            trust.effective_authority(&secondary, NodeProfile::Admin),
+            None
+        );
+        assert_eq!(
+            trust.effective_authority(&other, NodeProfile::Admin),
+            Some(EffectiveAuthority::Secondary)
+        );
+    }
+
+    /// A node never holds two grants at once, and a refused change leaves the
+    /// chain as it was: the principal stays anchored, at the same version.
+    #[test]
+    fn a_refused_grant_leaves_the_chain_untouched() {
+        let dir = TempDir::new();
+        let path = dir.path().join("trust.json");
+        let (trust, root_key, _root) = boot(&path);
+        let secondary = principal(2, "secondary", "peer-secondary");
+        let grant = trust
+            .signed_secondary_grant(&root_key, secondary.clone(), "root")
+            .unwrap();
+        trust.record_secondary_grant(grant, &root_key).unwrap();
+        let before = trust.document();
+        let version = trust.chain_version();
+
+        let again = trust
+            .signed_secondary_grant(&root_key, secondary.clone(), "root")
+            .unwrap();
+        assert!(trust.record_secondary_grant(again, &root_key).is_err());
+
+        assert!(trust.is_anchored());
+        assert_eq!(trust.document(), before);
+        assert_eq!(trust.chain_version(), version);
+        assert_eq!(AdminTrust::load(&path).unwrap().document(), before);
     }
 
     /// A conferência que ancora a confiança tolera a transcrição humana -

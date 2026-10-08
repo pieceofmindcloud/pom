@@ -1286,6 +1286,65 @@ pub(super) fn generic_embeddings_compatible(
     need_embeddings && n_embd == n_embd_out
 }
 
+/// Whether this processor has the x86 instruction set of that name.
+fn cpu_has(instruction_set: &str) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        match instruction_set {
+            "sse3" => std::arch::is_x86_feature_detected!("sse3"),
+            "ssse3" => std::arch::is_x86_feature_detected!("ssse3"),
+            "avx" => std::arch::is_x86_feature_detected!("avx"),
+            "avx2" => std::arch::is_x86_feature_detected!("avx2"),
+            "bmi2" => std::arch::is_x86_feature_detected!("bmi2"),
+            "f16c" => std::arch::is_x86_feature_detected!("f16c"),
+            "fma" => std::arch::is_x86_feature_detected!("fma"),
+            "avx512f" => std::arch::is_x86_feature_detected!("avx512f"),
+            "avx512vnni" => std::arch::is_x86_feature_detected!("avx512vnni"),
+            _ => true,
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = instruction_set;
+        true
+    }
+}
+
+/// The instruction sets the engine was built with that the processor lacks.
+pub(super) fn missing_instruction_sets(
+    built_with: &[&'static str],
+    cpu_has: impl Fn(&str) -> bool,
+) -> Vec<&'static str> {
+    built_with
+        .iter()
+        .copied()
+        .filter(|instruction_set| !cpu_has(instruction_set))
+        .collect()
+}
+
+/// Registers the llama.cpp backends; idempotent, called before every load.
+///
+/// Refuses first on a processor that lacks an instruction set the CPU backend
+/// was compiled to use. ggml does not check: its first vector instruction
+/// would kill the whole node with SIGILL, with nothing but a native crash
+/// report in the log. A refusal keeps the node up and says what is missing.
+pub(super) fn init_backend() -> Result<()> {
+    let missing = missing_instruction_sets(&sys::ggml_cpu_built_with(), cpu_has);
+    if !missing.is_empty() {
+        bail!(
+            "this processor cannot run this build: the inference engine was compiled to use {} \
+             and the processor does not have {}. Use a build whose CPU backend is chosen at run \
+             time (the Docker image built in `release` mode), or, on a virtual machine, expose \
+             the host processor to the guest",
+            sys::ggml_cpu_built_with().join(", "),
+            missing.join(", "),
+        );
+    }
+    unsafe { sys::llama_backend_init() };
+    crate::sysmon::mark_backend_initialized();
+    Ok(())
+}
+
 pub(super) fn backend_registry_name(device: sys::ggml_backend_dev_t) -> Option<String> {
     if device.is_null() {
         return None;
@@ -1487,8 +1546,7 @@ fn fit_plan_with_cache(
     // `common_fit_params` queries the backend devices and their free memory.
     // The call is idempotent and mirrors `LoadedModel::load`, which also keeps
     // the initialization close to every possible model-loading entry point.
-    unsafe { sys::llama_backend_init() };
-    crate::sysmon::mark_backend_initialized();
+    init_backend()?;
     let n_devices = unsafe { sys::llama_max_devices() }.max(1);
     let n_overrides = unsafe { sys::llama_max_tensor_buft_overrides() }.max(1);
 

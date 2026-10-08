@@ -1647,6 +1647,15 @@ fn main() {
 
     assert_ne!(llama_libs.len(), 0);
 
+    // `ggml_cpu_built_with` (src/lib.rs) asks the CPU backend which instruction
+    // sets it was compiled for. Those symbols only exist in this link when the
+    // CPU backend is one of the linked libraries: a dynamic-backends build
+    // loads it at run time, already picking a variant the processor supports.
+    println!("cargo:rustc-check-cfg=cfg(ggml_cpu_linked)");
+    if llama_libs.iter().any(|lib| lib == "ggml-cpu") {
+        println!("cargo:rustc-cfg=ggml_cpu_linked");
+    }
+
     let common_lib_dir = out_dir.join("build").join("common");
     if cfg!(feature = "common") && common_lib_dir.is_dir() {
         println!(

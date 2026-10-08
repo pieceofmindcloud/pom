@@ -131,6 +131,12 @@ check the offload, watch VRAM during loading.
 
 ## Pitfalls found
 
+- **A model load refused with "this processor cannot run this build".** The
+  binary has the CPU backend linked in and compiled for AVX2 and the machine's
+  processor does not have it (old hardware, or a virtual machine with a generic
+  CPU model). Use a Docker image built in `release` mode, or expose the host
+  processor to the guest. See `build-and-run.md`, "Development Docker with a
+  release or a local fork".
 - **`git pull` on another user's machine.** If the files belong to `<user>`
   and you access as `root`, run
   `git config --global --add safe.directory <path>`. A private repository needs

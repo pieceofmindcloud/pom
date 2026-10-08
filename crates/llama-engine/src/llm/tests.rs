@@ -6,6 +6,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_processor_without_the_compiled_instruction_sets_is_named() {
+        let built_with = ["sse3", "avx", "avx2", "fma"];
+        let old_cpu = |instruction_set: &str| instruction_set == "sse3";
+
+        assert_eq!(
+            missing_instruction_sets(&built_with, old_cpu),
+            vec!["avx", "avx2", "fma"]
+        );
+        assert!(missing_instruction_sets(&built_with, |_| true).is_empty());
+        assert!(missing_instruction_sets(&[], |_| false).is_empty());
+    }
+
+    #[test]
     fn receptor_aceita_hidden_state_com_fluxos_expandidos() {
         let shape = vec![11, 4096, 4];
         let values_len = 11 * 4096 * 4;

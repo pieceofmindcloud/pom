@@ -175,7 +175,8 @@ was validated offline by inspecting the workflows,
 
 ### Development Docker with a release or a local fork
 
-The cluster's Docker builds use `POM_LLAMA_CPP_MODE=release` by default.
+The Compose files build with `POM_LLAMA_CPP_MODE=release` by default;
+`scripts/build-docker.sh` called without the variable builds in `source`.
 `build-docker.sh` queries the remote `pom-tensor-parallel` branch, derives the
 same tag as `get-tag-name` in the workflow and passes the exact tag to Docker.
 It also accepts `POM_LLAMA_CPP_RELEASE_TAG` to pin an already chosen release.
@@ -219,6 +220,20 @@ In `source`, the Dockerfile keeps the normal CMake build and picks the CUDA
 prebuilt mode; the other GitHub Actions builds still compile the fork from
 source.
 `scripts/test-docker-build-mode.sh` tests the selection without real Docker.
+
+**The two modes do not run on the same processors.** In `release` the GGML CPU
+backend is a set of modules built with `GGML_CPU_ALL_VARIANTS`, and the runtime
+loads the one the processor supports. In `source` (and in every plain
+`cargo build`) the CPU backend is linked into the binary and compiled with
+ggml's defaults for x86-64 - SSE 4.2, AVX, AVX2, BMI2, FMA and F16C - with no
+check before using them: on a processor without AVX2 (an old one, or a virtual
+machine given a generic CPU model) the first vector instruction is SIGILL.
+`vendor/llama-cpp-sys-2/build.rs` sets the `ggml_cpu_linked` cfg when the CPU
+backend is linked, `ggml_cpu_built_with()` reads what it was compiled for, and
+`llm::init_backend` (`crates/llama-engine/src/llm/config.rs`) compares that
+with the processor before every `llama_backend_init`: the load is refused with
+the missing instruction sets named and the node stays up. A machine like that
+needs a `release` mode image, or the host processor exposed to the guest.
 
 ### Measurement on macOS
 

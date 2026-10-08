@@ -24,7 +24,11 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
 - `llm/` - wrapper FFI do llama.cpp dividido por responsabilidade em captura,
   configuração, modelo, engine, batch, amostragem e testes. É a única
   superfície `unsafe` do produto. Alcança o estado da coletiva TP por
-  `tp_probe` (see below). In `llm/config.rs`, `llama_max_devices()` is only
+  `tp_probe` (see below). `llm/config.rs::init_backend` is the only way the
+  product calls `llama_backend_init`: it first refuses a processor that lacks
+  an instruction set the linked CPU backend was compiled for
+  (`llama_cpp_sys_2::ggml_cpu_built_with`), which would otherwise be a SIGILL
+  that takes the node down. In `llm/config.rs`, `llama_max_devices()` is only
   the capacity of vectors passed to C; `fit_device_count` counts physical
   devices. The MTP KV reservation counts the fitted unified context once and
   follows the native `tensor_split` per NextN layer. When llama.cpp leaves the

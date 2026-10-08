@@ -535,8 +535,7 @@ impl LoadedModel {
     ) -> Result<Arc<Self>> {
         log_moe_route_diagnostics_configuration();
         // llama_backend_init is idempotent; call it on every load.
-        unsafe { sys::llama_backend_init() };
-        crate::sysmon::mark_backend_initialized();
+        init_backend()?;
 
         let path = CString::new(model_path)
             .with_context(|| format!("invalid model path: {model_path}"))?;

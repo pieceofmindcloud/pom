@@ -2262,13 +2262,9 @@ impl Network {
             // `CAP_LIBP2P_TUNNEL`). The last one only goes out once the swarm
             // has actually come up (`libp2p_tunnel_ready`) — claiming it any
             // earlier would send peers to dial a PeerId that can't answer.
-            inference_frame_capabilities: if let Some(code) = self.external_engine() {
+            inference_frame_capabilities: if let Some(caps) = self.plugin_engine_capabilities() {
                 // A plugin engine serves the whole model: it takes prompts,
                 // not hidden states.
-                let mut caps = vec![crate::plugin_engine::capability(&code)];
-                if self.libp2p_tunnel_ready() {
-                    caps.push("transport/libp2p-tunnel-v1".into());
-                }
                 caps
             } else {
                 let mut caps = vec![
@@ -2418,6 +2414,19 @@ impl Network {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
+    }
+
+    /// The inference capabilities while a plugin engine serves this node's
+    /// model, `None` otherwise. Every builder of this node's capabilities -
+    /// the announce, the gateway's own peer entry and `/api/ui/node` - goes
+    /// through it, so no view of this node offers hidden-state hops then.
+    pub fn plugin_engine_capabilities(&self) -> Option<Vec<String>> {
+        let code = self.external_engine()?;
+        let mut caps = vec![crate::plugin_engine::capability(&code)];
+        if self.libp2p_tunnel_ready() {
+            caps.push("transport/libp2p-tunnel-v1".into());
+        }
+        Some(caps)
     }
 
     /// Muda a geração dona da capacidade e a retira enquanto o novo runtime

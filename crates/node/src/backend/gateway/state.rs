@@ -1433,7 +1433,11 @@ impl GatewayState {
                 // Keep in sync with network.rs's `self_announce` and
                 // infer_server.rs's health/announce builder, and with the
                 // capability constants in routing/pipeline.rs.
-                inference_frame_capabilities: {
+                inference_frame_capabilities: if let Some(caps) =
+                    self.network.plugin_engine_capabilities()
+                {
+                    caps
+                } else {
                     let mut caps = vec![
                         crate::pipeline::CAP_FRAME_BATCH.into(),
                         crate::pipeline::CAP_FRAME_DTYPE_F8.into(),

@@ -132,6 +132,11 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/internal/admin-trust/chain"
             // A file offer: small and signed like the others.
             | "/api/transfer/offer"
+            // A deployment asking the target to fetch its slice, and then
+            // following the copy. Without these a target behind NAT could
+            // receive a file but never be told to.
+            | "/api/transfer/pull"
+            | "/api/transfer/jobs"
             // The file itself, when no direct address answers. Carried only
             // over a connection that may carry it - see
             // `is_transfer_data_path`.
@@ -731,6 +736,20 @@ mod tests {
         assert!(gateway_path_is_allowed("/api/transfer/download?grant=abc"));
         assert!(!is_transfer_data_path("/api/transfer/offer"));
         assert!(!is_transfer_data_path("/api/transfer/downloadx"));
+    }
+
+    /// A deployment tells the target to fetch its slice and then follows the
+    /// copy. Behind NAT the target has no address that answers, so both calls
+    /// must be able to cross the tunnel - and neither is file bytes.
+    #[test]
+    fn a_deployment_can_ask_for_a_pull_and_follow_it_through_the_tunnel() {
+        for path in ["/api/transfer/pull", "/api/transfer/jobs"] {
+            assert!(gateway_path_is_allowed(path), "{path}");
+            assert!(!is_transfer_data_path(path), "{path}");
+        }
+        // Cancelling and the offers inbox stay off the tunnel.
+        assert!(!gateway_path_is_allowed("/api/transfer/jobs/abc/cancel"));
+        assert!(!gateway_path_is_allowed("/api/transfer/offers"));
     }
 
     /// O plano de controle da implantação passa, e só porque o pedido chega

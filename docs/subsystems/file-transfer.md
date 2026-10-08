@@ -163,6 +163,14 @@ return address (`from_gateway`, through `local_ip_for`) comes from the first
 of that list, so it points at the interface through which the peer is really
 reached.
 
+A deployment that has to copy a slice does the same with its two calls to the
+target: `POST /api/transfer/pull`, which tells the target to fetch the slice,
+and the `GET /api/transfer/jobs` polling that follows the copy
+(`deploy/lifecycle.rs`, `deploy/node.rs::wait_for_transfers`). Both are signed
+control calls that end in the tunnel, and both are on its list. They used to go
+to a single HTTP address, so a target behind NAT could receive a file but could
+never be told to: the deployment failed with "error sending request".
+
 The download itself is direct HTTP when the address connects. When it does
 not - two machines behind NAT - `run_download` falls back to the libp2p
 tunnel (`download_over_tunnel`): the manifest and the `.pom` go as small signed

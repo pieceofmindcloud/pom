@@ -504,7 +504,10 @@ profile policy remains the effective authorization boundary.
   compatible external draft turns `capabilities.mtp` supported for a model
   without `nextn`. `lifecycle::run` adds the copies to its `pulls` and sends
   `mmproj_file` / `mtp_draft_file` so the target resolves the path on its own
-  disk (`jobs_apply`). `transfer::servable_path` serves a path outside the
+  disk (`jobs_apply`). The pull request to each target and the polling of its
+  copy (`node.rs::wait_for_transfers`) are `control_post_json`/`control_get`
+  calls to the peer, so they end in the libp2p tunnel for a target behind NAT;
+  `node.rs::peer_of` finds the peer. `transfer::servable_path` serves a path outside the
   shard folder only when it is in the node's sidecar inventory, and a finished
   download invalidates the receiver's catalog.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:

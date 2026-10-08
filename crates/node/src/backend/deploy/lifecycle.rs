@@ -230,22 +230,17 @@ pub(super) async fn run(
         )
         .await;
 
-        // (node_id, gateway, job id). O node_id entrou porque a sondagem do job
-        // fala com o peer, e com o cluster em TLS ela precisa fixar o
-        // certificado dele - uma URL sozinha não tem identidade a verificar.
-        let mut watching: Vec<(String, String, String)> = Vec::new();
+        // (target peer, job id). The whole peer and not a URL: the request and
+        // the polling go by every path the peer announces and, last, by the
+        // libp2p tunnel - a target behind NAT has no address that answers.
+        let mut watching: Vec<(crate::network::PeerInfo, String)> = Vec::new();
         for pull in &pulls {
             if pull.target_node_id == pull.source_node_id {
                 continue;
             }
-            let gateway = gateway_of(&state, &pull.target_node_id)
+            let target = peer_of(&state, &pull.target_node_id)
                 .await
-                .ok_or_else(|| format!("{} não anuncia porta de gateway", pull.target_host))?;
-
-            let cliente = state
-                .peer_http
-                .for_peer(&pull.target_node_id)
-                .map_err(|e| format!("{}: sem cliente para o peer: {e}", pull.target_host))?;
+                .ok_or_else(|| format!("{} saiu da rede", pull.target_host))?;
             let pull_body = json!({
                 "node_id": pull.source_node_id,
                 "sha256": pull.source_sha256,
@@ -253,23 +248,15 @@ pub(super) async fn run(
                 "remote_path": pull.source_path,
                 "name": pull.name,
             });
-            let request = state
-                .control_json_request(
-                    cliente.post(format!("{gateway}/api/transfer/pull")),
-                    "/api/transfer/pull",
-                    &pull_body,
-                )
+            // Por hash sempre que a origem souber o dela. É o que faz a
+            // fatia cair em `<shard_dir>/<modelo>/<sha>.gguf` com o `.pom`
+            // ao lado, em vez de solta na raiz parecendo um modelo
+            // inteiro. O pedido por caminho fica para a fatia sem hash -
+            // um arquivo que ninguém endereçou por conteúdo ainda.
+            let body: serde_json::Value = state
+                .control_post_json(&target, "/api/transfer/pull", &pull_body, PEER_TIMEOUT * 4)
                 .await
-                .map_err(|e| format!("{} não aceitou puxar a fatia: {e}", pull.target_host))?;
-            let body: serde_json::Value = request
-                // Por hash sempre que a origem souber o dela. É o que faz a
-                // fatia cair em `<shard_dir>/<modelo>/<sha>.gguf` com o `.pom`
-                // ao lado, em vez de solta na raiz parecendo um modelo
-                // inteiro. O pedido por caminho fica para a fatia sem hash -
-                // um arquivo que ninguém endereçou por conteúdo ainda.
-                .send()
-                .await
-                .map_err(|e| format!("{} não aceitou puxar a fatia: {e}", pull.target_host))?
+                .map_err(|e| format!("{} não aceitou puxar a fatia: {e:#}", pull.target_host))?
                 .json()
                 .await
                 .unwrap_or(json!({}));
@@ -280,7 +267,7 @@ pub(super) async fn run(
                         "{} puxando L{}-{} de {}",
                         pull.target_host, pull.start_layer, pull.end_layer, pull.source_node_id
                     );
-                    watching.push((pull.target_node_id.clone(), gateway, tid.to_string()));
+                    watching.push((target, tid.to_string()));
                 }
                 None => {
                     return Err(format!(

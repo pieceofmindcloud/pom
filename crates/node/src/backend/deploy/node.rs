@@ -998,6 +998,17 @@ pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<St
         .and_then(|p| state.gateway_base(p))
 }
 
+pub(super) async fn peer_of(
+    state: &GatewayState,
+    node_id: &str,
+) -> Option<crate::network::PeerInfo> {
+    state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|p| p.node_id == node_id)
+}
+
 /// Poll the machines doing the copying until they are all finished.
 ///
 /// The bar tracks bytes rather than file count, because the slices are wildly
@@ -1006,31 +1017,18 @@ pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<St
 pub(super) async fn wait_for_transfers(
     state: &GatewayState,
     _key: &str,
-    watching: &[(String, String, String)],
+    watching: &[(crate::network::PeerInfo, String)],
     job_id: &str,
 ) -> Result<(), String> {
     loop {
         let mut done = 0usize;
         let mut fraction_sum = 0.0;
 
-        for (node_id, gateway, id) in watching {
-            let cliente = state
-                .peer_http
-                .for_peer(node_id)
-                .map_err(|e| format!("sem cliente para {gateway}: {e}"))?;
-            let request = state
-                .control_get_request(
-                    cliente
-                        .get(format!("{gateway}/api/transfer/jobs"))
-                        .timeout(PEER_TIMEOUT),
-                    "/api/transfer/jobs",
-                )
+        for (peer, id) in watching {
+            let body: serde_json::Value = state
+                .control_get(peer, "/api/transfer/jobs", PEER_TIMEOUT)
                 .await
-                .map_err(|e| format!("não foi possível assinar a consulta de {gateway}: {e}"))?;
-            let body: serde_json::Value = request
-                .send()
-                .await
-                .map_err(|e| format!("perdi contato com {gateway}: {e}"))?
+                .map_err(|e| format!("perdi contato com {}: {e:#}", peer.hostname))?
                 .json()
                 .await
                 .unwrap_or(json!({}));

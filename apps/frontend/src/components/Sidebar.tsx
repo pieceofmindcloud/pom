@@ -193,7 +193,7 @@ function Leaf({
   const linkEnd = end ?? Boolean(children?.length);
   return (
     <div>
-      <NavLink to={to} end={linkEnd} onClick={onNavigate}>
+      <NavLink to={to} end={linkEnd} onClick={onNavigate} data-guide-nav={to}>
         {({ isActive }) => (
           <span
             className={clsx(
@@ -239,7 +239,7 @@ function FlyoutLeaf({
   const linkEnd = end ?? Boolean(children?.length);
   return (
     <div>
-      <NavLink to={to} end={linkEnd} onClick={onNavigate}>
+      <NavLink to={to} end={linkEnd} onClick={onNavigate} data-guide-nav={to}>
       {({ isActive }) => (
         <span
           className={clsx(
@@ -274,7 +274,7 @@ function CollapsedSection({
 
   if (section.to) {
     return (
-      <NavLink to={section.to} end onClick={onNavigate} aria-label={label} title={label}>
+      <NavLink to={section.to} end onClick={onNavigate} data-guide-nav={section.to} aria-label={label} title={label}>
         {({ isActive }) => (
           <span
             className={clsx(
@@ -309,6 +309,7 @@ function CollapsedSection({
         title={label}
         aria-haspopup="menu"
         aria-expanded={open}
+        data-guide-section={section.labelKey}
         onClick={() => setOpen((value) => !value)}
         className={clsx(
           "flex h-10 w-full items-center justify-center rounded-lg transition-colors duration-150",
@@ -365,7 +366,7 @@ function Section({
 
   if (section.to) {
     return (
-      <NavLink to={section.to} end onClick={onNavigate}>
+      <NavLink to={section.to} end onClick={onNavigate} data-guide-nav={section.to}>
         {({ isActive }) => (
           <span
             className={clsx(
@@ -399,6 +400,7 @@ function Section({
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={expanded}
+        data-guide-section={section.labelKey}
         className={clsx(
           "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium",
           "transition-colors duration-150",

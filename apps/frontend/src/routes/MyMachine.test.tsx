@@ -28,6 +28,9 @@ const queryMocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("../lib/guide", () => ({
+  useGuideActions: () => ({ complete: vi.fn(async () => {}), dismiss: vi.fn(async () => {}) }),
+}));
 vi.mock("../lib/api", () => ({
   api: {
     post: vi.fn(async () => undefined),

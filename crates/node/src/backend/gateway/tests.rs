@@ -3302,6 +3302,7 @@ pub(crate) mod testkit {
             network: Default::default(),
             resources: Default::default(),
             setup_model: None,
+            first_run_guide: None,
         }));
         let (network_chat, _) =
             crate::network_chat::NetworkChat::new(database.clone(), auth.clone(), false);

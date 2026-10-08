@@ -303,6 +303,7 @@ mod tests {
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
             resources: Default::default(),
             setup_model: None,
+            first_run_guide: None,
         }))
     }
 

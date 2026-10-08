@@ -18,6 +18,7 @@ import { syncPluginCatalogs } from "./lib/pluginI18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
+import { FirstRunGuide } from "./components/FirstRunGuide";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import pomMark from "./assets/pom-mark-dark.png";
@@ -353,6 +354,9 @@ export default function App() {
         </ErrorBoundary>
         <ErrorBoundary fallback={null}>
           <Sidebar />
+        </ErrorBoundary>
+        <ErrorBoundary fallback={null}>
+          <FirstRunGuide enabled={profile === "admin"} />
         </ErrorBoundary>
         <div className="flex min-w-0 flex-1 flex-col">
           <ErrorBoundary

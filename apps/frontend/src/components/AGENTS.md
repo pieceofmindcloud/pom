@@ -200,6 +200,18 @@ Per-file list:
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
+- `FirstRunGuide.tsx` - The hints of a machine's first run, mounted once in
+  the shell (`App.tsx`, `admin` profile only). Shows one balloon for the
+  current step of `lib/guide.ts`: beside the menu entry that leads to the
+  step (`[data-guide-nav="<path>"]`, else `[data-guide-section="<labelKey>"]`,
+  both set by `Sidebar.tsx`), or under the field on the step's own screen
+  (`[data-guide="network-name" | "machine-name" | "network-join"]`). It
+  re-measures the target every 200 ms and on scroll/resize, draws through a
+  portal above dialogs, and falls back to a corner card when there is no
+  target. `PLAN` maps each step to its path, section and target; adding a
+  step means a new entry there, in `MESSAGES`, in `guide.*` messages and in
+  `GUIDE_STEPS` on the node. Styles: `.tour-float`, `.tour-ring` in
+  `index.css`.
 - `LocationEditor.tsx` - Where a network is, used by Network settings and by
   the setup wizard. Inline it shows the chosen city, the precision select
   (approximate, city centre, exact) and a preview of the point the node will

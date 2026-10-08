@@ -284,6 +284,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
+    // The first run guide belongs to whoever sits at this machine.
+    RouteRule {
+        prefix: "/api/ui/guide",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
     // The machine's own name: its operator's to choose, whatever its role.
     RouteRule {
         prefix: "/api/ui/network/node-name",

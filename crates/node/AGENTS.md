@@ -114,7 +114,8 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
 2. Without `pom.json`, or with `Config.setup_pending` (the preference shell
    left by leaving a network), `webui::bootstrap_local_network` creates a
    local network and the node goes on as a configured one. A failure there is
-   a startup error. Without a config the ports come from `--port` and
+   a startup error. When there was no config at all, `first_run_guide` is set
+   so the interface shows its first run hints. Without a config the ports come from `--port` and
    `--gateway-port`, which lets a second local node be isolated.
    **The setup wizard is deprecated and unreachable.** `start_setup_mode`
    (the router carrying only `/api/setup/*`), `force_setup_if_requested`,

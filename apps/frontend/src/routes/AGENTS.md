@@ -8,6 +8,11 @@ cluster state in the browser. All copy goes through the i18n provider
 strings through `localizeServerText` (`../i18n/locales.ts`), which the backend
 writes as translation keys.
 
+`NetworkSettings.tsx` and `MyMachine.tsx` report their step of the first run
+guide after a successful save (`useGuideActions().complete`), and they and
+`PublicNetworks.tsx` carry the `data-guide` attribute the balloon points at
+(`components/FirstRunGuide.tsx`).
+
 Per-file list:
 
 - **`SetupWizard.tsx` and `Setup.tsx` are deprecated and unreachable.**

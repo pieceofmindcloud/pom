@@ -1537,6 +1537,42 @@ is also available to a node profile without administrative authority and does
 not depend on a loaded model or a Ready state: the handler stops the runtime,
 clears the deployment journal and unannounces the machine before answering.
 
+## First run guide
+
+A machine that starts with no configuration creates its local network and
+opens the panel with nothing explained, so the interface walks its operator
+through the first three things to do, one hint at a time
+(`components/FirstRunGuide.tsx`):
+
+1. **Name the network** - Network information, the "Public name" field. Done
+   when the network details are saved.
+2. **Name the machine** - My machine, the "Machine name" field. Done when the
+   name is saved.
+3. **Join another network** - the Networks screen, pointing at the first Join
+   button. Joining ends the guide; so does "Finish", because staying on the
+   machine's own network is a valid choice.
+
+Each hint is a balloon that floats beside its target, with a ring around the
+target. While the operator is on another screen it points at the menu entry
+that leads to the step (the link, or the section that hides it); on the
+step's own screen it points at the field. The target is found by attribute -
+`data-guide-nav` and `data-guide-section` in the Sidebar, `data-guide` on the
+fields - and looked up again five times a second, since scrolling and menus
+move it. With nothing to point at (a narrow screen with the menu closed, an
+empty list) the same text sits in the bottom right corner. Every balloon
+offers "Skip this step" and "Hide these hints", and motion stops under
+`prefers-reduced-motion`.
+
+The progress lives in the node, not in the browser: `first_run_guide` in
+`pom.json` lists the steps done, and is absent when there is no guide. Only
+the startup that created the configuration from nothing sets it; a machine
+that left a network and got a fresh local one is not new, and
+`Config::prepare_for_setup` (joining or leaving a network) drops it. When the
+last step is done or the operator hides the guide the field is removed and
+the guide never comes back. The screens report a step through
+`useGuideActions().complete(...)` after their own save succeeded (`lib/guide.ts`,
+`GET|POST /api/ui/guide`). Only the `admin` profile sees it.
+
 ## A machine has a single name
 
 `node_name` in `pom.json` is how the operator names the machine, and it is the

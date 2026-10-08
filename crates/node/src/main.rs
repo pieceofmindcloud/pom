@@ -726,12 +726,19 @@ async fn async_main(
         .as_ref()
         .is_none_or(|config| config.setup_pending)
     {
+        // Only a machine that never had a configuration is walked through
+        // the first steps; one that just left a network is not new.
+        let first_run = existing_config.is_none();
         let base = existing_config
             .take()
             .unwrap_or_else(|| blank_config(args.gateway_port, args.port));
         let mut created = webui::bootstrap_local_network(base, &database)
             .await
             .context("could not create the local network")?;
+        if first_run {
+            created.first_run_guide = Some(Vec::new());
+            created.save()?;
+        }
         info!(
             "No network configured - created the local network \"{}\"",
             created.network.public_name
@@ -970,6 +977,7 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
     resources: Default::default(),
     setup_model: None,
+    first_run_guide: None,
     node_name: None,
     huggingface_token: None,
     slot_save_path: None,

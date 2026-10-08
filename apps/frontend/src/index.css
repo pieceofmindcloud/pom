@@ -808,3 +808,37 @@ body {
   .pom-store-gallery:has(.pom-store-shot-main) { grid-template-columns: 1fr; }
   .pom-store-shot-main { grid-column: auto; }
 }
+
+/* First run guide (`components/FirstRunGuide.tsx`): the balloon hovers and the
+   ring breathes around what it points at. */
+.tour-float {
+  animation: tour-float 2.2s ease-in-out infinite;
+}
+@keyframes tour-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+.tour-ring {
+  border: 2px solid rgb(var(--iris) / 0.9);
+  animation: tour-ring 1.8s ease-in-out infinite;
+}
+@keyframes tour-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(var(--iris) / 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgb(var(--iris) / 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-float,
+  .tour-ring {
+    animation: none;
+  }
+}

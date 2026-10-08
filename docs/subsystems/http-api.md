@@ -914,6 +914,12 @@ directional probe; the gateway's and peers' probes stay as a fallback and cover
 a single head with no edge in the graph. The run RTT with remote processing
 stays in the trace), `chat/history` (authenticated GET/POST/DELETE for the
 durable conversation history), `dev/update` + `dev/restart`,
+`guide` (the first run guide, open to every profile: GET answers `{active,
+steps, done}`; POST takes `{done: "<step>"}` for a step done or skipped, or
+`{dismiss: true}`, and answers the new state. The steps are `network_name`,
+`machine_name` and `join`; the progress is `first_run_guide` in `pom.json`,
+removed when the last step is done or the guide is dismissed, after which
+both calls answer `active: false`. An unknown step is 400),
 `network/advertise-addr`, `network/node-name` (POST `{node_name}`, at most 64
 characters and no control characters; empty goes back to the system hostname;
 it writes `node_name` to the config and renames the node live, answering

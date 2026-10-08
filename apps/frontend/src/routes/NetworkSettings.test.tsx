@@ -68,6 +68,9 @@ const queryMocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("../lib/guide", () => ({
+  useGuideActions: () => ({ complete: vi.fn(async () => {}), dismiss: vi.fn(async () => {}) }),
+}));
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn(async (path: string) => path.includes("trust-share") ? queryMocks.trustShare : queryMocks.networkInfo.data),

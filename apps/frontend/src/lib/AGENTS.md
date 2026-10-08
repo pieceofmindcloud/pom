@@ -613,6 +613,13 @@ would go.
 ### transferLabel.ts
 - `transferTitle(item)` / `transferHash(name)` - como uma transferência ou uma oferta se apresenta: "qwen3:8b · L0–15" no título, sha256 curto ao lado. O nome de uma fatia em disco é o hash, e hash não identifica nada que se leia; o rótulo vem do `.pom`, que o nó manda junto com o job. Um modelo inteiro não tem faixa e continua se chamando pelo nome do arquivo, e um nó de versão anterior (que não manda nada disso) cai no nome também, sem quebrar a tela.
 
+### guide.ts
+- `useGuide()` reads the first run guide's state from `/api/ui/guide`;
+  `currentGuideStep(state)` is the first step not done, or null.
+  `useGuideActions()` gives `complete(step)` and `dismiss()`: a screen calls
+  `complete` after its own save succeeded. Both are no-ops once the guide
+  ended and never throw, so they cannot disturb the save that triggered them.
+
 ### chatScroll.ts
 - `isNearBottom(metrics, threshold = 32)` - decides whether streaming keeps the chat pinned to the bottom.
 

@@ -1214,6 +1214,11 @@ faz o download autenticado do blob persistido.
   inference ports, the admin surface's node-to-node path and `/handshake` in
   `session.rs` - accepts the key being replaced while its grace lasts, and
   every sender goes through `internal_node_token`.
+  `webui/guide.rs` keeps the first run guide's progress
+  (`Config::first_run_guide`) behind `GET|POST /api/ui/guide`:
+  `advance_guide` marks a step done, ends the guide with the last one or on
+  dismissal, and refuses an unknown step. Where the hints point is the
+  interface's business (`docs/subsystems/web-ui.md`, "First run guide").
   `webui/setup.rs::bootstrap_local_network` is what a node without a network
   runs at startup (`main.rs`); there is no other way to start. A trust root
   found without its configuration is moved to `setup-backups/<date>/`

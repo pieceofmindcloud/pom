@@ -414,6 +414,13 @@ pub struct Config {
     /// later deployment action and is deliberately not started by setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_model: Option<String>,
+    /// Progress of the first run guide: the hints that walk the operator of a
+    /// newly created local network through naming it, naming the machine and
+    /// looking for a network to join. `None` means there is no guide (it
+    /// ended, was dismissed, or this node never had one); `Some` lists the
+    /// steps already done, by id (`webui/guide.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_run_guide: Option<Vec<String>>,
     /// Quais GPUs desta máquina a inferência pode usar, pelo `index` que o nó
     /// publica em `system.gpus[]` - o mesmo número que o painel mostra.
     ///
@@ -523,6 +530,7 @@ impl fmt::Debug for Config {
             .field("shard_max_gb", &self.shard_max_gb)
             .field("resources", &self.resources)
             .field("setup_model", &self.setup_model)
+            .field("first_run_guide", &self.first_run_guide)
             .field("gpus", &self.gpus)
             .field("thermal", &self.thermal)
             .field("cache_type_k", &self.cache_type_k)
@@ -835,6 +843,7 @@ impl Config {
     /// every network identity or credential must be supplied again.
     pub fn prepare_for_setup(&mut self) {
         self.setup_pending = true;
+        self.first_run_guide = None;
         self.profile = crate::profile::NodeProfile::Node;
         self.connection_key.clear();
         self.bootstrap_nodes.clear();
@@ -1350,6 +1359,7 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,
+            first_run_guide: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -1458,6 +1468,7 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,
+            first_run_guide: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -1667,6 +1678,7 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,
+            first_run_guide: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -1899,6 +1911,7 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,
+            first_run_guide: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,

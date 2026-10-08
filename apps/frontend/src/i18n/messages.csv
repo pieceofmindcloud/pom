@@ -949,6 +949,19 @@ firstRun.stepStart,Start,Início
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil
+guide.finish,Finish,Concluir
+guide.hide,Hide these hints,Ocultar estas dicas
+guide.joinGo,Open Networks to see the networks you can join.,Abra Redes para ver as redes em que você pode entrar.
+guide.joinHere,"Pick a network and ask to join it; its administrator approves the request. Staying on your own network is fine too.","Escolha uma rede e peça para entrar; o administrador dela aprova o pedido. Ficar só na sua rede também serve."
+guide.joinTitle,Join another network,Entre em outra rede
+guide.machineGo,"Open Network, then My machine.","Abra Rede e depois Minha máquina."
+guide.machineHere,Type how other machines should see this one and save.,Digite como as outras máquinas devem ver esta e salve.
+guide.machineTitle,Name this machine,Dê um nome a esta máquina
+guide.networkGo,"Open Network, then Network information.","Abra Rede e depois Informações da rede."
+guide.networkHere,"Your network was created with this machine's name. Give it a name of its own and save.","Sua rede foi criada com o nome desta máquina. Dê a ela um nome próprio e salve."
+guide.networkTitle,Name your network,Dê um nome à sua rede
+guide.progress,Step {current} of {total},Passo {current} de {total}
+guide.skip,Skip this step,Pular este passo
 huggingFace.clear,Remove saved token,Remover token salvo
 huggingFace.cleared,Saved Hugging Face token removed,Token salvo do Hugging Face removido
 huggingFace.precedence,"Precedence: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json, then the Hugging Face cache file. Environment variables always win.","Precedência: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json e, por fim, o arquivo de cache do Hugging Face. As variáveis de ambiente sempre vencem."

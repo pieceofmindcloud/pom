@@ -23,9 +23,11 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   setup, sem migração.
   `NetworkSettings` guarda nome, organização, descrição, regras, canais,
   visibilidade (`local`, `private`, `public`), política de acesso e localização
-  geo (país, cidade, coordenadas e label canônico). `setup_pending` permite
-  preservar preferências locais ao sair da rede e voltar ao wizard mesmo com
-  `pom.json` presente.
+  geo (país, cidade, coordenadas e label canônico). `setup_pending` marks a `pom.json` that is only a
+  preference shell (the node left a network): startup then creates a local
+  network instead of loading it. `first_run_guide` is the progress of the
+  first run guide (`backend/webui/guide.rs`): `None` when there is no guide,
+  else the ids of the steps done; `prepare_for_setup` drops it.
   `ResourcePolicy` guarda os percentuais de RAM e CPU reservados ao sistema.
   O primeiro acesso usa `~/.pom/models` e `~/.pom/models_sliced` como padrões
   e grava `shard_max_gb` para limitar as fatias compartilhadas.

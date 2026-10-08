@@ -62,7 +62,15 @@ Per-file list:
   the publisher key and the `relay_hints`. Métricas agregadas só aparecem quando o cluster local
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
   Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
-  país, o combo de cidade mostra apenas as cidades daquele país.
+  país, o combo de cidade mostra apenas as cidades daquele país. The place
+  column (city, state, country) is what the node resolved from each network's
+  coordinates, not text the network sent; the discovery label is only in the
+  details. The toolbar also has a distance filter and a sort order (closest,
+  lowest latency, name). Distances are measured from this network's location
+  (`useNetworkInfo`) or, after "Use my browser's location", from the browser;
+  the screen never asks the browser by itself. Latency comes from
+  `usePublicLatencies` and is measured only after "Measure latency" or
+  choosing the latency order.
   O nome de cada rede abre um `Modal` com todo o registro público, incluindo
   descrição, regras e o campo único de canais Discord ou Telegram renderizados
   como Markdown; a confirmação de entrada continua sendo uma ação separada.

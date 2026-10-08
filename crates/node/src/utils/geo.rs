@@ -286,6 +286,46 @@ impl GeoDatabase {
     }
 }
 
+/// How many resolved coordinates `resolve` remembers.
+const RESOLVE_CACHE_MAX: usize = 2048;
+
+/// The city of the database closest to a coordinate.
+///
+/// This is how a listed network gets its country and city on this node: from
+/// the coordinates it publishes and this node's own database, never from the
+/// names the network sent. Answers are remembered, because the list of
+/// networks is read again every few seconds with the same coordinates.
+pub fn resolve(latitude: f64, longitude: f64) -> Option<CityView> {
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<(u64, u64), Option<CityView>>>> =
+        OnceLock::new();
+    if !valid_coordinate(latitude, longitude) {
+        return None;
+    }
+    let key = (latitude.to_bits(), longitude.to_bits());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(known) = cache.lock().expect("geo resolve cache lock").get(&key) {
+        return known.clone();
+    }
+    let database = database().ok()?;
+    let resolved = database
+        .cities
+        .iter()
+        .map(|city| {
+            (
+                distance_km(latitude, longitude, city.latitude, city.longitude),
+                city,
+            )
+        })
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+        .map(|(_, city)| database.view(city, None));
+    let mut cache = cache.lock().expect("geo resolve cache lock");
+    if cache.len() >= RESOLVE_CACHE_MAX {
+        cache.clear();
+    }
+    cache.insert(key, resolved.clone());
+    resolved
+}
+
 fn clamp_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
@@ -512,6 +552,15 @@ mod tests {
         assert!(nearest[0].distance_km.unwrap() < 5.0);
         assert!(nearest.windows(2).all(|pair| pair[0].distance_km <= pair[1].distance_km));
         assert_eq!(database.city(nearest[0].id).unwrap().name, "Curitiba");
+    }
+
+    #[test]
+    fn a_published_coordinate_resolves_to_its_city() {
+        let lisbon = resolve(38.72, -9.14).expect("a city near Lisbon");
+        assert_eq!(lisbon.country_code, "PT");
+        assert_eq!(resolve(38.72, -9.14), Some(lisbon));
+        assert_eq!(resolve(f64::NAN, 0.0), None);
+        assert_eq!(resolve(91.0, 0.0), None);
     }
 
     #[test]

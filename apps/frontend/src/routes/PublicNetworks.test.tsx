@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
+import { resetPublicLatencyCache } from "../lib/publicLatency";
 import { resetPublicLocatorCache } from "../lib/publicLocator";
 import { resetPublicStatsCache } from "../lib/publicStats";
 import { PublicNetworks } from "./PublicNetworks";
@@ -10,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   node: { data: undefined as { authority_level: "primary" | "secondary" | null } | undefined },
+  networkInfo: { data: undefined as { network: { location: { latitude: number; longitude: number } | null } } | undefined },
+  warning: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -18,9 +21,10 @@ vi.mock("../lib/api", () => ({
 vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: undefined }),
   useNode: () => mocks.node,
+  useNetworkInfo: () => mocks.networkInfo,
 }));
 vi.mock("../lib/toast", () => ({
-  useToast: () => ({ fromError: vi.fn(), success: vi.fn() }),
+  useToast: () => ({ fromError: vi.fn(), success: vi.fn(), warning: mocks.warning }),
 }));
 
 const networks = [
@@ -95,6 +99,7 @@ function serve(local?: (typeof networks)[number]) {
 beforeEach(() => {
   vi.stubGlobal("fetch", publicHealth);
   mocks.node.data = undefined;
+  mocks.networkInfo.data = undefined;
   mocks.post.mockResolvedValue({});
   mocks.get.mockImplementation((path: string) => {
     if (path === "/api/public/networks") return Promise.resolve(networks);
@@ -110,6 +115,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetPublicLocatorCache();
+  resetPublicLatencyCache();
   resetPublicStatsCache();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
@@ -139,6 +145,81 @@ describe("PublicNetworks", () => {
       expect(screen.queryByText("Rede Curitiba")).toBeNull();
       expect(screen.getByText("Rede São Paulo")).toBeTruthy();
     });
+  });
+
+  /** Names of the listed networks, top to bottom. */
+  function order() {
+    return screen.getAllByRole("button", { name: /Abrir detalhes|Open details/ }).map((button) => button.textContent ?? "").map((text) => ["Curitiba", "São Paulo", "Lisboa"].find((name) => text.includes(`Rede ${name}`)));
+  }
+
+  function mount() {
+    return render(
+      <LocaleProvider initialLocale="en">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+  }
+
+  it("measures distances from this network's location and never asks the browser by itself", async () => {
+    const geolocation = { getCurrentPosition: vi.fn() };
+    Object.defineProperty(navigator, "geolocation", { configurable: true, value: geolocation });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    // This node's network is in Lisbon.
+    mocks.networkInfo.data = { network: { location: { latitude: 38.72, longitude: -9.14 } } };
+    const points = [{ latitude: -25.43, longitude: -49.27 }, { latitude: -23.55, longitude: -46.63 }, { latitude: 38.72, longitude: -9.14 }];
+    const base = mocks.get.getMockImplementation()!;
+    mocks.get.mockImplementation((path: string) => path === "/api/public/networks"
+      ? Promise.resolve(networks.map((network, index) => ({ ...network, location: points[index] })))
+      : base(path));
+    mount();
+
+    await screen.findByText("Rede Curitiba");
+    expect(geolocation.getCurrentPosition).not.toHaveBeenCalled();
+    expect(order()).toEqual(["Lisboa", "São Paulo", "Curitiba"]);
+    expect(screen.getByTestId("distance-origin").textContent).toContain("your network's location");
+
+    // Only what is within reach of Lisbon stays.
+    fireEvent.change(screen.getByRole("combobox", { name: "Distance" }), { target: { value: "500" } });
+    expect(order()).toEqual(["Lisboa"]);
+    fireEvent.change(screen.getByRole("combobox", { name: "Distance" }), { target: { value: "0" } });
+
+    // The browser is asked on the button, and then it is the origin.
+    geolocation.getCurrentPosition.mockImplementation((ok: (position: unknown) => void) => ok({ coords: { latitude: -23.55, longitude: -46.63 } }));
+    fireEvent.click(screen.getByRole("button", { name: "Use my browser's location" }));
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(order()).toEqual(["São Paulo", "Curitiba", "Lisboa"]));
+    expect(screen.getByTestId("distance-origin").textContent).toContain("your browser's location");
+  });
+
+  it("has no distance filter without a point to measure from", async () => {
+    mount();
+    await screen.findByText("Rede Curitiba");
+    expect((screen.getByRole("combobox", { name: "Distance" }) as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByTestId("distance-origin").textContent).toContain("set your network's location");
+  });
+
+  it("measures latency only when asked, and sorts by it", async () => {
+    const rtt: Record<string, number> = { "pk:curitiba": 180, "pk:sao-paulo": 40 };
+    const base = mocks.get.getMockImplementation()!;
+    mocks.get.mockImplementation((path: string) => {
+      if (path.startsWith("/api/ui/network-chat/lobby/latency?")) {
+        const key = new URLSearchParams(path.split("?")[1]).get("key") ?? "";
+        return key in rtt ? Promise.resolve({ rtt_ms: rtt[key] }) : Promise.reject(new Error("publisher_timeout"));
+      }
+      return base(path);
+    });
+    mount();
+    await screen.findByText("Rede Curitiba");
+    const asked = () => mocks.get.mock.calls.filter(([path]) => String(path).includes("/lobby/latency")).length;
+    expect(asked()).toBe(0);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Sort by" }), { target: { value: "latency" } });
+    await waitFor(() => expect(screen.getByTestId("public-network-latency-fingerprint-sao-paulo").textContent).toBe("40 ms"));
+    await waitFor(() => expect(screen.getByTestId("public-network-latency-fingerprint-lisboa").textContent).toBe("no answer"));
+    expect(screen.getByTestId("public-network-latency-fingerprint-curitiba").textContent).toBe("180 ms");
+    expect(asked()).toBe(3);
+    // The network that did not answer goes last.
+    expect(order()).toEqual(["São Paulo", "Curitiba", "Lisboa"]);
   });
 
   it("does not call a network missing from the DHT when the check itself failed", async () => {

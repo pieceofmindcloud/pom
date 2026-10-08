@@ -183,7 +183,8 @@ private networks may leave the location empty.
 unmodified `assets/geo/csv-cities.csv.gz` (Countries States Cities Database,
 ODbL 1.0, pinned by `RELEASE` and a checksum test) embedded in the binary and
 decoded on first use. `GeoDatabase::nearest` answers the cities around a
-coordinate, `search` the cities of a country by name (accents folded), `city`
+coordinate, `resolve` the single closest one with a small memo (it names the
+place of every listed network on each poll of the Networks screen), `search` the cities of a country by name (accents folded), `city`
 one row by id. `apply_location` is the only writer of a network's location:
 `NetworkSettings.city_id` must be a row of the database, the country, state
 and city names are copied from that row (never the operator's text), and

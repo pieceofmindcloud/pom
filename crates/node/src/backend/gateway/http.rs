@@ -164,6 +164,9 @@ pub(crate) struct PublicNetworkView {
     pub channels: String,
     pub country_code: String,
     pub country_name: String,
+    /// State or region of the city. Only filled by `resolve_places`.
+    #[serde(default)]
+    pub state: String,
     pub city: String,
     pub geo_label: String,
     pub access_policy: crate::config::NetworkAccessPolicy,
@@ -272,6 +275,7 @@ fn view_from_directory_record(
         channels: network.channels,
         country_code: network.country_code,
         country_name: network.country_name,
+        state: String::new(),
         city: network.city,
         geo_label: network.geo_label,
         access_policy: network.access_policy,
@@ -700,20 +704,16 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         channels: network.channels.clone(),
         country_code: network.country_code.clone(),
         country_name: network.country_name.clone(),
+        state: network.state.clone(),
         city: network.city.clone(),
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
         lobby_chat: network.lobby_chat && state.network_chat.enabled(),
         public_stats: network.public_stats,
-        location: network
-            .location
-            .clone()
-            .map(|location| crate::config::NetworkLocation {
-                latitude: location.latitude,
-                longitude: location.longitude,
-                accuracy_m: None,
-            }),
+        // Already reduced to the precision the admin chose; `accuracy_m` is
+        // what tells a viewer the point is approximate.
+        location: network.location.clone(),
         discovered_via: "pkarr".to_string(),
         directory_replicas,
     })
@@ -925,7 +925,39 @@ pub(super) async fn public_networks(
         }
     }
     remember_listed_publishers(&networks);
+    resolve_places(&mut networks);
     Json(networks)
+}
+
+/// Rewrites the country, state and city of each listed network from the
+/// coordinates it publishes and this node's offline city database.
+///
+/// The names a network sends are text from another machine. What a viewer
+/// sees and filters by is what the local database says is at that point, so
+/// two nodes listing the same network name the place the same way and a
+/// network cannot claim one city while pointing at another. A network that
+/// publishes no coordinates is listed without a place.
+pub(crate) fn resolve_places(networks: &mut [PublicNetworkView]) {
+    for network in networks {
+        let place = network
+            .location
+            .as_ref()
+            .and_then(|location| crate::geo::resolve(location.latitude, location.longitude));
+        match place {
+            Some(city) => {
+                network.country_code = city.country_code;
+                network.country_name = city.country_name;
+                network.state = city.state;
+                network.city = city.name;
+            }
+            None => {
+                network.country_code.clear();
+                network.country_name.clear();
+                network.state.clear();
+                network.city.clear();
+            }
+        }
+    }
 }
 
 /// The public networks the relay under `key` knows, each checked against its

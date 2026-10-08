@@ -99,6 +99,19 @@ last):
   vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with
   `accepted: true` means the principal is still computing; ask again in a few
   seconds. Only meaningful for networks whose view has `public_stats: true`.
+- **Latency to another network**: `GET
+  /api/ui/network-chat/lobby/latency?key=pk:...` answers `{rtt_ms}`, the round
+  trip from this node to the node publishing under that key, over the lobby's
+  keyed connection (direct or relayed). The node sends `Describe` twice and
+  keeps the smaller time, because the first exchange also pays for resolving
+  the key and connecting; any answer counts, and silence is `502` with
+  `{error}`. Cached for 60 s per key. It leaves no presence in the other
+  network's lobby.
+- **Place of a listed network**: in `GET /api/public/networks` and `GET
+  /api/setup/public-networks`, `country_code`, `country_name`, `state` and
+  `city` are rewritten from the network's `location` and this node's offline
+  city database, and emptied when it publishes no coordinates. The names the
+  network itself sent are not shown.
 - **Admission** (`webui/lobby.rs`, `p2p-network.md` 6.1). On the candidate:
   `POST /api/ui/network-chat/lobby/admission` (`{key, role, name}`) asks the
   network under `key` to admit this machine; `GET

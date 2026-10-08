@@ -2907,6 +2907,43 @@ mod replicated_admin_logs_tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
+    #[test]
+    fn a_listed_network_is_placed_by_its_coordinates_not_by_its_words() {
+        let listed = |location: Option<(f64, f64)>| -> super::PublicNetworkView {
+            serde_json::from_value(serde_json::json!({
+                "cluster_id": "rede",
+                "name": "Rede",
+                "fingerprint": "f",
+                "trust_document": "",
+                "organization": "",
+                "description": "",
+                "rules": "",
+                "channels": "",
+                "country_code": "JP",
+                "country_name": "Japan",
+                "city": "Tokyo",
+                "geo_label": "com.jp.tokyo.node",
+                "access_policy": "anyone_with_anchor",
+                "location": location.map(|(latitude, longitude)| serde_json::json!({
+                    "latitude": latitude,
+                    "longitude": longitude,
+                })),
+                "discovered_via": "pkarr",
+            }))
+            .unwrap()
+        };
+        let mut networks = vec![listed(Some((-25.43, -49.27))), listed(None)];
+        super::resolve_places(&mut networks);
+
+        // It said Tokyo and pointed at Curitiba: the point is what counts.
+        assert_eq!(networks[0].city, "Curitiba");
+        assert_eq!(networks[0].state, "Paraná");
+        assert_eq!(networks[0].country_code, "BR");
+        // Without coordinates there is no place to show, whatever it said.
+        assert!(networks[1].city.is_empty() && networks[1].country_code.is_empty());
+        assert!(networks[1].country_name.is_empty() && networks[1].state.is_empty());
+    }
+
     #[tokio::test]
     async fn a_listed_network_is_accepted_only_when_it_certifies_itself() {
         let state = testkit::state_with("listing-node", vec![]).await;
@@ -2924,6 +2961,7 @@ mod replicated_admin_logs_tests {
             channels: String::new(),
             country_code: "BR".into(),
             country_name: "Brasil".into(),
+            state: String::new(),
             city: "Curitiba".into(),
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,

@@ -1170,6 +1170,10 @@ faz o download autenticado do blob persistido.
   keys, asked through `relay_directory` (lobby `Directory` request).
   `gateway::spawn_directory_publisher` sends the principal's own network to
   its relays every 90 s and `validated_publication` is the relay's check.
+  `gateway::resolve_places` rewrites country, state and city of every listed
+  network from its published coordinates and the local city database
+  (`geo::resolve`) right before `public_networks` and `setup_public_networks`
+  answer; the board a relay serves keeps the records as published.
   `gateway::collect_public_networks` is the listing behind
   `GET /api/public/networks` and behind the node's `DirectoryBoard`; it gathers
   gossip candidates when the node is in a public network or serves as a relay
@@ -1209,8 +1213,10 @@ faz o download autenticado do blob persistido.
   every sender goes through `internal_node_token`.
   `webui/setup.rs::bootstrap_local_network` is what a node without a network
   runs at startup instead of the wizard (`main.rs`, unless `--setup`).
-  The same file has `lobby_info` / `setup_lobby_info` (another network's
-  published stats), `network_info_from_cluster` and
+  The same file has `lobby_latency` (`GET
+  /api/ui/network-chat/lobby/latency`: two `Describe` round trips to a
+  publisher key, the smaller one answered as `rtt_ms`, 60 s cache) and
+  `lobby_info` / `setup_lobby_info` (another network's published stats), `network_info_from_cluster` and
   `spawn_public_stats_publisher`, the on-demand task that fills the principal's
   `PublicStats` from the cluster view (started in `spawn_gateway_companions`).
   `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key

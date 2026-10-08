@@ -668,6 +668,67 @@ pub(super) async fn lobby_info(_auth: ConnectionAuth, Query(query): Query<LobbyQ
     info_exchange(&query.key).await
 }
 
+/// How long a measured latency is answered again without asking the network.
+const LATENCY_TTL: Duration = Duration::from_secs(60);
+/// How many measured networks are remembered.
+const LATENCY_CACHE_MAX: usize = 1024;
+
+/// `GET /api/ui/network-chat/lobby/latency?key=pk:...` - the round trip from
+/// this node to the node that publishes the network under `key`, over the
+/// same keyed connection the lobby uses (direct or through a relay).
+///
+/// The question asked is `Describe`, which every node answers and which
+/// leaves no presence in the other network's lobby. It is asked twice: the
+/// first exchange pays for resolving the key and opening the connection, so
+/// the smaller of the two is the round trip. Any answer counts, a refusal
+/// included; only silence is `502`.
+pub(super) async fn lobby_latency(_auth: ConnectionAuth, Query(query): Query<LobbyQuery>) -> Response {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (Instant, u32)>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let key = query.key.trim().to_string();
+    if let Some((at, rtt_ms)) = cache.lock().expect("latency cache lock").get(&key).copied() {
+        if at.elapsed() < LATENCY_TTL {
+            return Json(json!({ "rtt_ms": rtt_ms })).into_response();
+        }
+    }
+    let client = match network_lobby::client().await {
+        Ok(client) => client,
+        Err(error) => {
+            warn!("lobby: não foi possível iniciar o cliente: {error:#}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "lobby_unavailable" })),
+            )
+                .into_response();
+        }
+    };
+    let mut best: Option<u32> = None;
+    let mut failure = String::new();
+    for _ in 0..2 {
+        let started = Instant::now();
+        match client.request(&key, LobbyRequest::Describe).await {
+            Ok(_) => {
+                let elapsed = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+                best = Some(best.map_or(elapsed, |known| known.min(elapsed)));
+            }
+            Err(error) => {
+                failure = error.to_string();
+                break;
+            }
+        }
+    }
+    let Some(rtt_ms) = best else {
+        return (StatusCode::BAD_GATEWAY, Json(json!({ "error": failure }))).into_response();
+    };
+    let mut cache = cache.lock().expect("latency cache lock");
+    if cache.len() >= LATENCY_CACHE_MAX {
+        cache.retain(|_, (at, _)| at.elapsed() < LATENCY_TTL);
+    }
+    cache.insert(key, (Instant::now(), rtt_ms));
+    Json(json!({ "rtt_ms": rtt_ms })).into_response()
+}
+
 /// `GET /api/setup/lobby/info?key=pk:...` - the same, from the setup wizard.
 pub async fn setup_lobby_info(Query(query): Query<LobbyQuery>) -> Response {
     info_exchange(&query.key).await
@@ -817,6 +878,7 @@ pub async fn setup_public_networks(
             networks.push(network);
         }
     }
+    crate::gateway::resolve_places(&mut networks);
     Json(networks).into_response()
 }
 

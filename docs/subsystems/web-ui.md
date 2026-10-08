@@ -699,8 +699,22 @@ canonical geo label (`com.<country>.<city>.<node>`) is a field of the record,
 never the pkarr key. The local index persists labels already observed and
 accepts `geo_prefix`/`geo_suffix`, allowing candidates to be filtered before the
 HTTP probes. The `/redes-publicas` page is full-bleed, like Logs, and shows a
-table with name, organization, country/city, label, nodes, latency, VRAM,
-models and reachability. **No IP is listed**: reachability comes from
+table with name, organization, place, reachability, nodes, latency, VRAM and
+models. The place (city, state, country) is **not** what the network wrote: the
+node looks up the coordinates each listed network publishes in its own offline
+city database (`gateway::resolve_places`, `geo::resolve`) and rewrites the
+fields before answering, so the country and city filters work on those names
+and a network without coordinates is listed without a place. The discovery
+label stays in the details window. The toolbar sorts by distance (default),
+by latency or by name and filters by distance (100, 500 or 2000 km).
+Distances are computed in the browser from this network's own location, or
+from the browser's location after the operator presses "Use my browser's
+location" - the screen never asks for it by itself and the position never
+leaves the browser. Latency is measured only on request ("Measure latency",
+or choosing the latency order): the node asks each listed network twice
+through the lobby connection (`GET /api/ui/network-chat/lobby/latency`) and
+the column shows the smaller round trip, "no answer" for a network that stayed
+silent, and the average between its own machines for the local network. **No IP is listed**: reachability comes from
 `GET /api/public/networks/locate`, which the node resolves from the publisher's
 key through pkarr (`direct`, `relayed` or `unresolved`). A check that could not
 be made - the node refused the key or did not answer - shows as "Could not

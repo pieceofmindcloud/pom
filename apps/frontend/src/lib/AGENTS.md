@@ -102,6 +102,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   this network received, admin only), `useAdmissionRequests` (what this node
   asked of other networks) and `admissionsApi` (`decide`, `join`, `forget`).
   The grant never reaches the browser, so there is no type for it.
+- `publicLatency.ts` - `usePublicLatencies(keys, enabled, refreshKey)`: round
+  trip from this node to each listed network, from
+  `/api/ui/network-chat/lobby/latency`. Nothing is asked until `enabled`,
+  three networks are measured at a time, answers are cached 60 s, and a
+  network that does not answer is `"failed"`.
 - `publicStats.ts` - `usePublicStats(endpoint, key, enabled, refreshKey)`:
   models, node count and VRAM of a network this machine is not in, asked from
   that network's principal through the node. 30 s cache, one retry after 3 s

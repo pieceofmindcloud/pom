@@ -1889,6 +1889,8 @@ profile.node,node,node
 publicNetworks.action,Action,Ação
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
+publicNetworks.browserLocationDenied,The browser did not share its location.,O navegador não compartilhou a localização.
+publicNetworks.browserLocationUnavailable,The browser only shares its location on HTTPS or on localhost.,O navegador só compartilha a localização em HTTPS ou em localhost.
 publicNetworks.chat,Chat,Conversar
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
@@ -1902,6 +1904,9 @@ publicNetworks.discoveredTitle,Networks found,Redes encontradas
 publicNetworks.discoveredVia,Discovered via,Descoberta via
 publicNetworks.distance,{value} km away,{value} km de distância
 publicNetworks.distanceApproximate,about {value} km,cerca de {value} km
+publicNetworks.distanceFromBrowser,"Distances are measured from your browser's location, which stays in the browser.","As distâncias são medidas a partir da localização do seu navegador, que não sai dele."
+publicNetworks.distanceFromNetwork,Distances are measured from your network's location.,As distâncias são medidas a partir da localização da sua rede.
+publicNetworks.distanceFromNone,"To see distances, set your network's location or use the browser's.","Para ver distâncias, defina a localização da sua rede ou use a do navegador."
 publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
 publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
 publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes
@@ -1913,8 +1918,12 @@ publicNetworks.joinDetail,"POM will leave the current network, keep your local h
 publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
 publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
 publicNetworks.latency,Average latency,Latência média
+publicNetworks.latencyChecking,measuring...,medindo...
+publicNetworks.latencyFailed,no answer,sem resposta
+publicNetworks.latencyValue,{value} ms,{value} ms
 publicNetworks.location,Country / city,País / cidade
-publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
+publicNetworks.locationNote,"Each network's city and country come from the coordinates it publishes, looked up in this node's own city list.","A cidade e o país de cada rede vêm das coordenadas que ela publica, consultadas na lista de cidades deste nó."
+publicNetworks.measureLatency,Measure latency,Medir latência
 publicNetworks.models,Served models,Modelos servidos
 publicNetworks.name,Public name,Nome público
 publicNetworks.noLobby,No lobby,Sem lobby
@@ -1925,6 +1934,7 @@ publicNetworks.nodes,Nodes,Nós
 publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
 publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
+publicNetworks.place,Place,Local
 publicNetworks.publisherKey,Publisher key,Chave do publicador
 publicNetworks.reach,Reachability,Alcance
 publicNetworks.reachDirect,Direct route published,Rota direta publicada
@@ -1934,12 +1944,20 @@ publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
 publicNetworks.relayHints,Dedicated relays,Relés dedicados
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
+publicNetworks.sort,Sort by,Ordenar por
+publicNetworks.sortDistance,Closest first,Mais próximas primeiro
+publicNetworks.sortLatency,Lowest latency first,Menor latência primeiro
+publicNetworks.sortName,Name,Nome
 publicNetworks.subtitle,Networks you can talk to and ask to join. The list comes from the relays this node knows.,Redes com as quais você pode conversar e pedir para entrar. A lista vem dos relés que este nó conhece.
 publicNetworks.title,Networks,Redes
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
+publicNetworks.useBrowserLocation,Use my browser's location,Usar a localização do meu navegador
 publicNetworks.vram,Total VRAM,VRAM total
+publicNetworks.within,Distance,Distância
+publicNetworks.withinAny,Any distance,Qualquer distância
+publicNetworks.withinKm,Within {value} km,Até {value} km
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada

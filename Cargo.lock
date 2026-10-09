@@ -3279,6 +3279,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.154"
+source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=dedaf0172404c917f1fe5b1afbdb4a2f1f424729#dedaf0172404c917f1fe5b1afbdb4a2f1f424729"
 dependencies = [
  "bindgen",
  "cc",
@@ -3291,9 +3292,9 @@ dependencies = [
 [[package]]
 name = "llama-engine"
 version = "0.1.0"
+source = "git+ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=dedaf0172404c917f1fe5b1afbdb4a2f1f424729#dedaf0172404c917f1fe5b1afbdb4a2f1f424729"
 dependencies = [
  "anyhow",
- "brand",
  "cc",
  "chrono",
  "half",
@@ -3305,8 +3306,6 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

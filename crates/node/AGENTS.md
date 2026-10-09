@@ -53,8 +53,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   local que contenha `ggml`; falhas de preparo exibem o comando de recuperação.
   O procedimento completo está em `docs/subsystems/build-and-run.md`, seção
   "Preparing a local worktree".
-- Durante o build, `crates/llama-engine/build/mtp_arch.rs` lê o fork local em modo
-  somente leitura:
+- Durante o build, `build/mtp_arch.rs` de `llama-engine` (repositório
+  `pom-plugin-llama.cpp`) lê o fork em modo somente leitura:
   descobre as verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em
   `src/models`, associa a verificação ao `build_arch_graph`, cruza a classe com
   `llama-model.cpp` e resolve o nome GGUF em `llama-arch.cpp`. Ele gera
@@ -470,7 +470,8 @@ dependência de licenciamento. A fronteira e os limites restantes estão em
 
 ## Ligações
 
-- **Depende de**: `routing-contract`, `llama-engine` e `brand` (crates irmãos);
+- **Depende de**: `routing-contract` e `brand` (crates irmãos) e `llama-engine`
+  (repositório `pom-plugin-llama.cpp`, dependência git);
   `config` é um módulo interno de `node`.
 - **Chamado por**: ninguém (é o binário). O servidor de inferência e o
   splitter são Rust, em-processo.

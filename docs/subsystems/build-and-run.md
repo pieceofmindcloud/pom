@@ -734,52 +734,44 @@ Linux one does not delete the macOS package that was already there.
 
 ### The llama.cpp fork is the step that cannot be missing
 
-`vendor/llama-cpp-sys-2/llama.cpp` is a **versioned symlink** to the
-repository root, and the folder it points to (`/llama.cpp/`) is in
-`.gitignore`. On a clean checkout, `llama-cpp-sys-2`'s own `build.rs` detects
-the broken symlink and automatically clones the public fork
-`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, before walking the
-native files. So CI, releases and local `cargo build` follow the same path,
-without pinning a fork commit.
+The engine lives in the private repository `pom-plugin-llama.cpp`
+(`llama-engine` and `llama-cpp-sys-2`). The POM depends on it by git, pinned to
+a `rev` in `Cargo.toml` (`[patch.crates-io]`) and in `crates/node/Cargo.toml`.
+Cargo fetches it over SSH through the system `git`, enabled by
+`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Changing the engine
+means: commit and push `pom-plugin-llama.cpp`, then move both `rev`s.
 
-That branch also carries the local fix to `common_fit_params`: free memory is
-captured before the dry context, because the recurrent state buffers are real
-even with `no_alloc=true`. The project does not version the content the symlink
-points to, so updating the fork is part of updating the dependency.
+The fork of llama.cpp is not in either repository. `llama-cpp-sys-2` finds it
+through `LLAMA_SOURCE`, which `.cargo/config.toml` sets to `llama.cpp`
+relative to the POM root (`[env]`, `force = false`). So the fork is the root's
+`llama.cpp` (a checkout or a symlink, ignored by git), and a `LLAMA_SOURCE` set
+by the environment (CI, Docker) wins. If the source is missing or has no `ggml`,
+the build stops with the manual clone command. The branch is
+`pom-tensor-parallel` of the fork. The project does not version the fork's
+content, so updating it is part of updating the dependency.
 
-On Windows the checkout can materialize the symlink as a text file or a
-reparse point. `build.rs` does not follow that entry: it removes the
-placeholder and installs the clone directly at the path Cargo reads
-(`<manifest_dir>/llama.cpp`). That leaves a real directory for `WalkDir` and
-avoids `PermissionDenied` on the depth-zero entry. On Unix, the clone is
-installed at the symlink's relative target, keeping the versioned layout. If
-the clone cannot be downloaded, the error lists the full command for manual
-preparation, instead of leaving `walkdir`'s raw `NotFound`.
+The binding's build also applies a local fix to `common_fit_params`: free
+memory is captured before the dry context, because the recurrent state buffers
+are real even with `no_alloc=true`.
 
-Before the native build, `release-windows.yml` compiles and runs
-`vendor/llama-cpp-sys-2/src/build_support.rs` with the runner's `rustc`. That
-smoke test confirms on Windows itself that a versioned symlink does not become
-the root walked by `WalkDir` and that the Unix target stays preserved.
+Before the native build, `release-windows.yml` locates `build_support.rs` in the
+checkout cargo fetched for `llama-cpp-sys-2` (`cargo metadata`) and runs it with
+the runner's `rustc`. That smoke test confirms on Windows that a versioned
+symlink does not become the root walked by `WalkDir` and that the Unix target
+stays preserved.
 
 ### Preparing a local worktree
 
-The versioned symlink at `vendor/llama-cpp-sys-2/llama.cpp` resolves to
-`<worktree>/llama.cpp`, but the root's content is ignored by git. The first
-`cargo build -p node` already triggers the automatic preparation. To reuse a
-local checkout of the fork without copying it into the worktree, set
-`LLAMA_SOURCE`:
+A new worktree needs a `llama.cpp` at its root, with `ggml`, for
+`LLAMA_SOURCE` to find it. Point the variable at another checkout to reuse one:
 
 ```bash
-LLAMA_SOURCE=/path/to/llama.cpp
-test -d "$LLAMA_SOURCE/ggml"
-cargo build -p node
+LLAMA_SOURCE=/path/to/llama.cpp cargo build -p node
 ```
 
-If `llama.cpp` already exists at the worktree root, confirm it is the fork's
-checkout and contains `ggml`; an existing directory without `ggml` is not
-overwritten automatically. `POM_LLAMA_CPP_REPOSITORY` and `POM_LLAMA_CPP_REF`
-can point the automatic preparation to another remote or branch during tests,
-without making that reference a fixed project dependency.
+`POM_LLAMA_CPP_REPOSITORY` and `POM_LLAMA_CPP_REF` belong to the
+`llama-cpp-sys-2` preparation and are only read when no source is available,
+so tests can point it at another remote or branch.
 
 ### The UI must go in the package
 

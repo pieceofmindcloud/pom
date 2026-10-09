@@ -8,13 +8,15 @@ shared `[workspace.package]` metadata, shared `[workspace.dependencies]` for
 
 - `brand` - the product identity from `/brand.json`, embedded with `include_str!`
   (was `node/src/utils/brand.rs`). Consumed by `node` and `llama-engine`.
-- `llama-engine` - **all** the code that talks to `llama-cpp-sys-2`: the FFI
-  wrapper (`llm`), MTP (`mtp`), the in-house MoE executor (`moe`), the TP reduce
-  barrier (`collective`), GGUF header parsing (`gguf`/`multipart`), KV budget
-  (`kv_budget`), and system/GPU monitoring (`sysmon`). Extracted from `node` so
-  editing backend/network/routing code does not rebuild it. Owns the C/CUDA
-  shims and the `mtp_arch` build step. Features `cuda`/`metal`/`vulkan` forward
-  to `llama-cpp-sys-2`.
+- `llama-engine` is **not in this workspace**: it lives in the repository
+  `pom-plugin-llama.cpp` (private), pinned by `rev` in `crates/node/Cargo.toml`.
+  It holds **all** the code that talks to `llama-cpp-sys-2`: the FFI wrapper
+  (`llm`), MTP (`mtp`), the in-house MoE executor (`moe`), the TP reduce barrier
+  (`collective`), GGUF header parsing (`gguf`/`multipart`), KV budget
+  (`kv_budget`), and system/GPU monitoring (`sysmon`), plus the C/CUDA shims and
+  the `mtp_arch` build step. `llama-cpp-sys-2` (the binding) lives there too and
+  is patched into the workspace from the same `rev`. The features
+  `cuda`/`metal`/`vulkan` forward to `llama-engine`.
 - `types` - infrastructure-free shared domain types (currently empty scaffolding)
 - `routing-contract` - versioned data contract for routing providers
 - `routing-base` - deterministic open-source routing provider
@@ -25,9 +27,12 @@ builds and tests the node crate. `resolver = "2"`.
 
 ## Dependency graph (verified by reading Cargo.tomls + grepping `use`)
 
-- `node` -> `routing-contract`, `llama-engine`, `brand` (all path deps in
-  `crates/node/Cargo.toml`).
-- `llama-engine` -> `brand`, `llama-cpp-sys-2` (patched to `vendor/`).
+- `node` -> `routing-contract`, `brand` (path deps) and `llama-engine` (git
+  dependency on `pom-plugin-llama.cpp`, see above).
+- `llama-engine` (external) -> `llama-cpp-sys-2` (external, patched from the same
+  repository). It no longer depends on `brand`: its GGUF key prefix is the
+  constant `llama_engine::GGUF_PREFIX`, which `node`'s test
+  `llama_engine_contract` checks against `brand::slug()`.
 - `routing-base` -> `routing-contract` (`crates/routing-base/Cargo.toml:7`).
 - `types` -> no dependencies, consumed by nothing.
 

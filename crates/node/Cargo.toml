@@ -16,8 +16,8 @@ path = "tests/support/fake_plugin_host.rs"
 
 [features]
 default = []
-# As features do backend nativo vivem em `llama-engine`, que é quem declara
-# `llama-cpp-sys-2`. Aqui só encaminham.
+# As features do backend nativo vivem em `llama-engine` (repositório pom-plugin-llama.cpp),
+# que é quem declara `llama-cpp-sys-2`. Aqui só encaminham.
 cuda = ["llama-engine/cuda"]
 metal = ["llama-engine/metal"]
 # Backend portatil: e o caminho das placas AMD, e tambem roda em NVIDIA e
@@ -28,7 +28,7 @@ vulkan = ["llama-engine/vulkan"]
 [dependencies]
 # Todo o código llama.cpp (FFI, MTP, MoE, GGUF, sysmon) mora aqui, para que
 # editar backend/rede/roteamento de `node` não o reconstrua.
-llama-engine = { path = "../llama-engine" }
+llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "dedaf0172404c917f1fe5b1afbdb4a2f1f424729" }
 brand = { path = "../brand" }
 enterprise-protocol = { path = "../enterprise-protocol" }
 arc-swap = "1"

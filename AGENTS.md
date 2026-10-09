@@ -105,14 +105,17 @@ compilar fontes locais, use `POM_LLAMA_CPP_MODE=source` e, opcionalmente,
 
 ## Preparo do build
 
-Os builds Cargo e o modo Docker `source` dependem do fork do `llama.cpp` na
-branch `pom-tensor-parallel`, ignorado pelo Git (ver `.gitignore`) e alcançado por
-`vendor/llama-cpp-sys-2/llama.cpp`. O `build.rs` prepara automaticamente um
-clone raso quando o checkout está ausente. Para reutilizar uma cópia existente,
-use `LLAMA_SOURCE=/caminho/para/llama.cpp cargo build`; o diretório precisa
-conter `ggml`. O erro de preparo informa o comando manual completo quando o
-download não puder ocorrer. O lado Rust acompanha a API dessa branch, mas o
-projeto não fixa um commit do fork.
+O motor llama.cpp (`llama-engine` e o binding `llama-cpp-sys-2`) mora no
+repositório privado `pom-plugin-llama.cpp`, fixado por `rev` em
+`Cargo.toml` (`[patch.crates-io]`) e em `crates/node/Cargo.toml`. O cargo o busca
+por SSH com o cliente `git` (`[net] git-fetch-with-cli` em `.cargo/config.toml`).
+
+Os builds Cargo e o modo Docker `source` precisam do fork do `llama.cpp` na
+branch `pom-tensor-parallel`. `.cargo/config.toml` define `LLAMA_SOURCE=llama.cpp`
+relativo a esta raiz: deixe ali um checkout ou um symlink do fork (ignorado pelo
+Git). Um `LLAMA_SOURCE` já definido no ambiente (CI, Docker) prevalece. O build
+do binding aceita um checkout com `ggml`; sem nenhum, o erro de preparo mostra o
+comando manual de clone.
 
 Se faltarem `llama_moe_ffn_descriptor`, `llama_set_moe_ffn_callback` ou campos
 `moe_external_executor*` em `llama_model_params`, o checkout do fork está

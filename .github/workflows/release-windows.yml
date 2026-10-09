@@ -157,7 +157,11 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force target | Out-Null
-          rustc --test vendor/llama-cpp-sys-2/src/build_support.rs -o target/build-support-test.exe
+          # llama-cpp-sys-2 vem do repositório pom-plugin-llama.cpp (dependência git): o
+          # arquivo de teste está no checkout que o cargo acabou de baixar.
+          $meta = cargo metadata --format-version 1 --locked | ConvertFrom-Json
+          $sys = ($meta.packages | Where-Object { $_.name -eq 'llama-cpp-sys-2' }).manifest_path
+          rustc --test (Join-Path (Split-Path -Parent $sys) 'src/build_support.rs') -o target/build-support-test.exe
           .\target\build-support-test.exe
 
       # O bindgen procura a libclang por conta própria e, quando não acha, o

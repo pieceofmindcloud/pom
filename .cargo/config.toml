@@ -1,8 +1,17 @@
 # bindgen needs to find stdbool.h when generating llama-cpp-sys-2 bindings.
 # Ubuntu ships clang without its bundled C headers; point bindgen at GCC's copy
 # instead. On macOS, Apple Clang has complete headers so this is harmless.
+# Dependências git (pom-plugin-llama.cpp, repositório privado por SSH) são buscadas pelo
+# cliente `git` do sistema, que usa as mesmas chaves e credenciais que o git do operador.
+[net]
+git-fetch-with-cli = true
+
 [env]
 BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include", force = false }
+# Fonte do fork do llama.cpp usado pelo binding llama-cpp-sys-2 (vem do repositório
+# pom-plugin-llama.cpp). Relativo a esta raiz: o `llama.cpp` da raiz do POM (checkout
+# ou symlink do fork). Um LLAMA_SOURCE já definido no ambiente (CI, Docker) prevalece.
+LLAMA_SOURCE = { value = "llama.cpp", relative = true, force = false }
 
 # Este perfil vale para o codigo *Rust*. O llama.cpp vem do cmake com
 # `--config Release` e sempre esteve otimizado - o que estava em opt-level 0 era

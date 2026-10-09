@@ -4,6 +4,9 @@ x-node: &node
   build:
     context: .
     target: ${POM_DOCKER_TARGET:-dev-runtime}
+    # The Rust build fetches pom-plugin-llama.cpp (private) over SSH with the host agent.
+    ssh:
+      - default
     additional_contexts:
       llama-fork: ${POM_LLAMA_CPP_SOURCE_CONTEXT:-./llama.cpp}
     args:

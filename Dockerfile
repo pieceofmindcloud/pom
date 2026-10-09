@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libshaderc-dev \
     libvulkan-dev \
     glslc \
+    git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -113,9 +115,9 @@ RUN set -eu; \
 # ── 1. the llama.cpp fork ─────────────────────────────────────────────────────
 # `llama-fork` is a named build context. It defaults to ./llama.cpp, but
 # POM_LLAMA_CPP_SOURCE_DIR can point at another local checkout for source mode.
-# The vendored sys crate's symlink resolves to this copied tree in the image.
+# llama-cpp-sys-2 and llama-engine come from pom-plugin-llama.cpp (a git dependency
+# pinned in Cargo.toml). Its build reads this copied tree through LLAMA_SOURCE.
 COPY --from=llama-fork . /build/llama.cpp/
-COPY vendor/ vendor/
 
 # ── 2. the backend ────────────────────────────────────────────────────────────
 # `brand.json` and `assets/` are inputs of the Rust build, not only of the
@@ -145,7 +147,12 @@ ENV XDG_CACHE_HOME=/build/target
 # load dynamically; POM's custom CUDA MoE kernels are linked into this executable.
 # `kache init` sets Cargo's `rustc-wrapper` and the build-script C/C++ `[env]`
 # keys; `--no-service` because a build container has no service manager.
-RUN --mount=type=cache,target=/root/.cargo/registry \
+# The engine repository is private and fetched over SSH: the build forwards the
+# host's agent (`docker compose build` with `ssh: [default]`, see
+# docker-compose.common.yml). github.com's host key is pinned here.
+RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts
+RUN --mount=type=ssh \
+    --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN},sharing=locked \
     if [ "$POM_LLAMA_CPP_MODE" = release ]; then \

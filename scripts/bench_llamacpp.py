@@ -702,9 +702,9 @@ def _remote_source_info(remote: Remote, source: str) -> dict[str, str]:
         raise ConfigError(
             f"arvore llama.cpp indisponivel em {source}: {(result.stderr or result.stdout).strip()}"
         )
-    if "pereirajair/llama.cpp" not in result.stdout:
+    if "pieceofmindcloud/llama.cpp" not in result.stdout:
         raise ConfigError(
-            f"a arvore {source} nao parece ser o fork do POM (remote pereirajair/llama.cpp ausente)"
+            f"a arvore {source} nao parece ser o fork do POM (remote pieceofmindcloud/llama.cpp ausente)"
         )
     commit = ""
     branch = ""

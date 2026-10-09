@@ -262,7 +262,7 @@ operador, e achar (ou não) o arquivo só decide como o MTP roda quando o modelo
 alvo não traz `nextn` embutido. Ver `crates/llama-engine/src/mtp.rs` para a
 mecânica completa (`LoadedModel::load_mtp_draft`, `EngineConfig.mtp_draft_path`)
 e o pré-requisito do lado do fork: o alvo precisa exportar `h_nextn` do
-próprio grafo (`qwen4exp.cpp` ganhou isso em `pereirajair/llama.cpp`,
+próprio grafo (`qwen4exp.cpp` ganhou isso em `pieceofmindcloud/llama.cpp`,
 `pom-tensor-parallel`, sem regredir o corte antecipado de linhas da última
 camada quando MTP não foi pedido).
 

@@ -353,7 +353,7 @@ class BenchLlamaCppTests(unittest.TestCase):
                 if len(self.commands) == 1:
                     return RemoteResult(
                         0,
-                        "origin git@github.com:pereirajair/llama.cpp.git (fetch)\n"
+                        "origin git@github.com:pieceofmindcloud/llama.cpp.git (fetch)\n"
                         "COMMIT=abc123\nBRANCH=\n",
                         "",
                     )

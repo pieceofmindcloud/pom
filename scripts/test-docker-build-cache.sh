@@ -259,7 +259,7 @@ cuda_architectures='86;120'
 cuda_arch_key=86-120
 llama_mode=release
 llama_release_tag=sample-release-tag
-llama_release_repository=pereirajair/llama.cpp
+llama_release_repository=pieceofmindcloud/llama.cpp
 cuda_runtime_flavor=runtime
 rust_toolchain=stable
 

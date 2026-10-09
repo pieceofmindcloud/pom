@@ -93,7 +93,7 @@ def check_config(
         fail(f"{filename}: build de desenvolvimento deve usar llama.cpp release por padrão")
     if build_args.get("CUDA_RUNTIME_FLAVOR") != "runtime":
         fail(f"{filename}: release prebuilt requer a imagem CUDA runtime")
-    if build_args.get("POM_LLAMA_CPP_RELEASE_REPOSITORY") != "pereirajair/llama.cpp":
+    if build_args.get("POM_LLAMA_CPP_RELEASE_REPOSITORY") != "pieceofmindcloud/llama.cpp":
         fail(f"{filename}: repositório da release prebuilt incorreto")
     if any(
         service["build"].get("context") != str(ROOT)

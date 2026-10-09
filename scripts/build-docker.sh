@@ -21,7 +21,7 @@ case "$mode" in
   *) echo "POM_LLAMA_CPP_MODE deve ser 'release' ou 'source' (recebido: $mode)." >&2; exit 1 ;;
 esac
 export POM_LLAMA_CPP_MODE="$mode"
-export POM_LLAMA_CPP_RELEASE_REPOSITORY=${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pereirajair/llama.cpp}
+export POM_LLAMA_CPP_RELEASE_REPOSITORY=${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pieceofmindcloud/llama.cpp}
 export POM_LLAMA_CPP_REF=${POM_LLAMA_CPP_REF:-pom-tensor-parallel}
 
 llama_docker_context=$(mktemp -d "${TMPDIR:-/tmp}/pom-llama-context.XXXXXX")

@@ -28,7 +28,7 @@ vulkan = ["llama-engine/vulkan"]
 [dependencies]
 # Todo o código llama.cpp (FFI, MTP, MoE, GGUF, sysmon) mora aqui, para que
 # editar backend/rede/roteamento de `node` não o reconstrua.
-llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "dedaf0172404c917f1fe5b1afbdb4a2f1f424729" }
+llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "b503e388b0dc65cf81a9df6c7909d33f0be7217b" }
 brand = { path = "../brand" }
 enterprise-protocol = { path = "../enterprise-protocol" }
 arc-swap = "1"

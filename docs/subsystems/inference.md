@@ -2273,7 +2273,7 @@ two values are equal.
   not supply on its own**: the target must export `h_nextn` from its own graph,
   which is per-architecture code in the fork
   (`build_arch_graph`/`res->t_h_nextn`); `qwen4exp.cpp` got that in
-  `pereirajair/llama.cpp` (`pom-tensor-parallel`), gated by
+  `pieceofmindcloud/llama.cpp` (`pom-tensor-parallel`), gated by
   `cparams.embeddings_nextn && !cparams.embeddings_nextn_masked` so the early
   cut of the last layer's rows (`inp_out_ids`) does not regress when MTP was not
   requested - without it the architecture would pay the FFN/hyper-connection
@@ -2930,7 +2930,7 @@ Fixed (2026-09-18), kept here for context: the external MTP draft of
 `qwen4exp` (Qwen3.8-Flash-Next) did not attach -
 `check_tensor_dims: tensor 'output_hc_norm.weight' not found` in
 `load_mtp_draft`. The cause had three parts in
-`llama.cpp/src/models/qwen4exp.cpp` (fork `pereirajair/llama.cpp`,
+`llama.cpp/src/models/qwen4exp.cpp` (fork `pieceofmindcloud/llama.cpp`,
 `pom-tensor-parallel`): `load_arch_tensors` never computed `mtp_only` (the
 pattern `qwen35.cpp`/`qwen3next.cpp`/`deepseek4.cpp` already use to free the
 trunk when the file is only the draft); the architecture never declared the

@@ -17,7 +17,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sha="$(git ls-remote https://github.com/pereirajair/llama.cpp.git refs/heads/pom-tensor-parallel | cut -f1)"
+        sha="$(git ls-remote https://github.com/pieceofmindcloud/llama.cpp.git refs/heads/pom-tensor-parallel | cut -f1)"
         test -n "$sha"
         echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -43,6 +43,6 @@ runs:
           rm -rf "$source_dir"
           mkdir -p "$(dirname "$source_dir")"
           git clone --depth 1 --branch pom-tensor-parallel \
-            https://github.com/pereirajair/llama.cpp.git "$source_dir"
+            https://github.com/pieceofmindcloud/llama.cpp.git "$source_dir"
           test "$(git -C "$source_dir" rev-parse HEAD)" = "$LLAMA_SHA"
         fi

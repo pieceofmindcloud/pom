@@ -56,7 +56,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 
 ARG POM_LLAMA_CPP_MODE=release
 ARG POM_LLAMA_CPP_RELEASE_TAG=""
-ARG POM_LLAMA_CPP_RELEASE_REPOSITORY=pereirajair/llama.cpp
+ARG POM_LLAMA_CPP_RELEASE_REPOSITORY=pieceofmindcloud/llama.cpp
 
 # This release layer depends only on its tag and repository, not POM/Rust sources.
 RUN set -eu; \

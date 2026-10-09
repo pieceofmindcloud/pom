@@ -153,6 +153,17 @@ jobs:
         with:
           key: ${{ matrix.variante }}-llama-${{ steps.llama.outputs.tag }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Acesso SSH ao repositório do motor (pom-plugin-llama.cpp)
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
+
+      - name: Chave do github.com no known_hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
       - name: Validar destino do autoclone no Windows
         shell: pwsh
         run: |

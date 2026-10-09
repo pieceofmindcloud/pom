@@ -115,6 +115,17 @@ jobs:
           npm run build
         working-directory: apps/frontend
 
+      - name: Acesso SSH ao repositório do motor (pom-plugin-llama.cpp)
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
+
+      - name: Chave do github.com no known_hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
       - name: Compilar
         # `CUDAARCHS` vazio de propósito, e não por esquecimento: sem ele o CMake
         # do llama.cpp escolhe a lista larga (compute_50 até 121a), que é o que

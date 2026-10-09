@@ -65,6 +65,17 @@ jobs:
           livre=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
           echo "livre em \$HOME: ${livre}G"
           [ "$livre" -ge 20 ] || echo "::warning::só ${livre}G livres; cada variante usa ~10G em ~/.cache/pom-release"
+      - name: Acesso SSH ao repositório do motor (pom-plugin-llama.cpp)
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
+
+      - name: Chave do github.com no known_hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
       - name: Compilar e empacotar
         run: scripts/release-ksia.sh --variant linux-cpu --version "${{ inputs.version }}"
       - name: Publicar na release
@@ -92,6 +103,17 @@ jobs:
           livre=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
           echo "livre em \$HOME: ${livre}G"
           [ "$livre" -ge 25 ] || echo "::warning::só ${livre}G livres; o build CUDA completo usa bem mais que o de CPU"
+      - name: Acesso SSH ao repositório do motor (pom-plugin-llama.cpp)
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
+
+      - name: Chave do github.com no known_hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
       - name: Compilar e empacotar
         run: scripts/release-ksia.sh --variant linux-cuda --version "${{ inputs.version }}"
       - name: Publicar na release
@@ -113,6 +135,17 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
+      - name: Acesso SSH ao repositório do motor (pom-plugin-llama.cpp)
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
+
+      - name: Chave do github.com no known_hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
       - name: Compilar e empacotar
         run: scripts/release-ksia.sh --variant windows-cpu --version "${{ inputs.version }}"
       - name: Publicar na release

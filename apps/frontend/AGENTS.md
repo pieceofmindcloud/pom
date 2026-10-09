@@ -84,10 +84,10 @@ nativos `/logs` e `/statistics` ao declarar esses destinos; sem uma declaração
 Menus novos entram na raiz, na ordem do manifesto, imediatamente antes de
 Documentação; um item com `children` vira seção expansível com submenus.
 `components/PluginBridge.tsx` liga o shell aos plugins pelo protocolo
-`pom-plugin-events/v1` (`lib/pluginEvents.ts`). Cada menu pode declarar `roles`; esse campo controla sua
-visibilidade e o acesso direto à rota vinculada. Sem `roles`, `profiles` do
-formato legado continua valendo quando presente; sem nenhum dos dois, os três
-perfis são aceitos conforme as restrições da rota. O código de
+`pom-plugin-events/v1` (`lib/pluginEvents.ts`). O POM mostra e abre as interfaces
+de todos os plugins nos perfis `admin`, `node` e `infer`; `roles` e `profiles`
+do manifesto são validados, mas não restringem essa UI. As restrições nativas
+do perfil `infer` continuam valendo para as rotas do POM. O código de
 Logs/Estatísticas não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/requests`,
 `/api/ui/requests/stats`) continua sendo a autoridade e recusa os dados sem
 entitlement.

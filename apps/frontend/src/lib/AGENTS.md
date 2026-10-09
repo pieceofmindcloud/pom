@@ -168,9 +168,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
-  a rota recusa. As superfícies `/logs` e `/statistics` são exceções de
-  descoberta e permanecem abertas no menu para todos os perfis; o entitlement
-  é aplicado pelo `App` e pelo backend. Testes em `access.test.ts`.
+  a rota recusa. Rotas de plugins ficam abertas a todos os perfis; as restrições
+  nativas de `infer` continuam valendo para `/logs`, `/statistics` e demais
+  superfícies do POM. Testes em `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.
@@ -670,15 +670,13 @@ When updating this file, preserve this bar for all agents and keep entries conci
   `/<plugin_code>/...` no mesmo registro, exceto reivindicação única das
   rotas nativas `/logs` e `/statistics`: `resolvePluginRoute`,
   `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
-  `roles` filtra o item e também limita o acesso direto à rota vinculada;
-  menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.
-  Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
-  elegíveis. `icon_image` é validado como PNG declarado em `assets` e fica
+  menus e rotas estão disponíveis para todos os perfis; `roles` e `profiles`
+  são validados e preservados no manifesto para compatibilidade, não usados como
+  controle de acesso. `icon_image` é validado como PNG declarado em `assets` e fica
   disponível para o menu como fallback visual; `documentation` valida as
   entradas Markdown dos guias e da referência. `menu[].children` vira seção
-  com submenus (`pluginMenuItems` devolve só os filhos visíveis ao perfil;
-  o `roles` do filho é interseção com o do pai) e `pluginDisplayName` dá o
-  nome humano do plugin. `slots` maps native extension slots to declared
+  com submenus (todos os filhos ficam visíveis nos perfis) e `pluginDisplayName`
+  dá o nome humano do plugin. `slots` maps native extension slots to declared
   screens; `pluginSlot(id)` returns the first active claimant. Não conhece
   plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de

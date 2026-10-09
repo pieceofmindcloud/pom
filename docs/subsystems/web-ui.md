@@ -238,9 +238,10 @@ local-only notice. Routes:
   menus show up in manifest order, before Documentation. If two plugins claim
   `/logs` or `/statistics`, both use their namespaces and the native fallback
   stays. `/logs/statistics` remains a native alias of `/statistics`.
-  `menu[].roles` filters the menu and direct access to the matching route;
-  without `roles` or the legacy `profiles` field, all three profiles are
-  accepted, always respecting the route's profiles.
+  Plugin menus and screens are available to all profiles; manifest `roles` and
+  legacy `profiles` are validated and preserved but do not gate this POM's UI.
+  Native route restrictions remain in force, so `infer` cannot open `/logs`,
+  `/statistics` or `/deployments`, even when a plugin claims an extension point.
 - `/plugins` -> Plugins, the showcase of publishable items returned by
   `https://license.pieceofmind.cloud/v1/plugins`, crossed by `code` with the
   local license and install state. Open to every profile: plugins are local to

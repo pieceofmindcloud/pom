@@ -242,7 +242,7 @@ describe("profile guard per route", () => {
     expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
   });
 
-  it("renders the plugin-provided screen instead of the fallback, per manifest profile", async () => {
+  it("renders plugin screens across profiles while retaining native infer restrictions", async () => {
     pluginUi.plugins = [enterpriseManifest(["admin", "node"])];
     open("/logs", "admin");
     expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
@@ -250,16 +250,19 @@ describe("profile guard per route", () => {
     open("/statistics", "node");
     expect(await screen.findByText("tela-plugin:logs:stats")).toBeTruthy();
     cleanup();
-    // infer não está nos perfis do manifesto: recusa, e não cai na propaganda.
+    // O POM mantém Logs fechado ao infer, mesmo quando um plugin o fornece.
     open("/logs", "infer");
     expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
     expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
   });
 
-  it("opens the Base manifest route after applying the plugin namespace", async () => {
+  it("opens an admin-only manifest route for node and infer profiles", async () => {
     pluginUi.plugins = [baseManifest];
-    open("/base/plugin-de-base", "admin");
+    open("/base/plugin-de-base", "node");
+    expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
+    cleanup();
 
+    open("/base/plugin-de-base", "infer");
     expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
   });
 
@@ -321,14 +324,6 @@ describe("profile guard per route", () => {
     cleanup();
     open("/logs", "admin");
     expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
-  });
-
-  it("keeps a plugin route closed for profiles excluded by its manifest", async () => {
-    pluginUi.plugins = [baseManifest];
-    open("/base/plugin-de-base", "node");
-
-    expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
-    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
   });
 
   it("does not let an invalid plugin path take over a native POM route", async () => {

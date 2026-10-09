@@ -77,12 +77,15 @@ describe("plugin UI registry", () => {
     expect(resolvePluginRoute("/logs")?.version).toBe("2.0.0");
   });
 
-  it("lets the manifest decide profiles, including infer", () => {
+  it("makes plugin routes available to every profile regardless of manifest roles", () => {
     setPluginUi([plugin]);
+    expect(canAccessRoute("/acme/extra", "admin")).toBe(true);
+    expect(canAccessRoute("/acme/extra", "node")).toBe(true);
     expect(canAccessRoute("/acme/extra", "infer")).toBe(true);
-    expect(canAccessRoute("/acme", "infer")).toBe(false);
-    expect(canAccessRoute("/logs", "node")).toBe(false);
+    expect(canAccessRoute("/acme", "infer")).toBe(true);
+    expect(canAccessRoute("/logs", "node")).toBe(true);
     expect(canAccessRoute("/logs", "admin")).toBe(true);
+    expect(canAccessRoute("/logs", "infer")).toBe(false, "the POM still denies native logs to infer");
   });
 
   it("accepts route roles without requiring legacy profiles", () => {
@@ -103,19 +106,21 @@ describe("plugin UI registry", () => {
       roles: ["infer"],
     });
     expect(canAccessRoute("/roles/roles-only", "infer")).toBe(true);
-    expect(canAccessRoute("/roles/roles-only", "admin")).toBe(false);
+    expect(canAccessRoute("/roles/roles-only", "node")).toBe(true);
+    expect(canAccessRoute("/roles/roles-only", "admin")).toBe(true);
   });
 
   it("uses each plugin namespace for matching and its displayed menu links", () => {
     setPluginUi([basePlugin, otherPlugin]);
 
-    expect(pluginMenuItems("admin").map(({ code, id, to }) => [code, id, to])).toEqual([
+    const allPluginMenus = [
       ["base", "plugin", "/base/plugin-de-base"],
       ["base", "example", "/base/example"],
-    ]);
-    expect(pluginMenuItems("infer").map(({ code, id, to }) => [code, id, to])).toEqual([
       ["analytics", "example", "/analytics/example"],
-    ]);
+    ];
+    for (const profile of ["admin", "node", "infer"] as const) {
+      expect(pluginMenuItems(profile).map(({ code, id, to }) => [code, id, to])).toEqual(allPluginMenus);
+    }
     expect(resolvePluginRoute("/base/plugin-de-base")).toMatchObject({
       code: "base",
       route: { path: "/base/plugin-de-base", screen: "plugin" },
@@ -127,9 +132,9 @@ describe("plugin UI registry", () => {
     expect(resolvePluginRoute("/example")).toBeNull();
     expect(resolvePluginRoute("/base/example")?.code).toBe("base");
     expect(canAccessRoute("/base/example", "node")).toBe(true);
-    expect(canAccessRoute("/base/example", "infer")).toBe(false);
+    expect(canAccessRoute("/base/example", "infer")).toBe(true);
     expect(canAccessRoute("/analytics/example", "infer")).toBe(true);
-    expect(canAccessRoute("/analytics/example", "admin")).toBe(false);
+    expect(canAccessRoute("/analytics/example", "admin")).toBe(true);
 
     const adminLinks = navForProfile("admin").flatMap((section) => [
       ...(section.to ? [{ labelKey: section.labelKey, to: section.to }] : []),
@@ -221,15 +226,22 @@ describe("plugin UI registry", () => {
     expect(resolvePluginRoute("/base/plugin-de-base")).toBeNull();
   });
 
-  it("filters menu items by profile and localizes labels with an en floor", () => {
+  it("exposes plugin menus across profiles while retaining native infer restrictions", () => {
     setPluginUi([plugin]);
-    expect(pluginMenuItems("infer").map((i) => i.id)).toEqual(["extra"]);
+    expect(pluginMenuItems("node").map((i) => i.id)).toEqual(["logs", "extra"]);
+    expect(pluginMenuItems("infer").map((i) => i.id)).toEqual(["logs", "extra"]);
+    const inferNavigation = navForProfile("infer").flatMap((section) => [
+      ...(section.to ? [section.labelKey] : []),
+      ...(section.children ?? []).map((child) => child.labelKey),
+    ]);
+    expect(inferNavigation).toContain("plugin:acme:extra");
+    expect(inferNavigation).not.toContain("plugin:acme:logs");
     expect(pluginLabel("plugin:acme:logs", "pt-BR")).toBe("Auditoria");
     expect(pluginLabel("plugin:acme:extra", "pt-BR")).toBe("Extra");
     expect(pluginLabel("plugin:acme:nope", "en")).toBeNull();
   });
 
-  it("applies menu roles to both visibility and direct route access, defaulting missing roles to all profiles", () => {
+  it("keeps manifest role metadata but exposes plugin menus and routes to every profile", () => {
     const rolesPlugin: ActivePluginUi = {
       code: "roles",
       manifest: {
@@ -258,24 +270,17 @@ describe("plugin UI registry", () => {
     };
     setPluginUi([rolesPlugin]);
 
-    for (const [profile, ownMenu, ownRoute, otherRoutes] of [
-      ["admin", "admin", "/roles/admin", ["/roles/node", "/roles/infer"]],
-      ["node", "node", "/roles/node", ["/roles/admin", "/roles/infer"]],
-      ["infer", "infer", "/roles/infer", ["/roles/admin", "/roles/node"]],
-    ] as const) {
-      expect(pluginMenuItems(profile).map(({ id }) => id)).toContain(ownMenu);
-      expect(pluginMenuItems(profile).map(({ id }) => id)).toContain("all");
+    for (const profile of ["admin", "node", "infer"] as const) {
+      const menuIds = pluginMenuItems(profile).map(({ id }) => id);
+      expect(menuIds).toEqual(["admin", "node", "infer", "all"]);
       const navKeys = navForProfile(profile).flatMap((section) => [
         ...(section.to ? [section.labelKey] : []),
         ...(section.children ?? []).map(({ labelKey }) => labelKey),
       ]);
-      expect(navKeys).toContain(`plugin:roles:${ownMenu}`);
-      expect(navKeys).toContain("plugin:roles:all");
-      for (const otherMenu of ["admin", "node", "infer"] as const) {
-        if (otherMenu !== ownMenu) expect(navKeys).not.toContain(`plugin:roles:${otherMenu}`);
+      for (const menu of ["admin", "node", "infer", "all"] as const) {
+        expect(navKeys).toContain(`plugin:roles:${menu}`);
+        expect(canAccessRoute(`/roles/${menu}`, profile)).toBe(true);
       }
-      expect(canAccessRoute(ownRoute, profile)).toBe(true);
-      for (const path of otherRoutes) expect(canAccessRoute(path, profile)).toBe(false);
     }
   });
 
@@ -353,13 +358,14 @@ describe("plugin UI registry", () => {
     )).toBe(false);
   });
 
-  it("never lets a plugin item show for a profile the manifest excludes", () => {
+  it("shows plugin items to every profile even when the manifest lists only admin", () => {
     setPluginUi([plugin]);
     const node = navForProfile("node");
-    expect(JSON.stringify(node)).not.toContain("plugin:acme:extra");
+    expect(JSON.stringify(node)).toContain("plugin:acme:extra");
+    expect(canAccessRoute("/acme/extra", "node")).toBe(true);
   });
 
-  it("registers menu children as a sidebar section with per-child roles", () => {
+  it("registers menu children as a sidebar section available to every profile", () => {
     setPluginUi([{
       code: "base",
       version: "0.2.0",
@@ -390,7 +396,7 @@ describe("plugin UI registry", () => {
     const [admin] = pluginMenuItems("admin");
     expect(admin.children?.map((child) => child.to)).toEqual(["/base/plugin", "/base/projects"]);
     const [node] = pluginMenuItems("node");
-    expect(node.children?.map((child) => child.id)).toEqual(["projects"]);
+    expect(node.children?.map((child) => child.id)).toEqual(["plugin", "projects"]);
     expect(pluginLabel("plugin:base:projects", "pt-BR")).toBe("Projetos");
     expect(pluginDisplayName("base", "en")).toBe("POM - Plugins");
 
@@ -398,7 +404,7 @@ describe("plugin UI registry", () => {
     expect(section?.to).toBeUndefined();
     expect(section?.children?.map((child) => child.to)).toEqual(["/base/plugin", "/base/projects"]);
     expect(canAccessRoute("/base/projects", "node")).toBe(true);
-    expect(canAccessRoute("/base/plugin", "node")).toBe(false);
+    expect(canAccessRoute("/base/plugin", "node")).toBe(true);
   });
 
   it("rejects a manifest whose child id repeats or points outside the declared routes", () => {

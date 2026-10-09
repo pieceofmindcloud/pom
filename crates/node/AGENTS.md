@@ -406,9 +406,10 @@ O manifesto pode declarar `icon_image` como PNG do menu,
 idioma, `screenshots` (caminhos do repositório ou `https://`, nunca servidos
 pelo nó) e `menu[].children` para submenus; tipos MIME e declarações são
 conferidos antes de servir.
-Menus e rotas aceitam `roles` opcionais; `profiles` continua aceito como campo
-legado, com `roles` prevalecendo quando ambos aparecem. A ausência dos dois
-libera todos os perfis antes da regra de acesso.
+Menus e rotas aceitam `roles` e `profiles` como metadados validados e
+preservados no manifesto; o frontend do POM não os usa para restringir plugins,
+que ficam disponíveis em todos os perfis. As restrições de acesso nativas do
+POM continuam independentes.
 `PluginRuntime::ui_manifest` reaproveita `query_audit`. Contrato completo em
 `docs/subsystems/plugins-ui.md`.
 

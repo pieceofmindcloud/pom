@@ -96,8 +96,8 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 
 /** Se este perfil pode abrir esta rota, incluindo superfícies Enterprise. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
-  // Rota fornecida por plugin: quem decide são os perfis do manifesto, que
-  // valem também para `infer` (a lista reduzida abaixo é só do POM).
+  // UIs de plugins são locais a este nó e ficam abertas a todos os perfis.
+  // Os bloqueios explícitos de superfícies nativas do infer continuam valendo.
   if (profile === "infer" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
   const pluginProfiles = pluginRouteProfiles(path);
   if (pluginProfiles) return pluginProfiles.includes(profile);

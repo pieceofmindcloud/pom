@@ -45,9 +45,9 @@ namespace. The real code of Request Logs and Statistics lives in
 | `icon_image` | optional; path of a `.png` asset. The frontend uses it in the menu and falls back to `menu[].icon` when the image fails or is missing |
 | `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
 | `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
-| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`); with neither `roles` nor the legacy `profiles` field, every profile is eligible. `group` is accepted but does not organize items |
-| `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and `roles` (intersected with the parent's). With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
-| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles` (`admin`/`node`/`infer`, non-empty), `full_bleed`; with neither, every profile is eligible |
+| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
+| `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and optional role metadata. With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
+| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles` (`admin`/`node`/`infer`, non-empty), `full_bleed`; role metadata is validated and retained, but does not restrict plugin routes in the current POM |
 | `screens{}` | `module` (ES asset), `export` (default `default`), `styles[]` |
 | `i18n{}` | language -> JSON asset; if present, `en` is required |
 | `documentation` | optional; current format with `guides[]` and `reference[]`, each entry with `id`, a localized `title` (with `en`) and a relative Markdown asset under `docs/`; a published list of `docs/*.md` paths is also normalized into guides |
@@ -114,15 +114,13 @@ registry normalizes each target once and both navigation and the router
 consume that same path. The `/admin-ui` basename is still applied by
 `BrowserRouter`, including on direct reloads and browser history navigation.
 
-The route's profiles decide who enters the plugin screen - including `infer`,
-whose reduced POM list does not apply to these routes. `menu[].roles`
-restricts the link's visibility and the matching direct route;
-`routes[].roles` takes precedence over `routes[].profiles`, and the effective
-list is the intersection with the menus that cover the target. For existing
-manifests, `menu[].profiles` is still accepted as an equivalent when `roles`
-was not declared; `roles` wins when both fields appear. With none of the menu
-or route fields, every profile is eligible. A profile outside the effective
-list gets the normal refusal.
+Every active plugin menu and route is available to `admin`, `node` and `infer`
+profiles. Each node owns its installed plugins, so manifest `roles` and legacy
+`profiles` are validated and preserved for compatibility with older hosts but
+do not gate this POM's plugin UI. The POM's native route restrictions still
+apply: for example, `infer` cannot open `/logs`, `/statistics` or
+`/deployments`, even when a plugin claims an extension point. Plugin APIs and
+sensitive operations must enforce their own authorization on the backend.
 
 ## Screens
 

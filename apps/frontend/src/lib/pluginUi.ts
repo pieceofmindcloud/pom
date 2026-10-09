@@ -4,8 +4,10 @@
  * O nó valida o manifesto e serve `GET /api/ui/plugins/ui`; este módulo mantém
  * um registro validado em que rotas e destinos de menu recebem o mesmo
  * namespace `/<plugin_code>`, salvo pontos nativos reivindicados sem colisão.
- * Assim, o link, o matcher e o controle de roles usam o mesmo caminho e
- * plugins diferentes podem declarar a mesma rota relativa.
+ * Assim, o link e o matcher usam o mesmo caminho, e plugins diferentes podem
+ * declarar a mesma rota relativa. Plugin UIs são locais ao nó e ficam
+ * disponíveis a todos os perfis; `roles`/`profiles` do manifesto são mantidos
+ * para compatibilidade, mas não restringem esta interface.
  */
 import type { Profile } from "./profile";
 
@@ -14,10 +16,10 @@ export interface PluginMenuItem {
   label: Record<string, string>;
   icon?: string | null;
   to: string;
-  /** Perfis novos do manifesto; na ausência, consulta `profiles` legado. */
+  /** Role metadata retained for compatibility; current POM exposes plugin UIs to every profile. */
   roles?: Profile[];
-  /** Campo legado de menus. Continua aceito quando `roles` não foi declarado. */
   group?: string | null;
+  /** Legacy role metadata; validated and preserved, but not used to gate plugin UI. */
   profiles?: Profile[];
   /** Submenus: o item vira uma seção expansível do menu lateral. */
   children?: PluginMenuChild[];
@@ -28,15 +30,16 @@ export interface PluginMenuChild {
   label: Record<string, string>;
   icon?: string | null;
   to: string;
+  /** Role metadata retained for compatibility; it does not gate plugin UI. */
   roles?: Profile[];
 }
 
 export interface PluginRoute {
   path: string;
   screen: string;
-  /** Roles do contrato atual; na ausência, consulta `profiles` legado. */
+  /** Role metadata retained for compatibility; current POM exposes plugin UIs to every profile. */
   roles?: Profile[];
-  /** Campo legado de rotas. Continua aceito quando `roles` não foi declarado. */
+  /** Legacy role metadata; validated and preserved, but not used to gate plugin UI. */
   profiles?: Profile[];
   full_bleed?: boolean;
 }
@@ -148,12 +151,9 @@ function isMenuRoleArray(value: unknown): value is Profile[] {
   );
 }
 
-function effectiveRouteProfiles(route: PluginRoute): Profile[] {
-  return route.roles !== undefined
-    ? [...route.roles]
-    : route.profiles !== undefined
-      ? [...route.profiles]
-      : [...ALL_PROFILES];
+/** Plugin UIs are local to this node; manifest role metadata does not gate them. */
+function effectiveRouteProfiles(_route: PluginRoute): Profile[] {
+  return [...ALL_PROFILES];
 }
 
 /**
@@ -321,7 +321,6 @@ function normalizePlugin(
       path,
       screen: candidate.screen,
       profiles,
-      ...(candidate.roles !== undefined ? { roles: [...(candidate.roles as Profile[])] } : {}),
       ...(candidate.full_bleed !== undefined ? { full_bleed: candidate.full_bleed } : {}),
     };
     rawRoutes.push({
@@ -337,7 +336,7 @@ function normalizePlugin(
   const menu: RegisteredMenuItem[] = [];
   const menuIds = new Set<string>();
   const rawMenu: PluginMenuItem[] = [];
-  const registerChild = (candidate: unknown, parentRoles: Profile[]): RegisteredMenuItem | null => {
+  const registerChild = (candidate: unknown): RegisteredMenuItem | null => {
     if (
       !isRecord(candidate) ||
       !isNonEmptyString(candidate.id) ||
@@ -353,9 +352,7 @@ function normalizePlugin(
     const to = pluginPath(code, candidate.to, extensionRoutes);
     if (!to || !routes.some(({ route }) => isUnder(to, route.path))) return null;
     menuIds.add(candidate.id);
-    const roles = candidate.roles !== undefined
-      ? (candidate.roles as Profile[]).filter((role) => parentRoles.includes(role))
-      : [...parentRoles];
+    const roles = [...ALL_PROFILES];
     return {
       code,
       id: candidate.id,
@@ -383,16 +380,12 @@ function normalizePlugin(
     }
     const to = pluginPath(code, candidate.to, extensionRoutes);
     if (!to || !routes.some(({ route }) => isUnder(to, route.path))) return null;
-    const roles = candidate.roles !== undefined
-      ? [...(candidate.roles as Profile[])]
-      : candidate.profiles !== undefined
-        ? [...(candidate.profiles as Profile[])]
-        : [...ALL_PROFILES];
+    const roles = [...ALL_PROFILES];
     menuIds.add(candidate.id);
     if (candidate.children !== undefined && !Array.isArray(candidate.children)) return null;
     const children: RegisteredMenuItem[] = [];
     for (const child of (candidate.children as unknown[] | undefined) ?? []) {
-      const registered = registerChild(child, roles);
+      const registered = registerChild(child);
       if (!registered) return null;
       children.push(registered);
     }
@@ -404,7 +397,6 @@ function normalizePlugin(
       roles,
       ...(children.length > 0 ? { children } : {}),
       ...(isNonEmptyString(iconImage) ? { iconImage } : {}),
-      ...(candidate.profiles !== undefined ? { profiles: [...(candidate.profiles as Profile[])] } : {}),
       ...(candidate.icon !== undefined ? { icon: candidate.icon as string | null } : {}),
       ...(candidate.group !== undefined ? { group: candidate.group as string | null } : {}),
     });
@@ -545,25 +537,10 @@ function flatMenu(items: readonly RegisteredMenuItem[]): RegisteredMenuItem[] {
   return items.flatMap((item) => [item, ...(item.children ?? [])]);
 }
 
-function profilesForPluginPath(
-  plugin: RegisteredPlugin,
-  path: string,
-  route: ResolvedPluginRoute,
-): readonly Profile[] {
-  const applicableMenus = flatMenu(plugin.menu).filter((item) => isUnder(path, item.to));
-  if (applicableMenus.length === 0) return effectiveRouteProfiles(route.route);
-  const menuRoles = new Set(applicableMenus.flatMap((item) => item.roles));
-  return effectiveRouteProfiles(route.route).filter((profile) => menuRoles.has(profile));
-}
-
-/** Perfis que um plugin admite numa rota dele; `null` se a rota não é de plugin. */
+/** Profiles that may open a plugin route; `null` when the path is not a plugin route. */
 export function pluginRouteProfiles(path: string): readonly Profile[] | null {
   const route = resolvePluginRoute(path);
-  if (!route) return null;
-  const plugin = registry.find(({ plugin }) => plugin.code === route.code);
-  if (!plugin) return null;
-  const pathname = normalizePathname(path, true);
-  return pathname ? profilesForPluginPath(plugin, pathname, route) : null;
+  return route ? effectiveRouteProfiles(route.route) : null;
 }
 
 /**
@@ -580,7 +557,7 @@ export function pluginMenuItems(profile: Profile): RegisteredMenuItem[] {
           (best, candidate) => !best || candidate.route.path.length > best.route.path.length ? candidate : best,
           null,
         );
-      return route !== null && profilesForPluginPath(plugin, item.to, route).includes(profile);
+      return route !== null && effectiveRouteProfiles(route.route).includes(profile);
     };
     return plugin.menu.flatMap((item) => {
       if (!item.children) return visible(item) ? [item] : [];

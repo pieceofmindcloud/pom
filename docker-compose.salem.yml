@@ -2,6 +2,11 @@
 # service inherits the persistent /data/workspace mount from
 # docker-compose.common.yml; set POM_WORKSPACE_DIR to relocate it.
 # This file can be selected directly or use docker-compose.yml by default.
+# Secret of the engine release download (read only when POM_PLUGIN_LLAMA_RELEASE is set).
+secrets:
+  pom_gh_token:
+    environment: POM_GH_TOKEN
+
 services:
   node-gpu:
     extends:

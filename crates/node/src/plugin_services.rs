@@ -31,7 +31,7 @@ const MAX_PEER_BODY: usize = 256 * 1024;
 const SERVICES_TTL: Duration = Duration::from_secs(5);
 
 /// One service of a plugin, as the dashboard shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct PluginService {
     pub plugin_code: String,
     /// Stable within the plugin: `rag`.
@@ -51,6 +51,117 @@ pub(crate) struct PluginService {
     /// only the models that engine can serve.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub architectures: Vec<String>,
+    /// For a service of kind `inference`: the settings its engine takes,
+    /// which the deploy inspector draws and `engine.load` receives back.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<EngineSetting>,
+}
+
+const MAX_SETTINGS: usize = 32;
+const MAX_OPTIONS: usize = 32;
+const SETTING_KINDS: [&str; 5] = ["number", "integer", "boolean", "enum", "list"];
+
+/// One setting an inference service's engine takes. The node only checks the
+/// shape; the plugin validates the values when it loads the model.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct EngineSetting {
+    /// Lowercase words separated by dots or underscores: `sampling.top_k`.
+    pub key: String,
+    /// `number`, `integer`, `boolean`, `enum` or `list` (of names).
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Per language; `en` is always present.
+    pub label: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub description: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+}
+
+fn setting_key(value: &Value) -> Option<String> {
+    let text = value.as_str()?;
+    (!text.is_empty()
+        && text.len() <= 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_'))
+        && !text.starts_with('.')
+        && !text.ends_with('.'))
+    .then(|| text.to_owned())
+}
+
+/// Texts per language: `en` required for a label; languages are short tags.
+fn localized(value: &Value, max_len: usize) -> std::collections::BTreeMap<String, String> {
+    value
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter(|(lang, _)| {
+                    lang.len() <= 8 && lang.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+                .filter_map(|(lang, text)| {
+                    let text = text.as_str()?.trim();
+                    (!text.is_empty() && text.len() <= max_len && !text.chars().any(char::is_control))
+                        .then(|| (lang.clone(), text.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_setting(entry: &Value) -> Option<EngineSetting> {
+    let key = setting_key(&entry["key"])?;
+    let kind = entry["type"].as_str().filter(|kind| SETTING_KINDS.contains(kind))?.to_owned();
+    let label = localized(&entry["label"], MAX_TEXT);
+    if !label.contains_key("en") {
+        return None;
+    }
+    let options: Vec<String> = if kind == "enum" {
+        let options: Vec<String> = entry["options"]
+            .as_array()?
+            .iter()
+            .filter_map(|option| text(option).filter(|option| option.len() <= 64))
+            .take(MAX_OPTIONS)
+            .collect();
+        if options.is_empty() {
+            return None;
+        }
+        options
+    } else {
+        Vec::new()
+    };
+    let bound = |field: &str| entry[field].as_f64().filter(|value| value.is_finite());
+    Some(EngineSetting {
+        key,
+        kind,
+        label,
+        description: localized(&entry["description"], 600),
+        min: bound("min"),
+        max: bound("max"),
+        options,
+    })
+}
+
+fn parse_settings(value: &Value) -> Vec<EngineSetting> {
+    let mut settings: Vec<EngineSetting> = Vec::new();
+    for setting in value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(parse_setting)
+    {
+        if settings.len() == MAX_SETTINGS {
+            break;
+        }
+        if !settings.iter().any(|known| known.key == setting.key) {
+            settings.push(setting);
+        }
+    }
+    settings
 }
 
 const MAX_ARCHITECTURES: usize = 16;
@@ -110,6 +221,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
                 .as_array()
                 .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
                 .unwrap_or_default(),
+            settings: parse_settings(&entry["settings"]),
         });
     }
     services
@@ -265,6 +377,31 @@ mod tests {
             serde_json::to_value(&services[0]).unwrap()["architectures"],
             json!(["qwen4exp"])
         );
+    }
+
+    #[test]
+    fn an_inference_service_publishes_its_engine_settings_validated() {
+        let answer = json!({"services": [
+            {"id": "e", "kind": "inference", "name": "Engine", "status": "ready", "settings": [
+                {"key": "sampling.top_k", "type": "integer", "min": 1, "max": 64,
+                 "label": {"en": "Top k", "pt-BR": "Top k"}, "description": {"en": "Default top_k"}},
+                {"key": "mode", "type": "enum", "options": ["a", "b"], "label": {"en": "Mode"}},
+                {"key": "mode", "type": "boolean", "label": {"en": "Duplicate"}},
+                {"key": "Bad Key", "type": "boolean", "label": {"en": "x"}},
+                {"key": "nolabel", "type": "boolean", "label": {"pt-BR": "x"}},
+                {"key": "kind", "type": "date", "label": {"en": "x"}},
+                {"key": "empty_enum", "type": "enum", "options": [], "label": {"en": "x"}}
+            ]}
+        ]});
+        let services = parse_services("engine", &answer);
+        let settings = &services[0].settings;
+        assert_eq!(settings.len(), 2);
+        assert_eq!(settings[0].key, "sampling.top_k");
+        assert_eq!(settings[0].max, Some(64.0));
+        assert_eq!(settings[1].options, vec!["a".to_string(), "b".to_string()]);
+        let published = serde_json::to_value(&services[0]).unwrap();
+        assert_eq!(published["settings"][0]["type"], "integer");
+        assert_eq!(published["settings"][0]["label"]["pt-BR"], "Top k");
     }
 
     #[test]

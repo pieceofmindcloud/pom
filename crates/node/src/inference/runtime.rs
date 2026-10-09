@@ -184,6 +184,9 @@ pub struct NodeConfig {
     /// llama.cpp (`RuntimeParams::inference_service`); `None` is llama.cpp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference_service: Option<String>,
+    /// That engine's settings (`RuntimeParams::engine_settings`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub engine_settings: std::collections::BTreeMap<String, serde_json::Value>,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -388,6 +391,7 @@ impl NodeConfig {
             tp: None,
             inference_mode: p.inference_mode,
             inference_service: p.inference_service.clone(),
+            engine_settings: p.engine_settings.clone(),
             inference_port: 0,
             single_peer: false,
             no_embeddings: p.no_embeddings,
@@ -2321,6 +2325,7 @@ mod tests {
             primary: true,
             inference_mode: Default::default(),
             inference_service: None,
+            engine_settings: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,

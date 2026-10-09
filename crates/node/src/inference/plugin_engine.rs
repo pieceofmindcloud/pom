@@ -129,6 +129,7 @@ pub(crate) fn load_params(cfg: &crate::runtime::NodeConfig, gpus: &[u32]) -> Val
         "max_sessions": cfg.max_sessions,
         "kv": kv_of(cfg),
         "gpus": gpus,
+        "settings": cfg.engine_settings,
     })
 }
 

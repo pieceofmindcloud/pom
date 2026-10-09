@@ -1007,6 +1007,9 @@ inspector.capabilityUnknown,Capability not confirmed. Turning it on is at the op
 inspector.engine.auto,Automatic,Automático
 inspector.engine.dense,llama.cpp,llama.cpp
 inspector.engine.moe,MoE,MoE
+inspector.engineDefault,Engine default,Padrão do motor
+inspector.engineOff,Off,Desligado
+inspector.engineOn,On,Ligado
 inspector.fitMemory,Fit to memory,Ajustar à memória
 inspector.guideBack,Back to the guide,Voltar ao guia
 inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}

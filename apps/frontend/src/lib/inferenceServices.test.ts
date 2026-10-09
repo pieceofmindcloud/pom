@@ -17,7 +17,7 @@ describe("inferenceServicesOf", () => {
       peer("d", []),
     ]);
     expect(services).toEqual([
-      { code: "strata", name: "Strata", architectures: ["qwen4exp"], nodeIds: ["a", "c"] },
+      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], nodeIds: ["a", "c"] },
     ]);
     expect(serviceRunsModel(services[0], "qwen4exp")).toBe(true);
     expect(serviceRunsModel(services[0], "llama")).toBe(false);

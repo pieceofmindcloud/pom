@@ -740,7 +740,24 @@ export interface PluginService {
   detail?: string;
   /** Kind `inference`: the GGUF architectures its engine runs. */
   architectures?: string[];
+  /** Kind `inference`: the settings its engine takes, drawn by the deploy inspector. */
+  settings?: EngineSetting[];
 }
+
+/** One setting an inference service's engine publishes (`host.services`). */
+export interface EngineSetting {
+  key: string;
+  type: "number" | "integer" | "boolean" | "enum" | "list";
+  /** Per language; `en` is always present. */
+  label: Record<string, string>;
+  description?: Record<string, string>;
+  min?: number;
+  max?: number;
+  options?: string[];
+}
+
+/** Values by setting key; an absent key keeps the engine's default. */
+export type EngineSettingValues = Record<string, number | boolean | string | string[]>;
 
 /** O diretório de snapshots de KV de uma máquina, medido pelo próprio nó. */
 export interface KvCacheDisk {
@@ -1995,6 +2012,8 @@ export interface RuntimeParams {
   /** The plugin whose inference service runs the whole model instead of
    *  llama.cpp (`"strata"`); absent is POM's own engine. */
   inference_service?: string | null;
+  /** That engine's settings, by the keys it publishes; absent = its defaults. */
+  engine_settings?: EngineSettingValues;
   /** Formato negociado para o estado oculto entre peers; ausente em config antiga = f16. */
   hidden_state_dtype?: WireDtype;
   n_gpu_layers: number;

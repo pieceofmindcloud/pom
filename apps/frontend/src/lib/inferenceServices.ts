@@ -8,13 +8,15 @@
  * screen offers it next to llama.cpp, limited to the machines that run it and
  * to the models of those architectures.
  */
-import type { PeerView, PluginService } from "./types";
+import type { EngineSetting, PeerView, PluginService } from "./types";
 
 export interface InferenceServiceEntry {
   /** The plugin code, what `RuntimeParams.inference_service` carries. */
   code: string;
   name: string;
   architectures: string[];
+  /** The settings its engine takes (the first machine that publishes them). */
+  settings: EngineSetting[];
   /** Machines that run it and can take a model (not in error). */
   nodeIds: string[];
 }
@@ -30,8 +32,10 @@ export function inferenceServicesOf(peers: PeerView[] | undefined): InferenceSer
         code: service.plugin_code,
         name: service.name,
         architectures: [],
+        settings: [],
         nodeIds: [],
       };
+      if (entry.settings.length === 0 && service.settings?.length) entry.settings = service.settings;
       for (const architecture of service.architectures ?? []) {
         if (!entry.architectures.includes(architecture)) entry.architectures.push(architecture);
       }

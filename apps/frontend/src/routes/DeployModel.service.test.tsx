@@ -24,6 +24,11 @@ const CLUSTER = {
             name: "Strata",
             status: "ready",
             architectures: ["qwen4exp"],
+            settings: [
+              { key: "sampling.top_k", type: "integer", min: 1, max: 64,
+                label: { en: "Default top_k", "pt-BR": "top_k padrão" } },
+              { key: "fit_max_tokens", type: "boolean", label: { en: "Fit max_tokens", "pt-BR": "Ajustar max_tokens" } },
+            ],
           },
         ],
       },
@@ -217,6 +222,10 @@ describe("DeployModel · serviço de inferência de plugin", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
     expect(await screen.findByText("Configurações do Strata")).toBeTruthy();
     expect(screen.queryByRole("combobox", { name: "Motor de inferência" })).toBeNull();
+    const topK = screen.getByRole("spinbutton", { name: "top_k padrão" });
+    fireEvent.change(topK, { target: { value: "20" } });
+    fireEvent.blur(topK);
+    fireEvent.change(screen.getByRole("combobox", { name: "Ajustar max_tokens" }), { target: { value: "true" } });
 
     const button = screen.getByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
@@ -226,7 +235,7 @@ describe("DeployModel · serviço de inferência de plugin", () => {
       expect(deploy?.[1]).toMatchObject({
         group: "qwen3.8-flash-next",
         kind: "whole",
-        params: { inference_service: "strata" },
+        params: { inference_service: "strata", engine_settings: { "sampling.top_k": 20, fit_max_tokens: true } },
       });
     });
   });

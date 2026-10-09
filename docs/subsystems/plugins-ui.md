@@ -327,10 +327,19 @@ its port and API key only when `caller.head` is true. The body is capped at
 returns the same service list, so a peer can find which machine serves what.
 
 **Inference services.** A service of kind `inference` runs whole models in
-place of llama.cpp and lists the GGUF `architectures` its engine runs. Such a
+place of llama.cpp and lists the GGUF `architectures` its engine runs. It may
+also publish `settings`, the engine settings a deployment can set: up to 32
+entries of `{key, type, label, description?, min?, max?, options?}`, where
+`key` is lowercase words with dots or underscores, `type` is `number`,
+`integer`, `boolean`, `enum` (with `options`) or `list`, and `label` and
+`description` are texts per language with `en` required. The node checks only
+that shape; the deploy inspector draws them, an empty field keeps the
+engine's default, and the values travel in `RuntimeParams.engine_settings` to
+`engine.load` (`params.settings`), where the plugin validates them. Such a
 plugin implements four operations the node calls through its own local host,
 never from another machine or a browser: `engine.load` (`params`:
-`model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`),
+`model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
+`settings`),
 `engine.unload`, `engine.status` (`state` among `idle`, `installing`,
 `preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
 `busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback

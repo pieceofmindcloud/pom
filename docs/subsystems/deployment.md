@@ -315,7 +315,8 @@ machine publishes a service of kind `inference`; choosing it fixes the kind to
 `whole`, lists only the whole models whose GGUF `architecture` the service
 declares, and keeps only the machines that run it in the peer strip. Its
 inspector shows the settings the engine reads (context, concurrent requests,
-idle unloading).
+idle unloading) and the engine's own settings, as the service publishes them
+(`components/EngineSettings.tsx`); those go in `RuntimeParams.engine_settings`.
 
 `POST /api/ui/deploy` (and the preview, when the screen sends the service in
 `params`) refuses such a deployment unless it is a whole model on exactly one

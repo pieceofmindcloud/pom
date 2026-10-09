@@ -640,6 +640,11 @@ Key logic carriers:
 - `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
   (Shards) or in a window (Models) and saved on the principal through
   `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
+- `EngineSettings.tsx` - draws the settings an inference service's engine
+  publishes (`PluginService.settings`) in the interface's language: one row
+  per setting, an empty field or "Engine default" keeps the engine's default,
+  and the values go to `RuntimeParams.engine_settings`. Mounted by
+  `DeploymentInspector` when a plugin's inference service is chosen.
 - `DeploymentInspector.tsx` - o inspetor de propriedades de uma implantação, e
   **um só** para os dois ecrãs: a tela de implantar o usa editável, o Histórico
   o usa com `readOnly` para mostrar com que parâmetros uma versão subiu. Em

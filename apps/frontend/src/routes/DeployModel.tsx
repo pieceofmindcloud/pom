@@ -1464,7 +1464,7 @@ export function DeployModel() {
             <DeploymentInspector
               value={eff}
               onChange={setParams}
-              inferenceService={service ? { name: service.name } : undefined}
+              inferenceService={service ? { name: service.name, settings: service.settings } : undefined}
               capabilities={p?.capabilities}
               cacheTypes={{
                 k: cacheTypeK,

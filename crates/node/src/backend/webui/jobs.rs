@@ -35,6 +35,11 @@ pub struct RuntimeParams {
     /// gateway sends it the rendered prompt. See `crate::plugin_engine`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference_service: Option<String>,
+    /// The settings of that service's engine, by the keys it publishes
+    /// (`PluginService::settings`). Passed to `engine.load` as they are; the
+    /// plugin validates them. Empty for llama.cpp.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub engine_settings: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
@@ -277,6 +282,7 @@ impl Default for RuntimeParams {
         Self {
             inference_mode: InferenceMode::Dense,
             inference_service: None,
+            engine_settings: Default::default(),
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -337,6 +343,7 @@ impl From<&NodeConfig> for RuntimeParams {
         Self {
             inference_mode: c.inference_mode,
             inference_service: c.inference_service.clone(),
+            engine_settings: c.engine_settings.clone(),
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,

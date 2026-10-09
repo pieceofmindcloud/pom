@@ -1,16 +1,16 @@
 import type { RuntimeParams } from "./types";
 
 /**
- * O piso de confiança do MTP, o mesmo `d_mtp_min_probability` do nó. Ligar o
- * MTP na tela grava este valor, que o operador pode editar depois.
+ * The MTP confidence floor, the same `d_mtp_min_probability` as the node. Turning
+ * MTP on in the screen writes this value, which the operator can edit afterwards.
  */
 export const MTP_MIN_PROBABILITY = 0.75;
 
 /**
- * As duas especulações nunca rodam juntas: o gateway usa um lote de rascunho
- * só, e com as duas ligadas o MTP ganha (`generation.rs`). A tela oferece por
- * isso uma escolha só - nenhuma, o MTP (rascunho da cabeça `nextn` do modelo)
- * ou o lookup (rascunho tirado do próprio texto).
+ * The two speculations never run together: the gateway uses a single draft
+ * batch, and with both on MTP wins (`generation.rs`). The screen therefore offers
+ * a single choice - none, MTP (draft from the model's `nextn` head)
+ * or lookup (draft taken from the text itself).
  */
 export type SpeculationMode = "none" | "mtp" | "lookup";
 
@@ -20,7 +20,7 @@ export function speculationModeOf(value: RuntimeParams): SpeculationMode {
   return "none";
 }
 
-/** Os campos que uma escolha grava; ligar o MTP repõe o piso de confiança padrão. */
+/** The fields a choice writes; turning MTP on restores the default confidence floor. */
 export function speculationPatch(mode: SpeculationMode, current: RuntimeParams): Partial<RuntimeParams> {
   return {
     mtp_enabled: mode === "mtp",

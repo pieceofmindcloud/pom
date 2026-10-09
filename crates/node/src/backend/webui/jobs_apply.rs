@@ -34,8 +34,8 @@ pub struct Job {
     pub outputs: Vec<String>,
     pub started_at: String,
     pub finished_at: Option<String>,
-    /// Campos opcionais usados por downloads de modelos remotos. Jobs de
-    /// fatiamento e aplicação permanecem com estes campos ausentes.
+    /// Optional fields used by remote model downloads. Slicing and apply
+    /// jobs keep these fields absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,9 +94,9 @@ pub(crate) fn new_job(id: &str, kind: &'static str, title: impl Into<String>, st
     }
 }
 
-/// Atualiza o estado rico de um download sem criar outro armazenamento de
-/// progresso. O semáforo e o token vivem no serviço do provider; este job é a
-/// fonte de verdade que a UI consulta com ETag.
+/// Updates the rich state of a download without creating another progress
+/// store. The semaphore and the token live in the provider's service; this job
+/// is the source of truth the UI queries with ETag.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn set_model_download_progress(
     id: &str,
@@ -362,15 +362,15 @@ pub(super) async fn apply(
     Json(json!({ "job_id": id })).into_response()
 }
 
-/// Qual shard de tensor este apply tem que extrair, se algum.
+/// Which tensor shard this apply has to extract, if any.
 ///
-/// **Todo** rank de um grupo tensor-parallel extrai o próprio, o rank 0
-/// inclusive. O `role` (`primary`/`worker`) diz quem hospeda a coletiva
-/// (`rank0_url`), **não** quem fatia - e confundir as duas coisas foi o defeito
-/// de 17/08: a condição era `role == "worker"`, então o primary caía no ramo
-/// `skip_split` e servia o GGUF inteiro, rodando atenção e FFN em largura cheia
-/// contra workers em meia largura. O `_tp0of2.gguf` nunca chegava a existir no
-/// disco, e o `_tp1of2.gguf` do worker era a única metade do grupo.
+/// **Every** rank of a tensor-parallel group extracts its own, rank 0
+/// included. The `role` (`primary`/`worker`) says who hosts the collective
+/// (`rank0_url`), **not** who slices - and confusing the two was the defect
+/// of 17/08: the condition was `role == "worker"`, so the primary fell into the
+/// `skip_split` branch and served the whole GGUF, running attention and FFN at
+/// full width against workers at half width. The `_tp0of2.gguf` never came to
+/// exist on disk, and the worker's `_tp1of2.gguf` was the group's only half.
 pub(super) fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity> {
     req.tp.as_ref().filter(|_| !req.skip_split)
 }
@@ -707,13 +707,13 @@ pub(crate) async fn model_layer_options_local(
     })
 }
 
-/// Sela uma parte cortada aqui no manifesto do modelo original.
+/// Seals a part cut here into the original model's manifest.
 ///
-/// O `apply` corta **uma** faixa, para esta máquina. Antes isso ia parar numa
-/// pasta com o nome do modelo e sem manifesto nenhum, e o catálogo mostrava um
-/// `<sha256>.gguf` órfão que não dizia de que modelo era. Um manifesto de uma
-/// parte só resolve as duas coisas: dá nome à fatia e a coloca na pasta
-/// compartilhada do modelo, sem perder alternativas anteriores.
+/// `apply` cuts **one** range, for this machine. Before, that ended up in a
+/// folder named after the model with no manifest at all, and the catalog showed
+/// an orphan `<sha256>.gguf` that did not say which model it belonged to. A
+/// single-part manifest solves both: it names the slice and puts it in the
+/// model's shared folder, without losing earlier alternatives.
 pub(super) fn seal_single_part(
     shard_dir: &std::path::Path,
     scratch: &std::path::Path,
@@ -778,8 +778,9 @@ pub(super) async fn run_apply(
         let source_sha256 =
             source_model_sha256_for_job(std::path::Path::new(&req.source_model_path), job_id)
                 .await?;
-        // Já tenho esta parte? A busca é por conteúdo, em todas as rodadas -
-        // a pasta de destino depende do manifesto, que só existe depois.
+        // Do I already have this part? The search is by content, across all
+        // runs - the destination folder depends on the manifest, which only
+        // exists afterwards.
         if let Some(ready) = req
             .part_sha256
             .as_deref()
@@ -932,10 +933,10 @@ pub(super) async fn run_apply(
     } else {
         None
     };
-    // Sem opt-in: o interruptor que já existe é `mtp_enabled` em
-    // `req.params`. Achar (ou não) o arquivo aqui só decide como o MTP roda
-    // quando o modelo alvo não traz `nextn` embutido - nunca se ele foi
-    // pedido. Ver `models::catalog::find_mtp_draft_sibling`.
+    // No opt-in: the switch that already exists is `mtp_enabled` in
+    // `req.params`. Finding (or not) the file here only decides how MTP runs
+    // when the target model does not carry an embedded `nextn` - never whether
+    // it was requested. See `models::catalog::find_mtp_draft_sibling`.
     let requested_mtp = match req.mtp_draft_path.clone().filter(|path| !path.is_empty()) {
         Some(path) => Some(path),
         None => local_sidecar(crate::catalog::SidecarKind::Mtp, req.mtp_draft_file.as_ref())?,
@@ -975,9 +976,9 @@ pub(super) async fn run_apply(
         ..NodeConfig::from_params(&req.params, req.tp.is_none())
     };
 
-    // Liga/desliga a coletiva TP antes de subir o servidor: o callback tem que
-    // estar registrado no llama.cpp antes do primeiro decode. Reaplicar muda o
-    // grupo só num reinício (o estado do tp.rs é OnceLock, por desenho da v1).
+    // Turns the TP collective on/off before starting the server: the callback
+    // has to be registered in llama.cpp before the first decode. Reapplying
+    // changes the group only on a restart (tp.rs state is OnceLock, by v1 design).
     match &req.tp {
         Some(tp) if tp.size > 1 && tp.rank0_url.is_some() => {
             let rank0 = tp.members.first();
@@ -1071,9 +1072,10 @@ pub(super) async fn merge_parts(
         .last()
         .map(|p| p.end_layer)
         .ok_or_else(|| anyhow::anyhow!("no slice to merge"))?;
-    // Reaproveitar a junção exige saber o hash do resultado, e quem manda o
-    // pedido sabe: é a mesma parte que o `.pom` lista. A busca é por conteúdo,
-    // em todas as rodadas - a pasta depende do manifesto, que só existe depois.
+    // Reusing the merge requires knowing the hash of the result, and whoever
+    // sends the request knows it: it is the same part the `.pom` lists. The
+    // search is by content, across all runs - the folder depends on the
+    // manifest, which only exists afterwards.
     if let Some(path) = req
         .part_sha256
         .as_deref()
@@ -1087,7 +1089,7 @@ pub(super) async fn merge_parts(
             .with_context(|| format!("validate the existing merged GGUF {}", path.display()))?;
         return Ok(path.to_string_lossy().into_owned());
     }
-    // O nome da pasta vem do manifesto do modelo original associado às partes.
+    // The folder name comes from the original model's manifest associated with the parts.
     let out_dir = crate::pom::scratch_dir(&shard_dir);
 
     set_job(
@@ -1115,7 +1117,7 @@ pub(super) async fn merge_parts(
     // (kill, power loss) never leaves a half file under the final name where a
     // later apply would reuse it as a finished model. The unique suffix also
     // keeps two concurrent merges of the same range from interleaving writes.
-    // O nome final só se conhece no fim: é o hash do que saiu.
+    // The final name is only known at the end: it is the hash of what came out.
     std::fs::create_dir_all(&out_dir).with_context(|| format!("criar {}", out_dir.display()))?;
     let temp = out_dir.join(format!("{}.part", uuid::Uuid::new_v4().simple()));
     let temp_cleanup = temp.clone();
@@ -1131,10 +1133,10 @@ pub(super) async fn merge_parts(
             crate::gguf::read_layout(&temp)
                 .with_context(|| format!("validate the merged GGUF {}", temp.display()))?;
             let dst = crate::pom::part_path(&dest_dir, &written.sha256)?;
-            // Um destino já ocupado é outra junção que terminou primeiro. Com
-            // endereço de conteúdo os dois arquivos são byte a byte o mesmo,
-            // então ficar com o que já está pronto é o certo - e no Windows o
-            // rename nem substituiria.
+            // A destination already taken is another merge that finished first.
+            // With content addressing the two files are byte for byte the same,
+            // so keeping the one already done is the right thing - and on
+            // Windows the rename would not even replace it.
             if dst.exists() {
                 if crate::gguf::read_layout(&dst).is_ok() {
                     let _ = std::fs::remove_file(&temp);
@@ -1157,9 +1159,9 @@ pub(super) async fn merge_parts(
             let _ = std::fs::remove_file(&temp_cleanup);
         })?;
 
-    // A junção é uma parte nova, e uma parte sem manifesto é um arquivo de nome
-    // ilegível no catálogo. Um manifesto de uma parte só a nomeia e põe a
-    // manifesto na pasta do modelo.
+    // The merge is a new part, and a part without a manifest is a file with an
+    // unreadable name in the catalog. A single-part manifest names it and puts
+    // the manifest in the model's folder.
     let sha = output
         .file_stem()
         .and_then(|s| s.to_str())

@@ -19,13 +19,13 @@ export type Brand = {
   tagline: string;
   description: string;
   slug: string;
-  /** Lockup por tema: `logo.light` no tema claro, `logo.dark` no escuro. */
+  /** Lockup per theme: `logo.light` in the light theme, `logo.dark` in the dark one. */
   logo: Record<"light" | "dark", string>;
   mark: string | null;
   icon: string | null;
   favicon: string | null;
   icons: Record<string, string>;
-  /** Bandeira por locale, para o seletor de idioma. */
+  /** Flag per locale, for the language selector. */
   flags: Record<string, string>;
 };
 

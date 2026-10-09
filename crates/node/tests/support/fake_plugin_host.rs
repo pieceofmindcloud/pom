@@ -1,10 +1,10 @@
-//! Host IPC mínimo, só para o teste de regressão em `plugins.rs`. Fala o
-//! mesmo protocolo de frame (u32 big-endian + JSON) que `plugin_host.rs`
-//! usa contra o `pom-plugin-host` real, mas sem nenhuma lógica de plugin: só
-//! responde `ready`, registra cada `ingest` e cada `query` numa linha do
-//! arquivo apontado por `POM_FAKE_HOST_LOG` e sai em `shutdown`. Das
-//! consultas, aceita `host.configure` e responde `ui.upstream` com o JSON de
-//! `POM_FAKE_HOST_UPSTREAM`, quando definido.
+//! Minimal IPC host, only for the regression test in `plugins.rs`. It speaks the
+//! same frame protocol (u32 big-endian + JSON) that `plugin_host.rs`
+//! uses against the real `pom-plugin-host`, but with no plugin logic at all: it only
+//! answers `ready`, records each `ingest` and each `query` on a line of the
+//! file pointed to by `POM_FAKE_HOST_LOG` and exits on `shutdown`. Of the
+//! queries, it accepts `host.configure` and answers `ui.upstream` with the JSON of
+//! `POM_FAKE_HOST_UPSTREAM`, when set.
 
 use serde_json::{json, Value};
 use std::fs::OpenOptions;

@@ -1,13 +1,13 @@
 /**
- * Interface fornecida por plugins (contrato `pom-plugin-ui/v1`).
+ * Interface provided by plugins (`pom-plugin-ui/v1` contract).
  *
- * O nó valida o manifesto e serve `GET /api/ui/plugins/ui`; este módulo mantém
- * um registro validado em que rotas e destinos de menu recebem o mesmo
- * namespace `/<plugin_code>`, salvo pontos nativos reivindicados sem colisão.
- * Assim, o link e o matcher usam o mesmo caminho, e plugins diferentes podem
- * declarar a mesma rota relativa. Plugin UIs são locais ao nó e ficam
- * disponíveis a todos os perfis; `roles`/`profiles` do manifesto são mantidos
- * para compatibilidade, mas não restringem esta interface.
+ * The node validates the manifest and serves `GET /api/ui/plugins/ui`; this module keeps
+ * a validated registry in which routes and menu destinations get the same
+ * `/<plugin_code>` namespace, except for native points claimed without collision.
+ * That way, the link and the matcher use the same path, and different plugins can
+ * declare the same relative route. Plugin UIs are local to the node and available
+ * to every profile; the manifest's `roles`/`profiles` are kept for compatibility,
+ * but do not restrict this interface.
  */
 import type { Profile } from "./profile";
 
@@ -21,7 +21,7 @@ export interface PluginMenuItem {
   group?: string | null;
   /** Legacy role metadata; validated and preserved, but not used to gate plugin UI. */
   profiles?: Profile[];
-  /** Submenus: o item vira uma seção expansível do menu lateral. */
+  /** Submenus: the item becomes an expandable section of the side menu. */
   children?: PluginMenuChild[];
 }
 
@@ -46,7 +46,7 @@ export interface PluginRoute {
 
 export interface PluginScreenSpec {
   module: string;
-  /** export do módulo que é o componente da tela; padrão `default` */
+  /** module export that is the screen's component; defaults to `default` */
   export?: string;
   styles?: string[];
 }
@@ -54,18 +54,18 @@ export interface PluginScreenSpec {
 export interface PluginUiManifest {
   schema: "pom-plugin-ui/v1";
   plugin_code: string;
-  /** Asset PNG opcional; o ícone declarado no menu continua sendo o fallback. */
+  /** Optional PNG asset; the icon declared in the menu remains the fallback. */
   icon_image?: string;
-  /** Descrição por idioma, mostrada na tela Plugins. */
+  /** Description per language, shown on the Plugins screen. */
   description?: Record<string, string>;
   menu: PluginMenuItem[];
   routes: PluginRoute[];
   screens: Record<string, PluginScreenSpec>;
   /** Extension slots inside native screens: slot id -> key of `screens`. */
   slots?: Record<string, string>;
-  /** idioma -> asset do catálogo de textos do plugin */
+  /** language -> asset of the plugin's text catalog */
   i18n?: Record<string, string>;
-  /** Documentação Markdown do plugin, separada em guias e referência. */
+  /** The plugin's Markdown documentation, split into guides and reference. */
   documentation?: PluginDocumentation;
   assets: string[];
 }
@@ -117,7 +117,7 @@ interface RegisteredPlugin {
 
 const PLUGIN_CODE_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
 const ALL_PROFILES: readonly Profile[] = ["admin", "node", "infer"];
-/** Rotas nativas do POM que um manifesto pode fornecer como substituição. */
+/** POM native routes that a manifest can provide as a replacement. */
 const POM_PLUGIN_EXTENSION_ROUTES = new Set(["/logs", "/statistics"]);
 
 let registry: RegisteredPlugin[] = [];
@@ -157,9 +157,9 @@ function effectiveRouteProfiles(_route: PluginRoute): Profile[] {
 }
 
 /**
- * Canonicaliza um caminho sem decodificar separadores nem aceitar segmentos
- * que possam sair do escopo do plugin. Caminhos de localização podem conter
- * query/hash; valores vindos do manifesto não podem.
+ * Canonicalizes a path without decoding separators or accepting segments
+ * that could leave the plugin's scope. Location paths may contain
+ * query/hash; values coming from the manifest may not.
  */
 function normalizePathname(value: unknown, stripSuffix = false): string | null {
   if (typeof value !== "string" || !value || value.trim() !== value) return null;
@@ -189,7 +189,7 @@ function normalizePathname(value: unknown, stripSuffix = false): string | null {
   return normalized.length ? `/${normalized.join("/")}` : "/";
 }
 
-/** Aplica o namespace ao caminho declarado por um plugin, sem duplicá-lo. */
+/** Applies the namespace to the path declared by a plugin, without duplicating it. */
 function pluginPath(code: string, value: unknown, extensionRoutes: ReadonlySet<string>): string | null {
   const path = normalizePathname(value);
   if (path === null) return null;
@@ -456,7 +456,7 @@ function normalizePlugin(
   return { plugin, routes, menu };
 }
 
-/** Troca o registro. Manifestos inválidos ou ambíguos são ignorados. */
+/** Swaps the registry. Invalid or ambiguous manifests are ignored. */
 export function setPluginUi(plugins: readonly ActivePluginUi[] | null | undefined): void {
   if (plugins === previousInput) return;
   previousInput = plugins;
@@ -517,7 +517,7 @@ export function pluginSlot(slot: string): ResolvedPluginSlot | null {
   return null;
 }
 
-/** A rota de plugin mais específica que cobre este caminho, ou `null`. */
+/** The most specific plugin route that covers this path, or `null`. */
 export function resolvePluginRoute(path: string): ResolvedPluginRoute | null {
   const pathname = normalizePathname(path, true);
   if (!pathname) return null;
@@ -544,8 +544,8 @@ export function pluginRouteProfiles(path: string): readonly Profile[] | null {
 }
 
 /**
- * Itens de menu visíveis para o perfil. Um item com submenus sobrevive quando
- * ao menos um filho é visível, e leva só os filhos visíveis.
+ * Menu items visible to the profile. An item with submenus survives when
+ * at least one child is visible, and carries only the visible children.
  */
 export function pluginMenuItems(profile: Profile): RegisteredMenuItem[] {
   return registry.flatMap((plugin) => {
@@ -569,7 +569,7 @@ export function pluginMenuItems(profile: Profile): RegisteredMenuItem[] {
 
 export const pluginLabelKey = (code: string, id: string) => `plugin:${code}:${id}`;
 
-/** Rótulo de um item de menu de plugin no idioma ativo; `en` é o piso. */
+/** Label of a plugin menu item in the active language; `en` is the floor. */
 export function pluginLabel(key: string, locale: string): string | null {
   const [, code, id] = key.split(":");
   const item = flatMenu(registry.find((plugin) => plugin.plugin.code === code)?.menu ?? [])
@@ -583,8 +583,8 @@ function localized(texts: Record<string, string>, locale: string): string | null
 }
 
 /**
- * Nome humano de um plugin ativo: o rótulo do item de menu com id igual ao
- * código, senão o primeiro item, senão o próprio código.
+ * Human name of an active plugin: the label of the menu item whose id equals
+ * the code, otherwise the first item, otherwise the code itself.
  */
 export function pluginDisplayName(code: string, locale: string): string {
   const plugin = registry.find((entry) => entry.plugin.code === code);

@@ -1,82 +1,83 @@
-//! A fatia que este nó servia, guardada para sobreviver a um reinício.
+//! The slice this node was serving, kept so it survives a restart.
 //!
-//! A atribuição de modelo vive só em memória (é decisão de projeto: quem manda
-//! é o plano de implantação, não um arquivo esquecido no disco). Uma queda,
-//! porém, não é uma mudança de intenção — é a mesma intenção com o processo
-//! novo. Então a fatia é anotada em disco e permanece até a confirmação.
+//! The model assignment lives only in memory (a design decision: the deployment
+//! plan is in charge, not a file forgotten on disk). A crash, however, is not
+//! a change of intent - it is the same intent with a new process. So the
+//! slice is recorded on disk and stays there until it is confirmed.
 //!
-//! **A anotação vale como retomável se e somente se a fatia foi vista
-//! carregada e servindo.** Daí ela carregar um [`SliceState`]: quem escreve
-//! `Pending` é o `apply`, quem promove a `Serving` é o `/health` do servidor
-//! de inferência respondendo `model_loaded` e quem escreve `Idle` é o monitor
-//! de ociosidade depois de liberar os pesos.
+//! **The annotation counts as resumable if and only if the slice was seen
+//! loaded and serving.** That is why it carries a [`SliceState`]: the one that
+//! writes `Pending` is `apply`, the one that promotes to `Serving` is the
+//! inference server's `/health` answering `model_loaded`, and the one that
+//! writes `Idle` is the idle monitor after releasing the weights.
 //!
-//! Confundir os dois é um laço infinito, não um detalhe: uma fatia que não cabe
-//! na memória mata o processo antes de carregar, o Docker religa o container, e
-//! uma anotação otimista faz o nó tentar a mesma fatia para sempre. O contador
-//! um contador apenas em memória não protege disso - ele morre com o processo.
-//! Reproduzido em `data/pom-reinicio-infinito-carga/`.
+//! Confusing the two is an infinite loop, not a detail: a slice that does not
+//! fit in memory kills the process before loading, Docker restarts the
+//! container, and an optimistic annotation makes the node try the same slice
+//! forever. A counter kept only in memory does not protect against that - it
+//! dies with the process.
+//! Reproduced in `data/pom-reinicio-infinito-carga/`.
 
 use crate::runtime::NodeConfig;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Em que ponto da vida da fatia esta anotação foi escrita.
+/// At which point of the slice's life this annotation was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SliceState {
-    /// Aplicada, ainda não vista carregada uma única vez.
+    /// Applied, not yet seen loaded even once.
     Pending,
-    /// O watcher confirmou `model_loaded` em sondagens consecutivas de
-    /// `/health`, depois da janela mínima de estabilidade.
+    /// The watcher confirmed `model_loaded` on consecutive `/health` probes,
+    /// after the minimum stability window.
     ///
-    /// É o padrão porque um arquivo escrito antes de 2026-08-15 não tem o
-    /// campo, e naquele formato só a rota de reinício escrevia — num nó que
-    /// estava servindo.
+    /// It is the default because a file written before 2026-08-15 does not
+    /// have the field, and in that format only the restart route wrote it -
+    /// on a node that was serving.
     #[default]
     Serving,
-    /// O deployment continua ativo, mas os pesos foram liberados por idle.
+    /// The deployment is still active, but the weights were released by idle.
     Idle,
 }
 
-/// O que está anotado em disco: a fatia e o quanto se sabe sobre ela.
+/// What is recorded on disk: the slice and how much is known about it.
 #[derive(Serialize, Deserialize)]
 struct Annotation {
     #[serde(default)]
     state: SliceState,
-    /// Tentativa da implantação que ainda não chegou ao `/health`.
-    /// Anotações antigas sem este campo contam como a primeira tentativa.
+    /// Attempt of the deployment that has not yet reached `/health`.
+    /// Old annotations without this field count as the first attempt.
     #[serde(default)]
     attempts: u32,
     #[serde(flatten)]
     slice: NodeConfig,
 }
 
-/// Limite persistente compartilhado pelo journal e pelo supervisor em memória.
-/// Dez já é o limite usado pelo supervisor para falhas da mesma geração.
+/// Persistent limit shared by the journal and the in-memory supervisor.
+/// Ten is already the limit the supervisor uses for failures of one generation.
 pub const MAX_AUTOMATIC_ATTEMPTS: u32 = 10;
 
-/// O que o arranque encontrou anotado.
+/// What startup found recorded.
 ///
-/// É enum, e não `Option<NodeConfig>`, porque o defeito que ela corrige foi
-/// justamente uma fatia ser aplicada de volta sem ninguém perguntar se ela
-/// chegou a servir: aqui não dá para pegar a config sem decidir o caso.
+/// It is an enum, and not `Option<NodeConfig>`, because the defect it fixes
+/// was precisely a slice being applied back without anyone asking whether it
+/// ever served: here the config cannot be taken without deciding the case.
 pub enum LastSlice {
-    /// Nada anotado.
+    /// Nothing recorded.
     Nothing,
-    /// Vista servindo antes da queda — o nó volta servindo o mesmo.
+    /// Seen serving before the crash - the node comes back serving the same.
     Serving(NodeConfig),
-    /// O nó volta anunciado e ocioso, sem recarregar antes da primeira chamada.
+    /// The node comes back announced and idle, without reloading before the first call.
     Idle(NodeConfig),
-    /// Anotada antes da implantação e ainda não confirmada pelo `/health`.
+    /// Recorded before the deployment and not yet confirmed by `/health`.
     Pending { cfg: NodeConfig, attempts: u32 },
 }
 
-/// Onde este nó anota a sua fatia.
+/// Where this node records its slice.
 ///
-/// Deriva do caminho da config porque dois nós da mesma máquina rodam com
-/// `POM_CONFIG` diferentes; um nome fixo faria um sobrescrever o outro.
+/// It derives from the config path because two nodes on the same machine run
+/// with different `POM_CONFIG`; a fixed name would make one overwrite the other.
 pub fn path() -> PathBuf {
     path_for(&crate::config::Config::config_path())
 }
@@ -87,7 +88,7 @@ fn path_for(config_path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Anota a fatia, e em que ponto da vida dela.
+/// Records the slice, and at which point of its life.
 pub fn save(cfg: &NodeConfig, state: SliceState) -> Result<()> {
     save_at(&path(), cfg, state)
 }
@@ -111,8 +112,8 @@ fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
         std::process::id()
     ));
     std::fs::write(&tmp, raw).with_context(|| format!("could not write {}", tmp.display()))?;
-    // Windows não substitui o destino existente com rename. A tentativa
-    // normal é atômica; só removemos o destino se a plataforma exigir.
+    // Windows does not replace an existing destination with rename. The normal
+    // attempt is atomic; we only remove the destination if the platform requires it.
     if let Err(error) = std::fs::rename(&tmp, p) {
         #[cfg(windows)]
         {
@@ -130,12 +131,12 @@ fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
     Ok(())
 }
 
-/// Esquece a fatia anotada.
+/// Forgets the recorded slice.
 ///
-/// Chamada quando o operador tira o modelo de propósito (liberar a fatia, sair
-/// da rede, parar para reconfigurar). Sem isto, um nó esvaziado a pedido
-/// voltaria servindo no próximo arranque, desfazendo a decisão de quem o
-/// esvaziou.
+/// Called when the operator removes the model on purpose (releasing the slice,
+/// leaving the network, stopping to reconfigure). Without this, a node emptied
+/// on request would come back serving on the next startup, undoing the
+/// decision of whoever emptied it.
 pub fn clear() {
     clear_at(&path());
 }
@@ -149,8 +150,8 @@ fn disable_path(p: &Path) -> PathBuf {
     PathBuf::from(format!("{}.disabled", p.display()))
 }
 
-/// Impede qualquer retomada automática até uma nova implantação explícita.
-/// Serve também quando o processo principal está sendo relançado por fora.
+/// Prevents any automatic resume until a new explicit deployment.
+/// Also used when the main process is being relaunched from outside.
 pub fn force_disable() -> Result<()> {
     force_disable_at(&path())
 }
@@ -169,8 +170,8 @@ pub fn auto_resume_disabled() -> bool {
     disable_path(&path()).exists()
 }
 
-/// Inicia uma implantação explícita e registra a primeira tentativa antes de
-/// qualquer chamada ao supervisor ou ao servidor nativo.
+/// Starts an explicit deployment and records the first attempt before any
+/// call to the supervisor or the native server.
 pub fn begin_new_attempt(cfg: &NodeConfig) -> Result<u32> {
     begin_new_attempt_at(&path(), cfg)
 }
@@ -186,7 +187,7 @@ fn begin_new_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
     Ok(annotation.attempts)
 }
 
-/// Registra a retomada de uma implantação que sobreviveu a um reinício.
+/// Records the resume of a deployment that survived a restart.
 pub fn resume_attempt(cfg: &NodeConfig) -> Result<u32> {
     resume_attempt_at(&path(), cfg)
 }
@@ -207,12 +208,12 @@ fn resume_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
     Ok(attempts)
 }
 
-/// Informa se o número da tentativa ainda está dentro do orçamento automático.
+/// Tells whether the attempt number is still within the automatic budget.
 pub const fn should_resume(attempts: u32) -> bool {
     attempts <= MAX_AUTOMATIC_ATTEMPTS
 }
 
-/// Lê a fatia anotada sem consumir o journal.
+/// Reads the recorded slice without consuming the journal.
 pub fn inspect() -> LastSlice {
     inspect_at(&path())
 }
@@ -242,9 +243,9 @@ fn read_annotation(p: &Path) -> Option<Annotation> {
 mod tests {
     use super::*;
 
-    /// Dois nós na mesma máquina rodam com POM_CONFIG diferentes. Se o
-    /// arquivo de fatia tivesse nome fixo, um sobrescreveria o do outro e a
-    /// máquina voltaria com as duas fatias trocadas.
+    /// Two nodes on the same machine run with different POM_CONFIG. If the
+    /// slice file had a fixed name, one would overwrite the other's and the
+    /// machine would come back with the two slices swapped.
     #[test]
     fn the_path_derives_from_each_node_config() {
         assert_eq!(
@@ -261,8 +262,8 @@ mod tests {
         );
     }
 
-    /// A leitura não consome o journal: uma queda entre a leitura e o início
-    /// da tentativa precisa continuar contabilizável no arranque seguinte.
+    /// The read does not consume the journal: a crash between the read and the
+    /// start of the attempt must remain countable on the next startup.
     #[test]
     fn inspect_preserves_the_journal() {
         let dir = tmp("inspect-preserva");
@@ -282,15 +283,16 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A garantia de `c7b70d8`: uma fatia que estava servindo saudável e caiu
-    /// volta servindo sozinha.
+    /// The guarantee of `c7b70d8`: a slice that was serving healthy and
+    /// crashed comes back serving on its own.
     ///
-    /// Um segfault nao executa codigo nenhum: em 2026-08-13 a ksia-gpu3 caiu
-    /// com SIGSEGV dentro do kernel CUDA do gated_delta_net, o Docker religou
-    /// o container pela politica `unless-stopped`, e o no voltou sem fatia -
-    /// sumindo do pipeline em silencio ate alguem notar um "Gap at layer 32"
-    /// numa requisicao, minutos depois. Por isso quem anota é o `/health`, e
-    /// não um caminho de desligamento gracioso que uma queda dessas pula.
+    /// A segfault runs no code at all: on 2026-08-13 ksia-gpu3 crashed with
+    /// SIGSEGV inside the CUDA kernel of gated_delta_net, Docker restarted
+    /// the container through the `unless-stopped` policy, and the node came
+    /// back without a slice - silently vanishing from the pipeline until
+    /// someone noticed a "Gap at layer 32" in a request, minutes later. That
+    /// is why `/health` is the one that records it, and not a graceful
+    /// shutdown path that a crash like this skips.
     #[test]
     fn a_slice_seen_serving_comes_back_after_a_crash() {
         let dir = tmp("servindo-volta");
@@ -318,7 +320,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Parar é decisão de quem operou, e o arranque seguinte não a desfaz.
+    /// Stopping is the operator's decision, and the next startup does not undo it.
     #[test]
     fn stopping_on_purpose_forgets_the_slice() {
         let dir = tmp("parar-esquece");
@@ -336,13 +338,13 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Regressão do laço infinito de reinício (2026-08-15).
+    /// Regression of the infinite restart loop (2026-08-15).
     ///
-    /// Uma fatia que não cabe na memória mata o processo antes de carregar; o
-    /// Docker religa o container; se a anotação escrita no `apply` valesse como
-    /// "estava servindo", o nó tentaria a mesma fatia para sempre. O contador
-    /// `MAX_RESTARTS` não segura isso: ele é de memória e morre junto com o
-    /// processo.
+    /// A slice that does not fit in memory kills the process before loading;
+    /// Docker restarts the container; if the annotation written at `apply`
+    /// counted as "was serving", the node would try the same slice forever.
+    /// The `MAX_RESTARTS` counter does not hold that back: it lives in memory
+    /// and dies together with the process.
     #[test]
     fn a_slice_that_never_loaded_is_not_resurrected() {
         let dir = tmp("nunca-carregou");
@@ -366,8 +368,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Um `apply` sobrepõe a anotação de uma fatia anterior que estava
-    /// servindo: da nova ainda não se sabe nada, e é ela que o nó serve agora.
+    /// An `apply` overrides the annotation of a previous slice that was
+    /// serving: nothing is known yet about the new one, and it is the one the
+    /// node serves now.
     #[test]
     fn applying_another_slice_drops_the_serving_state_of_the_previous_one() {
         let dir = tmp("apply-sobrepoe");
@@ -390,10 +393,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Uma anotação escrita por um binário anterior a esta mudança não tem o
-    /// campo `state`. Só a rota de reinício a escrevia, e num nó que estava
-    /// servindo — então ela conta como servindo, senão o próprio
-    /// "Atualizar e reiniciar" perderia a fatia na travessia de versão.
+    /// An annotation written by a binary older than this change does not have
+    /// the `state` field. Only the restart route wrote it, and on a node that
+    /// was serving - so it counts as serving, otherwise "Update and
+    /// restart" itself would lose the slice when crossing versions.
     #[test]
     fn an_old_annotation_without_state_counts_as_serving() {
         let dir = tmp("formato-antigo");

@@ -56,12 +56,12 @@ pub struct RoutingRequest {
 }
 
 impl PeerCapacity {
-    /// A faixa que este peer diz servir faz sentido no modelo declarado.
+    /// The range this peer says it serves makes sense for the declared model.
     ///
-    /// `total_layers == 0` significa "o cluster ainda não sabe quantas camadas
-    /// o modelo tem" (ver `catalog.rs`: o total é dedução, não número), então
-    /// só a ordenação é conferida nesse caso; passar do total é recusado assim
-    /// que existe um total.
+    /// `total_layers == 0` means "the cluster does not yet know how many layers
+    /// the model has" (see `catalog.rs`: the total is a deduction, not a
+    /// number), so only the ordering is checked in that case; exceeding the
+    /// total is refused as soon as a total exists.
     pub fn validate(&self, total_layers: u32) -> Result<(), RoutingError> {
         let out_of_bounds = total_layers > 0 && self.end_layer >= total_layers;
         if self.end_layer < self.start_layer || out_of_bounds {
@@ -76,8 +76,8 @@ impl PeerCapacity {
 }
 
 impl ModelCapability {
-    /// Mesma checagem para o que um peer anuncia sobre um modelo, contra o
-    /// `total_layers` que ele mesmo declara (quando declara).
+    /// The same check for what a peer announces about a model, against the
+    /// `total_layers` it declares itself (when it declares one).
     pub fn validate(&self) -> Result<(), RoutingError> {
         let total = self.total_layers.unwrap_or(0);
         let out_of_bounds = total > 0 && self.end_layer >= total;
@@ -93,13 +93,13 @@ impl ModelCapability {
 }
 
 impl RoutingRequest {
-    /// Confere a versão **e** o snapshot.
+    /// Checks the version **and** the snapshot.
     ///
-    /// Conferir só a versão deixava um snapshot malformado (peer com
-    /// `end_layer < start_layer`, ou faixa além de `total_layers`) chegar
-    /// inteiro ao provider: `RoutingPlan::validate` pega os mesmos problemas na
-    /// saída, mas só depois de o provider já ter confiado na entrada, e o erro
-    /// então aponta para o plano em vez de para o peer que mentiu.
+    /// Checking only the version let a malformed snapshot (a peer with
+    /// `end_layer < start_layer`, or a range beyond `total_layers`) reach the
+    /// provider whole: `RoutingPlan::validate` catches the same problems on the
+    /// output, but only after the provider has already trusted the input, and
+    /// the error then points at the plan instead of at the peer that lied.
     pub fn validate(&self) -> Result<(), RoutingError> {
         if self.api_version != ROUTING_API_VERSION {
             return Err(RoutingError::UnsupportedApiVersion {
@@ -216,8 +216,9 @@ mod tests {
         assert_eq!(snapshot(vec![peer(0, 15), peer(16, 31)]).validate(), Ok(()));
     }
 
-    /// Faixa invertida é entrada malformada, e recusá-la só na saída do
-    /// provider aponta o erro para o plano em vez de para o peer que mentiu.
+    /// An inverted range is malformed input, and refusing it only on the
+    /// provider's output points the error at the plan instead of at the peer
+    /// that lied.
     #[test]
     fn an_inverted_range_is_refused_on_the_way_in() {
         assert_eq!(
@@ -242,8 +243,8 @@ mod tests {
         );
     }
 
-    /// Total desconhecido (`0`) é estado legítimo do cluster: a checagem de
-    /// limite espera saber o total, a de ordenação não.
+    /// An unknown total (`0`) is a legitimate cluster state: the bound check
+    /// waits to know the total, the ordering check does not.
     #[test]
     fn an_unknown_total_still_refuses_an_inverted_range() {
         let mut req = snapshot(vec![peer(0, 15)]);

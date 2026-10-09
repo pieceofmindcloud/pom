@@ -1,12 +1,12 @@
-//! Interface fornecida por plugins: manifesto JSON, telas e assets.
+//! Interface provided by plugins: JSON manifest, screens and assets.
 //!
-//! O manifesto e os assets viajam **dentro** do artefato do plugin (o mesmo
-//! binário verificado por SHA-256 na instalação): o host do plugin responde as
-//! operações `ui.manifest` e `ui.asset` do `query` genérico, então nada muda no
-//! servidor de licenças e o manifesto nunca diverge da versão do backend
-//! instalado. O `pom` valida tudo aqui antes de entregar ao navegador; o
-//! frontend só conhece o contrato `pom-plugin-ui/v1`, nunca um plugin
-//! específico. Ver `docs/subsystems/plugins-ui.md`.
+//! The manifest and the assets travel **inside** the plugin artifact (the same
+//! binary verified by SHA-256 at install time): the plugin host answers the
+//! `ui.manifest` and `ui.asset` operations of the generic `query`, so nothing
+//! changes on the license server and the manifest never diverges from the
+//! installed backend version. `pom` validates everything here before handing it
+//! to the browser; the frontend only knows the `pom-plugin-ui/v1` contract,
+//! never a specific plugin. See `docs/subsystems/plugins-ui.md`.
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -16,35 +16,35 @@ use serde_json::{json, Value};
 
 pub(crate) const MANIFEST_SCHEMA: &str = "pom-plugin-ui/v1";
 const PROFILES: [&str; 3] = ["admin", "node", "infer"];
-/// Teto de um asset: telas empacotadas cabem folgadas, e o host limita o frame.
+/// Ceiling of one asset: bundled screens fit comfortably, and the host limits the frame.
 const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct MenuItem {
     pub id: String,
-    /// Rótulo por idioma (`{"en": "...", "pt-BR": "..."}`); o frontend cai em `en`.
+    /// Label per language (`{"en": "...", "pt-BR": "..."}`); the frontend falls back to `en`.
     pub label: std::collections::BTreeMap<String, String>,
-    /// Nome de ícone da lista conhecida do frontend; desconhecido vira genérico.
+    /// Icon name from the frontend's known list; an unknown one becomes generic.
     #[serde(default)]
     pub icon: Option<String>,
     pub to: String,
-    /// Campo antigo preservado no contrato; o frontend atual não agrupa menus.
+    /// Old field kept in the contract; the current frontend does not group menus.
     #[serde(default)]
     pub group: Option<String>,
-    /// Perfis do novo contrato; ausente admite todos os perfis.
+    /// Profiles of the new contract; absent admits every profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    /// Campo legado. Mantido para manifestos já publicados.
+    /// Legacy field. Kept for manifests already published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
-    /// Submenus do item. Com filhos, o item vira uma seção expansível; o `to`
-    /// do pai continua obrigatório para que hosts sem suporte a submenus
-    /// mostrem ao menos o destino principal.
+    /// Submenus of the item. With children, the item becomes an expandable
+    /// section; the parent's `to` stays required so that hosts without submenu
+    /// support show at least the main destination.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<MenuChild>,
 }
 
-/// Um submenu. Mesmas regras de um item de primeiro nível, sem netos.
+/// A submenu. Same rules as a first-level item, with no grandchildren.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct MenuChild {
     pub id: String,
@@ -60,21 +60,21 @@ pub(crate) struct MenuChild {
 pub(crate) struct RouteSpec {
     pub path: String,
     pub screen: String,
-    /// Roles do contrato atual; na ausência, consulta `profiles` legado.
+    /// Roles of the current contract; when absent, falls back to the legacy `profiles`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    /// Campo legado. Mantido para manifestos já publicados.
+    /// Legacy field. Kept for manifests already published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
-    /// A tela ocupa a viewport inteira (como Painel/Logs), sem coluna central.
+    /// The screen takes the whole viewport (like Dashboard/Logs), with no central column.
     #[serde(default)]
     pub full_bleed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ScreenSpec {
-    /// Módulo ES (asset) cujo export `export` (padrão `default`) é o componente
-    /// React da tela; um módulo pode servir várias telas.
+    /// ES module (asset) whose `export` export (default `default`) is the screen's
+    /// React component; one module can serve several screens.
     pub module: String,
     #[serde(default)]
     pub export: Option<String>,
@@ -89,13 +89,13 @@ pub(crate) struct PluginUiManifest {
     /// Optional PNG served by the plugin and used in the navigation menu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_image: Option<String>,
-    /// Descrição curta por idioma (`en` obrigatório quando presente), mostrada
-    /// na tela Plugins.
+    /// Short description per language (`en` required when present), shown on
+    /// the Plugins screen.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub description: std::collections::BTreeMap<String, String>,
-    /// Capturas de tela: caminhos relativos à raiz do repositório GitHub do
-    /// plugin ou URLs `https://`. O POM não as serve: o navegador as carrega
-    /// direto do GitHub.
+    /// Screenshots: paths relative to the root of the plugin's GitHub repository
+    /// or `https://` URLs. The POM does not serve them: the browser loads them
+    /// straight from GitHub.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screenshots: Vec<String>,
     #[serde(default)]
@@ -109,15 +109,15 @@ pub(crate) struct PluginUiManifest {
     /// ignored by hosts that do not offer them.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub slots: std::collections::BTreeMap<String, String>,
-    /// Catálogos de texto do plugin: idioma -> asset JSON plano
-    /// (`{"<plugin_code>.chave": "texto ICU"}`). O plugin é dono dos próprios
-    /// textos; o POM só carrega e resolve. Se declarado, `en` é obrigatório.
+    /// Plugin text catalogs: language -> flat JSON asset
+    /// (`{"<plugin_code>.key": "ICU text"}`). The plugin owns its own texts; the
+    /// POM only loads and resolves them. If declared, `en` is required.
     #[serde(default)]
     pub i18n: std::collections::BTreeMap<String, String>,
     /// Markdown pages shipped by the plugin and presented with the POM docs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<PluginDocumentation>,
-    /// Lista fechada do que `/assets/*` pode servir.
+    /// Closed list of what `/assets/*` may serve.
     pub assets: Vec<String>,
 }
 
@@ -157,9 +157,9 @@ fn valid_locale(tag: &str) -> bool {
         && parts.all(|p| (2..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
-/// Valida o conteúdo de um catálogo: objeto plano de textos, todas as chaves no
-/// espaço `<plugin_code>.` (um plugin não sobrescreve texto do POM nem de outro
-/// plugin), com tetos de quantidade e tamanho.
+/// Validates the content of a catalog: a flat object of texts, every key in the
+/// `<plugin_code>.` namespace (a plugin does not overwrite text of the POM or of
+/// another plugin), with ceilings on count and size.
 pub(crate) fn validate_catalog(plugin_code: &str, value: &Value) -> Result<(), String> {
     let object = value.as_object().ok_or("catalog is not an object")?;
     if object.len() > MAX_CATALOG_KEYS {
@@ -237,8 +237,8 @@ fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
 const MAX_SCREENSHOTS: usize = 8;
 const MAX_DESCRIPTION_TEXT: usize = 2000;
 
-/// Caminho relativo seguro dentro do repositório ou URL `https://` sem
-/// credenciais. Nada aqui é servido pelo nó.
+/// Safe relative path inside the repository or `https://` URL without
+/// credentials. Nothing here is served by the node.
 pub(crate) fn valid_screenshot(value: &str) -> bool {
     if value.len() > 1024 {
         return false;
@@ -264,8 +264,8 @@ fn valid_roles(roles: &[String]) -> bool {
 }
 
 impl PluginUiManifest {
-    /// Interpreta e valida o JSON devolvido pelo plugin. Recusa em vez de
-    /// corrigir: um manifesto torto não pode desenhar menu nem carregar código.
+    /// Parses and validates the JSON returned by the plugin. Refuses instead of
+    /// fixing: a crooked manifest cannot draw a menu or load code.
     pub(crate) fn parse(expected_code: &str, value: Value) -> Result<Self, String> {
         let value = normalize_ui_manifest_documentation(value)?;
         let manifest: Self =
@@ -405,7 +405,7 @@ impl PluginUiManifest {
     }
 }
 
-/// Decodifica a resposta `ui.asset` do plugin: `{content_type, base64}`.
+/// Decodes the plugin's `ui.asset` response: `{content_type, base64}`.
 pub(crate) fn decode_asset(value: &Value) -> Result<(String, Vec<u8>), String> {
     let content_type = value
         .get("content_type")
@@ -444,9 +444,9 @@ struct ActivePluginUi {
     manifest: PluginUiManifest,
 }
 
-/// `GET /api/ui/plugins/ui`: manifestos dos plugins ativos com host rodando.
-/// Plugin inativo, ausente ou com manifesto inválido simplesmente não aparece -
-/// o frontend então mostra só os fallbacks de propaganda.
+/// `GET /api/ui/plugins/ui`: manifests of the active plugins with a running host.
+/// An inactive or absent plugin, or one with an invalid manifest, simply does not
+/// appear - the frontend then shows only the promotional fallbacks.
 pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewayState>) -> Response {
     let mut out = Vec::new();
     for status in state.plugins.all_statuses().await {
@@ -527,7 +527,7 @@ pub(crate) async fn plugin_rpc(
     }
 }
 
-/// `GET /api/ui/plugins/:code/assets/*path`: asset declarado no manifesto.
+/// `GET /api/ui/plugins/:code/assets/*path`: asset declared in the manifest.
 pub(crate) async fn plugin_asset(
     State(state): State<crate::gateway::GatewayState>,
     Path((code, path)): Path<(String, String)>,
@@ -553,7 +553,7 @@ pub(crate) async fn plugin_asset(
         if manifest.is_documentation(&path) && content_type != "text/markdown" {
             return Err("documentation was not served as Markdown".into());
         }
-        // Catálogo de texto: só sai se o conteúdo obedece ao contrato.
+        // Text catalog: only served if the content obeys the contract.
         if manifest.i18n.values().any(|asset| *asset == path) {
             let parsed: Value =
                 serde_json::from_slice(&bytes).map_err(|e| format!("unreadable catalog: {e}"))?;
@@ -815,7 +815,7 @@ mod tests {
         .expect("valid manifest with children");
         assert_eq!(parsed.menu[0].children.len(), 2);
         assert_eq!(parsed.screenshots.len(), 2);
-        // A serialização preserva os filhos para o navegador.
+        // Serialization preserves the children for the browser.
         let served = serde_json::to_value(&parsed).unwrap();
         assert_eq!(served["menu"][0]["children"][1]["id"], "projects");
 
@@ -834,7 +834,7 @@ mod tests {
         }
     }
 
-    /// O manifesto que o plugin `logs` (pom-plugin-logs) entrega hoje.
+    /// The manifest the `logs` plugin (pom-plugin-logs) ships today.
     #[test]
     fn accepts_the_manifest_shipped_by_the_logs_plugin() {
         let value: Value = serde_json::from_str(r#"{

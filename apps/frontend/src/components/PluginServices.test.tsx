@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * O serviço de um plugin aparece junto da máquina em que roda: no card de
- * detalhes e, no Fluxo, pendurado sob o card dela.
+ * A plugin's service shows up next to the machine it runs on: on the details
+ * card and, in the Flow, hanging under its card.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";

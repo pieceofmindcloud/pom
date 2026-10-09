@@ -5,12 +5,12 @@ import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
 
 /**
- * A tela que este perfil não abre.
+ * The screen this profile does not open.
  *
- * Não é a mesma coisa que `NotFound`: o endereço existe e funciona, o que falta
- * é o perfil. Dizer "não encontrado" mandaria o operador procurar um defeito de
- * rota que não há - então a tela diz qual perfil está ativo e que o caminho é
- * trocar de perfil, não corrigir o endereço.
+ * Not the same thing as `NotFound`: the address exists and works, what is missing
+ * is the profile. Saying "not found" would send the operator looking for a route
+ * defect that is not there - so the screen says which profile is active and that
+ * the way forward is to switch profile, not to fix the address.
  */
 export function Forbidden() {
   const { t } = useI18n();

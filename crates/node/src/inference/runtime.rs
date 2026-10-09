@@ -20,27 +20,27 @@ use tracing::{info, warn};
 /// Give up restarting a crash-looping inference server after this many tries.
 /// The same budget is persisted by `lastslice` so a process crash cannot reset it.
 const MAX_RESTARTS: u32 = crate::lastslice::MAX_AUTOMATIC_ATTEMPTS;
-/// Um supervisor antigo não pode bloquear indefinidamente a primeira
-/// requisição depois de um unload. O limite cobre o encerramento gracioso do
-/// transporte e dá ao `spawn_blocking` uma janela curta para a limpeza nativa;
-/// se ele estourar, a task é mantida joinable e a nova geração não começa.
-/// Cinco segundos cobrem a drenagem TCP de 3 s e o fechamento QUIC de 2 s sem
-/// transformar uma falha de transporte em espera de dezenas de segundos.
+/// An old supervisor cannot block the first request indefinitely
+/// after an unload. The limit covers the transport's graceful shutdown and
+/// gives `spawn_blocking` a short window for native cleanup;
+/// if it overruns, the task is kept joinable and the new generation does not start.
+/// Five seconds cover the 3 s TCP drain and the 2 s QUIC close without
+/// turning a transport failure into a wait of tens of seconds.
 const SUPERVISOR_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 
-/// O anúncio é apenas uma atualização de descoberta: uma falha não pode
-/// impedir o servidor local de voltar a atender. O prazo cobre resolução DNS
-/// e os envios UDP aos endereços conhecidos sem deixar o reload preso. Um
-/// segundo é curto em relação ao caminho de fallback QUIC de 300 ms, mas deixa
-/// margem para um lookup local sem afetar um anúncio saudável.
+/// The announcement is only a discovery update: a failure cannot
+/// keep the local server from serving again. The deadline covers DNS resolution
+/// and the UDP sends to the known addresses without leaving the reload stuck. One
+/// second is short relative to the 300 ms QUIC fallback path, but leaves
+/// margin for a local lookup without affecting a healthy announcement.
 const ANNOUNCE_DEADLINE: Duration = Duration::from_secs(1);
 
-/// Um único /health só prova que uma resposta foi montada. O crash do
-/// Windows aconteceu no mesmo instante em que essa resposta virou
-/// model_loaded, então a anotação persistente só pode ser promovida depois
-/// de duas sondagens consecutivas. Com o intervalo de 3 s do watcher, isso
-/// deixa passar o primeiro retorno e uma janela curta de estabilidade sem
-/// inventar um novo timeout de produto.
+/// A single /health only proves that a response was assembled. The Windows
+/// crash happened at the same instant that response became
+/// model_loaded, so the persistent annotation can only be promoted after
+/// two consecutive probes. With the watcher's 3 s interval, this
+/// lets the first return pass plus a short stability window without
+/// inventing a new product timeout.
 const HEALTH_CONFIRMATION_POLLS: u32 = 2;
 /// Largest context the product exposes. Larger allocations can exhaust a node
 /// before llama.cpp can report a useful error, so keep the operator-facing
@@ -55,20 +55,20 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
         .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions exceeds the numeric limit"))
 }
 
-/// A mesma conversão `NodeConfig` -> `EngineConfig` que `infer_server::run`
-/// monta antes de carregar o modelo de verdade.
+/// The same `NodeConfig` -> `EngineConfig` conversion that `infer_server::run`
+/// builds before loading the model for real.
 ///
-/// Extraída para ser reutilizada pela pré-visualização de capacidade
-/// (`crate::deploy::capacity_preview_endpoint`), que precisa dos mesmos
-/// parâmetros normalizados sem chamar a FFI. `need_embeddings` continua
-/// parâmetro em vez de recomputado aqui: o carregamento real também considera
-/// o caminho de inferência MoE (`inference_path.is_moe()`), que depende de uma
-/// leitura de GGUF que o chamador já fez; a pré-visualização usa só
-/// `cfg.needs_residual_export()`, que é a metade que não depende do executor.
-/// `moe_external_executor`/`moe_external_executor_layers` ficam de fora da
-/// pré-visualização porque o ownership de experts é decidido por
-/// `MoeRuntime::external_executor_plan`, uma leitura de GGUF à parte que ela
-/// não faz. A carga real recebe esses valores completos.
+/// Extracted to be reused by the capacity preview
+/// (`crate::deploy::capacity_preview_endpoint`), which needs the same normalized
+/// parameters without calling the FFI. `need_embeddings` stays a
+/// parameter instead of being recomputed here: the real load also considers
+/// the MoE inference path (`inference_path.is_moe()`), which depends on a
+/// GGUF read that the caller has already done; the preview uses only
+/// `cfg.needs_residual_export()`, which is the half that does not depend on the executor.
+/// `moe_external_executor`/`moe_external_executor_layers` are left out of the
+/// preview because expert ownership is decided by
+/// `MoeRuntime::external_executor_plan`, a separate GGUF read that it
+/// does not do. The real load receives these values in full.
 pub(crate) fn engine_config_from_node(
     cfg: &NodeConfig,
     need_embeddings: bool,
@@ -102,10 +102,10 @@ pub(crate) fn engine_config_from_node(
     })
 }
 
-/// Converte a prova de prontidão do servidor numa capacidade publicável.
-/// `n_ctx_per_session` é a janela que o llama.cpp conseguiu reservar de fato;
-/// `max_new_tokens` continua sendo apenas o tamanho de uma perna. A capacidade
-/// publicada é derivada somente desses valores efetivos do runtime.
+/// Converts the server's readiness proof into a publishable capacity.
+/// `n_ctx_per_session` is the window llama.cpp actually managed to reserve;
+/// `max_new_tokens` remains only the size of one leg. The published
+/// capacity is derived only from these effective runtime values.
 fn runtime_capacity_from_health(
     body: &serde_json::Value,
     config: &NodeConfig,
@@ -123,10 +123,10 @@ fn runtime_capacity_from_health(
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-/// Folga conservadora para a projeção de alocação CUDA: 256 MiB mantém o
-/// ganho de capacidade observado no modelo híbrido sem voltar a consumir 1 GiB.
-/// Definida em `llama-engine` (o `llm` a usa); re-exportada para que
-/// `crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB` continue valendo.
+/// Conservative headroom for the CUDA allocation projection: 256 MiB keeps the
+/// capacity gain observed on the hybrid model without going back to consuming 1 GiB.
+/// Defined in `llama-engine` (the `llm` uses it); re-exported so that
+/// `crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB` remains valid.
 pub use llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB;
 
 /// What this node is currently serving. Serialisable so the UI can round-trip it.
@@ -134,33 +134,33 @@ pub use llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB;
 pub struct NodeConfig {
     /// Path of the GGUF this peer loads — a full model or one slice of one.
     pub model_path: String,
-    /// Projector multimodal carregado junto do GGUF, equivalente a `--mmproj`.
+    /// Multimodal projector loaded together with the GGUF, equivalent to `--mmproj`.
     #[serde(default)]
     pub mmproj_path: Option<String>,
-    /// GGUF externo de rascunho MTP ("shared MTP module"), presente só na
-    /// máquina que serve a última camada do modelo (onde o bloco `nextn`
-    /// rodaria). O MTP usa a própria convenção `mtp-` e quantização; o
-    /// `mmproj_path` usa associação verificada por identidade GGUF e dimensão.
-    /// Ver `models::catalog::find_mtp_draft_sibling` e `crate::llm::mtp`.
+    /// External MTP draft GGUF ("shared MTP module"), present only on the
+    /// machine that serves the last layer of the model (where the `nextn` block
+    /// would run). MTP uses its own `mtp-` convention and quantization; the
+    /// `mmproj_path` uses association verified by GGUF identity and dimension.
+    /// See `models::catalog::find_mtp_draft_sibling` and `crate::llm::mtp`.
     #[serde(default)]
     pub mtp_draft_path: Option<String>,
     /// Label shared by every peer of the same model. The pipeline planner only
     /// chains peers whose label matches exactly, so this must agree across the
     /// cluster (see `ModelProfile::guess_from_name`).
     pub model_label: String,
-    /// A implantação de que este nó faz parte. Ver `models/deployment.rs`.
+    /// The deployment this node is part of. See `models/deployment.rs`.
     ///
-    /// É o que permite o mesmo modelo estar no ar duas vezes, em máquinas ou
-    /// configurações diferentes: quem monta o pipeline agrupa por este id, e
-    /// não mais pela igualdade de `model_label`, que não distinguia as duas.
+    /// It is what allows the same model to be up twice, on different machines or
+    /// configurations: whoever assembles the pipeline groups by this id, and
+    /// no longer by equality of `model_label`, which did not tell the two apart.
     ///
-    /// Vazio num nó configurado pela linha de comando, que não passou por
-    /// implantação nenhuma - aí o agrupamento cai de volta no rótulo. É também
-    /// o que um peer de versão anterior anuncia.
+    /// Empty on a node configured by the command line, which went through no
+    /// deployment - there the grouping falls back to the label. It is also
+    /// what a peer of an earlier version announces.
     #[serde(default)]
     pub deploy_id: String,
-    /// Nome operacional desta implantação, separado do rótulo técnico do
-    /// modelo usado pelo roteamento.
+    /// Operational name of this deployment, separate from the model's technical
+    /// label used by routing.
     #[serde(default)]
     pub deployment_name: String,
     pub start_layer: u32,
@@ -172,8 +172,8 @@ pub struct NodeConfig {
     pub peer_index: u32,
     /// This peer is the entry point clients talk to.
     pub primary: bool,
-    /// Identidade de tensor parallelism deste nó (caminho C), quando ele é
-    /// primary/worker de um grupo. `None` = nó sem TP (o caso de hoje).
+    /// Tensor parallelism identity of this node (path C), when it is
+    /// primary/worker of a group. `None` = node without TP (today's case).
     #[serde(default)]
     pub tp: Option<crate::network::TpIdentity>,
     /// Persisted engine preference for this deployment. The executor decides
@@ -198,16 +198,16 @@ pub struct NodeConfig {
     /// Precision used for hidden state crossing between inference peers.
     #[serde(default)]
     pub hidden_state_dtype: crate::wire::WireDtype,
-    /// Tipo numérico do cache K, definido pela instalação inteira.
+    /// Numeric type of the K cache, defined by the whole installation.
     #[serde(default)]
     pub cache_type_k: crate::config::KvCacheType,
-    /// Tipo numérico do cache V, definido pela instalação inteira.
+    /// Numeric type of the V cache, defined by the whole installation.
     #[serde(default)]
     pub cache_type_v: crate::config::KvCacheType,
-    /// Diretório de snapshots de KV cache (`Config::slot_save_path`), injetado
-    /// da instalação em `apply_locked` como `cache_type_*`. `None` desliga as
-    /// rotas de snapshot neste peer. Não entra em `weights_are_compatible`:
-    /// mudar o diretório não invalida os pesos carregados.
+    /// Directory for KV cache snapshots (`Config::slot_save_path`), injected
+    /// from the installation in `apply_locked` as `cache_type_*`. `None` turns off the
+    /// snapshot routes on this peer. It is not part of `weights_are_compatible`:
+    /// changing the directory does not invalidate the loaded weights.
     #[serde(default)]
     pub slot_save_path: Option<String>,
     /// Host-memory KV cache setting in MiB (`Config::cache_ram_mib`, the
@@ -217,15 +217,15 @@ pub struct NodeConfig {
     /// `infer_server/ram_cache.rs`.
     #[serde(default)]
     pub cache_ram_mib: Option<i64>,
-    /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
+    /// Lets llama.cpp adjust layers/context to the free memory.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
-    /// Reserva de segurança que o `fit` deixa livre em cada dispositivo.
+    /// Safety reserve that `fit` leaves free on each device.
     #[serde(default = "default_fit_memory_margin_mb")]
     pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
-    /// Microlote físico (`n_ubatch` do llama.cpp) enquanto o fit de memória
-    /// está ligado; nunca maior que `n_batch`.
+    /// Physical micro-batch (`n_ubatch` of llama.cpp) while the memory fit
+    /// is on; never larger than `n_batch`.
     #[serde(default = "default_n_ubatch")]
     pub n_ubatch: u32,
     /// Concurrent generations; each one gets the full configured context.
@@ -249,10 +249,10 @@ pub struct NodeConfig {
     /// Prompt tokens pushed through the pipeline per round trip.
     #[serde(default = "default_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
-    /// Profundidade do pipeline de prefill: pedaços mantidos em voo pela cadeia
-    /// ao mesmo tempo. O runtime limita o valor efetivo a oito e a um orçamento
-    /// de bytes de estado oculto; oito é o padrão, que enche o pipeline num
-    /// cluster de poucos hops. Um desliga a sobreposição.
+    /// Depth of the prefill pipeline: chunks kept in flight by the chain
+    /// at the same time. The runtime caps the effective value at eight and at a byte
+    /// budget of hidden state; eight is the default, which fills the pipeline in a
+    /// cluster of few hops. One turns the overlap off.
     #[serde(default = "default_prefill_max_inflight_chunks")]
     pub prefill_max_inflight_chunks: u32,
     pub max_new_tokens: u32,
@@ -261,25 +261,25 @@ pub struct NodeConfig {
     pub top_k: u32,
     pub repeat_penalty: f32,
     pub repeat_last_n: u32,
-    /// Penalidades do sampler do llama.cpp, subtraídas do logit dos tokens
-    /// vistos na janela: uma vez por token (`presence`) e por ocorrência
-    /// (`frequency`). 0 desliga.
+    /// llama.cpp sampler penalties, subtracted from the logit of the tokens
+    /// seen in the window: once per token (`presence`) and per occurrence
+    /// (`frequency`). 0 turns them off.
     #[serde(default)]
     pub presence_penalty: f32,
     #[serde(default)]
     pub frequency_penalty: f32,
-    /// Corta candidatos abaixo desta fração do mais provável. 0 desliga.
+    /// Cuts candidates below this fraction of the most probable. 0 turns it off.
     #[serde(default)]
     pub min_p: f32,
-    /// Semente do gerador do sampler, aplicada quando a implantação carrega.
-    /// O padrão é o valor fixo que o POM sempre usou.
+    /// Sampler generator seed, applied when the deployment loads.
+    /// The default is the fixed value POM has always used.
     #[serde(
         with = "llama_engine::llm::seed_text",
         default = "llama_engine::llm::seed_text::default_seed"
     )]
     pub seed: u64,
-    /// Sampler DRY do llama.cpp: penaliza o token que estenderia uma sequência
-    /// já vista. `dry_multiplier` 0 desliga.
+    /// llama.cpp DRY sampler: penalizes the token that would extend a sequence
+    /// already seen. `dry_multiplier` 0 turns it off.
     #[serde(default)]
     pub dry_multiplier: f32,
     #[serde(default = "default_dry_base")]
@@ -288,8 +288,8 @@ pub struct NodeConfig {
     pub dry_allowed_length: u32,
     #[serde(default = "default_dry_penalty_last_n")]
     pub dry_penalty_last_n: u32,
-    /// Limite de tokens de um bloco de raciocínio (`--reasoning-budget` do
-    /// llama.cpp): ao atingi-lo, a tag de fim é forçada. -1 não limita.
+    /// Token limit of a reasoning block (`--reasoning-budget` of
+    /// llama.cpp): upon reaching it, the end tag is forced. -1 means no limit.
     #[serde(default = "default_reasoning_budget")]
     pub reasoning_budget: i32,
     pub no_thinking: bool,
@@ -312,40 +312,40 @@ pub struct NodeConfig {
     /// `find_draft` searches for a prior repeat of.
     #[serde(default = "default_speculative_lookup_window")]
     pub speculative_lookup_window: u32,
-    /// Predição multi-token pelo bloco `nextn` do próprio modelo.
+    /// Multi-token prediction by the model's own `nextn` block.
     ///
-    /// **Interruptor separado de `speculative_decoding_enabled` de
-    /// propósito**: são dois mecanismos diferentes, e o de cima
-    /// (prompt-lookup) não usa peso nenhum do modelo. Ver `crate::mtp` para
-    /// a diferença e `mtp_effective` para quando ele realmente entra em ação.
+    /// **A switch separate from `speculative_decoding_enabled` on
+    /// purpose**: they are two different mechanisms, and the one above
+    /// (prompt-lookup) uses no model weight at all. See `crate::mtp` for
+    /// the difference and `mtp_effective` for when it really takes effect.
     #[serde(default)]
     pub mtp_enabled: bool,
-    /// Quantos tokens a cabeça `nextn` rascunha por rodada.
+    /// How many tokens the `nextn` head drafts per round.
     #[serde(default = "default_mtp_draft_tokens")]
     pub mtp_draft_tokens: u32,
-    /// Confiança mínima para o rascunho continuar. Zero aceita qualquer
-    /// palpite (o padrão do llama.cpp); acima disso o rascunho para no
-    /// primeiro token duvidoso, em vez de alargar o lote de todos os hops
-    /// para uma aposta que a verificação vai recusar.
+    /// Minimum confidence for the draft to continue. Zero accepts any
+    /// guess (the llama.cpp default); above that the draft stops at the
+    /// first doubtful token, instead of widening every hop's batch
+    /// for a bet the verification will refuse.
     #[serde(default = "default_mtp_min_probability")]
     pub mtp_min_probability: f32,
-    /// Permite carregar os pesos e o contexto `nextn` na RAM quando a VRAM
-    /// não comportar o MTP pedido. Ligado por padrão para honrar a implantação;
-    /// o operador pode desligar o recuo se a medição local não compensar.
+    /// Allows loading the `nextn` weights and context into RAM when VRAM
+    /// cannot hold the requested MTP. On by default to honor the deployment;
+    /// the operator may turn the fallback off if the local measurement does not pay off.
     #[serde(default = "default_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
-    /// Onde o bloco MTP fica: automático, sempre na VRAM ou sempre na RAM.
+    /// Where the MTP block lives: automatic, always in VRAM or always in RAM.
     #[serde(default)]
     pub mtp_placement: llama_engine::MtpPlacement,
-    /// Todos os experts roteados de um MoE ficam na RAM e a CPU os calcula
-    /// (o `--cpu-moe` do llama.cpp); a VRAM fica com o resto do modelo. Pula o
-    /// ajuste de memória, que recusa overrides definidos antes dele.
+    /// All the routed experts of a MoE stay in RAM and the CPU computes them
+    /// (llama.cpp's `--cpu-moe`); VRAM keeps the rest of the model. It skips the
+    /// memory fit, which refuses overrides set before it.
     #[serde(default)]
     pub moe_experts_in_ram: bool,
-    /// Cache na GPU, em MiB, dos experts que ficaram na RAM: os usados há
-    /// pouco são servidos da VRAM, só as faltas sobem pelo PCIe (lotes de até
-    /// 32 tokens). `0` desliga. Com o ajuste de memória ligado, o ajuste conta
-    /// o cache e deixa menos camadas de experts inteiras na GPU.
+    /// GPU cache, in MiB, of the experts that stayed in RAM: the recently used ones
+    /// are served from VRAM, only the misses go up over PCIe (batches of up to
+    /// 32 tokens). `0` turns it off. With the memory fit on, the fit counts
+    /// the cache and leaves fewer whole expert layers on the GPU.
     #[serde(default)]
     pub moe_cache_mib: u32,
     /// The gateway picks each request's prefill chunk (between 32 tokens and
@@ -353,27 +353,27 @@ pub struct NodeConfig {
     /// prompt goes in chunks of exactly `prefill_chunk_tokens`.
     #[serde(default = "default_adaptive_prefill_chunks")]
     pub adaptive_prefill_chunks: bool,
-    /// Descarrega os pesos quando este peer fica ocioso.
+    /// Unloads the weights when this peer is idle.
     #[serde(default)]
     pub unload_if_idle: bool,
-    /// Minutos sem requisição antes de entrar em `idle`.
+    /// Minutes without a request before entering `idle`.
     #[serde(default = "default_idle_minutes")]
     pub idle_minutes: u32,
 }
 
 impl NodeConfig {
-    /// Uma configuração com os **parâmetros** preenchidos e mais nada.
+    /// A configuration with the **parameters** filled in and nothing else.
     ///
-    /// Os campos de identidade (caminho, rótulo, faixa, posição no pipeline)
-    /// saem em branco de propósito: quem chama os preenche por cima, com a
-    /// sintaxe de atualização de struct. Existe para que a lista de "o que é
-    /// parâmetro" viva **num lugar só** - antes ela estava escrita à mão no
-    /// `run_apply`, e qualquer caminho novo que montasse um `NodeConfig` teria
-    /// que repetir as trinta linhas sem esquecer nenhuma.
+    /// The identity fields (path, label, range, position in the pipeline)
+    /// come out blank on purpose: callers fill them in on top, with the
+    /// struct update syntax. It exists so that the list of "what is a
+    /// parameter" lives in **one place only** - before, it was written by hand in
+    /// `run_apply`, and any new path that assembled a `NodeConfig` would have
+    /// had to repeat the thirty lines without forgetting any.
     ///
-    /// `allow_fit_memory` é falso num nó de tensor parallelism: o `fit` nativo
-    /// do llama.cpp não sabe lidar com `split-mode tensor`, então lá ele fica
-    /// desligado independentemente do que o operador pediu.
+    /// `allow_fit_memory` is false on a tensor parallelism node: llama.cpp's native
+    /// `fit` does not know how to handle `split-mode tensor`, so there it stays
+    /// off regardless of what the operator asked for.
     pub fn from_params(p: &crate::webui::RuntimeParams, allow_fit_memory: bool) -> Self {
         Self {
             deploy_id: String::new(),
@@ -448,17 +448,17 @@ impl NodeConfig {
         }
     }
 
-    /// Esta mesma fatia, com outros parâmetros.
+    /// This same slice, with other parameters.
     ///
-    /// **Nada que identifique a fatia muda**: caminho, rótulo, faixa de
-    /// camadas, posição no pipeline, grupo de TP e porta continuam os deste
-    /// nó. É essa garantia que torna seguro reconfigurar uma implantação no
-    /// ar - o nó recarrega o mesmo arquivo com outro `n_ctx`, e não vira outro
-    /// nó do pipeline no meio do caminho.
+    /// **Nothing that identifies the slice changes**: path, label, layer
+    /// range, position in the pipeline, TP group and port remain those of this
+    /// node. This guarantee is what makes it safe to reconfigure a live
+    /// deployment - the node reloads the same file with another `n_ctx`, and does not
+    /// become another node of the pipeline midway.
     ///
-    /// `no_embeddings` é exceção só na aparência: ele é decidido pela posição
-    /// no pipeline (a cauda não exporta residual), então vem do que já estava
-    /// aqui, e não do que o operador digitou.
+    /// `no_embeddings` is an exception only in appearance: it is decided by the position
+    /// in the pipeline (the tail does not export the residual), so it comes from what was already
+    /// here, and not from what the operator typed.
     pub fn with_params(&self, p: &crate::webui::RuntimeParams) -> Self {
         let mut next = Self {
             deploy_id: self.deploy_id.clone(),
@@ -525,12 +525,12 @@ fn default_speculative_k() -> u32 {
 fn default_speculative_lookup_window() -> u32 {
     3
 }
-/// O mesmo padrão do `llama.cpp` (`common_params_speculative_draft::n_max`).
+/// The same default as `llama.cpp` (`common_params_speculative_draft::n_max`).
 fn default_mtp_draft_tokens() -> u32 {
     3
 }
-/// Zero, como o `p_min` do llama.cpp: sem corte por confiança até que uma
-/// medição diga que cortar rende mais que rascunhar.
+/// Zero, like llama.cpp's `p_min`: no confidence cutoff until a
+/// measurement says that cutting pays more than drafting.
 fn default_mtp_min_probability() -> f32 {
     0.0
 }
@@ -565,18 +565,18 @@ impl NodeConfig {
         self.end_layer.saturating_sub(self.start_layer) + 1
     }
 
-    /// Este nó precisa mesmo entregar o estado oculto ao sucessor?
+    /// Does this node really need to hand the hidden state to its successor?
     ///
-    /// É a **única** condição que justifica instalar o
-    /// `ggml_backend_sched_eval_callback` de captura em `llm.rs`: o callback
-    /// muda como o scheduler do ggml agrupa os nós do grafo e custou 7,8-8,2 ms
-    /// por token na medição de 2026-08-12, contra 0,14-0,67 ms no hop que não o
-    /// instala — mesmo número de camadas, e o que não instala ainda carrega a
-    /// LM head. O custo segue a posição, não a máquina.
+    /// It is the **only** condition that justifies installing the
+    /// `ggml_backend_sched_eval_callback` capture in `llm.rs`: the callback
+    /// changes how the ggml scheduler groups the graph nodes and cost 7.8-8.2 ms
+    /// per token in the 2026-08-12 measurement, against 0.14-0.67 ms on the hop that does not
+    /// install it - same number of layers, and the one that does not install it still carries
+    /// the LM head. The cost follows the position, not the machine.
     ///
-    /// Errar para menos não corrompe em silêncio: `LlmEngine::hidden_state`
-    /// recusa com "residual capture did not fire" em vez de devolver o
-    /// pós-norm.
+    /// Erring on the low side does not corrupt silently: `LlmEngine::hidden_state`
+    /// refuses with "residual capture did not fire" instead of returning the
+    /// post-norm.
     pub fn needs_residual_export(&self) -> bool {
         if self.single_peer || self.no_embeddings {
             return false;
@@ -586,20 +586,20 @@ impl NodeConfig {
         !serves_last_layer && !last_in_split
     }
 
-    /// O MTP vale a pena **neste** nó?
+    /// Is MTP worth it on **this** node?
     ///
-    /// Dois casos, e eles não se confundem:
+    /// Two cases, and they are not to be confused:
     ///
-    /// * **Modelo inteiro:** uma máquina só serve todas as camadas, inclusive a
-    ///   última com o bloco `nextn`. O rascunho e o lote saem da mesma cabeça.
-    /// * **Cauda de um pipeline fatiado:** o bloco `nextn` mora aqui mas quem
-    ///   monta o lote é a cabeça, duas máquinas diferentes. Aqui só se liga o
-    ///   *motor* de rascunho — a produção do draft via `mtp_draft` e a
-    ///   observação (`observe`) depois do `decode_hidden`. O gateway faz o resto.
+    /// * **Whole model:** a single machine serves all the layers, including the
+    ///   last one with the `nextn` block. The draft and the batch come out of the same head.
+    /// * **Tail of a sliced pipeline:** the `nextn` block lives here but whoever
+    ///   assembles the batch is the head, two different machines. Here only the draft
+    ///   *engine* is turned on - draft production via `mtp_draft` and the
+    ///   observation (`observe`) after `decode_hidden`. The gateway does the rest.
     ///
-    /// Que o modelo tenha ou não bloco `nextn` **não** se decide aqui: quem
-    /// sabe isso é o GGUF carregado, e `MtpDrafter::attach` devolve `None`
-    /// quando não tem.
+    /// Whether the model has a `nextn` block or not is **not** decided here: whoever
+    /// knows that is the loaded GGUF, and `MtpDrafter::attach` returns `None`
+    /// when it has none.
     pub fn mtp_effective(&self) -> bool {
         if !self.mtp_enabled {
             return false;
@@ -612,16 +612,16 @@ impl NodeConfig {
         if self.start_layer == 0 && self.peer_count <= 1 {
             return true;
         }
-        // Cauda de um pipeline fatiado — só a última camada tem o bloco.
+        // Tail of a sliced pipeline - only the last layer has the block.
         if self.start_layer > 0 && self.peer_count > 1 {
             return true;
         }
         false
     }
 
-    /// Pesos podem sobreviver a esta troca de configuração quando a fatia e a
-    /// forma de carregamento continuam iguais. Contexto, KV, sessões, lote e
-    /// sampling ficam fora desta identidade e são reconstruídos no servidor.
+    /// Weights may survive this configuration change when the slice and the
+    /// way of loading remain the same. Context, KV, sessions, batch and
+    /// sampling are outside this identity and are rebuilt on the server.
     fn weights_are_compatible(&self, other: &Self) -> bool {
         self.model_path == other.model_path
             && self.mmproj_path == other.mmproj_path
@@ -713,7 +713,7 @@ pub enum ServerState {
     Starting,
     /// `/health` answered and the model is loaded.
     Ready,
-    /// Modelo descarregado por inatividade; a implantação continua anunciada.
+    /// Model unloaded for inactivity; the deployment remains announced.
     Idle,
     /// Crashed past the restart budget.
     Failed,
@@ -741,18 +741,18 @@ pub struct RuntimeStatus {
     pub log_path: Option<String>,
     /// Layer count read back from the shard's GGUF metadata via `/health`.
     pub reported_total_layers: Option<u32>,
-    /// Quantas camadas o llama.cpp **de fato** pôs na GPU, lidas do mesmo
-    /// `/health`, no mesmo instante e pelo mesmo motivo que a linha acima: é o
-    /// motor relatando o que aconteceu, não o que foi pedido.
+    /// How many layers llama.cpp **actually** put on the GPU, read from the same
+    /// `/health`, at the same instant and for the same reason as the line above: it is the
+    /// engine reporting what happened, not what was requested.
     ///
-    /// A distinção é o valor inteiro do campo. `n_gpu_layers` da config é o
-    /// pedido, e o pedido costuma ser o sentinela 99 ("descarregue tudo"); com
-    /// `fit_memory`, o llama.cpp reduz esse número para caber na VRAM e é aqui
-    /// que o número escolhido aparece. Ler o pedido para dizer onde as camadas
-    /// estão responde "todas na GPU" justamente quando algumas não estão.
+    /// The distinction is the whole value of the field. `n_gpu_layers` of the config is the
+    /// request, and the request is usually the sentinel 99 ("offload everything"); with
+    /// `fit_memory`, llama.cpp reduces this number to fit in VRAM and this is where
+    /// the chosen number shows up. Reading the request to say where the layers
+    /// are answers "all on the GPU" precisely when some are not.
     ///
-    /// Negativo significa "todas" na convenção do llama.cpp; quem lê deve
-    /// tratá-lo como a faixa inteira, e não como zero.
+    /// Negative means "all" in the llama.cpp convention; whoever reads it must
+    /// treat it as the whole range, not as zero.
     pub reported_gpu_layers: Option<i32>,
     pub changed_at: String,
 }
@@ -783,21 +783,21 @@ pub struct NodeRuntime {
     net: Arc<Network>,
     /// Bumped on every `apply`; the supervisor of an older generation exits.
     generation: watch::Sender<u64>,
-    /// Certificado que o servidor de inferência apresenta, quando há um.
-    /// `None` nos testes, que sobem em `127.0.0.1` e falam em claro.
+    /// Certificate the inference server presents, when there is one.
+    /// `None` in tests, which come up on `127.0.0.1` and speak in clear text.
     tls: Option<crate::serve::TlsServer>,
-    /// Endpoint HTTP/3 da inferência. Não depende da política TLS sobre TCP.
+    /// HTTP/3 endpoint of the inference. It does not depend on the TLS policy over TCP.
     quic: Option<crate::serve::QuicServerConfig>,
-    /// Porta UDP dedicada anunciada para o endpoint HTTP/3 da inferência.
+    /// Dedicated UDP port announced for the inference HTTP/3 endpoint.
     quic_port: Option<u16>,
-    /// Configuração viva usada para autorizar chamadas internas de inferência.
+    /// Live configuration used to authorize internal inference calls.
     auth: Option<crate::auth::AuthState>,
-    /// Dono do último conjunto de pesos carregado. O servidor de cada geração
-    /// conserva sua própria referência até drenar as requisições em voo.
+    /// Owner of the last set of loaded weights. Each generation's server
+    /// keeps its own reference until it drains the in-flight requests.
     model_cache: Arc<crate::llm::ModelCache>,
-    /// Contador compartilhado pelo gateway e pelo servidor de inferência local.
-    /// Sem a mesma instância, o painel só veria o zero do tracker do gateway
-    /// enquanto as requisições executavam na porta de inferência.
+    /// Counter shared by the gateway and the local inference server.
+    /// Without the same instance, the panel would only see the zero of the gateway's tracker
+    /// while the requests ran on the inference port.
     loads: Arc<crate::pipeline::LoadTracker>,
     request_activity: Arc<crate::reqlog::RequestActivity>,
     status_changed: Arc<Notify>,
@@ -821,8 +821,8 @@ impl NodeRuntime {
         Self::new_with_tls(net, assignment, None)
     }
 
-    /// Como `new`, mas dizendo qual certificado o servidor de inferência
-    /// apresenta. É o caminho que o `main.rs` usa; `new` fica para os testes.
+    /// Like `new`, but saying which certificate the inference server
+    /// presents. It is the path `main.rs` uses; `new` is left for the tests.
     pub fn new_with_tls(
         net: Arc<Network>,
         assignment: Arc<RwLock<Option<LayerAssignment>>>,
@@ -875,8 +875,8 @@ impl NodeRuntime {
         })
     }
 
-    /// Tracker compartilhado com o gateway desta máquina e com o servidor de
-    /// inferência da geração atual.
+    /// Tracker shared with this machine's gateway and with the current generation's
+    /// inference server.
     pub fn load_tracker(&self) -> Arc<crate::pipeline::LoadTracker> {
         self.loads.clone()
     }
@@ -1072,11 +1072,11 @@ impl NodeRuntime {
         self.config.read().await.clone()
     }
 
-    /// Põe uma configuração sem subir servidor de inferência nenhum.
+    /// Puts a configuration in place without bringing up any inference server.
     ///
-    /// `apply` é o caminho de verdade e carrega um modelo; um teste que só
-    /// precisa que o gateway leia `speculative_decoding_enabled` não tem GGUF
-    /// para dar a ele.
+    /// `apply` is the real path and loads a model; a test that only
+    /// needs the gateway to read `speculative_decoding_enabled` has no GGUF
+    /// to give it.
     #[cfg(test)]
     pub(crate) async fn seed_config_for_test(&self, cfg: NodeConfig) {
         *self.config.write().await = Some(cfg);
@@ -1179,8 +1179,8 @@ impl NodeRuntime {
         self.net.set_external_engine(None);
         self.net.set_runtime_generation(generation);
 
-        // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
-        // nó de voltar servindo no próximo arranque e desfazer essa decisão.
+        // Stopping is the decision of whoever operated. Forgetting the annotation is what keeps the
+        // node from coming back serving on the next start and undoing that decision.
         crate::lastslice::clear();
 
         self.thermal.lock().await.recovery = None;
@@ -1195,9 +1195,9 @@ impl NodeRuntime {
         self.apply_locked(cfg, true, false).await
     }
 
-    /// Retoma uma fatia que o journal marcou como pendente depois de um crash.
-    /// O chamador já incrementou a tentativa no disco; este caminho não pode
-    /// resetá-la para 1 antes de iniciar o servidor nativo.
+    /// Resumes a slice that the journal marked as pending after a crash.
+    /// The caller has already incremented the attempt on disk; this path cannot
+    /// reset it to 1 before starting the native server.
     pub async fn apply_after_restart(&self, cfg: NodeConfig) -> Result<()> {
         let _operation = self.operation.lock().await;
         self.apply_locked(cfg, false, false).await
@@ -1310,8 +1310,8 @@ impl NodeRuntime {
         self.request_activity.mark_now();
         self.net.set_idle(waking);
         self.net.set_external_engine(cfg.inference_service.clone());
-        // A configuração nova só vira capacidade efetiva depois que o
-        // `/health` do processo novo responder `model_loaded`.
+        // The new configuration only becomes effective capacity after the
+        // new process's `/health` answers `model_loaded`.
         self.net.set_runtime_generation(generation);
 
         // Let peers know immediately instead of waiting for the next gossip
@@ -1485,13 +1485,13 @@ impl NodeRuntime {
         let _ = self.net.announce(None).await;
     }
 
-    /// Registra que a fatia anotada não voltou porque nunca chegou a carregar.
+    /// Records that the annotated slice did not come back because it never managed to load.
     ///
-    /// O arranque que recusa retomá-la tem que dizer isso: o painel de um nó
-    /// vazio e calado é indistinguível do de uma máquina que nunca recebeu
-    /// fatia nenhuma, e esta é a máquina cuja última tentativa derrubou o
-    /// processo. É o que o operador precisa ler para saber que tem de dar
-    /// menos camadas a ela.
+    /// The start that refuses to resume it has to say so: the panel of an
+    /// empty and silent node is indistinguishable from that of a machine that never received
+    /// any slice, and this is the machine whose last attempt brought the
+    /// process down. It is what the operator needs to read to know they have to give
+    /// it fewer layers.
     pub async fn note_unloadable_slice(&self, cfg: &NodeConfig, attempts: u32) {
         let detail = format!(
             "slice {} {}-{} never loaded: it failed {} consecutive attempts before /health and was blocked; undeploy or apply again manually",
@@ -1510,12 +1510,13 @@ impl NodeRuntime {
         };
         let port = cfg.inference_port;
         let cfg_for_health = cfg.clone();
-        // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
-        // Ver `Network::mtp_ready`.
+        // Only the engine knows whether the GGUF carries the `nextn` block; the
+        // announcement reads from here.
+        // See `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
         let batching_ready = self.net.batching_ready_handle();
-        // `slot_save_path` é config estática da máquina: já se sabe aqui se
-        // este peer serve `POST /v1/session/slot`. Ver `Network::slot_persist_ready`.
+        // `slot_save_path` is static machine config: it is already known here whether
+        // this peer serves `POST /v1/session/slot`. See `Network::slot_persist_ready`.
         self.net.set_slot_persist_ready(
             cfg.slot_save_path
                 .as_deref()
@@ -1528,8 +1529,8 @@ impl NodeRuntime {
         let loads = self.loads.clone();
         let request_activity = self.request_activity.clone();
         let load_node_id = self.net.node_id.clone();
-        // A porta de inferência só recebe peer: nada de redirecionar para
-        // https quem chegar em claro, porque não há navegador aqui.
+        // The inference port only receives peers: no redirecting
+        // to https whoever arrives in clear text, because there is no browser here.
         let tls = self.tls.as_ref().map(|t| t.peers_only());
         let quic = self.quic.clone();
         let quic_port = self.quic_port;
@@ -1551,10 +1552,10 @@ impl NodeRuntime {
                         .await;
                     return;
                 }
-                // A cada tentativa, não só antes do laço: quem segura a porta
-                // pode ter aparecido depois, ou não ter morrido na primeira
-                // investida. Limpar uma vez só fazia as outras nove tentativas
-                // baterem na mesma porta ocupada.
+                // On each attempt, not only before the loop: whoever holds the port
+                // may have appeared later, or may not have died on the first
+                // strike. Clearing only once made the other nine attempts
+                // hit the same occupied port.
                 let held_port = free_port(port).await.err();
                 if restarts > 0 {
                     warn!(
@@ -1583,11 +1584,11 @@ impl NodeRuntime {
                     }
                 }
 
-                // Porta presa não pode passar em silêncio: o servidor vai
-                // morrer com "Address already in use" e, enquanto o orçamento
-                // de tentativas não esgota, o operador via só "carregando" e a
-                // TUI seguia anunciando saúde. O estado visível diz o motivo
-                // desde a primeira tentativa (mesmo padrão de
+                // A stuck port cannot pass in silence: the server is going to
+                // die with "Address already in use" and, while the attempt budget
+                // is not exhausted, the operator saw only "loading" and the
+                // TUI kept announcing health. The visible state gives the reason
+                // from the first attempt (same pattern as
                 // `note_unloadable_slice`).
                 match &held_port {
                     Some(reason) => {
@@ -1669,12 +1670,12 @@ impl NodeRuntime {
                         append_log(port, &format!("stopped with an error: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
-                            // Uma fatia que chegou a servir (e por isso está
-                            // anotada como `Serving`) e depois quebrou
-                            // O journal pendente permanece no disco. Se o
-                            // processo principal cair agora, o próximo
-                            // arranque verá o mesmo limite e não tentará de
-                            // novo até o operador intervir.
+                            // A slice that did get to serve (and for that reason is
+                            // annotated as `Serving`) and then broke.
+                            // The pending journal remains on disk. If the
+                            // main process goes down now, the next
+                            // start will see the same limit and will not try
+                            // again until the operator intervenes.
                             let detail = match &held_port {
                                 Some(reason) => {
                                     format!("gave up after {MAX_RESTARTS} persistent attempts: {reason}")
@@ -1774,8 +1775,8 @@ impl NodeRuntime {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32);
 
-                // O mesmo `/health`, já buscado: quantas camadas foram parar na
-                // GPU depois do fit. Nenhuma chamada nova.
+                // The same `/health`, already fetched: how many layers ended up on the
+                // GPU after the fit. No new call.
                 let reported_gpu = body
                     .get("n_gpu_layers_effective")
                     .and_then(|v| v.as_i64())
@@ -1796,11 +1797,11 @@ impl NodeRuntime {
                     }
                 }
 
-                // O único ponto do código que prova que a fatia está no ar:
-                // `/health` respondeu `model_loaded` em sondagens
-                // consecutivas. Um primeiro retorno não basta: a confirmação
-                // de carregamento pode ser justamente o caminho que derruba
-                // o processo nativo.
+                // The only point in the code that proves the slice is up:
+                // `/health` answered `model_loaded` in consecutive
+                // probes. A first return is not enough: the loading confirmation
+                // may be precisely the path that brings down
+                // the native process.
                 if let Err(e) = crate::lastslice::save_at(
                     &last_slice_path,
                     &cfg,
@@ -1832,20 +1833,20 @@ impl NodeRuntime {
     }
 }
 
-/// Onde ficam os logs do servidor de inferência desta porta.
+/// Where the inference server logs for this port live.
 ///
-/// Um arquivo por porta, sob o project root, porque duas instâncias na mesma
-/// máquina (`POM_HOME` diferente) não podem escrever no mesmo arquivo.
+/// One file per port, under the project root, because two instances on the same
+/// machine (different `POM_HOME`) cannot write to the same file.
 pub fn log_file_path(port: u16) -> PathBuf {
     crate::config::project_root().join(format!("infer_server_{port}.log"))
 }
 
-/// Anexa uma linha ao log do servidor de inferência.
+/// Appends a line to the inference server log.
 ///
-/// O stdout do processo mistura tudo e rola, então é um lugar ruim para o
-/// histórico de arranque e queda do servidor: quando o operador vai olhar, a
-/// linha já passou. O arquivo é o que sobra, e é ele que
-/// `RuntimeStatus::log_path` aponta.
+/// The process stdout mixes everything and scrolls, so it is a bad place for the
+/// history of the server's startup and crash: by the time the operator goes to look, the
+/// line has already passed. The file is what remains, and it is what
+/// `RuntimeStatus::log_path` points to.
 fn append_log(port: u16, line: &str) {
     use std::io::Write;
     let path = log_file_path(port);
@@ -1886,14 +1887,14 @@ fn port_is_free(port: u16) -> bool {
     }
 }
 
-/// Os PIDs que seguram `port`, lidos da saída do `netstat -ano` do Windows.
+/// The PIDs holding `port`, read from the output of Windows `netstat -ano`.
 ///
-/// Separada da chamada de processo justamente para poder ser testada em
-/// qualquer sistema: é a parte que erra calado, e um PID lido errado aqui
-/// vira um `taskkill` em processo inocente.
+/// Separated from the process call precisely so it can be tested on
+/// any system: it is the part that errs silently, and a PID read wrong here
+/// becomes a `taskkill` on an innocent process.
 ///
-/// Formato das linhas (o estado some nas de UDP, mas o PID é sempre o último
-/// campo):
+/// Format of the lines (the state is absent in the UDP ones, but the PID is always the last
+/// field):
 ///
 /// ```text
 ///   TCP    0.0.0.0:8181     0.0.0.0:0    LISTENING    1234
@@ -1908,8 +1909,8 @@ fn parse_netstat_pids(output: &str, port: u16) -> Vec<u32> {
         if fields.len() < 4 {
             continue;
         }
-        // O endereço local é o segundo campo. Comparar a porta como número, e
-        // não o sufixo textual, evita casar 18181 com 8181.
+        // The local address is the second field. Comparing the port as a number, and
+        // not the textual suffix, avoids matching 18181 with 8181.
         let local = fields[1];
         let Some((_, port_str)) = local.rsplit_once(':') else {
             continue;
@@ -1918,8 +1919,8 @@ fn parse_netstat_pids(output: &str, port: u16) -> Vec<u32> {
             continue;
         }
         if let Ok(pid) = fields[fields.len() - 1].parse::<u32>() {
-            // PID 0 é o processo ocioso do sistema: não é dono de nada que
-            // possamos matar, e mandar um taskkill nele só gera erro.
+            // PID 0 is the system idle process: it owns nothing
+            // we could kill, and sending a taskkill to it only generates an error.
             if pid != 0 && !pids.contains(&pid) {
                 pids.push(pid);
             }
@@ -1928,7 +1929,7 @@ fn parse_netstat_pids(output: &str, port: u16) -> Vec<u32> {
     pids
 }
 
-/// Quem está segurando `port`, perguntado do jeito de cada sistema.
+/// Who is holding `port`, asked the way each system does it.
 async fn pids_holding_port(port: u16) -> Vec<u32> {
     #[cfg(windows)]
     {
@@ -1960,7 +1961,7 @@ async fn pids_holding_port(port: u16) -> Vec<u32> {
     }
 }
 
-/// Mata `pid` à força.
+/// Kills `pid` by force.
 async fn kill_pid(pid: u32) {
     #[cfg(windows)]
     let _ = Command::new("taskkill")
@@ -1978,9 +1979,9 @@ async fn kill_pid(pid: u32) {
 
 /// Kill any process holding `port` so the inference server can bind.
 ///
-/// Unix: `lsof -ti :PORT` acha o PID e leva SIGKILL. Windows: `netstat -ano` e
-/// `taskkill /F /PID`, que são os equivalentes que vêm com o sistema. Depois,
-/// nos dois, a porta é sondada por até 5 segundos até ficar livre.
+/// Unix: `lsof -ti :PORT` finds the PID and it gets SIGKILL. Windows: `netstat -ano` and
+/// `taskkill /F /PID`, which are the equivalents that ship with the system. Afterwards,
+/// on both, the port is probed for up to 5 seconds until it is free.
 async fn free_port(port: u16) -> Result<(), String> {
     // Fast path: if we can bind, the port is already free.
     if port_is_free(port) {
@@ -2066,15 +2067,15 @@ impl StatusWriter {
 mod tests {
     use super::*;
 
-    /// Porta presa é falha visível, não espera silenciosa.
+    /// A stuck port is a visible failure, not a silent wait.
     ///
-    /// Com o ocupante não identificável (ou não matável, como aqui: quem segura
-    /// a porta é o próprio processo de teste, e o supervisor nunca se mata), o
-    /// servidor morre com "Address already in use" a cada tentativa. Antes, o
-    /// operador via só "carregando" até `MAX_RESTARTS` esgotar; o peer só
-    /// quebrava na hora da inferência. O motivo tem que estar no status desde a
-    /// primeira tentativa - e o arquivo de log tem que existir, porque o stdout
-    /// não guarda o histórico.
+    /// With the occupant unidentifiable (or not killable, as here: whoever holds
+    /// the port is the test process itself, and the supervisor never kills itself), the
+    /// server dies with "Address already in use" on every attempt. Before, the
+    /// operator saw only "loading" until `MAX_RESTARTS` ran out; the peer only
+    /// broke at inference time. The reason has to be in the status from the
+    /// first attempt - and the log file has to exist, because stdout
+    /// does not keep the history.
     #[tokio::test]
     async fn the_held_port_shows_up_in_the_status_and_in_the_log() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
@@ -2084,10 +2085,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("POM_HOME", &dir);
 
-        // Alguém já está com a porta, e é este processo: `free_port` nunca se
-        // mata, então a porta segue presa como no defeito real.
-        // No curinga dual-stack, que é o que `port_is_free` sonda e o que o
-        // servidor de inferência liga.
+        // Someone already has the port, and it is this process: `free_port` never
+        // kills itself, so the port stays stuck as in the real defect.
+        // On the dual-stack wildcard, which is what `port_is_free` probes and what the
+        // inference server binds.
         let occupant = match tokio::net::TcpListener::bind("[::]:0").await {
             Ok(l) => l,
             Err(_) => tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap(),
@@ -2113,11 +2114,11 @@ mod tests {
             }
         }
 
-        // O supervisor continua sendo uma task viva enquanto percorre o
-        // orçamento de reinícios. Sinalize a geração e aguarde sua saída antes
-        // de devolver o ambiente global ao restante da suíte, senão uma
-        // tentativa atrasada pode escrever o journal usando o POM_HOME do
-        // teste seguinte.
+        // The supervisor remains a live task while it walks through the
+        // restart budget. Signal the generation and wait for its exit before
+        // returning the global environment to the rest of the suite, otherwise a
+        // late attempt may write the journal using the next test's
+        // POM_HOME.
         let generation = *rt.generation.borrow() + 1;
         rt.generation.send_replace(generation);
         let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
@@ -2199,12 +2200,12 @@ mod tests {
         assert!(pending_supervisor.await.is_err());
     }
 
-    /// A garantia que torna seguro reconfigurar uma implantação no ar: mexer
-    /// nos parâmetros **não** pode mexer em nada que identifique a fatia.
+    /// The guarantee that makes it safe to reconfigure a live deployment: touching
+    /// the parameters **must not** touch anything that identifies the slice.
     ///
-    /// Se `with_params` deixasse escapar um `start_layer` ou um `model_path`,
-    /// um "aumentar o n_ctx" viraria silenciosamente uma máquina servindo outra
-    /// faixa - e o buraco só apareceria na requisição seguinte, como
+    /// If `with_params` let a `start_layer` or a `model_path` escape,
+    /// an "increase n_ctx" would silently turn into a machine serving another
+    /// range - and the hole would only show up on the next request, as
     /// "Gap at layer N".
     #[test]
     fn reconfiguring_changes_parameters_and_nothing_else() {
@@ -2223,14 +2224,14 @@ mod tests {
 
         let after = before.with_params(&p);
 
-        // O que tinha que mudar, mudou.
+        // What had to change, changed.
         assert_eq!(after.n_ctx, 100_000);
         assert_eq!(after.max_new_tokens, 32000);
         assert_eq!(after.n_gpu_layers, 7);
         assert_eq!(after.temperature, 1.25);
         assert_eq!(after.max_sessions, 4);
 
-        // E a identidade da fatia é byte a byte a mesma.
+        // And the slice identity is byte for byte the same.
         assert_eq!(after.deploy_id, before.deploy_id);
         assert_eq!(after.model_path, before.model_path);
         assert_eq!(after.model_label, before.model_label);
@@ -2285,8 +2286,8 @@ mod tests {
         assert!(!before.weights_are_compatible(&after));
     }
 
-    /// Num grupo de tensor parallelism o `fit` nativo do llama.cpp não serve, e
-    /// isso não pode depender de quem preencheu o formulário.
+    /// In a tensor parallelism group llama.cpp's native `fit` does not serve, and
+    /// this cannot depend on whoever filled in the form.
     #[test]
     fn the_memory_fit_stays_off_on_a_tp_node() {
         let mut before = cfg();
@@ -2383,14 +2384,14 @@ mod tests {
         }
     }
 
-    /// A outra metade da lei: quem promove a anotação a `Serving` é o
-    /// `/health` respondendo `model_loaded`, e mais ninguém.
+    /// The other half of the law: whoever promotes the annotation to `Serving` is
+    /// `/health` answering `model_loaded`, and no one else.
     ///
-    /// Sem esta promoção o `apply` anotaria `Pending` para sempre e a garantia
-    /// de `c7b70d8` morreria calada - um nó que estava servindo saudável e caiu
-    /// voltaria vazio, abrindo um buraco de camadas no cluster. O teste sobe um
-    /// `/health` de mentira porque não há GGUF que carregue nesta máquina; o
-    /// que ele prova é o contrato entre o watch e o disco, não o llama.cpp.
+    /// Without this promotion `apply` would annotate `Pending` forever and the guarantee
+    /// of `c7b70d8` would die silently - a node that was serving healthy and went down
+    /// would come back empty, opening a layer hole in the cluster. The test brings up a fake
+    /// `/health` because there is no GGUF that loads on this machine; what
+    /// it proves is the contract between the watch and the disk, not llama.cpp.
     #[tokio::test]
     async fn health_is_what_promotes_the_annotation_to_serving() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
@@ -2441,13 +2442,13 @@ mod tests {
 
         let mut c = cfg();
         c.inference_port = port;
-        // Como o `apply` deixa: aplicada, ainda sem ter carregado.
+        // As `apply` leaves it: applied, not yet loaded.
         crate::lastslice::save(&c, crate::lastslice::SliceState::Pending).unwrap();
         rt.spawn_health_watch(c, 0);
 
-        // Aguarde a primeira sondagem real, em vez de depender do scheduler
-        // entregar exatamente o intervalo de 3 s. O primeiro retorno ainda
-        // não pode limpar a tentativa: é a janela do crash observado.
+        // Wait for the first real probe, instead of depending on the scheduler
+        // delivering exactly the 3 s interval. The first return still
+        // cannot clear the attempt: it is the window of the observed crash.
         for _ in 0..60 {
             if health_polls.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
                 break;
@@ -2501,12 +2502,12 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// O arranque que recusa retomar uma fatia tem que dizer isso ao operador.
+    /// The start that refuses to resume a slice has to say so to the operator.
     ///
-    /// Sem esta linha o nó sobe vazio e calado: o painel diria só "nenhum
-    /// modelo carregado", indistinguível de uma máquina que nunca recebeu
-    /// fatia nenhuma — e a máquina que acabou de derrubar o processo tentando
-    /// carregar é justamente a que precisa ser explicada.
+    /// Without this line the node comes up empty and silent: the panel would say only "no
+    /// model loaded", indistinguishable from a machine that never received
+    /// any slice - and the machine that just brought the process down trying to
+    /// load is precisely the one that needs to be explained.
     #[tokio::test]
     async fn a_slice_that_did_not_load_shows_up_in_the_status_with_the_reason() {
         let net = Arc::new(
@@ -2552,12 +2553,12 @@ mod tests {
         assert_eq!(rt.status().await.state, ServerState::Disabled);
     }
 
-    /// O callback de captura do residual custa ~8 ms por token (medido em
-    /// 2026-08-12: 7,8 e 8,2 ms no hop que o instala, contra 0,14 e 0,67 no que
-    /// não instala). Quem serve a última camada amostra tokens e não tem para
-    /// quem exportar — instalar ali é pagar 11% do orçamento por nada. A
-    /// derivação tem que valer também para o nó subido por linha de comando,
-    /// que não passa por `ApplyRequest` e sempre mandava `no_embeddings: false`.
+    /// The residual capture callback costs ~8 ms per token (measured on
+    /// 2026-08-12: 7.8 and 8.2 ms on the hop that installs it, against 0.14 and 0.67 on
+    /// the one that does not). Whoever serves the last layer samples tokens and has no one to
+    /// export to - installing it there is paying 11% of the budget for nothing. The
+    /// derivation has to hold also for the node started by command line,
+    /// which does not go through `ApplyRequest` and always sent `no_embeddings: false`.
     #[test]
     fn a_slice_that_serves_the_last_layer_never_exports_the_residual() {
         let mut c = cfg();
@@ -2582,8 +2583,8 @@ mod tests {
         assert!(!c.needs_residual_export());
     }
 
-    /// O último da divisão pode não ser o último em camadas quando o plano vem
-    /// da interface com `peer_index`/`peer_count`; os dois caminhos valem.
+    /// The last of the division may not be the last in layers when the plan comes
+    /// from the interface with `peer_index`/`peer_count`; both paths hold.
     #[test]
     fn the_last_peer_of_the_split_also_skips_it() {
         let mut c = cfg();
@@ -2593,9 +2594,9 @@ mod tests {
         assert!(!c.needs_residual_export());
     }
 
-    /// O MTP só faz sentido em quem serve o modelo inteiro. O bloco `nextn`
-    /// mora na última camada e quem monta o lote é a cabeça: numa fatia, as
-    /// duas pontas são máquinas diferentes.
+    /// MTP only makes sense on whoever serves the whole model. The `nextn` block
+    /// lives in the last layer and whoever assembles the batch is the head: in a slice, the
+    /// two ends are different machines.
     #[test]
     fn mtp_only_where_one_machine_serves_the_whole_model() {
         let mut c = cfg();
@@ -2629,9 +2630,9 @@ mod tests {
         );
     }
 
-    /// O interruptor desligado vence tudo: ligar o MTP muda o grafo de toda
-    /// decodificação (`llama_set_embeddings_nextn` no contexto alvo), então
-    /// ele não pode ser inferido de "o modelo tem o bloco".
+    /// The switch turned off wins over everything: turning MTP on changes the graph of every
+    /// decode (`llama_set_embeddings_nextn` on the target context), so
+    /// it cannot be inferred from "the model has the block".
     #[test]
     fn mtp_off_stays_off_on_a_whole_model() {
         let mut c = cfg();
@@ -2732,10 +2733,10 @@ mod tests {
         assert_eq!(cfg().layers_count(), 16);
     }
 
-    /// A saída do `netstat -ano` é a única pista de quem segura a porta no
-    /// Windows, e um PID lido errado ali vira um `taskkill` em processo
-    /// inocente. O teste roda em qualquer sistema de propósito: o parser é
-    /// código comum, só a chamada do processo é que muda por plataforma.
+    /// The output of `netstat -ano` is the only clue to who holds the port on
+    /// Windows, and a PID read wrong there becomes a `taskkill` on an
+    /// innocent process. The test runs on any system on purpose: the parser is
+    /// common code, only the process call changes per platform.
     #[test]
     fn netstat_gives_the_pids_of_the_requested_port() {
         let output = "\
@@ -2747,14 +2748,14 @@ Conexoes ativas
   TCP    127.0.0.1:52777        0.0.0.0:0              LISTENING       9999
   UDP    0.0.0.0:8181          *:*                                     5678
 ";
-        // 1234 aparece duas vezes (IPv4 e IPv6) e volta uma vez só.
+        // 1234 appears twice (IPv4 and IPv6) and comes back only once.
         assert_eq!(parse_netstat_pids(output, 8181), vec![1234, 5678]);
         assert_eq!(parse_netstat_pids(output, 52777), vec![9999]);
         assert!(parse_netstat_pids(output, 8080).is_empty());
     }
 
-    /// Comparar a porta como texto casaria 18181 com 8181 e mataria o nó
-    /// vizinho da mesma máquina.
+    /// Comparing the port as text would match 18181 with 8181 and kill the
+    /// neighboring node on the same machine.
     #[test]
     fn netstat_does_not_mistake_a_suffix_for_the_port() {
         let output = "  TCP    0.0.0.0:18181    0.0.0.0:0    LISTENING    4242\n";
@@ -2762,7 +2763,7 @@ Conexoes ativas
         assert_eq!(parse_netstat_pids(output, 18181), vec![4242]);
     }
 
-    /// PID 0 é o processo ocioso do sistema: mandar taskkill nele só gera erro.
+    /// PID 0 is the system idle process: sending taskkill to it only generates an error.
     #[test]
     fn netstat_ignores_pid_zero() {
         let output = "  TCP    0.0.0.0:8181    0.0.0.0:0    LISTENING    0\n";

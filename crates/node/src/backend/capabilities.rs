@@ -1,5 +1,5 @@
-//! Capacidade de implantação calculada a partir de evidência do modelo,
-//! runtime e topologia do plano.
+//! Deployment capability computed from model evidence, runtime and
+//! plan topology.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +17,8 @@ pub(crate) struct Capability {
     pub state: CapabilityState,
     pub source: String,
     pub reason: String,
-    /// Limitação de execução que não prova ausência da capacidade no modelo.
-    /// A UI mostra este aviso, mas mantém o controle acionável.
+    /// Execution limitation that does not prove the capability is absent from
+    /// the model. The UI shows this warning but keeps the control actionable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }

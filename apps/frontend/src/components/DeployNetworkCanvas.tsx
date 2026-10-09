@@ -113,10 +113,10 @@ function CapacityBar({
 }
 
 /**
- * Uma GPU depois da implantação: a barra é o uso **projetado**
- * (`vram_projected_mb / vram_total_mb`), o tracinho é o uso de agora
- * (`vram_used_mb`), e a barra fica rósea quando a projeção passa da placa.
- * É o preview que o operador ajusta mexendo no contexto e nas sessões.
+ * A GPU after the deployment: the bar is the **projected** usage
+ * (`vram_projected_mb / vram_total_mb`), the tick is the usage as of now
+ * (`vram_used_mb`), and the bar turns rose when the projection exceeds the card.
+ * It is the preview the operator adjusts by changing the context and the sessions.
  */
 function GpuProjectionBar({
   index,
@@ -457,9 +457,9 @@ export function DeployNetworkCanvas({
       for (const to of stages[index].nodeIds) bridgeIds.add(edgeId(from, to));
     }
   }
-  // O backend já limita as opções ao próximo estágio. Esta guarda no canvas
-  // mantém a regra visual mesmo enquanto um peer antigo ainda responde com a
-  // lista ampla anterior: nenhum salto por cima de uma camada aparece no mapa.
+  // The backend already limits the options to the next stage. This guard in the canvas
+  // keeps the visual rule even while an old peer still answers with the
+  // previous broad list: no jump over a layer appears on the map.
   const visibleRouteOptions = (plan.route_options ?? []).filter(
     (route) => bridgeIds.has(edgeId(route.from_node_id, route.to_node_id)),
   );
@@ -475,8 +475,8 @@ export function DeployNetworkCanvas({
     ...principalEdges.map((edge) => ({
       from_node_id: edge.from,
       to_node_id: edge.to,
-      // Sem uma opção explícita não há medição direcional para esta aresta.
-      // Nunca copie o RTT do destino, que seria a medição de outra origem.
+      // Without an explicit option there is no directional measurement for this edge.
+      // Never copy the destination's RTT, which would be the measurement from another origin.
       rtt_ms: null,
       selected: true,
       note: "pipeline",

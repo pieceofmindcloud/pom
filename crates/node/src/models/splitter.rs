@@ -19,12 +19,12 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use tracing::info;
 
-/// O que um fatiamento deixou em disco.
+/// What a slicing left on disk.
 ///
-/// O `sha256` sai do mesmo passe que grava os bytes (ver
-/// `pom::HashingWriter`), e não de uma segunda leitura: uma fatia tem dezenas
-/// de GB, e reler tudo só para hashear dobrava o tempo do corte. É este hash
-/// que vira o **nome** do arquivo e a identidade da parte no `.pom`.
+/// The `sha256` comes out of the same pass that writes the bytes (see
+/// `pom::HashingWriter`), not from a second read: a slice is tens of GB, and
+/// re-reading everything just to hash it doubled the cut time. This hash is
+/// what becomes the file's **name** and the part's identity in the `.pom`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrittenSlice {
     pub bytes: u64,
@@ -449,8 +449,8 @@ fn layer_slice_bounds(
     Ok((start_layer as usize, end_layer as usize))
 }
 
-// Helper de teste que preserva a prova da seleção de valores por camada; o
-// caminho de produção usa `layer_slice_bounds` diretamente ao serializar.
+// Test helper that preserves the proof of per-layer value selection; the
+// production path uses `layer_slice_bounds` directly when serializing.
 #[cfg(test)]
 fn slice_layer_values<T: Clone>(
     values: &[T],
@@ -996,8 +996,8 @@ pub fn split(
     }
 
     let dst_file = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
-    // O hash por fora do buffer: assim ele vê exatamente a sequência de bytes
-    // que o `BufWriter` entrega ao arquivo, uma vez cada.
+    // The hash sits outside the buffer: that way it sees exactly the sequence of
+    // bytes the `BufWriter` hands to the file, once each.
     let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     // Fixed header
@@ -1097,59 +1097,59 @@ pub fn split(
     })
 }
 
-// ── Tensor parallelism: shard por tensor ─────────────────────────────────────
+// ── Tensor parallelism: per-tensor shard ─────────────────────────────────────
 
-/// Versão da regra de fatiamento por tensor, gravada em `pom.tp_format`.
+/// Version of the per-tensor slicing rule, written to `pom.tp_format`.
 ///
-/// **Suba este número sempre que mudar o que o shard contém** - eixo de corte,
-/// hiperparâmetro reescrito, tensor que passa a ser replicado. É o que faz um
-/// shard antigo ser regenerado em vez de reaproveitado em silêncio.
+/// **Bump this number whenever what the shard contains changes** - cut axis,
+/// rewritten hyperparameter, a tensor that becomes replicated. It is what makes
+/// an old shard get regenerated instead of silently reused.
 ///
-/// 1 = cabeça de saída replicada, `head_count`/`head_count_kv`/
-/// `feed_forward_length` divididos por `tp_size`. Arquivos escritos antes deste
-/// carimbo não têm a chave, e a ausência já significa "regra desconhecida".
+/// 1 = replicated output head, `head_count`/`head_count_kv`/
+/// `feed_forward_length` divided by `tp_size`. Files written before this
+/// stamp do not have the key, and its absence already means "unknown rule".
 pub const TP_SHARD_FORMAT: u32 = 1;
 
-/// Papel de um tensor num shard de tensor parallelism (estilo Megatron).
+/// Role of a tensor in a tensor parallelism shard (Megatron style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TpRole {
-    /// Split pela dimensão de saída (ne[1]): Q/K/V e MLP gate/up. Fatia
-    /// contígua; a saída já nasce particionada, sem redução.
+    /// Split along the output dimension (ne[1]): Q/K/V and MLP gate/up.
+    /// Contiguous slice; the output is born partitioned, with no reduction.
     Column,
-    /// Split pela dimensão de entrada (ne[0], a contígua): projeção de saída
-    /// da atenção e MLP down. Soma parcial a ser reduzida.
+    /// Split along the input dimension (ne[0], the contiguous one): attention
+    /// output projection and MLP down. Partial sum to be reduced.
     ///
-    /// Só vale para tensor cuja **entrada já chega particionada**: estes dois
-    /// consomem a saída dos `Column` (`attn_q/k/v`, `ffn_gate/up`) do mesmo
-    /// bloco. Um tensor que recebe o oculto inteiro não pode ser `Row` - ver a
-    /// nota da cabeça de saída em `Shared`.
+    /// Only valid for a tensor whose **input already arrives partitioned**:
+    /// these two consume the output of the `Column` tensors (`attn_q/k/v`,
+    /// `ffn_gate/up`) of the same block. A tensor that receives the whole
+    /// hidden state cannot be `Row` - see the note on the output head in `Shared`.
     Row,
-    /// Replicado igual em todos os ranks: norms, token_embd, rope e a cabeça
-    /// de saída (`output.weight`).
+    /// Replicated identically on every rank: norms, token_embd, rope and the
+    /// output head (`output.weight`).
     ///
-    /// A cabeça esteve em `Row` e era um defeito: a entrada dela é a saída de
-    /// `output_norm.weight`, que é `Shared`, então o oculto que chega nela é
-    /// **inteiro** (`n_embd`), nunca particionado. Cortá-la por `ne[0]` gerava
-    /// uma cabeça esperando `n_embd/size` de entrada, largura que não existe em
-    /// ponto nenhum do grafo, e o llama.cpp recusava o load:
+    /// The head used to be `Row` and that was a defect: its input is the output of
+    /// `output_norm.weight`, which is `Shared`, so the hidden state that reaches it
+    /// is **whole** (`n_embd`), never partitioned. Cutting it by `ne[0]` produced
+    /// a head expecting `n_embd/size` of input, a width that exists nowhere in
+    /// the graph, and llama.cpp refused the load:
     /// `check_tensor_dims: tensor 'output.weight' has wrong shape; expected
     /// 4096, 128256, got 2048, 128256` (Llama-3.1-8B-Q4_K_M, 17/08).
-    /// `validate_tensor_parallel` não podia pegar isso: ela só confere se a
-    /// dimensão divide, e 4096/2 divide.
+    /// `validate_tensor_parallel` could not catch this: it only checks whether the
+    /// dimension divides, and 4096/2 divides.
     ///
-    /// A alternativa clássica é cortar a cabeça por **vocabulário** (`ne[1]`) e
-    /// juntar os logits com um all-gather. Não cabe na v1: a coletiva do fork é
-    /// um reduce (soma), não um gather, e o llama.cpp confere `output.weight`
-    /// contra `n_vocab` - cortar ali exigiria reescrever o vocabulário por rank
-    /// e quebraria o tokenizer. Replicar custa memória e é correto;
-    /// `token_embd.weight` tem o mesmo formato e já é replicada pelo mesmo
-    /// motivo.
+    /// The classic alternative is to cut the head by **vocabulary** (`ne[1]`) and
+    /// join the logits with an all-gather. It does not fit in v1: the fork's
+    /// collective is a reduce (sum), not a gather, and llama.cpp checks `output.weight`
+    /// against `n_vocab` - cutting there would require rewriting the vocabulary per rank
+    /// and would break the tokenizer. Replicating costs memory and is correct;
+    /// `token_embd.weight` has the same shape and is already replicated for the same
+    /// reason.
     Shared,
-    /// Não shardável com segurança (MoE 3D, nome não reconhecido).
+    /// Not safely shardable (3D MoE, unrecognized name).
     Unsupported,
 }
 
-/// Classifica o papel de um tensor pelo nome (o que vem depois de `blk.N.`).
+/// Classifies a tensor's role by its name (what comes after `blk.N.`).
 fn tp_role(name: &str) -> TpRole {
     let tail = match name.strip_prefix("blk.") {
         Some(rest) => rest.splitn(2, '.').nth(1).unwrap_or(name),
@@ -1168,17 +1168,17 @@ fn tp_role(name: &str) -> TpRole {
     }
 }
 
-/// Dry-run da classificação de shard do caminho C.
+/// Dry-run of path C's shard classification.
 ///
-/// Lê a tabela de tensores de `src` e responde se `shard_tensor_parallel`
-/// conseguiria partir o modelo em `tp_size` ranks, **sem escrever nada**. É o
-/// que a tela de implantar consulta antes de aceitar o deploy, para recusar
-/// MoE/SSM/weight-tied com um erro que nomeia o tensor — em vez de deixar o
-/// job falhar na metade do apply.
+/// Reads the tensor table of `src` and answers whether `shard_tensor_parallel`
+/// could split the model into `tp_size` ranks, **without writing anything**. It
+/// is what the deploy screen consults before accepting the deploy, to refuse
+/// MoE/SSM/weight-tied with an error that names the tensor - instead of letting
+/// the job fail halfway through the apply.
 ///
-/// Espelha exatamente as recusas de `shard_tensor_parallel`; o shard chama esta
-/// função como porta de entrada, então manter as duas em sincronia é esta
-/// função ser a fonte da decisão.
+/// It mirrors exactly the refusals of `shard_tensor_parallel`; the shard calls this
+/// function as its entry gate, so keeping the two in sync means this
+/// function being the source of the decision.
 pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
     if tp_size < 2 {
         bail!("tp_size must be >= 2");
@@ -1206,10 +1206,10 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
-    // Os hiperparâmetros que o shard reescreve têm que dividir por `tp_size`,
-    // senão o arquivo sai com cabeçalho impossível. Conferir aqui é o que faz a
-    // tela recusar antes do deploy, em vez de o job morrer no meio do apply -
-    // mesma razão de existir desta função. Espelha `shard_tensor_parallel`.
+    // The hyperparameters the shard rewrites must divide by `tp_size`,
+    // otherwise the file comes out with an impossible header. Checking here is what makes
+    // the screen refuse before the deploy, instead of the job dying halfway through
+    // the apply - the same reason this function exists. Mirrors `shard_tensor_parallel`.
     for _ in 0..n_kv {
         let key = r.string()?;
         let vtype = r.u32()?;
@@ -1243,8 +1243,8 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         })
         .collect();
 
-    // Weight-tied output (output.weight compartilha offset com token_embd)
-    // quebraria o shard: um fica inteiro e o outro partido. Recusa.
+    // Weight-tied output (output.weight shares an offset with token_embd)
+    // would break the shard: one stays whole and the other is split. Refuse.
     let embd_offset = tensors
         .iter()
         .find(|t| t.name == "token_embd.weight")
@@ -1339,17 +1339,17 @@ pub fn estimate_tensor_parallel_output_bytes(src: &Path, tp_size: u32) -> Result
         .ok_or_else(|| anyhow::anyhow!("overflow while estimating the TP output"))
 }
 
-/// Shard de um modelo GGUF por tensor parallelism.
+/// Shard of a GGUF model by tensor parallelism.
 ///
-/// Produz em `dst` um GGUF estruturalmente válido com os tensores do rank
-/// `tp_rank` de um grupo de `tp_size`: projeções de saída partidas em fatias
-/// contíguas (coluna), projeções de entrada partidas em fatias alinhadas ao
-/// bloco do tipo ggml (linha) e o resto replicado. Todas as camadas continuam
-/// presentes; não há remapeamento de nome nem mudança de `block_count`.
+/// Produces in `dst` a structurally valid GGUF with the tensors of rank
+/// `tp_rank` of a group of `tp_size`: output projections split into
+/// contiguous slices (column), input projections split into slices aligned to
+/// the ggml type's block (row), and the rest replicated. All layers remain
+/// present; there is no name remapping nor change to `block_count`.
 ///
-/// Um shard não é um modelo autossuficiente: o llama.cpp de hoje não o carrega
-/// sozinho. Ele é a metade que o fork do llama.cpp (caminho C) carrega junto
-/// com a coletiva all-reduce.
+/// A shard is not a self-sufficient model: today's llama.cpp does not load it
+/// on its own. It is the half that the llama.cpp fork (path C) loads together
+/// with the all-reduce collective.
 pub fn shard_tensor_parallel(
     src: &Path,
     dst: &Path,
@@ -1363,9 +1363,9 @@ pub fn shard_tensor_parallel(
     if tp_rank >= tp_size {
         bail!("tp_rank {tp_rank} outside a group of {tp_size}");
     }
-    // A decisão "este modelo dá para partir" é uma só: o dry-run acima é a
-    // porta de entrada, e as checagens abaixo (redundantes depois dele) ficam
-    // como rede de segurança do layout.
+    // The "this model can be split" decision is a single one: the dry-run above is
+    // the entry gate, and the checks below (redundant after it) stay
+    // as a safety net for the layout.
     validate_tensor_parallel(src, tp_size)?;
 
     let source = crate::multipart::GgufSource::open(src)?;
@@ -1390,24 +1390,24 @@ pub fn shard_tensor_parallel(
         bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
-    // KV: passa tudo como está, menos as chaves pom.* (re-adicionadas abaixo) e
-    // os hiperparâmetros que descrevem uma **largura** particionada.
+    // KV: pass everything through as is, except the pom.* keys (re-added below) and
+    // the hyperparameters that describe a partitioned **width**.
     //
-    // `block_count` e `embedding_length` de fato não mudam: todas as camadas
-    // seguem presentes, e o eixo do resíduo (`n_embd`) é o único que atravessa
-    // o all-reduce inteiro. Mas três chaves descrevem exatamente as dimensões
-    // que o shard corta, e deixá-las passar intactas foi o defeito de 17/08: o
-    // tensor saía com metade da largura e o cabeçalho continuava prometendo a
-    // largura cheia, então o llama.cpp recusava o load com
+    // `block_count` and `embedding_length` really do not change: all layers
+    // remain present, and the residual axis (`n_embd`) is the only one that crosses
+    // the whole all-reduce. But three keys describe exactly the dimensions
+    // the shard cuts, and letting them through untouched was the 17/08 defect: the
+    // tensor came out with half the width while the header kept promising the
+    // full width, so llama.cpp refused the load with
     // `'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got 4096, 2048`.
     //
-    // - `attention.head_count`    -> colunas de `attn_q`   (n_head * head_dim)
-    // - `attention.head_count_kv` -> colunas de `attn_k/v`  (n_head_kv * head_dim)
-    // - `feed_forward_length`     -> colunas de `ffn_gate/up` e linhas de `ffn_down`
+    // - `attention.head_count`    -> columns of `attn_q`   (n_head * head_dim)
+    // - `attention.head_count_kv` -> columns of `attn_k/v`  (n_head_kv * head_dim)
+    // - `feed_forward_length`     -> columns of `ffn_gate/up` and rows of `ffn_down`
     //
-    // Dividir a contagem de cabeças (e não `head_dim`) é o que mantém cada
-    // cabeça inteira num rank só: cabeça partida ao meio daria atenção errada
-    // sem nenhum erro de forma para acusar.
+    // Dividing the head count (and not `head_dim`) is what keeps each head
+    // whole on a single rank: a head split in half would give wrong attention
+    // with no shape error to flag it.
     let tp_scaled_key = |key: &str| -> bool {
         key.ends_with(".attention.head_count")
             || key.ends_with(".attention.head_count_kv")
@@ -1424,9 +1424,9 @@ pub fn shard_tensor_parallel(
                 T_U32 => u32::from_le_bytes(r.take(4)?.try_into().unwrap()),
                 T_U64 => r.u64()? as u32,
                 _ => {
-                    // Tipo inesperado para um hiperparâmetro numérico: recusar é
-                    // a única saída honesta. Passar adiante produziria um shard
-                    // que carrega e responde errado.
+                    // Unexpected type for a numeric hyperparameter: refusing is
+                    // the only honest way out. Passing it on would produce a shard
+                    // that loads and answers wrong.
                     bail!("'{key}' is not an integer in the GGUF; it cannot be divided by {tp_size}");
                 }
             };
@@ -1445,11 +1445,11 @@ pub fn shard_tensor_parallel(
         &crate::brand::gguf_key("tp_shard"),
         1,
     )));
-    // Qual **regra** escreveu este arquivo. Sem isto o reaproveitamento em
-    // `plan::extract_tp_shard` era "existe e tem mais de 1 KB", que não sabe
-    // distinguir um shard atual de um escrito por uma versão com defeito: em
-    // 17/08 a ksia continuou carregando um shard de cabeçalho não dividido
-    // durante três correções seguidas, e o log dizia "reaproveitando".
+    // Which **rule** wrote this file. Without this, the reuse in
+    // `plan::extract_tp_shard` was "exists and is larger than 1 KB", which cannot
+    // tell a current shard from one written by a defective version: on
+    // 17/08 ksia kept loading a shard with an undivided header
+    // through three fixes in a row, and the log said "reusing".
     kv_out.push(KvOut::Encoded(encode_kv_u32(
         &crate::brand::gguf_key("tp_format"),
         TP_SHARD_FORMAT,
@@ -1481,8 +1481,8 @@ pub fn shard_tensor_parallel(
         .map(|index| &all_tensors[index])
         .collect::<Vec<_>>();
 
-    // Weight-tied output (output.weight compartilha offset com token_embd)
-    // quebraria o shard: um fica inteiro e o outro partido. Recusa.
+    // Weight-tied output (output.weight shares an offset with token_embd)
+    // would break the shard: one stays whole and the other is split. Refuse.
     let embd_offset = all_tensors
         .iter()
         .find(|t| t.name == "token_embd.weight")
@@ -1493,11 +1493,11 @@ pub fn shard_tensor_parallel(
         }
     }
 
-    // Segmento de bytes a copiar do fonte para o destino.
+    // Segment of bytes to copy from the source to the destination.
     #[derive(Debug, Clone, Copy)]
     struct Seg {
         part_index: usize,
-        src: usize, // offset relativo à seção de dados da parte
+        src: usize, // offset relative to the part's data section
         len: usize,
     }
     #[derive(Debug)]
@@ -1541,7 +1541,7 @@ pub fn shard_tensor_parallel(
                 if t.byte_size % ne1 != 0 {
                     bail!("tensor '{}' has a size not aligned to ne[1]={ne1}", t.name);
                 }
-                let row_stride = t.byte_size / ne1; // bytes por linha completa
+                let row_stride = t.byte_size / ne1; // bytes per full row
                 let mut dims = t.dims.clone();
                 let segs: Vec<Seg> = match role {
                     TpRole::Column => {
@@ -2332,9 +2332,9 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
             T_F32,
             f32v(&data),
         ));
-        // Um tensor `Row` de verdade (entrada já particionada pelos Column do
-        // mesmo bloco). Sem ele o fixture não cobre o corte por ne[0]: a cabeça
-        // de saída era o único Row aqui, e ela passou a ser replicada.
+        // A genuine `Row` tensor (input already partitioned by the Column tensors of the
+        // same block). Without it the fixture does not cover the ne[0] cut: the output
+        // head was the only Row here, and it became replicated.
         tensors.push((
             format!("blk.{i}.ffn_down.weight"),
             vec![n, n],
@@ -2386,9 +2386,9 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("llama.embedding_length", n as u32),
         u32_kv("llama.block_count", n_blocks),
         u32_kv("llama.vocab_size", n as u32),
-        // As três larguras que um shard de tensor parallelism reescreve. Sem
-        // elas o fixture não cobre a divisão do cabeçalho, que é metade da
-        // correção: tensor cortado com cabeçalho intacto não carrega.
+        // The three widths that a tensor parallelism shard rewrites. Without
+        // them the fixture does not cover the header division, which is half of the
+        // fix: a tensor cut with an intact header does not load.
         u32_kv("llama.attention.head_count", 4),
         u32_kv("llama.attention.head_count_kv", 2),
         u32_kv("llama.feed_forward_length", 4),
@@ -3615,18 +3615,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A fatia 0-23 do Qwen3.8-27B-Q3_K_S, com a forma exata do modelo que
-    /// falhou: 65 blocos, `qwen35.nextn_predict_layers = 1` e o bloco `nextn`
-    /// só em `blk.64`. Copiar essa marca para a fatia 0-23 faz o llama.cpp
-    /// derivar `blk.23.nextn.eh_proj.weight` do hiperparâmetro e abortar o
-    /// load com "missing tensor" — foi o que aconteceu na salem-gpu em
-    /// 2026-08-14, enquanto a 24-64 (`block_count = 41`, último bloco = o 64
-    /// original) carregava na ksia.
+    /// Slice 0-23 of Qwen3.8-27B-Q3_K_S, with the exact shape of the model that
+    /// failed: 65 blocks, `qwen35.nextn_predict_layers = 1` and the `nextn` block
+    /// only in `blk.64`. Copying that marker into slice 0-23 makes llama.cpp
+    /// derive `blk.23.nextn.eh_proj.weight` from the hyperparameter and abort the
+    /// load with "missing tensor" - that is what happened on salem-gpu on
+    /// 2026-08-14, while 24-64 (`block_count = 41`, last block = the original
+    /// 64) loaded on ksia.
     ///
-    /// O teste menor acima prova a mesma regra; este prova que ela vale nos
-    /// números reais, que é o que o defeito relatado citava: fatia não-final
-    /// declara zero e não leva tensor `nextn` nenhum; a final declara 1 e leva
-    /// o bloco, renumerado para `blk.40.*`.
+    /// The smaller test above proves the same rule; this one proves it holds on the
+    /// real numbers, which is what the reported defect cited: a non-final slice
+    /// declares zero and carries no `nextn` tensor at all; the final one declares 1 and
+    /// carries the block, renumbered to `blk.40.*`.
     #[test]
     fn the_qwen38_27b_slice_0_23_carries_no_nextn_block_nor_its_hyperparameter() {
         let dir = std::env::temp_dir().join(format!("pom-nextn-27b-{}", std::process::id()));
@@ -3679,15 +3679,15 @@ mod tests {
         );
     }
 
-    /// A fatia 35-64 do Qwen3.8-27B-Q3_K_S — a forma exata do arquivo que
-    /// falhou com "missing tensor 'blk.0.ssm_conv1d.weight'" em 2026-08-16.
+    /// Slice 35-64 of Qwen3.8-27B-Q3_K_S - the exact shape of the file that
+    /// failed with "missing tensor 'blk.0.ssm_conv1d.weight'" on 2026-08-16.
     ///
-    /// O modelo é híbrido: camadas recorrentes (SSM/linear attention) levam
-    /// `ssm_conv1d.weight`, e llama.cpp decide qual é qual, na ausência de um
-    /// array explícito, pela fórmula `(i+1) % full_attention_interval != 0`
-    /// sobre o índice ABSOLUTO da camada. `split` renumeia `blk.35` para
-    /// `blk.0`; sem o array explícito, o llama.cpp da fatia recalcula com
-    /// i=0 (em vez de 35) e erra qual bloco local precisa do tensor.
+    /// The model is hybrid: recurrent layers (SSM/linear attention) carry
+    /// `ssm_conv1d.weight`, and llama.cpp decides which is which, in the absence of an
+    /// explicit array, by the formula `(i+1) % full_attention_interval != 0`
+    /// over the layer's ABSOLUTE index. `split` renumbers `blk.35` to
+    /// `blk.0`; without the explicit array, the slice's llama.cpp recomputes with
+    /// i=0 (instead of 35) and gets wrong which local block needs the tensor.
     #[test]
     fn hybrid_slice_carries_an_explicit_ground_truth_recurrent_layers_array() {
         let dir = std::env::temp_dir().join(format!("pom-hybrid-27b-{}", std::process::id()));
@@ -3721,8 +3721,8 @@ mod tests {
         );
     }
 
-    /// Sem tensor `ssm_conv1d` no arquivo inteiro (modelo comum, não híbrido),
-    /// `split` não deve inventar a chave — o llama.cpp nem olha para ela.
+    /// With no `ssm_conv1d` tensor in the whole file (an ordinary, non-hybrid model),
+    /// `split` must not invent the key - llama.cpp does not even look at it.
     #[test]
     fn plain_transformer_slice_gets_no_recurrent_layers_array() {
         let dir = std::env::temp_dir().join(format!("pom-nonhybrid-{}", std::process::id()));
@@ -3942,8 +3942,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// `merge` reconstrói o array híbrido para a numeração 0-based do arquivo
-    /// unido — não pode só copiar o array (errado) da primeira fatia.
+    /// `merge` rebuilds the hybrid array for the 0-based numbering of the merged
+    /// file - it cannot just copy the (wrong) array from the first slice.
     #[test]
     fn merging_hybrid_slices_recomputes_recurrent_layers_for_the_union() {
         let dir = std::env::temp_dir().join(format!("pom-hybrid-merge-{}", std::process::id()));
@@ -3980,10 +3980,10 @@ mod tests {
         assert_eq!(flags, vec![1, 1, 1, 0, 1, 1, 1, 0], "{flags:?}");
     }
 
-    // ── Tensor parallelism: shard por tensor ──────────────────────────────
+    // ── Tensor parallelism: per-tensor shard ──────────────────────────────
 
-    /// Lê dims e dados f32 de um tensor de um GGUF no disco. O modelo de teste
-    /// é todo f32, então os dados são interpretados como floats.
+    /// Reads dims and f32 data of a tensor from a GGUF on disk. The test model
+    /// is all f32, so the data is interpreted as floats.
     fn read_shard_tensor(path: &std::path::Path, name: &str) -> (Vec<u64>, Vec<f32>) {
         let bytes = std::fs::read(path).unwrap();
         let mut r = R {
@@ -4016,8 +4016,8 @@ mod tests {
         }
         assert!(found, "tensor {name} not found in the shard");
         let data_start = align_up(r.pos as u64) as usize;
-        // Tamanho real vem das dims (o modelo de teste é f32), não do delta de
-        // offset: o delta inclui o padding de alinhamento entre tensores.
+        // The real size comes from the dims (the test model is f32), not from the offset
+        // delta: the delta includes the alignment padding between tensors.
         let size = dims.iter().product::<u64>() * 4;
         let start = data_start + offset as usize;
         let floats: Vec<f32> = bytes[start..start + size as usize]
@@ -4033,9 +4033,9 @@ mod tests {
         assert_eq!(tp_role("blk.3.ffn_gate.weight"), TpRole::Column);
         assert_eq!(tp_role("blk.0.attn_output.weight"), TpRole::Row);
         assert_eq!(tp_role("blk.0.ffn_down.weight"), TpRole::Row);
-        // A cabeça de saída recebe o oculto **inteiro** (a entrada dela é
-        // `output_norm`, que é Shared), então ela não pode ser Row: cortá-la
-        // por ne[0] fazia o llama.cpp recusar o load com
+        // The output head receives the **whole** hidden state (its input is
+        // `output_norm`, which is Shared), so it cannot be Row: cutting it
+        // by ne[0] made llama.cpp refuse the load with
         // `'output.weight' has wrong shape; expected 4096, got 2048`.
         assert_eq!(tp_role("output.weight"), TpRole::Shared);
         assert_eq!(tp_role("token_embd.weight"), TpRole::Shared);
@@ -4060,7 +4060,7 @@ mod tests {
         assert_eq!(kv_u32(&bytes, &crate::brand::gguf_key("tp_rank")), Some(0));
         assert_eq!(kv_u32(&bytes, &crate::brand::gguf_key("tp_shard")), Some(1));
 
-        // Replicado: inteiro, igual ao fonte.
+        // Replicated: whole, identical to the source.
         let (dims, data) = read_shard_tensor(&out, "token_embd.weight");
         assert_eq!(dims, vec![4, 4]);
         assert_eq!(data.len(), 16);
@@ -4070,14 +4070,14 @@ mod tests {
         assert_eq!(dims, vec![4]);
         assert_eq!(data, vec![2.0; 4]);
 
-        // Coluna: ne[1] 4 -> 2; rank 0 fica com as duas primeiras linhas.
+        // Column: ne[1] 4 -> 2; rank 0 keeps the first two rows.
         let (dims, data) = read_shard_tensor(&out, "blk.0.attn_q.weight");
         assert_eq!(dims, vec![4, 2]);
         assert_eq!(data, (0..8).map(|j| j as f32).collect::<Vec<_>>());
 
-        // A cabeça é replicada inteira: o oculto que chega nela vem de
-        // `output_norm` (Shared) e tem largura cheia. Cortar ne[0] aqui fazia o
-        // llama.cpp recusar o load do shard.
+        // The head is replicated whole: the hidden state that reaches it comes from
+        // `output_norm` (Shared) and has full width. Cutting ne[0] here made
+        // llama.cpp refuse the shard's load.
         let (dims, data) = read_shard_tensor(&out, "output.weight");
         assert_eq!(dims, vec![4, 4]);
         assert_eq!(data, vec![3.0; 16]);
@@ -4093,29 +4093,29 @@ mod tests {
         let out = dir.join("rank1.gguf");
         shard_tensor_parallel(&whole, &out, 2, 1, |_| {}).unwrap();
 
-        // Coluna: rank 1 fica com as duas últimas linhas (floats 8..16).
+        // Column: rank 1 keeps the last two rows (floats 8..16).
         let (dims, data) = read_shard_tensor(&out, "blk.0.attn_q.weight");
         assert_eq!(dims, vec![4, 2]);
         assert_eq!(data, (8..16).map(|j| j as f32).collect::<Vec<_>>());
 
-        // A cabeça é replicada: todo rank calcula os logits a partir do oculto
-        // já reduzido, então ela é idêntica à do rank 0 e à do fonte.
+        // The head is replicated: every rank computes the logits from the already
+        // reduced hidden state, so it is identical to rank 0's and to the source's.
         let (dims, data) = read_shard_tensor(&out, "output.weight");
         assert_eq!(dims, vec![4, 4]);
         assert_eq!(data, vec![3.0; 16]);
 
-        // Linha de verdade: entrada já particionada pelos Column do bloco.
+        // A genuine Row: input already partitioned by the block's Column tensors.
         let (dims, _) = read_shard_tensor(&out, "blk.0.ffn_down.weight");
         assert_eq!(dims[0], 2, "ffn_down is still cut by ne[0]");
     }
 
-    /// O cabeçalho do shard tem que descrever o tensor que o shard contém.
+    /// The shard's header must describe the tensor the shard contains.
     ///
-    /// Cortar `attn_q` por coluna sem dividir `head_count` deixa o arquivo
-    /// prometendo largura cheia, e o llama.cpp recusa o load:
+    /// Cutting `attn_q` by column without dividing `head_count` leaves the file
+    /// promising full width, and llama.cpp refuses the load:
     /// `'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got
-    /// 4096, 2048`. `embedding_length` e `block_count` continuam intactos - o
-    /// eixo do resíduo e a contagem de camadas não são particionados.
+    /// 4096, 2048`. `embedding_length` and `block_count` stay intact - the
+    /// residual axis and the layer count are not partitioned.
     #[test]
     fn the_shard_header_is_divided_with_the_tensors() {
         let dir = std::env::temp_dir().join(format!("pom-tp-hdr-{}", std::process::id()));
@@ -4135,15 +4135,15 @@ mod tests {
         );
         assert_eq!(kv_u32(&bytes, "llama.feed_forward_length"), Some(2), "4/2");
 
-        // Não particionados: o resíduo atravessa o all-reduce inteiro e toda
-        // camada segue presente em todo rank.
+        // Not partitioned: the residual crosses the whole all-reduce and every
+        // layer remains present on every rank.
         assert_eq!(kv_u32(&bytes, "llama.embedding_length"), Some(4));
         assert_eq!(kv_u32(&bytes, "llama.block_count"), Some(2));
     }
 
-    /// Largura que não divide pelo grupo é recusa nos dois lados, e a recusa
-    /// nomeia a chave - o operador precisa saber qual hiperparâmetro trava o
-    /// modelo, não só que "não deu".
+    /// A width that does not divide by the group is a refusal on both sides, and the refusal
+    /// names the key - the operator needs to know which hyperparameter blocks the
+    /// model, not just that "it did not work".
     #[test]
     fn a_width_that_does_not_divide_is_refused_by_both_paths() {
         let dir = std::env::temp_dir().join(format!("pom-tp-odd-{}", std::process::id()));
@@ -4151,7 +4151,7 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
 
-        // head_count_kv = 2 no fixture: um grupo de 4 não divide.
+        // head_count_kv = 2 in the fixture: a group of 4 does not divide.
         let error = validate_tensor_parallel(&whole, 4).unwrap_err().to_string();
         assert!(
             error.contains("head_count_kv") && error.contains("4"),
@@ -4183,14 +4183,14 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
 
-        // O modelo denso do fixture dá para partir; o dry-run concorda com o
-        // shard de verdade (que chama esta mesma função como porta de entrada).
+        // The fixture's dense model can be split; the dry-run agrees with the real
+        // shard (which calls this same function as its entry gate).
         assert!(validate_tensor_parallel(&whole, 2).is_ok());
 
-        // tp_size < 2 é recusado aqui também.
+        // tp_size < 2 is refused here too.
         assert!(validate_tensor_parallel(&whole, 1).is_err());
 
-        // Não-GGUF recusa pelo magic.
+        // A non-GGUF is refused by the magic.
         let junk = dir.join("junk.bin");
         std::fs::write(&junk, b"not a gguf").unwrap();
         assert!(validate_tensor_parallel(&junk, 2).is_err());

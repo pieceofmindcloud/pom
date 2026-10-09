@@ -4,10 +4,10 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 platform=""
 output="${root}/dist-release"
-# `enterprise-plugin` (o cdylib de produção com o domínio de auditoria) foi
-# extraído para o repositório pom-plugin-logs, que tem seu próprio script de
-# build. O único cdylib que resta neste workspace é o fixture de ABI usado
-# pelos testes de `pom-plugin-host`.
+# `enterprise-plugin` (the production cdylib with the audit domain) was
+# extracted to the pom-plugin-logs repository, which has its own build script.
+# The only cdylib left in this workspace is the ABI fixture used by the
+# `pom-plugin-host` tests.
 plugin_crate="enterprise-plugin-fixture"
 profile="release"
 

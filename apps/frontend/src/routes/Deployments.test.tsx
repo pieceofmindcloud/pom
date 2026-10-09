@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 /**
- * O que esta tela promete: mostrar **todas** as implantações do cluster, sem
- * confundir "no ar" com "padrão", e deixar mexer num parâmetro sem refazer a
- * implantação inteira.
+ * What this screen promises: to show **all** the deployments of the cluster,
+ * without confusing "in service" with "default", and to let a parameter be
+ * changed without redoing the whole deployment.
  *
- * O caso que mais importa é o que era inexprimível antes do `deploy_id`: o
- * mesmo modelo no ar duas vezes. Se a tela colapsar as duas em uma linha, ou
- * marcar as duas como padrão, o operador reimplanta a errada.
+ * The case that matters most is the one that was inexpressible before the
+ * `deploy_id`: the same model in service twice. If the screen collapses the two
+ * into one row, or marks both as default, the operator redeploys the wrong one.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -30,8 +30,8 @@ vi.mock("../lib/api", () => ({
     failed: 0,
     results: [],
   })),
-  // `useJobs` passa por aqui; sem uma resposta de verdade o react-query
-  // reclama de `undefined` e polui a saída do teste.
+  // `useJobs` goes through here; without a real response react-query
+  // complains about `undefined` and pollutes the test output.
   api: {
     get: vi.fn(async (url: string) =>
       url === "/api/ui/node" ? { connection_key: "", pom_dev_mode: true } : { jobs: [] },
@@ -163,13 +163,13 @@ describe("Deployments", () => {
     await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
     expect(screen.getByText("d-bbbbbbbb")).toBeTruthy();
 
-    // Uma está no ar sem ser padrão; a outra é padrão sem estar no ar. Se a
-    // tela tratasse as duas palavras como sinônimo, um destes sumiria.
+    // One is in service without being the default; the other is the default without
+    // being in service. If the screen treated the two words as synonyms, one of these would vanish.
     expect(screen.getByText("No ar")).toBeTruthy();
     expect(screen.getByText("Fora do ar")).toBeTruthy();
     expect(screen.getAllByText("Padrão")).toHaveLength(1);
 
-    // E a forma de cada uma aparece, que é o que distingue as duas na prática.
+    // And the form of each one shows, which is what tells the two apart in practice.
     expect(screen.getByText("Fatias")).toBeTruthy();
     expect(screen.getByText("Modelo inteiro")).toBeTruthy();
   });
@@ -193,7 +193,7 @@ describe("Deployments", () => {
 
     mount();
     const table = await screen.findByRole("table");
-    // A primeira coluna é o controle de expansão; o `deploy_id` é a segunda.
+    // The first column is the expand control; the `deploy_id` is the second.
     const cells = Array.from(table.querySelectorAll("tbody tr")).map((tr) => tr.cells[1]);
 
     expect(cells.map((cell) => cell.textContent ?? "")).toEqual([
@@ -217,7 +217,7 @@ describe("Deployments", () => {
 
     click(screen.getByText("Reimplantar com novos parâmetros"));
 
-    // O formulário abre preenchido com o que a implantação está rodando.
+    // The form opens filled with what the deployment is running.
     const nCtx = (await screen.findByRole("spinbutton", { name: /contexto|n_ctx/i })) as
       | HTMLInputElement
       | undefined;
@@ -235,12 +235,12 @@ describe("Deployments", () => {
       { params: RuntimeParams; per_node: Record<string, unknown> },
     ];
 
-    // Mesmo id: reimplantar mexendo num parâmetro não cria outra implantação,
-    // senão todo cliente presa a `modelo@d-aaaaaaaa` deixaria de achar.
+    // Same id: redeploying by changing a parameter does not create another deployment,
+    // otherwise every client pinned to `modelo@d-aaaaaaaa` would stop finding it.
     expect(id).toBe("d-aaaaaaaa");
     expect(body.params.n_ctx).toBe(16384);
-    // O resto vai junto como estava: mandar só o campo mexido faria o nó
-    // recarregar com os padrões nos outros vinte.
+    // The rest goes along as it was: sending only the changed field would make the
+    // node reload with the defaults in the other twenty.
     expect(body.params.temperature).toBe(0.7);
     expect(body.params.n_batch).toBe(512);
     expect(body.per_node["no-a"]).toBeTruthy();
@@ -286,7 +286,7 @@ describe("Deployments", () => {
 
     mount();
     await waitFor(() => expect(screen.getByText("d-strata01")).toBeTruthy());
-    // Sem o serviço anunciado no cluster, o motor aparece pelo código do plugin.
+    // Without the service announced in the cluster, the engine shows by the plugin's code.
     expect(screen.getByText("strata")).toBeTruthy();
 
     click(screen.getByRole("button", { name: "Ver versões" }));
@@ -315,18 +315,18 @@ describe("Deployments", () => {
     mount();
     await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
 
-    // Fechada, as versões não aparecem.
+    // Closed, the versions do not show.
     expect(screen.queryByText("Reimplantar esta versão")).toBeNull();
 
     click(screen.getByRole("button", { name: "Ver versões" }));
 
-    // As duas versões, com a ativa marcada.
+    // Both versions, with the active one marked.
     expect(screen.getByText("v1")).toBeTruthy();
     expect(screen.getByText("v2")).toBeTruthy();
     expect(screen.getByText("Ativa")).toBeTruthy();
 
     const buttons = screen.getAllByText("Reimplantar esta versão");
-    // v2 primeiro (mais recente); clicar em v1 é o segundo.
+    // v2 first (most recent); clicking v1 is the second.
     click(buttons[1]);
 
     await waitFor(() => expect(redeployDeployment).toHaveBeenCalledWith("d-aaaaaaaa", {
@@ -357,7 +357,7 @@ describe("Deployments", () => {
     click(screen.getByRole("button", { name: "Ver as propriedades da versão 1" }));
     click(screen.getByText("Editar e reimplantar"));
 
-    // O painel de leitura dá lugar ao de edição, semeado com a versão 1.
+    // The read panel gives way to the edit one, seeded with version 1.
     expect(screen.queryByText("Propriedades da versão 1")).toBeNull();
     const panel = screen.getByText("Reimplantar qwen3:8b").closest("aside")!;
     const nCtx = panel.querySelector('input[name="n_ctx"]') as HTMLInputElement;
@@ -369,9 +369,9 @@ describe("Deployments", () => {
   });
 
   /**
-   * O mesmo inspetor da tela de implantar, aqui em somente leitura: é o que
-   * responde "com que parâmetros esta versão subiu?" sem obrigar a abrir o
-   * diálogo de reimplantar, que é um formulário editável e sugere mudança.
+   * The same inspector as the deploy screen, here read-only: it is what
+   * answers "which parameters did this version come up with?" without forcing the
+   * redeploy dialog open, which is an editable form and suggests change.
    */
   it("opens the properties of a version read-only", async () => {
     listDeployments.mockResolvedValue({
@@ -393,7 +393,7 @@ describe("Deployments", () => {
     await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
     click(screen.getByRole("button", { name: "Ver versões" }));
 
-    // Fechado, o inspetor não existe.
+    // Closed, the inspector does not exist.
     expect(screen.queryByText("Configurações padrões")).toBeNull();
 
     click(screen.getByRole("button", { name: "Ver as propriedades da versão 1" }));
@@ -403,13 +403,13 @@ describe("Deployments", () => {
     expect(screen.getByText("Configurações POM")).toBeTruthy();
     expect(screen.getByText("Configurações POM (DESENV)")).toBeTruthy();
 
-    // Somente leitura de verdade: o valor está escrito, não num campo.
+    // Truly read-only: the value is written out, not in a field.
     const inspector = screen.getByText("Configurações padrões").closest("aside");
     expect(inspector).toBeTruthy();
     expect(inspector!.querySelectorAll("input")).toHaveLength(0);
     expect(inspector!.querySelectorAll("select")).toHaveLength(0);
     expect(within(inspector!).getByText("8192")).toBeTruthy();
-    // E o interruptor do plano continua legível, sem ser acionável.
+    // And the plan's switch stays readable, without being actionable.
     const noThinking = within(inspector!).getByRole("checkbox", {
       name: "Desativar thinking",
     }) as HTMLButtonElement;

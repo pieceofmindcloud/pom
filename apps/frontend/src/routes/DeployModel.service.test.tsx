@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
- * Implantar com o serviço de inferência de um plugin (Strata).
+ * Deploying with a plugin's inference service (Strata).
  *
- * A escolha do serviço muda três coisas e nada mais: o modo vira modelo
- * inteiro, os modelos oferecidos são os da arquitetura que o motor roda e a
- * implantação leva `params.inference_service` - no plano e no deploy.
+ * Choosing the service changes three things and nothing else: the mode becomes
+ * whole model, the models offered are those of the architecture the engine runs
+ * and the deployment carries `params.inference_service` - in the plan and in the deploy.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

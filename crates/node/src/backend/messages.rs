@@ -205,66 +205,66 @@ pub struct MessagesRequest {
     pub tools: Vec<ToolDef>,
     #[serde(default)]
     pub stop_sequences: Vec<String>,
-    /// `output_config`, de onde sai o orçamento de tarefa. Ver [`OutputConfig`].
+    /// `output_config`, where the task budget comes from. See [`OutputConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,
 }
 
-/// O `output_config` da Anthropic, do qual este nó lê só o `task_budget`.
-/// Campos que ele não implementa (`effort`, `format`) são aceitos e ignorados
-/// em vez de derrubarem a requisição - recusar um campo que o cliente manda
-/// para outro modelo não protege ninguém.
+/// Anthropic's `output_config`, of which this node reads only `task_budget`.
+/// Fields it does not implement (`effort`, `format`) are accepted and ignored
+/// instead of failing the request - refusing a field the client sends for
+/// another model protects nobody.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OutputConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_budget: Option<TaskBudget>,
 }
 
-/// Orçamento de tarefa: o mecanismo que os provedores oferecem **no lugar** do
-/// transbordo do teto.
+/// Task budget: the mechanism the providers offer **in place of** overflowing
+/// the cap.
 ///
-/// Ele não corta nada. Quem corta é `max_tokens`, que é teto imposto e
-/// inviolável. O orçamento é **advisory**: o servidor injeta na geração um
-/// marcador de contagem regressiva que o modelo enxerga, para ele se organizar
-/// e terminar de forma graciosa dentro do limite em vez de ser cortado.
+/// It cuts nothing. What cuts is `max_tokens`, which is an enforced and
+/// inviolable cap. The budget is **advisory**: the server injects into the
+/// generation a countdown marker the model sees, so that it can organize
+/// itself and finish gracefully within the limit instead of being cut off.
 ///
-/// A forma é a da Anthropic, verificada na documentação viva em 2026-08-29
-/// (`platform.claude.com/docs/en/build-with-claude/task-budgets`):
-/// `{"type": "tokens", "total": N, "remaining": M?}`, mínimo de 20.000 no
-/// `total`, `remaining` opcional e igual a `total` quando ausente. Lá ele é
-/// beta, atrás do header `task-budgets-2026-03-13`. Ver
+/// The shape is Anthropic's, verified against the live documentation on
+/// 2026-08-29 (`platform.claude.com/docs/en/build-with-claude/task-budgets`):
+/// `{"type": "tokens", "total": N, "remaining": M?}`, a minimum of 20.000 on
+/// `total`, `remaining` optional and equal to `total` when absent. There it is
+/// beta, behind the `task-budgets-2026-03-13` header. See
 /// `docs/subsystems/http-api.md`.
 ///
-/// **Limite deste nó, declarado:** lá o marcador atravessa o laço agêntico
-/// inteiro e atualiza sozinho a cada turno; aqui ele é injetado uma vez por
-/// requisição, no prompt renderizado, com o `remaining` que a requisição
-/// trouxe. O nó não guarda estado entre requisições, então quem costura o laço
-/// é o cliente - exatamente o caso que a Anthropic documenta para compactação,
-/// em que o `remaining` é passado adiante a cada pedido. `x_pom.task_budget`
-/// devolve o que o turno gastou para o cliente decrementar.
+/// **This node's limit, stated:** there the marker crosses the whole agentic
+/// loop and updates itself on every turn; here it is injected once per
+/// request, in the rendered prompt, with the `remaining` the request brought.
+/// The node keeps no state between requests, so the one stitching the loop
+/// together is the client - exactly the case Anthropic documents for
+/// compaction, in which `remaining` is passed along on every request.
+/// `x_pom.task_budget` returns what the turn spent for the client to decrement.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskBudget {
-    /// Sempre `"tokens"`. É o discriminador da união, e só esta variante
-    /// existe hoje.
+    /// Always `"tokens"`. It is the union's discriminator, and only this
+    /// variant exists today.
     #[serde(rename = "type")]
     pub kind: String,
     pub total: u32,
-    /// O resto do orçamento vindo de uma requisição anterior. Ausente vale
+    /// The rest of the budget coming from a previous request. Absent means
     /// `total`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining: Option<u32>,
 }
 
-/// Mínimo aceito no `total`, espelhando o dos provedores.
+/// Minimum accepted on `total`, mirroring the providers'.
 ///
-/// Lá ele é por modelo e vale 20.000 em todo modelo que hoje suporta a
-/// funcionalidade; abaixo disso a API responde 400. Um orçamento pequeno
-/// demais para a tarefa faz o modelo recusar ou parar cedo, então recusar o
-/// pedido é melhor do que aceitar um número que só atrapalha.
+/// There it is per model and is 20.000 on every model that supports the
+/// feature today; below that the API answers 400. A budget too small for the
+/// task makes the model refuse or stop early, so refusing the request is
+/// better than accepting a number that only gets in the way.
 pub const TASK_BUDGET_MIN_TOTAL: u32 = 20_000;
 
 impl TaskBudget {
-    /// Quanto o marcador anuncia nesta requisição.
+    /// How much the marker announces on this request.
     pub fn remaining_now(&self) -> u32 {
         self.remaining.unwrap_or(self.total).min(self.total)
     }
@@ -293,19 +293,19 @@ impl TaskBudget {
     }
 }
 
-/// O marcador de contagem regressiva que o modelo enxerga.
+/// The countdown marker the model sees.
 ///
-/// **Este texto é aproximação nossa, não o marcador do provedor.** A
-/// documentação (`platform.claude.com/docs/en/build-with-claude/task-budgets`,
-/// lida em 2026-08-29) diz que o marcador é injetado server-side e que "a
-/// contagem regressiva é visível apenas para o modelo" - o texto literal não é
-/// publicado em lugar nenhum, então não há o que espelhar byte a byte. O que é
-/// espelhado é o contrato, esse sim documentado: o modelo vê quanto resta e usa
-/// isso para se organizar, e o marcador nunca corta nada.
+/// **This text is our approximation, not the provider's marker.** The
+/// documentation (`platform.claude.com/docs/en/build-with-claude/task-budgets`,
+/// read on 2026-08-29) says the marker is injected server-side and that "the
+/// countdown is visible only to the model" - the literal text is not published
+/// anywhere, so there is nothing to mirror byte for byte. What is mirrored is
+/// the contract, which is documented: the model sees how much is left and uses
+/// that to organize itself, and the marker never cuts anything.
 ///
-/// **Não verificado:** se um modelo local reage a ele. A bancada prova que o
-/// marcador chega à geração; se o modelo servido sabe usá-lo é medição em
-/// cluster, não coisa que esta função possa afirmar.
+/// **Not verified:** whether a local model reacts to it. The test bench proves
+/// the marker reaches the generation; whether the served model knows how to
+/// use it is a cluster measurement, not something this function can assert.
 pub fn task_budget_marker(budget: &TaskBudget) -> String {
     format!(
         "<task_budget>\nremaining_tokens: {}\ntotal_tokens: {}\n</task_budget>",
@@ -340,13 +340,13 @@ pub struct CountTokensRequest {
 /// peer already applies the model's chat template once, so a second one here
 /// would nest inside it. A lone user message with no system prompt and no
 /// tools passes through untouched.
-/// Chave do cache de prefixo para uma conversa Anthropic sem orçamento de
-/// tarefa.
+/// Prefix cache key for an Anthropic conversation without a task budget.
 ///
-/// Mesma razão e mesma forma da versão OpenAI - ver
-/// `crate::openai::conversation_cache_key`, que documenta por que o texto
-/// renderizado não serve como chave. Requisições com `task_budget` passam pela
-/// variante abaixo para que o valor que muda o prompt também invalide o cache.
+/// Same reason and same shape as the OpenAI version - see
+/// `crate::openai::conversation_cache_key`, which documents why the rendered
+/// text does not work as a key. Requests with `task_budget` go through the
+/// variant below so that the value that changes the prompt also invalidates
+/// the cache.
 pub fn conversation_cache_key(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
@@ -355,14 +355,14 @@ pub fn conversation_cache_key(
     conversation_cache_key_with_budget(system, messages, tools, None)
 }
 
-/// Chave do cache de prefixo incluindo o orçamento de tarefa, quando houver.
+/// Prefix cache key including the task budget, when there is one.
 ///
-/// O segmento do orçamento fica antes de ferramentas, sistema e mensagens.
-/// Assim, uma requisição com orçamento não reutiliza por engano uma entrada sem
-/// orçamento ou com outro `total`/`remaining`. O marcador é injetado no fim do
-/// prompt a cada requisição, e a posição segue a semântica documentada da
-/// Anthropic: ele não coincide entre requisições e mudar `task_budget` invalida
-/// o cache de prompt.
+/// The budget segment comes before tools, system and messages. That way, a
+/// request with a budget does not mistakenly reuse an entry without a budget
+/// or with another `total`/`remaining`. The marker is injected at the end of
+/// the prompt on every request, and the position follows Anthropic's
+/// documented semantics: it does not match across requests and changing
+/// `task_budget` invalidates the prompt cache.
 pub fn conversation_cache_key_with_budget(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
@@ -409,9 +409,9 @@ pub fn conversation_cache_key_with_budget(
     key
 }
 
-/// O prompt renderizado, sem orçamento de tarefa. Ver
-/// [`render_prompt_with_budget`] - quando há orçamento, o handler também passa
-/// o mesmo valor para [`conversation_cache_key_with_budget`].
+/// The rendered prompt, without a task budget. See
+/// [`render_prompt_with_budget`] - when there is a budget, the handler also
+/// passes the same value to [`conversation_cache_key_with_budget`].
 pub fn render_prompt(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
@@ -420,13 +420,13 @@ pub fn render_prompt(
     render_prompt_with_budget(system, messages, tools, None)
 }
 
-/// [`render_prompt`] com o marcador de contagem regressiva do orçamento de
-/// tarefa, quando a requisição trouxe um.
+/// [`render_prompt`] with the task budget's countdown marker, when the request
+/// brought one.
 ///
-/// O marcador entra **depois** dos turnos, o mais perto possível do ponto em
-/// que o modelo começa a escrever: é o último contexto que ele lê, e é onde a
-/// contagem regressiva pesa mais. Ele é injetado server-side e nunca aparece
-/// na resposta - só o modelo o vê, como nos provedores.
+/// The marker goes in **after** the turns, as close as possible to the point
+/// where the model starts writing: it is the last context it reads, and it is
+/// where the countdown weighs the most. It is injected server-side and never
+/// appears in the response - only the model sees it, as with the providers.
 pub fn render_prompt_with_budget(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
@@ -448,9 +448,9 @@ pub fn render_prompt_with_budget(
     }
     let system_text = system_text.trim();
 
-    // Todo turno é rotulado, inclusive o primeiro - ver
-    // `crate::openai::render_prompt`, que documenta por que a passagem crua da
-    // mensagem solitária quebrava o reuso de prefixo na transição 1→2.
+    // Every turn is labelled, including the first - see
+    // `crate::openai::render_prompt`, which documents why passing the lone
+    // message through raw broke prefix reuse on the 1→2 transition.
     let mut out = String::new();
     if !system_text.is_empty() {
         out.push_str(system_text);
@@ -495,11 +495,11 @@ fn content_blocks(parts: &[OutputPart]) -> (Vec<serde_json::Value>, bool) {
                     "input": arguments,
                 }));
             }
-            // A chamada que o teto cortou volta como último bloco `tool_use`,
-            // com o `input` incompleto - é isso que a Anthropic devolve, e é
-            // como o cliente detecta o corte (último bloco `tool_use` com
-            // `stop_reason: "max_tokens"`). `saw_tool_call` fica falso: o
-            // turno terminou no teto, não na chamada.
+            // The call the cap cut off comes back as the last `tool_use` block,
+            // with an incomplete `input` - that is what Anthropic returns, and
+            // it is how the client detects the cut (last `tool_use` block with
+            // `stop_reason: "max_tokens"`). `saw_tool_call` stays false: the
+            // turn ended at the cap, not at the call.
             OutputPart::ToolCallTruncated(partial) => {
                 blocks.push(json!({
                     "type": "tool_use",
@@ -548,8 +548,8 @@ async fn messages(
     }
     let prompt =
         render_prompt_with_budget(req.system.as_ref(), &req.messages, &req.tools, task_budget);
-    // A chave acompanha o valor do marcador: orçamento diferente não pode
-    // reutilizar KV produzido para outro prompt.
+    // The key follows the marker's value: a different budget cannot reuse
+    // KV produced for another prompt.
     let cache_key = match task_budget {
         Some(task_budget) => conversation_cache_key_with_budget(
             req.system.as_ref(),
@@ -575,9 +575,9 @@ async fn messages(
         return error_response(status, "invalid_request_error", error);
     }
     let budget = output_limit.budget();
-    // O que o cliente precisa para decrementar o `remaining` do próximo
-    // pedido. Fica só no `x_pom`: a Anthropic não devolve orçamento restante
-    // em `usage`, e copiar o schema dela inclui o que ela **não** manda.
+    // What the client needs to decrement the next request's `remaining`. It
+    // stays only in `x_pom`: Anthropic does not return the remaining budget in
+    // `usage`, and copying its schema includes what it does **not** send.
     let task_budget_report = task_budget.map(|b| {
         json!({
             "total": b.total,
@@ -628,12 +628,13 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
         .into_response()
 }
 
-/// `max_tokens` aqui é o **total** da requisição, não o teto de uma perna do
-/// laço de continuação: perna esgotada é meio de resposta, não fim de turno.
-/// Mesmo raciocínio de `openai::finish_reason`, no vocabulário da Anthropic:
-/// atingir o teto é parada terminal e vem primeiro, mesmo com um `tool_use` na
-/// saída - a chamada que o teto pegou aberta está incompleta, e é `max_tokens`
-/// que diz ao cliente para repetir o pedido com um teto maior.
+/// `max_tokens` here is the request's **total**, not the cap of one leg of the
+/// continuation loop: an exhausted leg is the middle of a response, not the
+/// end of a turn. Same reasoning as `openai::finish_reason`, in Anthropic's
+/// vocabulary: reaching the cap is a terminal stop and comes first, even with
+/// a `tool_use` in the output - the call the cap caught open is incomplete,
+/// and `max_tokens` is what tells the client to repeat the request with a
+/// larger cap.
 fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
     if summary.tokens_generated >= max_tokens {
         "max_tokens"
@@ -646,10 +647,10 @@ fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'
     }
 }
 
-/// Tudo que as duas formas de resposta - bloqueante e SSE - precisam saber.
+/// Everything the two response forms - blocking and SSE - need to know.
 ///
-/// As duas recebem exatamente a mesma coisa, então a lista viaja junta em vez
-/// de ser digitada duas vezes e crescer de um lado só.
+/// Both receive exactly the same thing, so the list travels together instead
+/// of being typed twice and growing on one side only.
 struct ResponseParams {
     state: GatewayState,
     caller: crate::reqlog::Caller,
@@ -663,10 +664,10 @@ struct ResponseParams {
     cache_key: Option<String>,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
-    /// `x_pom.task_budget`: o orçamento de tarefa que a requisição trouxe,
-    /// para o cliente decrementar no próximo pedido. `None` quando ausente.
+    /// `x_pom.task_budget`: the task budget the request brought, for the
+    /// client to decrement on the next request. `None` when absent.
     task_budget_report: Option<serde_json::Value>,
-    /// Quais ferramentas pediram `eager_input_streaming`. Ver [`EagerTools`].
+    /// Which tools asked for `eager_input_streaming`. See [`EagerTools`].
     eager_tools: EagerTools,
 }
 
@@ -684,8 +685,8 @@ async fn blocking_response(params: ResponseParams) -> Response {
         cache_key,
         request_details,
         output_limit,
-        // Sem streaming não há fragmento a transmitir: a resposta bloqueante
-        // devolve os argumentos completos de uma vez, sempre.
+        // Without streaming there is no fragment to transmit: the blocking
+        // response returns the complete arguments at once, always.
         eager_tools: _,
         task_budget_report,
     } = params;
@@ -712,9 +713,9 @@ async fn blocking_response(params: ResponseParams) -> Response {
     .await
     {
         Ok((text, summary)) => {
-            // Mesma regra do adaptador OpenAI: teto esgotado com uma chamada
-            // aberta devolve a chamada estruturada e incompleta, nunca
-            // marcação crua e nunca o descarte.
+            // Same rule as the OpenAI adapter: an exhausted cap with an open
+            // call returns the call structured and incomplete, never raw
+            // markup and never a discard.
             let truncated = summary.finish_reason.as_deref() == Some("length");
             let (parts, truncated_tool_call) = if truncated {
                 parse_output_truncated(&text)
@@ -736,10 +737,10 @@ async fn blocking_response(params: ResponseParams) -> Response {
                     "usage": {
                         "input_tokens": input_tokens,
                         "output_tokens": summary.tokens_generated,
-                        // Quantos tokens do prompt o pipeline não reprocessou,
-                        // medido no lado que executa. Ver
-                        // `RequestTrace::cached_tokens`. O nome segue o campo
-                        // de leitura de cache da Anthropic.
+                        // How many prompt tokens the pipeline did not reprocess,
+                        // measured on the side that executes. See
+                        // `RequestTrace::cached_tokens`. The name follows
+                        // Anthropic's cache read field.
                         "cache_read_input_tokens": summary
                             .trace
                             .as_ref()
@@ -753,22 +754,22 @@ async fn blocking_response(params: ResponseParams) -> Response {
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "timings": summary.timings,
-                        // Uma chamada cortada ao meio também é resposta
-                        // parcial - ver `openai::blocking_response`.
+                        // A call cut in the middle is also a partial
+                        // response - see `openai::blocking_response`.
                         "partial": summary.partial || truncated_tool_call,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                         "output_limits": output_limit,
-                        // Quantas gerações de backend a resposta costurou.
-                        // `1` é uma só - ver `GenSummary::legs`.
+                        // How many backend generations the response stitched.
+                        // `1` is a single one - see `GenSummary::legs`.
                         "continuation_legs": summary.legs,
                         "truncated_tool_call": truncated_tool_call,
-                        // Presente só quando a requisição trouxe orçamento de
-                        // tarefa. Ver `TaskBudget`.
+                        // Present only when the request brought a task
+                        // budget. See `TaskBudget`.
                         "task_budget": task_budget_report,
-                        // O que este turno gastou do orçamento, para o cliente
-                        // decrementar o `remaining` do próximo pedido.
+                        // What this turn spent of the budget, for the client to
+                        // decrement the next request's `remaining`.
                         "task_budget_spent_this_turn": summary.tokens_generated,
                     },
                 })),
@@ -850,19 +851,19 @@ fn stream_response(params: ResponseParams) -> Response {
 /// there's nothing to stream *before* that point. The blob is small and the
 /// wait is sub-second either way — an honest, deliberate trade-off, not a
 /// missing feature.
-/// O estado de uma chamada de ferramenta sendo transmitida - ver
-/// `openai::CallInProgress`, que faz o mesmo no outro vocabulário.
+/// The state of a tool call being transmitted - see
+/// `openai::CallInProgress`, which does the same in the other vocabulary.
 struct CallInProgress {
     body: String,
     streamer: crate::tool_call::CallArgsStreamer,
-    /// O índice do bloco `tool_use` já aberto no cliente, quando aberto.
+    /// The index of the `tool_use` block already open on the client, when open.
     index: Option<u32>,
 }
 
-/// Quais ferramentas desta requisição pediram streaming de granularidade fina.
+/// Which tools of this request asked for fine-grained streaming.
 ///
-/// `eager_input_streaming` é **por ferramenta**, então a decisão depende de
-/// qual delas o modelo chamou - e só dá para saber isso quando o nome sai.
+/// `eager_input_streaming` is **per tool**, so the decision depends on which
+/// of them the model called - and that is only known once the name comes out.
 #[derive(Clone, Default)]
 pub(crate) struct EagerTools(std::collections::HashSet<String>);
 
@@ -891,8 +892,8 @@ fn apply_scan_events(
     eager_tools: &EagerTools,
     out: &mut Vec<(&'static str, serde_json::Value)>,
 ) {
-    /// Abre o bloco `tool_use`: `input` vai vazio, que é o marcador de lugar
-    /// documentado - o valor de verdade chega nos `input_json_delta`.
+    /// Opens the `tool_use` block: `input` goes empty, which is the documented
+    /// placeholder - the real value arrives in the `input_json_delta` events.
     fn open_call(
         name: &str,
         text_open: &mut Option<u32>,
@@ -977,8 +978,8 @@ fn apply_scan_events(
             }
             ScanEvent::Text(_) => {}
             ScanEvent::ToolCallOpen => {
-                // O modo só é conhecido quando o nome sair: `eager_input_streaming`
-                // é por ferramenta. Até lá, represado.
+                // The mode is only known once the name comes out:
+                // `eager_input_streaming` is per tool. Until then, held back.
                 *in_progress = Some(CallInProgress {
                     body: String::new(),
                     streamer: crate::tool_call::CallArgsStreamer::new(false),
@@ -994,8 +995,8 @@ fn apply_scan_events(
                 let Some(name) = crate::tool_call::peek_call_name(&body) else {
                     continue;
                 };
-                // Assim que o nome sai, o modo da ferramenta é aplicado. Ainda
-                // não saiu fragmento nenhum, então trocar aqui é seguro.
+                // As soon as the name comes out, the tool's mode is applied. No
+                // fragment has gone out yet, so switching here is safe.
                 if call.index.is_none() && call.streamer.emitted_len() == 0 {
                     call.streamer =
                         crate::tool_call::CallArgsStreamer::new(eager_tools.contains(&name));
@@ -1020,9 +1021,10 @@ fn apply_scan_events(
             }
             ScanEvent::ToolCallClose(Err(raw)) => {
                 let call = in_progress.take();
-                // Ver `openai::apply_scan_events_openai`: uma chamada que já
-                // começou a sair não volta a ser texto. Ela fecha com o
-                // `input` que não parseia, e o cliente devolve `INVALID_JSON`.
+                // See `openai::apply_scan_events_openai`: a call that has
+                // already started going out does not turn back into text. It
+                // closes with the `input` that does not parse, and the client
+                // returns `INVALID_JSON`.
                 if let Some(call) = call {
                     if let Some(idx) = call.index {
                         close_call(idx, out);
@@ -1039,10 +1041,10 @@ fn apply_scan_events(
                     out,
                 );
             }
-            // A chamada cortada pelo teto: mesma sequência de blocos, com o
-            // `partial_json` inacabado - que é literalmente o que a Anthropic
-            // transmite enquanto o `input` está sendo escrito. `saw_tool_call`
-            // fica falso: o `message_delta` tem de dizer `max_tokens`.
+            // The call cut by the cap: same sequence of blocks, with the
+            // unfinished `partial_json` - which is literally what Anthropic
+            // transmits while the `input` is being written. `saw_tool_call`
+            // stays false: the `message_delta` has to say `max_tokens`.
             ScanEvent::ToolCallTruncated(partial) => {
                 let mut call = in_progress.take().unwrap_or_else(|| CallInProgress {
                     body: String::new(),
@@ -1111,11 +1113,11 @@ fn sse_stream(
         text_open: Option<u32>,
         next_index: u32,
         saw_tool_call: bool,
-        /// Ver `blocking_response`.
+        /// See `blocking_response`.
         task_budget_report: Option<serde_json::Value>,
-        /// A chamada cujos argumentos estão sendo transmitidos agora.
+        /// The call whose arguments are being transmitted right now.
         in_progress: Option<CallInProgress>,
-        /// Quais ferramentas pediram `eager_input_streaming`.
+        /// Which tools asked for `eager_input_streaming`.
         eager_tools: EagerTools,
     }
 
@@ -1311,15 +1313,15 @@ mod tests {
 
     #[test]
     fn single_user_message_is_labelled_like_every_other_turn() {
-        // Ver `crate::openai::render_prompt`: o rótulo desde o primeiro turno é
-        // o que faz um prompt ser prefixo exato do prompt do turno seguinte.
+        // See `crate::openai::render_prompt`: the label from the first turn on
+        // is what makes a prompt an exact prefix of the next turn's prompt.
         assert_eq!(
             render_prompt(None, &[msg("user", "O que e inferencia distribuida?")], &[]),
             "User: O que e inferencia distribuida?"
         );
     }
 
-    /// A propriedade de que o reuso de prefixo depende, no caminho Anthropic.
+    /// The property prefix reuse depends on, on the Anthropic path.
     #[test]
     fn every_extra_turn_only_appends_to_the_previous_prompt() {
         let turn1 = vec![msg("user", "1+1?")];
@@ -1527,8 +1529,8 @@ mod tests {
         };
         // Complete tool call within the budget remains tool_use.
         assert_eq!(stop_reason(&summary(5), 100, true), "tool_use");
-        // Atingir o teto é parada terminal e vence uma chamada na saída: a
-        // chamada que o teto pegou aberta está incompleta.
+        // Reaching the cap is a terminal stop and beats a call in the output:
+        // the call the cap caught open is incomplete.
         assert_eq!(stop_reason(&summary(100), 100, true), "max_tokens");
         // Plain text cut by the budget reports max_tokens.
         assert_eq!(stop_reason(&summary(100), 100, false), "max_tokens");

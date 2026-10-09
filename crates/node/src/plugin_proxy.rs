@@ -1,25 +1,26 @@
-//! Proxy reverso das interfaces web que um plugin serve:
+//! Reverse proxy of the web interfaces a plugin serves:
 //! `/api/ui/plugins/:code/proxy/*`.
 //!
-//! Um plugin pode rodar um servidor HTTP próprio em loopback (por exemplo uma
-//! aplicação web completa) e expô-lo na interface do POM sem abrir outra porta
-//! na rede. O plugin informa onde ele está pela operação `ui.upstream` do
-//! `query` genérico: `{"status":"ready","port":N,"token":"..."}`. O nó encaminha
-//! para `127.0.0.1:N` - HTTP com corpo em streaming e upgrades (WebSocket) -,
-//! anexando o `token` em [`PROXY_TOKEN_HEADER`] para que só ele alcance o
-//! servidor do plugin, e [`FORWARDED_PREFIX_HEADER`] para que o plugin saiba
-//! sob qual caminho foi montado.
+//! A plugin can run its own HTTP server on loopback (for example a full web
+//! application) and expose it in the POM interface without opening another port
+//! on the network. The plugin says where it is through the `ui.upstream`
+//! operation of the generic `query`: `{"status":"ready","port":N,"token":"..."}`.
+//! The node forwards to `127.0.0.1:N` - HTTP with a streaming body and upgrades
+//! (WebSocket) -, attaching the `token` in [`PROXY_TOKEN_HEADER`] so that only
+//! the proxy reaches the plugin's server, and [`FORWARDED_PREFIX_HEADER`] so the
+//! plugin knows under which path it was mounted.
 //!
-//! Quem entra: a rota está sob `/api/ui`, então passa pela superfície
-//! administrativa (loopback em `localhost`, sessão por senha em `network`) e é
-//! aberta a todo perfil na tabela de perfis, porque plugins são locais do nó.
-//! Como scripts, WebSockets e `EventSource` não carregam o `Authorization` da
-//! interface, a credencial aqui é a da superfície, e a falsificação entre
-//! sites é barrada por [`same_origin`].
-//! Chamadas entre nós nunca passam: o proxy é só para o navegador.
+//! Who gets in: the route is under `/api/ui`, so it goes through the
+//! administrative surface (loopback in `localhost`, password session in
+//! `network`) and is open to every profile in the profile table, because
+//! plugins are local to the node. Since scripts, WebSockets and `EventSource`
+//! do not carry the interface's `Authorization`, the credential here is the
+//! surface's, and cross-site forgery is blocked by [`same_origin`].
+//! Node-to-node calls never pass: the proxy is only for the browser.
 //!
-//! O que sai: o cookie de sessão administrativa, o `Authorization` e o token de
-//! acesso nunca chegam ao plugin, e o plugin não grava cookies na origem do POM.
+//! What goes out: the administrative session cookie, the `Authorization` and the
+//! access token never reach the plugin, and the plugin does not write cookies on
+//! the POM origin.
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -28,15 +29,15 @@ use serde_json::{json, Value};
 use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Cabeçalho com o segredo que o plugin publicou em `ui.upstream`.
+/// Header with the secret the plugin published in `ui.upstream`.
 pub(crate) const PROXY_TOKEN_HEADER: &str = "x-pom-plugin-token";
-/// Caminho público sob o qual o nó montou o servidor do plugin.
+/// Public path under which the node mounted the plugin's server.
 pub(crate) const FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
-/// Teto do cabeçalho de resposta de um upgrade lido à mão.
+/// Ceiling of the response header of an upgrade read by hand.
 const MAX_UPGRADE_HEAD: usize = 64 * 1024;
 
-/// Cabeçalhos que não atravessam um proxy (RFC 9110 §7.6.1), mais os que só
-/// valem para a sessão do POM.
+/// Headers that do not cross a proxy (RFC 9110 §7.6.1), plus those that only
+/// apply to the POM session.
 const DROPPED_REQUEST_HEADERS: [&str; 13] = [
     "connection",
     "keep-alive",
@@ -63,17 +64,17 @@ const DROPPED_RESPONSE_HEADERS: [&str; 9] = [
     "upgrade",
     "set-cookie",
 ];
-/// Marcadores de chamada entre nós; o proxy existe só para o navegador.
+/// Markers of a node-to-node call; the proxy exists only for the browser.
 const INTERNAL_HEADERS: [&str; 2] = ["x-pom-internal-node", "x-pom-control-signature"];
 
-/// Onde o servidor do plugin está, segundo `ui.upstream`.
+/// Where the plugin's server is, according to `ui.upstream`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Upstream {
     pub port: u16,
     pub token: String,
 }
 
-/// Lê a resposta de `ui.upstream`. `Err` traz o motivo mostrado ao navegador.
+/// Reads the `ui.upstream` response. `Err` carries the reason shown to the browser.
 pub(crate) fn parse_upstream(value: &Value) -> Result<Upstream, String> {
     match value.get("status").and_then(Value::as_str) {
         Some("ready") => {}
@@ -109,9 +110,9 @@ pub(crate) fn proxy_prefix(code: &str) -> String {
     format!("/api/ui/plugins/{code}/proxy")
 }
 
-/// Barreira contra falsificação entre sites. O navegador marca a origem de
-/// toda requisição que um script ou página pode forjar (`Sec-Fetch-Site`, e
-/// `Origin` em POST e WebSocket); só a própria origem do POM passa.
+/// Barrier against cross-site forgery. The browser marks the origin of every
+/// request a script or page can forge (`Sec-Fetch-Site`, and `Origin` on POST
+/// and WebSocket); only the POM's own origin passes.
 pub(crate) fn same_origin(headers: &HeaderMap) -> bool {
     if let Some(site) = headers.get("sec-fetch-site") {
         if !matches!(site.to_str(), Ok("same-origin" | "none")) {
@@ -145,7 +146,8 @@ fn is_upgrade(headers: &HeaderMap) -> bool {
             })
 }
 
-/// O alvo no servidor do plugin: o caminho depois do prefixo, byte a byte, e a query.
+/// The target on the plugin's server: the path after the prefix, byte for byte,
+/// and the query.
 pub(crate) fn upstream_target(prefix: &str, uri: &axum::http::Uri) -> String {
     let rest = uri.path().strip_prefix(prefix).unwrap_or_default();
     let path = if rest.starts_with('/') { rest } else { "/" };
@@ -155,8 +157,8 @@ pub(crate) fn upstream_target(prefix: &str, uri: &axum::http::Uri) -> String {
     }
 }
 
-/// Cabeçalhos que seguem para o plugin: os do navegador menos os da sessão do
-/// POM, mais o token e o contexto de montagem.
+/// Headers that go on to the plugin: the browser's minus those of the POM
+/// session, plus the token and the mount context.
 pub(crate) fn upstream_headers(
     incoming: &HeaderMap,
     upstream: &Upstream,
@@ -201,7 +203,7 @@ fn refusal(status: StatusCode, error: &str) -> Response {
     (status, axum::Json(json!({ "error": error }))).into_response()
 }
 
-/// Encaminha uma requisição do navegador para o servidor do plugin.
+/// Forwards a browser request to the plugin's server.
 pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request) -> Response {
     let secure = request
         .extensions()
@@ -244,8 +246,8 @@ pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request)
         .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "invalid plugin response"))
 }
 
-/// Um upgrade (WebSocket) não cabe no cliente HTTP: o cabeçalho vai à mão pela
-/// conexão TCP, e depois do `101` os dois lados só copiam bytes.
+/// An upgrade (WebSocket) does not fit the HTTP client: the header goes by hand
+/// over the TCP connection, and after the `101` both sides just copy bytes.
 async fn forward_upgrade(
     upstream: &Upstream,
     target: &str,
@@ -322,7 +324,7 @@ async fn forward_upgrade(
         .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "invalid plugin response"))
 }
 
-/// Lê o cabeçalho de resposta HTTP/1.1 e devolve os bytes que vieram depois dele.
+/// Reads the HTTP/1.1 response header and returns the bytes that came after it.
 async fn read_response_head(
     stream: &mut tokio::net::TcpStream,
 ) -> Result<(StatusCode, HeaderMap, Vec<u8>), String> {
@@ -539,7 +541,7 @@ mod tests {
         assert_eq!(out["x-forwarded-proto"], "https");
     }
 
-    /// Servidor HTTP mínimo que devolve o que recebeu, e faz eco depois de um upgrade.
+    /// Minimal HTTP server that returns what it received, and echoes after an upgrade.
     async fn echo_upstream() -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

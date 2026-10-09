@@ -6,21 +6,21 @@ use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Testes que mudam `POM_CONFIG` ou `POM_HOME` compartilham o ambiente do
-/// processo. A trava mantém esses testes assíncronos determinísticos quando a
-/// suíte roda em paralelo.
+/// Tests that change `POM_CONFIG` or `POM_HOME` share the process environment.
+/// The lock keeps these async tests deterministic when the suite runs in
+/// parallel.
 #[cfg(test)]
 pub static TEST_ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Nome do arquivo de config: derivado da marca (`brand.json`), não escrito à
-/// mão, para renomear o produto ser uma edição só.
+/// Config file name: derived from the brand (`brand.json`), not written by hand,
+/// so that renaming the product is a single edit.
 fn config_filename() -> String {
     crate::brand::config_filename()
 }
 
-/// Arquivo separado que guarda a âncora e a cadeia de concessões de admin.
-/// Nunca é derivado de `Config.profile`: editar `pom.json` não pode criar
-/// autoridade.
+/// Separate file that holds the anchor and the chain of admin grants.
+/// Never derived from `Config.profile`: editing `pom.json` cannot create
+/// authority.
 pub fn admin_trust_filename() -> String {
     format!(".{}-admin-trust.json", crate::brand::slug())
 }
@@ -31,9 +31,9 @@ pub fn admin_trust_path() -> PathBuf {
         .unwrap_or_else(|_| project_root().join(admin_trust_filename()))
 }
 
-/// Superfície administrativa do gateway. As rotas da pipeline não usam esta
-/// política: continuam ouvindo em IPv4 e IPv6 para que o túnel libp2p tenha um
-/// caminho HTTP de reserva.
+/// Administrative surface of the gateway. The pipeline routes do not use this
+/// policy: they keep listening on IPv4 and IPv6 so that the libp2p tunnel has a
+/// fallback HTTP path.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AdminExposure {
@@ -243,11 +243,11 @@ impl Default for ResourcePolicy {
     }
 }
 
-/// Tipos de dados aceitos pelo cache KV do llama.cpp desta instalação.
+/// Data types accepted by this installation's llama.cpp KV cache.
 ///
-/// A definição mudou para `llama-engine` (`kv_cache.rs`) porque o lado FFI
-/// precisa dela; aqui é só um campo de `Config`. Re-exportada para que
-/// `crate::config::KvCacheType` continue valendo.
+/// The definition moved to `llama-engine` (`kv_cache.rs`) because the FFI side
+/// needs it; here it is only a `Config` field. Re-exported so that
+/// `crate::config::KvCacheType` keeps working.
 pub use llama_engine::KvCacheType;
 
 /// Older `pom.json` files carried API keys with their secrets in plain text.
@@ -299,28 +299,30 @@ pub struct Config {
     /// without booting the old network.
     #[serde(default)]
     pub setup_pending: bool,
-    /// Responder de bootstrap local. O wizard usa um listener transitório;
-    /// depois do setup esta preferência continua desligada até o admin ligar.
+    /// Local bootstrap responder. The wizard uses a transient listener; after
+    /// setup this preference stays off until the admin turns it on.
     #[serde(default)]
     pub local_auto_discovery: bool,
     #[serde(default)]
     pub connection_key: String,
     #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
-    /// Onde as rotas administrativas podem ser usadas. Ausente significa
-    /// localhost, inclusive em configurações gravadas antes deste campo.
+    /// Where the administrative routes may be used. Absent means localhost,
+    /// including in configurations saved before this field existed.
     #[serde(default)]
     pub admin_exposure: AdminExposure,
-    /// Hash PHC Argon2id da senha da pessoa que abre a superfície administrativa.
-    /// O nome serializado permanece por compatibilidade com configurações
-    /// antigas, cujo token literal é migrado no primeiro `Config::load`.
-    /// Não é a `connection_key`, que continua autenticando nós e pipeline.
+    /// Argon2id PHC hash of the password of the person who opens the
+    /// administrative surface. The serialized name stays for compatibility with
+    /// old configurations, whose literal token is migrated on the first
+    /// `Config::load`. It is not the `connection_key`, which keeps authenticating
+    /// nodes and the pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_access_token: Option<String>,
-    /// A senha administrativa ainda é a padrão do primeiro acesso
-    /// (`auth::DEFAULT_ADMIN_PASSWORD`). Enquanto for, a interface entra sem
-    /// perguntá-la e pede para trocar. É uma marca gravada junto do hash para a
-    /// rota pública `/api/access` não precisar rodar Argon2 a cada visita.
+    /// The administrative password is still the first-access default
+    /// (`auth::DEFAULT_ADMIN_PASSWORD`). While it is, the interface lets you in
+    /// without asking for it and asks you to change it. It is a mark saved next
+    /// to the hash so the public `/api/access` route does not have to run Argon2
+    /// on every visit.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub admin_password_default: bool,
     #[serde(default = "default_p2p_port")]
@@ -329,10 +331,10 @@ pub struct Config {
     pub inference_port: Option<u16>,
     #[serde(default)]
     pub bootstrap_nodes: Vec<String>,
-    /// Chaves pkarr (`pk:...`) de relés para a travessia de NAT, somadas às de
-    /// `--relay-peers`. Resolvidas uma vez no arranque; só entra o registro
-    /// que se declara relé. Um relé que este nó já alcança como bootstrap não
-    /// precisa estar aqui (ver `relay_reservation_addrs` em `discovery.rs`).
+    /// pkarr keys (`pk:...`) of relays for NAT traversal, added to those of
+    /// `--relay-peers`. Resolved once at startup; only a record that declares
+    /// itself a relay gets in. A relay this node already reaches as a bootstrap
+    /// does not need to be here (see `relay_reservation_addrs` in `discovery.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_peers: Vec<String>,
     /// Whom this node relays for, and whether file transfers may cross it.
@@ -360,22 +362,23 @@ pub struct Config {
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
     pub blocked_nodes: Vec<String>,
-    /// Todo HTTP entre peers vai por TLS quando isto é `true`.
+    /// All HTTP between peers goes over TLS when this is `true`.
     ///
-    /// A decisão é do nó principal e vale para o cluster inteiro; os demais nós
-    /// gravam aqui o que buscaram dele por canal autenticado. **Nunca grave
-    /// isto a partir do gossip**: o UDP de descoberta é em claro e não
-    /// autenticado, e um anúncio forjado rebaixaria a rede para texto claro,
-    /// que é exatamente o ataque que o TLS existe para impedir. Ver
-    /// `tls_policy`.
+    /// The decision belongs to the principal node and applies to the whole
+    /// cluster; the other nodes save here what they fetched from it over an
+    /// authenticated channel. **Never write this from gossip**: the discovery UDP
+    /// is in the clear and unauthenticated, and a forged announcement would
+    /// downgrade the network to plaintext, which is exactly the attack TLS exists
+    /// to prevent. See `tls_policy`.
     #[serde(default)]
     pub tls_required: bool,
     /// HTTP/3 over QUIC for inference hops, decided by the principal. On
     /// unless the config says otherwise.
     #[serde(default = "default_true")]
     pub quic_enabled: bool,
-    /// Coleta de logs de processo para o nó principal. A decisão é do
-    /// principal e os demais nós só adotam a resposta autenticada da catraca.
+    /// Process log collection for the principal node. The decision belongs to
+    /// the principal and the other nodes only adopt the authenticated answer from
+    /// the turnstile.
     #[serde(default)]
     pub cluster_logs_enabled: bool,
     /// The network Chat, decided by the principal and confirmed by the other
@@ -383,8 +386,8 @@ pub struct Config {
     /// otherwise.
     #[serde(default = "default_true")]
     pub network_chat_enabled: bool,
-    /// Nível mínimo capturado no histórico de logs do cluster. O filtro é
-    /// local à captura e não altera o nível do console ou de outros sinks.
+    /// Minimum level captured in the cluster log history. The filter is local to
+    /// the capture and does not change the level of the console or other sinks.
     #[serde(default)]
     pub cluster_logs_min_level: crate::cluster_logs::ClusterLogLevel,
     /// Directories holding **whole** models.
@@ -423,38 +426,38 @@ pub struct Config {
     /// steps already done, by id (`webui/guide.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_run_guide: Option<Vec<String>>,
-    /// Quais GPUs desta máquina a inferência pode usar, pelo `index` que o nó
-    /// publica em `system.gpus[]` - o mesmo número que o painel mostra.
+    /// Which of this machine's GPUs inference may use, by the `index` the node
+    /// publishes in `system.gpus[]` - the same number the dashboard shows.
     ///
-    /// Três estados, e os três querem dizer coisas diferentes:
+    /// Three states, and the three mean different things:
     ///
-    /// - **ausente** (`None`): todas as placas disponíveis. É o padrão, e é o
-    ///   que uma `pom.json` antiga significa sem ter sido editada.
-    /// - **lista com itens**: só essas. Numa máquina com Radeon e NVIDIA, é
-    ///   assim que se reserva uma placa para outro uso.
-    /// - **lista vazia**: nenhuma - a inferência fica em CPU. Vazio é uma
-    ///   escolha explícita, não "não configurado", mesma regra do `model_dirs`.
+    /// - **absent** (`None`): all available cards. It is the default, and it is
+    ///   what an old `pom.json` that was never edited means.
+    /// - **list with items**: only those. On a machine with a Radeon and an
+    ///   NVIDIA card, this is how you reserve a card for another use.
+    /// - **empty list**: none - inference stays on CPU. Empty is an explicit
+    ///   choice, not "not configured", the same rule as `model_dirs`.
     ///
-    /// O índice é o do nó, não o do backend: `gpu_selection` traduz para o
-    /// `CUDA_VISIBLE_DEVICES` e o `GGML_VK_VISIBLE_DEVICES` que cada backend
-    /// entende, que numeram as placas em espaços separados.
+    /// The index is the node's, not the backend's: `gpu_selection` translates it
+    /// into the `CUDA_VISIBLE_DEVICES` and `GGML_VK_VISIBLE_DEVICES` that each
+    /// backend understands, which number the cards in separate spaces.
     #[serde(default)]
     pub gpus: Option<Vec<u32>>,
-    /// Política local de proteção térmica da GPU.
+    /// Local GPU thermal protection policy.
     #[serde(default)]
     pub thermal: crate::thermal::ThermalPolicy,
-    /// Tipo numérico do cache K usado por todos os contextos desta instalação.
+    /// Numeric type of the K cache used by all contexts of this installation.
     #[serde(default)]
     pub cache_type_k: KvCacheType,
-    /// Tipo numérico do cache V usado por todos os contextos desta instalação.
+    /// Numeric type of the V cache used by all contexts of this installation.
     #[serde(default)]
     pub cache_type_v: KvCacheType,
     /// Human-readable name for this node shown in the dashboard and peer lists.
     /// Falls back to the OS hostname when absent.
     #[serde(default)]
     pub node_name: Option<String>,
-    /// Token opcional salvo pela tela de Configurações. O provider nunca o
-    /// devolve pela API: a interface recebe apenas estado e máscara.
+    /// Optional token saved by the Settings screen. The provider never returns it
+    /// through the API: the interface only receives the state and a mask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
     /// Directory where KV cache snapshots are written and read, like
@@ -476,14 +479,14 @@ pub struct Config {
     /// `slot_persist_prefix_cache_enabled()`.
     #[serde(default = "default_slot_persist_prefix_cache")]
     pub slot_persist_prefix_cache: bool,
-    /// Orçamento de disco para os snapshots automáticos de prefixo, somado
-    /// entre as fatias. `None` usa `DEFAULT_SLOT_AUTO_MAX_BYTES` (2 GiB). Use
+    /// Disk budget for the automatic prefix snapshots, summed across the slices.
+    /// `None` uses `DEFAULT_SLOT_AUTO_MAX_BYTES` (2 GiB). Use
     /// `slot_auto_max_bytes()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_auto_max_bytes: Option<u64>,
-    /// TTL de um snapshot automático de prefixo sem uso, em segundos. `None`
-    /// usa `DEFAULT_SLOT_AUTO_TTL_SECS` (7 dias). A env `POM_SLOT_AUTO_TTL_SECS`
-    /// vence o campo. Use `slot_auto_ttl_secs()`.
+    /// TTL of an unused automatic prefix snapshot, in seconds. `None` uses
+    /// `DEFAULT_SLOT_AUTO_TTL_SECS` (7 days). The `POM_SLOT_AUTO_TTL_SECS` env
+    /// overrides the field. Use `slot_auto_ttl_secs()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_auto_ttl_secs: Option<u64>,
     /// Host-memory KV cache for retained sessions that lose their sequence to
@@ -663,16 +666,16 @@ pub fn normalize_peer_addr(raw: &str) -> String {
     s.to_string()
 }
 
-/// Pastas de modelos inteiros vindas de `POM_MODEL_DIRS`, separadas como o
-/// `PATH` do sistema (`:` no Unix, `;` no Windows). Vence `model_dirs` do
-/// `pom.json` e, como toda variável de ambiente, não é persistida: `save()`
-/// continua gravando só o campo do arquivo, e tirar a variável devolve o que
-/// estava salvo. Vazia conta como ausente.
+/// Whole-model folders coming from `POM_MODEL_DIRS`, separated like the system
+/// `PATH` (`:` on Unix, `;` on Windows). It overrides `model_dirs` from
+/// `pom.json` and, like any environment variable, is not persisted: `save()`
+/// keeps writing only the file's field, and removing the variable gives back
+/// what was saved. Empty counts as absent.
 pub fn model_dirs_from_env() -> Option<Vec<PathBuf>> {
     parse_model_dirs(&std::env::var_os(crate::brand::env_var("MODEL_DIRS"))?)
 }
 
-/// Pasta das fatias vinda de `POM_SHARD_DIR`, com as mesmas regras de
+/// Slice folder coming from `POM_SHARD_DIR`, with the same rules as
 /// `model_dirs_from_env`.
 pub fn shard_dir_from_env() -> Option<PathBuf> {
     parse_shard_dir(&std::env::var_os(crate::brand::env_var("SHARD_DIR"))?)
@@ -880,7 +883,7 @@ impl Config {
     /// Directories to scan for whole models, falling back to what LM Studio and
     /// Ollama put on this machine while the operator has not chosen.
     ///
-    /// `POM_MODEL_DIRS` (derivada da marca) vence o `pom.json`; ver
+    /// `POM_MODEL_DIRS` (derived from the brand) overrides `pom.json`; see
     /// `model_dirs_from_env`.
     pub fn model_dir_paths(&self) -> Vec<PathBuf> {
         if let Some(dirs) = model_dirs_from_env() {
@@ -901,7 +904,7 @@ impl Config {
     /// Destination of local slicing, and the only directory a peer may pull
     /// from (see `transfer::safe_model_path`).
     ///
-    /// `POM_SHARD_DIR` (derivada da marca) vence o `pom.json`; ver
+    /// `POM_SHARD_DIR` (derived from the brand) overrides `pom.json`; see
     /// `shard_dir_from_env`.
     pub fn shard_dir_path(&self) -> PathBuf {
         if let Some(dir) = shard_dir_from_env() {
@@ -1006,9 +1009,9 @@ impl Config {
         self.slot_save_path_effective().map(PathBuf::from)
     }
 
-    /// Persistência automática do cache de prefixo ligada? A env var
-    /// `POM_SLOT_PERSIST_PREFIX_CACHE` (`1`/`true`/`yes`/`on`) vence o campo do
-    /// `pom.json`.
+    /// Is automatic prefix cache persistence on? The env var
+    /// `POM_SLOT_PERSIST_PREFIX_CACHE` (`1`/`true`/`yes`/`on`) overrides the
+    /// `pom.json` field.
     pub fn slot_persist_prefix_cache_enabled(&self) -> bool {
         match crate::brand::env("SLOT_PERSIST_PREFIX_CACHE")
             .ok()
@@ -1022,9 +1025,9 @@ impl Config {
         }
     }
 
-    /// Caminho do índice de snapshots automáticos de prefixo (fica ao lado dos
-    /// `.bin`, no `slot_save_path` deste nó). `None` se `slot_save_path` não
-    /// está configurado.
+    /// Path of the automatic prefix snapshot index (it sits beside the `.bin`
+    /// files, in this node's `slot_save_path`). `None` if `slot_save_path` is not
+    /// configured.
     pub fn prefix_auto_index_path(&self) -> Option<PathBuf> {
         self.slot_save_dir()
             .map(|dir| dir.join("prefix-auto-index.json"))
@@ -1045,8 +1048,8 @@ impl Config {
             .or(self.cache_ram_mib)
     }
 
-    /// TTL efetivo dos snapshots automáticos de prefixo, em segundos.
-    /// `POM_SLOT_AUTO_TTL_SECS` vence o campo do `pom.json`.
+    /// Effective TTL of the automatic prefix snapshots, in seconds.
+    /// `POM_SLOT_AUTO_TTL_SECS` overrides the `pom.json` field.
     pub fn slot_auto_ttl_secs(&self) -> i64 {
         crate::brand::env("SLOT_AUTO_TTL_SECS")
             .ok()
@@ -1142,16 +1145,17 @@ pub fn ui_dist_dir() -> PathBuf {
     project_root().join("apps/frontend/dist")
 }
 
-/// A interface dentro de um bundle `.app` do macOS.
+/// The interface inside a macOS `.app` bundle.
 ///
-/// O bundle é o único jeito de um executável ter ícone no macOS
-/// (`scripts/make-macos-app.sh`), e nele o binário vive em
-/// `POM.app/Contents/MacOS/`. Dali, `project_root()` cai no cwd de quem
-/// abriu - o Finder abre em `/`, e a tela responderia 500. A interface viaja
-/// em `Contents/Resources/apps/frontend/dist`, que é o que esta função acha.
+/// The bundle is the only way for an executable to have an icon on macOS
+/// (`scripts/make-macos-app.sh`), and in it the binary lives in
+/// `POM.app/Contents/MacOS/`. From there, `project_root()` falls back to the cwd
+/// of whoever launched it - Finder opens in `/`, and the screen would answer 500.
+/// The interface travels in `Contents/Resources/apps/frontend/dist`, which is
+/// what this function finds.
 ///
-/// Vale em qualquer plataforma porque é só um teste de caminho; fora de um
-/// bundle o diretório não existe e a função devolve `None`.
+/// It applies on any platform because it is only a path test; outside a bundle
+/// the directory does not exist and the function returns `None`.
 fn bundled_ui_dist() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let macos_dir = exe.parent()?;
@@ -1376,8 +1380,7 @@ mod tests {
         assert_eq!(parsed.connection_key, "test-key");
     }
 
-    /// Configurações legadas não podem reintroduzir uma capacidade absoluta
-    /// silenciosamente.
+    /// Legacy configurations cannot silently reintroduce an absolute capacity.
     #[test]
     fn removed_output_capacity_field_is_rejected_explicitly() {
         let legacy_field = ["max", "output", "tokens"].join("_");
@@ -1732,8 +1735,8 @@ mod tests {
         );
     }
 
-    /// `pom.json` gravado antes do TLS não pode deixar de parsear - e o padrão
-    /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
+    /// A `pom.json` saved before TLS must still parse - and the default has to
+    /// be "no TLS", otherwise updating the binary takes the cluster down.
     #[test]
     fn an_old_config_parses_without_tls_required() {
         let cfg: Config =

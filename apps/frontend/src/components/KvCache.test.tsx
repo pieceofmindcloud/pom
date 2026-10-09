@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * O cache de KV no card da máquina: quanto disco o `kv-slots` dela ocupa, e a
- * limpeza daquela máquina e de nenhuma outra.
+ * The KV cache on the machine card: how much disk its `kv-slots` takes, and
+ * clearing that machine and no other.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

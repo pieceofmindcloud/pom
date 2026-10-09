@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { transferHash, transferTitle } from "./transferLabel";
 
 /**
- * A notificação mostrava o sha256 do arquivo — `df48d094c3d1023c0dab9e…` — e o
- * operador não tinha como saber de que modelo era nem que camadas trazia. O
- * `.pom` viaja com a oferta e chega antes do primeiro byte de peso; é dele que
- * sai o nome que se lê.
+ * The notification showed the file's sha256 - `df48d094c3d1023c0dab9e…` - and the
+ * operator had no way of knowing which model it was or which layers it carried. The
+ * `.pom` travels with the offer and arrives before the first weight byte; the
+ * readable name comes from it.
  */
 describe("transferTitle", () => {
   const hashName =
@@ -29,8 +29,8 @@ describe("transferTitle", () => {
   });
 
   /**
-   * Sem manifesto não se inventa faixa nem modelo: um GGUF inteiro não
-   * pertence a `.pom` nenhum e continua se chamando pelo próprio nome.
+   * Without a manifest neither a range nor a model is invented: a whole GGUF does not
+   * belong to any `.pom` and keeps being called by its own name.
    */
   it("a whole model keeps being named by the file name", () => {
     expect(transferTitle({ name: "llama-3.1-8b-Q4_K_M.gguf" })).toBe(
@@ -53,8 +53,8 @@ describe("transferTitle", () => {
 });
 
 /**
- * O hash não some: ele é o que identifica a parte entre máquinas e o que
- * nomeia o arquivo em disco. Só deixa de ser o título.
+ * The hash does not vanish: it is what identifies the part between machines and what
+ * names the file on disk. It just stops being the title.
  */
 describe("transferHash", () => {
   it("shortens the sha256 to fit beside the name", () => {

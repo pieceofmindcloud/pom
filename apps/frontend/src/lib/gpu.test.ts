@@ -25,13 +25,13 @@ describe("sumVram", () => {
     });
   });
 
-  /** Memória unificada não tem VRAM: um total inventado viraria barra cheia. */
+  /** Unified memory has no VRAM: an invented total would become a full bar. */
   it("returns null when no card reports VRAM", () => {
     expect(sumVram([gpu({ vendor: "apple", vram_total_mb: null, vram_used_mb: null })])).toBeNull();
     expect(sumVram([])).toBeNull();
   });
 
-  /** Só as que sabem entram na conta; a que não sabe não vira zero usado. */
+  /** Only the ones that know enter the sum; one that does not know does not become zero used. */
   it("ignores the card without a reading instead of counting it as empty", () => {
     expect(
       sumVram([gpu({ index: 0 }), gpu({ index: 1, vram_total_mb: null, vram_used_mb: null })]),

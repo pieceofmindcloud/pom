@@ -305,12 +305,12 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
     speculative_k.max(1).min(n_batch.max(1))
 }
 
-/// Decide se a geração pode pedir MTP para o plano selecionado.
+/// Decide whether generation may ask for MTP on the selected plan.
 ///
-/// Um gateway sem modelo local não tem `NodeConfig` para consultar. Nesse
-/// caso, a capacidade anunciada pelo plano é a evidência da execução remota.
-/// `Some(false)` continua sendo um kill-switch explícito do nó que inicia a
-/// geração.
+/// A gateway with no local model has no `NodeConfig` to consult. In that case,
+/// the capacity announced by the plan is the evidence of remote execution.
+/// `Some(false)` remains an explicit kill-switch of the node that starts the
+/// generation.
 pub(super) fn mtp_enabled_for_plan(
     local_mtp_enabled: Option<bool>,
     plan_supports_mtp: bool,
@@ -425,10 +425,10 @@ mod adaptive_chunk_tests {
     }
 }
 
-// O protocolo antigo `/v1/infer` (tensor em base64, uma chamada por peer)
-// saiu daqui: hoje o pipeline fala `/v1/prefill` e `/v1/step` com o
-// enquadramento binario de `inference/wire.rs`, e o encadeamento dos hops
-// mora em `inference/prefill.rs`.
+// The old `/v1/infer` protocol (base64 tensor, one call per peer)
+// left here: today the pipeline speaks `/v1/prefill` and `/v1/step` with the
+// binary framing of `inference/wire.rs`, and the chaining of the hops
+// lives in `inference/prefill.rs`.
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -444,37 +444,37 @@ pub struct GenerateRequest {
     pub stop: Option<StopInput>,
 }
 
-/// Os dois orçamentos de uma geração, que nunca são o mesmo número.
+/// The two budgets of a generation, which are never the same number.
 ///
-/// `leg` é o que **uma** geração de backend pode produzir - o `max_new_tokens`
-/// da implantação, escolha do operador. `total` é o que a **requisição** pode
-/// produzir. Esgotar a perna não encerra a resposta: o laço de continuação
-/// abre a próxima e segue decodificando na mesma sessão e no mesmo fluxo SSE.
-/// Confundir os dois é o defeito que este orçamento existe para impedir - era
-/// exatamente ele que devolvia `finish_reason: "length"` ao cliente no meio de
-/// uma chamada de ferramenta.
-/// O `total` é **imposto e inviolável**: nada o ultrapassa, por motivo nenhum,
-/// nem uma chamada de ferramenta aberta no token do corte. É a regra dos dois
-/// provedores - `max_tokens` é teto por resposta, atingi-lo é parada terminal,
-/// e a saída trunca no meio. O que existe no lugar do transbordo é o orçamento
-/// de tarefa (`messages::TaskBudget`), que avisa o modelo em vez de esticar o
-/// teto. Ver `docs/subsystems/inference.md` (9.1).
+/// `leg` is what **one** backend generation can produce - the deployment's
+/// `max_new_tokens`, the operator's choice. `total` is what the **request** can
+/// produce. Exhausting the leg does not end the reply: the continuation loop
+/// opens the next one and keeps decoding in the same session and the same SSE
+/// stream. Confusing the two is the defect this budget exists to prevent - it
+/// was exactly what returned `finish_reason: "length"` to the client halfway
+/// through a tool call.
+/// The `total` is **enforced and inviolable**: nothing crosses it, for no
+/// reason, not even a tool call left open on the cut token. That is the rule of
+/// both providers - `max_tokens` is a per-response ceiling, reaching it is a
+/// terminal stop, and the output truncates halfway. What stands in place of
+/// overshoot is the task budget (`messages::TaskBudget`), which warns the model
+/// instead of stretching the ceiling. See `docs/subsystems/inference.md` (9.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputBudget {
-    /// Teto da requisição inteira, somando todas as pernas.
+    /// Ceiling of the whole request, summing all the legs.
     pub total: u32,
-    /// Teto de uma perna.
+    /// Ceiling of one leg.
     pub leg: u32,
 }
 
 impl OutputBudget {
-    /// Um orçamento sem continuação: uma perna que já é a requisição inteira.
-    /// É o que os testes e as bancadas usam quando o laço não é o assunto.
+    /// A budget without continuation: one leg that is already the whole request.
+    /// It is what tests and benches use when the loop is not the subject.
     pub fn single(total: u32) -> Self {
         Self { total, leg: total }
     }
 
-    /// Números utilizáveis: nunca zero, e a perna nunca maior que o total.
+    /// Usable numbers: never zero, and the leg never larger than the total.
     pub(super) fn normalized(self) -> Self {
         let total = self.total.max(1);
         Self {
@@ -511,21 +511,21 @@ impl OutputBudget {
 pub struct OutputTokenLimit {
     #[serde(rename = "requested_max_tokens")]
     pub requested: u32,
-    /// O que a requisição inteira vai poder gerar. É o total do orçamento.
+    /// What the whole request will be able to generate. It is the budget's total.
     #[serde(rename = "effective_max_tokens")]
     pub effective: u32,
-    /// `max_new_tokens` da implantação. **Não** limita mais a requisição, só
-    /// uma perna do laço de continuação.
+    /// `max_new_tokens` of the deployment. It **no longer** limits the request, only
+    /// one leg of the continuation loop.
     #[serde(rename = "deployment_max_tokens")]
     pub deployment: Option<u32>,
     #[serde(rename = "context_available_tokens")]
     pub context_available: Option<u32>,
-    /// Tokens que cabem numa perna: `min(deployment, effective)`.
+    /// Tokens that fit in one leg: `min(deployment, effective)`.
     #[serde(rename = "leg_max_tokens")]
     pub leg: u32,
-    /// Um modelo com peer vivo sem capacidade confirmada não pode usar o
-    /// fallback local com segurança. O campo é interno porque a requisição é
-    /// recusada antes de qualquer resposta `x_pom` ser gerada.
+    /// A model with a live peer without confirmed capacity cannot safely use the
+    /// local fallback. The field is internal because the request is
+    /// refused before any `x_pom` response is generated.
     #[serde(skip)]
     pub(super) capacity_pending: bool,
 }
@@ -535,7 +535,7 @@ impl OutputTokenLimit {
         self.effective < self.requested
     }
 
-    /// Os dois números que a geração precisa, sem o adaptador ter de escolher.
+    /// The two numbers that generation needs, without the adapter having to choose.
     pub fn budget(self) -> OutputBudget {
         OutputBudget {
             total: self.effective,
@@ -543,8 +543,8 @@ impl OutputTokenLimit {
         }
     }
 
-    /// Esta requisição pode precisar de mais de uma perna. Não é promessa de
-    /// que vai precisar: o modelo pode parar antes.
+    /// This request may need more than one leg. It is not a promise
+    /// that it will need to: the model may stop earlier.
     pub fn continuation_possible(self) -> bool {
         self.leg < self.effective
     }
@@ -578,12 +578,12 @@ impl OutputTokenLimit {
 
 /// Resolve one request's output budget.
 ///
-/// Dois números saem daqui, e é de propósito. O **total** da requisição é
-/// `min(pedido, contexto que sobrou)`: o `max_new_tokens` da implantação
-/// **não** entra no total, porque ele nunca foi limite do backend -
-/// sempre foi um corte do gateway, e cortar aí calado é o defeito. O que ele
-/// vira é o teto de **uma perna**, que o laço de continuação atravessa quantas
-/// vezes o total permitir. Nenhum adaptador de protocolo duplica esta conta.
+/// Two numbers come out of here, on purpose. The request's **total** is
+/// `min(requested, context left)`: the deployment's `max_new_tokens`
+/// does **not** enter the total, because it was never a backend limit -
+/// it was always a gateway cut, and cutting there silently is the defect. What it
+/// becomes is the ceiling of **one leg**, which the continuation loop crosses as many
+/// times as the total allows. No protocol adapter duplicates this calculation.
 pub fn output_token_limit(
     requested: u32,
     deployment: Option<u32>,
@@ -597,8 +597,8 @@ pub fn output_token_limit(
         .flatten()
         .min()
         .unwrap_or(0);
-    // A perna nunca passa do total: pedir 10 com implantação de 1000 continua
-    // sendo uma perna de 10, e o laço nem abre.
+    // The leg never exceeds the total: asking for 10 with a deployment of 1000 is still
+    // a leg of 10, and the loop does not even open.
     let leg = deployment.unwrap_or(effective).min(effective);
 
     OutputTokenLimit {
@@ -653,8 +653,8 @@ impl GatewayState {
         )
     }
 
-    /// Metadados publicados por `/v1/models`, derivados da mesma capacidade
-    /// que a validação de uma requisição usa.
+    /// Metadata published by `/v1/models`, derived from the same capacity
+    /// that the validation of a request uses.
     pub async fn advertised_output_limits(
         &self,
         model: Option<&str>,
@@ -664,9 +664,9 @@ impl GatewayState {
             .await
     }
 
-    /// Variante que recebe a mesma fotografia usada para descobrir o
-    /// catálogo. Assim um peer não pode desaparecer ou entrar em restart entre
-    /// a decisão do ID e a publicação de `max_completion_tokens`.
+    /// Variant that receives the same snapshot used to discover the
+    /// catalog. This way a peer cannot disappear or enter a restart between
+    /// the ID decision and the publication of `max_completion_tokens`.
     pub async fn advertised_output_limits_from_peers(
         &self,
         peers: &[PeerInfo],
@@ -715,8 +715,8 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
     }
 }
 
-/// `/api/generate` valida apenas o orçamento pedido. A capacidade do runtime é
-/// resolvida depois, a partir do contexto efetivo e da implantação ativa.
+/// `/api/generate` validates only the requested budget. The runtime capacity is
+/// resolved afterwards, from the effective context and the active deployment.
 pub(super) fn resolve_request_max_tokens(requested: Option<u32>) -> Result<u32, String> {
     let max_tokens = requested.unwrap_or(DEFAULT_MAX_TOKENS);
     if max_tokens == 0 {
@@ -782,7 +782,7 @@ pub struct GenerateResponse {
     pub duration_ms: u64,
     pub timings: Option<GenerationTimings>,
     pub stop_sequence: Option<String>,
-    /// Motivo terminal, quando não é um fim comum.
+    /// Terminal reason, when it is not an ordinary end.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "is_false")]
@@ -818,8 +818,8 @@ pub struct HealthResponse {
     pub peer_count: usize,
     pub pipeline_peers: usize,
     pub default_model: String,
-    /// Só fica presente quando o `/health` do servidor de inferência local
-    /// confirmou o runtime desta geração.
+    /// Only present when the `/health` of the local inference server
+    /// confirmed the runtime of this generation.
     pub runtime_capacity: Option<RuntimeCapacity>,
 }
 
@@ -854,26 +854,26 @@ pub(crate) struct GenerationInput {
     pub(crate) inference_token: String,
     pub(crate) model: String,
     pub(crate) prompt: String,
-    /// Bytes das imagens já reduzidas pelo cliente. Só a cabeça do pipeline
-    /// recebe este campo; os outros peers trabalham com o estado oculto.
+    /// Bytes of the images already downscaled by the client. Only the pipeline head
+    /// receives this field; the other peers work with the hidden state.
     pub(crate) images: Vec<Vec<u8>>,
     pub(crate) chat_template: bool,
-    /// Escolha do usuário para esta inferência. O peer head ainda aplica o
-    /// kill-switch global da implantação antes de renderizar o template.
+    /// The user's choice for this inference. The head peer still applies the
+    /// deployment's global kill-switch before rendering the template.
     pub(crate) thinking_enabled: bool,
-    /// Os dois tetos desta requisição: o da perna e o do total. Ver
+    /// The two ceilings of this request: the leg's and the total's. See
     /// [`OutputBudget`].
     pub(crate) budget: OutputBudget,
     pub(crate) stops: Vec<String>,
-    /// Como o cache de prefixo reconhece que esta requisição continua a
-    /// anterior. `None` usa o próprio prompt.
+    /// How the prefix cache recognizes that this request continues the
+    /// previous one. `None` uses the prompt itself.
     ///
-    /// O texto renderizado não serve como chave: `render_prompt` devolve uma
-    /// mensagem de usuário solitária **crua** e rotula a partir da segunda, de
-    /// modo que o prompt do turno 1 não é prefixo do prompt do turno 2 e a
-    /// transição 1→2 de qualquer chat nunca acertava. A chave vem do array de
-    /// mensagens, que só cresce: imune a template, a rótulo e a bloco de
-    /// ferramentas. Ver `crate::openai::conversation_cache_key`.
+    /// The rendered text does not serve as a key: `render_prompt` returns a lone user
+    /// message **raw** and labels from the second on, so
+    /// the prompt of turn 1 is not a prefix of the prompt of turn 2 and the
+    /// 1→2 transition of any chat never hit. The key comes from the array of
+    /// messages, which only grows: immune to template, to label and to the tool
+    /// block. See `crate::openai::conversation_cache_key`.
     pub(crate) cache_key: Option<String>,
     /// Explicit layer-0 peer selected by the Chat UI, when any. The planner
     /// validates it against the live model heads before honoring it.
@@ -881,8 +881,8 @@ pub(crate) struct GenerationInput {
     /// The parsed HTTP request body, retained for audit without headers or
     /// credentials.
     pub(crate) request_details: serde_json::Value,
-    /// Rótulos de uma decisão tipada (`/v1/systemone`). O último peer devolve a
-    /// probabilidade de cada um em `GenSummary::trace.probe`.
+    /// Labels of a typed decision (`/v1/systemone`). The last peer returns the
+    /// probability of each one in `GenSummary::trace.probe`.
     pub(crate) probe: Option<crate::prefill::DecisionProbe>,
 }
 
@@ -900,23 +900,23 @@ pub struct GenSummary {
     pub finish_reason: Option<String>,
     /// The exact stop sequence that was matched, when one ended the stream.
     pub stop_sequence: Option<String>,
-    /// Quantas pernas do laço de continuação a resposta costurou. `1` é uma
-    /// geração só - nenhuma costura. Maior que `1` quer dizer que a saída
-    /// passou do `max_new_tokens` da implantação sem que ele fosse alterado, e
-    /// é o que torna a costura inspecionável de fora.
+    /// How many legs of the continuation loop the reply stitched. `1` is a
+    /// single generation - no stitching. Greater than `1` means the output
+    /// went past the deployment's `max_new_tokens` without it being changed, and
+    /// it is what makes the stitching inspectable from outside.
     pub legs: u32,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
 }
 
-/// Resumo de desempenho de uma requisição, agregado sobre o pipeline inteiro.
-/// Cada taxa usa seu próprio relógio e conjunto de tokens.
+/// Performance summary of a request, aggregated over the whole pipeline.
+/// Each rate uses its own clock and set of tokens.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GenerationTimings {
-    /// Primeiro evento observável do motor local. Nulo quando o backend não
-    /// publicou uma marca temporal explícita.
+    /// First observable event of the local engine. Null when the backend did not
+    /// publish an explicit timestamp.
     pub local_engine_first_event_ms: Option<u64>,
-    /// Primeiro token que atravessou o pipeline até o gateway.
+    /// First token that crossed the pipeline to the gateway.
     pub pipeline_first_token_ms: u64,
     pub ttft_ms: u64,
     /// TTFT measured by the gateway, from generation ingress to first token
@@ -1094,8 +1094,8 @@ pub(super) fn rate_if_measurable(tokens: u32, milliseconds: u64) -> Option<f64> 
     (tokens > 0 && milliseconds > 0).then(|| tokens as f64 / (milliseconds as f64 / 1000.0))
 }
 
-/// Calcula taxas com relógios que não se misturam. `generation_ms` começa no
-/// primeiro token e, portanto, não varia com o tamanho do prompt.
+/// Computes rates with clocks that do not mix. `generation_ms` starts at the
+/// first token and therefore does not vary with the prompt size.
 pub(crate) fn timing_metrics(
     total_ms: u64,
     ttft_ms: u64,
@@ -1177,13 +1177,13 @@ pub(super) fn summary_for(
     }
 }
 
-/// Contabiliza um token confirmado contra o orçamento de perna.
+/// Accounts for one confirmed token against the leg budget.
 ///
-/// A perna é o teto de **uma** geração de backend (`max_new_tokens` da
-/// implantação). Fechá-la não encerra a resposta: o laço de continuação abre a
-/// seguinte e segue decodificando na mesma sessão de KV e no mesmo fluxo SSE,
-/// então nada disso é observável do lado do cliente. Só o total encerra, e só
-/// ele vira `finish_reason: "length"`.
+/// The leg is the ceiling of **one** backend generation (`max_new_tokens` of the
+/// deployment). Closing it does not end the reply: the continuation loop opens the
+/// next one and keeps decoding in the same KV session and the same SSE stream,
+/// so none of this is observable on the client side. Only the total ends it, and only
+/// it becomes `finish_reason: "length"`.
 pub(super) fn note_leg_boundary(budget: OutputBudget, tokens_generated: u32, legs: &mut u32) {
     if tokens_generated.is_multiple_of(budget.leg) && tokens_generated < budget.total {
         *legs += 1;

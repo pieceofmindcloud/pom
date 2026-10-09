@@ -1,6 +1,6 @@
 use super::super::*;
 
-/// Rotas disponíveis para inferência e pedido de entrada no processamento.
+/// Routes available for inference and for requesting entry into processing.
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/infer/heads", get(inference_heads))

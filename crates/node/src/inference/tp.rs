@@ -1,14 +1,14 @@
-//! Registro do callback de tensor parallelism no llama.cpp (caminho C).
+//! Registration of the tensor parallelism callback in llama.cpp (C path).
 //!
-//! O fork do llama.cpp insere um op de reduce (GGML_OP_CUSTOM) depois das
-//! projeções row-parallel (wo e ffn_down). O op chama a llama_tp_reduce_fun,
-//! que copia a parcial e invoca este callback para somar as parciais do grupo.
+//! The llama.cpp fork inserts a reduce op (GGML_OP_CUSTOM) after the
+//! row-parallel projections (wo and ffn_down). The op calls llama_tp_reduce_fun,
+//! which copies the partial and invokes this callback to sum the group's partials.
 //!
-//! O callback roda num thread de blocking durante o llama_decode. Os workers
-//! fazem um POST da própria parcial para o primary (rank 0), cujo endpoint
-//! `/v1/tp/reduce` acumula via `ReduceBarrier`. O próprio primary contribui
-//! diretamente na barreira local, sem discar a própria URL pública. A parcial
-//! é f32 (a precisão da GEMM).
+//! The callback runs on a blocking thread during llama_decode. The workers
+//! POST their own partial to the primary (rank 0), whose `/v1/tp/reduce`
+//! endpoint accumulates via `ReduceBarrier`. The primary itself contributes
+//! directly to the local barrier, without dialing its own public URL. The
+//! partial is f32 (the precision of the GEMM).
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,59 +17,59 @@ use std::sync::Arc;
 use crate::collective::ReduceBarrier;
 use crate::relay::ByteTransport;
 
-/// Cabeçalhos da coletiva. O corpo é a parcial em f32 cru; metadado de tamanho
-/// fixo vai em cabeçalho, e não misturado ao vetor.
+/// Headers of the collective. The body is the partial in raw f32; fixed-size
+/// metadata goes in a header, not mixed into the vector.
 pub const TP_BARRIER_HEADER: &str = "x-pom-tp-barrier";
 pub const TP_RANK_HEADER: &str = "x-pom-tp-rank";
 
 struct TpState {
     rank: u32,
     size: u32,
-    /// URL do primary (rank 0) da coletiva. Os workers POSTam para cá; o rank
-    /// 0 usa a barreira local e não disca a própria URL.
+    /// URL of the collective's primary (rank 0). The workers POST here; rank
+    /// 0 uses the local barrier and does not dial its own URL.
     rank0_url: String,
-    /// Candidatos alternativos do primary, escolhidos por quem fez o deploy.
-    /// O primeiro é `rank0_url`; os demais cobrem NAT, LAN e containers no
-    /// mesmo host quando só um deles é alcançável deste rank.
+    /// Alternative candidates for the primary, chosen by whoever deployed.
+    /// The first is `rank0_url`; the others cover NAT, LAN and containers on
+    /// the same host when only one of them is reachable from this rank.
     rank0_urls: Vec<String>,
-    /// Endereços UDP anunciados pelo primary, para o túnel reconstruir as
-    /// multiaddresses TCP sem depender da tabela de descoberta deste rank.
+    /// UDP addresses announced by the primary, so the tunnel can rebuild the
+    /// TCP multiaddresses without depending on this rank's discovery table.
     rank0_addr_candidates: Vec<String>,
-    /// PeerId e capacidade do túnel do primary, para redes sem rota HTTPS
-    /// direta entre as máquinas.
+    /// PeerId and tunnel capability of the primary, for networks with no
+    /// direct HTTPS route between the machines.
     rank0_peer_id: Option<String>,
     rank0_supports_tunnel: bool,
-    /// Cliente **pinado no `node_id` do primary**, montado uma vez no registro.
+    /// Client **pinned to the primary's `node_id`**, built once at registration.
     ///
-    /// A coletiva usava `reqwest::Client::new()`, que valida o certificado pela
-    /// cadeia pública; o do cluster é autoassinado e verificado por
-    /// `SHA256(pubkey) == node_id`. Com TLS ligado, todo POST morria em 13 ms
-    /// (medido na ksia, 18/08) e o all-reduce nunca acontecia.
+    /// The collective used `reqwest::Client::new()`, which validates the
+    /// certificate through the public chain; the cluster's is self-signed and
+    /// verified by `SHA256(pubkey) == node_id`. With TLS on, every POST died in
+    /// 13 ms (measured on ksia, 18/08) and the all-reduce never happened.
     client: reqwest::Client,
-    /// Configuração viva usada para obter a credencial interna. O receptor
-    /// também aceita API keys ativas, mas os nós usam a connection_key.
+    /// Live configuration used to obtain the internal credential. The receiver
+    /// also accepts active API keys, but the nodes use the connection_key.
     auth: Option<crate::auth::AuthState>,
-    /// Runtime que hospeda o servidor de inferência. O callback do llama.cpp
-    /// roda numa thread `spawn_blocking`, então `Handle::current()` não existe
-    /// ali; o handle precisa ser capturado no registro do grupo TP.
+    /// Runtime that hosts the inference server. The llama.cpp callback runs
+    /// on a `spawn_blocking` thread, so `Handle::current()` does not exist
+    /// there; the handle has to be captured when the TP group is registered.
     runtime: Option<tokio::runtime::Handle>,
-    /// Contador de reduces. Em execução lockstep, o k-ésimo reduce de todos os
-    /// ranks corresponde à mesma projeção, então o id casa entre os processos.
+    /// Reduce counter. In lockstep execution, the k-th reduce of all the
+    /// ranks corresponds to the same projection, so the id matches across processes.
     counter: AtomicU64,
-    /// Barreira local pertencente ao servidor que registrou este estado TP.
-    /// Mantê-la no estado, e não num único global do processo, evita que uma
-    /// reconfiguração troque a barreira de um decode antigo ainda drenando.
+    /// Local barrier belonging to the server that registered this TP state.
+    /// Keeping it in the state, and not in a single process global, prevents a
+    /// reconfiguration from swapping the barrier of an old decode still draining.
     local_barrier: std::sync::RwLock<Option<(ReduceBarrier, u32, u64)>>,
 }
 
-/// Estado da coletiva deste processo. `None` = este nó não é de um grupo TP.
+/// State of this process's collective. `None` = this node is not in a TP group.
 ///
-/// Era um `OnceLock`, que **não tem como ser limpo**: um processo que um dia
-/// serviu um grupo TP continuava se declarando TP para sempre. Implantar um
-/// modelo inteiro por cima de um grupo herdava esse estado, e a checagem de
-/// "nenhum reduce neste decode" chegava a derrubar requisições legítimas de um
-/// modelo que nunca teve coletiva nenhuma (18/08). Trocar o grupo também
-/// exigia reiniciar o processo, o que era limitação do tipo, não do desenho.
+/// It used to be a `OnceLock`, which **cannot be cleared**: a process that
+/// once served a TP group kept declaring itself TP forever. Deploying a whole
+/// model on top of a group inherited that state, and the "no reduce in this
+/// decode" check went as far as failing legitimate requests of a model that
+/// never had any collective at all (18/08). Swapping the group also required
+/// restarting the process, which was a limitation of the type, not the design.
 static TP_STATE: std::sync::RwLock<Option<Arc<TpState>>> = std::sync::RwLock::new(None);
 
 static NEXT_LOCAL_BARRIER_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -115,34 +115,35 @@ fn tp_state() -> Option<Arc<TpState>> {
     TP_STATE.read().ok().and_then(|s| s.clone())
 }
 
-/// Última falha da coletiva, para o decode transformar em erro da requisição.
+/// Last failure of the collective, for the decode to turn into a request error.
 ///
-/// Um all-reduce que falha **não degrada a qualidade da resposta: ele produz
-/// números errados**. O rank fica com a própria parcial - metade das cabeças e
-/// metade do FFN - e a geração sai sintaticamente plausível e semanticamente
-/// lixo (`oI, TESTE` seguido de `ape ilib ion perc`, 18/08). Por isso a falha
-/// é registrada aqui e derruba a requisição, em vez de virar texto.
+/// An all-reduce that fails **does not degrade the quality of the reply: it
+/// produces wrong numbers**. The rank is left with its own partial - half the
+/// heads and half the FFN - and the generation comes out syntactically plausible
+/// and semantically garbage (`oI, TESTE` followed by `ape ilib ion perc`, 18/08).
+/// That is why the failure is recorded here and fails the request, instead of
+/// becoming text.
 static TP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Consome a falha pendente da coletiva, se houver.
+/// Consumes the collective's pending failure, if there is one.
 ///
-/// Chamado pelo decode: enquanto isto devolver `Some`, a resposta em curso está
-/// contaminada e não pode ser entregue.
+/// Called by the decode: while this returns `Some`, the reply in progress is
+/// contaminated and cannot be delivered.
 pub fn take_failure() -> Option<String> {
     TP_FAILURE.lock().ok().and_then(|mut f| f.take())
 }
 
-/// Decode em curso: `(id, próxima sequência de reduce)`.
+/// Decode in progress: `(id, next reduce sequence)`.
 ///
-/// O `barrier_id` **tem que ser o mesmo em todos os ranks** para as parciais se
-/// encontrarem. Ele era um contador por processo, o que só casa enquanto os
-/// processos estiverem perfeitamente alinhados desde o arranque: um worker que
-/// reinicia zera o contador e o grupo nunca mais se encontra - erro que não dá
-/// erro, só trava. Agora o rank 0 gera o id do decode, manda junto do lote, e
-/// os dois lados numeram os reduces daquele decode a partir de zero.
+/// The `barrier_id` **has to be the same on all ranks** for the partials to
+/// meet. It used to be a per-process counter, which only matches while the
+/// processes are perfectly aligned since startup: a worker that restarts
+/// zeroes the counter and the group never meets again - an error that gives no
+/// error, it just hangs. Now rank 0 generates the decode's id, sends it along
+/// with the batch, and both sides number that decode's reduces from zero.
 ///
-/// Global porque o `llama_context` não é seguro para uso concorrente e já vive
-/// atrás de um mutex: há no máximo um decode por processo de cada vez.
+/// Global because the `llama_context` is not safe for concurrent use and already
+/// lives behind a mutex: there is at most one decode per process at a time.
 static DECODE: std::sync::Mutex<Option<(String, u64)>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -187,32 +188,32 @@ fn telemetry_snapshot(current: &TpDecodeTelemetry) -> TpDecodeTelemetry {
     snapshot
 }
 
-/// Este processo está executando um decode como **réplica** (rank != 0)?
+/// Is this process running a decode as a **replica** (rank != 0)?
 ///
-/// Uma réplica não tem opinião: ela existe para contribuir com a metade dela em
-/// cada reduce. Quem amostra o token, decide se a geração acabou e comanda o
-/// ciclo de vida da sessão é o rank 0 - a réplica segue.
+/// A replica has no opinion: it exists to contribute its half to each
+/// reduce. Whoever samples the token, decides whether the generation is over
+/// and drives the session's lifecycle is rank 0 - the replica follows.
 ///
-/// Ignorar isso custou o 400 de 18/08: a amostragem é estocástica (temperatura,
-/// top_p, top_k, com RNG independente em cada processo), o worker amostrou EOS
-/// enquanto o rank 0 amostrava um token normal, deu a sessão por encerrada e
-/// apagou. O step seguinte chegou nele e recebeu "sessão desconhecida".
+/// Ignoring this cost the 400 of 18/08: sampling is stochastic (temperature,
+/// top_p, top_k, with an independent RNG in each process), the worker sampled EOS
+/// while rank 0 sampled a normal token, considered the session finished and
+/// deleted it. The next step reached it and got "unknown session".
 pub fn is_replica() -> bool {
     REPLICA.load(Ordering::Relaxed)
 }
 
 static REPLICA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Abre um decode como réplica: mesmo id do rank 0, e sem direito a decisão.
+/// Opens a decode as a replica: same id as rank 0, and with no right to decide.
 pub fn begin_replica_decode(id: &str) {
     REPLICA.store(true, Ordering::Relaxed);
     begin_decode_inner(id);
 }
 
-/// Abre um decode: os reduces seguintes pertencem a `id` e recomeçam do zero.
+/// Opens a decode: the following reduces belong to `id` and restart from zero.
 ///
-/// Chamado pelos handlers de `/v1/prefill` e `/v1/step` nos **dois** lados - o
-/// rank 0 com o id que ele sorteou, o worker com o id que recebeu no cabeçalho.
+/// Called by the `/v1/prefill` and `/v1/step` handlers on **both** sides -
+/// rank 0 with the id it drew, the worker with the id it received in the header.
 pub fn begin_decode(id: &str) {
     REPLICA.store(false, Ordering::Relaxed);
     begin_decode_inner(id);
@@ -298,7 +299,7 @@ pub fn take_decode_telemetry() -> Option<TpDecodeTelemetry> {
     })
 }
 
-/// Quantos reduces o decode em curso já fez. Zero = o op não entrou no grafo.
+/// How many reduces the decode in progress has done. Zero = the op did not enter the graph.
 pub fn reduces_in_current_decode() -> u64 {
     DECODE
         .lock()
@@ -307,7 +308,7 @@ pub fn reduces_in_current_decode() -> u64 {
         .unwrap_or(0)
 }
 
-/// Consome o próximo `barrier_id` deste decode.
+/// Consumes the next `barrier_id` of this decode.
 fn next_barrier_id() -> Option<String> {
     let mut d = DECODE.lock().ok()?;
     let (id, seq) = d.as_mut()?;
@@ -316,15 +317,15 @@ fn next_barrier_id() -> Option<String> {
     Some(format!("{id}#{current}"))
 }
 
-/// A coletiva está ligada neste processo?
+/// Is the collective on in this process?
 pub fn is_active() -> bool {
     tp_state().is_some()
 }
 
-/// Liga a ponte que o `llama-engine` usa para consultar este módulo de dentro
-/// do decode (`llm.rs` -> `llama_engine::tp_probe`). Chamado uma vez no arranque
-/// do `node`; `tp.rs` fica em `node` porque a coletiva fala com o primary por
-/// HTTP/túnel libp2p.
+/// Wires the bridge the `llama-engine` uses to query this module from inside
+/// the decode (`llm.rs` -> `llama_engine::tp_probe`). Called once at `node`
+/// startup; `tp.rs` stays in `node` because the collective talks to the primary
+/// over HTTP/libp2p tunnel.
 pub fn install_probe() {
     llama_engine::tp_probe::install(llama_engine::tp_probe::TpProbe {
         is_active,
@@ -335,12 +336,12 @@ pub fn install_probe() {
     });
 }
 
-/// Quantos reduces este processo já executou.
+/// How many reduces this process has already executed.
 ///
-/// O decode compara antes e depois: com a coletiva ligada, um decode que não
-/// disparou **nenhum** reduce rodou o grafo com meia largura e sem soma, e a
-/// resposta é falsa. Foi o estado de 18/08 - 30 tok/s de texto sem sentido -, e
-/// ele não tinha nenhum sintoma além do texto.
+/// The decode compares before and after: with the collective on, a decode that
+/// fired **no** reduce ran the graph at half width and with no sum, and the
+/// reply is false. That was the state of 18/08 - 30 tok/s of meaningless text -,
+/// and it had no symptom other than the text.
 pub fn reduce_count() -> u64 {
     tp_state()
         .map(|s| s.counter.load(Ordering::Relaxed))
@@ -350,16 +351,16 @@ pub fn reduce_count() -> u64 {
 fn note_failure(reason: String) {
     tracing::error!("TP collective failed: {reason}");
     if let Ok(mut f) = TP_FAILURE.lock() {
-        // A primeira falha é a que explica; as seguintes são consequência dela.
+        // The first failure is the one that explains; the later ones follow from it.
         if f.is_none() {
             *f = Some(reason);
         }
     }
 }
 
-/// Liga a coletiva TP deste processo e registra o callback no llama.cpp.
+/// Turns on this process's TP collective and registers the callback in llama.cpp.
 ///
-/// Chamado pelo apply quando o nó é primary/worker de um grupo (size > 1).
+/// Called by apply when the node is primary/worker of a group (size > 1).
 #[cfg(test)]
 pub fn register_tp_reduce(
     rank: u32,
@@ -383,7 +384,7 @@ pub fn register_tp_reduce(
     );
 }
 
-/// Liga a coletiva TP com todos os endereços conhecidos do primary.
+/// Turns on the TP collective with all the known addresses of the primary.
 pub fn register_tp_reduce_with_urls(
     rank: u32,
     size: u32,
@@ -407,8 +408,8 @@ pub fn register_tp_reduce_with_urls(
     } else if !rank0_urls.iter().any(|url| url == &rank0_url) {
         rank0_urls.insert(0, rank0_url.clone());
     }
-    // Cliente da coletiva: pinado quando o cluster está em TLS, simples quando
-    // não está. Falhar aqui é melhor que descobrir no meio do primeiro decode.
+    // Client of the collective: pinned when the cluster is on TLS, plain when
+    // it is not. Failing here is better than finding out mid first decode.
     let client = match (crate::peer_client::tls_enabled(), rank0_node_id.as_deref()) {
         (true, Some(id)) => match crate::tls::client_config(id) {
             Ok(cfg) => reqwest::Client::builder()
@@ -424,8 +425,8 @@ pub fn register_tp_reduce_with_urls(
             }
         },
         (true, None) => {
-            // Grupo montado por uma versão que não propagava o id: o POST vai
-            // ser recusado pelo certificado, e é melhor dizer isso agora.
+            // Group built by a version that did not propagate the id: the POST
+            // will be refused by the certificate, and it is better to say so now.
             note_failure(
                 "cluster on TLS and the TP group did not bring the node_id of the primary: redo the deployment of the group"
                     .to_string(),
@@ -459,13 +460,13 @@ pub fn register_tp_reduce_with_urls(
     }
 }
 
-/// Desliga a coletiva: o callback vira None e o fork deixa de inserir o op.
+/// Turns the collective off: the callback becomes None and the fork stops inserting the op.
 pub fn unregister_tp_reduce() {
     unsafe {
         llama_engine::llama_cpp_sys_2::llama_set_tp_reduce_callback(None, std::ptr::null_mut());
     }
-    // Limpar o estado é metade do desligamento: sem isto `is_active()` continua
-    // verdadeiro e o nó se comporta como membro de um grupo que não existe mais.
+    // Clearing the state is half of the shutdown: without this `is_active()` stays
+    // true and the node behaves as a member of a group that no longer exists.
     if let Ok(mut slot) = TP_STATE.write() {
         *slot = None;
     }
@@ -476,14 +477,14 @@ pub fn unregister_tp_reduce() {
         *telemetry = None;
     }
     REPLICA.store(false, Ordering::Relaxed);
-    // Falha do grupo antigo não pode derrubar a primeira requisição do modelo
-    // novo, que não tem nada a ver com ela.
+    // A failure of the old group must not fail the first request of the new
+    // model, which has nothing to do with it.
     let _ = take_failure();
 }
 
-/// O callback do op de reduce: lê a parcial (f32), contribui na barreira local
-/// quando é o primary ou POSTa para ele quando é worker, e devolve a soma no
-/// mesmo buffer.
+/// The reduce op's callback: reads the partial (f32), contributes to the local
+/// barrier when it is the primary or POSTs to it when it is a worker, and
+/// returns the sum in the same buffer.
 unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: *mut c_void) {
     if data.is_null() || n_bytes == 0 || n_bytes % 4 != 0 {
         return;
@@ -496,15 +497,15 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
     let partial = unsafe { std::slice::from_raw_parts(data as *const f32, n).to_vec() };
     let seq = state.counter.fetch_add(1, Ordering::Relaxed);
     let Some(barrier_id) = next_barrier_id() else {
-        // Reduce fora de um decode conhecido: não há id que case com os outros
-        // ranks, então a soma seria por acaso. Melhor falhar nomeando isso.
+        // Reduce outside a known decode: there is no id that matches the other
+        // ranks, so the sum would be by chance. Better to fail naming that.
         note_failure("reduce outside a known decode (begin_decode was not called)".into());
         return;
     };
     if seq == 0 {
-        // A primeira invocação é a prova de que o op do fork está no grafo.
-        // Sem esta linha, "o callback não é chamado" e "o callback falha" têm
-        // exatamente o mesmo sintoma: texto errado, rápido, sem log.
+        // The first invocation is the proof that the fork's op is in the graph.
+        // Without this line, "the callback is not called" and "the callback fails"
+        // have exactly the same symptom: wrong text, fast, with no log.
         if state.rank == 0 {
             tracing::info!(
                 "TP collective active: first reduce of rank 0 ({} values) -> local barrier",
@@ -534,39 +535,39 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
         Ok(sum) if sum.len() == n => unsafe {
             std::ptr::copy_nonoverlapping(sum.as_ptr(), data as *mut f32, n);
         },
-        // Soma de tamanho errado é tão fatal quanto soma ausente: copiar
-        // parcialmente deixaria metade do vetor reduzido e metade não.
+        // A sum of the wrong size is as fatal as a missing sum: copying
+        // partially would leave half the vector reduced and half not.
         Ok(sum) => note_failure(format!(
             "collective sum came with {} values, expected {n}",
             sum.len()
         )),
-        // O buffer continua com a parcial deste rank. Não copiar nada e seguir
-        // era o defeito: a parcial passava por soma e a resposta saía errada.
+        // The buffer still holds this rank's partial. Copying nothing and carrying
+        // on was the defect: the partial passed for a sum and the reply came out wrong.
         Err(e) => note_failure(e),
     }
 }
 
-/// Cabeçalho que marca um quadro como réplica de TP e carrega o id do decode.
+/// Header that marks a frame as a TP replica and carries the decode's id.
 ///
-/// Presente = "você é um worker executando o decode que o rank 0 está
-/// executando agora". Ausente = quadro normal, vindo do gateway.
+/// Present = "you are a worker running the decode that rank 0 is running
+/// right now". Absent = normal frame, coming from the gateway.
 pub const TP_DECODE_HEADER: &str = "x-pom-tp-decode";
 
-/// Põe os workers para rodar **o mesmo decode**, com o mesmo lote.
+/// Makes the workers run **the same decode**, with the same batch.
 ///
-/// Esta é a metade que faltava do tensor parallelism. O gateway só fala com o
-/// rank 0 (o worker é excluído do pipeline de propósito), então sem esta
-/// transmissão o rank 0 postava a parcial e ficava esperando na barreira uma
-/// contribuição que ninguém ia mandar: o decode travava. TP exige que todos os
-/// ranks percorram o mesmo grafo sobre os mesmos tokens.
+/// This is the half of tensor parallelism that was missing. The gateway only
+/// talks to rank 0 (the worker is excluded from the pipeline on purpose), so
+/// without this broadcast rank 0 posted the partial and waited at the barrier
+/// for a contribution nobody was going to send: the decode hung. TP requires
+/// all ranks to walk the same graph over the same tokens.
 ///
-/// O corpo repassado é **o quadro original, byte a byte** - o worker roda o
-/// mesmo handler e produz a mesma sequência de reduces. A resposta dele é
-/// descartada: quem amostra o token é o rank 0, e com a cabeça de saída
-/// replicada os dois chegam aos mesmos logits depois das somas.
+/// The forwarded body is **the original frame, byte for byte** - the worker
+/// runs the same handler and produces the same sequence of reduces. Its reply
+/// is discarded: the one that samples the token is rank 0, and with the output
+/// head replicated both reach the same logits after the sums.
 ///
-/// Dispara em paralelo e **não espera**: quem espera é a barreira, no momento
-/// certo. Esperar aqui seria serializar o que precisa ser simultâneo.
+/// Fires in parallel and **does not wait**: the one that waits is the barrier,
+/// at the right moment. Waiting here would serialize what must be simultaneous.
 pub fn broadcast_decode(
     members: &[crate::network::TpMember],
     route: &str,
@@ -583,12 +584,12 @@ fn broadcast_target(member_url: &str, route: &str) -> (String, String) {
     )
 }
 
-/// O mesmo, dizendo o `content-type` quando o corpo não é um quadro binário.
+/// The same, stating the `content-type` when the body is not a binary frame.
 ///
-/// O extrator `Json` do axum **exige** o cabeçalho: sem ele a réplica devolve
-/// 415 e a chamada some, que é o pior tipo de falha para uma rota de ciclo de
-/// vida - a sessão ficaria pendurada e o defeito só apareceria na requisição
-/// seguinte, longe da causa.
+/// axum's `Json` extractor **requires** the header: without it the replica
+/// returns 415 and the call vanishes, which is the worst kind of failure for a
+/// lifecycle route - the session would be left hanging and the defect would
+/// only show up on the next request, far from the cause.
 pub fn broadcast_to(
     members: &[crate::network::TpMember],
     route: &str,
@@ -599,9 +600,9 @@ pub fn broadcast_to(
     let replicas = members.len().saturating_sub(1) as u64;
     record_broadcast_scheduled(replicas, body.len() as u64);
     for member in members.iter().skip(1) {
-        // A base e o path precisam permanecer separados: o túnel usa apenas
-        // o path para encaminhar ao loopback do worker. Concatenar a rota e
-        // passar `path=""` faz o túnel chegar em `/`, que responde 404.
+        // The base and the path must stay separate: the tunnel uses only
+        // the path to forward to the worker's loopback. Concatenating the route
+        // and passing `path=""` makes the tunnel reach `/`, which answers 404.
         let (url, path) = broadcast_target(&member.url, route);
         let url_candidates = if member.url_candidates.is_empty() {
             vec![url.clone()]
@@ -671,7 +672,7 @@ pub fn broadcast_to(
     }
 }
 
-/// Cliente pinado no membro, ou `None` (com a falha anotada) se não der.
+/// Client pinned to the member, or `None` (with the failure recorded) if it cannot be built.
 fn peer_client_for(node_id: &str) -> Option<reqwest::Client> {
     if !crate::peer_client::tls_enabled() {
         return Some(reqwest::Client::new());
@@ -719,9 +720,9 @@ async fn post_reduce(
         return Ok(sum);
     }
 
-    // f32 cru, little-endian. JSON custava ~12 bytes por float de 4: um prefill
-    // de 100 tokens dava ~5 MB por reduce e estourava o limite de corpo (413),
-    // 64 vezes por decode.
+    // Raw f32, little-endian. JSON cost ~12 bytes per 4-byte float: a prefill
+    // of 100 tokens gave ~5 MB per reduce and blew the body limit (413),
+    // 64 times per decode.
     let mut body = Vec::with_capacity(data.len() * 4);
     for v in &data {
         body.extend_from_slice(&v.to_le_bytes());
@@ -811,12 +812,12 @@ mod tests {
         assert_eq!(path, "/v1/prefill");
     }
 
-    /// O `barrier_id` é função do decode, não do relógio de cada processo.
+    /// The `barrier_id` is a function of the decode, not of each process's clock.
     ///
-    /// Dois ranks que abrem o **mesmo** decode numeram os reduces igual, então
-    /// as parciais se encontram. Enquanto foi um contador por processo, bastava
-    /// um worker reiniciar para o grupo nunca mais se encontrar - e isso não
-    /// dava erro, só travava.
+    /// Two ranks that open the **same** decode number the reduces alike, so
+    /// the partials meet. While it was a per-process counter, one worker
+    /// restarting was enough for the group never to meet again - and that gave
+    /// no error, it just hung.
     #[test]
     fn the_barrier_id_comes_from_the_decode_so_every_rank_agrees() {
         let _guard = GLOBAL_STATE.lock();
@@ -824,7 +825,7 @@ mod tests {
         begin_decode("sessao-x:chunk-0");
         let rank0: Vec<String> = (0..3).map(|_| next_barrier_id().unwrap()).collect();
 
-        // Outro processo, mesmo decode: a numeração recomeça do zero.
+        // Another process, same decode: the numbering restarts from zero.
         begin_decode("sessao-x:chunk-0");
         let rank1: Vec<String> = (0..3).map(|_| next_barrier_id().unwrap()).collect();
 
@@ -832,19 +833,19 @@ mod tests {
         assert_eq!(rank0[0], "sessao-x:chunk-0#0");
         assert_eq!(rank0[2], "sessao-x:chunk-0#2");
 
-        // Decode seguinte não reaproveita id do anterior.
+        // The next decode does not reuse the previous one's id.
         begin_decode("sessao-x:chunk-1");
         assert_eq!(next_barrier_id().unwrap(), "sessao-x:chunk-1#0");
     }
 
-    /// Desligar o grupo desliga o nó: implantar um modelo inteiro por cima de
-    /// um grupo TP não pode deixar resíduo.
+    /// Turning the group off turns the node off: deploying a whole model on top
+    /// of a TP group must leave no residue.
     ///
-    /// `TP_STATE` era um `OnceLock`, que não tem como ser limpo. Um processo que
-    /// um dia serviu TP continuava se declarando TP para sempre: a implantação
-    /// seguinte, de um modelo inteiro sem coletiva nenhuma, avisava "reduziu 1
-    /// vezes, esperado 64" - e a checagem de zero reduces chegava a derrubar a
-    /// requisição (18/08).
+    /// `TP_STATE` was a `OnceLock`, which cannot be cleared. A process that
+    /// once served TP kept declaring itself TP forever: the next deployment,
+    /// of a whole model with no collective at all, warned "reduced 1
+    /// times, expected 64" - and the zero-reduces check went as far as failing
+    /// the request (18/08).
     #[test]
     fn turning_the_group_off_leaves_no_residue() {
         let _guard = GLOBAL_STATE.lock();
@@ -878,8 +879,8 @@ mod tests {
         );
     }
 
-    /// Réplica não decide nada; rank 0 decide. E abrir um decode normal tira a
-    /// marca, senão o processo carregaria "sou réplica" para sempre.
+    /// A replica decides nothing; rank 0 decides. And opening a normal decode
+    /// removes the mark, otherwise the process would carry "I am a replica" forever.
     #[test]
     fn a_replica_has_no_say_and_the_mark_does_not_leak() {
         let _guard = GLOBAL_STATE.lock();
@@ -898,17 +899,17 @@ mod tests {
         );
     }
 
-    /// A falha da coletiva é guardada, consumida uma vez, e a **primeira**
-    /// vence: as seguintes são consequência dela.
+    /// The collective's failure is stored, consumed once, and the **first**
+    /// wins: the following ones are its consequence.
     ///
-    /// É o que transforma "resposta errada" em "requisição com erro". Um
-    /// all-reduce que falha não degrada a qualidade - ele produz números
-    /// falsos, e o texto sai plausível e sem sentido.
+    /// It is what turns "wrong reply" into "request with an error". An
+    /// all-reduce that fails does not degrade quality - it produces false
+    /// numbers, and the text comes out plausible and meaningless.
     #[test]
     fn the_first_failure_wins_and_is_consumed_once() {
         let _guard = GLOBAL_STATE.lock();
         cleanup();
-        let _ = take_failure(); // limpa resíduo de outro teste
+        let _ = take_failure(); // clears residue from another test
 
         note_failure("certificate of the primary did not pin".into());
         note_failure("next error, a consequence of the first".into());
@@ -1032,28 +1033,28 @@ mod tests {
     use axum::{routing::post, Router};
     use tokio::sync::mpsc;
 
-    /// Trava que serializa os testes que mexem no estado GLOBAL da coletiva
+    /// Lock that serializes the tests that touch the collective's GLOBAL state
     /// (`TP_STATE`, `DECODE`, `REPLICA`, `TP_FAILURE`).
     ///
-    /// Sem isto eles se atropelam em paralelo e falham por acaso - o mesmo
-    /// defeito que perseguiu `transfer::offer_latency_tests` o dia 18/08
-    /// inteiro, e que só se explicou depois de horas. Todo teste novo que toque
-    /// nesses estáticos toma esta trava.
+    /// Without this they trample each other in parallel and fail by chance - the
+    /// same defect that haunted `transfer::offer_latency_tests` the whole day
+    /// of 18/08, and that was only explained after hours. Every new test that
+    /// touches those statics takes this lock.
     static GLOBAL_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Deixa o processo sem grupo, para um teste não herdar o do anterior.
+    /// Leaves the process with no group, so a test does not inherit the previous one's.
     fn cleanup() {
         unregister_tp_reduce();
     }
 
-    /// Os dois lados de produção falando entre si: o cliente real
-    /// (`post_reduce`) contra o handler real (`infer_server::handle_tp_reduce`).
+    /// The two production sides talking to each other: the real client
+    /// (`post_reduce`) against the real handler (`infer_server::handle_tp_reduce`).
     ///
-    /// A versão anterior deste teste montava um servidor JSON próprio e um
-    /// cliente JSON próprio - não exercitava nenhum dos dois lados reais, e
-    /// continuou passando verde depois que a produção trocou o corpo para f32
-    /// cru. Um teste que não pode falhar quando o contrato muda não é rede de
-    /// proteção, é enfeite.
+    /// The previous version of this test built a JSON server of its own and a
+    /// JSON client of its own - it exercised neither of the two real sides, and
+    /// kept passing green after production switched the body to raw f32.
+    /// A test that cannot fail when the contract changes is not a safety
+    /// net, it is decoration.
     #[tokio::test]
     async fn three_ranks_reduce_over_the_real_wire() {
         let app = Router::new()

@@ -20,17 +20,17 @@ fn main() {
     embed_windows_icon(&root);
 }
 
-/// Compila a ponte Objective-C do item da barra de status, só no alvo macOS.
+/// Compiles the Objective-C bridge of the status bar item, only on the macOS target.
 ///
-/// AppKit e WebKit entram pelos frameworks do sistema, não por uma dependência
-/// Rust nem por um runtime de navegador empacotado: o bundle continua fino e
-/// Linux e Windows não ganham nada disto.
+/// AppKit and WebKit come in through the system frameworks, not through a Rust
+/// dependency nor a bundled browser runtime: the bundle stays thin and
+/// Linux and Windows gain nothing from this.
 ///
-/// O `cfg(macos)` de fora é do **host** e traz o `cc` como build-dependency,
-/// exatamente pelo motivo descrito em `embed_windows_icon`. O teste contra
-/// `CARGO_CFG_TARGET_OS` é do **alvo**, que é quem decide se a ponte tem que
-/// existir no binário. Os dois têm que valer: compilar um alvo macOS é coisa
-/// que só acontece num host macOS.
+/// The outer `cfg(macos)` refers to the **host** and brings `cc` in as a build-dependency,
+/// for exactly the reason described in `embed_windows_icon`. The test against
+/// `CARGO_CFG_TARGET_OS` refers to the **target**, which decides whether the bridge has to
+/// exist in the binary. Both must hold: building a macOS target is something
+/// that only happens on a macOS host.
 #[cfg(target_os = "macos")]
 fn build_macos_status() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
@@ -48,19 +48,19 @@ fn build_macos_status() {
 #[cfg(not(target_os = "macos"))]
 fn build_macos_status() {}
 
-/// Grava o ícone do aplicativo dentro do `.exe` (só no Windows).
+/// Embeds the application icon inside the `.exe` (Windows only).
 ///
-/// Um executável Unix não carrega ícone: no macOS quem o mostra é o bundle
-/// `.app` (`scripts/make-macos-app.sh`) e no Linux é o `.desktop` com a árvore
-/// `hicolor` (os dois saem de `assets/brand/`). No Windows o ícone é um recurso
-/// dentro do próprio arquivo, e é aqui que ele entra - sem isto o Explorer
-/// mostra o ícone genérico de console.
+/// A Unix executable carries no icon: on macOS the bundle `.app`
+/// (`scripts/make-macos-app.sh`) shows it and on Linux it is the `.desktop` with the
+/// `hicolor` tree (both come from `assets/brand/`). On Windows the icon is a resource
+/// inside the file itself, and this is where it goes in - without this Explorer
+/// shows the generic console icon.
 ///
-/// O `cfg(windows)` é do **host**, não do alvo, e é o mesmo critério que traz o
-/// `winresource` como build-dependency (`[target.'cfg(windows)'.build-dependencies]`
-/// também é host). Os dois casam: o release compila o alvo Windows num runner
-/// Windows. Cruzar de Linux para Windows sai sem ícone, em silêncio, em vez de
-/// falhar o build de quem só quer o nó.
+/// The `cfg(windows)` refers to the **host**, not the target, and is the same criterion that brings
+/// `winresource` in as a build-dependency (`[target.'cfg(windows)'.build-dependencies]`
+/// is also the host). The two match: the release builds the Windows target on a
+/// Windows runner. Cross-compiling from Linux to Windows comes out without an icon, silently, instead of
+/// failing the build for someone who only wants the node.
 #[cfg(windows)]
 fn embed_windows_icon(root: &Path) {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
@@ -78,7 +78,7 @@ fn embed_windows_icon(root: &Path) {
     let mut res = winresource::WindowsResource::new();
     res.set_icon(&icon.to_string_lossy());
     if let Err(e) = res.compile() {
-        // Um ícone ausente não pode impedir alguém de compilar o nó.
+        // A missing icon must not stop anyone from building the node.
         println!("cargo:warning=could not embed the icon in the executable: {e}");
     }
 }
@@ -90,7 +90,7 @@ fn embed_windows_icon(_root: &Path) {}
 ///
 /// A cluster is many machines, and "which build is that peer running?" was not
 /// answerable without a shell on it. A peer running yesterday's binary looks
-/// exactly like a peer with a fresh bug — the same layer range, the same
+/// exactly like a peer with a fresh bug - the same layer range, the same
 /// healthy `/health`, and an error from a code path that was already fixed.
 /// Diagnosing one such peer cost an afternoon, so the answer now travels with
 /// the node, in `/api/ui/node`.

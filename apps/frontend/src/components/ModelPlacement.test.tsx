@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 /**
- * Uma camada é "na GPU" pelos bytes dela, não pelo dispositivo do bloco.
+ * A layer is "on the GPU" by its bytes, not by the block's device.
  *
- * Esta é a única regra que a seção tem, e é a que separa o que a tela mostra do
- * que `n_gpu_layers` diria: com um override de buffer type, o llama.cpp deixa o
- * bloco atribuído à GPU e manda parte dos pesos - os experts de um MoE - para a
- * CPU. Contar essa camada como descarregada faria a conta de memória de quem lê
- * a tela não fechar.
+ * This is the only rule the section has, and it is what separates what the screen shows from
+ * what `n_gpu_layers` would say: with a buffer type override, llama.cpp leaves the
+ * block assigned to the GPU and sends part of the weights - the experts of a MoE - to the
+ * CPU. Counting that layer as offloaded would make the memory math of whoever reads
+ * the screen not add up.
  */
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -113,8 +113,8 @@ describe("ModelPlacementSection", () => {
   });
 
   /**
-   * O ponto da medida: sem ela a tela só pode repetir o que foi pedido, e tem
-   * que dizer que é pedido. Com ela, diz onde o cache está.
+   * The point of the measurement: without it the screen can only repeat what was asked, and has
+   * to say that it is requested. With it, it says where the cache is.
    */
   it("shows the measured KV cache instead of the flag when the breakdown arrives", () => {
     mount(partial, [{ buffer: "CUDA0", device: "CUDA0", model: 240, context: 1024, compute: 16 }]);

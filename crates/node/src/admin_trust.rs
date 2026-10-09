@@ -298,18 +298,18 @@ pub(crate) struct AdminTrust {
 }
 
 impl AdminTrust {
-    /// Um nó sem âncora e sem arquivo, para as bancadas de teste. O binário
-    /// usa `load_or_empty`, que guarda o caminho.
+    /// A node with no anchor and no file, for the test benches. The binary
+    /// uses `load_or_empty`, which keeps the path.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self::empty_at(None)
     }
 
-    /// O mesmo estado sem âncora, mas ciente de onde a âncora vai ficar.
+    /// The same unanchored state, but aware of where the anchor will live.
     ///
-    /// Um nó por ancorar precisa lembrar o caminho: é ali que a instalação
-    /// pelo operador vai escrever, e sem isso `adopt_anchor` mudaria a
-    /// autoridade em memória sem deixar nada no disco.
+    /// A node yet to be anchored needs to remember the path: it is where the operator's
+    /// installation will write, and without it `adopt_anchor` would change the
+    /// authority in memory without leaving anything on disk.
     fn empty_at(path: Option<PathBuf>) -> Self {
         let signing_key = SigningKey::from_bytes(&[0; 32]);
         let principal = AuthorityPrincipal::from_signing_key("", "", &signing_key);
@@ -358,17 +358,17 @@ impl AdminTrust {
         }
     }
 
-    /// Se este nó já tem raiz de confiança. É o mesmo julgamento que decide a
-    /// capacidade efetiva de admin, e é o que a interface mostra como
-    /// "ancorado" ou "por ancorar".
+    /// Whether this node already has a trust root. It is the same judgment that decides the
+    /// effective admin capacity, and is what the interface shows as
+    /// "anchored" or "to be anchored".
     pub(crate) fn is_anchored(&self) -> bool {
         validate_document(&self.document()).is_ok()
     }
 
-    /// Identificador do enxame que esta máquina aceitou fora de banda.
+    /// Identifier of the swarm that this machine accepted out of band.
     ///
-    /// O valor serve apenas para selecionar a cadeia local. A admissão ainda
-    /// exige a tupla completa do principal em `admits_participant`.
+    /// The value only serves to select the local chain. Admission still
+    /// requires the principal's full tuple in `admits_participant`.
     pub(crate) fn cluster_id(&self) -> Option<String> {
         let document = self.document();
         validate_document(&document)
@@ -376,26 +376,26 @@ impl AdminTrust {
             .then(|| document.anchor.cluster_id)
     }
 
-    /// Há uma cadeia local válida ancorada exatamente neste `cluster_id`?
+    /// Is there a valid local chain anchored exactly at this `cluster_id`?
     ///
-    /// Ao contrário de [`Self::admits_participant`], não exige que o peer tenha
-    /// uma concessão de autoridade primária ou secundária. É a prova de
-    /// participação de `access_policy = anyone_with_anchor`: sob essa política o
-    /// operador declarou que segurar a âncora correspondente já é a prova de
-    /// pertencimento, então um nó worker comum que nunca recebeu concessão
-    /// continua sendo participante legítimo. A identidade do peer (nó ↔ chave ↔
-    /// PeerId, e o Announce assinado por esse PeerId) é conferida à parte por
-    /// quem chama.
+    /// Unlike [`Self::admits_participant`], it does not require the peer to have
+    /// a primary or secondary authority grant. It is the proof of
+    /// participation of `access_policy = anyone_with_anchor`: under that policy the
+    /// operator declared that holding the matching anchor is already the proof
+    /// of belonging, so an ordinary worker node that never received a grant
+    /// remains a legitimate participant. The peer's identity (node <-> key <->
+    /// PeerId, and the Announce signed by that PeerId) is checked separately by
+    /// the caller.
     pub(crate) fn anchors_cluster(&self, cluster_id: &str) -> bool {
         let document = self.document();
         validate_document(&document).is_ok() && document.anchor.cluster_id == cluster_id
     }
 
-    /// Confere uma prova de participação contra a cadeia já validada.
+    /// Checks a participation proof against the already-validated chain.
     ///
-    /// No formato atual, a cadeia só tem concessões de autoridade primária e
-    /// secundária. Elas são também as concessões de participação disponíveis
-    /// para a descoberta: o `profile` anunciado nunca substitui esta prova.
+    /// In the current format, the chain only has primary and secondary authority
+    /// grants. They are also the participation grants available
+    /// for discovery: the announced `profile` never replaces this proof.
     pub(crate) fn admits_participant(
         &self,
         cluster_id: &str,
@@ -418,21 +418,21 @@ impl AdminTrust {
         })
     }
 
-    /// Se já existe arquivo de confiança no disco, mesmo ilegível. Um arquivo
-    /// ilegível não é âncora, mas também não é coisa que a interface apague:
-    /// a recusa manda o operador para a reancoragem manual na máquina.
+    /// Whether a trust file already exists on disk, even if unreadable. An unreadable
+    /// file is not an anchor, but it is also not something the interface erases:
+    /// the refusal sends the operator to manual re-anchoring on the machine.
     pub(crate) fn anchor_file_exists(&self) -> bool {
         self.path.as_deref().is_some_and(Path::exists)
     }
 
-    /// Adota, num nó ainda sem raiz, a cadeia assinada que o operador
-    /// transportou, depois de ele conferir a impressão digital à mão.
+    /// Adopts, on a node that still has no root, the signed chain the operator
+    /// carried over, after checking the fingerprint by hand.
     ///
-    /// A assinatura só prova que a cadeia é coerente consigo mesma; o arquivo
-    /// não se auto-valida. Quem o valida é `typed_fingerprint`, o valor que o
-    /// operador trouxe pelo canal dele. Trocar uma âncora existente não é
-    /// gesto de interface: é reancoragem manual (`pom admin-anchor
-    /// --replace`), por isso um nó já ancorado recusa aqui.
+    /// The signature only proves that the chain is coherent with itself; the file
+    /// does not validate itself. What validates it is `typed_fingerprint`, the value the
+    /// operator brought through their own channel. Replacing an existing anchor is not
+    /// an interface gesture: it is manual re-anchoring (`pom admin-anchor
+    /// --replace`), so a node that is already anchored refuses here.
     pub(crate) fn adopt_anchor(
         &self,
         document: AdminTrustDocument,
@@ -491,10 +491,10 @@ impl AdminTrust {
             .clone()
     }
 
-    /// Completa uma cadeia primária antiga com os metadados que o wizard já
-    /// persistiu na configuração local. A operação só é permitida ao
-    /// principal vigente da própria cadeia, pois esses dados passam a fazer
-    /// parte do documento assinado que será transportado para novos nós.
+    /// Completes an old primary chain with the metadata that the wizard already
+    /// persisted in the local configuration. The operation is only allowed to the
+    /// current principal of the chain itself, since this data becomes
+    /// part of the signed document that will be carried to new nodes.
     pub(crate) fn ensure_setup_metadata(
         &self,
         setup: TrustNetworkMetadata,
@@ -1123,8 +1123,8 @@ pub(crate) fn fingerprint_of(pubkey: &str) -> String {
     hex::encode(Sha256::digest(pubkey.as_bytes()))
 }
 
-/// A impressão digital que o operador confere: a da chave ancorada, nunca a
-/// de quem trouxe o arquivo.
+/// The fingerprint that the operator checks: the anchored key's, never
+/// that of whoever brought the file.
 pub(crate) fn anchor_fingerprint(document: &AdminTrustDocument) -> String {
     fingerprint_of(&document.anchor.principal.pubkey)
 }
@@ -1208,9 +1208,9 @@ pub(crate) fn validate_local_primary_document(
     Ok(())
 }
 
-/// Lê uma cadeia transportada pelo operador. Decodifica e confere a coerência
-/// interna da cadeia; a conferência que ancora a confiança continua sendo a
-/// impressão digital, que não vem daqui.
+/// Reads a chain carried by the operator. Decodes and checks the chain's internal
+/// coherence; the check that anchors trust remains the
+/// fingerprint, which does not come from here.
 pub(crate) fn parse_transported(content: &str) -> Result<AdminTrustDocument> {
     let document: AdminTrustDocument =
         serde_json::from_str(content).context("the content is not an administrative chain")?;
@@ -1218,10 +1218,10 @@ pub(crate) fn parse_transported(content: &str) -> Result<AdminTrustDocument> {
     Ok(document)
 }
 
-/// A conferência manual da impressão digital, uma só para o comando e para a
-/// interface. Normaliza apenas o que a transcrição humana acrescenta -
-/// espaços, dois-pontos e caixa - e nunca o valor em si: continua sendo
-/// preciso trazer os 64 dígitos certos.
+/// The manual fingerprint check, a single one for the command and for the
+/// interface. It normalizes only what human transcription adds -
+/// spaces, colons and case - and never the value itself: it is still
+/// necessary to bring the right 64 digits.
 pub(crate) fn fingerprint_matches(typed: &str, expected: &str) -> bool {
     fn normalize(value: &str) -> String {
         value
@@ -2207,8 +2207,8 @@ mod tests {
         assert_eq!(AdminTrust::load(&path).unwrap().document(), before);
     }
 
-    /// A conferência que ancora a confiança tolera a transcrição humana -
-    /// espaços, dois-pontos, caixa - e nada além disso.
+    /// The check that anchors trust tolerates human transcription -
+    /// spaces, colons, case - and nothing beyond that.
     #[test]
     fn the_manual_check_normalizes_the_transcription_and_nothing_else() {
         let expected = fingerprint_of(&principal(1, "root", "peer-root").pubkey);
@@ -2232,9 +2232,9 @@ mod tests {
         ));
     }
 
-    /// O nó que recebe: cadeia colada mais impressão digital conferida
-    /// instala a raiz e a deixa no disco, com a autoridade valendo em memória
-    /// sem reinício.
+    /// The receiving node: pasted chain plus checked fingerprint
+    /// installs the root and leaves it on disk, with the authority taking effect in memory
+    /// without a restart.
     #[test]
     fn adopting_with_the_right_fingerprint_anchors_the_node() {
         let source = TempDir::new();
@@ -2254,8 +2254,8 @@ mod tests {
         assert_eq!(AdminTrust::load(&path).unwrap().document(), document);
     }
 
-    /// A recusa que não depende de HTTP: com a impressão digital errada nada
-    /// é escrito, nem em memória nem no disco.
+    /// The refusal that does not depend on HTTP: with the wrong fingerprint nothing
+    /// is written, neither in memory nor on disk.
     #[test]
     fn adopting_with_the_wrong_fingerprint_writes_nothing() {
         let source = TempDir::new();
@@ -2276,8 +2276,8 @@ mod tests {
         );
     }
 
-    /// Trocar a raiz é reancoragem manual. Nem a cadeia em memória nem um
-    /// arquivo já no disco podem ser substituídos por esta porta.
+    /// Replacing the root is manual re-anchoring. Neither the chain in memory nor a
+    /// file already on disk can be replaced through this door.
     #[test]
     fn adopting_over_an_already_anchored_node_is_refused() {
         let local = TempDir::new();
@@ -2306,8 +2306,8 @@ mod tests {
         assert_eq!(mine.document().anchor, original_anchor);
     }
 
-    /// Um arquivo ilegível não é âncora, mas também não é coisa que a
-    /// interface apague por cima.
+    /// An unreadable file is not an anchor, but it is also not something the
+    /// interface erases by writing over it.
     #[test]
     fn adopting_over_an_existing_file_is_refused() {
         let source = TempDir::new();
@@ -2327,8 +2327,8 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"{ nao e json }");
     }
 
-    /// Uma cadeia adulterada é recusada na leitura, antes de qualquer
-    /// conferência de impressão digital.
+    /// A tampered chain is refused on read, before any
+    /// fingerprint check.
     #[test]
     fn a_tampered_chain_is_not_read() {
         let source = TempDir::new();

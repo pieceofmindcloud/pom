@@ -1,9 +1,9 @@
 /**
- * Soma uma máquina a um modelo que já está no ar.
+ * Adds a machine to a model that is already live.
  *
- * O inventário é lido depois que a máquina é escolhida. Assim o diálogo não
- * mistura as fatias da máquina A com as da máquina B, e um modelo inteiro
- * continua sendo uma opção explícita do mesmo fluxo.
+ * The inventory is read after the machine is chosen. That way the dialog does
+ * not mix machine A's slices with machine B's, and a whole model remains an
+ * explicit option of the same flow.
  */
 import { useEffect, useRef, useState } from "react";
 import { Route } from "lucide-react";
@@ -18,7 +18,7 @@ export interface AddNodePeer {
   hostname: string;
 }
 
-/** Compatibilidade do componente com a lista antiga fornecida pelo Painel. */
+/** Component compatibility with the old list supplied by the Dashboard. */
 export interface AddNodeSlice {
   start_layer: number;
   end_layer: number;
@@ -38,14 +38,14 @@ export function AddNodeDialog({
   onDone,
 }: {
   open: boolean;
-  /** Identidade técnica do modelo no catálogo. */
+  /** Technical identity of the model in the catalog. */
   group?: string;
-  /** Deployment ativo que receberá a nova versão. */
+  /** Active deployment that will receive the new version. */
   deployId?: string;
   peers: AddNodePeer[];
-  /** Fallback para chamadas antigas e para o estado inicial dos testes. */
+  /** Fallback for old calls and for the initial state of the tests. */
   slices: AddNodeSlice[];
-  /** Faixas que já estão no ar, para saber o que a escolha sobrepõe. */
+  /** Ranges that are already live, to know what the choice overlaps. */
   existingRanges: [number, number][];
   onClose: () => void;
   onDone?: (overlapping: number[]) => void;
@@ -61,8 +61,8 @@ export function AddNodeDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-semear é ato de abrir o diálogo, não de receber props novas. O Painel
-  // repolla os peers e não pode interromper a edição em andamento.
+  // Re-seeding is an act of opening the dialog, not of receiving new props. The Dashboard
+  // re-polls the peers and must not interrupt the edit in progress.
   const wasOpen = useRef(false);
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -79,8 +79,8 @@ export function AddNodeDialog({
     wasOpen.current = open;
   }, [open, peers, slices]);
 
-  // A escolha só é trocada quando desaparece. Arrays novos do polling não
-  // devem devolver o operador para a primeira máquina.
+  // The choice is only changed when it disappears. New arrays from polling
+  // must not send the operator back to the first machine.
   useEffect(() => {
     if (!open) return;
     if (peers.length > 0 && !peers.some((peer) => peer.node_id === nodeId)) {
@@ -88,9 +88,9 @@ export function AddNodeDialog({
     }
   }, [open, peers, nodeId]);
 
-  // O catálogo e a configuração pertencem à máquina escolhida. O AbortSignal
-  // também impede que uma resposta lenta da máquina anterior sobrescreva a
-  // lista nova.
+  // The catalog and the configuration belong to the chosen machine. The AbortSignal
+  // also prevents a slow response from the previous machine from overwriting the
+  // new list.
   useEffect(() => {
     if (!open || !group || !nodeId) return;
     const controller = new AbortController();
@@ -273,14 +273,14 @@ function toShardOptions(slices: AddNodeSlice[]): AddNodeOption[] {
   return slices.map((slice) => ({ ...slice, kind: "shards" as const }));
 }
 
-/** Uma opção é identificada pela faixa e pelo tipo de arquivo. */
+/** An option is identified by the range and the file type. */
 function keyOf(option?: Pick<AddNodeOption, "kind" | "start_layer" | "end_layer">): string {
   return option
     ? `${option.kind === "whole" ? "whole:" : ""}${option.start_layer}-${option.end_layer}`
     : "";
 }
 
-/** As camadas que a faixa escolhida compartilha com as que já estão no ar. */
+/** The layers the chosen range shares with those already live. */
 export function rangeOverlap(
   existing: [number, number][],
   range: [number, number],

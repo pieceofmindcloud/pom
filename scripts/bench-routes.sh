@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
-# bench-routes.sh - bateria reproduzivel para separar forma da saida, origem de
-# rede e custo do no na geracao distribuida do POM.
+# bench-routes.sh - reproducible battery to separate output shape, network
+# origin and node cost in POM's distributed generation.
 #
-# O que mede:
-#   4 origens (mac-local, mac-ksia, ksia-local e salem-ksia) x 5 prompts
-#   (curto/longo repetitivo/variado e prefill aleatorio). Cada celula recebe uma chamada
-#   de aquecimento descartada e, por padrao, 3 repeticoes medidas.
+# What it measures:
+#   4 origins (mac-local, mac-ksia, ksia-local and salem-ksia) x 5 prompts
+#   (short/long repetitive/varied and random prefill). Each cell gets a discarded
+#   warm-up call and, by default, 3 measured repetitions.
 #
-# Uso:
+# Usage:
 #   ./scripts/bench-routes.sh ipv4-42777
 #   ./scripts/bench-routes.sh ipv6-42777 --origins mac-ksia,ksia-local
 #   ./scripts/bench-routes.sh passagem-1 --repetitions 5 --csv /tmp/p1.csv
 #
-# A saida principal e um CSV estavel, uma linha por aquecimento, pedido medido
-# ou falha. O resumo de medianas por celula e impresso no fim. As colunas
-# timings_* sao os tempos agregados da resposta; trace_* sao tokens/cache/
-# bytes; decode_* e prefill_* sao as telemetrias do primeiro hop. As quatro
-# colunas trace_mtp_* finais sao os contadores MTP somados por requisicao e
-# trace_mtp_acceptance_rate e aceitos / propostos, ou vazio quando nao houve
-# proposta MTP. model_requested
-# e "auto" quando o campo foi omitido; served_model vem do trace retornado pelo
-# gateway. A coluna fichas_por_chamada e sempre calculada como
-# trace.output_tokens / trace.hops[0].decode.calls e e a metrica central.
+# The main output is a stable CSV, one row per warm-up, measured request or
+# failure. The per-cell summary of medians is printed at the end. The timings_*
+# columns are the aggregated times of the response; trace_* are tokens/cache/
+# bytes; decode_* and prefill_* are the first hop's telemetry. The final four
+# trace_mtp_* columns are the MTP counters summed per request, and
+# trace_mtp_acceptance_rate is accepted / proposed, or empty when there was no
+# MTP proposal. model_requested is "auto" when the field was omitted;
+# served_model comes from the trace returned by the gateway. The
+# fichas_por_chamada column is always computed as
+# trace.output_tokens / trace.hops[0].decode.calls and is the central metric.
 #
-# A API usada e somente POST /api/generate, autenticada com a API key informada
-# em POM_BENCH_API_KEY, sempre com o modelo atualmente servido (o campo model
-# e omitido), max_tokens=200 por padrao (8 no prompt de prefill aleatorio) e
-# stream=false. POM_BENCH_MODEL pode fixar um modelo apenas quando isso for
-# desejado para uma comparacao especifica. Esta rota nao oferece uma opcao de
-# seed fixa, portanto o script nao envia seed e registra essa limitacao no
-# relatorio. A variacao estocastica deve ser tratada pelas 3 repeticoes e
-# pelas medianas, nunca por trocar as constantes entre celulas.
+# The only API used is POST /api/generate, authenticated with the API key given
+# in POM_BENCH_API_KEY, always with the currently served model (the model field
+# is omitted), max_tokens=200 by default (8 on the random prefill prompt) and
+# stream=false. POM_BENCH_MODEL can pin a model only when that is wanted for a
+# specific comparison. This route offers no fixed seed option, so the script
+# sends no seed and records that limitation in the report. Stochastic variation
+# must be handled by the 3 repetitions and by the medians, never by changing the
+# constants between cells.
 #
-# salem-ksia usa SSH como SALEM_SSH_USER (padrao ubuntu) em
-# SALEM_SSH_HOST (padrao 100.85.81.27), autenticando com SALEM_PASS. Informe
-# a senha no ambiente ao rodar, por exemplo:
-#   SALEM_PASS='sua-senha' ./scripts/bench-routes.sh passagem-1
-# A senha nunca fica neste arquivo. SALEM_KSIA_URL pode sobrescrever o alvo
-# visto de dentro da salem; por padrao e http://ksia:8080. KSIA_URL pode
-# sobrescrever o alvo usado pelo Mac; por padrao e http://ksia:8080.
+# salem-ksia uses SSH as SALEM_SSH_USER (default ubuntu) on
+# SALEM_SSH_HOST (default 100.85.81.27), authenticating with SALEM_PASS. Provide
+# the password in the environment when running, for example:
+#   SALEM_PASS='your-password' ./scripts/bench-routes.sh passagem-1
+# The password is never kept in this file. SALEM_KSIA_URL can override the
+# target as seen from inside salem; by default it is http://ksia:8080. KSIA_URL
+# can override the target used by the Mac; by default it is http://ksia:8080.
 
 set -uo pipefail
 

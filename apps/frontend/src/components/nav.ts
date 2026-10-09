@@ -89,8 +89,8 @@ export const NAV: NavSection[] = [
     icon: Rocket,
     children: [
       { labelKey: "nav.deploy", to: "/deploy", icon: Rocket },
-      // Separada de "implantar" de proposito: uma cria, a outra mostra e
-      // ajusta o que ja existe. Sao dois momentos diferentes do mesmo trabalho.
+      // Separate from "deploy" on purpose: one creates, the other shows and
+      // adjusts what already exists. They are two different moments of the same work.
       { labelKey: "nav.history", to: "/deployments", icon: History },
     ],
   },
@@ -149,7 +149,7 @@ export const NAV: NavSection[] = [
   },
 ];
 
-/** Ícones que um manifesto de plugin pode pedir por nome; o resto vira `Blocks`. */
+/** Icons a plugin manifest may ask for by name; the rest becomes `Blocks`. */
 const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   "list-tree": ListTree,
   "chart-no-axes-column": ChartNoAxesColumn,
@@ -174,9 +174,9 @@ function pluginIcon(name?: string | null): LucideIcon {
 }
 
 /**
- * Aplica os itens de menu dos plugins ativos: um item cujo `to` já existe
- * substitui esse destino nativo; cada novo item entra na raiz, antes da
- * documentação, na ordem do manifesto. Um item com `children` vira seção com
+ * Applies the menu items of active plugins: an item whose `to` already exists
+ * replaces that native destination; each new item goes in at the root, before the
+ * documentation, in manifest order. An item with `children` becomes a section with
  * submenus.
  */
 function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] {
@@ -213,8 +213,8 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     if (placed) continue;
     const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
     const iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
-    // Com submenus, o item vira uma seção expansível; os filhos usam o
-    // ícone nomeado de cada um, e a imagem do plugin fica só na seção.
+    // With submenus, the item becomes an expandable section; the children use the
+    // named icon of each one, and the plugin's image stays only on the section.
     const entry: NavSection = item.children
       ? {
           labelKey: key,
@@ -239,16 +239,16 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
 }
 
 /**
- * O menu como este perfil o vê.
+ * The menu as this profile sees it.
  *
- * Uma seção que navega sozinha some quando a rota dela é fechada; uma seção com
- * filhas some quando **nenhuma** filha sobra, e não quando alguma sai. As telas
- * servidas por plugin (Logs de Requisições, Estatísticas) são deliberadamente
- * descobríveis e permanecem no menu mesmo sem licença; a própria tela mostra o
- * convite de ativação, e "Plugins" lista o catálogo inteiro.
+ * A section that navigates by itself disappears when its route is closed; a section with
+ * children disappears when **none** of the children remains, and not when one goes out. The screens
+ * served by plugins (Request Logs, Statistics) are deliberately
+ * discoverable and stay in the menu even without a license; the screen itself shows the
+ * activation invitation, and "Plugins" lists the whole catalog.
  *
- * A decisão de quem entra onde não está aqui: está em `lib/access.ts`, a mesma
- * tabela que o roteador consulta.
+ * The decision of who goes where is not here: it is in `lib/access.ts`, the same
+ * table the router consults.
  */
 export function navForProfile(profile: Profile, _enterpriseActive = true): NavSection[] {
   const filterLeaf = (leaf: NavLeaf): NavLeaf | null => {

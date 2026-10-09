@@ -1,22 +1,22 @@
-//! Atualizar e reiniciar um nó pela interface, em desenvolvimento.
+//! Update and restart a node through the interface, in development.
 //!
-//! Isto é execução remota de código: quem tem a chave de conexão passa a poder
-//! rodar um build e trocar o binário da máquina. Por isso o portão é uma
-//! variável de ambiente, ligada por processo por quem é dono da máquina, e não
-//! um campo de config — a config é reescrita pela própria interface, o que
-//! deixaria o portão ligável pela rede.
+//! This is remote code execution: whoever holds the connection key gains the
+//! ability to run a build and swap the machine's binary. That is why the gate
+//! is an environment variable, set per process by the owner of the machine,
+//! and not a config field - the config is rewritten by the interface itself,
+//! which would make the gate switchable over the network.
 
-/// Nome da variável que abre o recurso (`POM_DEV_UPDATE`), derivado da marca.
+/// Name of the variable that opens the feature (`POM_DEV_UPDATE`), derived from the brand.
 pub fn env_gate() -> String {
     crate::brand::env_var("DEV_UPDATE")
 }
 
-/// Variável que diz com que features esta máquina compila.
+/// Variable that says which features this machine compiles with.
 pub fn env_features() -> String {
     crate::brand::env_var("BUILD_FEATURES")
 }
 
-/// Este nó aceita pedidos de atualização?
+/// Does this node accept update requests?
 pub fn enabled() -> bool {
     enabled_from(crate::brand::env("DEV_UPDATE").ok().as_deref())
 }
@@ -35,7 +35,7 @@ use axum::{
 };
 use serde_json::json;
 
-/// A recusa do portão, ou `None` quando ele está aberto.
+/// The gate's refusal, or `None` when it is open.
 fn gate_rejection() -> Option<(StatusCode, String)> {
     if enabled() {
         return None;
@@ -53,15 +53,15 @@ fn refuse(r: (StatusCode, String)) -> Response {
     (r.0, Json(json!({ "error": r.1 }))).into_response()
 }
 
-/// Folga entre a resposta HTTP sair e o processo morrer.
+/// Slack between the HTTP response leaving and the process dying.
 ///
-/// O corpo é um JSON minúsculo; numa LAN, escrevê-lo na conexão leva
-/// microssegundos. 300ms é folga generosa para isso mesmo passando por um
-/// proxy reverso local, sem ser tão longo que o operador sinta demora no
-/// reinício. Os dois lados do erro são assimétricos: passar deste valor só
-/// custa ao operador esperar um pouco mais; ficar aquém dele corta a conexão
-/// do cliente antes do byte chegar, e o pedido parece ter falhado quando na
-/// verdade funcionou.
+/// The body is a tiny JSON; on a LAN, writing it to the connection takes
+/// microseconds. 300ms is generous slack for that even through a local
+/// reverse proxy, without being so long that the operator feels a delay in
+/// the restart. The two sides of the error are asymmetric: going past this
+/// value only costs the operator a little more waiting; falling short of it
+/// cuts the client's connection before the byte arrives, and the request
+/// looks like it failed when it actually worked.
 const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 pub fn router() -> Router<GatewayState> {
@@ -70,7 +70,7 @@ pub fn router() -> Router<GatewayState> {
         .route("/api/ui/dev/update", post(update_endpoint))
 }
 
-/// Argumentos do cargo, com as features desta máquina.
+/// Cargo arguments, with this machine's features.
 fn build_args(features: Option<&str>) -> Vec<String> {
     let mut v = vec!["build".to_string(), "--release".to_string()];
     match features.map(str::trim) {
@@ -83,22 +83,23 @@ fn build_args(features: Option<&str>) -> Vec<String> {
     v
 }
 
-/// URLs de gateway dos peers que rodam na mesma máquina que este nó.
+/// Gateway URLs of the peers running on the same machine as this node.
 ///
-/// A entrada é `(hostname, addr, gateway_port)` de cada peer vivo. Peer sem
-/// porta de gateway fica de fora: não há como pedir nada a ele. Hostname
-/// repetido não basta — duas VMs chamadas `ubuntu` não são a mesma máquina —
-/// então `same_host` também precisa aprovar o endereço; quem decide a lógica
-/// de rede fica de fora desta função para ela continuar testável sem sockets.
+/// The input is each live peer's `(hostname, addr, gateway_port)`. A peer
+/// without a gateway port stays out: there is no way to ask it anything. A
+/// repeated hostname is not enough - two VMs called `ubuntu` are not the same
+/// machine - so `same_host` must also approve the address; whoever decides the
+/// network logic stays outside this function so it remains testable without
+/// sockets.
 ///
-/// A URL é montada com `network::ip_host`, a mesma função por trás de
-/// `PeerInfo::gateway_url()` — não uma reimplementação com `rsplit_once`, que
-/// quebra em IPv6 sem colchetes.
+/// The URL is built with `network::ip_host`, the same function behind
+/// `PeerInfo::gateway_url()` - not a reimplementation with `rsplit_once`, which
+/// breaks on IPv6 without brackets.
 ///
-/// Devolve `(node_id, url)`: o irmão está na mesma máquina, mas o POST sai pelo
-/// endereço da interface e não pelo loopback, então num cluster em TLS ele
-/// precisa do certificado daquele nó fixado como qualquer outra chamada entre
-/// peers. Ver `serve::plain_allowed`.
+/// Returns `(node_id, url)`: the sibling is on the same machine, but the POST
+/// goes out through the interface address and not through loopback, so in a
+/// TLS cluster it needs that node's certificate pinned like any other call
+/// between peers. See `serve::plain_allowed`.
 fn sibling_urls(
     my_hostname: &str,
     peers: &[(&str, &str, Option<u16>, &str)],
@@ -108,10 +109,10 @@ fn sibling_urls(
         .iter()
         .filter(|(h, _, _, _)| *h == my_hostname)
         .filter(|(_, addr, _, _)| {
-            // `0.0.0.0`/`::` é o sentinela "endereço ainda não reescrito"
-            // (`Network::announce_addr`) de um peer chegado por libp2p; sem
-            // este descarte explícito o POST iria para este próprio nó, que
-            // se reiniciaria antes de o job ser marcado como `done`.
+            // `0.0.0.0`/`::` is the sentinel "address not yet rewritten"
+            // (`Network::announce_addr`) of a peer that arrived through libp2p; without
+            // this explicit discard the POST would go to this very node, which
+            // would restart before the job was marked as `done`.
             let host = crate::network::ip_host(addr);
             host != "0.0.0.0" && host != "::" && host != "[::]" && same_host(addr)
         })
@@ -129,12 +130,12 @@ fn sibling_urls(
         .collect()
 }
 
-/// Este endereço pertence à máquina onde este processo está rodando?
+/// Does this address belong to the machine where this process is running?
 ///
-/// Conecta um socket UDP (sem tráfego, só fixa a rota) ao IP do peer e
-/// compara o endereço local resultante com o do peer: se o peer é este
-/// próprio host, o roteamento do SO devolve o mesmo IP. Endereço que não
-/// resolve para um IP válido nunca é a mesma máquina.
+/// Connects a UDP socket (no traffic, it only fixes the route) to the peer's IP and
+/// compares the resulting local address with the peer's: if the peer is this
+/// very host, the OS routing returns the same IP. An address that does not
+/// resolve to a valid IP is never the same machine.
 fn same_machine(addr: &str) -> bool {
     let host = crate::network::ip_host(addr);
     let bare = host.trim_start_matches('[').trim_end_matches(']');
@@ -162,22 +163,22 @@ async fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// Corpo opcional de `POST /api/ui/dev/update`.
+/// Optional body of `POST /api/ui/dev/update`.
 ///
-/// `Option<Json<T>>` em vez de `Json<T>`: um corpo vazio (o botão da tela hoje
-/// manda `{}`, mas um `curl` sem `-d` nenhum manda corpo zero) faria o
-/// extractor `Json<T>` falhar antes mesmo de o handler rodar, e a mensagem de
-/// erro do axum não é a que este endpoint quer mostrar. Com `Option`, corpo
-/// ausente e corpo `{}` chegam ambos como `node_id: None` — executa aqui.
+/// `Option<Json<T>>` instead of `Json<T>`: an empty body (the screen's button today
+/// sends `{}`, but a `curl` without any `-d` sends a zero body) would make the
+/// `Json<T>` extractor fail before the handler even runs, and axum's error
+/// message is not the one this endpoint wants to show. With `Option`, an absent body
+/// and a `{}` body both arrive as `node_id: None` - runs here.
 #[derive(Debug, Default, serde::Deserialize)]
 struct UpdateRequest {
     node_id: Option<String>,
 }
 
-/// Este pedido é para repassar a outro peer, ou para executar aqui?
+/// Is this request to be forwarded to another peer, or executed here?
 ///
-/// Função pura para ficar testável sem subir rede: sem `node_id`, ou com o
-/// `node_id` deste próprio nó, executa aqui; qualquer outro id repassa.
+/// Pure function to stay testable without bringing up a network: without `node_id`, or with the
+/// `node_id` of this very node, it runs here; any other id forwards.
 fn should_forward(requested_node_id: Option<&str>, my_node_id: &str) -> bool {
     matches!(requested_node_id, Some(id) if id != my_node_id)
 }
@@ -189,12 +190,12 @@ async fn update_endpoint(
 ) -> Response {
     let requested_node_id = body.and_then(|Json(b)| b.node_id);
 
-    // O portão protege a máquina que vai rodar o build, e repassar não roda
-    // nada aqui. Checá-lo antes da decisão de repasse impedia o painel de um nó
-    // comum de atualizar um peer que tem o portão aberto — e a tela desenha o
-    // botão a partir do `dev_update` **do alvo**, então o botão aparecia e este
-    // nó respondia 403. Quem repassa não precisa da permissão; quem executa,
-    // sim, e é o destino que a verifica.
+    // The gate protects the machine that will run the build, and forwarding runs
+    // nothing here. Checking it before the forwarding decision kept the panel of an
+    // ordinary node from updating a peer that has the gate open - and the screen draws the
+    // button from the **target's** `dev_update`, so the button appeared and this
+    // node answered 403. Whoever forwards does not need the permission; whoever executes
+    // does, and it is the destination that checks it.
     if let Some(target) = requested_node_id.filter(|id| should_forward(Some(id), &state.network.node_id))
     {
         let peers = state.network.alive_peers().await;
@@ -260,7 +261,7 @@ async fn update_endpoint(
         };
     }
 
-    // Daqui para baixo é execução nesta máquina, e aí sim o portão manda.
+    // From here down it is execution on this machine, and then the gate rules.
     if let Some(r) = gate_rejection() {
         return refuse(r);
     }
@@ -287,7 +288,7 @@ async fn update_endpoint(
             }
         }
 
-        // ── Checagens ────────────────────────────────────────────────────────
+        // ── Checks ───────────────────────────────────────────────────────────
         let branch = match git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
             Ok(b) => b,
             Err(e) => return fail(&job_id, e).await,
@@ -339,7 +340,7 @@ async fn update_endpoint(
             Err(e) => return fail(&job_id, format!("could not run cargo: {e}")).await,
         }
 
-        // ── Reinícios ────────────────────────────────────────────────────────
+        // ── Restarts ─────────────────────────────────────────────────────────
         step(&job_id, "restarting the nodes of this machine").await;
         let me = crate::sysmon::sample().await.hostname;
         let peers = state.network.alive_peers().await;
@@ -356,11 +357,11 @@ async fn update_endpoint(
             .collect();
         let targets = sibling_urls(&me, &tuples, same_machine);
 
-        // Máquina de outra pessoa: um irmão que não responde não pode
-        // desaparecer em silêncio, ou o operador fica com um nó rodando
-        // binário velho e nenhuma pista. Mas nenhum irmão respondendo não
-        // impede este nó de reiniciar — cada máquina se anota por conta
-        // própria.
+        // Someone else's machine: a sibling that does not answer must not
+        // vanish silently, or the operator is left with a node running an
+        // old binary and no clue. But no sibling answering does not
+        // stop this node from restarting - each machine annotates itself on its
+        // own.
         let mut restarted = 0usize;
         let mut failed: Vec<String> = Vec::new();
         for (node_id, url) in &targets {
@@ -418,13 +419,13 @@ async fn update_endpoint(
             }
         }
 
-        // Este nó por último, para o job chegar a ser marcado como pronto.
+        // This node last, so the job gets to be marked as ready.
         //
-        // Nada a anotar aqui: quem mantém a anotação é o runtime, e ela já
-        // reflete a verdade deste nó (`Pending` desde o apply, `Serving` desde
-        // que o `/health` respondeu). Reescrevê-la neste ponto só poderia
-        // mentir - carimbar de servindo uma fatia que nunca carregou é o laço
-        // infinito de 2026-08-15 entrando por outra porta.
+        // Nothing to annotate here: whoever maintains the annotation is the runtime, and it already
+        // reflects this node's truth (`Pending` since the apply, `Serving` since
+        // `/health` answered). Rewriting it at this point could only
+        // lie - stamping as serving a slice that never loaded is the
+        // infinite loop of 2026-08-15 coming in through another door.
         tokio::time::sleep(RESTART_DELAY).await;
         let e = crate::respawn::respawn_self();
         tracing::error!("respawn failed, the node stays up: {e}");
@@ -448,9 +449,9 @@ async fn restart_endpoint(
         return refuse(r);
     }
 
-    // A fatia não é anotada aqui: o runtime já a mantém anotada, com o estado
-    // que ela de fato alcançou. Um nó servindo volta servindo; um nó cuja
-    // fatia nunca carregou volta vazio, dizendo por quê.
+    // The slice is not annotated here: the runtime already keeps it annotated, with the state
+    // it actually reached. A serving node comes back serving; a node whose
+    // slice never loaded comes back empty, saying why.
 
     tokio::spawn(async {
         tokio::time::sleep(RESTART_DELAY).await;
@@ -461,7 +462,7 @@ async fn restart_endpoint(
     Json(json!({ "restarting": true })).into_response()
 }
 
-/// O que impede esta máquina de ser atualizada agora.
+/// What keeps this machine from being updated right now.
 #[derive(Debug, PartialEq)]
 pub enum Preflight {
     Ok,
@@ -470,7 +471,7 @@ pub enum Preflight {
     DirtyTree(Vec<String>),
 }
 
-/// Decide a partir da saída de `git rev-parse --abbrev-ref HEAD` e de
+/// Decides from the output of `git rev-parse --abbrev-ref HEAD` and of
 /// `git status --porcelain`.
 pub fn preflight(branch: &str, status_porcelain: &str) -> Preflight {
     let branch = branch.trim();
@@ -481,7 +482,7 @@ pub fn preflight(branch: &str, status_porcelain: &str) -> Preflight {
         return Preflight::WrongBranch(branch.to_string());
     }
 
-    // `??` é arquivo não rastreado: o pull não o toca.
+    // `??` is an untracked file: the pull does not touch it.
     let dirty: Vec<String> = status_porcelain
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with("??"))
@@ -495,7 +496,7 @@ pub fn preflight(branch: &str, status_porcelain: &str) -> Preflight {
 }
 
 impl Preflight {
-    /// A mensagem que vai para a tela, ou `None` quando dá para seguir.
+    /// The message that goes to the screen, or `None` when it is fine to proceed.
     pub fn message(&self) -> Option<String> {
         match self {
             Preflight::Ok => None,
@@ -518,9 +519,9 @@ impl Preflight {
 mod tests {
     use super::*;
 
-    /// O portão é por processo e não é ligável pela rede — diferente da config,
-    /// que a própria interface reescreve. Só "1" liga: um "true" ou "yes" que
-    /// alguém escreveu achando que ligava não deve abrir execução remota.
+    /// The gate is per process and cannot be switched on over the network - unlike the config,
+    /// which the interface itself rewrites. Only "1" turns it on: a "true" or "yes" that
+    /// someone wrote thinking it turned it on must not open remote execution.
     #[test]
     fn only_the_value_1_opens_the_gate() {
         assert!(enabled_from(Some("1")));
@@ -530,11 +531,11 @@ mod tests {
         assert!(!enabled_from(None));
     }
 
-    /// Com o portão fechado a rota não existe para efeitos práticos: responde
-    /// 403 sem tocar em nada.
+    /// With the gate closed the route does not exist for practical purposes: it answers
+    /// 403 without touching anything.
     #[test]
     fn a_closed_gate_refuses_with_403() {
-        // Num ambiente de teste a variável não está ligada, então há recusa.
+        // In a test environment the variable is not set, so there is a refusal.
         let r = gate_rejection().expect("without the variable, it must refuse");
         assert_eq!(r.0, axum::http::StatusCode::FORBIDDEN);
         assert!(
@@ -544,9 +545,9 @@ mod tests {
         );
     }
 
-    /// Numa máquina onde alguém está codificando, o botão falha e explica, em
-    /// vez de arrumar a casa alheia. Um `git pull --ff-only origin main` num
-    /// branch de trabalho o avançaria para o main em silêncio.
+    /// On a machine where someone is coding, the button fails and explains, instead
+    /// of tidying someone else's house. A `git pull --ff-only origin main` on a
+    /// working branch would silently advance it to main.
     #[test]
     fn refuses_a_branch_other_than_main() {
         let p = preflight("fm/minha-feature", "");
@@ -556,7 +557,7 @@ mod tests {
 
     #[test]
     fn refuses_a_detached_head() {
-        // `git rev-parse --abbrev-ref HEAD` devolve literalmente "HEAD".
+        // `git rev-parse --abbrev-ref HEAD` returns literally "HEAD".
         assert!(matches!(
             preflight("HEAD", ""),
             Preflight::DetachedOrNoBranch
@@ -567,9 +568,9 @@ mod tests {
         ));
     }
 
-    /// Árvore suja para antes de tocar em qualquer coisa, e diz quais arquivos.
-    /// Um build de árvore suja não corresponde a commit nenhum, e o carimbo
-    /// build_commit viraria mentira.
+    /// A dirty tree stops before touching anything, and says which files.
+    /// A dirty-tree build corresponds to no commit, and the build_commit
+    /// stamp would become a lie.
     #[test]
     fn refuses_a_dirty_tree_naming_the_files() {
         let status = " M src/llm.rs\n M src/webui.rs\n";
@@ -586,8 +587,8 @@ mod tests {
         assert!(p.message().unwrap().contains("src/llm.rs"));
     }
 
-    /// Arquivo não rastreado não conta: o pull não o toca, e se colidir com um
-    /// arquivo do remoto o próprio git aborta sem sobrescrever.
+    /// An untracked file does not count: the pull does not touch it, and if it collides with a
+    /// file from the remote git itself aborts without overwriting.
     #[test]
     fn an_untracked_file_does_not_block() {
         assert!(matches!(
@@ -597,8 +598,8 @@ mod tests {
         assert!(preflight("main", "").message().is_none());
     }
 
-    /// O comando de build precisa carregar as features da máquina. Sem isto a
-    /// ksia perderia CUDA no primeiro clique — o mesmo engano já cometido à mão.
+    /// The build command must carry the machine's features. Without this
+    /// ksia would lose CUDA on the first click - the same mistake already made by hand.
     #[test]
     fn the_build_carries_the_machine_features() {
         assert_eq!(build_args(None), vec!["build", "--release"]);
@@ -613,8 +614,8 @@ mod tests {
         );
     }
 
-    /// Sem `node_id`, com o `node_id` deste nó, e com o de outro peer: as três
-    /// respostas que decidem entre executar aqui e repassar.
+    /// Without `node_id`, with this node's `node_id`, and with another peer's: the three
+    /// answers that decide between executing here and forwarding.
     #[test]
     fn should_forward_only_with_another_peer_node_id() {
         assert!(!should_forward(None, "meu-id"), "without node_id, runs here");
@@ -628,8 +629,8 @@ mod tests {
         );
     }
 
-    /// Os irmãos são os peers da mesma máquina, e este nó não está na lista de
-    /// peers — ele reinicia por último, por conta própria.
+    /// The siblings are the peers of the same machine, and this node is not in the list of
+    /// peers - it restarts last, on its own.
     #[test]
     fn siblings_are_the_peers_with_the_same_hostname() {
         let targets = sibling_urls(
@@ -652,9 +653,9 @@ mod tests {
         );
     }
 
-    /// Hostname repetido não basta: duas VMs chamadas `ksia` não são a mesma
-    /// máquina. `same_host` é quem decide isso de verdade; aqui simulamos a
-    /// recusa para um dos dois endereços.
+    /// A repeated hostname is not enough: two VMs called `ksia` are not the same
+    /// machine. `same_host` is what really decides that; here we simulate the
+    /// refusal for one of the two addresses.
     #[test]
     fn the_same_hostname_on_a_different_machine_is_left_out() {
         let targets = sibling_urls(
@@ -672,11 +673,11 @@ mod tests {
         );
     }
 
-    /// `0.0.0.0`/`::` é o sentinela de um peer chegado por libp2p cujo
-    /// endereço ainda não foi reescrito com a origem real. Batendo como
-    /// irmão, o POST iria para este próprio nó — que se reiniciaria antes do
-    /// job ser marcado como `done`. Por isso o descarte é explícito e não
-    /// depende de `same_host` aprovar ou não.
+    /// `0.0.0.0`/`::` is the sentinel of a peer that arrived through libp2p whose
+    /// address has not yet been rewritten with the real origin. Matching as a
+    /// sibling, the POST would go to this very node - which would restart before the
+    /// job was marked as `done`. That is why the discard is explicit and does not
+    /// depend on `same_host` approving or not.
     #[test]
     fn address_0_0_0_0_is_left_out() {
         let targets = sibling_urls(

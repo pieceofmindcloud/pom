@@ -10,11 +10,11 @@ import { formatMessage, getActiveLocale } from "../i18n/locales";
  * a glance is part of reading the pipeline.
  */
 /**
- * O nome da placa como cabe num rótulo.
+ * The card's name as it fits in a label.
  *
- * O prefixo do fabricante sai porque ele já está no contexto e come a largura
- * que interessa - o modelo. A Radeon vem do sysfs sem nome comercial (só o id
- * PCI), então o que se pode limpar ali é diferente do que se limpa numa NVIDIA.
+ * The manufacturer prefix goes away because it is already in context and eats the width
+ * that matters - the model. The Radeon comes from sysfs with no commercial name (only the PCI
+ * id), so what can be cleaned up there is different from what is cleaned up on an NVIDIA.
  */
 export function gpuLabel(gpu: { name: string; vendor?: string }) {
   if (gpu.vendor === "amd") return gpu.name.replace(/^AMD\s+/i, "");
@@ -22,13 +22,13 @@ export function gpuLabel(gpu: { name: string; vendor?: string }) {
 }
 
 /**
- * O mesmo nome, com o índice quando a máquina tem duas placas iguais.
+ * The same name, with the index when the machine has two identical cards.
  *
- * Uma caixa com duas RTX 5060 Ti mostrava dois rótulos idênticos - duas
- * temperaturas, duas barras de VRAM, e nada dizendo qual era qual. O índice é
- * o número pelo qual a `pom.json` e o painel já falam de uma placa, então é
- * ele que entra, e só onde é preciso: numa máquina de placa única o sufixo
- * seria ruído.
+ * A box with two RTX 5060 Ti showed two identical labels - two
+ * temperatures, two VRAM bars, and nothing saying which was which. The index is
+ * the number by which `pom.json` and the panel already refer to a card, so it is
+ * the one that goes in, and only where needed: on a single-card machine the suffix
+ * would be noise.
  */
 export function gpuDisplayName(
   gpu: { index: number; name: string; vendor?: string },
@@ -43,8 +43,8 @@ export function machineKind(system?: SystemLoad | null) {
   if (!system) return { label: formatMessage(getActiveLocale(), "machine.kindUnknown"), icon: HelpCircle, accent: "faint" as const };
   const os = system.os.toLowerCase();
   if (system.gpu_kind === "nvidia" || system.gpu_kind === "amd" || system.gpu_kind === "mixed") {
-    // Numa máquina mista o rótulo conta quantas placas há, em vez de eleger
-    // uma: o número é o que muda a decisão de quem implanta.
+    // On a mixed machine the label counts how many cards there are, instead of picking
+    // one: the number is what changes the decision of whoever deploys.
     if (system.gpu_kind === "mixed") {
       return {
         label: `${system.gpus.length} GPUs · NVIDIA + AMD`,

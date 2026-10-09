@@ -15,7 +15,7 @@ export interface MemStat {
   used_pct: number;
 }
 
-/** De quem é a placa. `GpuKind` descreve a máquina; isto, uma peça. */
+/** Whose card it is. `GpuKind` describes the machine; this, one part. */
 export type GpuVendor = "nvidia" | "amd" | "apple";
 
 export interface GpuStat {
@@ -42,14 +42,14 @@ export interface GpuProcess {
   used_mb: number;
 }
 
-/** Resumo da máquina. `mixed` = placas de marcas diferentes juntas. */
+/** Summary of the machine. `mixed` = cards of different brands together. */
 export type GpuKind = "nvidia" | "amd" | "mixed" | "unified" | "none";
 
 export interface DiskStat {
   total_mb: number;
   free_mb: number;
   mount_point: string;
-  /** Dispositivo por trás da montagem (`/dev/nvme0n1p2`); vazio quando não se sabe. */
+  /** Device behind the mount (`/dev/nvme0n1p2`); empty when it is not known. */
   device: string;
 }
 
@@ -65,13 +65,13 @@ export interface SystemLoad {
   gpus: GpuStat[];
   gpu_processes: GpuProcess[];
   wired_mb: number | null;
-  /** O volume onde as fatias moram - o que responde "cabe outra?". */
+  /** The volume where the slices live - the one that answers "does another fit?". */
   disk: DiskStat;
   /**
-   * Todo volume montado na máquina, um por partição.
+   * Every volume mounted on the machine, one per partition.
    *
-   * Lista vazia é "não perguntei", não "não tem disco": um nó velho não
-   * publica este campo, e a tela recai no `disk`.
+   * An empty list is "I did not ask", not "there is no disk": an old node does
+   * not publish this field, and the screen falls back to `disk`.
    */
   disks: DiskStat[];
   sampled_at: string;
@@ -86,7 +86,7 @@ export interface SystemLoad {
  */
 export type ServerState = "disabled" | "starting" | "ready" | "idle" | "failed" | "thermal";
 
-/** Motor que o backend afirma ter executado, sem inferência da interface. */
+/** Engine the backend states it ran, with no inference by the interface. */
 export type ExecutionEngine = "llama.cpp" | "moe" | "plugin" | "unknown";
 
 export interface RuntimeStatus {
@@ -96,21 +96,21 @@ export interface RuntimeStatus {
   restarts: number;
   log_path: string | null;
   reported_total_layers: number | null;
-  /** Camadas que o llama.cpp de fato pôs na GPU, relatadas pelo motor depois de
-   *  carregar. Não confundir com `NodeConfig.n_gpu_layers`, que é o pedido.
-   *  Negativo é "todas", na convenção do llama.cpp. Ver `layerPlacement`. */
+  /** Layers llama.cpp actually put on the GPU, reported by the engine after
+   *  loading. Not to be confused with `NodeConfig.n_gpu_layers`, which is the request.
+   *  Negative is "all", in llama.cpp's convention. See `layerPlacement`. */
   reported_gpu_layers: number | null;
   changed_at: string;
 }
 
 export interface NodeConfig {
   model_path: string;
-  /** Projector multimodal carregado neste nó, quando a visão está ligada. */
+  /** Multimodal projector loaded on this node, when vision is on. */
   mmproj_path?: string | null;
   model_label: string;
-  /** A implantação de que este nó faz parte; vazio se ele não veio de uma. */
+  /** The deployment this node is part of; empty if it did not come from one. */
   deploy_id: string;
-  /** Nome operacional da implantação, quando informado pelo operador. */
+  /** Operational name of the deployment, when given by the operator. */
   deployment_name: string;
   start_layer: number;
   end_layer: number;
@@ -174,21 +174,21 @@ export interface NodeConfig {
   adaptive_prefill_chunks?: boolean;
 }
 
-/** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
+/** Boundary of the administrative surface, distinct from the pipeline routes. */
 export type AdminExposure = "localhost" | "network";
 
-/** Metadados públicos usados para decidir se a catraca deve aparecer. */
+/** Public metadata used to decide whether the turnstile should appear. */
 export interface AdminAccessStatus {
   admin_exposure: AdminExposure;
   requires_password: boolean;
-  /** A senha em vigor é a padrão do primeiro acesso (`admin`). */
+  /** The password in effect is the first access default (`admin`). */
   default_password?: boolean;
   /** Identifies this run of the node; changes on every restart. */
   boot_id?: string;
   gateway_port: number;
 }
 
-/** Estado administrativo consultado depois que a página já foi autenticada. */
+/** Administrative state queried after the page has already been authenticated. */
 export interface AdminAccessInfo {
   admin_exposure: AdminExposure;
   gateway_port: number;
@@ -197,11 +197,11 @@ export interface AdminAccessInfo {
 }
 
 /**
- * Estado local de um plugin independente (ver `crates/node/src/plugins.rs`),
- * comprado/ativado/desativado separadamente dos demais. O nó cria runtimes
- * dinamicamente para os `plugin_code` concedidos pelo servidor; a tela de
- * Plugins cruza esses estados locais com a vitrine pública, que também contém
- * plugins sem status local nesta instalação.
+ * Local state of an independent plugin (see `crates/node/src/plugins.rs`),
+ * bought/activated/deactivated separately from the others. The node creates
+ * runtimes dynamically for the `plugin_code`s granted by the server; the
+ * Plugins screen crosses these local states with the public storefront, which
+ * also holds plugins with no local status on this installation.
  */
 export type PluginLicenseState =
   | "needs_activation"
@@ -211,7 +211,7 @@ export type PluginLicenseState =
   | "revoked"
   | "unavailable";
 
-/** Uma atualização de versão disponível - do plugin em si, nunca do `pom_core`. */
+/** An available version update - of the plugin itself, never of `pom_core`. */
 export interface PluginUpdateInfo {
   release_id: string;
   version: string;
@@ -278,9 +278,9 @@ export interface GithubRepository {
   manifest: GithubRepositoryManifest;
   ui_manifest?: Record<string, unknown> | null;
   releases: GithubRepositoryRelease[];
-  /** Descrição por idioma declarada no manifesto do repositório. */
+  /** Per-language description declared in the repository's manifest. */
   description?: Record<string, string>;
-  /** Capturas de tela servidas direto pelo GitHub (`raw.githubusercontent.com`). */
+  /** Screenshots served straight from GitHub (`raw.githubusercontent.com`). */
   screenshot_urls?: string[];
   checked_at: string;
   check_error: string | null;
@@ -349,9 +349,9 @@ export interface PluginStatus {
 }
 
 /**
- * Atualização do binário `pom` em si. Fronteira de produto deliberadamente
- * separada dos plugins (ver `crates/node/src/pom_core_update.rs`): nunca
- * misture este tipo com `PluginStatus`/`PluginUpdateInfo` na UI.
+ * Update of the `pom` binary itself. A product boundary deliberately
+ * separate from the plugins (see `crates/node/src/pom_core_update.rs`): never
+ * mix this type with `PluginStatus`/`PluginUpdateInfo` in the UI.
  */
 export interface PomCoreUpdateStatus {
   core_update: PluginUpdateInfo | null;
@@ -370,17 +370,17 @@ export interface NodeInfo {
   /** This node's copy of the trust chain and whether a peer has a newer one. */
   cluster_version?: import("./clusterVersion").ClusterVersionStatus;
   /**
-   * A chave de conexão do cluster, que esta interface mostra em "Chave de
-   * Conexão" e guarda para autenticar as chamadas que a exigem.
+   * The cluster's connection key, which this interface shows under "Connection
+   * Key" and keeps to authenticate the calls that require it.
    */
   connection_key: string;
   /**
-   * Autoridade administrativa **efetiva** deste nó, e não o perfil: um
-   * `profile: admin` sem a concessão assinada vem `null`. É o que decide se a
-   * tela oferece um ato administrativo ou só o mostra.
+   * This node's **effective** administrative authority, and not the profile: a
+   * `profile: admin` without the signed grant comes as `null`. It is what decides
+   * whether the screen offers an administrative act or only shows it.
    */
   authority_level: "primary" | "secondary" | null;
-  /** Impressão digital do principal ancorado, quando este nó é `admin`. */
+  /** Fingerprint of the anchored principal, when this node is `admin`. */
   authority_fingerprint: string | null;
   p2p_port: number;
   gateway_port: number;
@@ -390,9 +390,9 @@ export interface NodeInfo {
   config: NodeConfig | null;
   status: RuntimeStatus;
   system: SystemLoad;
-  /** O que os plugins em execução nesta máquina servem para a rede. Ausente num nó antigo. */
+  /** What the plugins running on this machine serve to the network. Absent on an old node. */
   plugin_services?: PluginService[];
-  /** Disco usado pelo diretório de snapshots de KV desta máquina (`kv-slots`). Ausente num nó antigo. */
+  /** Disk used by this machine's KV snapshot directory (`kv-slots`). Absent on an old node. */
   kv_cache?: KvCacheDisk;
   peer_count: number;
   load: number;
@@ -400,33 +400,33 @@ export interface NodeInfo {
   active_deployment?: string;
   /** True while the operator has taken this node off the network. */
   detached?: boolean;
-  /** Commit de que o binário foi construído. */
+  /** Commit the binary was built from. */
   build_commit: string;
-  /** Este nó aceita atualizar-se pela interface (POM_DEV_UPDATE=1). */
+  /** This node accepts updating itself through the interface (POM_DEV_UPDATE=1). */
   dev_update: boolean;
-  /** Se os controles POM exclusivos de desenvolvimento estão expostos. */
+  /** Whether the development-only POM controls are exposed. */
   pom_dev_mode: boolean;
   /** The name the operator gave this machine; `null` means the system hostname. */
   node_name: string | null;
-  /** Endereço fixado pelo operador. `null` quando nada foi fixado. */
+  /** Address pinned by the operator. `null` when nothing was pinned. */
   advertise_addr: string | null;
-  /** O que este nó anuncia agora de fato (fixado, observado, ou o sentinela). */
+  /** What this node actually announces now (pinned, observed, or the sentinel). */
   effective_address: string;
-  /** Se o cluster fala TLS entre peers agora. `webui.rs` - `NodeInfo`. */
+  /** Whether the cluster speaks TLS between peers now. `webui.rs` - `NodeInfo`. */
   tls_required: boolean;
-  /** Se **este** nó pode mudar isso: só o principal pode. */
+  /** Whether **this** node can change that: only the principal can. */
   tls_authority: boolean;
-  /** Se o cluster prefere HTTP/3 sobre QUIC nos novos hops. */
+  /** Whether the cluster prefers HTTP/3 over QUIC on new hops. */
   quic_enabled: boolean;
-  /** Só o principal pode alterar a preferência QUIC. */
+  /** Only the principal can change the QUIC preference. */
   quic_authority: boolean;
-  /** Se este nó coleta e envia logs de processo do cluster. */
+  /** Whether this node collects and sends the cluster's process logs. */
   cluster_logs_enabled: boolean;
-  /** Só o principal pode mudar a política de logs. */
+  /** Only the principal can change the log policy. */
   cluster_logs_authority: boolean;
-  /** Se o canal global de conversa está ligado neste nó. */
+  /** Whether the global conversation channel is on at this node. */
   network_chat_enabled: boolean;
-  /** Só o principal pode mudar a política do Chat da rede. */
+  /** Only the principal can change the network Chat policy. */
   network_chat_authority: boolean;
   thermal: ThermalPolicy;
 }
@@ -515,7 +515,7 @@ export interface NetworkChatRequest {
     mime_type?: string;
     data?: number[];
     is_typing?: boolean;
-    /** Só em `plugin_notice` (aviso de plugin para a rede). */
+    /** Only in `plugin_notice` (a plugin's notice to the network). */
     plugin_code?: string;
     title?: string;
     body?: string;
@@ -537,7 +537,7 @@ export interface NetworkChatEvent {
   mimeType: string | null;
   fileData: number[];
   sentAt: string;
-  /** Só em `plugin_notice`. */
+  /** Only in `plugin_notice`. */
   pluginCode?: string;
   title?: string;
   level?: "info" | "success" | "warning" | "error";
@@ -617,7 +617,7 @@ export interface NetworkChatSnapshot {
   messages: NetworkChatEvent[];
   participants: NetworkChatParticipant[];
   typing: NetworkChatEvent[];
-  /** Avisos de plugins recebidos nas últimas 24 h; só em memória no nó. */
+  /** Plugin notices received in the last 24 h; in memory only on the node. */
   notices?: NetworkChatEvent[];
   dropped: number;
 }
@@ -632,7 +632,7 @@ export interface PeerView {
   total_layers: number;
   capabilities: ModelCapability[];
   inference_url: string | null;
-  /** Endereço escolhido para falar com este peer, e a latência medida. */
+  /** Address chosen to talk to this peer, and the measured latency. */
   route: { addr: string; rtt_ms: number } | null;
   gateway_url: string | null;
   /** In-flight requests as reported by the peer itself; `null` means it was not readable. */
@@ -641,30 +641,30 @@ export interface PeerView {
   node: NodeInfo | null;
   unreachable: string | null;
   /**
-   * Todo endereço conhecido deste par está desacreditado e o nó já pediu à
-   * rede o endereço atual dele.
+   * Every known address of this peer is discredited and the node has already
+   * asked the network for its current address.
    *
-   * Não é o mesmo que `unreachable`: aqui há trabalho em curso. Endereços IPv6
-   * temporários rodam sozinhos, e a tela precisa dizer "reencontrando" em vez
-   * de anunciar um beco sem saída que se resolve na volta seguinte do gossip.
+   * Not the same as `unreachable`: here there is work in progress. Temporary
+   * IPv6 addresses rotate on their own, and the screen has to say "finding again"
+   * instead of announcing a dead end that resolves on the next gossip round.
    */
   rediscovering: boolean;
 }
 
-/** Quantos bytes de um grupo de tensores ficaram num buffer. */
+/** How many bytes of a tensor group ended up in a buffer. */
 export interface BufferBytes {
   buffer: string;
   bytes: number;
 }
 
 /**
- * Onde o llama.cpp pôs cada camada, medido depois da carga.
+ * Where llama.cpp put each layer, measured after the load.
  *
- * `device` é o dispositivo que o llama.cpp atribuiu ao bloco; `buffers` é onde
- * os pesos dele estão de fato. Os dois divergem quando um override de buffer
- * type entra - o caso clássico é o `fit` mandando os experts de um MoE para a
- * CPU numa camada cujo dispositivo continua sendo a GPU. Por isso a tela lê os
- * buffers, não o dispositivo.
+ * `device` is the device llama.cpp assigned to the block; `buffers` is where
+ * its weights actually are. The two diverge when a buffer type override
+ * comes in - the classic case is `fit` sending the experts of a MoE to the
+ * CPU on a layer whose device is still the GPU. That is why the screen reads
+ * the buffers, not the device.
  */
 export interface LayerPlacement {
   layer: number;
@@ -674,19 +674,19 @@ export interface LayerPlacement {
 
 export interface ModelPlacement {
   n_layer: number;
-  /** O que o llama.cpp acabou usando, não o que foi pedido. */
+  /** What llama.cpp ended up using, not what was requested. */
   n_gpu_layers: number;
   has_tensor_overrides: boolean;
   devices: Array<{ name: string; description: string }>;
   layers: LayerPlacement[];
-  /** Embeddings, norma final e cabeça: tudo que não pertence a um bloco. */
+  /** Embeddings, final norm and head: everything that does not belong to a block. */
   output: { device: string; buffers: BufferBytes[] };
   totals: BufferBytes[];
 }
 
 /**
- * A memória do contexto por buffer. `context` é o cache KV - a resposta real
- * para "o KV ficou na GPU?", que a flag `offload_kqv` só pede.
+ * The context's memory per buffer. `context` is the KV cache - the real answer
+ * to "did the KV stay on the GPU?", which the `offload_kqv` flag only requests.
  */
 export interface ContextMemoryBuffer {
   buffer: string;
@@ -697,11 +697,11 @@ export interface ContextMemoryBuffer {
 }
 
 /**
- * Os parâmetros de llama.cpp com que o contexto de um nó subiu.
+ * The llama.cpp parameters a node's context came up with.
  *
- * Vem do contexto vivo, não do `EngineConfig` do nó: o fallback de KV em RAM
- * reconstrói o contexto com outra configuração, e o operador precisa ver o que
- * está rodando, não o que foi pedido.
+ * It comes from the live context, not from the node's `EngineConfig`: the KV in
+ * RAM fallback rebuilds the context with another configuration, and the
+ * operator needs to see what is running, not what was requested.
  */
 export interface PeerLoadParams {
   n_ctx: number;
@@ -711,9 +711,9 @@ export interface PeerLoadParams {
   n_seq_max: number;
   n_threads: number;
   n_threads_batch: number;
-  /** `null` quando a ponte de diagnóstico não respondeu. */
+  /** `null` when the diagnostics bridge did not answer. */
   flash_attn: boolean | null;
-  /** O Flash Attention veio da sonda `AUTO` ou de um pedido explícito? */
+  /** Did Flash Attention come from the `AUTO` probe or from an explicit request? */
   flash_attn_auto: boolean | null;
   kv_unified: boolean;
   embeddings: boolean;
@@ -726,14 +726,14 @@ export interface PeerLoadParams {
 }
 
 /**
- * Um serviço que um plugin de uma máquina oferece ao cluster (`host.services`),
- * como o Qdrant servindo de banco de RAG. O nó valida e publica; a tela só
- * desenha.
+ * A service that a plugin on one machine offers the cluster (`host.services`),
+ * such as Qdrant serving as the RAG database. The node validates and publishes;
+ * the screen only draws.
  */
 export interface PluginService {
   plugin_code: string;
   id: string;
-  /** Para que serve: `rag`. Vocabulário aberto; um tipo desconhecido aparece como veio. */
+  /** What it is for: `rag`. Open vocabulary; an unknown kind shows up as it came. */
   kind: string;
   name: string;
   status: "ready" | "starting" | "installing" | "waiting" | "error";
@@ -762,19 +762,19 @@ export interface EngineSetting {
 /** Values by setting key; an absent key keeps the engine's default. */
 export type EngineSettingValues = Record<string, number | boolean | string | string[]>;
 
-/** O diretório de snapshots de KV de uma máquina, medido pelo próprio nó. */
+/** A machine's KV snapshot directory, measured by the node itself. */
 export interface KvCacheDisk {
-  /** `false` quando `slot_save_path` está desligado naquela máquina. */
+  /** `false` when `slot_save_path` is off on that machine. */
   enabled: boolean;
   path: string | null;
   snapshots: number;
   bytes: number;
 }
 
-/** O cache de KV em RAM (`--cache-ram`) do servidor de inferência. */
+/** The inference server's KV cache in RAM (`--cache-ram`). */
 export interface KvCacheRam {
   enabled: boolean;
-  /** `null` com o cache ligado: máquina com menos de 12 GiB de RAM, ou ainda não medida. */
+  /** `null` with the cache on: a machine with less than 12 GiB of RAM, or not measured yet. */
   limit_bytes: number | null;
   user_reserve_bytes: number | null;
   bytes: number;
@@ -785,7 +785,7 @@ export interface KvCacheRam {
   evicted: number;
 }
 
-/** O que `POST /api/ui/kv-cache/clear` devolve. */
+/** What `POST /api/ui/kv-cache/clear` returns. */
 export interface KvCacheCleared {
   cleared: boolean;
   node_id: string;
@@ -795,7 +795,7 @@ export interface KvCacheCleared {
   ram_bytes: number;
 }
 
-/** O `/health` do servidor de inferência de uma máquina, como a tela o lê. */
+/** The `/health` of a machine's inference server, as the screen reads it. */
 export interface PeerRuntimeHealth {
   start_layer: number;
   end_layer: number;
@@ -808,85 +808,85 @@ export interface PeerRuntimeHealth {
   n_ubatch_effective: number;
   /** Real backend setting on this peer, not inferred from a zero timing. */
   profile_sync_enabled?: boolean;
-  /** Caminho selecionado pelo GGUF; o motor por requisição vem da trace. */
+  /** Path selected by the GGUF; the per-request engine comes from the trace. */
   selected_path?: string;
-  /** Ownership efetivo dos experts neste nó, separado do caminho selecionado. */
+  /** Effective ownership of the experts on this node, separate from the selected path. */
   moe_requested?: boolean;
   moe_executor?: "cpu-reference" | "cuda" | "not-installed" | "not-requested" | "not-run" | "mixed";
   moe_executor_dtypes?: number[];
-  /** Razão concreta quando o executor MoE não foi instalado ou usa CPU. */
+  /** Concrete reason when the MoE executor was not installed or uses the CPU. */
   moe_executor_reason?: string | null;
-  /** Cache de KV em RAM deste nó. Ausente num nó antigo. */
+  /** This node's KV cache in RAM. Absent on an old node. */
   cache_ram?: KvCacheRam;
   mtp_ready: boolean;
-  /** Motivo retornado pelo runtime quando o MTP pedido não foi anexado. */
+  /** Reason returned by the runtime when the requested MTP was not attached. */
   mtp_unavailable_reason?: string | null;
-  /** Local dominante dos buffers do contexto MTP pronto. */
+  /** Dominant location of the buffers of the ready MTP context. */
   mtp_allocation?: "vram" | "ram" | null;
-  /** Com que parâmetros de llama.cpp este contexto subiu. */
+  /** Which llama.cpp parameters this context came up with. */
   load_params?: PeerLoadParams;
-  /** `null` num nó cuja ponte de diagnóstico não respondeu. */
+  /** `null` on a node whose diagnostics bridge did not answer. */
   placement: ModelPlacement | null;
   context_memory: { buffers: ContextMemoryBuffer[] } | null;
 }
 
-/** Resposta de `/api/ui/peer/:node_id/runtime`. */
+/** Response of `/api/ui/peer/:node_id/runtime`. */
 export interface PeerRuntime {
   loaded: boolean;
-  /** Por que não há dados, quando `loaded` é falso. */
+  /** Why there is no data, when `loaded` is false. */
   reason?: string;
   health?: PeerRuntimeHealth;
 }
 
-/** RTT direcional medido entre dois peers da execução exibida no chat. */
+/** Directional RTT measured between two peers of the run shown in the chat. */
 export interface ChatTelemetryRtt {
   from_node_id: string;
   to_node_id: string;
   rtt_ms: number;
   transport: string;
-  /** A aresta passa por um circuito num relé libp2p: rota a rever. */
+  /** The edge goes through a circuit on a libp2p relay: a route to review. */
   relayed?: boolean;
 }
 
 export interface ChatTelemetryNetwork {
   measurements: ChatTelemetryRtt[];
-  /** Custo observado do ciclo completo, quando o trace fechou todas as pernas. */
+  /** Observed cost of the full cycle, when the trace closed every leg. */
   pipeline_cost?: {
     legs_ms: Array<number | null>;
     compute_ms: number | null;
   } | null;
-  /** Todas as rotas completas possíveis para o modelo ativo, do head à cauda. */
+  /** Every possible complete route for the active model, from head to tail. */
   pipeline_routes?: Array<{
     node_ids: string[];
     legs_ms: Array<number | null>;
     rtt_ms: number | null;
-    /** Compute de um passo de decode somado nos peers da rota. */
+    /** Compute of one decode step summed over the route's peers. */
     compute_ms?: number | null;
-    /** Rede paga por token no modo de volta escolhido (não a soma das pernas). */
+    /** Network paid per token in the chosen return mode (not the sum of the legs). */
     network_ms?: number | null;
     return_mode?: "direct" | "ring" | null;
-    /** Um token pela rota: rede no modo escolhido mais compute. */
+    /** One token through the route: network in the chosen mode plus compute. */
     total_ms?: number | null;
     tokens_per_sec?: number | null;
-    /** Alguma perna da rota passa por relé. */
+    /** Some leg of the route goes through a relay. */
     relayed?: boolean;
-    /** Quais pernas passam por relé, como `[de, para]`. */
+    /** Which legs go through a relay, as `[from, to]`. */
     relayed_legs?: Array<[string, string]>;
-    /** A volta direta passaria por relé e o anel a contorna. */
+    /** The direct return would go through a relay and the ring goes around it. */
     relay_bypassed_by_ring?: boolean;
   }>;
-  /** Velocidade medida de cada peer do modelo ativo. */
+  /** Measured speed of each peer of the active model. */
   peer_perf?: Record<string, ChatTelemetryPeerPerf>;
 }
 
-/** Velocidade medida de um peer: teste ao servir e tráfego real. */
+/** Measured speed of a peer: test when serving and real traffic. */
 export interface ChatTelemetryPeerPerf {
   prefill_tokens_per_sec: number | null;
   decode_tokens_per_sec: number | null;
   active_generations: number;
 }
 
-/** Resposta do recorte de topologia que um nó infer pode consultar. */
+/** Response of the topology cut an infer node can query. */
 export interface InferenceHeadCandidate {
   node_id: string;
   short_id: string;
@@ -927,12 +927,12 @@ export interface ModelCoverage {
   coverage: boolean[];
   complete: boolean;
   /**
-   * Máquinas que contribuem camadas para esta cobertura e não puderam ser
-   * lidas nesta passagem.
+   * Machines that contribute layers to this coverage and could not be read
+   * on this pass.
    *
-   * A cobertura sai do que os pares anunciam no gossip, não da leitura de
-   * cada um. Sem esta lista, um par ilegível conta como saudável e a tela diz
-   * "completo" para um modelo cuja metade ninguém consegue consultar.
+   * The coverage comes from what the peers announce in the gossip, not from
+   * reading each one. Without this list, an unreadable peer counts as healthy and
+   * the screen says "complete" for a model half of which nobody can query.
    */
   unreadable_nodes: string[];
 }
@@ -949,7 +949,7 @@ export interface RoutingEdge {
 export interface ClusterView {
   self_id: string;
   active_model: string;
-  /** Projetor carregado na cabeça da implantação ativa, quando há visão. */
+  /** Projector loaded at the head of the active deployment, when there is vision. */
   mmproj_path?: string | null;
   total_layers: number;
   covered_layers: number;
@@ -960,19 +960,19 @@ export interface ClusterView {
   routing_edges: RoutingEdge[];
   candidate_edges: RoutingEdge[];
   node: NodeInfo | null;
-  /** Diagnóstico da travessia de NAT deste nó. Ausente em nó antigo. */
+  /** Diagnostics of this node's NAT traversal. Absent on an old node. */
   traversal?: TraversalView;
 }
 
 /**
- * Em que degrau a travessia de NAT parou. Sem isto, "os dois nós não se
- * falam" só se investiga com log de depuração na máquina certa.
+ * On which rung the NAT traversal stopped. Without this, "the two nodes do not
+ * talk to each other" can only be investigated with a debug log on the right machine.
  */
 export interface TraversalView {
   nat: "unknown" | "public" | "private";
-  /** Multiaddresses publicados, inclusive o circuito de relé. */
+  /** Published multiaddresses, including the relay circuit. */
   addrs: string[];
-  /** PeerId dos relés que aceitaram reserva. */
+  /** PeerId of the relays that accepted a reservation. */
   reservations: string[];
   hole_punch_ok: number;
   hole_punch_failed: number;
@@ -1012,18 +1012,18 @@ export interface DiscoveredModel {
   source: ModelSource;
   source_label: string;
   path: string;
-  /** GGUF mmproj adjacente escolhido pela convenção do llama.cpp. */
+  /** Adjacent mmproj GGUF chosen by llama.cpp's convention. */
   mmproj_path?: string | null;
-  /** Todos os projetores compatíveis para escolha na implantação. */
+  /** Every compatible projector to choose from in the deployment. */
   mmproj_candidates?: string[];
-  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
+  /** Reason when the catalog could not suggest a compatible projector. */
   mmproj_reason?: string | null;
   size_bytes: number;
-  /** O GGUF declara split.count > 1 e este item representa o conjunto. */
+  /** The GGUF declares split.count > 1 and this item represents the set. */
   multipart?: boolean;
-  /** Partes físicas do conjunto, na ordem split.no. */
+  /** Physical parts of the set, in split.no order. */
   multipart_parts?: MultipartPart[];
-  /** Motivo concreto que impede ler um conjunto multipart incompleto. */
+  /** Concrete reason that prevents reading an incomplete multipart set. */
   multipart_error?: string | null;
   architecture: string | null;
   /** `<arch>.embedding_length`: the width a projector or MTP draft must match. */
@@ -1035,27 +1035,27 @@ export interface DiscoveredModel {
   total_layers: number | null;
   quant: string | null;
   shard_range: [number, number] | null;
-  /** Chave da rodada de fatiamento: `<modelo>-<id curto>`. */
+  /** Key of the slicing round: `<modelo>-<id curto>`. */
   shard_group: string | null;
-  /** sha256 da parte, quando o arquivo é endereçado por conteúdo. */
+  /** sha256 of the part, when the file is content addressed. */
   sha256: string | null;
-  /** Rótulo do modelo de origem, do `.pom`. */
+  /** Label of the source model, from the `.pom`. */
   model_label: string | null;
-  /** A rodada que produziu esta parte. */
+  /** The round that produced this part. */
   pom_id: string | null;
-  /** Rank tensorial, quando a parte pertence a uma rodada TP. */
+  /** Tensor rank, when the part belongs to a TP round. */
   tp_rank?: number | null;
-  /** Tamanho do grupo tensorial, quando a parte pertence a uma rodada TP. */
+  /** Size of the tensor group, when the part belongs to a TP round. */
   tp_size?: number | null;
 }
 
 /** A whole `.gguf`, as opposed to a slice of one. Slices carry `shard_range`. */
 export const isWholeModel = (m: DiscoveredModel): boolean => m.shard_range == null;
 
-/** `src/models/deployment.rs` — de que forma um modelo está no ar. */
+/** `src/models/deployment.rs` - in what form a model is in service. */
 export type DeploymentKind = 'shards' | 'whole' | 'tensor_parallel' | 'mixed';
 
-/** `src/models/deployment.rs` — um nó da implantação, e a config com que subiu. */
+/** `src/models/deployment.rs` - a node of the deployment, and the config it came up with. */
 export interface DeploymentNode {
   node_id: string;
   hostname: string;
@@ -1070,11 +1070,11 @@ export interface DeploymentNode {
 }
 
 /**
- * `src/models/deployment.rs` — uma configuração que este `deploy_id` já rodou.
+ * `src/models/deployment.rs` - a configuration this `deploy_id` has already run.
  *
- * O que distingue uma versão da outra são os parâmetros do deployment inteiro
- * (`params`). Ajustes por máquina entram no snapshot `nodes` mas não forkam
- * uma versão.
+ * What tells one version from another are the parameters of the whole
+ * deployment (`params`). Per-machine adjustments go into the `nodes` snapshot
+ * but do not fork a version.
  */
 export interface DeploymentVersion {
   version: number;
@@ -1085,15 +1085,15 @@ export interface DeploymentVersion {
 }
 
 /**
- * `src/models/deployment.rs` — a ligação entre um conjunto de nós e um modelo.
+ * `src/models/deployment.rs` - the link between a set of nodes and a model.
  *
- * O mesmo modelo pode estar no ar em mais de uma implantação, com máquinas ou
- * configuração diferentes; o `deploy_id` é o que as distingue. Uma requisição
- * escolhe uma pelo sufixo `<modelo>@<deploy_id>`.
+ * The same model can be in service in more than one deployment, with different
+ * machines or configuration; the `deploy_id` is what tells them apart. A
+ * request picks one by the suffix `<modelo>@<deploy_id>`.
  *
- * `versions` é o histórico de configurações do mesmo `deploy_id`;
- * `active_version` aponta a que está no ar. `nodes` é a lista achatada da
- * versão ativa.
+ * `versions` is the history of configurations of the same `deploy_id`;
+ * `active_version` points to the one in service. `nodes` is the flattened list
+ * of the active version.
  */
 export interface Deployment {
   deployment_version: number;
@@ -1112,35 +1112,35 @@ export interface Deployment {
   active_version: number;
 }
 
-/** O que `GET /api/ui/deployments` responde. */
+/** What `GET /api/ui/deployments` answers. */
 export interface DeploymentsResponse {
   node_id: string;
   deployments: Deployment[];
-  /** Os `deploy_id` que atendem um pedido feito só com o nome do modelo. */
+  /** The `deploy_id`s that serve a request made with the model name alone. */
   active: string[];
 }
 
 export interface ShardSet {
-  /** Rótulo do modelo — o que se lê. `group` identifica a rodada. */
+  /** Label of the model - what one reads. `group` identifies the round. */
   model_label: string;
   /** Projector adjacent to this set or to its original whole model. */
   mmproj_path?: string | null;
-  /** Todos os projetores compatíveis para escolha na implantação. */
+  /** Every compatible projector to choose from in the deployment. */
   mmproj_candidates?: string[];
-  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
+  /** Reason when the catalog could not suggest a compatible projector. */
   mmproj_reason?: string | null;
-  /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
+  /** The slicing round that produced these parts. Identification, not a name. */
   pom_id: string;
   group: string;
   total_layers: number | null;
   total_layers_inferred: boolean;
   shards: DiscoveredModel[];
-  /** Partes completas do modelo, uma por rank TP. */
+  /** Complete parts of the model, one per TP rank. */
   tp_parts?: DiscoveredModel[];
   complete: boolean;
 }
 
-/** Lê a lista TP de respostas de catálogo sem derrubar a tela se ela faltar. */
+/** Reads the TP list of catalog responses without taking the screen down if it is missing. */
 export const tpPartsOf = (set: { tp_parts?: DiscoveredModel[] }): DiscoveredModel[] =>
   Array.isArray(set.tp_parts) ? set.tp_parts : [];
 
@@ -1273,9 +1273,9 @@ export interface PathsResponse {
   default_shard_dir: string;
   default_workspace_root: string;
   shard_max_gb: number;
-  /** Variável de ambiente que define as pastas de modelos inteiros, quando vale. */
+  /** Environment variable that sets the whole model folders, when it applies. */
   model_dirs_env?: string | null;
-  /** Variável de ambiente que define a pasta das fatias, quando vale. */
+  /** Environment variable that sets the slices folder, when it applies. */
   shard_dir_env?: string | null;
 }
 
@@ -1296,7 +1296,7 @@ export interface CacheTypesResponse {
   choices: KvCacheType[];
 }
 
-/** Inventário da máquina escolhida no diálogo de adicionar. */
+/** Inventory of the machine chosen in the add dialog. */
 export interface AddNodeOption {
   kind: "shards" | "whole";
   start_layer: number;
@@ -1333,7 +1333,7 @@ export interface Job {
   kind?: string;
   /** Human label for the notification list. */
   title?: string;
-  /** Campos presentes quando `kind === "model_download"`. */
+  /** Fields present when `kind === "model_download"`. */
   repo_id?: string;
   revision?: string | null;
   filename?: string;
@@ -1415,7 +1415,7 @@ export interface RemoteModelProviderStatus {
   };
 }
 
-/** Estado seguro do token: o segredo bruto nunca faz parte do contrato da UI. */
+/** Safe state of the token: the raw secret is never part of the UI contract. */
 export interface HuggingFaceTokenConfig {
   configured: boolean;
   masked: string | null;
@@ -1448,11 +1448,11 @@ export interface RemoteModelDetails {
 export interface TransferJob {
   id: string;
   name: string;
-  /** De que lado desta máquina a transferência está. O id é o mesmo nas duas. */
+  /** Which side of this machine the transfer is on. The id is the same on both. */
   direction: "sending" | "receiving";
-  /** A outra máquina. */
+  /** The other machine. */
   peer_host: string;
-  /** Arquivo local envolvido. */
+  /** Local file involved. */
   path: string;
   state: "running" | "verifying" | "done" | "failed" | "cancelled";
   bytes_done: number;
@@ -1461,27 +1461,27 @@ export interface TransferJob {
   eta_secs: number | null;
   detail: string;
   /**
-   * De que modelo esta transferência é, e que camadas ela traz — do `.pom`.
+   * Which model this transfer belongs to, and which layers it brings - from the `.pom`.
    *
-   * O `name` de uma parte é o sha256 dela, e hash não identifica nada que se
-   * leia. Ausentes quando o arquivo não é parte de fatiamento nenhum (um
-   * modelo inteiro) ou quando o nó é de versão anterior.
+   * The `name` of a part is its sha256, and a hash identifies nothing one can
+   * read. Absent when the file is not part of any slicing (a whole model) or
+   * when the node is of an earlier version.
    */
   model_label?: string | null;
   start_layer?: number | null;
   end_layer?: number | null;
   /**
-   * Quando o job entrou num estado terminal, em RFC 3339. Ausente enquanto
-   * corre, e também num nó de versão anterior, que não carimbava a hora.
+   * When the job entered a terminal state, in RFC 3339. Absent while it runs,
+   * and also on a node of an earlier version, which did not stamp the time.
    */
   finished_at?: string | null;
 }
 
 export interface TransferOffer {
-  /** Tipo explícito no contrato novo; ausente apenas quando o servidor ainda
-   * não anota ofertas de fatia, que continuam sendo o caso padrão. */
+  /** Explicit kind in the new contract; absent only when the server does not yet
+   * annotate slice offers, which remain the default case. */
   kind?: "slice";
-  /** Resultado terminal, quando o servidor mantém o desfecho no sino. */
+  /** Terminal result, when the server keeps the outcome in the bell. */
   status?: "pending" | "accepted" | "rejected" | "expired";
   id: string;
   from_node_id: string;
@@ -1492,23 +1492,23 @@ export interface TransferOffer {
   name: string;
   size_bytes: number;
   /**
-   * Sempre vazio. Quem confere o arquivo é este nó, depois de aceitar, com o
-   * digest que ele pede em `/api/transfer/manifest`; calculá-lo para oferecer
-   * segurava a notificação pelo tempo de ler o arquivo inteiro.
+   * Always empty. The one that checks the file is this node, after accepting,
+   * with the digest it asks for in `/api/transfer/manifest`; computing it to offer
+   * held the notification for the time it takes to read the whole file.
    */
   md5: string;
   start_layer: number | null;
   end_layer: number | null;
   /**
-   * O manifesto do fatiamento a que esta parte pertence, quando ela é uma.
+   * The manifest of the slicing this part belongs to, when it is one.
    *
-   * Viaja **junto com a oferta**, e não depois: é ele que diz de que modelo a
-   * parte é. Sem isto a notificação só tinha o `<sha256>.gguf` para mostrar.
+   * It travels **along with the offer**, and not afterwards: it is what says which
+   * model the part is from. Without this the notification only had the `<sha256>.gguf` to show.
    */
   pom?: OfferManifest | null;
 }
 
-/** Oferta do mesmo sino que transfere o papel de principal. */
+/** Offer on the same bell that transfers the principal role. */
 export interface AdminTransferOffer {
   kind: "principal_transfer";
   id: string;
@@ -1520,12 +1520,12 @@ export interface AdminTransferOffer {
   issued_at: string;
 }
 
-/** Todos os pedidos que podem aparecer no sino de atividade. */
+/** Every request that can show up in the activity bell. */
 export type NetworkOffer =
   | TransferOffer
   | AdminTransferOffer;
 
-/** `crate::pom::PomManifest`, na parte que a tela usa. */
+/** `crate::pom::PomManifest`, in the part the screen uses. */
 export interface OfferManifest {
   pom_id: string;
   model: {
@@ -1536,7 +1536,7 @@ export interface OfferManifest {
   };
 }
 
-/** Uma conexão libp2p viva com o peer. */
+/** A live libp2p connection with the peer. */
 export interface PeerRouteLink {
   address: string;
   relayed: boolean;
@@ -1545,11 +1545,11 @@ export interface PeerRouteLink {
 }
 
 /**
- * Por onde este nó fala de fato com o peer, observado - não o endereço que o
- * peer anuncia. `http`: um endereço direto respondeu; `p2p_direct`: conexão
- * libp2p direta (discada ou por hole punch); `relayed`: só pelo relé.
- * `relay_kind` diz, em `relayed`, se o relé é dedicado (configurado) ou um
- * membro do cluster servindo de relé - o último degrau da escada.
+ * Through where this node actually talks to the peer, observed - not the
+ * address the peer announces. `http`: a direct address answered; `p2p_direct`:
+ * direct libp2p connection (dialed or by hole punch); `relayed`: only through
+ * the relay. `relay_kind` says, in `relayed`, whether the relay is dedicated
+ * (configured) or a cluster member serving as relay - the last rung of the ladder.
  */
 export interface PeerRoute {
   kind: "http" | "p2p_direct" | "relayed" | "none";
@@ -1563,7 +1563,7 @@ export interface AdminNode {
   node_id: string;
   short_id: string;
   hostname: string;
-  /** O que o peer anuncia; a rota em uso está em `route`. */
+  /** What the peer announces; the route in use is in `route`. */
   addr: string;
   route?: PeerRoute | null;
   role?: string;
@@ -1603,7 +1603,7 @@ export type AdminResignationState =
   | { kind: "no_secondary" }
   | { kind: "no_active_secondary" };
 
-/** Contrato de apresentação. Não carrega a escolha de chave, assinatura ou armazenamento. */
+/** Presentation contract. It does not carry the choice of key, signature or storage. */
 export interface AdminAuthorityView {
   viewer: AdminAuthorityViewer;
   principal: AdminAuthorityMember;
@@ -1619,26 +1619,26 @@ export interface AdminAuthorityView {
 }
 
 /**
- * A raiz de confiança desta máquina.
+ * This machine's root of trust.
  *
- * Contrato de apresentação, como o de autoridade: a impressão digital é
- * pública e existe para o operador a conferir a olho; a decisão de instalar
- * é do servidor, e `can_install` só diz se vale a pena desenhar o formulário.
+ * Presentation contract, like the authority one: the fingerprint is public
+ * and exists for the operator to check it by eye; the decision to install is
+ * the server's, and `can_install` only says whether the form is worth drawing.
  */
 export interface TrustAnchorView {
   anchored: boolean;
   fingerprint: string | null;
   cluster_id: string | null;
   anchor_node_id: string | null;
-  /** A raiz é a chave deste nó, e não uma que ele recebeu. */
+  /** The root is this node's key, and not one it received. */
   is_anchor: boolean;
-  /** Esta ligação chegou pelo loopback, medido no socket real. */
+  /** This connection arrived over loopback, measured on the real socket. */
   loopback: boolean;
   can_install: boolean;
   trust_filename: string;
 }
 
-/** Códigos de recusa do servidor ao instalar a âncora, traduzidos na tela. */
+/** Refusal codes of the server when installing the anchor, translated on the screen. */
 export type TrustAnchorRefusal =
   | "not_loopback"
   | "already_anchored"
@@ -1685,7 +1685,7 @@ export interface GenerationTimings {
   total_tokens_per_sec: number;
 }
 
-/** Linha do log de processo persistida pelo nó principal. */
+/** Process log line persisted by the principal node. */
 export interface ClusterLogEntry {
   received_seq: number;
   received_at: string;
@@ -1725,7 +1725,7 @@ export interface LayerCut {
   remainder_bytes: number;
 }
 
-/** Cortes de camada aceitos pelo GGUF para uma fatia independente. */
+/** Layer cuts the GGUF accepts for an independent slice. */
 export interface SliceLayerOptions {
   total_layers: number;
   valid_starts: number[];
@@ -1756,14 +1756,14 @@ export interface SizePlan {
   space_status?: "ok" | "tight" | "insufficient" | "unknown";
 }
 
-/** Um rank de um plano de fatiamento tensorial. */
+/** One rank of a tensor slicing plan. */
 export interface TpSliceRank {
   rank: number;
   start_layer: number;
   end_layer: number;
 }
 
-/** `src/backend/webui.rs` - plano de fatiamento Tensor Parallelism. */
+/** `src/backend/webui.rs` - Tensor Parallelism slicing plan. */
 export interface TpSlicePlan {
   mode: "tensor_parallel";
   total_layers: number;
@@ -1845,7 +1845,7 @@ export interface DeployStep {
   position: number;
   start_layer: number;
   end_layer: number;
-  /** Faixa efetivamente executada; ausente em respostas antigas. */
+  /** Range actually executed; absent in old responses. */
   exec_start?: number;
   exec_end?: number;
   /** The plan's answer for the model size, `null` when nobody could say. */
@@ -1963,7 +1963,7 @@ export interface DeployMachine {
   mem_free_mb: number;
   gpu_free_mb: number;
   ram_free_mb: number;
-  /** Métricas live da visão do cluster, ausentes em respostas antigas. */
+  /** Live metrics of the cluster view, absent in old responses. */
   gpu_used_pct?: number | null;
   ram_used_pct?: number | null;
   disk_free_mb: number;
@@ -2017,7 +2017,7 @@ export interface RuntimeParams {
   inference_service?: string | null;
   /** That engine's settings, by the keys it publishes; absent = its defaults. */
   engine_settings?: EngineSettingValues;
-  /** Formato negociado para o estado oculto entre peers; ausente em config antiga = f16. */
+  /** Format negotiated for the hidden state between peers; absent in old config = f16. */
   hidden_state_dtype?: WireDtype;
   n_gpu_layers: number;
   n_ctx: number;
@@ -2055,23 +2055,23 @@ export interface RuntimeParams {
   reasoning_budget?: number;
   no_thinking: boolean;
   no_embeddings: boolean;
-  /** Kill-switch do operador: mesmo com todos os peers capazes, a
-   *  especulação só liga aqui. */
+  /** Operator's kill-switch: even with every peer capable,
+   *  speculation only turns on here. */
   speculative_decoding_enabled: boolean;
-  /** Largura do rascunho: o token confirmado mais até `k - 1` palpites. */
+  /** Width of the draft: the confirmed token plus up to `k - 1` guesses. */
   speculative_k: number;
-  /** Maior n-grama que o rascunho por prompt-lookup procura repetir. */
+  /** Largest n-gram the prompt-lookup draft tries to repeat. */
   speculative_lookup_window: number;
-  /** Predição multi-token pelo bloco `nextn` do próprio modelo.
-   *  Interruptor **separado** do de cima: são mecanismos diferentes, e só
-   *  este usa peso treinado. Só entra em ação quando uma máquina serve o
-   *  modelo inteiro — ver `crates/node/src/inference/mtp.rs`. */
+  /** Multi-token prediction by the model's own `nextn` block.
+   *  A switch **separate** from the one above: they are different mechanisms, and
+   *  only this one uses trained weights. It only kicks in when one machine serves
+   *  the whole model - see `crates/node/src/inference/mtp.rs`. */
   mtp_enabled: boolean;
-  /** Quantos tokens a cabeça `nextn` rascunha por rodada. */
+  /** How many tokens the `nextn` head drafts per round. */
   mtp_draft_tokens: number;
-  /** Confiança mínima para o rascunho continuar; 0 aceita qualquer palpite. */
+  /** Minimum confidence for the draft to continue; 0 accepts any guess. */
   mtp_min_probability: number;
-  /** Permite o recuo do MTP para pesos e cache em RAM quando a VRAM falhar. */
+  /** Allows the MTP to fall back to weights and cache in RAM when VRAM fails. */
   mtp_cpu_fallback_enabled?: boolean;
   /** Where the MTP block goes: with the model when it all fits (auto), always in VRAM, or always in RAM. */
   mtp_placement?: MtpPlacement;
@@ -2085,7 +2085,7 @@ export interface RuntimeParams {
   adaptive_prefill_chunks?: boolean;
 }
 
-/** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
+/** Precisions the inference protocol can convert end to end. */
 export type WireDtype = "f32" | "f16" | "f8" | "i4g64" | "i4g128";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown";
@@ -2094,7 +2094,7 @@ export interface RuntimeCapability {
   state: CapabilityState;
   source: string;
   reason: string;
-  /** Limitação de execução que não prova ausência no modelo selecionado. */
+  /** Execution limitation that does not prove absence in the selected model. */
   warning?: string;
 }
 
@@ -2104,11 +2104,11 @@ export interface DeploymentCapabilities {
   no_embeddings: RuntimeCapability;
   speculative_decoding: RuntimeCapability;
   mtp: RuntimeCapability;
-  /** Capacidade de todos os peers selecionados de receber estado oculto f8. */
+  /** Ability of every selected peer to receive f8 hidden state. */
   hidden_state_f8?: RuntimeCapability;
-  /** Capacidade de todos os peers selecionados de receber estado oculto i4g64. */
+  /** Ability of every selected peer to receive i4g64 hidden state. */
   hidden_state_i4g64?: RuntimeCapability;
-  /** Capacidade de todos os peers selecionados de receber estado oculto i4g128. */
+  /** Ability of every selected peer to receive i4g128 hidden state. */
   hidden_state_i4g128?: RuntimeCapability;
 }
 
@@ -2168,11 +2168,11 @@ export interface DeployPlan {
    * the same default the node applies to a request without a `kind`.
    */
   kind?: DeployKind;
-  /** Projector adjacente encontrado para o modelo escolhido. */
+  /** Adjacent projector found for the chosen model. */
   mmproj_path?: string | null;
-  /** Todos os projetores compatíveis no peer da cabeça. */
+  /** Every compatible projector on the head peer. */
   mmproj_candidates?: string[];
-  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
+  /** Reason when the catalog could not suggest a compatible projector. */
   mmproj_reason?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;
@@ -2180,7 +2180,7 @@ export interface DeployPlan {
   inference_mode_supported?: boolean;
   /** Why the selected inference mode cannot be honored, when applicable. */
   inference_mode_reason?: string | null;
-  /** Capacidades condicionais apuradas pelo backend para os alvos atuais. */
+  /** Conditional capabilities worked out by the backend for the current targets. */
   capabilities?: DeploymentCapabilities;
   /** `null` means no slice declares it and none starts at layer 0, which is a
    *  `blocked` plan rather than a model of zero layers. */

@@ -1,7 +1,7 @@
 use super::super::*;
 
-/// Rotas da UI que pertencem a todos os perfis. O middleware de autorização
-/// continua sendo a barreira real; este arquivo é a organização legível do
+/// UI routes that belong to every profile. The authorization middleware
+/// remains the real barrier; this file is the readable organization of the
 /// router.
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
@@ -95,8 +95,8 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/network-chat/lobby/requests/forget",
             post(lobby_request_forget),
         )
-        // Ancorar a confiança de admin é o único trabalho que precisa de tela
-        // **antes** de existir autoridade: ver o cabeçalho de `webui/trust.rs`.
+        // Anchoring admin trust is the only job that needs a screen
+        // **before** any authority exists: see the header of `webui/trust.rs`.
         .route(
             "/api/ui/network/trust-anchor",
             get(trust_anchor).post(install_trust_anchor),

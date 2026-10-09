@@ -149,9 +149,9 @@ describe("Sidebar", () => {
   });
 
   /**
-   * O menu segue a mesma tabela que barra a rota (`lib/access.ts`). As telas
-   * Enterprise são a exceção de descoberta: o item permanece visível sem
-   * licença e a tela explica como ativá-lo.
+   * The menu follows the same table that blocks the route (`lib/access.ts`). The Enterprise
+   * screens are the discovery exception: the item stays visible without a
+   * license and the screen explains how to activate it.
    */
   it("hides from the node profile the entries it cannot open and keeps Enterprise", () => {
     render(
@@ -170,7 +170,7 @@ describe("Sidebar", () => {
     expect(screen.queryByText("Implantar na rede")).toBeNull();
     expect(screen.queryByText("Implantações")).toBeNull();
     expect(screen.getByText("Logs")).toBeTruthy();
-    // O que ninguém restringiu continua no lugar.
+    // What nobody restricted stays in place.
     expect(screen.getByText("Painel")).toBeTruthy();
     expect(screen.getByText("Modelos")).toBeTruthy();
     expect(screen.getByText("Configurações")).toBeTruthy();
@@ -302,9 +302,9 @@ describe("Sidebar", () => {
   });
 
   /**
-   * O histórico é o menu principal do `infer` e é visto de toda rota. Escolher
-   * uma conversa das configurações ou da documentação trocava a conversa ativa
-   * e deixava a tela onde estava - o menu parecia ter parado de responder.
+   * The history is the `infer` main menu and is seen from every route. Choosing
+   * a conversation from settings or documentation changed the active conversation
+   * and left the screen where it was - the menu seemed to have stopped responding.
    */
   it("goes to the chat when a conversation is chosen from another route", () => {
     window.localStorage.setItem("pom.chat.sessions", JSON.stringify([

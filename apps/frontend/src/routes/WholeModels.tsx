@@ -179,9 +179,9 @@ export function WholeModels() {
   const { t } = useI18n();
   const catalog = useLocalCatalog();
 
-  // Fatias têm `shard_range` preenchido e ficam fora da lista de modelos
-  // inteiros — o catálogo continua trazendo as duas, e quem precisa das fatias
-  // lê `shard_sets` (ou faz a pergunta inversa).
+  // Slices have `shard_range` filled in and stay out of the list of whole
+  // models - the catalog still brings both, and whoever needs the slices
+  // reads `shard_sets` (or asks the inverse question).
   const models = (catalog.data?.models ?? []).filter(isWholeModel);
 
   return (

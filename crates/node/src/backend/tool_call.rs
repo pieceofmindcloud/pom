@@ -55,16 +55,16 @@ pub(crate) struct ToolDef {
     pub description: Option<String>,
     #[serde(default)]
     pub input_schema: serde_json::Value,
-    /// Streaming de granularidade fina para **esta** ferramenta: entrega os
-    /// fragmentos do argumento conforme o modelo os gera, sem represar para
-    /// validar antes.
+    /// Fine-grained streaming for **this** tool: delivers the argument
+    /// fragments as the model generates them, without holding them back to
+    /// validate first.
     ///
-    /// Forma da Anthropic, verificada na documentação viva em 2026-08-29
+    /// Anthropic's shape, verified against the live documentation on 2026-08-29
     /// (`platform.claude.com/docs/en/agents-and-tools/tool-use/fine-grained-tool-streaming`):
-    /// campo **opcional na definição da ferramenta**, sem cabeçalho beta - o
-    /// header legado `fine-grained-tool-streaming-2025-05-14` foi substituído
-    /// por ele. Ausente ou `false` mantém o represamento, que lá é **por valor
-    /// de parâmetro**, não pela chamada inteira.
+    /// an **optional field in the tool definition**, with no beta header - the
+    /// legacy `fine-grained-tool-streaming-2025-05-14` header was replaced by
+    /// it. Absent or `false` keeps the holding back, which there is **per
+    /// parameter value**, not for the whole call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eager_input_streaming: Option<bool>,
 }
@@ -223,42 +223,42 @@ pub(crate) enum ScanEvent {
     /// plain text — malformed model output must degrade gracefully, never
     /// crash or vanish.
     ToolCallClose(Result<(String, serde_json::Value), String>),
-    /// A chamada que o teto de saída cortou ao meio. Não é escolha do modelo:
-    /// o orçamento do cliente acabou com a tag ainda aberta. Ver
-    /// [`TagScanner::finish_truncated`] e [`PartialCall`].
+    /// The call the output cap cut in the middle. It is not the model's choice:
+    /// the client's budget ran out with the tag still open. See
+    /// [`TagScanner::finish_truncated`] and [`PartialCall`].
     ToolCallTruncated(PartialCall),
 }
 
-/// Uma chamada de ferramenta interrompida pelo teto de saída, na forma em que
-/// os dois provedores a devolvem.
+/// A tool call interrupted by the output cap, in the shape in which the two
+/// providers return it.
 ///
-/// OpenAI e Anthropic **não descartam** a chamada cortada e **não** a degradam
-/// em texto: ela volta estruturada, com os argumentos incompletos, ao lado do
-/// motivo de parada terminal (`finish_reason: "length"` /
-/// `stop_reason: "max_tokens"`). A orientação dos dois é a mesma - o cliente
-/// confere o motivo de parada e repete o pedido com um teto maior, sem
-/// executar nada.
+/// OpenAI and Anthropic **do not discard** the cut call and do **not** degrade
+/// it into text: it comes back structured, with incomplete arguments, beside
+/// the terminal stop reason (`finish_reason: "length"` /
+/// `stop_reason: "max_tokens"`). The guidance from both is the same - the
+/// client checks the stop reason and repeats the request with a larger cap,
+/// without executing anything.
 ///
-/// Apurado na documentação viva em 2026-08-29:
+/// Established from the live documentation on 2026-08-29:
 /// - `platform.claude.com/docs/en/build-with-claude/handling-stop-reasons` -
-///   com `stop_reason: "max_tokens"`, o cliente confere se o **último bloco**
-///   é um `tool_use` incompleto e repete com `max_tokens` maior.
-/// - `developers.openai.com/api/reference/…/chat` - `function.arguments` é
-///   documentado como string que nem sempre é JSON válido, a validar antes de
-///   executar.
+///   with `stop_reason: "max_tokens"`, the client checks whether the **last
+///   block** is an incomplete `tool_use` and repeats with a larger `max_tokens`.
+/// - `developers.openai.com/api/reference/…/chat` - `function.arguments` is
+///   documented as a string that is not always valid JSON, to be validated
+///   before executing.
 ///
-/// Ver `docs/subsystems/inference.md` (9.1).
+/// See `docs/subsystems/inference.md` (9.1).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PartialCall {
     pub(crate) name: String,
-    /// Os argumentos como a OpenAI os entrega: uma string JSON **inacabada**,
-    /// cortada onde o modelo foi cortado. É de propósito que ela não parseia -
-    /// é o que faz um cliente que ignore o motivo de parada falhar em vez de
-    /// executar meia chamada.
+    /// The arguments as OpenAI delivers them: an **unfinished** JSON string,
+    /// cut where the model was cut. It is on purpose that it does not parse -
+    /// that is what makes a client that ignores the stop reason fail instead
+    /// of executing half a call.
     pub(crate) arguments: String,
-    /// O objeto com o que deu para recuperar, para o `input` do bloco
-    /// `tool_use` da Anthropic, que é tipado como objeto. Vazio quando o corte
-    /// caiu antes do primeiro parâmetro fechar.
+    /// The object with whatever could be recovered, for the `input` of
+    /// Anthropic's `tool_use` block, which is typed as an object. Empty when
+    /// the cut fell before the first parameter closed.
     pub(crate) recovered: serde_json::Value,
 }
 
@@ -371,11 +371,11 @@ impl TagScanner {
 
     /// Whatever never resolved into a complete tag by the time the **model**
     /// stopped — a dangling `<tool_c` fragment, or a call the model abandoned
-    /// before closing. Nothing is dropped: o modelo escolheu parar ali, e o
-    /// texto que ele produziu é a resposta dele.
+    /// before closing. Nothing is dropped: the model chose to stop there, and
+    /// the text it produced is its answer.
     ///
-    /// Para o fim que não é escolha do modelo - o orçamento acabou - use
-    /// [`TagScanner::finish_truncated`], que descarta em vez de degradar.
+    /// For the end that is not the model's choice - the budget ran out - use
+    /// [`TagScanner::finish_truncated`], which discards instead of degrading.
     pub(crate) fn finish(self) -> Vec<ScanEvent> {
         match self.state {
             ScanState::Outside if self.pending.is_empty() => Vec::new(),
@@ -388,26 +388,25 @@ impl TagScanner {
         }
     }
 
-    /// Como [`TagScanner::finish`], mas para o fim imposto de fora: o teto de
-    /// saída pedido pelo cliente se esgotou no meio da geração.
+    /// Like [`TagScanner::finish`], but for the end imposed from outside: the
+    /// output cap requested by the client ran out in the middle of generation.
     ///
-    /// Com uma chamada **aberta e não fechada**, ela sai estruturada e
-    /// incompleta - [`ScanEvent::ToolCallTruncated`] - que é o que OpenAI e
-    /// Anthropic fazem. Nem degradar em texto (marcação crua entregue como
-    /// prosa, o defeito original) nem descartar: o cliente precisa ver que
-    /// **aquela** chamada não coube, para repetir o pedido com um teto maior.
-    /// Ver [`PartialCall`].
+    /// With a call **open and not closed**, it goes out structured and
+    /// incomplete - [`ScanEvent::ToolCallTruncated`] - which is what OpenAI and
+    /// Anthropic do. Neither degrade into text (raw markup delivered as prose,
+    /// the original defect) nor discard: the client needs to see that **that**
+    /// call did not fit, to repeat the request with a larger cap.
+    /// See [`PartialCall`].
     ///
-    /// Cortada cedo demais para ter nome, não há chamada nenhuma a nomear e
-    /// nada sai: um nome que o modelo não terminou de escrever não é
-    /// ferramenta, é palpite.
+    /// Cut too early to have a name, there is no call to name and nothing goes
+    /// out: a name the model did not finish writing is not a tool, it is a
+    /// guess.
     ///
-    /// O `bool` de retorno é `true` sempre que o corte caiu dentro de uma
-    /// chamada, com nome ou sem, e é o que faz `x_pom` dizer a verdade.
+    /// The returned `bool` is `true` whenever the cut fell inside a call, with
+    /// a name or without, and it is what makes `x_pom` tell the truth.
     ///
-    /// Fora de uma chamada nada muda - texto truncado continua sendo texto, e
-    /// um prefixo pendente de tag (`<tool_c`) nunca chegou a abrir chamada
-    /// nenhuma.
+    /// Outside a call nothing changes - truncated text is still text, and a
+    /// pending tag prefix (`<tool_c`) never got to open any call.
     pub(crate) fn finish_truncated(self) -> (Vec<ScanEvent>, bool) {
         match self.state {
             ScanState::Inside(raw, kind) => {
@@ -422,15 +421,15 @@ impl TagScanner {
     }
 }
 
-/// O que dá para recuperar do corpo de uma chamada que o teto cortou.
+/// What can be recovered from the body of a call the cap cut off.
 ///
-/// Espelha [`parse_call_body`], mas tolerando o fim ausente: o `</function>`
-/// que nunca veio, o `</parameter>` que ficou aberto, o JSON sem a chave de
-/// fechamento. `None` quando nem o nome da ferramenta chegou a sair inteiro.
+/// Mirrors [`parse_call_body`], but tolerating the missing end: the
+/// `</function>` that never came, the `</parameter>` left open, the JSON
+/// without the closing brace. `None` when not even the tool name came out whole.
 fn parse_partial_call_body(raw: &str, kind: CallKind) -> Option<PartialCall> {
     match kind {
-        // `<function>NAME` sem fechamento: `NAME` pode estar pela metade, e
-        // um nome pela metade não identifica ferramenta nenhuma.
+        // `<function>NAME` with no closing: `NAME` may be half written, and
+        // half a name identifies no tool at all.
         CallKind::BareFunction => None,
         CallKind::Wrapped => {
             let trimmed = raw.trim_start();
@@ -443,10 +442,10 @@ fn parse_partial_call_body(raw: &str, kind: CallKind) -> Option<PartialCall> {
     }
 }
 
-/// Serializa os pares recuperados na forma exata em que a OpenAI entrega uma
-/// chamada cortada: um objeto JSON **sem fechar**, interrompido onde o modelo
-/// foi interrompido. `partial` é o par cujo valor ainda estava sendo escrito -
-/// ele entra sem a aspa de fechamento.
+/// Serializes the recovered pairs in the exact shape in which OpenAI delivers
+/// a cut call: an **unclosed** JSON object, interrupted where the model was
+/// interrupted. `partial` is the pair whose value was still being written -
+/// it goes in without the closing quote.
 fn unterminated_arguments(
     complete: &[(String, serde_json::Value)],
     partial: Option<(&str, &str)>,
@@ -466,18 +465,18 @@ fn unterminated_arguments(
         }
         out.push_str(&serde_json::Value::String(name.to_string()).to_string());
         out.push(':');
-        // A aspa de abertura entra, a de fechamento não: o valor não acabou.
+        // The opening quote goes in, the closing one does not: the value is not over.
         let escaped = serde_json::Value::String(value.to_string()).to_string();
         out.push_str(&escaped[..escaped.len() - 1]);
     }
     out
 }
 
-/// `<function=NAME>` com zero ou mais `<parameter=P>v</parameter>` completos e,
-/// possivelmente, um último parâmetro aberto que o corte pegou no meio.
+/// `<function=NAME>` with zero or more complete `<parameter=P>v</parameter>`
+/// and, possibly, a last open parameter the cut caught in the middle.
 fn parse_partial_function_call_xml(raw: &str) -> Option<PartialCall> {
     let rest = raw.strip_prefix("<function=")?;
-    // Sem o `>` o próprio nome está pela metade.
+    // Without the `>` the name itself is half written.
     let (name, mut cursor) = rest.split_once('>')?;
     let name = name.trim();
     if name.is_empty() {
@@ -492,7 +491,7 @@ fn parse_partial_function_call_xml(raw: &str) -> Option<PartialCall> {
             break;
         };
         let Some((pname, after_name)) = after_open.split_once('>') else {
-            // `<parameter=pa` - nem o nome do parâmetro fechou.
+            // `<parameter=pa` - not even the parameter name closed.
             break;
         };
         let pname = pname.trim().to_string();
@@ -503,11 +502,11 @@ fn parse_partial_function_call_xml(raw: &str) -> Option<PartialCall> {
                 cursor = &after_name[close + PARAM_CLOSE.len()..];
             }
             None => {
-                // O que ainda pode virar `</parameter>` não é conteúdo: sem
-                // este recuo, um corte no meio da tag entregaria `</paramet`
-                // dentro do valor. É o mesmo recuo de `open_parameter_prefix`,
-                // e é o que mantém a versão truncada sempre estendendo o que
-                // o streaming já transmitiu.
+                // What can still become `</parameter>` is not content: without
+                // this hold-back, a cut in the middle of the tag would deliver
+                // `</paramet` inside the value. It is the same hold-back as in
+                // `open_parameter_prefix`, and it is what keeps the truncated
+                // version always extending what the streaming already sent.
                 let hold = [PARAM_CLOSE, "</function>"]
                     .iter()
                     .map(|tag| longest_prefix_overlap(after_name, tag))
@@ -538,9 +537,10 @@ fn parse_partial_function_call_xml(raw: &str) -> Option<PartialCall> {
     })
 }
 
-/// A forma Hermes (`{"name":…,"arguments":{…`) cortada. O nome só serve se a
-/// string dele fechou; o resto do corpo já é, ele próprio, JSON inacabado - e
-/// é entregue como está, que é exatamente o que a OpenAI devolve.
+/// The Hermes form (`{"name":…,"arguments":{…`) cut off. The name is only
+/// usable if its string closed; the rest of the body is already, in itself,
+/// unfinished JSON - and it is delivered as is, which is exactly what OpenAI
+/// returns.
 fn parse_partial_function_call_json(raw: &str) -> Option<PartialCall> {
     let name = complete_json_string_field(raw, "name")?;
     let arguments = match raw.find("\"arguments\"") {
@@ -552,8 +552,8 @@ fn parse_partial_function_call_json(raw: &str) -> Option<PartialCall> {
         }
         None => String::from("{"),
     };
-    // Um corpo que por acaso parseia inteiro ainda é chamada cortada: a tag de
-    // fechamento não veio, então mais argumentos podiam estar a caminho.
+    // A body that happens to parse whole is still a cut call: the closing tag
+    // did not come, so more arguments could have been on the way.
     let recovered = serde_json::from_str::<serde_json::Value>(&arguments)
         .ok()
         .filter(serde_json::Value::is_object)
@@ -565,8 +565,8 @@ fn parse_partial_function_call_json(raw: &str) -> Option<PartialCall> {
     })
 }
 
-/// O valor de uma chave de string JSON, **só** quando a string fechou. Um
-/// nome cortado ao meio não identifica ferramenta nenhuma, então `None`.
+/// The value of a JSON string key, **only** when the string closed. A name
+/// cut in the middle identifies no tool at all, so `None`.
 fn complete_json_string_field(raw: &str, field: &str) -> Option<String> {
     let key = format!("\"{field}\"");
     let at = raw.find(&key)?;
@@ -672,9 +672,9 @@ fn parse_bare_function_call(raw: &str) -> Option<(String, serde_json::Value)> {
 /// internal ones, since the template explicitly allows multi-line values.
 /// `None` on any structural mismatch — missing `>`, unclosed `</function>`
 /// or `</parameter>` — so the caller can fall back to literal text.
-/// O valor de um `<parameter=…>`: JSON quando o texto é JSON, string crua
-/// quando não é. O parser completo e o parcial dividem esta função para nunca
-/// discordarem sobre o tipo de um mesmo valor.
+/// The value of a `<parameter=…>`: JSON when the text is JSON, a raw string
+/// when it is not. The complete parser and the partial one share this function
+/// so that they never disagree about the type of the same value.
 fn decode_parameter_value(value_raw: &str) -> serde_json::Value {
     serde_json::from_str::<serde_json::Value>(value_raw)
         .unwrap_or_else(|_| serde_json::Value::String(value_raw.to_string()))
@@ -708,38 +708,38 @@ fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
     Some((name.to_string(), serde_json::Value::Object(args)))
 }
 
-// ── Streaming incremental dos argumentos ─────────────────────────────────────
+// ── Incremental streaming of the arguments ───────────────────────────────────
 
-/// A partir de quantos bytes um valor de parâmetro pode ser transmitido em
-/// fragmentos no modo ansioso.
+/// From how many bytes on a parameter value may be transmitted in fragments
+/// in eager mode.
 ///
-/// O streaming de granularidade fina existe para "reduzir o tempo até o
-/// primeiro fragmento de um parâmetro **grande**". Um valor que coube em 64
-/// bytes não tinha latência para resolver, e represá-lo custa nada e preserva
-/// o tipo dele - que é o que separa `{"limit":5}` de `{"limit":"5"}`. A
-/// marcação do POM não carrega tipo, então este é o preço de transmitir sem
-/// esperar, e é por isso que ele só é pago onde há o que ganhar.
+/// Fine-grained streaming exists to "reduce the time to the first fragment of
+/// a **large** parameter". A value that fit in 64 bytes had no latency to
+/// solve, and holding it back costs nothing and preserves its type - which is
+/// what separates `{"limit":5}` from `{"limit":"5"}`. POM's markup carries no
+/// type, so this is the price of transmitting without waiting, and that is why
+/// it is only paid where there is something to gain.
 const EAGER_MIN_VALUE_BYTES: usize = 64;
 
-/// Este valor de parâmetro vai ser transmitido em fragmentos?
+/// Is this parameter value going to be transmitted in fragments?
 ///
-/// **A resposta é estável enquanto o valor cresce**, e é disso que depende a
-/// monotonicidade de `streamable_arguments_prefix`: o comprimento só aumenta,
-/// e o primeiro caractere não muda. Um parâmetro que começou a ser transmitido
-/// continua sendo até fechar.
+/// **The answer is stable while the value grows**, and that is what the
+/// monotonicity of `streamable_arguments_prefix` depends on: the length only
+/// increases, and the first character does not change. A parameter that
+/// started being transmitted keeps being so until it closes.
 ///
-/// **Só é transmitido o valor que comprovadamente não pode ser JSON.** É essa
-/// a regra que faz o modo ansioso e o represado concordarem sobre o tipo: um
-/// valor que nunca vai parsear como JSON vira `String` nos dois caminhos, e
-/// `{"limit":5}` jamais degenera em `{"limit":"5"}`.
+/// **Only a value that provably cannot be JSON is transmitted.** That is the
+/// rule that makes eager mode and held-back mode agree about the type: a value
+/// that will never parse as JSON becomes a `String` on both paths, and
+/// `{"limit":5}` never degenerates into `{"limit":"5"}`.
 ///
-/// Acima do limiar, só estes primeiros caracteres ainda podem começar um JSON
-/// válido: `{` e `[` (contêineres), `"` (string literal), `-` e dígito
-/// (número). `true`/`false`/`null` são literais curtos, então uma letra num
-/// valor longo já garante que ele não é JSON - por isso letra passa.
+/// Above the threshold, only these first characters can still start valid
+/// JSON: `{` and `[` (containers), `"` (string literal), `-` and a digit
+/// (number). `true`/`false`/`null` are short literals, so a letter in a long
+/// value already guarantees it is not JSON - that is why a letter passes.
 ///
-/// Represar um arquivo que começa em `{` custa latência num caso raro; entregar
-/// um array virado em texto custa correção. A escolha é óbvia.
+/// Holding back a file that starts with `{` costs latency in a rare case;
+/// delivering an array turned into text costs correctness. The choice is obvious.
 fn streams_eagerly(eager: bool, value_seen: &str) -> bool {
     if !eager {
         return false;
@@ -754,24 +754,24 @@ fn streams_eagerly(eager: bool, value_seen: &str) -> bool {
     )
 }
 
-/// O corpo de uma string JSON, já escapado, sem as aspas.
+/// The body of a JSON string, already escaped, without the quotes.
 fn json_string_body(raw: &str) -> String {
     let quoted = serde_json::Value::String(raw.to_string()).to_string();
     quoted[1..quoted.len() - 1].to_string()
 }
 
-/// O maior prefixo dos argumentos JSON que já pode ser transmitido, dado o
-/// corpo da chamada visto até agora.
+/// The longest prefix of the JSON arguments that can already be transmitted,
+/// given the call body seen so far.
 ///
-/// **Invariante:** o resultado só cresce conforme `raw` cresce. Nada que sai
-/// daqui é retirado depois - não existe desenviar um fragmento SSE. Todo
-/// cuidado deste módulo (o recuo de espaço em branco, a retenção de prefixo de
-/// tag, a estabilidade de `streams_eagerly`) existe para sustentar isso.
+/// **Invariant:** the result only grows as `raw` grows. Nothing that leaves
+/// here is taken back later - there is no unsending an SSE fragment. All the
+/// care in this module (the whitespace hold-back, the tag prefix retention,
+/// the stability of `streams_eagerly`) exists to uphold that.
 ///
-/// `None` quer dizer "ainda não dá para dizer nada": o nome da função não
-/// fechou, ou o corpo não é a forma XML. A forma Hermes (`{"name":…}`) não é
-/// transcodificada ao vivo porque o nome mora dentro do próprio JSON que
-/// estaria sendo transmitido; ela sai inteira no fechamento, como antes.
+/// `None` means "nothing can be said yet": the function name did not close,
+/// or the body is not the XML form. The Hermes form (`{"name":…}`) is not
+/// transcoded live because the name lives inside the very JSON that would be
+/// transmitted; it goes out whole at the close, as before.
 fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
     let trimmed = raw.trim_start();
     let rest = trimmed.strip_prefix("<function=")?;
@@ -800,9 +800,9 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
                 first = false;
                 out.push_str(&serde_json::Value::String(pname.to_string()).to_string());
                 out.push(':');
-                // O parâmetro que foi transmitido em fragmentos fecha como
-                // string, porque foi assim que ele saiu. Os outros levam o
-                // tipo decodificado, igual ao caminho não-streaming.
+                // The parameter that was transmitted in fragments closes as a
+                // string, because that is how it went out. The others carry
+                // the decoded type, same as the non-streaming path.
                 if streams_eagerly(eager, value_raw) {
                     out.push('"');
                     out.push_str(&json_string_body(value_raw));
@@ -813,8 +813,8 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
                 cursor = &after_name[close + "</parameter>".len()..];
             }
             None => {
-                // Parâmetro ainda aberto. Só o modo ansioso emite algo dele, e
-                // só depois de o valor ficar grande o bastante.
+                // Parameter still open. Only eager mode emits anything of it,
+                // and only after the value gets large enough.
                 if let Some(partial) = open_parameter_prefix(after_name, eager) {
                     if !first {
                         out.push(',');
@@ -831,16 +831,18 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
     Some(out)
 }
 
-/// O pedaço já transmissível de um parâmetro que ainda não fechou, escapado.
+/// The already transmittable piece of a parameter that has not closed yet,
+/// escaped.
 ///
-/// Dois recuos, os dois pela monotonicidade:
+/// Two hold-backs, both for monotonicity:
 ///
-/// - **prefixo de tag**: o que ainda pode virar `</parameter>` ou
-///   `</function>` fica retido, senão `</par` sairia como conteúdo e teria de
-///   ser retirado quando a tag se completasse.
-/// - **espaço em branco no fim**: o valor final é `trim()`ado, então espaço no
-///   fim do que se viu até agora pode ser o espaço que vai sumir. Ele só sai
-///   quando algo que não é espaço vem depois - e aí ele era conteúdo interno.
+/// - **tag prefix**: what can still become `</parameter>` or `</function>` is
+///   retained, otherwise `</par` would go out as content and would have to be
+///   taken back when the tag completed.
+/// - **trailing whitespace**: the final value is `trim()`med, so whitespace at
+///   the end of what was seen so far may be the whitespace that will vanish.
+///   It only goes out when something that is not whitespace comes after it -
+///   and then it was internal content.
 fn open_parameter_prefix(value_seen: &str, eager: bool) -> Option<String> {
     let hold = [PARAM_CLOSE, "</function>"]
         .iter()
@@ -857,12 +859,12 @@ fn open_parameter_prefix(value_seen: &str, eager: bool) -> Option<String> {
 
 const PARAM_CLOSE: &str = "</parameter>";
 
-/// O nome da ferramenta, assim que ele fecha - antes de a chamada terminar.
+/// The tool name, as soon as it closes - before the call ends.
 ///
-/// É o que permite anunciar `tool_calls[i].function.name` no primeiro
-/// fragmento, como a OpenAI faz: sem o nome, um índice aberto não serve para
-/// nada. `None` enquanto o `<function=NOME>` não fechou, ou na forma Hermes,
-/// que não é transcodificada ao vivo.
+/// It is what allows announcing `tool_calls[i].function.name` in the first
+/// fragment, as OpenAI does: without the name, an open index is good for
+/// nothing. `None` while the `<function=NOME>` has not closed, or in the Hermes
+/// form, which is not transcoded live.
 pub(crate) fn peek_call_name(raw_body: &str) -> Option<String> {
     let rest = raw_body.trim_start().strip_prefix("<function=")?;
     let (name, _) = rest.split_once('>')?;
@@ -870,21 +872,22 @@ pub(crate) fn peek_call_name(raw_body: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Transmite os argumentos de **uma** chamada de ferramenta em fragmentos,
-/// conforme o modelo os gera.
+/// Transmits the arguments of **one** tool call in fragments, as the model
+/// generates them.
 ///
-/// O defeito que ela existe para consertar, medido no ksia vivo: os 663
-/// caracteres do argumento chegavam todos de uma vez, no fim da geração, em
-/// dois pedaços ambos aos 11,01 s. O leitor de tags acumulava o corpo inteiro
-/// e só descarregava quando a chamada fechava, então o usuário encarava uma
-/// tela parada e recebia o arquivo de supetão. Anthropic e OpenAI emitem os
-/// fragmentos conforme geram.
+/// The defect it exists to fix, measured on the live ksia: the 663 characters
+/// of the argument all arrived at once, at the end of generation, in two
+/// pieces both at 11,01 s. The tag reader accumulated the whole body and only
+/// flushed when the call closed, so the user stared at a frozen screen and
+/// received the file all of a sudden. Anthropic and OpenAI emit the fragments
+/// as they generate.
 ///
-/// **Invariante central:** a concatenação de tudo que sai daqui é exatamente a
-/// string de argumentos que o caminho não-streaming produziria - inclusive
-/// quando o teto corta a chamada ao meio, caso em que ela é a string inacabada
-/// da Fase 1. `emitted` guarda o que já saiu justamente para que o fechamento
-/// emita só o que falta, e nunca repita o que o cliente já tem.
+/// **Central invariant:** the concatenation of everything that leaves here is
+/// exactly the arguments string the non-streaming path would produce -
+/// including when the cap cuts the call in the middle, in which case it is the
+/// unfinished string of Phase 1. `emitted` keeps what already went out
+/// precisely so that the close emits only what is missing, and never repeats
+/// what the client already has.
 pub(crate) struct CallArgsStreamer {
     eager: bool,
     emitted: String,
@@ -898,41 +901,41 @@ impl CallArgsStreamer {
         }
     }
 
-    /// Quanto já saiu. `0` quer dizer que o cliente ainda não viu argumento
-    /// nenhum desta chamada.
+    /// How much already went out. `0` means the client has not yet seen any
+    /// argument of this call.
     pub(crate) fn emitted_len(&self) -> usize {
         self.emitted.len()
     }
 
-    /// O próximo fragmento, dado o corpo da chamada visto até agora.
-    /// `None` quando não há nada novo a dizer.
+    /// The next fragment, given the call body seen so far.
+    /// `None` when there is nothing new to say.
     pub(crate) fn advance(&mut self, raw_body_so_far: &str) -> Option<String> {
         let prefix = streamable_arguments_prefix(raw_body_so_far, self.eager)?;
-        // A chave sozinha não é conteúdo: enquanto nenhum parâmetro fechou (ou
-        // começou a ser transmitido) esta chamada ainda não começou a sair.
-        // Isso é o que deixa uma chamada malformada continuar caindo em texto
-        // no fechamento, como antes - depois do primeiro fragmento não haveria
-        // como voltar atrás.
+        // The brace alone is not content: while no parameter has closed (or
+        // started being transmitted) this call has not started going out yet.
+        // That is what lets a malformed call keep falling back to text at the
+        // close, as before - after the first fragment there would be no way
+        // to go back.
         if self.emitted.is_empty() && prefix == "{" {
             return None;
         }
         self.take_delta(prefix)
     }
 
-    /// O fechamento de uma chamada que **completou**.
+    /// The close of a call that **completed**.
     ///
-    /// A string sai do mesmo transcodificador que gerou os fragmentos, mais a
-    /// chave de fechamento - e não de `parsed.to_string()`. O motivo é
-    /// concreto: `serde_json::Map` é uma árvore ordenada, então
-    /// `parsed.to_string()` devolve as chaves em ordem **alfabética**,
-    /// enquanto os fragmentos saíram na ordem em que o modelo as escreveu.
-    /// Fechar com a versão ordenada não estenderia o que o cliente já
-    /// acumulou. O conteúdo é o mesmo; a ordem das chaves de um objeto JSON
-    /// não é semântica.
+    /// The string comes from the same transcoder that generated the
+    /// fragments, plus the closing brace - and not from `parsed.to_string()`.
+    /// The reason is concrete: `serde_json::Map` is an ordered tree, so
+    /// `parsed.to_string()` returns the keys in **alphabetical** order, while
+    /// the fragments went out in the order in which the model wrote them.
+    /// Closing with the sorted version would not extend what the client
+    /// already accumulated. The content is the same; the key order of a JSON
+    /// object is not semantic.
     ///
-    /// `parsed` é o recurso da forma Hermes, que não é transcodificada ao vivo
-    /// e portanto não teve fragmento nenhum: ali a string inteira sai de uma
-    /// vez, como antes.
+    /// `parsed` is the fallback for the Hermes form, which is not transcoded
+    /// live and therefore had no fragment at all: there the whole string goes
+    /// out at once, as before.
     pub(crate) fn finish_complete(
         &mut self,
         raw_body: &str,
@@ -947,18 +950,18 @@ impl CallArgsStreamer {
         }
     }
 
-    /// O fechamento de uma chamada que o teto **cortou**: `full` é a string
-    /// inacabada da Fase 1. Sai só o que ainda não tinha saído, para o cliente
-    /// não receber duas vezes o que já acumulou.
+    /// The close of a call the cap **cut**: `full` is the unfinished string of
+    /// Phase 1. Only what had not gone out yet goes out, so the client does
+    /// not receive twice what it already accumulated.
     pub(crate) fn finish_truncated(&mut self, full: &str) -> Option<String> {
         self.take_delta(full.to_string())
     }
 
-    /// O delta, com a rede de segurança: se o novo prefixo não estende o que
-    /// já saiu, a monotonicidade foi quebrada em algum lugar. Emitir o delta
-    /// aí corromperia o JSON do cliente, então nada sai e o fragmento
-    /// divergente é registrado. Degradar para "não transmitiu" é sempre
-    /// melhor que transmitir errado.
+    /// The delta, with the safety net: if the new prefix does not extend what
+    /// already went out, monotonicity was broken somewhere. Emitting the
+    /// delta then would corrupt the client's JSON, so nothing goes out and
+    /// the divergent fragment is logged. Degrading to "did not transmit" is
+    /// always better than transmitting wrong.
     fn take_delta(&mut self, prefix: String) -> Option<String> {
         if !prefix.starts_with(&self.emitted) {
             warn!(
@@ -986,8 +989,8 @@ pub(crate) enum OutputPart {
         name: String,
         arguments: serde_json::Value,
     },
-    /// A chamada que o teto do cliente cortou ao meio, estruturada e
-    /// incompleta - ver [`PartialCall`].
+    /// The call the client's cap cut in the middle, structured and
+    /// incomplete - see [`PartialCall`].
     ToolCallTruncated(PartialCall),
 }
 
@@ -1035,10 +1038,10 @@ pub(crate) fn parse_output(text: &str) -> Vec<OutputPart> {
     merge_adjacent_text(events_to_parts(events))
 }
 
-/// [`parse_output`] para uma saída cortada pelo teto de tokens, e não pelo
-/// modelo: uma chamada aberta e não fechada volta **estruturada e incompleta**
-/// em vez de degradar em texto. O `bool` diz se o corte caiu dentro de uma
-/// chamada - ver [`TagScanner::finish_truncated`].
+/// [`parse_output`] for an output cut by the token cap, and not by the model:
+/// a call open and not closed comes back **structured and incomplete** instead
+/// of degrading into text. The `bool` says whether the cut fell inside a
+/// call - see [`TagScanner::finish_truncated`].
 pub(crate) fn parse_output_truncated(text: &str) -> (Vec<OutputPart>, bool) {
     let mut scanner = TagScanner::new();
     let mut events = scanner.feed(text);
@@ -1329,12 +1332,12 @@ mod tests {
         assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
     }
 
-    // ── o corte do teto dentro de uma chamada ───────────────────────────────
+    // ── the ceiling cut inside a call ───────────────────────────────────────
 
-    /// A forma que os dois provedores devolvem: chamada estruturada, nome
-    /// recuperado, argumentos numa string JSON **inacabada**. Ela não parseia
-    /// de propósito - é o que faz um cliente que ignore o motivo de parada
-    /// falhar em vez de executar meia chamada.
+    /// The shape both providers return: structured call, recovered name,
+    /// arguments in an **unfinished** JSON string. It does not parse, on
+    /// purpose - that is what makes a client that ignores the stop reason
+    /// fail instead of executing half a call.
     #[test]
     fn a_call_cut_mid_parameter_keeps_the_name_and_the_unterminated_arguments() {
         let raw = "<tool_call>\n<function=Write>\n<parameter=path>\n/tmp/a.py\n</parameter>\n\
@@ -1353,15 +1356,15 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&partial.arguments).is_err(),
             "arguments of a cut call cannot parse"
         );
-        // E o objeto recuperado, para o `input` da Anthropic, é JSON válido
-        // com o que deu para recuperar.
+        // And the recovered object, for Anthropic's `input`, is valid JSON
+        // with whatever could be recovered.
         assert_eq!(partial.recovered["path"], "/tmp/a.py");
         assert_eq!(partial.recovered["content"], "linha 1\nlinha 2");
     }
 
-    /// Corte exatamente na fronteira de um `</parameter>`: não há parâmetro
-    /// pela metade, mas a chamada continua incompleta - a chave do objeto
-    /// nunca fecha, porque mais parâmetros podiam estar a caminho.
+    /// Cut exactly at the boundary of a `</parameter>`: there is no half
+    /// parameter, but the call is still incomplete - the object's closing
+    /// brace never comes, because more parameters could be on the way.
     #[test]
     fn a_call_cut_between_parameters_still_returns_unterminated_arguments() {
         let raw = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n";
@@ -1374,7 +1377,7 @@ mod tests {
         assert_eq!(partial.recovered["command"], "ls");
     }
 
-    /// Corte antes do primeiro parâmetro: o nome já saiu, os argumentos não.
+    /// Cut before the first parameter: the name is out, the arguments are not.
     #[test]
     fn a_call_cut_before_any_parameter_keeps_the_name_and_an_empty_object() {
         let raw = "<tool_call>\n<function=Bash>\n";
@@ -1387,9 +1390,9 @@ mod tests {
         assert_eq!(partial.recovered, json!({}));
     }
 
-    /// Cortada cedo demais para ter nome: nada sai. Um nome que o modelo não
-    /// terminou de escrever não é ferramenta, é palpite - e degradá-lo em
-    /// texto entregaria marcação crua como se fosse prosa.
+    /// Cut too early to have a name: nothing comes out. A name the model
+    /// did not finish writing is not a tool, it is a guess - and degrading it
+    /// to text would deliver raw markup as if it were prose.
     #[test]
     fn a_call_cut_before_the_name_closed_yields_nothing_executable() {
         for raw in [
@@ -1403,7 +1406,7 @@ mod tests {
         }
     }
 
-    /// O texto antes da abertura é resposta do modelo e sobrevive ao corte.
+    /// The text before the opening is the model's answer and survives the cut.
     #[test]
     fn text_before_a_cut_call_survives_and_never_carries_raw_markup() {
         let raw = "Vou escrever.\n<tool_call>\n<function=Write>\n<parameter=p>\nx";
@@ -1420,8 +1423,8 @@ mod tests {
         }
     }
 
-    /// A forma Hermes cortada: o nome sai se a string dele fechou, e o corpo
-    /// dos argumentos já é, ele próprio, JSON inacabado.
+    /// The cut Hermes form: the name comes out if its string closed, and the
+    /// arguments body is itself already unfinished JSON.
     #[test]
     fn a_cut_hermes_style_call_keeps_the_name_and_the_raw_partial_json() {
         let raw = r#"<tool_call>{"name":"Bash","arguments":{"command":"ls -"#;
@@ -1434,8 +1437,8 @@ mod tests {
         assert_eq!(partial.recovered, json!({}));
     }
 
-    /// Fora de uma chamada nada muda: texto cortado continua texto, e um
-    /// prefixo de tag pendente nunca chegou a abrir chamada nenhuma.
+    /// Outside a call nothing changes: cut text stays text, and a pending
+    /// tag prefix never got to open any call.
     #[test]
     fn truncation_outside_a_call_behaves_exactly_like_a_normal_finish() {
         for raw in ["prose cut in half", "prosa <tool_c"] {
@@ -1445,8 +1448,8 @@ mod tests {
         }
     }
 
-    /// A chamada que **fechou** antes do corte não é chamada cortada: o corte
-    /// caiu depois dela, em texto.
+    /// A call that **closed** before the cut is not a cut call: the cut
+    /// fell after it, in text.
     #[test]
     fn a_call_that_closed_before_the_cut_is_a_complete_call() {
         let raw = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n\
@@ -1457,10 +1460,10 @@ mod tests {
         assert_eq!(parts[1], OutputPart::Text("depois".into()));
     }
 
-    // ── streaming incremental dos argumentos ────────────────────────────────
+    // ── incremental streaming of the arguments ──────────────────────────────
 
-    /// O roteiro do defeito medido no ksia: uma chamada com um argumento
-    /// grande, entregue token a token.
+    /// The script of the defect measured in ksia: a call with one large
+    /// argument, delivered token by token.
     fn long_call_script() -> Vec<String> {
         let mut script = vec![
             "<tool_call>\n".to_string(),
@@ -1479,8 +1482,8 @@ mod tests {
         script
     }
 
-    /// Alimenta o roteiro pedaço a pedaço e devolve os fragmentos emitidos.
-    /// `until` corta a geração no meio, para o caso do teto.
+    /// Feeds the script piece by piece and returns the emitted fragments.
+    /// `until` cuts the generation midway, for the ceiling case.
     fn fragments(eager: bool, until: Option<usize>) -> Vec<String> {
         let script = long_call_script();
         let script = &script[..until.unwrap_or(script.len())];
@@ -1521,8 +1524,8 @@ mod tests {
         out
     }
 
-    /// **O defeito, virado do avesso.** Os argumentos saíam num pedaço só, no
-    /// fim; agora saem em muitos, e o primeiro chega muito antes do último.
+    /// **The defect, turned inside out.** The arguments used to come out in one piece, at
+    /// the end; now they come out in many, and the first arrives long before the last.
     #[test]
     fn a_long_argument_streams_in_many_fragments_instead_of_one_blob() {
         let frags = fragments(true, None);
@@ -1533,9 +1536,9 @@ mod tests {
         );
     }
 
-    /// **O invariante central:** concatenar os fragmentos na ordem reproduz
-    /// exatamente a string de argumentos, e ela é JSON válido com o mesmo
-    /// conteúdo do caminho não-streaming.
+    /// **The central invariant:** concatenating the fragments in order
+    /// reproduces exactly the arguments string, and it is valid JSON with the
+    /// same content as the non-streaming path.
     #[test]
     fn concatenating_the_fragments_reproduces_the_final_argument_exactly() {
         let whole: String = fragments(true, None).concat();
@@ -1547,8 +1550,8 @@ mod tests {
             .expect("content")
             .ends_with("linha_39 = 39 * 2"));
 
-        // E é o mesmo objeto que o caminho não-streaming produz - só a ordem
-        // das chaves difere, porque `serde_json::Map` ordena e o modelo não.
+        // And it is the same object the non-streaming path produces - only the order
+        // of the keys differs, because `serde_json::Map` sorts and the model does not.
         let raw: String = long_call_script().concat();
         let OutputPart::ToolCall { arguments, .. } = &parse_output(&raw)[0] else {
             panic!("expected a complete call");
@@ -1556,17 +1559,17 @@ mod tests {
         assert_eq!(&json, arguments);
     }
 
-    /// **O modo represado preserva o comportamento antigo:** nada sai enquanto
-    /// o parâmetro grande não fecha. É o padrão da Anthropic - o represamento
-    /// é por valor de parâmetro, então o `path` sai cedo e o `content` só no
-    /// fim.
+    /// **The held-back mode preserves the old behavior:** nothing comes out while
+    /// the large parameter has not closed. It is Anthropic's default - the holding back
+    /// is per parameter value, so `path` comes out early and `content` only at the
+    /// end.
     #[test]
     fn buffered_mode_emits_nothing_until_each_parameter_closes() {
         let frags = fragments(false, None);
-        // Um fragmento por parâmetro que fechou, mais a chave de fechamento.
+        // One fragment per parameter that closed, plus the closing brace.
         assert_eq!(frags.len(), 3, "{frags:?}");
-        // O que importa: o parâmetro grande sai INTEIRO num fragmento só - é
-        // o comportamento antigo, e é o que o modo ansioso troca por latência.
+        // What matters: the large parameter comes out WHOLE in a single fragment - it is
+        // the old behavior, and it is what eager mode trades for latency.
         let large = frags
             .iter()
             .find(|f| f.contains("linha_39"))
@@ -1584,10 +1587,10 @@ mod tests {
             .contains("linha_39"));
     }
 
-    /// **O corte do teto não se confunde com fragmento parcial.** O que já
-    /// tinha sido transmitido conta: o fechamento emite só o que falta, e a
-    /// concatenação é exatamente a string inacabada da Fase 1 - que não
-    /// parseia, de propósito.
+    /// **The ceiling cut is not confused with a partial fragment.** What had
+    /// already been transmitted counts: the close emits only what is missing, and
+    /// the concatenation is exactly the unfinished string of Phase 1 - which does
+    /// not parse, on purpose.
     #[test]
     fn a_truncated_call_never_repeats_what_was_already_streamed() {
         let raw_cut: String = long_call_script()[..20].concat();
@@ -1607,8 +1610,8 @@ mod tests {
         );
     }
 
-    /// Chamada curta continua correta e com o tipo intacto: um valor que coube
-    /// no limiar nunca é transmitido em fragmentos, então `5` continua número.
+    /// A short call stays correct and with its type intact: a value that fit
+    /// under the threshold is never transmitted in fragments, so `5` stays a number.
     #[test]
     fn a_short_call_keeps_its_argument_types_even_in_eager_mode() {
         let raw = "<function=Bash>\n<parameter=command>\nls -la\n</parameter>\n                     <parameter=limit>\n5\n</parameter>\n";
@@ -1616,8 +1619,8 @@ mod tests {
         assert_eq!(prefix, r#"{"command":"ls -la","limit":5"#);
     }
 
-    /// Um valor grande que já é JSON estruturado fica represado mesmo no modo
-    /// ansioso: transmiti-lo como string trocaria o tipo dele em silêncio.
+    /// A large value that is already structured JSON is held back even in eager
+    /// mode: transmitting it as a string would silently change its type.
     #[test]
     fn a_long_structured_value_stays_buffered_so_its_type_survives() {
         let array = format!(
@@ -1631,13 +1634,13 @@ mod tests {
         );
         assert!(!streams_eagerly(true, &format!("{{\"a\": {array}}}")));
         assert!(!streams_eagerly(true, &format!("\"{}\"", "x".repeat(80))));
-        // Já texto que não pode ser JSON, esse sim.
+        // Already text that cannot be JSON, that one yes.
         assert!(streams_eagerly(true, &"linha de codigo ".repeat(10)));
     }
 
-    /// **Monotonicidade**, alimentando byte a byte: o prefixo transmissível
-    /// nunca encolhe nem diverge. Não existe desenviar um fragmento SSE, então
-    /// esta é a propriedade que o módulo inteiro protege.
+    /// **Monotonicity**, feeding byte by byte: the transmittable prefix
+    /// never shrinks nor diverges. There is no un-sending an SSE fragment, so
+    /// this is the property the whole module protects.
     #[test]
     fn the_streamable_prefix_only_ever_grows_byte_by_byte() {
         let raw: String = long_call_script().concat();

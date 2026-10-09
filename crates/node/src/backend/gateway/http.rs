@@ -49,8 +49,8 @@ pub(crate) async fn start_gateway_with_ready(
             post(crate::webui::member_left),
         )
         .route("/handshake", post(session::handle_handshake))
-        // Onde a cauda de um pipeline entrega o resultado. A rota é interna ao
-        // pipeline: o Ticket é a credencial por quadro.
+        // Where the tail of a pipeline delivers the result. The route is internal
+        // to the pipeline: the Ticket is the per-frame credential.
         .route(
             crate::direct::RELAY_RESULT_PATH,
             post(handle_relay_result).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
@@ -90,7 +90,7 @@ pub(crate) async fn start_gateway_with_ready(
             verify_control_request,
         ))
         .layer(tower_http::compression::CompressionLayer::new())
-        // Toda resposta diz de qual nó veio; ver `peer_client::answered_by_other_node`.
+        // Every response says which node it came from; see `peer_client::answered_by_other_node`.
         .layer(middleware::map_response(crate::peer_client::stamp_node_id));
 
     // Both startup paths (with a model and gateway-only) come through here, so
@@ -106,13 +106,13 @@ pub(crate) async fn start_gateway_with_ready(
          — UI /  ·  OpenAI /v1/chat/completions  ·  Anthropic /v1/messages  ·  \
          POST /api/generate  ·  GET /peers /health"
     );
-    // Nagle atrasa uma escrita pequena até o ACK da anterior. No SSE cada token
-    // é uma escrita pequena, e a interação com o delayed-ACK do outro lado soma
-    // dezenas de ms ao que o cliente sente. O `reqwest` já desliga isso no lado
-    // cliente por padrão; o `axum::serve` deixava `tcp_nodelay` em `None`, então
-    // o lado servidor ficava com Nagle ligado em todas as respostas. O
-    // `tcp_nodelay` mudou de lugar, não sumiu: `serve` o aplica em cada conexão
-    // aceita, junto com a decisão entre TLS e texto claro.
+    // Nagle delays a small write until the ACK of the previous one. In SSE each
+    // token is a small write, and the interaction with the other side's
+    // delayed-ACK adds tens of ms to what the client feels. `reqwest` already
+    // turns this off on the client side by default; `axum::serve` left
+    // `tcp_nodelay` at `None`, so the server side kept Nagle on in every
+    // response. `tcp_nodelay` moved, it did not go away: `serve` applies it to
+    // each accepted connection, along with the decision between TLS and clear text.
     crate::serve::serve_with_quic(
         listener,
         app,
@@ -1332,12 +1332,12 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
-/// O que o principal responde à catraca dos outros nós.
+/// What the principal answers to the other nodes' ratchet.
 ///
-/// Autenticada pelo envelope assinado da cadeia de confiança. Em rede privada
-/// a chave compartilhada pode acompanhar a assinatura como guarda de transporte;
-/// isso impede um intruso de responder pelo principal e rebaixar o cluster para
-/// texto claro. Ver `tls_policy`.
+/// Authenticated by the signed envelope of the trust chain. On a private network
+/// the shared key may accompany the signature as a transport guard; this keeps
+/// an intruder from answering for the principal and downgrading the cluster to
+/// clear text. See `tls_policy`.
 pub(super) async fn cluster_tls(
     _auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
@@ -1370,9 +1370,9 @@ pub(super) async fn handle_remote_stream_result(
     crate::direct::handle_remote_stream_result(&state.reply_inbox, body).await
 }
 
-/// Serve o retorno do `remote-stream` pelo mesmo canal persistente enquadrado
-/// que o transporte entre as fatias. A credencial é reconferida para cada
-/// frame, porque a conexão pode sobreviver à troca da chave do cluster.
+/// Serves the `remote-stream` return over the same framed persistent channel
+/// as the transport between slices. The credential is rechecked for each
+/// frame, because the connection can outlive a change of the cluster key.
 pub(super) async fn handle_remote_stream_link(
     State(state): State<GatewayState>,
     headers: axum::http::HeaderMap,
@@ -1524,8 +1524,8 @@ pub(super) async fn handle_generate(
             budget: output_limit.budget(),
             stops,
             request_details,
-            // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
-            // o próprio texto.
+            // `/api/generate` receives a prompt, not a conversation: the prefix
+            // is the text itself.
             cache_key: None,
             preferred_head: None,
         },

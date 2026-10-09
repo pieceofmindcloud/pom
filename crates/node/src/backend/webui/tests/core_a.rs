@@ -259,8 +259,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Um alvo TP runtime extrai o próprio rank, mas um alvo que já aponta para
-    /// `tp_parts` usa o arquivo existente e não o fatia novamente.
+    /// A runtime TP target extracts its own rank, but a target that already points to
+    /// `tp_parts` uses the existing file and does not slice it again.
     #[test]
     fn every_rank_of_a_tp_group_extracts_its_own_shard() {
         let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
@@ -321,8 +321,8 @@ mod tests {
         );
     }
 
-    /// A rota escolhida tem que chegar a interface: sem ela, "por onde este
-    /// salto vai" so se responde com shell na maquina.
+    /// The chosen route has to reach the interface: without it, "where does this
+    /// hop go" can only be answered with a shell on the machine.
     #[test]
     fn the_cluster_view_carries_the_chosen_route() {
         let table = crate::route::RouteTable::new();
@@ -330,10 +330,10 @@ mod tests {
         assert!(view.is_none(), "an unmeasured peer invents no route");
     }
 
-    /// Offload e cache KV sao as duas coisas que uma maquina pode discordar do
-    /// cluster, e discordar nao pode mexer em mais nada de que o pipeline
-    /// depende - contexto, batch e amostragem tem que continuar iguais nos dois
-    /// lados do salto.
+    /// Offload and KV cache are the two things a machine may disagree with the
+    /// cluster about, and disagreeing must not touch anything else the pipeline
+    /// depends on - context, batch and sampling have to remain equal on both
+    /// sides of the hop.
     #[test]
     fn only_the_hardware_settings_are_per_machine() {
         let base = RuntimeParams {
@@ -368,8 +368,8 @@ mod tests {
         assert!(!cpu_only.offload_kqv);
         assert_eq!(cpu_only.n_ctx, 32768, "the rest still belongs to the cluster");
 
-        // Sem sobreposicao, o numero do cluster vale — e sobrepor um nao mexe
-        // no outro.
+        // Without an override, the cluster's number holds - and overriding one
+        // does not touch the other.
         let inherited = params_for(&base, &target(None, None));
         assert_eq!(inherited.n_gpu_layers, 99);
         assert!(inherited.offload_kqv);
@@ -1050,8 +1050,8 @@ mod tests {
                 .await
                 .unwrap();
             let out_path = std::path::Path::new(&out);
-            // O nome é o conteúdo: quem junta não escolhe como chamar o
-            // resultado, o hash é que o nomeia.
+            // The name is the content: whoever merges does not choose what to
+            // call the result, the hash is what names it.
             let name = out_path.file_stem().unwrap().to_string_lossy().into_owned();
             assert!(
                 crate::pom::is_sha256_hex(&name),

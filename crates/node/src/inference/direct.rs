@@ -1,44 +1,44 @@
-//! Resposta direta: a cauda entrega o resultado a quem pediu.
+//! Direct response: the tail delivers the result to whoever asked.
 //!
-//! O modo anel (`relay/v1-chain`) encadeia chamadas HTTP aninhadas — cada hop
-//! segura a própria resposta aberta enquanto chama o hop seguinte, e o
-//! resultado volta refazendo o caminho da ida. São `2N` travessias de rede por
-//! token para uma cadeia de `N` hops, e a conta piora justamente quando a
-//! cabeça não está na máquina que recebeu a requisição: aí a ida e a volta
-//! atravessam o enlace duas vezes cada. Medido em 2026-08-14 entre os dois
-//! sites do captain (RTT 30 ms): 25 tok/s com a cabeça local contra 14 tok/s
-//! com ela remota, exatamente um RTT a mais por token.
+//! The ring mode (`relay/v1-chain`) chains nested HTTP calls - each hop
+//! holds its own response open while it calls the next hop, and the
+//! result comes back retracing the path of the outbound trip. That is `2N` network traversals per
+//! token for a chain of `N` hops, and the count gets worse precisely when the
+//! head is not on the machine that received the request: then the outbound and the return
+//! cross the link twice each. Measured on 2026-08-14 between the captain's two
+//! sites (RTT 30 ms): 25 tok/s with the head local against 14 tok/s
+//! with it remote, exactly one RTT more per token.
 //!
-//! Aqui a cadeia deixa de voltar. O gateway manda junto do quadro um
-//! [`DirectReply::reply_to`] — os endereços por onde ele mesmo pode ser
-//! alcançado, mais um *ticket* aleatório — e cada hop repassa esse campo
-//! adiante sem tocar nele. Quem termina (a cauda, ou o hop que falhou ao
-//! repassar) faz **um** POST em `/v1/relay-result` direto ao gateway. São
-//! `N + 1` travessias, e o custo deixa de depender de onde está a cabeça.
+//! Here the chain stops coming back. The gateway sends along with the frame a
+//! [`DirectReply::reply_to`] - the addresses through which it can itself be
+//! reached, plus a random *ticket* - and each hop relays that field
+//! onward without touching it. Whoever finishes (the tail, or the hop that failed to
+//! relay) makes **one** POST to `/v1/relay-result` straight to the gateway. That is
+//! `N + 1` traversals, and the cost stops depending on where the head is.
 //!
-//! O que cada hop devolve ao seu chamador vira um *ack* imediato: o hop já
-//! aceitou a responsabilidade pelo quadro, e nada mais viaja por ali. O ack
-//! sai do caminho crítico — quem espera é o gateway, no ticket.
+//! What each hop returns to its caller becomes an immediate *ack*: the hop has already
+//! accepted responsibility for the frame, and nothing else travels that way. The ack
+//! leaves the critical path - whoever waits is the gateway, on the ticket.
 //!
-//! ## Falha, cancelamento e prazo
+//! ## Failure, cancellation and deadline
 //!
-//! * **Hop do meio morre antes de aceitar** — quem o chamou recebe erro de
-//!   transporte e entrega um [`crate::relay::RelayFailure`] direto ao gateway,
-//!   nomeando o nó que realmente morreu.
-//! * **Cauda morre** — idem, denunciada pelo hop anterior.
-//! * **Hop morre depois de aceitar** (processo caiu, máquina sumiu) — não há
-//!   quem denuncie; quem fecha a requisição é o prazo do frame (`relay::frame_deadline`).
-//! * **Resposta direta perdida** (gateway inalcançável a partir da cauda) —
-//!   mesmo prazo. A cauda tenta cada URL de `reply_to` antes de desistir.
-//! * **Resposta que chega depois da desistência** — o [`Ticket`] já saiu do
-//!   inbox (é removido no `Drop`, em qualquer caminho de saída), e o resultado
-//!   atrasado leva `410 Gone`. Como o ticket é único por quadro, ele nunca
-//!   pode ser confundido com o do token seguinte.
+//! * **A middle hop dies before accepting** - whoever called it receives a transport
+//!   error and delivers a [`crate::relay::RelayFailure`] straight to the gateway,
+//!   naming the node that really died.
+//! * **The tail dies** - likewise, reported by the previous hop.
+//! * **A hop dies after accepting** (process crashed, machine vanished) - there is
+//!   nobody to report it; what closes the request is the frame deadline (`relay::frame_deadline`).
+//! * **Direct response lost** (gateway unreachable from the tail) -
+//!   same deadline. The tail tries each `reply_to` URL before giving up.
+//! * **A response that arrives after the giving up** - the [`Ticket`] has already left the
+//!   inbox (it is removed on `Drop`, on any exit path), and the late result
+//!   gets `410 Gone`. Since the ticket is unique per frame, it can never
+//!   be confused with the one of the next token.
 //!
-//! A capacidade é negociada como todas as outras: só entra quando **todos** os
-//! passos anunciam `relay/v2-direct` (ver `PipelinePlan::supports_direct_reply`)
-//! e o gateway sabe pelo menos um endereço de si mesmo. Um cluster em
-//! atualização progressiva cai no anel de sempre, sem nada a configurar.
+//! The capability is negotiated like all the others: it only enters when **all** the
+//! steps announce `relay/v2-direct` (see `PipelinePlan::supports_direct_reply`)
+//! and the gateway knows at least one address of itself. A cluster in
+//! rolling update falls back to the usual ring, with nothing to configure.
 
 use anyhow::{anyhow, Result};
 use axum::body::Bytes;
@@ -52,51 +52,51 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
-/// Rota em que o gateway recebe o resultado que a cauda entrega.
+/// Route on which the gateway receives the result the tail delivers.
 pub const RELAY_RESULT_PATH: &str = "/v1/relay-result";
 /// Callback used by the remote decode transport for each opportunistic batch.
 pub const REMOTE_STREAM_RESULT_PATH: &str = "/v1/remote-stream-result";
 
-// Quanto o gateway espera pelo resultado direto é o prazo do frame
-// (`relay::frame_deadline`), proporcional aos tokens e aos hops da cadeia; o
-// chamador o passa para `await_result_with_ack`.
+// How long the gateway waits for the direct result is the frame deadline
+// (`relay::frame_deadline`), proportional to the tokens and hops of the chain; the
+// caller passes it to `await_result_with_ack`.
 
-/// Teto de uma tentativa de entrega quando **ainda há outro endereço** para
-/// tentar. Curto de propósito: um endereço que aceita o SYN e nunca responde
-/// não pode custar o prazo inteiro antes de o seguinte ser pago.
+/// Cap of one delivery attempt when **there is still another address** to
+/// try. Short on purpose: an address that accepts the SYN and never answers
+/// must not cost the whole deadline before the next one is paid.
 #[cfg(not(test))]
 const DELIVERY_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Na bancada o teto precisa ficar acima de uma travessia legítima do
-/// laboratório (`direct_lab::LINK_MS`, 50 ms), senão o próprio teste declara
-/// morta uma entrega que só é lenta.
+/// On the bench the cap needs to stay above a legitimate traversal of the
+/// laboratory (`direct_lab::LINK_MS`, 50 ms), otherwise the test itself declares
+/// dead a delivery that is only slow.
 #[cfg(test)]
 const DELIVERY_TIMEOUT: Duration = Duration::from_millis(150);
 
-/// Teto da **última** tentativa. Depois dela não há terceira via: o gateway
-/// espera o prazo do frame (`relay::frame_deadline`) inteiro e a sessão morre calada.
+/// Cap of the **last** attempt. After it there is no third way: the gateway
+/// waits the whole frame deadline (`relay::frame_deadline`) and the session dies silently.
 ///
-/// Desistir aos 500 ms de uma entrega apenas lenta - portal ocupado, TLS frio,
-/// lote grande, WAN - troca dezenas de segundos de espera por dez minutos de
-/// silêncio. O último endereço tem o teto que o caminho por requisição sempre
-/// usou; a rapidez de trocar de candidato vale enquanto há candidato.
+/// Giving up at 500 ms on a merely slow delivery - busy portal, cold TLS,
+/// large batch, WAN - trades tens of seconds of waiting for ten minutes of
+/// silence. The last address gets the cap the per-request path always
+/// used; the speed of switching candidates holds while there is a candidate.
 #[cfg(not(test))]
 const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_millis(600);
 
-/// A resposta já pode ter sido liberada quando o recibo de transporte chega.
-/// Mantemos apenas o snapshot pequeno por este período, sem segurar a geração.
+/// The response may already have been released when the transport receipt arrives.
+/// We keep only the small snapshot for this period, without holding up generation.
 const TELEMETRY_RETENTION: Duration = Duration::from_secs(30);
 
 // ── Inbox ─────────────────────────────────────────────────────────────────────
 
-/// Os quadros que este nó despachou e ainda espera resultado.
+/// The frames this node dispatched and is still waiting a result for.
 ///
-/// Um mapa de ticket → canal. Vive no gateway (`GatewayState`) porque é o
-/// gateway que abre a requisição; o handler de `/v1/relay-result` só procura o
-/// ticket aqui.
+/// A ticket -> channel map. It lives in the gateway (`GatewayState`) because it is the
+/// gateway that opens the request; the `/v1/relay-result` handler only looks up the
+/// ticket here.
 #[derive(Clone, Default)]
 pub struct ReplyInbox(Arc<Mutex<InboxState>>);
 
@@ -141,19 +141,19 @@ impl ReplyInbox {
         Self::default()
     }
 
-    /// Abre um ticket. O guarda devolvido remove-o do inbox quando cai, em
-    /// qualquer caminho de saída — é o que impede um ticket órfão de segurar
-    /// memória depois de um erro ou de um prazo estourado.
+    /// Opens a ticket. The returned guard removes it from the inbox when it drops, on
+    /// any exit path - it is what keeps an orphan ticket from holding
+    /// memory after an error or an expired deadline.
     pub fn register(&self) -> Ticket {
         self.register_with_expected_transport(0)
     }
 
-    /// Abre um ticket que também espera uma evidência por travessia.
+    /// Opens a ticket that also waits for evidence per traversal.
     ///
-    /// A resposta direta chega por um POST separado dos acks. O resultado é
-    /// publicado assim que chega. Recibos já recebidos são anexados; os que
-    /// chegam depois deixam a amostra explicitamente incompleta, sem colocar
-    /// telemetria no caminho crítico da geração.
+    /// The direct response arrives through a POST separate from the acks. The result is
+    /// published as soon as it arrives. Receipts already received are attached; those that
+    /// arrive later leave the sample explicitly incomplete, without putting
+    /// telemetry on the critical path of generation.
     pub fn register_with_expected_transport(&self, expected_transport: usize) -> Ticket {
         self.cleanup_expired();
         let id = uuid::Uuid::new_v4().to_string();
@@ -196,8 +196,8 @@ impl ReplyInbox {
         }
     }
 
-    /// Entrega um resultado. `false` quando o ticket não existe mais — o
-    /// gateway já desistiu, e quem entregou precisa saber que chegou tarde.
+    /// Delivers a result. `false` when the ticket no longer exists - the
+    /// gateway has already given up, and whoever delivered needs to know it arrived late.
     pub fn deliver(&self, ticket: &str, meta: Value) -> bool {
         self.cleanup_expired();
         let mut state = self.0.lock().unwrap();
@@ -218,8 +218,8 @@ impl ReplyInbox {
         sender.is_some_and(|sender| meta_sender_send(meta, sender))
     }
 
-    /// Registra a resposta de uma travessia sem transformá-la em resultado.
-    /// Retorna `false` quando o ticket já expirou ou foi removido.
+    /// Records the response of a traversal without turning it into a result.
+    /// Returns `false` when the ticket has already expired or was removed.
     pub fn record_transport(&self, ticket: &str, hop_index: usize, meta: Value) -> bool {
         self.cleanup_expired();
         let mut state = self.0.lock().unwrap();
@@ -247,7 +247,7 @@ impl ReplyInbox {
         true
     }
 
-    /// Snapshota a versão mais recente da telemetria sem bloquear a resposta.
+    /// Snapshots the latest version of the telemetry without blocking the response.
     pub fn trace_snapshot(&self, ticket: &str) -> Option<Value> {
         self.cleanup_expired();
         self.0
@@ -278,7 +278,7 @@ impl ReplyInbox {
         state.streams.remove(ticket);
     }
 
-    /// Quantos quadros estão em voo. Só para teste e diagnóstico.
+    /// How many frames are in flight. Only for tests and diagnostics.
     pub fn outstanding(&self) -> usize {
         self.cleanup_expired();
         self.0
@@ -353,7 +353,7 @@ fn meta_sender_send(meta: Value, sender: oneshot::Sender<Value>) -> bool {
     sender.send(meta).is_ok()
 }
 
-/// Um quadro em voo. Removido do inbox no `Drop`.
+/// A frame in flight. Removed from the inbox on `Drop`.
 pub struct Ticket {
     id: String,
     inbox: ReplyInbox,
@@ -395,34 +395,34 @@ impl Drop for StreamTicket {
     }
 }
 
-// ── O que o gateway manda junto do quadro ─────────────────────────────────────
+// ── What the gateway sends along with the frame ───────────────────────────────
 
-/// Endereços por onde a cauda alcança este gateway, mais o inbox onde o
-/// resultado será procurado.
+/// Addresses through which the tail reaches this gateway, plus the inbox where the
+/// result will be looked up.
 #[derive(Clone)]
 pub struct DirectReply {
     inbox: ReplyInbox,
     urls: Vec<String>,
     quic_addresses: Vec<String>,
-    /// `PeerId` e multiaddresses do gateway, para a entrega cair no túnel
-    /// libp2p quando nenhuma URL de `urls` é alcançável de onde a cauda está.
-    /// Atrás de NAT/CGNAT esse é o caso normal, não a exceção: as URLs saem
-    /// das interfaces locais do gateway e não valem nada na outra ponta.
+    /// The gateway's `PeerId` and multiaddresses, so the delivery lands on the libp2p
+    /// tunnel when no URL in `urls` is reachable from where the tail is.
+    /// Behind NAT/CGNAT that is the normal case, not the exception: the URLs come
+    /// from the gateway's local interfaces and are worth nothing at the other end.
     libp2p_peer_id: Option<String>,
     libp2p_addrs: Vec<String>,
-    /// node_id de quem vai receber a resposta.
+    /// node_id of whoever will receive the response.
     ///
-    /// Viaja no `reply_to` porque quem entrega precisa dele para fixar o
-    /// certificado do gateway: com o cluster em TLS, uma URL sem identidade não
-    /// dá para verificar. Peer em binário antigo não manda o campo, e aí a
-    /// entrega cai no cliente sem pinning - ver `deliver_result`.
+    /// It travels in the `reply_to` because whoever delivers needs it to pin the
+    /// gateway's certificate: with the cluster on TLS, a URL without an identity cannot
+    /// be verified. A peer on an old binary does not send the field, and then the
+    /// delivery falls to the client without pinning - see `deliver_result`.
     node_id: String,
 }
 
 impl DirectReply {
-    /// `None` quando este nó não sabe nenhum endereço de si mesmo: sem isso a
-    /// cauda não teria para onde responder, e o certo é cair no anel de sempre
-    /// em vez de despachar um quadro que nunca volta.
+    /// `None` when this node knows no address of itself: without that the
+    /// tail would have nowhere to answer, and the right thing is to fall back to the usual ring
+    /// instead of dispatching a frame that never comes back.
     pub fn new(inbox: ReplyInbox, urls: Vec<String>, node_id: String) -> Option<Self> {
         if urls.is_empty() {
             return None;
@@ -437,17 +437,17 @@ impl DirectReply {
         })
     }
 
-    /// Identidade libp2p deste gateway, para a volta ter um caminho quando
-    /// nenhuma URL direta é alcançável.
+    /// This gateway's libp2p identity, so the return has a path when
+    /// no direct URL is reachable.
     pub fn with_libp2p(mut self, peer_id: Option<String>, addrs: Vec<String>) -> Self {
         self.libp2p_peer_id = peer_id;
         self.libp2p_addrs = addrs;
         self
     }
 
-    /// Endereços `host:porta` do endpoint QUIC do gateway. Eles são separados
-    /// das URLs HTTP para que o callback nunca tente transformar `http://...`
-    /// em destino UDP.
+    /// `host:port` addresses of the gateway's QUIC endpoint. They are kept apart
+    /// from the HTTP URLs so the callback never tries to turn `http://...`
+    /// into a UDP destination.
     pub fn with_quic_addresses(mut self, addresses: Vec<String>) -> Self {
         self.quic_addresses = addresses;
         self
@@ -513,20 +513,20 @@ fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value 
     })
 }
 
-/// URLs de gateway deste nó, na ordem em que um peer deve tentá-las.
+/// This node's gateway URLs, in the order a peer should try them.
 ///
-/// Mesma regra de preferência de `gateway::self_dial_host`: o endereço fixado
-/// pelo operador vale mais que o da LAN, porque entre sites um `192.168.x.y` é
-/// tão inútil quanto o loopback. Os candidatos enumerados das interfaces vêm
-/// depois, e daí o loopback não entra: a cauda quase nunca é esta máquina.
+/// Same preference rule as `gateway::self_dial_host`: the address pinned
+/// by the operator is worth more than the LAN's, because across sites a `192.168.x.y` is
+/// as useless as the loopback. The candidates enumerated from the interfaces come
+/// after, and there the loopback does not enter: the tail is almost never this machine.
 ///
-/// `pinned` é o endereço que o operador fixou (`advertise_addr`), e só ele pode
-/// ser loopback: numa máquina só, apontar para si mesmo é a configuração certa
-/// e foi escolha de quem configurou. O que não pode entrar é o loopback que
-/// aparece sozinho, do fallback `127.0.0.1` de `gateway::self_dial_host` ou da
-/// enumeração de interfaces: aí a cauda em outra máquina entrega ao loopback
-/// *dela* e a resposta se perde, com prazo de 600 s. Sem nenhuma URL utilizável
-/// a lista fica vazia e o plano cai no anel, que funciona.
+/// `pinned` is the address the operator pinned (`advertise_addr`), and only it may
+/// be loopback: on a single machine, pointing at itself is the right configuration
+/// and was the choice of whoever configured it. What cannot enter is the loopback that
+/// shows up on its own, from the `127.0.0.1` fallback of `gateway::self_dial_host` or from the
+/// interface enumeration: there the tail on another machine delivers to *its own*
+/// loopback and the response is lost, with a 600 s deadline. With no usable URL
+/// the list is empty and the plan falls back to the ring, which works.
 pub fn self_reply_urls(
     pinned: Option<String>,
     hosts: impl IntoIterator<Item = String>,
@@ -539,9 +539,9 @@ pub fn self_reply_urls(
         if host.is_empty() || (!pinned_by_operator && is_unroutable_host(&host)) {
             continue;
         }
-        // O esquema segue a política do cluster: estas URLs são as que a cauda
-        // vai discar de volta, e num cluster em TLS o `/relay/result` deste nó
-        // recusa texto claro vindo de fora.
+        // The scheme follows the cluster policy: these URLs are the ones the tail
+        // will dial back, and in a TLS cluster this node's `/relay/result`
+        // refuses cleartext coming from outside.
         let url =
             crate::peer_client::peer_base_url(&host, gateway_port, crate::peer_client::tls_enabled());
         if !urls.contains(&url) {
@@ -551,11 +551,11 @@ pub fn self_reply_urls(
     urls
 }
 
-/// Endereço que não serve para outra máquina nos alcançar: o curinga de bind e
-/// o loopback, em v4 e v6. O loopback é o que mais engana, porque
-/// `gateway::self_dial_host` cai em `127.0.0.1` quando não acha endereço
-/// melhor: a lista fica não-vazia, o modo direto liga, e a cauda em outra
-/// máquina entrega o resultado ao loopback *dela*, onde ninguém espera.
+/// An address that is no use for another machine to reach us: the bind wildcard and
+/// the loopback, in v4 and v6. The loopback is what misleads most, because
+/// `gateway::self_dial_host` falls back to `127.0.0.1` when it finds no better
+/// address: the list is non-empty, direct mode turns on, and the tail on another
+/// machine delivers the result to *its own* loopback, where nobody is waiting.
 fn is_unroutable_host(host: &str) -> bool {
     let bare = host
         .strip_prefix('[')
@@ -563,20 +563,20 @@ fn is_unroutable_host(host: &str) -> bool {
         .unwrap_or(host);
     match bare.parse::<std::net::IpAddr>() {
         Ok(ip) => ip.is_loopback() || ip.is_unspecified(),
-        // Nome que não é IP (um `--public-addr` com domínio, por exemplo)
-        // passa: resolvê-lo aqui seria adivinhar.
+        // A name that is not an IP (a `--public-addr` with a domain, for example)
+        // passes: resolving it here would be guessing.
         Err(_) => bare.eq_ignore_ascii_case("localhost"),
     }
 }
 
 // ── Lado de quem recebe o resultado (gateway) ─────────────────────────────────
 
-/// Handler de `/v1/relay-result`: procura o ticket e resolve o canal.
+/// Handler of `/v1/relay-result`: looks up the ticket and resolves the channel.
 ///
-/// A rota não usa a API key do cliente. O ticket é um UUID v4 sorteado por
-/// quadro e conhecido apenas pela cadeia; ele é a credencial da entrega. Um
-/// resultado sem ticket vivo é recusado com `410`, que é o que diz a quem
-/// entregou que o gateway já desistiu.
+/// The route does not use the client's API key. The ticket is a UUID v4 drawn per
+/// frame and known only to the chain; it is the credential of the delivery. A
+/// result without a live ticket is refused with `410`, which is what tells whoever
+/// delivered that the gateway has already given up.
 pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     let (mut meta, _tensor) = match crate::wire::decode(&body) {
         Ok(v) => v,
@@ -604,7 +604,7 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
         }
         return (StatusCode::GONE, "unknown ticket").into_response();
     }
-    // Os bytes que atravessaram a rede na volta. Só quem recebeu sabe.
+    // The bytes that crossed the network on the way back. Only the receiver knows.
     meta["result_bytes"] = json!(body.len());
     if inbox.deliver(&ticket, meta) {
         (StatusCode::OK, "ok").into_response()
@@ -639,10 +639,10 @@ pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Res
     }
 }
 
-/// Espera o resultado e executa uma ação síncrona quando o ack da cabeça
-/// chega. Se o resultado chegar primeiro, o ack continua em uma tarefa
-/// destacada: ele é liberado sem esperar, mas a evidência do primeiro hop não
-/// é perdida quando a resposta da cauda vence a resposta HTTP da cabeça.
+/// Waits for the result and runs a synchronous action when the head's ack
+/// arrives. If the result arrives first, the ack continues in a detached
+/// task: it is released without waiting, but the first hop's evidence is not
+/// lost when the tail's response beats the head's HTTP response.
 pub async fn await_result_with_ack<F, C>(
     ack: F,
     ticket: &mut Ticket,
@@ -677,10 +677,10 @@ where
             sent = &mut ack, if !acked => {
                 acked = true;
                 match sent {
-                    // Peer antigo: em vez de aceitar e repassar, borbulhou a
-                    // resposta inteira. Vale como resultado — é o que mantém
-                    // um cluster meio atualizado funcionando mesmo se a
-                    // negociação de capacidade escapar.
+                    // Old peer: instead of accepting and relaying, it bubbled the
+                    // whole response. It counts as a result - it is what keeps
+                    // a half-updated cluster working even if the
+                    // capability negotiation slips through.
                     Ok(frame) if frame.meta.get("token_id").is_some() => {
                         if let Some(on_ack) = on_ack.take() {
                             on_ack(&frame);
@@ -705,26 +705,26 @@ where
     }
 }
 
-/// O erro que um hop entregou no lugar do resultado, se foi isso que chegou.
+/// The error a hop delivered in place of the result, if that is what arrived.
 pub fn result_failure(meta: &Value) -> Option<crate::relay::RelayFailure> {
     serde_json::from_value(meta.get("error")?.clone()).ok()
 }
 
-// ── Lado de quem entrega (cauda, ou hop que falhou) ───────────────────────────
+// ── Delivering side (tail, or the hop that failed) ────────────────────────────
 
-/// O que aconteceu com uma entrega ao gateway.
+/// What happened to a delivery to the gateway.
 ///
-/// Existe porque "não entregou" tem dois significados opostos para quem
-/// emite um stream: o gateway já ter desistido (não há a quem reportar) e
-/// nenhum endereço ter aceitado (é preciso reportar, ou o gateway espera o
-/// prazo do frame (`relay::frame_deadline`) inteiro por uma falha que este lado já conhece).
+/// It exists because "did not deliver" has two opposite meanings for whoever
+/// emits a stream: the gateway already gave up (nobody to report to) and
+/// no address accepted (it must be reported, or the gateway waits out the
+/// whole frame deadline (`relay::frame_deadline`) for a failure this side already knows).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {
     /// O gateway recebeu.
     Accepted,
-    /// O gateway respondeu `410`: já desistiu deste quadro.
+    /// The gateway answered `410`: it already gave up on this frame.
     GatewayGone,
-    /// Nenhum endereço de retorno aceitou a entrega.
+    /// No return address accepted the delivery.
     Failed,
 }
 
@@ -734,12 +734,12 @@ impl Delivery {
     }
 }
 
-/// Entrega um resultado ao gateway, tentando cada URL de `reply_to` em ordem.
+/// Delivers a result to the gateway, trying each `reply_to` URL in order.
 ///
-/// Uma máquina pode ser alcançável por vários endereços e nenhum deles é
-/// certo de fora: o gateway anuncia todos os que conhece de si e quem entrega
-/// descobre qual funciona. Falhou em todos, o gateway fecha no prazo — não há
-/// terceira via, e inventar uma seria pior que a espera.
+/// A machine may be reachable through several addresses and none of them is
+/// certain from outside: the gateway announces all the ones it knows of itself and whoever delivers
+/// finds out which one works. If all fail, the gateway closes at the deadline - there is no
+/// third way, and inventing one would be worse than the wait.
 pub async fn deliver_result(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
@@ -761,10 +761,10 @@ pub async fn deliver_stream_batch(
     deliver_meta_at(http, reply_to, REMOTE_STREAM_RESULT_PATH, meta).await
 }
 
-/// Recebe um callback remoto dentro do canal persistente `/v1/link`. O frame
-/// interno é um batch de um item só para que o próprio protocolo carregue a
-/// rota e mantenha a correlação do canal; o item contém a mesma metadata que o
-/// endpoint HTTP por callback receberia.
+/// Receives a remote callback inside the persistent `/v1/link` channel. The internal
+/// frame is a one-item batch so that the protocol itself carries the
+/// route and keeps the channel's correlation; the item contains the same metadata that the
+/// HTTP callback endpoint would receive.
 pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Response {
     let (header, mut items) = match crate::wire::decode_batch_items(&body) {
         Ok(value) => value,
@@ -795,13 +795,13 @@ pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Respo
     }
 }
 
-/// Entrega callbacks do `remote-stream` por um canal persistente. A primeira
-/// falha desativa o canal para o restante deste stream e marca cada callback
-/// seguinte como fallback explícito para HTTP(S) por requisição. Um ACK 410 é
-/// diferente: ele prova que o gateway cancelou o ticket, então o produtor
-/// remoto recebe `GatewayGone` e para em vez de continuar gerando. Isso mantém
-/// o caminho normal livre de request/reply por token sem transformar uma queda
-/// transitória em uma tempestade de tentativas de abertura.
+/// Delivers `remote-stream` callbacks through a persistent channel. The first
+/// failure deactivates the channel for the rest of this stream and marks each following
+/// callback as an explicit fallback to per-request HTTP(S). A 410 ACK is
+/// different: it proves the gateway cancelled the ticket, so the remote
+/// producer receives `GatewayGone` and stops instead of continuing to generate. This keeps
+/// the normal path free of per-token request/reply without turning a transient
+/// drop into a storm of open attempts.
 pub struct RemoteStreamDelivery {
     http: crate::peer_client::PeerClients,
     reply_to: Value,
@@ -864,9 +864,9 @@ impl RemoteStreamDelivery {
             .map(str::to_owned)
             .collect();
 
-        // Com rota fixada até o gateway (`route_plan`), ela decide: HTTP usa o
-        // canal persistente naquele endereço; QUIC e túnel vão direto para a
-        // entrega por requisição, que segue a rota fixada. Sem rota fixada,
+        // With a route pinned up to the gateway (`route_plan`), it decides: HTTP uses the
+        // persistent channel at that address; QUIC and tunnel go straight to the
+        // per-request delivery, which follows the pinned route. Without a pinned route,
         // QUIC is the authoritative preference for a new delivery. Do not
         // silently keep using the persistent TCP link when the cluster opted
         // into QUIC: otherwise the MTP/remote-stream trace would describe a
@@ -954,8 +954,8 @@ impl RemoteStreamDelivery {
     }
 }
 
-/// Entrega uma evidência de transporte pelo mesmo retorno autenticado do
-/// resultado. O POST é pequeno e fica fora dos bytes da travessia medida.
+/// Delivers a transport evidence through the same authenticated return as the
+/// result. The POST is small and stays outside the bytes of the measured traversal.
 pub async fn deliver_transport(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
@@ -996,10 +996,10 @@ async fn deliver_meta_at(
         .and_then(|value| value.as_str())
         .map(|node_id| format!("reply:{node_id}"))
         .unwrap_or_else(|| format!("reply:urls:{}", urls.join("\u{1f}")));
-    // Sem node_id no `reply_to` o remetente roda binário antigo: não há o que
-    // fixar, e a entrega vai pelo cliente compartilhado. Num cluster estrito
-    // ela será recusada do outro lado, que é o resultado correto - o que não
-    // pode acontecer é entregar em texto claro fingindo que foi verificado.
+    // Without a node_id in the `reply_to` the sender runs an old binary: there is nothing to
+    // pin, and the delivery goes through the shared client. In a strict cluster
+    // it will be refused on the other side, which is the correct result - what
+    // cannot happen is delivering in cleartext pretending it was verified.
     let client = match reply_to.get("node_id").and_then(|v| v.as_str()) {
         Some(id) => match http.for_peer(id) {
             Ok(c) => c,
@@ -1031,9 +1031,9 @@ async fn deliver_meta_at(
     let mut quic_failed = false;
     for (index, url) in ordered.into_iter().enumerate() {
         let target = format!("{url}{path}");
-        // O último candidato ganha o teto longo: não há terceira via depois
-        // dele, e desistir de uma entrega só lenta custa o prazo inteiro do
-        // gateway. Ver `LAST_DELIVERY_TIMEOUT`.
+        // The last candidate gets the long cap: there is no third way after
+        // it, and giving up on a merely slow delivery costs the gateway's
+        // whole deadline. See `LAST_DELIVERY_TIMEOUT`.
         let ceiling = if index == last_index {
             LAST_DELIVERY_TIMEOUT
         } else {
@@ -1118,8 +1118,8 @@ async fn deliver_meta_at(
                 http.remember_route_success(&route_key, &url);
                 return Delivery::Accepted;
             }
-            // `410` é resposta, não falha de rota: o gateway desistiu deste
-            // quadro. Tentar o próximo endereço só acharia o mesmo inbox.
+            // `410` is an answer, not a route failure: the gateway gave up on this
+            // frame. Trying the next address would only find the same inbox.
             Ok(r) if r.status() == StatusCode::GONE => {
                 debug!("the gateway had already given up on the frame delivered at {target}");
                 return Delivery::GatewayGone;
@@ -1131,19 +1131,19 @@ async fn deliver_meta_at(
             }
         }
     }
-    // Nenhuma URL direta chegou. Atrás de NAT/CGNAT esse é o caso normal: as
-    // URLs de `reply_to` saem das interfaces locais do gateway e não valem
-    // nada de fora da rede dele. O túnel libp2p é o mesmo caminho que a ida já
-    // usa, só que na volta - sem ele o quadro morre calado, e o gateway só
-    // percebe quando o prazo do frame vence.
+    // No direct URL got through. Behind NAT/CGNAT this is the normal case: the
+    // `reply_to` URLs come from the gateway's local interfaces and are worth
+    // nothing from outside its network. The libp2p tunnel is the same path the outbound
+    // already uses, only on the return - without it the frame dies silently, and the gateway only
+    // notices when the frame deadline expires.
     if let Some(delivery) = deliver_via_tunnel(reply_to, path, &base_meta, &last).await {
         return delivery;
     }
 
-    // Motivo vazio era a assinatura do defeito da lista de candidatos vazia.
-    // Hoje `route_order` nunca esvazia a lista, então só sobra o caso de o
-    // `reply_to` não trazer endereço nenhum - e isso se diz com todas as
-    // letras, não com um parêntese vazio.
+    // An empty reason was the signature of the empty candidate list defect.
+    // Today `route_order` never empties the list, so only the case of the
+    // `reply_to` carrying no address at all remains - and that is said with every
+    // letter, not with an empty parenthesis.
     if last.is_empty() {
         last = "the reply_to brought no return address".to_string();
     }
@@ -1151,14 +1151,14 @@ async fn deliver_meta_at(
     Delivery::Failed
 }
 
-/// Quantas rotas fixadas uma entrega percorre antes da escada completa.
+/// How many pinned routes a delivery goes through before the full ladder.
 const MAX_PINNED_DELIVERIES: usize = 8;
 
-/// Entrega pela rota fixada até o gateway (`route_plan`, plano `Gateway`).
-/// A falha repete a mesma rota uma vez e depois passa para a próxima medida;
-/// `None` devolve a entrega à escada completa de `reply_to`, que ainda tenta
-/// todos os endereços e o túnel. O plano é de quem entrega: a volta é uma
-/// aresta própria, e quem mediu a ida não sabe nada dela.
+/// Delivers through the pinned route to the gateway (`route_plan`, `Gateway` plan).
+/// A failure repeats the same route once and then moves to the next measured one;
+/// `None` hands the delivery back to the full ladder of `reply_to`, which still tries
+/// all the addresses and the tunnel. The plan belongs to whoever delivers: the return is its
+/// own edge, and whoever measured the outbound knows nothing about it.
 async fn deliver_pinned(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
@@ -1252,12 +1252,12 @@ async fn deliver_pinned(
     None
 }
 
-/// Última via da entrega: o túnel libp2p até o gateway.
+/// Last way of the delivery: the libp2p tunnel to the gateway.
 ///
-/// `None` quando o `reply_to` não traz identidade libp2p (gateway em binário
-/// anterior) ou quando o próprio túnel não entrega - nos dois casos o chamador
-/// segue para o log de falha e o gateway fecha no prazo. A rota entra pela
-/// lista fechada de `infer_tunnel::gateway_path_is_allowed`.
+/// `None` when the `reply_to` carries no libp2p identity (gateway on a prior
+/// binary) or when the tunnel itself does not deliver - in both cases the caller
+/// moves on to the failure log and the gateway closes at the deadline. The route enters through the
+/// closed list of `infer_tunnel::gateway_path_is_allowed`.
 async fn deliver_via_tunnel(
     reply_to: &Value,
     path: &str,
@@ -1275,8 +1275,8 @@ async fn deliver_via_tunnel(
         .collect();
     let tunnel = crate::peer_client::TunnelPeer::from_parts(peer_id, addrs)?;
 
-    // O transporte anotado é o que de fato levou o quadro: publicar "http"
-    // aqui faria o trace do gateway mentir sobre o caminho da volta.
+    // The annotated transport is what actually carried the frame: publishing "http"
+    // here would make the gateway's trace lie about the path of the return.
     let attempt_meta = delivery_meta(
         base_meta,
         path,
@@ -1340,9 +1340,9 @@ fn encode_delivery_body(meta: &Value) -> Result<Vec<u8>> {
     crate::wire::encode(meta, None, crate::wire::WireDtype::F16).map_err(|error| anyhow!("{error}"))
 }
 
-/// Anexa ao quadro o transporte que será efetivamente usado nesta tentativa.
-/// A metadata é codificada novamente por tentativa para que um fallback QUIC
-/// -> TCP nunca seja publicado como QUIC no trace do gateway.
+/// Attaches to the frame the transport that will actually be used in this attempt.
+/// The metadata is encoded again per attempt so that a QUIC
+/// -> TCP fallback is never published as QUIC in the gateway's trace.
 fn delivery_meta(
     base: &Value,
     path: &str,
@@ -1386,8 +1386,8 @@ fn delivery_meta(
     meta
 }
 
-/// Entrega uma falha no lugar do resultado, para que o gateway nomeie o nó que
-/// morreu em vez de esperar o prazo inteiro.
+/// Delivers a failure in place of the result, so the gateway names the node that
+/// died instead of waiting out the whole deadline.
 pub async fn deliver_failure(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
@@ -1397,18 +1397,18 @@ pub async fn deliver_failure(
     deliver_result(http, reply_to, meta).await;
 }
 
-// ── Telemetria acumulada na ida ───────────────────────────────────────────────
+// ── Telemetry accumulated on the outbound ─────────────────────────────────────
 
-/// A contribuição de um hop para o `hop_timings` que viaja **na ida**.
+/// A hop's contribution to the `hop_timings` that travels **on the outbound**.
 ///
-/// No anel borbulhado cada entrada era montada por quem chamou, na volta. Sem
-/// volta, cada hop descreve a si mesmo e empurra a lista adiante; a cauda
-/// entrega o conjunto junto do resultado, na mesma ordem cabeça→cauda que
-/// `RequestTrace::record_hop_from_json` já espera.
+/// In the bubbled ring each entry was assembled by whoever called, on the return. With no
+/// return, each hop describes itself and pushes the list onward; the tail
+/// delivers the set along with the result, in the same head→tail order that
+/// `RequestTrace::record_hop_from_json` already expects.
 ///
-/// `bytes_sent` é o quadro que **entrou** neste hop, que é exatamente o que o
-/// anterior pôs no fio. A chamada que originou a entrada envia uma evidência
-/// posterior com o relógio e o transporte observados no cliente.
+/// `bytes_sent` is the frame that **entered** this hop, which is exactly what the
+/// previous one put on the wire. The call that originated the entry sends a later
+/// evidence with the clock and transport observed on the client.
 pub fn hop_entry(processing_ms: &Value, node_timings: &Value, inbound_bytes: usize) -> Value {
     json!({
         "round_trip_ms": processing_ms.clone(),
@@ -1445,7 +1445,7 @@ pub fn hop_entry_with_state(
     entry
 }
 
-/// Acrescenta a entrada deste hop à lista que veio na ida.
+/// Adds this hop's entry to the list that came on the outbound.
 pub fn accumulate(inbound_meta: &Value, entry: Value) -> Vec<Value> {
     let mut hops: Vec<Value> = inbound_meta
         .get("hop_timings")
@@ -1456,11 +1456,11 @@ pub fn accumulate(inbound_meta: &Value, entry: Value) -> Vec<Value> {
     hops
 }
 
-/// Substitui a estimativa de um hop pela medição da chamada que o originou.
-/// O índice é a posição do destino na cadeia, por isso nenhum tempo de uma
-/// travessia pode ser lançado no primeiro hop por conveniência.
-// Mantido para a prova unitária do mapeamento de índice; o caminho direto em
-// produção registra a medição no inbox com `record_transport`.
+/// Replaces a hop's estimate with the measurement of the call that originated it.
+/// The index is the position of the destination in the chain, so no time of a
+/// traversal can be booked on the first hop for convenience.
+// Kept for the unit proof of the index mapping; the direct path in
+// production records the measurement in the inbox with `record_transport`.
 #[cfg(test)]
 pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::relay::SentFrame) {
     let Some(hop) = hops.get_mut(destination) else {
@@ -1614,9 +1614,9 @@ mod tests {
 
         assert_eq!(blackhole_hits.load(Ordering::SeqCst), 1);
         assert_eq!(healthy_hits.load(Ordering::SeqCst), 2);
-        // O que se prova é que o buraco negro não foi pago duas vezes: quem o
-        // evita é a preferência pela rota que respondeu, não a quarentena.
-        // O orçamento é o teto de uma tentativa, não um número mágico.
+        // What is proven is that the black hole was not paid twice: what
+        // avoids it is the preference for the route that answered, not the quarantine.
+        // The budget is the cap of one attempt, not a magic number.
         assert!(
             started.elapsed() < DELIVERY_TIMEOUT * 2,
             "the dead route was paid again: {:?}",
@@ -1624,11 +1624,11 @@ mod tests {
         );
     }
 
-    /// O defeito de 600 s, provado no caminho real de entrega: depois de o
-    /// único endereço de retorno acumular falhas suficientes para a
-    /// quarentena, a entrega seguinte **tem** de continuar sendo tentada. Com
-    /// a lista de candidatos esvaziada, o `for` não executava, o aviso saía
-    /// com o motivo vazio e o gateway esperava o prazo do frame.
+    /// The 600 s defect, proven on the real delivery path: after the
+    /// only return address accumulates enough failures for the
+    /// quarantine, the next delivery **has** to keep being attempted. With
+    /// the candidate list emptied, the `for` did not run, the warning went out
+    /// with an empty reason and the gateway waited out the frame deadline.
     #[tokio::test]
     async fn a_quarantined_address_keeps_being_tried() {
         use axum::{body::Bytes, routing::post, Router};
@@ -1660,8 +1660,8 @@ mod tests {
         });
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(600));
 
-        // Põe o único endereço em quarentena por fora, como se três entregas
-        // seguidas tivessem estourado o teto.
+        // Put the only address in quarantine from outside, as if three deliveries
+        // in a row had blown the cap.
         let route_key = "reply:gateway-quarentena";
         for _ in 0..4 {
             http.remember_route_failure(route_key, &url);
@@ -1675,9 +1675,9 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
-    /// Uma entrega que demora, mas termina com sucesso, não é prova de que a
-    /// rota morreu. O último candidato recebe o teto longo e o sucesso zera
-    /// qualquer memória de falhas anterior.
+    /// A delivery that is slow, but ends in success, is not proof that the
+    /// route died. The last candidate gets the long cap and success clears
+    /// any earlier memory of failures.
     #[tokio::test]
     async fn a_slow_but_live_delivery_is_not_marked_dead() {
         use axum::{body::Bytes, routing::post, Router};
@@ -2001,9 +2001,9 @@ mod tests {
         );
     }
 
-    /// O guarda tem que limpar o inbox sozinho: o caminho de erro e o de prazo
-    /// estourado saem por `return`, e um ticket esquecido segura memória por
-    /// requisição perdida.
+    /// The guard has to clean the inbox by itself: the error path and the expired
+    /// deadline path leave by `return`, and a forgotten ticket holds memory for
+    /// every lost request.
     #[test]
     fn a_dropped_ticket_leaves_no_entry_behind() {
         let inbox = ReplyInbox::new();
@@ -2014,8 +2014,8 @@ mod tests {
         assert_eq!(inbox.outstanding(), 0);
     }
 
-    /// Um hop que responde depois de o gateway ter desistido não pode ser
-    /// confundido com o quadro seguinte, nem derrubar nada.
+    /// A hop that answers after the gateway has given up must not be
+    /// confused with the next frame, nor bring anything down.
     #[test]
     fn a_late_result_is_refused_instead_of_landing_on_another_frame() {
         let inbox = ReplyInbox::new();
@@ -2050,10 +2050,10 @@ mod tests {
         );
     }
 
-    /// Loopback é endereço da máquina de quem responde, não desta. Uma lista
-    /// que só tem loopback tem que ficar vazia para `DirectReply::new` recusar
-    /// o modo direto e o plano cair no anel, que funciona: ligado, o quadro
-    /// sairia para nunca voltar e a requisição só terminaria no prazo de 600 s.
+    /// Loopback is the address of the machine of whoever answers, not of this one. A list
+    /// that only has loopback must end up empty so `DirectReply::new` refuses
+    /// direct mode and the plan falls back to the ring, which works: turned on, the frame
+    /// would go out never to return and the request would only end at the 600 s deadline.
     #[test]
     fn a_loopback_only_host_list_falls_back_to_the_ring() {
         let urls = self_reply_urls(
@@ -2075,8 +2075,8 @@ mod tests {
             "without a usable address the plan must fall to the ring"
         );
 
-        // O loopback que o operador fixou é outra história: numa máquina só,
-        // apontar para si mesmo é a configuração certa e foi escolha dele.
+        // The loopback the operator pinned is another story: on a single machine,
+        // pointing at itself is the right configuration and was their choice.
         assert_eq!(
             self_reply_urls(
                 Some("127.0.0.1:42777".into()),
@@ -2087,9 +2087,9 @@ mod tests {
         );
     }
 
-    /// O `reply_to` tem de carregar a identidade libp2p do gateway: sem ela a
-    /// cauda atrás de NAT não tem como devolver o quadro, e o gateway fecha
-    /// no prazo sem dizer por quê.
+    /// The `reply_to` has to carry the gateway's libp2p identity: without it the
+    /// tail behind NAT has no way to return the frame, and the gateway closes
+    /// at the deadline without saying why.
     #[test]
     fn the_reply_to_carries_the_gateway_libp2p_identity() {
         let reply = DirectReply::new(
@@ -2115,8 +2115,8 @@ mod tests {
         );
     }
 
-    /// Gateway em binário anterior não manda os campos, e a entrega tem de
-    /// seguir sem eles em vez de quebrar.
+    /// A gateway on a prior binary does not send the fields, and the delivery has to
+    /// proceed without them instead of breaking.
     #[tokio::test]
     async fn without_a_libp2p_identity_the_tunnel_delivery_is_not_attempted() {
         let reply_to = json!({ "ticket": "t1", "urls": [] });

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Implementacao do benchmark remoto de llama.cpp puro.
+"""Implementation of the remote plain llama.cpp benchmark.
 
-O launcher publico e ``bench-llamacpp.sh``. Este modulo concentra as partes
-deterministicas para que selecao de deployment, payloads, parsing de SSE e
-medianas tenham testes locais e continuem independentes do host remoto.
+The public launcher is ``bench-llamacpp.sh``. This module concentrates the
+deterministic parts so that deployment selection, payloads, SSE parsing and
+medians have local tests and stay independent of the remote host.
 """
 
 from __future__ import annotations
@@ -27,11 +27,11 @@ from typing import Any, Iterable, Sequence
 
 
 class ConfigError(ValueError):
-    """Snapshot ou override nao contem uma configuracao utilizavel."""
+    """Snapshot or override does not contain a usable configuration."""
 
 
 class SafetyError(RuntimeError):
-    """A politica de seguranca impediu iniciar o servidor."""
+    """The safety policy prevented starting the server."""
 
 
 PROMPT_IDS = (
@@ -41,9 +41,10 @@ PROMPT_IDS = (
     "p-longo-variado",
     "p-prefill-aleatorio",
 )
-# Estes IDs e textos espelham intencionalmente a copia fixa em
-# ~/scripts/bench-routes.sh usada pelo pom-bench. Se a bateria mudar, atualize
-# os dois lados no mesmo trabalho e registre a nova referencia no relatorio.
+# These IDs and texts intentionally mirror the fixed copy in
+# ~/scripts/bench-routes.sh used by pom-bench. If the battery changes, update
+# both sides in the same piece of work and record the new reference in the
+# report.
 HEATING_PROMPT = (
     "Aquecimento da medicao. Responda brevemente com uma frase curta sobre o POM."
 )
@@ -159,7 +160,7 @@ def _active_model(snapshot: dict[str, Any]) -> str:
 def select_deployment(
     snapshot: dict[str, Any], model: str | None = None, deploy_id: str | None = None
 ) -> dict[str, Any]:
-    """Seleciona um deployment do snapshot, respeitando serving/default."""
+    """Selects a deployment from the snapshot, honoring serving/default."""
 
     endpoint = snapshot.get("/api/ui/deployments", {})
     entries = endpoint.get("deployments", []) if isinstance(endpoint, dict) else []
@@ -205,13 +206,13 @@ def select_deployment(
 def merge_runtime_node_config(
     snapshot: dict[str, Any], deployment: dict[str, Any]
 ) -> dict[str, Any]:
-    """Completa campos runtime ausentes com o config do nó ativo.
+    """Fills missing runtime fields from the active node's config.
 
-    O snapshot do pom-bench mistura o registro de deployments com o estado
-    runtime de ``/api/ui/node``. Alguns campos do deployment podem ficar
-    nulos, embora o nó ativo os publique preenchidos. Só fazemos o merge
-    quando ``deploy_id`` coincide exatamente e nunca substituímos um valor
-    já presente no deployment.
+    The pom-bench snapshot mixes the deployment registry with the runtime state
+    of ``/api/ui/node``. Some deployment fields may be null even though the
+    active node publishes them filled in. We only merge when ``deploy_id``
+    matches exactly and we never replace a value already present in the
+    deployment.
     """
 
     node_endpoint = snapshot.get("/api/ui/node", {})
@@ -271,7 +272,7 @@ def _layer_range(node: dict[str, Any]) -> dict[str, Any]:
 def build_bench_plan(
     deployment: dict[str, Any], n_ctx_override: int | None = None
 ) -> dict[str, Any]:
-    """Converte o deployment selecionado em plano serializavel de benchmark."""
+    """Converts the selected deployment into a serializable benchmark plan."""
 
     kind = deployment.get("kind") or ""
     if kind != "whole":
@@ -522,7 +523,7 @@ def summary_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def incomplete_prompts(rows: Iterable[dict[str, Any]], expected_repetitions: int) -> list[str]:
-    """Retorna prompts que nao completaram todas as repeticoes medidas."""
+    """Returns prompts that did not complete all the measured repetitions."""
 
     counts: dict[str, int] = defaultdict(int)
     for row in rows:
@@ -717,7 +718,7 @@ def _remote_source_info(remote: Remote, source: str) -> dict[str, str]:
 
 
 def _prebuilt_cache_is_compatible(cache_text: str, source: str) -> bool:
-    """Exige prova no CMakeCache de que o binario e CUDA/server deste fork."""
+    """Requires proof in the CMakeCache that the binary is this fork's CUDA/server build."""
 
     values: dict[str, str] = {}
     for line in cache_text.splitlines():
@@ -889,7 +890,7 @@ def _server_alive(remote: Remote, pid: int) -> bool:
 
 
 def _tail_log(remote: Remote, path: str, lines: int = 120) -> str:
-    """Preserva o arranque e o fim do log para auditar flags e timings."""
+    """Keeps the start and the end of the log to audit flags and timings."""
 
     try:
         result = remote.run(
@@ -1190,7 +1191,7 @@ def _resolve_model_path(remote: Remote, root: str, label: str, override: str | N
 
 
 def _cleanup_server(remote: Remote, pid: int | None, log_path: str | None) -> bool:
-    """Encerra apenas o PID criado e retorna se o cleanup remoto foi confirmado."""
+    """Stops only the PID that was created; returns whether the remote cleanup was confirmed."""
 
     cleanup_ok = True
     if pid is not None:
@@ -1333,9 +1334,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "model": model_path,
             **plan["llama_flags"],
         }
-        # O build externo e a resolucao do GGUF podem demorar. Reconfirma o
-        # estado imediatamente antes do launch para nunca competir com o POM
-        # caso ele tenha voltado a ocupar VRAM nesse intervalo.
+        # The external build and the GGUF resolution can take a while. Reconfirms
+        # the state immediately before the launch so as never to compete with POM
+        # in case it went back to occupying VRAM in that interval.
         metadata["vram_pre_launch"] = _remote_vram(remote, args.min_free_mb)
         _check_port(remote, args.port)
         remote_log = f"/tmp/rdma-bench-llamacpp-{os.getpid()}-{args.port}.log"

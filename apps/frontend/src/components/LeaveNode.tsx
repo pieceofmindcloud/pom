@@ -1,16 +1,16 @@
 /**
- * Tirar **uma** máquina da rede, do card dela no Painel.
+ * Take **one** machine out of the network, from its card on the Dashboard.
  *
- * É o mesmo ato do menu "Este nó › Sair da rede", que sempre valeu só para a
- * máquina em que o painel está aberto. Mas o painel de um nó mostra o cluster
- * inteiro, e ir até a interface de cada máquina para desligá-la é uma volta que
- * o operador não deveria dar — então o pedido vai para o nó local com o
- * `node_id` do alvo e ele repassa (`/api/ui/leave`, `webui::forward_leave`).
- * Quem se desliga continua sendo o dono daquele processo: este nó não detacha
- * ninguém por fora.
+ * It is the same act as the "This node > Leave the network" menu, which has always applied
+ * only to the machine where the panel is open. But a node's panel shows the whole
+ * cluster, and going to each machine's interface to shut it down is a detour the
+ * operator should not have to make - so the request goes to the local node with the
+ * target's `node_id` and it forwards it (`/api/ui/leave`, `webui::forward_leave`).
+ * Whoever shuts down is still the owner of that process: this node does not detach
+ * anyone from outside.
  *
- * Confirmação explícita porque o caminho de volta não é este: a máquina que sai
- * some do painel, e reentrar se faz pela aba Rede *dela*.
+ * Explicit confirmation because the way back is not this one: the machine that leaves
+ * disappears from the panel, and rejoining is done through *its own* Network tab.
  */
 import { useState } from "react";
 import { LogOut } from "lucide-react";
@@ -28,7 +28,7 @@ export function LeaveNode({
 }: {
   nodeId: string;
   hostname: string;
-  /** No próprio nó o pedido é local — sem repasse e sem `node_id`. */
+  /** On the node itself the request is local - with no forwarding and no `node_id`. */
   isSelf: boolean;
 }) {
   const { t } = useI18n();

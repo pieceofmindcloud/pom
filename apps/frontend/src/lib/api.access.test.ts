@@ -96,10 +96,10 @@ describe("administrative access token", () => {
 });
 
 /**
- * A sessão administrativa vive na memória do nó e o token humano vive na
- * memória desta aba: um reinício do nó, ou o fim da validade, derruba as duas
- * com a aba aberta. Sem este aviso, cada tela imprimia o 401 cru do servidor e
- * o operador não tinha caminho de volta ao portão que não fosse recarregar.
+ * The administrative session lives in the node's memory and the human token
+ * lives in this tab's memory: a node restart, or the end of validity, drops
+ * both with the tab open. Without this notice, each screen printed the server's
+ * raw 401 and the operator had no way back to the gate other than reloading.
  */
 describe("loss of the administrative session", () => {
   function refusal(status: number, kind: string | null) {
@@ -137,8 +137,8 @@ describe("loss of the administrative session", () => {
   });
 
   /**
-   * Um 403 de perfil não é sessão perdida: quem manda de volta ao portão quem
-   * já está autenticado o obriga a reautenticar para ver a mesma recusa.
+   * A profile 403 is not a lost session: sending back to the gate someone who
+   * is already authenticated forces them to reauthenticate to see the same refusal.
    */
   it("does not mistake a profile refusal for a lost session", async () => {
     apiModule.setAdminAccessToken("admin-secret");

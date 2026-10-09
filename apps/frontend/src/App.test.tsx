@@ -12,21 +12,21 @@ const adminSurface = vi.hoisted(() => ({
 const pluginUi = vi.hoisted(() => ({ plugins: [] as unknown[] }));
 
 /**
- * Esconder o item do menu não é bloquear: o endereço continua digitável, e um
- * favorito antigo entra direto. Este teste é o que prova que a rota fechada
- * **não renderiza a tela**, e que a aberta continua renderizando.
+ * Hiding the menu item is not blocking: the address is still typeable, and an old
+ * bookmark goes straight in. This test is what proves that the closed route
+ * **does not render the screen**, and that the open one keeps rendering.
  *
- * Por isso ele monta o `App` de verdade, com as telas trocadas por marcadores:
- * o que está sob prova é o guarda, não o conteúdo de cada tela.
+ * That is why it mounts the real `App`, with the screens swapped for markers:
+ * what is under test is the guard, not the content of each screen.
  */
 vi.mock("./lib/queries", () => ({
   useAdminSurface: () => ({ data: adminSurface.value, isLoading: false, isError: false }),
   useAdminAccess: () => ({ data: { default_password: false } }),
   useNetworkChat: () => ({ data: { notices: [] } }),
   usePluginUi: () => ({ data: { plugins: pluginUi.plugins }, isLoading: false, isError: false }),
-  // Nó completo o bastante para a barra superior e o rodapé do menu
-  // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o
-  // teste passa a medir o `ErrorBoundary` em vez do guarda.
+  // Node complete enough for the top bar and the menu footer to
+  // render: a `data: null` brings down the `NodeChip` at `node.data!` and the
+  // test ends up measuring the `ErrorBoundary` instead of the guard.
   useNode: () => ({
     data: {
       hostname: "salem",
@@ -57,15 +57,15 @@ vi.mock("./components/Logo", () => ({
   LogoMark: () => <div aria-hidden="true" />,
 }));
 
-// `vi.mock` sobe para o topo do arquivo, antes de qualquer `const`, então cada
-// marcador é escrito à mão em vez de sair de um auxiliar compartilhado.
+// `vi.mock` is hoisted to the top of the file, before any `const`, so each
+// marker is written by hand instead of coming from a shared helper.
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
 vi.mock("./components/PluginScreen", () => ({
   PluginScreen: ({ resolved }: { resolved: { code: string; route: { path: string; screen: string } } }) => {
-    // Simula a tela real mantendo o componente carregado enquanto o pai troca
-    // a rota. O App precisa remontá-la por identidade de rota para não deixar
-    // a tela anterior presa quando dois destinos compartilham o mesmo módulo.
+    // Simulates the real screen keeping the component loaded while the parent swaps
+    // the route. App must remount it by route identity so as not to leave
+    // the previous screen stuck when two destinations share the same module.
     const [initialPath] = useState(resolved.route.path);
     const [initialScreen] = useState(resolved.route.screen);
     return (
@@ -87,8 +87,8 @@ import App from "./App";
 
 function open(path: string, profile: Profile) {
   return render(
-    // Mesmas flags que o `main.tsx` liga: sem elas o teste roda num modo de
-    // roteador que a aplicação não usa, e o console enche de aviso de futuro.
+    // Same flags that `main.tsx` turns on: without them the test runs in a router
+    // mode the application does not use, and the console fills with future warnings.
     <MemoryRouter
       initialEntries={[path]}
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
@@ -250,7 +250,7 @@ describe("profile guard per route", () => {
     open("/statistics", "node");
     expect(await screen.findByText("tela-plugin:logs:stats")).toBeTruthy();
     cleanup();
-    // O POM mantém Logs fechado ao infer, mesmo quando um plugin o fornece.
+    // POM keeps Logs closed to infer, even when a plugin provides it.
     open("/logs", "infer");
     expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
     expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
@@ -365,9 +365,9 @@ describe("profile guard per route", () => {
   });
 
   /**
-   * O chat renderiza fora do `<Routes>`, então um guarda por rota o deixaria
-   * de fora. Hoje ele é livre, e este teste é o que avisa se a exceção do chat
-   * voltar a escapar do guarda quando alguém o restringir.
+   * The chat renders outside `<Routes>`, so a per-route guard would leave it
+   * out. Today it is free, and this test is what warns if the chat exception
+   * escapes the guard again when someone restricts it.
    */
   it("passes the chat through the same guard", async () => {
     open("/chat", "node");
@@ -387,7 +387,7 @@ describe("profile guard per route", () => {
     expect(password.getAttribute("autocomplete")).toBe("current-password");
     expect(screen.queryByRole("navigation")).toBeNull();
 
-    // O seletor mostra a bandeira do idioma atual e troca pelo submenu.
+    // The selector shows the flag of the current language and switches through the submenu.
     fireEvent.click(screen.getByRole("button", { name: "Idioma: Português (Brasil)" }));
     fireEvent.click(screen.getByRole("option", { name: "English" }));
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();

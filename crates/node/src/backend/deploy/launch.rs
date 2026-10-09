@@ -84,9 +84,9 @@ pub(super) async fn deploy_endpoint(
         }));
     }
 
-    // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
-    // sobre a varredura fresca, então também re-valida aqui — não confia no
-    // preview que a tela mostrou.
+    // The shardability check reads the GGUF on the primary; the deploy redoes everything
+    // on the fresh survey, so it also re-validates here - it does not trust the
+    // preview the screen showed.
     if req.kind == DeployKind::TensorParallel && plan.blocked.is_none() && !has_tp_parts(&machines)
     {
         if let Some(tp) = &req.tp {
@@ -119,19 +119,19 @@ pub(super) async fn deploy_endpoint(
             .into_response();
     }
 
-    // A identidade é resolvida antes de criar o job e antes de tocar em um
-    // peer. Se o GGUF não puder ser provado por hash, ou a fatia não trouxer
-    // pom_id, o operador recebe a recusa na própria ação de implantar.
+    // The identity is resolved before the job is created and before touching a
+    // peer. If the GGUF cannot be proven by hash, or the slice carries no
+    // pom_id, the operator gets the refusal on the deploy action itself.
     let identity = match resolve_requested_model_identity(&state, &plan, &machines).await {
         Ok(identity) => identity,
         Err(error) => return bad(json!({ "error": error })),
     };
 
-    // Reaproveitar o `deploy_id` de uma implantação de mesma **forma**: mesmo
-    // `kind`, mesma identidade de modelo provada e o mesmo conjunto de
-    // `(node_id, faixa, rank)`. Sem prova de identidade não deduplica - cunha um
-    // id novo, como antes. Trocar de máquina ou de faixa muda a forma e também
-    // cunha id novo (isso é assunto do Deploy Studio, não uma versão).
+    // Reuse the `deploy_id` of a deployment of the same **shape**: same
+    // `kind`, same proven model identity and the same set of
+    // `(node_id, range, rank)`. Without proof of identity it does not deduplicate - it mints a
+    // new id, as before. Changing machine or range changes the shape and also
+    // mints a new id (that is a Deploy Studio matter, not a version).
     let ranges: Vec<(String, u32, u32, Option<u32>)> = if !plan.tp_targets.is_empty() {
         plan.tp_targets
             .iter()
@@ -177,12 +177,12 @@ pub(super) async fn deploy_endpoint(
         new_job(&job_id, "deploy", title, "preparing"),
     );
 
-    // Cunhado antes de subir nada: é o nome desta implantação, e ele vai junto
-    // com cada `apply` para que o nó saiba de que conjunto passou a fazer parte.
+    // Minted before anything is brought up: it is the name of this deployment, and it goes along
+    // with every `apply` so the node knows which set it became part of.
     let record_plan = match reuse_id {
         Some(id) => match find_record(&state, &id).await {
             Some(existing) => RecordPlan::ReuseVersion(Box::new(existing)),
-            // O registro sumiu entre o `matching_shape` e agora: trata como novo.
+            // The record vanished between `matching_shape` and now: treat it as new.
             None => RecordPlan::New {
                 deploy_id: crate::deployment::new_deploy_id(),
             },
@@ -232,10 +232,10 @@ pub(super) async fn deploy_endpoint(
 /// whose range happens to be the entire model, so it comes out as a plain
 /// target with `skip_split` — which is also what makes the receiving peer a
 /// `single_peer`, running without hidden-state extraction.
-/// Validações estáticas de um grupo de tensor parallelism, antes da checagem
-/// de shardabilidade (que lê o GGUF). Devolve `Some(motivo)` quando o deploy não
-/// pode nem começar: tamanho inválido, primary/workers fora do cluster, alguém
-/// sem o modelo inteiro, ou primary sem URL de inferência derivável.
+/// Static validations of a tensor parallelism group, before the shardability
+/// check (which reads the GGUF). Returns `Some(reason)` when the deploy cannot
+/// even start: invalid size, primary/workers outside the cluster, someone
+/// without the whole model, or a primary without a derivable inference URL.
 pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<String> {
     if tp.size < 2 {
         return Some("a tensor-parallel group needs at least 2 ranks".to_string());
@@ -330,10 +330,10 @@ pub(super) fn has_tp_parts(machines: &[Machine]) -> bool {
         .any(|machine| machine.held.iter().any(|shard| shard.tp_size.is_some()))
 }
 
-/// Resolve o arquivo de cada rank TP pré-fatiado. O alvo pode já ter o rank;
-/// nesse caso não há transferência. Se ainda não tiver, escolhemos qualquer
-/// peer que possua exatamente o mesmo `tp_rank` e carregamos o hash e caminho
-/// desse peer para a transferência por conteúdo.
+/// Resolves the file of each pre-sliced TP rank. The target may already have the rank;
+/// in that case there is no transfer. If it does not yet, we pick any
+/// peer that has exactly the same `tp_rank` and carry that peer's hash and path
+/// over for the content-based transfer.
 pub(super) fn tp_targets_for(
     tp: &TpLaunch,
     machines: &[Machine],
@@ -430,21 +430,21 @@ pub(super) fn tp_identity(
         size,
         rank,
         rank0_url: rank0.map(|m| m.url.clone()),
-        // O certificado da coletiva é pinado por este id; sem ele o cliente
-        // padrão recusa o autoassinado do cluster e o all-reduce falha calado.
+        // The collective's certificate is pinned by this id; without it the default client
+        // refuses the cluster's self-signed one and the all-reduce fails silently.
         rank0_node_id: rank0.map(|m| m.node_id.clone()),
-        // Todo membro recebe a lista inteira: o rank 0 usa para transmitir o
-        // decode, e os demais para saber quem são.
+        // Every member receives the whole list: rank 0 uses it to broadcast the
+        // decode, and the others to know who they are.
         members: members.to_vec(),
     }
 }
 
-/// Os membros do grupo TP em ordem de rank (0 = primary), com a URL de
-/// inferência de cada um.
+/// The members of the TP group in rank order (0 = primary), with the
+/// inference URL of each.
 ///
-/// Recusa cedo quem não anuncia porta de inferência: sem ela o rank 0 não teria
-/// como disparar o decode daquele rank, e o grupo travaria na primeira barreira
-/// em vez de falhar aqui.
+/// Refuses early whoever does not announce an inference port: without it rank 0 would have no
+/// way to trigger that rank's decode, and the group would hang on the first barrier
+/// instead of failing here.
 pub(super) fn tp_members(
     tp: &TpLaunch,
     machines: &[Machine],
@@ -495,8 +495,8 @@ pub(super) fn launch_targets(
     tp: Option<&TpLaunch>,
     tp_targets: &[TpTarget],
 ) -> Result<Vec<LaunchTarget>, String> {
-    // A URL da coletiva (rank 0) é derivada do primary, não digitada: é a porta
-    // de inferência que o próprio nó anuncia. `tp.is_some()` ⟺ `rank0_url.is_some()`.
+    // The collective's URL (rank 0) is derived from the primary, not typed: it is the inference
+    // port the node itself announces. `tp.is_some()` ⟺ `rank0_url.is_some()`.
     let rank0_url = tp
         .map(|t| {
             machines
@@ -575,9 +575,9 @@ pub(super) fn launch_targets(
         return Ok(targets);
     }
 
-    // Réplicas da mesma faixa ocupam o mesmo estágio lógico do pipeline. Cada
-    // cópia precisa receber o mesmo peer_index/peer_count para exportar o
-    // residual exatamente como a rota principal daquele estágio.
+    // Replicas of the same range occupy the same logical pipeline stage. Each
+    // copy must receive the same peer_index/peer_count to export the
+    // residual exactly like that stage's main route.
     let mut pipeline_ranges: Vec<(u32, u32)> = Vec::new();
     for step in steps {
         let range = (step.start_layer, step.end_layer);
@@ -637,8 +637,8 @@ pub(super) fn launch_targets(
                 end_layer: step.end_layer,
                 // Nothing to cut: the merge produces the exact range.
                 skip_split: true,
-                // A junção produz um arquivo novo, cujo hash ninguém conhece
-                // antes de juntar: quem junta é que o nomeia.
+                // The merge produces a new file, whose hash nobody knows
+                // before merging: whoever merges is the one that names it.
                 part_sha256: None,
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
@@ -703,8 +703,8 @@ pub(super) fn launch_targets(
         });
     }
 
-    // Grupo de tensor parallelism: além do primary (o step do modelo inteiro),
-    // cada worker vira um alvo que extrai o próprio shard de tensor.
+    // Tensor parallelism group: besides the primary (the whole-model step),
+    // each worker becomes a target that extracts its own tensor shard.
     if let Some(tp) = tp {
         let head = steps.first().ok_or("TP plan without a step")?;
         for (i, worker_id) in tp.worker_node_ids.iter().enumerate() {
@@ -728,8 +728,8 @@ pub(super) fn launch_targets(
                 start_layer: head.start_layer,
                 end_layer: head.end_layer,
                 skip_split: true,
-                // O shard de tensor deste rank ainda vai ser extraído aqui; o
-                // hash sai do corte.
+                // This rank's tensor shard is still to be extracted here; the
+                // hash comes out of the cut.
                 part_sha256: None,
                 merge: None,
                 n_gpu_layers: head.n_gpu_layers,
@@ -1258,9 +1258,9 @@ pub(super) async fn wait_for_peer_idle_with_timeout(
     }
 }
 
-/// True quando o nó tem um `NodeConfig` carregado e o servidor de inferência
-/// está `ready` - o inverso de `node_is_idle`, para o `redeploy` esperar cada
-/// máquina *voltar a servir* antes de mexer na próxima.
+/// True when the node has a loaded `NodeConfig` and the inference server
+/// is `ready` - the inverse of `node_is_idle`, so `redeploy` waits for each
+/// machine to *serve again* before touching the next.
 pub(super) fn node_is_serving_ready(snapshot: &serde_json::Value) -> bool {
     !snapshot
         .get("config")
@@ -1451,11 +1451,11 @@ pub(super) async fn prepare_existing_model(
     Ok(())
 }
 
-/// De onde sai o registro que `run` publica ao fim de um `launch` bem-sucedido.
+/// Where the record that `run` publishes at the end of a successful `launch` comes from.
 pub(super) enum RecordPlan {
-    /// `deploy_id` novo: monta a v1 a partir do plano e dos alvos.
+    /// New `deploy_id`: builds v1 from the plan and the targets.
     New { deploy_id: String },
-    /// `deploy_id` reaproveitado (mesma forma, mesma identidade provada):
-    /// anexa - ou reativa - uma versão neste registro.
+    /// Reused `deploy_id` (same shape, same proven identity):
+    /// appends - or reactivates - a version in this record.
     ReuseVersion(Box<crate::deployment::Deployment>),
 }

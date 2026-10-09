@@ -32,10 +32,10 @@ describe("network layout", () => {
   });
 
   /**
-   * Reiniciar um nó mudava o `changed_at` dele, o que mudava a chave, o que
-   * fazia `readPositions` voltar vazio: o arranjo que o operador tinha montado
-   * à mão não era reorganizado, era **perdido**. A fatia e o modelo continuam
-   * invalidando, porque aí a rede desenhada é outra.
+   * Restarting a node changed its `changed_at`, which changed the key, which
+   * made `readPositions` come back empty: the arrangement the operator had made
+   * by hand was not reorganized, it was **lost**. The slice and the model still
+   * invalidate, because then the drawn network is another one.
    */
   it("keeps the arrangement when a node merely restarted", () => {
     const before = [{ node_id: "node-a", start_layer: 0, end_layer: 15, changed_at: "2026-08-12T10:00:00Z" }];
@@ -67,12 +67,12 @@ describe("writePositions and clearPositions", () => {
 });
 
 /**
- * O arranjo automático existe porque a grade não conta a história do pipeline.
+ * The automatic arrangement exists because the grid does not tell the pipeline's story.
  *
- * O que a tela precisa mostrar é a ordem das camadas da esquerda para a
- * direita, e as réplicas de uma mesma faixa empilhadas na mesma coluna - é
- * assim que a aresta vira uma linha curta e legível em vez de atravessar o
- * canvas inteiro.
+ * What the screen needs to show is the order of the layers from left to
+ * right, and the replicas of the same range stacked in the same column - that
+ * is how the edge becomes a short, readable line instead of crossing the
+ * whole canvas.
  */
 describe("autoLayout", () => {
   const macbook = { id: "macbook", start_layer: 0, end_layer: 18 };
@@ -86,8 +86,8 @@ describe("autoLayout", () => {
     expect(positions.salem.left).toBeLessThan(positions.ksia.left);
   });
 
-  /** A ordem de entrada não pode mudar o desenho: a rede se reordena sozinha
-   * a cada refresh, e um layout que dependesse disso tremeria na tela. */
+  /** The input order cannot change the drawing: the network reorders itself
+   * on every refresh, and a layout that depended on it would jitter on the screen. */
   it("does not depend on the order the nodes arrived in", () => {
     const a = autoLayout([macbook, salem, salem2, ksia]);
     const b = autoLayout([ksia, salem2, macbook, salem]);
@@ -100,8 +100,8 @@ describe("autoLayout", () => {
     expect(positions.salem.top).not.toBe(positions.salem2.top);
   });
 
-  /** Duas réplicas ficam simétricas em torno do eixo do estágio anterior, que
-   * é o que faz a bifurcação parecer uma bifurcação. */
+  /** Two replicas sit symmetrically around the previous stage's axis, which
+   * is what makes the fork look like a fork. */
   it("centers the column vertically, whatever its height", () => {
     const positions = autoLayout([macbook, salem, salem2, ksia]);
     const axis = (id: string) => positions[id].top;
@@ -115,9 +115,9 @@ describe("autoLayout", () => {
     expect(Math.abs(positions.salem.top - positions.salem2.top)).toBeGreaterThanOrEqual(202);
   });
 
-  /** Duas rotas alternativas: 16-30 seguido de 31-40, ou 16-40 direto. As
-   * faixas que começam em 16 dividem a coluna, e a rota de dois estágios
-   * segue reta na linha da primeira. */
+  /** Two alternative routes: 16-30 followed by 31-40, or 16-40 directly. The
+   * ranges that start at 16 share the column, and the two-stage route
+   * goes straight on the first one's line. */
   it("puts alternative ranges that start at the same point in the same column", () => {
     const head = { id: "ksia-gpu2", start_layer: 0, end_layer: 15 };
     const shortRange = { id: "salem-gpu1", start_layer: 16, end_layer: 30 };
@@ -136,8 +136,8 @@ describe("autoLayout", () => {
     expect(autoLayout([])).toEqual({});
   });
 
-  /** Nó sem faixa (anunciando 0-0) ainda precisa de um lugar: some da tela é
-   * pior que aparecer numa coluna própria. */
+  /** A node without a range (announcing 0-0) still needs a place: vanishing from
+   * the screen is worse than appearing in a column of its own. */
   it("makes room for whoever serves no range", () => {
     const positions = autoLayout([{ id: "empty", start_layer: 0, end_layer: 0 }]);
     expect(Number.isFinite(positions.empty.left)).toBe(true);

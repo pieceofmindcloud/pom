@@ -24,7 +24,7 @@ pub type AuthState = Arc<RwLock<Config>>;
 /// cookie is not a durable credential. This is the single source of truth for
 /// the expiry advertised in the Set-Cookie header below.
 pub(crate) const ADMIN_SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
-/// Sufixo do nome do cookie de sessão; o nome inteiro sai de
+/// Suffix of the session cookie name; the whole name comes from
 /// `admin_session_cookie_name`.
 const ADMIN_SESSION_COOKIE_SUFFIX: &str = "admin_session";
 pub(crate) const ADMIN_SESSION_COOKIE_PATHS: [&str; 3] = ["/api/ui", "/admin", "/admin-ui"];
@@ -85,12 +85,12 @@ impl AdminSessionStore {
 /// disjoint path set, so the three copies cover the API, legacy admin routes,
 /// and the static UI mount without ever putting the session identifier on the
 /// inference paths.
-/// Nome do cookie de sessão para a porta que o navegador usou.
+/// Name of the session cookie for the port the browser used.
 ///
-/// Cookies não separam por porta: dois nós no mesmo host (`ksia:8080` e
-/// `ksia:8081`) gravavam o mesmo nome, e entrar num derrubava a sessão do
-/// outro - a aba voltava ao portão sem que o nó tivesse reiniciado. A porta do
-/// `Host` entra no nome; sem porta explícita, fica só o nome base.
+/// Cookies do not separate by port: two nodes on the same host (`ksia:8080` and
+/// `ksia:8081`) wrote the same name, and signing in to one dropped the other's
+/// session - the tab went back to the gate without the node having restarted. The port of the
+/// `Host` goes into the name; without an explicit port, only the base name remains.
 pub(crate) fn admin_session_cookie_name(headers: &HeaderMap) -> String {
     let base = format!("{}_{ADMIN_SESSION_COOKIE_SUFFIX}", crate::brand::slug());
     let port = headers
@@ -137,14 +137,14 @@ fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
-/// Cabeçalho da credencial da pessoa que abre a superfície administrativa.
-/// Deliberadamente diferente de `Authorization`, que continua sendo usado
-/// pela API key de inferência compatível com OpenAI/Anthropic.
+/// Header of the credential of the person who opens the administrative surface.
+/// Deliberately different from `Authorization`, which remains in use
+/// by the OpenAI/Anthropic-compatible inference API key.
 pub const ADMIN_ACCESS_TOKEN_HEADER: &str = "x-pom-access-token";
-/// Marca requests de controle emitidos pelo próprio nó para outro nó. Ela não
-/// é uma credencial: em redes privadas acompanha a `connection_key`; em redes
-/// públicas acompanha o envelope assinado. Nunca é enviada pelo cliente da
-/// interface.
+/// Marks control requests issued by the node itself to another node. It is not
+/// a credential: on private networks it accompanies the `connection_key`; on public
+/// networks it accompanies the signed envelope. It is never sent by the interface's
+/// client.
 pub const INTERNAL_NODE_REQUEST_HEADER: &str = "x-pom-internal-node";
 /// Signed control-plane envelope. It replaces the shared connection secret on
 /// public networks while leaving inference frames on their transport path.
@@ -153,19 +153,19 @@ pub const CONTROL_SIGNATURE_HEADER: &str = "x-pom-control-signature";
 /// is not a credential and is never accepted by the inference middleware.
 pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 
-/// Escolhe a credencial que um nó usa nas chamadas internas de inferência.
-/// API keys pertencem à superfície do cliente e nunca atravessam um salto
-/// interno. A `connection_key` compartilhada é anexada também ao fallback HTTP
-/// sem TLS: o transporte pode ser protegido por Noise ou Tailscale por baixo,
-/// mas a porta de inferência ainda precisa receber a mesma credencial em toda a
-/// escada HTTP/HTTPS/QUIC. QUIC e HTTPS continuam podendo validar pelo
-/// transporte seguro na rede pública, sem depender desse cabeçalho.
+/// Chooses the credential a node uses in internal inference calls.
+/// API keys belong to the client surface and never cross an internal
+/// hop. The shared `connection_key` is also attached to the HTTP fallback
+/// without TLS: the transport may be protected by Noise or Tailscale underneath,
+/// but the inference port still needs to receive the same credential across the whole
+/// HTTP/HTTPS/QUIC ladder. QUIC and HTTPS can still validate through the
+/// secure transport on the public network, without depending on this header.
 pub fn internal_node_token(config: &Config) -> Option<String> {
     let key = outbound_connection_key(config);
     (!key.is_empty()).then_some(key)
 }
 
-/// Confere a credencial compartilhada de um peer na porta de inferência.
+/// Checks a peer's shared credential on the inference port.
 pub fn is_valid_internal_node_token(config: &Config, token: &str) -> bool {
     connection_key_accepted(config, token)
 }
@@ -258,8 +258,8 @@ pub fn connection_key_accepted(config: &Config, token: &str) -> bool {
     connection_key_accepted_at(config, token, chrono::Utc::now().timestamp())
 }
 
-/// Valida uma API key apresentada pela superfície de inferência do cliente.
-/// Esta regra permanece separada da autenticação entre peers.
+/// Validates an API key presented by the client's inference surface.
+/// This rule stays separate from authentication between peers.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_valid_inference_token(config: &Config, token: &str) -> bool {
     if token.is_empty() {
@@ -272,11 +272,11 @@ pub fn is_valid_inference_token(config: &Config, token: &str) -> bool {
         .any(|key| key.active && constant_time_token_eq(&key.key_hash, &hash))
 }
 
-/// O prefixo das API keys emitidas pelo POM. Chaves antigas (`sk-<uuid>`)
-/// continuam válidas: a validação só compara hashes.
+/// The prefix of API keys issued by POM. Old keys (`sk-<uuid>`)
+/// remain valid: validation only compares hashes.
 pub const API_KEY_PREFIX: &str = "sk-pom-";
 
-/// Um segredo novo: 32 bytes aleatórios do sistema, em hex.
+/// A new secret: 32 random bytes from the system, in hex.
 pub fn generate_api_key_secret() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -284,17 +284,17 @@ pub fn generate_api_key_secret() -> String {
     format!("{API_KEY_PREFIX}{}", hex::encode(bytes))
 }
 
-/// O que se guarda de uma API key: o SHA-256 do segredo, em hex.
+/// What gets stored of an API key: the SHA-256 of the secret, in hex.
 ///
-/// SHA-256 e não um KDF lento (Argon2, bcrypt) de propósito: o segredo tem
-/// 256 bits de aleatoriedade, então não há dicionário a atacar, e este hash
-/// roda em toda requisição de inferência. Um KDF só custaria latência.
+/// SHA-256 and not a slow KDF (Argon2, bcrypt) on purpose: the secret has
+/// 256 bits of randomness, so there is no dictionary to attack, and this hash
+/// runs on every inference request. A KDF would only cost latency.
 pub fn api_key_hash(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))
 }
 
-/// O começo e o fim do segredo, para a tela e os outros nós distinguirem as
-/// chaves sem poder usar nenhuma: `sk-pom-3f9a…c41e`.
+/// The beginning and the end of the secret, so the screen and the other nodes can tell the
+/// keys apart without being able to use any: `sk-pom-3f9a…c41e`.
 pub fn api_key_hint(secret: &str) -> String {
     let chars: Vec<char> = secret.chars().collect();
     if chars.len() <= 16 {
@@ -412,8 +412,8 @@ where
     }
 }
 
-/// Valida um request de peer, incluindo o marcador que impede que a mesma
-/// `Authorization` seja reutilizada como chamada de navegador.
+/// Validates a peer request, including the marker that prevents the same
+/// `Authorization` from being reused as a browser call.
 pub(crate) async fn validate_internal_node_headers(
     config: &AuthState,
     headers: &HeaderMap,
@@ -510,19 +510,19 @@ pub enum AdminAuthRejection {
     LocalhostOnly,
 }
 
-/// Cabeçalho que nomeia **qual** recusa administrativa aconteceu.
+/// Header that names **which** administrative refusal happened.
 ///
-/// A frase do corpo é para a pessoa e muda com o idioma; o navegador precisa
-/// de um valor estável para distinguir "a sessão administrativa acabou" de
-/// qualquer outro 401. Sem isso a interface só sabia imprimir a frase crua
-/// dentro da tela, e o operador ficava sem caminho de volta ao portão.
+/// The body's sentence is for the person and changes with the language; the browser needs
+/// a stable value to tell "the administrative session ended" apart from
+/// any other 401. Without this the interface could only print the raw sentence
+/// inside the screen, and the operator was left with no way back to the gate.
 pub(crate) const ADMIN_ERROR_HEADER: &str = "x-pom-admin-error";
-/// Não havia credencial administrativa nenhuma: sessão expirada, nó
-/// reiniciado (a sessão vive em memória) ou primeira visita.
+/// There was no administrative credential at all: expired session, restarted
+/// node (the session lives in memory) or first visit.
 pub(crate) const ADMIN_ERROR_MISSING_TOKEN: &str = "missing-token";
-/// Havia credencial e ela não confere.
+/// There was a credential and it does not match.
 pub(crate) const ADMIN_ERROR_INVALID_TOKEN: &str = "invalid-token";
-/// A superfície administrativa deste nó só atende pelo endereço local.
+/// This node's administrative surface only answers on the local address.
 pub(crate) const ADMIN_ERROR_LOCAL_ONLY: &str = "local-only";
 
 impl IntoResponse for AdminAuthRejection {
@@ -604,9 +604,9 @@ pub(crate) fn constant_time_token_eq(expected: &str, supplied: &str) -> bool {
     expected_digest.ct_eq(&supplied_digest).into()
 }
 
-/// Senha administrativa gravada no primeiro acesso. O wizard não a pergunta:
-/// enquanto ela for a senha em vigor (`AppConfig::admin_password_default`), a
-/// interface entra sozinha e mostra o aviso para trocá-la.
+/// Administrative password written on first access. The wizard does not ask for it:
+/// while it is the password in force (`AppConfig::admin_password_default`), the
+/// interface signs in by itself and shows the warning to change it.
 pub(crate) const DEFAULT_ADMIN_PASSWORD: &str = "admin";
 
 /// Hash a human administrative password with Argon2id's default password
@@ -639,9 +639,9 @@ pub(crate) fn verify_admin_password(hash: &str, password: &str) -> bool {
         .is_ok()
 }
 
-/// O endereço real do socket é loopback. Toda decisão que depende de "veio
-/// desta máquina" usa esta, nunca um cabeçalho: `X-Forwarded-For` e afins são
-/// escritos pelo cliente e não provam origem nenhuma.
+/// The socket's real address is loopback. Every decision that depends on "came from
+/// this machine" uses this, never a header: `X-Forwarded-For` and the like are
+/// written by the client and prove no origin whatsoever.
 pub(crate) fn is_loopback_addr(peer: std::net::SocketAddr) -> bool {
     match peer.ip() {
         std::net::IpAddr::V4(ip) => ip.is_loopback(),
@@ -1012,7 +1012,7 @@ mod tests {
             format!("{base}_8081")
         );
 
-        // O cookie da 8080 não é lido como sessão pela 8081.
+        // The 8080 cookie is not read as a session by 8081.
         let mut request = headers("ksia:8081");
         request.insert(
             axum::http::header::COOKIE,

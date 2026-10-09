@@ -1,7 +1,7 @@
-//! Contrato agnóstico para fontes de modelos.
+//! Agnostic contract for model sources.
 //!
-//! Este módulo não conhece o transporte do Hugging Face. Os tipos daqui são o
-//! limite estável que a UI e qualquer provider remoto podem consumir.
+//! This module does not know the Hugging Face transport. The types here are the
+//! stable boundary that the UI and any remote provider can consume.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,7 @@ impl fmt::Display for HfError {
 
 impl std::error::Error for HfError {}
 
-/// Redige tokens sem registrar stdout/stderr brutos.
+/// Redacts tokens without logging raw stdout/stderr.
 pub(crate) fn redact_sensitive<T: AsRef<str>>(text: T) -> String {
     let mut out = text.as_ref().to_string();
     for marker in [

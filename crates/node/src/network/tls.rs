@@ -1,14 +1,14 @@
-//! TLS entre peers: certificado auto assinado amarrado à identidade do nó.
+//! TLS between peers: a self-signed certificate bound to the node's identity.
 //!
-//! A pergunta que este módulo responde é "com quem eu estou falando", e a
-//! resposta já existia: `node_id` é `hex(SHA256(pubkey))` da chave Ed25519 de
-//! longa duração (`identity.rs`), e o cluster inteiro já distribui esse hash
-//! pelo gossip. Então o certificado não precisa ser assinado por ninguém - ele
-//! precisa apenas **provar posse da chave que dá naquele node_id**, e é isso
-//! que o handshake TLS faz.
+//! The question this module answers is "who am I talking to", and the
+//! answer already existed: `node_id` is `hex(SHA256(pubkey))` of the long-lived
+//! Ed25519 key (`identity.rs`), and the whole cluster already distributes that hash
+//! through the gossip. So the certificate does not need to be signed by anyone - it
+//! only needs to **prove possession of the key that yields that node_id**, and that
+//! is what the TLS handshake does.
 //!
-//! Nada aqui vai para o disco: o certificado é derivado da chave a cada
-//! arranque. Não há o que renovar, revogar ou distribuir.
+//! Nothing here goes to disk: the certificate is derived from the key on every
+//! start. There is nothing to renew, revoke or distribute.
 
 use anyhow::{anyhow, Context, Result};
 use ed25519_dalek::pkcs8::EncodePrivateKey;
@@ -20,18 +20,18 @@ use std::sync::Arc;
 
 use crate::identity::Identity;
 
-/// Certificado e chave que este nó apresenta, ambos em memória.
+/// Certificate and key this node presents, both in memory.
 pub struct NodeCertificate {
     pub cert: CertificateDer<'static>,
     pub key: PrivateKeyDer<'static>,
 }
 
-/// Deriva o certificado auto assinado da identidade do nó.
+/// Derives the self-signed certificate from the node's identity.
 ///
-/// A chave do certificado **é** a `.pom-node.key`: o `rcgen` aceita o PKCS#8
-/// que o `ed25519-dalek` exporta, e o rustls assina TLS 1.3 com Ed25519. Gerar
-/// uma chave nova aqui destruiria o propósito - o par apresentado precisa ser o
-/// par que define o node_id.
+/// The certificate's key **is** the `.pom-node.key`: `rcgen` accepts the PKCS#8
+/// that `ed25519-dalek` exports, and rustls signs TLS 1.3 with Ed25519. Generating
+/// a new key here would defeat the purpose - the pair presented has to be the
+/// pair that defines the node_id.
 pub fn node_certificate(id: &Identity) -> Result<NodeCertificate> {
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 
@@ -43,10 +43,10 @@ pub fn node_certificate(id: &Identity) -> Result<NodeCertificate> {
         .map_err(|e| anyhow!("the node key did not work as a TLS key pair: {e}"))?;
 
     let node_id = id.node_id.0.clone();
-    // O SAN é um nome DNS sintético com o node_id. Nunca é resolvido: existe só
-    // porque um certificado sem SAN é recusado por bibliotecas estritas, e
-    // porque põe a identidade num campo legível por `openssl x509 -text` na
-    // hora de depurar.
+    // The SAN is a synthetic DNS name with the node_id. It is never resolved: it exists
+    // only because a certificate without a SAN is refused by strict libraries, and
+    // because it puts the identity in a field readable by `openssl x509 -text` when
+    // debugging.
     let mut params = CertificateParams::new(vec![format!("{node_id}.{}", crate::brand::slug())])
         .map_err(|e| anyhow!("invalid certificate parameters: {e}"))?;
     let mut dn = DistinguishedName::new();
@@ -63,11 +63,11 @@ pub fn node_certificate(id: &Identity) -> Result<NodeCertificate> {
     })
 }
 
-/// O node_id que um certificado apresenta: SHA256 da pubkey do SPKI.
+/// The node_id a certificate presents: SHA256 of the SPKI's pubkey.
 ///
-/// Mesma conta de `NodeId::from_pubkey`, sobre os mesmos 32 bytes. O teste
-/// `the_certificate_fingerprint_is_the_same_as_from_pubkey` prende as duas: se um
-/// dia divergirem, o pinning passa a recusar todo mundo.
+/// Same computation as `NodeId::from_pubkey`, over the same 32 bytes. The test
+/// `the_certificate_fingerprint_is_the_same_as_from_pubkey` ties the two: if they
+/// ever diverge, the pinning starts refusing everyone.
 pub fn node_id_of_cert(der: &[u8]) -> Result<String> {
     let (_, parsed) =
         x509_parser::parse_x509_certificate(der).context("peer certificate did not parse")?;
@@ -81,7 +81,7 @@ pub fn node_id_of_cert(der: &[u8]) -> Result<String> {
     Ok(hex::encode(Sha256::digest(bits)))
 }
 
-/// Verifier que só aceita o nó cujo node_id foi fixado.
+/// Verifier that only accepts the node whose node_id was pinned.
 #[derive(Debug)]
 pub struct PinnedNodeId {
     expected: String,
@@ -92,7 +92,7 @@ impl PinnedNodeId {
         Self { expected }
     }
 
-    /// A regra inteira, isolada do trait para poder ser testada sem handshake.
+    /// The whole rule, isolated from the trait so it can be tested without a handshake.
     pub fn matches(&self, der: &[u8]) -> Result<()> {
         let found = node_id_of_cert(der)?;
         if found == self.expected {
@@ -108,14 +108,14 @@ impl PinnedNodeId {
 }
 
 impl ServerCertVerifier for PinnedNodeId {
-    /// Validade, cadeia e nome são **ignorados de propósito**.
+    /// Validity, chain and name are **ignored on purpose**.
     ///
-    /// Isso parece um buraco quando lido fora de contexto, então: a confiança
-    /// aqui não vem de autoridade nem de prazo, vem de posse de chave, que o
-    /// handshake prova em `verify_tls13_signature`. Checar validade só
-    /// produziria falha operacional por relógio torto, e checar nome só
-    /// produziria falha por discar um IP em vez do CN - nenhuma das duas diria
-    /// nada sobre com quem estamos falando.
+    /// This looks like a hole when read out of context, so: the trust
+    /// here does not come from an authority or an expiry, it comes from key possession,
+    /// which the handshake proves in `verify_tls13_signature`. Checking validity would
+    /// only produce operational failures from a skewed clock, and checking the name would
+    /// only produce failures from dialing an IP instead of the CN - neither would say
+    /// anything about who we are talking to.
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -162,35 +162,35 @@ impl ServerCertVerifier for PinnedNodeId {
     }
 }
 
-/// Instala o provedor de cripto do rustls uma vez por processo.
+/// Installs the rustls crypto provider once per process.
 ///
-/// O rustls 0.23 exige um provedor default explícito quando mais de um está
-/// compilado, e a chamada é idempotente por design - erro aqui significa "já
-/// tem um", que é exatamente o que queremos.
+/// rustls 0.23 requires an explicit default provider when more than one is
+/// compiled in, and the call is idempotent by design - an error here means "there
+/// already is one", which is exactly what we want.
 pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// ALPN que só os nós deste projeto oferecem.
+/// ALPN that only this project's nodes offer.
 ///
-/// É o discriminador que decide **qual dos dois certificados** o servidor
-/// apresenta, e ele precisa ser confiável: SNI não serve (peer disca IP, e IP
-/// não leva SNI) e a lista de algoritmos do cliente varia entre navegadores. O
-/// ALPN está inteiramente sob nosso controle - nosso cliente oferece `pom/1`,
-/// navegador nenhum oferece.
+/// It is the discriminator that decides **which of the two certificates** the server
+/// presents, and it has to be reliable: SNI does not work (a peer dials an IP, and an
+/// IP carries no SNI) and the client's algorithm list varies between browsers. The
+/// ALPN is entirely under our control - our client offers `pom/1`,
+/// no browser does.
 pub const PEER_ALPN: &[u8] = b"pom/1";
 
-/// Certificado que um **navegador** aceita, para a interface web.
+/// Certificate a **browser** accepts, for the web interface.
 ///
-/// Não pode ser o mesmo do pinning: aquele é Ed25519, porque a chave dele é a
-/// identidade do nó, e navegador não verifica certificado Ed25519 - medido com
-/// o curl/LibreSSL do macOS, que responde `sslv3 alert handshake failure`. Este
-/// aqui é ECDSA P-256, que eles sabem verificar.
+/// It cannot be the same as the pinning one: that one is Ed25519, because its key is
+/// the node's identity, and a browser does not verify an Ed25519 certificate - measured
+/// with macOS's curl/LibreSSL, which answers `sslv3 alert handshake failure`. This
+/// one is ECDSA P-256, which they know how to verify.
 ///
-/// Continua auto assinado, então o navegador avisa na primeira visita de cada
-/// máquina. Isso é inerente a não ter uma CA; os endereços entram no SAN para o
-/// aviso ser "emissor desconhecido" e não "host errado", que é o que faria o
-/// operador desconfiar da máquina em vez do certificado.
+/// It is still self-signed, so the browser warns on the first visit from each
+/// machine. That is inherent to having no CA; the addresses go into the SAN so the
+/// warning is "unknown issuer" and not "wrong host", which is what would make the
+/// operator distrust the machine instead of the certificate.
 pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 
@@ -205,7 +205,7 @@ pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
     dn.push(DnType::CommonName, "pom");
     params.distinguished_name = dn;
 
-    // Padrão do rcgen: ECDSA P-256.
+    // rcgen's default: ECDSA P-256.
     let key_pair = KeyPair::generate().map_err(|e| anyhow!("web certificate key: {e}"))?;
     let cert = params
         .self_signed(&key_pair)
@@ -218,8 +218,8 @@ pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
     })
 }
 
-/// Escolhe o certificado por conexão: peer recebe o do pinning, navegador
-/// recebe o que ele sabe verificar.
+/// Picks the certificate per connection: a peer gets the pinning one, a browser
+/// gets the one it knows how to verify.
 #[derive(Debug)]
 pub struct NodeCertResolver {
     peer: Arc<rustls::sign::CertifiedKey>,
@@ -234,7 +234,7 @@ impl NodeCertResolver {
         })
     }
 
-    /// A regra, isolada do trait para ter teste sem handshake.
+    /// The rule, isolated from the trait so it can be tested without a handshake.
     pub fn wants_peer<'a>(alpn: Option<impl Iterator<Item = &'a [u8]>>) -> bool {
         match alpn {
             Some(mut offered) => offered.any(|p| p == PEER_ALPN),
@@ -262,41 +262,41 @@ impl rustls::server::ResolvesServerCert for NodeCertResolver {
     }
 }
 
-/// Configuração de servidor: apresenta o certificado do nó, não pede
-/// certificado do cliente.
+/// Server configuration: presents the node's certificate, does not ask for
+/// a client certificate.
 ///
-/// mTLS fica de fora porque o cliente já se autentica pela chave de conexão no
-/// header, e duplicar a política de autorização em dois lugares é como ela
-/// passa a divergir.
+/// mTLS is left out because the client already authenticates with the connection key
+/// in the header, and duplicating the authorization policy in two places is how it
+/// starts to diverge.
 pub fn server_config(id: &Identity, sans: &[String]) -> Result<Arc<rustls::ServerConfig>> {
     install_crypto_provider();
     let mut cfg = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(NodeCertResolver::new(id, sans)?));
-    // `pom/1` primeiro: a preferência é do servidor, e um peer que ofereça os
-    // dois tem que fechar no nosso. `h2` e `http/1.1` existem para o navegador,
-    // e o builder automático do hyper serve os dois.
+    // `pom/1` first: the preference is the server's, and a peer that offers
+    // both has to settle on ours. `h2` and `http/1.1` exist for the browser,
+    // and hyper's automatic builder serves both.
     cfg.alpn_protocols = vec![PEER_ALPN.to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(cfg))
 }
 
-/// Configuração de cliente que só aceita o peer de node_id `expected`.
+/// Client configuration that only accepts the peer whose node_id is `expected`.
 pub fn client_config(expected: &str) -> Result<rustls::ClientConfig> {
     install_crypto_provider();
     let mut cfg = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(PinnedNodeId::new(expected.to_string())))
         .with_no_client_auth();
-    // `pom/1` é o que faz o servidor escolher o certificado do pinning; sem ele
-    // viria o certificado de navegador, que é ECDSA, e este verifier - que só
-    // aceita Ed25519 - recusaria. Falha fechada, mas por engano. O `http/1.1`
-    // continua na lista porque é o protocolo que os pares de fato falam.
+    // `pom/1` is what makes the server pick the pinning certificate; without it
+    // the browser certificate would come, which is ECDSA, and this verifier - which only
+    // accepts Ed25519 - would refuse it. Fail-closed, but by mistake. `http/1.1`
+    // stays on the list because it is the protocol the peers actually speak.
     cfg.alpn_protocols = vec![PEER_ALPN.to_vec(), b"http/1.1".to_vec()];
     Ok(cfg)
 }
 
-/// Configuração TLS 1.3 do HTTP/3, com o mesmo pinning de identidade do HTTP
-/// sobre TCP. QUIC usa ALPN `h3` e nunca participa da chave `tls_required`.
+/// TLS 1.3 configuration of HTTP/3, with the same identity pinning as HTTP
+/// over TCP. QUIC uses ALPN `h3` and never takes part in the `tls_required` key.
 pub fn quic_client_config(expected: &str) -> Result<rustls::ClientConfig> {
     let mut cfg = client_config(expected)?;
     cfg.alpn_protocols = vec![b"h3".to_vec()];
@@ -308,8 +308,8 @@ mod tests {
     use super::*;
     use crate::identity::{Identity, NodeId};
 
-    /// O certificado tem que carregar a identidade do nó, não uma chave nova:
-    /// é isso que faz o pinning valer sem distribuir arquivo nenhum.
+    /// The certificate has to carry the node's identity, not a new key:
+    /// that is what makes the pinning hold without distributing any file.
     #[test]
     fn the_certificate_carries_the_identity_node_id() {
         let id = Identity::generate();
@@ -317,7 +317,7 @@ mod tests {
         assert_eq!(node_id_of_cert(cert.cert.as_ref()).unwrap(), id.node_id.0);
     }
 
-    /// Duas identidades diferentes não podem produzir o mesmo fingerprint.
+    /// Two different identities cannot produce the same fingerprint.
     #[test]
     fn a_certificate_from_another_key_has_another_node_id() {
         let a = node_certificate(&Identity::generate()).unwrap();
@@ -328,7 +328,7 @@ mod tests {
         );
     }
 
-    /// O verifier aceita o certificado do nó que ele esperava.
+    /// The verifier accepts the certificate of the node it expected.
     #[test]
     fn verifier_accepts_the_expected_node_id() {
         let id = Identity::generate();
@@ -337,9 +337,9 @@ mod tests {
         assert!(v.matches(cert.cert.as_ref()).is_ok());
     }
 
-    /// E recusa o de qualquer outro - é o ataque de quem se põe no meio com o
-    /// próprio auto assinado, que é o único ataque que o pinning existe para
-    /// impedir.
+    /// And refuses anyone else's - that is the attack of someone getting in the middle
+    /// with their own self-signed certificate, which is the only attack the pinning
+    /// exists to prevent.
     #[test]
     fn verifier_refuses_a_certificate_from_another_node() {
         let expected = Identity::generate();
@@ -348,9 +348,9 @@ mod tests {
         assert!(v.matches(impostor.cert.as_ref()).is_err());
     }
 
-    /// O node_id do certificado é, literalmente, o mesmo hash que o cluster já
-    /// usa para nomear a máquina. Se um dia divergirem, o pinning passa a
-    /// recusar todo mundo, e este teste é o que avisa.
+    /// The certificate's node_id is, literally, the same hash the cluster already
+    /// uses to name the machine. If they ever diverge, the pinning starts
+    /// refusing everyone, and this test is what warns about it.
     #[test]
     fn the_certificate_fingerprint_is_the_same_as_from_pubkey() {
         let id = Identity::generate();

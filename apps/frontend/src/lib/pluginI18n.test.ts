@@ -44,7 +44,7 @@ describe("plugin i18n catalogs", () => {
   it("loads only the selected languages: the active one plus en as the floor", () => {
     expect(selectedLocales(plugin(both), "pt-BR")).toEqual(["en", "pt-BR"]);
     expect(selectedLocales(plugin(both), "en")).toEqual(["en"]);
-    // Idioma que o POM não suporta ou que o plugin não declara não entra.
+    // A language POM does not support or the plugin does not declare does not enter.
     expect(selectedLocales(plugin({ en: "i18n/en.json", fr: "i18n/fr.json" }), "pt-BR")).toEqual(["en"]);
   });
 

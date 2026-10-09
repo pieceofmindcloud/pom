@@ -96,8 +96,8 @@ async fn quic_policy_probe_only_accepts_the_configured_principal_identity() {
     network.set_quic_probe(sender);
     network.set_policy_principal_pubkey("authority-primary");
 
-    // Um admin secundário pode anunciar a mesma capacidade, mas não pode
-    // reverter a preferência que o principal acabou de gravar.
+    // A secondary admin may announce the same capability, but cannot
+    // revert the preference the principal has just written.
     network.trigger_quic_probe("secondary", "authority-secondary", true, false);
     assert!(receiver.try_recv().is_err());
 
@@ -190,7 +190,7 @@ async fn plugin_notices_are_validated_kept_in_memory_and_never_persisted() {
     assert!(notice("n0", "Base", "info").validate().is_err());
     assert!(notice("n0", "base", "loud").validate().is_err());
     assert!(chat.accept(notice("n1", "base", "success")).unwrap());
-    // Uma retransmissão do mesmo aviso não duplica.
+    // A retransmission of the same notice does not duplicate it.
     assert!(chat.accept(notice("n1", "base", "success")).unwrap());
     let notices = chat.notice_snapshot();
     assert_eq!(notices.len(), 1);

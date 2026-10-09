@@ -1,22 +1,21 @@
 /**
- * Protocolo de eventos entre o POM e os plugins (`pom-plugin-events/v1`).
+ * Event protocol between POM and the plugins (`pom-plugin-events/v1`).
  *
- * Um único envelope JSON viaja por todos os canais, para que qualquer tela de
- * plugin - um componente React montado pelo host, um script sem o SDK ou uma
- * aplicação de terceiros embutida (como a do harness) - receba os mesmos
- * eventos:
+ * A single JSON envelope travels through every channel, so that any plugin
+ * screen - a React component mounted by the host, a script without the SDK or an
+ * embedded third-party application (such as the harness's) - receives the same
+ * events:
  *
- * - SDK: `__POM_HOST__.events.subscribe(tipo, handler)`;
- * - DOM: `CustomEvent("pom:plugin-event")` disparado no `window`;
- * - iframes: `postMessage(envelope)` para `iframe[data-pom-plugin]` da mesma
- *   origem;
- * - backend nativo: operação `host.event` do `query` (lado Rust, `plugins.rs`).
+ * - SDK: `__POM_HOST__.events.subscribe(type, handler)`;
+ * - DOM: `CustomEvent("pom:plugin-event")` dispatched on the `window`;
+ * - iframes: `postMessage(envelope)` to the same-origin `iframe[data-pom-plugin]`;
+ * - native backend: the `query`'s `host.event` operation (Rust side, `plugins.rs`).
  *
- * No sentido inverso, o plugin pede ações ao POM com comandos
- * (`notification.notify`, `notification.confirm`) pelo SDK ou por
- * `CustomEvent("pom:plugin-request")`/`postMessage`. O resultado de todo comando
- * volta como o evento `notification.response`, com o `request_id` do pedido.
- * Ver `docs/subsystems/plugins-ui.md`, seção "Events and notifications".
+ * In the opposite direction, the plugin asks POM for actions with commands
+ * (`notification.notify`, `notification.confirm`) through the SDK or through
+ * `CustomEvent("pom:plugin-request")`/`postMessage`. The result of every command
+ * comes back as the `notification.response` event, with the request's `request_id`.
+ * See `docs/subsystems/plugins-ui.md`, section "Events and notifications".
  */
 import { randomId as newId } from "./id";
 import { api } from "./api";
@@ -35,7 +34,7 @@ export type PluginEventType =
   | "model.serving"
   | "model.stopped";
 
-/** Tipos que o nó publica em `GET /api/ui/plugins/events` e a ponte repassa. */
+/** Types the node publishes in `GET /api/ui/plugins/events` and the bridge relays. */
 const NODE_EVENT_TYPES: readonly PluginEventType[] = [
   "preferences.changed",
   "deployment.started",
@@ -47,7 +46,7 @@ export interface PluginEvent<P = Record<string, unknown>> {
   protocol: typeof PLUGIN_EVENTS_PROTOCOL;
   id: string;
   type: PluginEventType;
-  /** `plugin_code` destinatário, ou `*` para todos os plugins. */
+  /** Destination `plugin_code`, or `*` for all plugins. */
   target: string;
   source: "pom";
   at: string;
@@ -60,7 +59,7 @@ export interface NotifyRequest {
   title: string;
   body?: string;
   level?: NotificationLevel;
-  /** `local` avisa só quem está nesta interface; `network`, todos os nós. */
+  /** `local` notifies only whoever is on this interface; `network`, all nodes. */
   scope?: "local" | "network";
 }
 
@@ -71,9 +70,9 @@ export interface ConfirmRequest {
   cancelLabel?: string;
   tone?: "primary" | "danger";
   /**
-   * `notification` (padrão): entra no sino da barra superior com Aceitar e
-   * Recusar, como uma oferta de transferência. `dialog`: abre um diálogo
-   * modal na hora.
+   * `notification` (default): goes into the top bar's bell with Accept and
+   * Refuse, like a transfer offer. `dialog`: opens a modal dialog
+   * immediately.
    */
   display?: "notification" | "dialog";
 }
@@ -97,7 +96,7 @@ export interface PluginCommand {
 
 type Handler = (event: PluginEvent) => void;
 
-/** Quem executa os comandos: instalado pela `PluginBridge` montada no App. */
+/** Who executes the commands: installed by the `PluginBridge` mounted in the App. */
 export interface PluginCommandExecutor {
   isPlugin: (code: string) => boolean;
   notify: (code: string, request: NotifyRequest) => Promise<void>;
@@ -128,7 +127,7 @@ function reaches(event: PluginEvent, plugin?: string) {
   return event.target === "*" || plugin === undefined || plugin === event.target;
 }
 
-/** Publica um evento em todos os canais do navegador. */
+/** Publishes an event on all the browser channels. */
 export function publishPluginEvent<P extends Record<string, unknown>>(
   type: PluginEventType,
   payload: P,
@@ -138,8 +137,8 @@ export function publishPluginEvent<P extends Record<string, unknown>>(
 }
 
 /**
- * Repassa às telas um envelope que o nó já montou, preservando `id` e `at`.
- * Recusa o que não segue o protocolo ou não é um tipo publicado pelo nó.
+ * Relays to the screens an envelope the node has already built, preserving `id` and `at`.
+ * Refuses what does not follow the protocol or is not a type published by the node.
  */
 export function forwardNodeEvent(value: unknown): PluginEvent | null {
   if (typeof value !== "object" || value === null) return null;
@@ -183,9 +182,9 @@ function deliver<P>(event: PluginEvent<P>): PluginEvent<P> {
 }
 
 /**
- * Assina um tipo (ou `*`). Com `plugin`, só recebe eventos endereçados a ele ou
- * a todos. `replay` entrega de imediato o último evento global daquele tipo -
- * útil para saber o idioma e o tema atuais ao montar a tela.
+ * Subscribes to a type (or `*`). With `plugin`, it only receives events addressed to it or
+ * to all. `replay` immediately delivers the last global event of that type -
+ * useful to learn the current language and theme when mounting the screen.
  */
 export function subscribePluginEvents(
   type: PluginEventType | "*",
@@ -253,8 +252,8 @@ function respond(code: string, response: NotificationResponse): NotificationResp
 }
 
 /**
- * Executa um comando de um plugin. Sempre termina com o evento
- * `notification.response` para o próprio plugin, inclusive em recusa.
+ * Executes a plugin's command. It always ends with the `notification.response`
+ * event for the plugin itself, including on refusal.
  */
 export async function runPluginCommand(command: unknown): Promise<NotificationResponse> {
   const value = (typeof command === "object" && command !== null ? command : {}) as Partial<PluginCommand>;
@@ -284,7 +283,7 @@ export async function runPluginCommand(command: unknown): Promise<NotificationRe
   }
 }
 
-/** Canais sem SDK: `CustomEvent` no `window` e `postMessage` da mesma origem. */
+/** Channels without the SDK: `CustomEvent` on the `window` and same-origin `postMessage`. */
 export function listenForPluginCommands(): () => void {
   const onDom = (event: Event) => void runPluginCommand((event as CustomEvent).detail);
   const onMessage = (event: MessageEvent) => {
@@ -302,7 +301,7 @@ export function listenForPluginCommands(): () => void {
   };
 }
 
-/** API com escopo de um plugin, entregue pelo SDK (`host.plugin(code)`). */
+/** A plugin-scoped API, delivered by the SDK (`host.plugin(code)`). */
 export function scopedPluginApi(code: string) {
   const command = (type: PluginCommand["type"], payload: NotifyRequest | ConfirmRequest) =>
     runPluginCommand({ protocol: PLUGIN_EVENTS_PROTOCOL, id: newId(), type, plugin_code: code, payload });
@@ -326,7 +325,7 @@ export function scopedPluginApi(code: string) {
   };
 }
 
-/** Só para testes. */
+/** For tests only. */
 export function resetPluginEventsForTest() {
   handlers.clear();
   lastByType.clear();

@@ -1,11 +1,11 @@
-//! Shell nativo do Windows: janela WebView2 e ícone na área de notificação.
+//! Native Windows shell: WebView2 window and notification area icon.
 //!
-//! O processo continua sendo o mesmo binário Rust que serve o gateway. Tao
-//! entrega a janela Win32, Wry usa o WebView2 instalado pelo Windows e
-//! `tray-icon` registra o menu da bandeja. Não há console nem Electron: o
-//! processo filho nativo é acompanhado por um supervisor leve no mesmo
-//! executável. `main.rs` declara `windows_subsystem = "windows"` no alvo
-//! Windows.
+//! The process is still the same Rust binary that serves the gateway. Tao
+//! provides the Win32 window, Wry uses the WebView2 installed by Windows and
+//! `tray-icon` registers the tray menu. There is no console and no Electron: the
+//! native child process is watched by a lightweight supervisor in the same
+//! executable. `main.rs` declares `windows_subsystem = "windows"` on the
+//! Windows target.
 
 pub const TRAY_SHOW_ID: &str = "pom.show";
 pub const TRAY_QUIT_ID: &str = "pom.quit";
@@ -40,8 +40,8 @@ pub fn menu_action(id: &str) -> Option<WindowAction> {
     }
 }
 
-/// Só uma saída bem-sucedida representa `Sair` na camada supervisora.
-/// `None` cobre encerramento por exceção ou sinal, que deve ser relançado.
+/// Only a successful exit represents `Quit` in the supervisor layer.
+/// `None` covers termination by exception or signal, which must be relaunched.
 pub fn should_relaunch(exit_code: Option<i32>) -> bool {
     exit_code != Some(0)
 }
@@ -203,19 +203,19 @@ mod native {
             }
         });
 
-        // Desregistre o callback antes de destruir a bandeja e libere os
-        // objetos na ordem inversa da criação. `process::exit` sem esse trecho
-        // deixava a classe Win32 do WebView2 viva e produzia ERROR 1412 no
-        // teardown, mascarando a causa real de uma queda do serviço.
+        // Unregister the callback before destroying the tray and release the
+        // objects in the reverse order of creation. `process::exit` without this
+        // block left the WebView2 Win32 class alive and produced ERROR 1412 on
+        // teardown, masking the real cause of a service crash.
         MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
         drop(tray);
         drop(webview);
         drop(window);
 
         if user_quit {
-            // Assim como o Sair do AppKit, não aguardamos um servidor Tokio
-            // sem canal cooperativo: terminar o processo encerra o serviço e
-            // remove o ícone da bandeja de forma determinística.
+            // As with AppKit's Quit, we do not wait for a Tokio server with no
+            // cooperative channel: ending the process stops the service and
+            // removes the tray icon deterministically.
             std::process::exit(0);
         }
 

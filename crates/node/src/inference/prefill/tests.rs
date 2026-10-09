@@ -200,10 +200,10 @@ mod tests {
         assert_eq!(groups[0].items[0].session_id, session_id);
     }
 
-    // O número de pedaços não é calculado em lugar nenhum: `run` avança até o
-    // peer da cabeça dizer que não há mais (`more_chunks`), que é o único que
-    // sabe quantos tokens o prompt virou. A aritmética que existia aqui, e os
-    // testes dela, não tinham chamador na produção.
+    // The number of chunks is not computed anywhere: `run` advances until the
+    // head peer says there are no more (`more_chunks`), which is the only one that
+    // knows how many tokens the prompt became. The arithmetic that used to be here, and
+    // its tests, had no caller in production.
 
     #[test]
     fn hop_trace_separates_peer_compute_from_transport_time() {
@@ -669,9 +669,9 @@ mod tests {
         assert!(no_mtp["mtp_acceptance_rate"].is_null());
     }
 
-    /// O resumo dizia "não medido" enquanto a tabela por salto mostrava as
-    /// chamadas: o laço de continuação funde uma perna na outra, e a fusão
-    /// carregava `PhaseTrace::calls` mas não o contador solto do resumo.
+    /// The summary said "not measured" while the per-hop table showed the
+    /// calls: the continuation loop merges one leg into the other, and the merge
+    /// carried `PhaseTrace::calls` but not the summary's standalone counter.
     #[test]
     fn trace_derives_decode_calls_from_the_hops_after_the_merge() {
         fn leg(calls: u32) -> RequestTrace {
@@ -701,8 +701,8 @@ mod tests {
         trace.merge(&leg(24));
         trace.set_generated_tokens(119);
 
-        // Máximo entre os saltos, não a soma: uma rodada de decode toca os dois
-        // saltos, e somar dobraria as chamadas num pipeline de dois nós.
+        // Maximum across the hops, not the sum: one decode round touches both
+        // hops, and summing would double the calls in a two-node pipeline.
         assert_eq!(trace.decode_calls, 64);
         assert_eq!(trace.hops[0].decode.calls, 64);
         assert_eq!(
@@ -776,13 +776,13 @@ mod tests {
         assert_eq!(trace.hops[0].decode.hidden_state_bytes_received, 0);
     }
 
-    /// A espera pelo mutex do motor tem que chegar a telemetria com nome.
+    /// The wait for the engine mutex has to reach telemetry with a name.
     ///
-    /// Numa medicao de 2026-08-14 ela era 194 ms por token - 63% do tempo da
-    /// requisicao - e aparecia na tela apenas como "nao atribuido", porque
-    /// caia no vao entre a entrada do handler e o primeiro medidor. Um numero
-    /// grande sem nome e pior que um numero grande: manda procurar no lugar
-    /// errado.
+    /// In a measurement of 2026-08-14 it was 194 ms per token - 63% of the
+    /// request time - and showed up on screen only as "not attributed", because
+    /// it fell into the gap between the handler's entry and the first meter. A large
+    /// number without a name is worse than a large number: it sends you looking in the
+    /// wrong place.
     #[test]
     fn the_wait_for_the_engine_lock_reaches_the_trace() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
@@ -1314,7 +1314,7 @@ mod tests {
 
     #[test]
     fn speculative_decode_coverage_counts_rounds_not_tokens() {
-        // 84 tokens, 61 drafts aceitos: 23 rodadas por salto, não 84.
+        // 84 tokens, 61 drafts accepted: 23 rounds per hop, not 84.
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
         trace.output_tokens = 84;
         trace.mtp_draft_tokens_accepted = 61;
@@ -1334,8 +1334,8 @@ mod tests {
 
     #[test]
     fn decode_coverage_counts_the_rounds_the_gateway_sent() {
-        // 1649 tokens, 722 drafts aceitos, 926 rodadas: a estimativa por tokens
-        // esperava 927 e mostrava 98,9% com os dois saltos respondendo tudo.
+        // 1649 tokens, 722 drafts accepted, 926 rounds: the token-based estimate
+        // expected 927 and showed 98.9% with both hops answering everything.
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
         trace.output_tokens = 1649;
         trace.mtp_draft_tokens_accepted = 722;
@@ -1359,8 +1359,8 @@ mod tests {
 
     #[test]
     fn remote_stream_rounds_are_not_estimated_from_tokens() {
-        // 90 tokens sem MTP pelo remote stream: o primeiro veio do prefill, as
-        // 89 rodadas renderam 178 spans, e a estimativa por tokens esperava 180.
+        // 90 tokens without MTP over the remote stream: the first came from the prefill, the
+        // 89 rounds yielded 178 spans, and the token-based estimate expected 180.
         let mut trace = RequestTrace::new("qwen", &[("head", 0, 26), ("tail", 27, 47)]);
         for index in 0..89 {
             let mut frame = RequestTrace::new("qwen", &[("head", 0, 26), ("tail", 27, 47)]);
@@ -1583,11 +1583,11 @@ mod tests {
         assert!(trace.hops[0].decode.node_p95_ms > trace.hops[0].decode.node_p50_ms);
     }
 
-    // ── As duas formas legítimas de resposta a uma rodada especulativa ──────
+    // ── The two legitimate forms of answering a speculative round ──────
     //
-    // Ler só a primeira era o defeito de 2026-08-15: a cabeça que recusa
-    // rascunhar responde na segunda, e o gateway matava a geração no primeiro
-    // token. A prova ponta a ponta está em `spec_lab.rs`.
+    // Reading only the first was the defect of 2026-08-15: a head that refuses
+    // to draft answers in the second, and the gateway killed the generation at the first
+    // token. The end-to-end proof is in `spec_lab.rs`.
 
     fn empty_trace() -> RequestTrace {
         RequestTrace::new("qwen", &[("no1", 0, 15)])
@@ -1612,7 +1612,7 @@ mod tests {
         assert!(!step.speculation_active);
     }
 
-    /// Sem isto a geração ignoraria o EOS e só pararia no teto de tokens.
+    /// Without this, the generation would ignore the EOS and only stop at the token cap.
     #[test]
     fn the_end_of_a_one_token_response_is_honored() {
         let step = speculative_step_from_meta(
@@ -1686,8 +1686,8 @@ mod tests {
         );
     }
 
-    /// Uma resposta que não é nem uma coisa nem outra continua sendo erro:
-    /// seguir em silêncio com token nenhum seria pior que a falha.
+    /// An answer that is neither one thing nor the other is still an error:
+    /// carrying on silently with no token at all would be worse than the failure.
     #[test]
     fn a_response_with_no_token_at_all_is_still_an_error() {
         assert!(speculative_step_from_meta(&json!({"done": false}), empty_trace()).is_err());
@@ -1738,7 +1738,7 @@ mod tests {
         let window = PrefillOverlapWindow::new(8);
         let budget = PrefillOverlapWindow::INFLIGHT_BYTE_BUDGET;
 
-        // Metade do orçamento cada: os dois passam, o terceiro espera.
+        // Half of the budget each: both pass, the third waits.
         let a = window.reserve_bytes(budget / 2).await;
         let b = window.reserve_bytes(budget / 2).await;
         assert!(
@@ -1762,7 +1762,7 @@ mod tests {
         );
         drop(b);
 
-        // Um pedaço sozinho maior que o orçamento é limitado a ele e não trava.
+        // A single chunk larger than the budget is clamped to it and does not block.
         let huge = tokio::time::timeout(
             std::time::Duration::from_millis(10),
             window.reserve_bytes(budget.saturating_mul(4)),

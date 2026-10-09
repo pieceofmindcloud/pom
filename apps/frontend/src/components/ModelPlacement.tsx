@@ -1,17 +1,17 @@
 /**
- * Como o llama.cpp de fato carregou o modelo nesta máquina.
+ * How llama.cpp actually loaded the model on this machine.
  *
- * O que o operador quer saber ao abrir um card é o que a configuração não
- * responde: quais camadas ficaram na GPU, quais sobraram na CPU, e onde o cache
- * KV foi parar. `n_gpu_layers` é o **pedido**; entre o pedido e o resultado
- * estão o `fit`, que reduz o número numa GPU cheia, e os overrides de buffer
- * type, que mandam parte de uma camada - os experts de um MoE, tipicamente -
- * para a CPU sem mudar o dispositivo do bloco.
+ * What the operator wants to know when opening a card is what the configuration does not
+ * answer: which layers stayed on the GPU, which were left on the CPU, and where the KV
+ * cache ended up. `n_gpu_layers` is the **request**; between the request and the result
+ * are the `fit`, which reduces the number on a full GPU, and the buffer type
+ * overrides, which send part of a layer - the experts of a MoE, typically -
+ * to the CPU without changing the block's device.
  *
- * Por isso a classificação abaixo lê os **buffers dos pesos**, não o campo
- * `device`. Uma camada com 90% dos bytes na GPU e os experts na CPU aparece
- * como mista, que é o que ela é. Derivar a faixa de `n_gpu_layers` mostraria
- * ela como inteira na GPU, e a conta de memória de quem lê não fecharia.
+ * That is why the classification below reads the **weight buffers**, not the `device`
+ * field. A layer with 90% of its bytes on the GPU and the experts on the CPU appears
+ * as mixed, which is what it is. Deriving the range from `n_gpu_layers` would show
+ * it as entirely on the GPU, and the memory math of whoever reads would not add up.
  */
 import clsx from "clsx";
 import { Cpu } from "lucide-react";
@@ -23,17 +23,17 @@ import { Footnote, KeyValue } from "./ui";
 export type Placement = "gpu" | "cpu" | "mixed" | "unknown";
 
 /**
- * Um buffer é de CPU pelo nome que o próprio ggml lhe dá.
+ * A buffer is a CPU one by the name ggml itself gives it.
  *
- * Os backends nomeiam o buffer com o nome do dispositivo (`CUDA0`, `Metal`,
- * `Vulkan0`), e só o host se chama `CPU` - com o sufixo `_Mapped` quando o peso
- * veio de `mmap` do arquivo, que é o caso comum de camada não descarregada.
+ * The backends name the buffer with the device name (`CUDA0`, `Metal`,
+ * `Vulkan0`), and only the host is called `CPU` - with the `_Mapped` suffix when the weight
+ * came from `mmap` of the file, which is the common case of a non-offloaded layer.
  */
 export function isCpuBuffer(name: string): boolean {
   return name === "CPU" || name.startsWith("CPU_");
 }
 
-/** Onde os pesos de um grupo ficaram, pelos bytes em cada buffer. */
+/** Where a group's weights ended up, by the bytes in each buffer. */
 export function placementOf(buffers: BufferBytes[]): Placement {
   const total = buffers.reduce((sum, b) => sum + b.bytes, 0);
   if (total === 0) return "unknown";
@@ -44,10 +44,10 @@ export function placementOf(buffers: BufferBytes[]): Placement {
 }
 
 /*
- * As cores saem dos tokens do produto (`tailwind.config.js`), não da paleta
- * numérica do Tailwind: aqui `lime` e `amber` são cores planas, então
- * `bg-lime-400` não existe e o Tailwind não gerava classe nenhuma - a tira de
- * camadas saía invisível, uma faixa vazia no meio do card.
+ * The colors come from the product tokens (`tailwind.config.js`), not from Tailwind's
+ * numeric palette: here `lime` and `amber` are flat colors, so
+ * `bg-lime-400` does not exist and Tailwind generated no class at all - the layer
+ * strip came out invisible, an empty band in the middle of the card.
  */
 const CELL: Record<Placement, string> = {
   gpu: "bg-lime/80",
@@ -56,7 +56,7 @@ const CELL: Record<Placement, string> = {
   unknown: "bg-line",
 };
 
-/** Quantos bytes de um grupo estão em buffer de CPU e quantos não estão. */
+/** How many bytes of a group are in a CPU buffer and how many are not. */
 function split(buffers: BufferBytes[]): { cpu: number; gpu: number } {
   let cpu = 0;
   let gpu = 0;
@@ -67,18 +67,18 @@ function split(buffers: BufferBytes[]): { cpu: number; gpu: number } {
   return { cpu, gpu };
 }
 
-/** O resumo de uma camada, para o `title` da célula. */
+/** The summary of a layer, for the cell's `title`. */
 function layerTitle(layer: LayerPlacement): string {
   const where = layer.buffers.map((b) => `${b.buffer} ${bytes(b.bytes)}`).join(" · ");
   return `${layer.layer}: ${where || layer.device}`;
 }
 
 /**
- * A tira de camadas: uma célula por bloco, na ordem em que o modelo as executa.
+ * The layer strip: one cell per block, in the order the model runs them.
  *
- * Uma tira, e não uma lista: com 80 camadas a pergunta que se faz é sobre a
- * *forma* do corte - "quantas ficaram de fora e onde" - e essa forma se lê de
- * relance numa faixa, nunca em oitenta linhas de texto.
+ * A strip, and not a list: with 80 layers the question being asked is about the
+ * *shape* of the cut - "how many were left out and where" - and that shape is read at a
+ * glance in a band, never in eighty lines of text.
  */
 function LayerStrip({ layers }: { layers: LayerPlacement[] }) {
   return (
@@ -104,11 +104,11 @@ function Legend({ tone, label }: { tone: Placement; label: string }) {
 }
 
 /**
- * Onde o cache KV ficou, pelos bytes de contexto de cada buffer.
+ * Where the KV cache ended up, by the context bytes of each buffer.
  *
- * `context` na repartição do llama.cpp é o cache KV (mais o estado recorrente,
- * num modelo híbrido). Um buffer com `context` zerado não guarda cache nenhum e
- * não entra na frase.
+ * `context` in llama.cpp's breakdown is the KV cache (plus the recurrent state,
+ * in a hybrid model). A buffer with `context` zeroed holds no cache at all and
+ * does not enter the sentence.
  */
 export function kvCacheBuffers(buffers: ContextMemoryBuffer[]): ContextMemoryBuffer[] {
   return buffers.filter((b) => b.context > 0);
@@ -122,7 +122,7 @@ export function ModelPlacementSection({
 }: {
   placement: ModelPlacement | null;
   contextMemory: ContextMemoryBuffer[] | null;
-  /** O que foi **pedido** para o cache KV. Só aparece na falta da medida. */
+  /** What was **requested** for the KV cache. It only appears in the absence of the measurement. */
   offloadKqv: boolean;
   fitApplied: boolean;
 }) {
@@ -179,17 +179,17 @@ export function ModelPlacementSection({
               {kv.map((b) => `${b.buffer} ${bytes(b.context)}`).join(" · ")}
             </span>
           ) : (
-            // Sem medida, a flag é tudo que se pode dizer - e se diz como
-            // pedido, não como fato, porque numa GPU cheia o llama.cpp
-            // recarrega com ela desligada.
+            // Without a measurement, the flag is all that can be said - and it is said as
+            // requested, not as fact, because on a full GPU llama.cpp
+            // reloads with it turned off.
             <span className="text-[0.7rem] text-muted">
               {t(offloadKqv ? "placement.kvRequestedGpu" : "placement.kvRequestedCpu")}
             </span>
           )}
         </KeyValue>
-        {/* A cabeça de saída é uma pergunta à parte: ela só vai para a GPU
-            quando `n_gpu_layers` passa do número de blocos, e num pipeline é o
-            último peer quem a carrega. */}
+        {/* The output head is a separate question: it only goes to the GPU
+            when `n_gpu_layers` exceeds the number of blocks, and in a pipeline it is the
+            last peer that loads it. */}
         <KeyValue compact label={t("placement.output")}>
           <span className="font-mono text-[0.7rem]">
             {placement.output.buffers.map((b) => `${b.buffer} ${bytes(b.bytes)}`).join(" · ") ||

@@ -158,9 +158,9 @@ fn the_plan_echoes_the_settings_and_the_prompt_budget() {
     let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards, None);
 
     assert_eq!(p.params.n_ctx, 32768);
-    // Cada sessão recebe 32768; 256 ficam reservados para a resposta.
+    // Each session receives 32768; 256 stay reserved for the answer.
     assert_eq!(p.prompt_tokens, 32512);
-    // O pedaço nunca passa de n_batch, por mais alto que seja o pedido.
+    // The chunk never exceeds n_batch, however high the request is.
     assert_eq!(p.chunk_tokens, 3072);
 }
 
@@ -276,9 +276,9 @@ fn per_machine_gpu_offload_rides_along_with_the_slice() {
     assert_eq!(p.steps[1].n_gpu_layers, Some(0));
 }
 
-/// Onde o cache KV mora é decidido pela VRAM da máquina, e as máquinas do
-/// cluster não se parecem: a escolha feita para uma não pode aparecer na
-/// outra, nem apagar a que não foi escolhida.
+/// Where the KV cache lives is decided by the machine's VRAM, and the machines of the
+/// cluster do not look alike: the choice made for one must not show up on the
+/// other, nor erase the one that was not chosen.
 #[test]
 fn per_machine_kv_cache_rides_along_with_the_slice() {
     let ms = build(vec![
@@ -296,7 +296,7 @@ fn per_machine_kv_cache_rides_along_with_the_slice() {
     assert!(p.blocked.is_none(), "{:?}", p.blocked);
     assert_eq!(p.steps[0].offload_kqv, None, "inherits the cluster choice");
     assert_eq!(p.steps[1].offload_kqv, Some(false));
-    // Um eixo não mexe no outro: nenhuma das duas pediu offload.
+    // One axis does not move the other: neither of the two asked for offload.
     assert_eq!(p.steps[1].n_gpu_layers, None);
 }
 
@@ -328,7 +328,7 @@ fn nvidia_memory_comes_from_vram_and_everything_else_from_ram() {
 // `"total_layers": null` for the `qwen` set (slices cut before
 // `split_model.py` wrote `pom.original_block_count`). That `null`
 // became a `0`, the plan called itself complete, and every peer's apply
-// died on `runtime::NodeConfig::validate` with "total_layers não pode ser
+// died on `runtime::NodeConfig::validate` with "total_layers cannot be
 // zero" — after `launch` had already stopped inference on all of them.
 
 /// The exact shape of the captain's `qwen` set: no metadata anywhere, but
@@ -495,15 +495,15 @@ fn a_shard_that_reports_zero_layers_is_a_shard_with_no_total() {
     );
 }
 
-// ── Um modelo inteiro ───────────────────────────────────────────────────
+// ── A whole model ───────────────────────────────────────────────────────
 //
-// O caso degenerado: uma máquina, todas as camadas. O que estes testes
-// guardam não é uma segunda implementação - é que **não** existe uma. Um
-// modelo inteiro entra no mesmo `HeldShard`, sai no mesmo `Step` e é
-// lançado pelo mesmo `launch`; o que muda é de onde o inventário é lido e
-// qual substantivo a recusa usa.
+// The degenerate case: one machine, all the layers. What these tests
+// guard is not a second implementation - it is that there is **not** one. A whole
+// model enters the same `HeldShard`, comes out as the same `Step` and is
+// launched by the same `launch`; what changes is where the inventory is read from and
+// which noun the refusal uses.
 
-/// Uma máquina com (ou sem) o GGUF inteiro de 32 camadas.
+/// A machine with (or without) the whole 32-layer GGUF.
 fn whole_machine(id: &'static str, mem_free_mb: u64, has: bool) -> Machine {
     Machine {
         node_id: id.to_string(),
@@ -577,9 +577,9 @@ fn tp_machine(id: &'static str, rank: u32) -> Machine {
     machine
 }
 
-/// O plano de um modelo inteiro é uma máquina cobrindo tudo - e é
-/// `complete`, sem buraco e sem sobreposição, porque a única faixa que
-/// existe é o modelo todo.
+/// The plan of a whole model is one machine covering everything - and it is
+/// `complete`, with no gap and no overlap, because the only range that
+/// exists is the whole model.
 #[test]
 fn a_whole_model_is_one_machine_covering_every_layer() {
     let ms = vec![whole_machine("a", 900_000, true)];
@@ -606,8 +606,8 @@ fn a_whole_model_is_one_machine_covering_every_layer() {
     assert_eq!(p.transfer_bytes, 0);
 }
 
-/// O operador escolhe a máquina, e a escolha é validada como qualquer
-/// outra: a faixa é a do modelo inteiro.
+/// The operator chooses the machine, and the choice is validated like any
+/// other: the range is that of the whole model.
 #[test]
 fn the_operator_picks_the_machine_for_a_whole_model() {
     let ms = vec![
@@ -623,9 +623,9 @@ fn the_operator_picks_the_machine_for_a_whole_model() {
     assert!(p.steps[0].ready);
 }
 
-/// Duas cópias do modelo inteiro são duas rotas válidas para a mesma
-/// faixa. O erro de modelo escolhido duas vezes só vale quando o mesmo
-/// destino aparece duas vezes na seleção.
+/// Two copies of the whole model are two valid routes for the same
+/// range. The error of a model chosen twice only applies when the same
+/// target appears twice in the selection.
 #[test]
 fn a_whole_model_on_two_machines_is_a_parallel_route() {
     let ms = vec![
@@ -649,8 +649,8 @@ fn a_whole_model_on_two_machines_is_a_parallel_route() {
     assert_eq!(p.steps[1].target_node_id, "b");
 }
 
-/// Uma máquina que não tem o arquivo recebe uma cópia, exatamente como uma
-/// fatia - e o plano nomeia quem envia.
+/// A machine that does not have the file receives a copy, exactly like a
+/// slice - and the plan names who sends it.
 #[test]
 fn a_machine_without_the_model_is_planned_as_a_copy() {
     let ms = vec![
@@ -665,9 +665,9 @@ fn a_machine_without_the_model_is_planned_as_a_copy() {
     assert_eq!(s.source_node_id.as_deref(), Some("tem"));
     assert_eq!(s.source_path.as_deref(), Some("/tem/qwen3.5-9b.gguf"));
     assert_eq!(p.transfer_bytes, 5 * GIB);
-    // O aviso existe porque `transfer::safe_model_path` prende o sentido
-    // "puxar" à pasta de fatias de quem envia, e um modelo inteiro mora
-    // quase sempre fora dela.
+    // The warning exists because `transfer::safe_model_path` pins the "pull"
+    // direction to the sender's slice folder, and a whole model almost
+    // always lives outside it.
     assert!(
         s.note
             .as_deref()
@@ -678,8 +678,8 @@ fn a_machine_without_the_model_is_planned_as_a_copy() {
     );
 }
 
-/// A recusa fala do que está na tela. "a fatia L0-31" nomeia uma coisa que
-/// o operador que escolheu um modelo inteiro não vê em lugar nenhum.
+/// The refusal speaks of what is on the screen. "a fatia L0-31" names something that
+/// the operator who chose a whole model does not see anywhere.
 #[test]
 fn a_whole_model_refusal_names_the_model_and_not_a_slice() {
     let ms = vec![whole_machine("a", 900_000, true)];
@@ -700,7 +700,7 @@ fn a_whole_model_refusal_names_the_model_and_not_a_slice() {
     assert!(!reason.contains("slices of"), "{reason}");
 }
 
-/// O menu de destinos diz "já tem o modelo", não "já tem a fatia".
+/// The target menu says "já tem o modelo", not "já tem a fatia".
 #[test]
 fn the_target_menu_speaks_of_a_model() {
     let ms = vec![
@@ -717,8 +717,8 @@ fn the_target_menu_speaks_of_a_model() {
     assert!(b.note.as_deref().unwrap().contains("would receive"));
 }
 
-/// A camada 0 é a que processa o prompt inteiro, e com um modelo inteiro
-/// ela é a máquina escolhida - que a sugestão manda para a mais folgada.
+/// Layer 0 is the one that processes the whole prompt, and with a whole model
+/// it is the chosen machine - which the suggestion sends to the roomiest one.
 #[test]
 fn the_suggestion_puts_a_whole_model_on_the_roomiest_machine() {
     let ms = vec![
@@ -730,10 +730,10 @@ fn the_suggestion_puts_a_whole_model_on_the_roomiest_machine() {
     assert_eq!(p.steps[0].target_node_id, "grande");
 }
 
-/// Um modelo cujo cabeçalho GGUF não deu o número de camadas não vira uma
-/// implantação com `total_layers` zero: ele simplesmente não entra no
-/// inventário. `NodeConfig::validate` recusaria o zero no destino, depois
-/// de `launch` já ter parado a inferência de lá.
+/// A model whose GGUF header did not give the number of layers does not become a
+/// deployment with `total_layers` zero: it simply does not enter the
+/// inventory. `NodeConfig::validate` would refuse the zero at the target, after
+/// `launch` had already stopped the inference there.
 #[test]
 fn a_model_with_no_layer_count_never_becomes_a_candidate() {
     let without_layers = json!({
@@ -755,8 +755,8 @@ fn a_model_with_no_layer_count_never_becomes_a_candidate() {
     assert!(parse_whole(&zero, "quebrado").is_none());
 }
 
-/// Uma fatia não é um modelo inteiro, mesmo com o nome pedido - as duas
-/// listas saem da mesma varredura e `shard_range` é o que as separa.
+/// A slice is not a whole model, even with the requested name - the two
+/// lists come out of the same survey and `shard_range` is what separates them.
 #[test]
 fn a_slice_is_never_read_as_a_whole_model() {
     let slice = json!({
@@ -769,13 +769,13 @@ fn a_slice_is_never_read_as_a_whole_model() {
     assert!(parse_whole(&slice, "qwen").is_none());
 }
 
-/// A segunda metade da implantação: o que a máquina é mandada carregar.
+/// The second half of the deployment: what the machine is told to load.
 ///
-/// É aqui que "modelo inteiro" tem que sair como um alvo comum - faixa
-/// cheia, `skip_split`, sem `merge` e sem posição forçada -, porque é
-/// exatamente essa forma que faz o `apply` no destino se reconhecer como
-/// `single_peer` e subir sem extração de estado oculto. Um `skip_split`
-/// falso aqui mandaria a máquina fatiar um arquivo que já é o modelo todo.
+/// This is where "whole model" has to come out as an ordinary target - full
+/// range, `skip_split`, without `merge` and without a forced position -, because it is
+/// exactly that shape that makes the `apply` at the target recognize itself as
+/// `single_peer` and come up without hidden-state extraction. A false
+/// `skip_split` here would send the machine to slice a file that is already the whole model.
 #[test]
 fn a_whole_model_is_launched_as_one_plain_target() {
     let ms = vec![whole_machine("a", 900_000, true)];
@@ -785,8 +785,8 @@ fn a_whole_model_is_launched_as_one_plain_target() {
     assert_eq!(targets.len(), 1);
     let target = &targets[0];
     assert_eq!(target.node_id, "a");
-    // O caminho é o da máquina de destino, lido da varredura - nunca um
-    // palpite sobre o sistema de arquivos alheio.
+    // The path is the target machine's, read from the survey - never a
+    // guess about someone else's filesystem.
     assert_eq!(target.source_model_path, "/a/qwen3.5-9b.gguf");
     assert_eq!((target.start_layer, target.end_layer), (0, 31));
     assert!(target.skip_split, "the file is already the whole model");
@@ -797,8 +797,8 @@ fn a_whole_model_is_launched_as_one_plain_target() {
     );
 }
 
-/// Um grupo de tensor parallelism vira um alvo por rank: o primary (rank 0)
-/// e cada worker, todos apontando o mesmo rank0_url para a coletiva.
+/// A tensor parallelism group becomes one target per rank: the primary (rank 0)
+/// and each worker, all pointing to the same rank0_url for the collective.
 #[test]
 fn a_tensor_parallel_group_launches_one_target_per_rank() {
     let ms = vec![
@@ -820,8 +820,8 @@ fn a_tensor_parallel_group_launches_one_target_per_rank() {
     assert_eq!(primary.node_id, "a");
     assert_eq!(primary.tp.as_ref().unwrap().role, "primary");
     assert_eq!(primary.tp.as_ref().unwrap().rank, 0);
-    // A URL da coletiva é derivada da porta de inferência anunciada pelo
-    // primary - o operador só escolhe a máquina, não digita a URL.
+    // The collective's URL is derived from the inference port announced by the
+    // primary - the operator only chooses the machine, does not type the URL.
     assert_eq!(
         primary.tp.as_ref().unwrap().rank0_url.as_deref(),
         Some("http://a:8181")
@@ -959,9 +959,9 @@ fn selected_tp_metadata_gate_opens_when_all_ranks_are_ready() {
     .is_none());
 }
 
-/// As validações estáticas do grupo TP recusam o plano antes de qualquer
-/// checagem remota: tamanho, presença no cluster, modelo inteiro e contagem
-/// de workers.
+/// The static validations of the TP group refuse the plan before any
+/// remote check: size, presence in the cluster, whole model and count
+/// of workers.
 #[test]
 fn tp_group_checks_rejects_bad_groups() {
     let ms = vec![
@@ -1013,10 +1013,10 @@ fn tp_group_checks_rejects_bad_groups() {
         .contains("primary itself"));
 }
 
-/// A recusa do peer é repetida ao operador, em vez de virar palpite sobre a
-/// versão do binário dele. O caso que motivou: `/api/ui/tp/check` é
-/// autenticada, a chamada ia sem a chave, e o `{"error":...}` que voltava
-/// era anunciado como "binário antigo" - com as duas máquinas no mesmo
+/// The peer's refusal is repeated to the operator, instead of becoming a guess about
+/// its binary version. The case that motivated it: `/api/ui/tp/check` is
+/// authenticated, the call went without the key, and the `{"error":...}` that came back
+/// was announced as "old binary" - with both machines on the same
 /// commit.
 #[test]
 fn a_refusal_is_quoted_not_guessed_as_an_old_binary() {
@@ -1041,14 +1041,14 @@ fn a_refusal_is_quoted_not_guessed_as_an_old_binary() {
         "a peer that refused is not an outdated peer: {refusal}"
     );
 
-    // Só um corpo que não explica nada continua valendo como binário velho.
+    // Only a body that explains nothing still counts as an old binary.
     assert!(tp_check_verdict(&json!({ "outra": 1 }), "ksia")
         .unwrap()
         .contains("old binary"));
 }
 
-/// A checagem tem que chegar autenticada no primary. Sem isto ela é 401 em
-/// qualquer máquina, e nenhuma implantação TP passa.
+/// The check has to arrive authenticated at the primary. Without it, it is 401 on
+/// any machine, and no TP deployment passes.
 #[tokio::test]
 async fn the_shardability_check_carries_the_operator_key() {
     use crate::gateway::testkit::state_with;
@@ -1135,12 +1135,12 @@ async fn the_shardability_check_carries_the_operator_key() {
     );
 }
 
-/// Os membros saem em ordem de rank, e quem não anuncia porta de inferência
-/// é recusado **aqui**.
+/// The members come out in rank order, and whoever does not announce an inference port
+/// is refused **here**.
 ///
-/// O rank 0 dispara o decode de cada membro por essa URL; um membro sem ela
-/// travaria o grupo na primeira barreira, que é o pior lugar para descobrir
-/// o problema.
+/// Rank 0 triggers each member's decode through that URL; a member without it
+/// would hang the group on the first barrier, which is the worst place to discover
+/// the problem.
 #[test]
 fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
     let mut a = whole_machine("a", 900_000, true);
@@ -1155,8 +1155,8 @@ fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
         primary_node_id: "a".into(),
         worker_node_ids: vec!["b".into()],
     };
-    // A ordem no cluster não é a ordem dos ranks: o teste embaralha de
-    // propósito, porque quem manda é `worker_node_ids`.
+    // The order in the cluster is not the order of the ranks: the test shuffles on
+    // purpose, because whoever commands is `worker_node_ids`.
     let members = tp_members(&tp, &[b, a]).unwrap();
     assert_eq!(members.len(), 2);
     assert_eq!(members[0].node_id, "a", "rank 0 is the primary");
@@ -1173,8 +1173,8 @@ fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
     assert!(error.contains("inference URL"), "{error}");
 }
 
-/// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o
-/// modelo, não uma implantação que sobe apontando para lugar nenhum.
+/// A machine that did not find the file after the copy is an error naming the
+/// model, not a deployment that comes up pointing nowhere.
 #[test]
 fn a_missing_file_after_the_copy_is_an_error_that_names_the_model() {
     let ms = vec![
@@ -1190,8 +1190,8 @@ fn a_missing_file_after_the_copy_is_an_error_that_names_the_model() {
     );
 }
 
-/// O caminho das fatias sai igualzinho pela mesma função - a extração não
-/// mudou o que o `launch` recebe.
+/// The path of the slices comes out exactly the same through the same function - the
+/// extraction did not change what `launch` receives.
 #[test]
 fn the_slice_path_still_launches_the_way_it_did() {
     let ms = build(vec![
@@ -1207,8 +1207,8 @@ fn the_slice_path_still_launches_the_way_it_did() {
     assert!(targets.iter().all(|a| a.skip_split && a.merge.is_none()));
 }
 
-/// O modelo inteiro vira a faixa 0..total-1, que é o que faz todo o resto
-/// do módulo funcionar sem saber que ele é inteiro.
+/// The whole model becomes the range 0..total-1, which is what makes the whole rest
+/// of the module work without knowing that it is whole.
 #[test]
 fn a_whole_model_reads_as_the_range_it_covers() {
     let whole = parse_whole(
@@ -1226,7 +1226,7 @@ fn a_whole_model_reads_as_the_range_it_covers() {
     assert_eq!(whole.total_layers, Some(32));
     assert_eq!(whole.name, "qwen3.5-9b");
 
-    // Outro modelo com outro nome não entra no lugar deste.
+    // Another model with another name does not take the place of this one.
     assert!(parse_whole(
         &json!({
             "name": "llama3",

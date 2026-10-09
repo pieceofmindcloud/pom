@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * A rede vazia na visao estendida mostra uma unica mensagem.
+ * The empty network in the extended view shows a single message.
  *
- * Antes do fix, com `c.peers.length === 0` a visao estendida desenhava duas
- * mensagens empilhadas: o painel `dashboard.noMachines` dentro da area de
- * rolagem e o overlay `dashboard.emptyNetwork` ancorado ao fundo. O overlay
- * saiu, e este teste confirma que so uma aparece.
+ * Before the fix, with `c.peers.length === 0` the extended view drew two
+ * stacked messages: the `dashboard.noMachines` panel inside the scroll
+ * area and the `dashboard.emptyNetwork` overlay anchored to the bottom. The
+ * overlay is gone, and this test confirms that only one shows.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -213,7 +213,7 @@ describe("Dashboard", () => {
     const cluster = fakeCluster([fakeSlicePeer("head", 0, 31)], "qwen35");
 
     mount(cluster, "admin", undefined, undefined, undefined, [
-      // Resposta direta: meio RTT da ida (5) e meio da volta (3).
+      // Direct response: half the outbound RTT (5) and half the return one (3).
       { nodeIds: ["head", "gateway"], legsMs: [5, 3], computeMs: null, networkMs: 4, returnMode: "direct" },
     ]);
 
@@ -227,11 +227,11 @@ describe("Dashboard", () => {
   });
 
   /**
-   * A cobertura sai do que os pares anunciam no gossip, não da leitura de cada
-   * um: uma máquina cujo endereço anunciado morreu continua contribuindo
-   * camadas. Mostrar "completo" em verde nesse estado é o pior que a tela pode
-   * fazer - o operador acredita numa pipeline fechada que ninguém consegue
-   * consultar.
+   * The coverage comes from what the peers announce in the gossip, not from
+   * reading each one: a machine whose announced address died keeps contributing
+   * layers. Showing "complete" in green in that state is the worst the screen can
+   * do - the operator believes in a closed pipeline that nobody can
+   * query.
    */
   it("does not treat coverage as confirmed when one of its machines could not be read", async () => {
     const cluster = fakeCluster([
@@ -262,17 +262,17 @@ describe("Dashboard", () => {
 
     mount(cluster, "node");
 
-    // O seletor de vista não existe neste perfil: o Fluxo é a única vista.
+    // The view selector does not exist on this profile: Flow is the only view.
     await waitFor(() => expect(screen.getByLabelText("Modelo")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Adicionar" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Desimplantar" })).toBeNull();
   });
 
   /**
-   * O Painel tem duas vistas do mesmo cluster, e os Detalhes são operação do
-   * cluster: os cards trazem o estado interno de cada máquina e os botões de
-   * liberar fatia, remover do pipeline e tirar da rede. Fora do `admin` resta
-   * o Fluxo, e onde há uma vista só não há o que escolher.
+   * The Dashboard has two views of the same cluster, and Details are cluster
+   * operation: the cards carry each machine's internal state and the buttons to
+   * release a slice, remove from the pipeline and take off the network. Outside
+   * `admin` Flow is left, and where there is a single view there is nothing to choose.
    */
   it("denies Details to the node profile and removes the view selector from the screen", async () => {
     const cluster = fakeCluster([
@@ -352,7 +352,7 @@ describe("Dashboard", () => {
       { node_id: "a", deployments: [strata] },
     );
 
-    // Sem o serviço anunciado no cluster, o motor aparece pelo código do plugin.
+    // Without the service announced in the cluster, the engine shows by the plugin's code.
     expect(await screen.findByText("Configurações do strata")).toBeTruthy();
   });
 

@@ -1,39 +1,39 @@
 /**
- * As propriedades de uma implantação, num inspetor só.
+ * The properties of a deployment, in a single inspector.
  *
- * Vive aqui, e não dentro da tela de implantar, porque é lido em dois lugares:
- * o operador **edita** estas propriedades ao montar a implantação, e **lê** as
- * mesmas propriedades no Histórico, ao abrir a versão com que uma implantação
- * subiu. Duas listas divergem - um campo novo entra num lado e não no outro, e
- * o operador passa a ver coisas diferentes conforme por onde chegou.
+ * It lives here, and not inside the deploy screen, because it is read in two places:
+ * the operator **edits** these properties when assembling the deployment, and **reads** the
+ * same properties in the History, when opening the version a deployment
+ * came up with. Two lists diverge - a new field goes in on one side and not the other, and
+ * the operator starts to see different things depending on how they got there.
  *
- * Por isso o mesmo componente tem `readOnly`: no modo de leitura não há
- * `<input>` desabilitado nenhum, há o valor escrito. Campo desabilitado ainda
- * se lê como "posso mexer, mas não agora"; um número escrito se lê como o que
- * é - o registro do que aquela implantação usou.
+ * That is why the same component has `readOnly`: in read mode there is no disabled
+ * `<input>` at all, there is the written value. A disabled field still
+ * reads as "I can touch it, but not now"; a written number reads as what it
+ * is - the record of what that deployment used.
  *
- * **Três categorias, e a fronteira entre elas é de quem é o parâmetro:**
+ * **Three categories, and the border between them is whose the parameter is:**
  *
- * * *Configurações padrões* - o que o llama.cpp já tem: contexto, lote,
- *   amostragem (temperatura, top-p/top-k/min-p, penalidades, DRY e semente),
- *   cache KV, e os interruptores de recurso do próprio motor, com onde o MTP
- *   fica logo abaixo dos números do MTP.
- * * *Configurações POM* - o que existe porque a inferência é distribuída:
- *   desativar embeddings, ajuste de memória, chunks de prefill em voo, fusão
- *   de fatias e a precisão do estado oculto entre peers. Dentro dela, o grupo
- *   *Beta* reúne o que funciona mas ainda está sendo medido: experts do MoE na
- *   RAM, cache de experts na GPU e pedaço de prefill automático.
- * * *Configurações POM (DESENV)* - o motor de inferência e o descarregamento
- *   ocioso, que ainda estão sendo medidos.
+ * * *Default settings* - what llama.cpp already has: context, batch,
+ *   sampling (temperature, top-p/top-k/min-p, penalties, DRY and seed),
+ *   KV cache, and the feature switches of the engine itself, with where the MTP
+ *   sits right below the MTP numbers.
+ * * *POM settings* - what exists because inference is distributed:
+ *   disabling embeddings, memory adjustment, in-flight prefill chunks, fusion
+ *   of slices and the precision of the hidden state between peers. Inside it, the group
+ *   *Beta* gathers what works but is still being measured: MoE experts in
+ *   RAM, expert cache on the GPU and automatic prefill chunk.
+ * * *POM settings (DEV)* - the inference engine and idle
+ *   unloading, which are still being measured.
  *
- * Cada categoria (e o grupo Beta) tem um botão de ajuda que abre, numa janela,
- * o guia dela na Documentação (`guides/deploySettings.ts`): o que cada
- * propriedade faz e como mudá-la.
+ * Each category (and the Beta group) has a help button that opens, in a dialog,
+ * its guide in the Documentation (`guides/deploySettings.ts`): what each
+ * property does and how to change it.
  *
- * **O ícone de informação vem antes do nome**, e não depois: os nomes têm
- * larguras diferentes, e um `[i]` colado ao fim de cada um deixava a coluna de
- * ícones serrilhada. Antes do nome ela é uma coluna reta, do topo ao pé do
- * inspetor. É a mesma razão de o controle ter largura fixa à direita.
+ * **The information icon comes before the name**, and not after: the names have
+ * different widths, and an `[i]` glued to the end of each one left the column of
+ * icons jagged. Before the name it is a straight column, from the top to the bottom of the
+ * inspector. It is the same reason the control has a fixed width on the right.
  */
 import { EngineSettingsFields } from "./EngineSettings";
 import { useState, type ReactNode } from "react";
@@ -61,7 +61,7 @@ import type {
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
-/** A caixinha de marcar do inspetor (`role="checkbox"` + `aria-label`, que é como os testes a encontram). */
+/** The inspector's checkbox (`role="checkbox"` + `aria-label`, which is how tests find it). */
 export function Tick({
   on,
   label,
@@ -92,7 +92,7 @@ export function Tick({
   );
 }
 
-/** Toda linha do inspetor: `[i]` · nome · controle. */
+/** Every row of the inspector: `[i]` · name · control. */
 const ROW =
   "grid grid-cols-[0.9rem_minmax(0,1fr)_6.5rem] items-center gap-x-1.5 gap-y-0.5 text-[0.65rem]";
 
@@ -124,8 +124,8 @@ type NumericKey =
   | "moe_cache_mib";
 
 /**
- * `step` só existe onde o valor não é inteiro: sem ele o navegador recusa
- * "0.05" num campo numérico e o operador não consegue digitar a temperatura.
+ * `step` only exists where the value is not an integer: without it the browser refuses
+ * "0.05" in a numeric field and the operator cannot type the temperature.
  */
 const NUMERIC_STEP: Partial<Record<NumericKey, string>> = {
   temperature: "0.05",
@@ -139,7 +139,7 @@ const NUMERIC_STEP: Partial<Record<NumericKey, string>> = {
   mtp_min_probability: "0.01",
 };
 
-/** A ordem em que a categoria "padrões" mostra os números do llama.cpp. */
+/** The order in which the "defaults" category shows the llama.cpp numbers. */
 const DEFAULT_NUMERIC_KNOBS: NumericKey[] = [
   "n_ctx",
   "max_sessions",
@@ -147,9 +147,9 @@ const DEFAULT_NUMERIC_KNOBS: NumericKey[] = [
   "n_batch",
   "n_ubatch",
   "prefill_chunk_tokens",
-  // Amostragem na ordem do llama.cpp: temperatura e os cortes do conjunto de
-  // candidatos, depois as penalidades de repetição, depois o DRY (que também é
-  // uma penalidade de repetição, por sequência). A semente vem logo depois.
+  // Sampling in llama.cpp order: temperature and the cuts of the set of
+  // candidates, then the repetition penalties, then DRY (which is also
+  // a repetition penalty, per sequence). The seed comes right after.
   "temperature",
   "top_p",
   "top_k",
@@ -164,7 +164,7 @@ const DEFAULT_NUMERIC_KNOBS: NumericKey[] = [
   "dry_penalty_last_n",
 ];
 
-/** O DRY se desliga com o multiplicador em 0; os outros números dele só valem ligado. */
+/** DRY is turned off with the multiplier at 0; its other numbers only apply when on. */
 const DRY_DETAIL_KNOBS: NumericKey[] = ["dry_base", "dry_allowed_length", "dry_penalty_last_n"];
 
 export const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
@@ -179,7 +179,7 @@ export const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
   q5_1: "Q5_1",
 };
 
-/** O cache KV é da instalação, não da implantação: quem o edita passa isto. */
+/** The KV cache belongs to the installation, not the deployment: whoever edits it passes this. */
 export interface CacheTypeControl {
   k: KvCacheType;
   v: KvCacheType;
@@ -188,7 +188,7 @@ export interface CacheTypeControl {
   onChange: (part: "k" | "v", value: KvCacheType) => void;
 }
 
-/** A fusão de fatias vizinhas só existe quando há fatias. */
+/** Merging neighboring slices only exists when there are slices. */
 export interface MergeControl {
   value: boolean;
   onChange: (next: boolean) => void;
@@ -298,11 +298,11 @@ function BetaGroup({ children }: { children: ReactNode }) {
 }
 
 /**
- * Uma propriedade: o `[i]` na coluna da esquerda, o nome, e o controle.
+ * One property: the `[i]` in the left column, the name, and the control.
  *
- * O aviso de capacidade entra na **mesma** coluna do `[i]`, e não ao lado do
- * controle: a coluna continua reta, e a linha que tem algo a avisar se
- * distingue pela cor do ícone.
+ * The capacity warning goes in the **same** column as the `[i]`, and not beside the
+ * control: the column stays straight, and the row that has something to warn about
+ * is distinguished by the color of the icon.
  */
 export function InspectorRow({
   label,
@@ -331,19 +331,19 @@ export function InspectorRow({
 }
 
 /**
- * O número como o operador o escreveu, não como o `f32` o guardou.
+ * The number as the operator wrote it, not as the `f32` stored it.
  *
- * A temperatura sai do nó como 0.699999988079071 - é o mesmo 0,7 depois de uma
- * volta por precisão simples -, e imprimi-lo assim enche a coluna de dígitos
- * que ninguém digitou e que não significam nada. O arredondamento é só de
- * exibição: o valor enviado continua sendo o que estava no campo.
+ * The temperature leaves the node as 0.699999988079071 - it is the same 0.7 after a
+ * round trip through single precision -, and printing it that way fills the column with digits
+ * that nobody typed and that mean nothing. The rounding is display
+ * only: the value sent remains what was in the field.
  */
 function showNumber(value: unknown): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return String(value ?? "");
   return String(Number(value.toFixed(6)));
 }
 
-/** O valor, quando não há nada a mexer nele. */
+/** The value, when there is nothing to change in it. */
 const MTP_PLACEMENT_LABELS: Record<MtpPlacement, string> = {
   auto: "deploy.mtpPlacementAuto",
   vram: "deploy.mtpPlacementVram",
@@ -366,13 +366,13 @@ export function DeploymentInspector({
   vision,
   sidecars,
   /**
-   * O motor só é uma pergunta quando o modelo é MoE: num modelo denso não há
-   * escolha a fazer, e um combo com uma resposta só é ruído. O Histórico
-   * mostra sempre, porque ali é registro do que subiu, não pergunta.
+   * The engine is only a question when the model is MoE: in a dense model there is no
+   * choice to make, and a combo with a single answer is noise. The History
+   * always shows it, because there it is a record of what came up, not a question.
    */
   showInferenceMode = false,
   inferenceModeAlert,
-  /** A precisão do estado oculto só existe quando o pipeline cruza máquinas. */
+  /** The hidden-state precision only exists when the pipeline crosses machines. */
   showHiddenStateDtype = false,
   pomDevMode = false,
   inferenceService,
@@ -396,17 +396,17 @@ export function DeploymentInspector({
 }) {
   const { t } = useI18n();
   /*
-   * O texto meio digitado. Sem ele, apagar o "8192" para escrever "16384"
-   * fazia o campo pular para zero no primeiro caractere apagado, porque o
-   * valor volta como número a cada tecla.
+   * The half-typed text. Without it, erasing "8192" to write "16384"
+   * made the field jump to zero on the first erased character, because the
+   * value comes back as a number on every keystroke.
   */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   /**
-   * O rascunho vale enquanto ele **é** o valor - ou enquanto está vazio, que é
-   * o momento em que ele existe para alguma coisa. Assim que o valor muda por
-   * fora (voltar ao plano do nó, trocar de modelo), o rascunho deixa de casar e
-   * a tela mostra o valor de verdade, sem precisar de ninguém para limpá-lo.
+   * The draft holds while it **is** the value - or while it is empty, which is
+   * the moment it exists for anything. As soon as the value changes from
+   * outside (going back to the node's plan, switching models), the draft stops matching and
+   * the screen shows the real value, with nobody needed to clear it.
    */
   function shown(key: NumericKey): string {
     const draft = drafts[key];
@@ -433,10 +433,10 @@ export function DeploymentInspector({
   const i4g128Unavailable = capabilities?.hidden_state_i4g128?.state !== "supported";
 
   /*
-   * `auto` não está mais na combo, mas pode chegar de uma API ou de uma
-   * implantação persistida. A apresentação cai visualmente em `dense` para
-   * manter a seleção válida, sem mutar o estado recebido; o backend continua
-   * aplicando a escolha explícita.
+   * `auto` is no longer in the combo, but may arrive from an API or from a
+   * persisted deployment. The presentation falls back visually to `dense` to
+   * keep the selection valid, without mutating the received state; the backend keeps
+   * applying the explicit choice.
    */
 
   function setKnob(key: NumericKey, text: string) {
@@ -475,10 +475,10 @@ export function DeploymentInspector({
   }
 
   /**
-   * Um interruptor de recurso, com o que o nó respondeu sobre ele.
+   * A feature switch, with what the node answered about it.
    *
-   * `unsupported` some da tela quando não é `alwaysVisible`: oferecer o que o
-   * runtime provou não ter é convidar a uma implantação que não sobe.
+   * `unsupported` disappears from the screen when it is not `alwaysVisible`: offering what the
+   * runtime proved not to have is inviting a deployment that does not come up.
    */
   function toggle({
     key,
@@ -530,7 +530,7 @@ export function DeploymentInspector({
   const speculationCapability = (mode: SpeculationMode) =>
     mode === "mtp" ? capabilities?.mtp : mode === "lookup" ? capabilities?.speculative_decoding : undefined;
   const chosenCapability = speculationCapability(speculation);
-  // Uma escolha cujo suporte o nó ainda não sabe dizer fica disponível, mas avisada.
+  // A choice whose support the node cannot yet tell stays available, but with a warning.
   const speculationAlert = chosenCapability?.state === "unknown"
     ? `${t("inspector.capabilityUnknown")} ${chosenCapability.reason}`
     : chosenCapability?.warning || undefined;
@@ -880,8 +880,8 @@ export function DeploymentInspector({
                 }
                 compact
               >
-                {/* "Automático" continua existindo no backend; sai daqui porque
-                    a interface passou a decidir por llama.cpp. */}
+                {/* "Automático" continues to exist in the backend; it leaves here because
+                    the interface now decides per llama.cpp. */}
                 <option value="dense">{t("inspector.engine.dense")}</option>
                 <option value="moe">{t("inspector.engine.moe")}</option>
               </Select>

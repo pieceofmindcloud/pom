@@ -1,4 +1,4 @@
-/// A visão do cluster e o que a tela de implantações precisa saber.
+/// The cluster view and what the deployments screen needs to know.
 #[cfg(test)]
 mod deployments_tests {
     use super::*;
@@ -39,7 +39,7 @@ mod deployments_tests {
         d
     }
 
-    /// Um peer que responde `/api/ui/deployments?local=true` com os registros dados.
+    /// A peer that answers `/api/ui/deployments?local=true` with the given records.
     async fn peer_with_records(records: Vec<Deployment>) -> u16 {
         let body = json!({ "node_id": "outro", "deployments": records });
         let app = Router::new().route(
@@ -57,10 +57,10 @@ mod deployments_tests {
         port
     }
 
-    /// O registro tem uma cópia por nó participante, então a listagem junta e
-    /// **deduplica** - senão uma implantação de três nós apareceria três vezes.
-    /// Empate desfeito pela ativação mais recente: um nó que estava fora do ar
-    /// durante um `activate` tem a cópia velha, e ela não pode ganhar.
+    /// The record has one copy per participating node, so the listing joins and
+    /// **deduplicates** - otherwise a three-node deployment would show up three
+    /// times. The tie is broken by the latest activation: a node that was down
+    /// during an `activate` has the old copy, and it must not win.
     #[tokio::test]
     async fn copies_of_one_deployment_collapse_to_the_newest() {
         let old = record("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
@@ -73,7 +73,7 @@ mod deployments_tests {
         peer.total_layers = 32;
 
         let state = state_with("eu", vec![peer]).await;
-        let _ = old; // a cópia velha vive no disco de quem não respondeu
+        let _ = old; // the old copy lives on the disk of whoever did not answer
 
         let resp = list_deployments(
             ConnectionAuth,
@@ -94,10 +94,10 @@ mod deployments_tests {
         assert_eq!(lines[0]["is_default"], true, "it is the only one of its model");
     }
 
-    /// O coordenador pode ter uma cópia velha no próprio banco enquanto um
-    /// peer participante já recebeu a versão corrente. Operações dirigidas a
-    /// um `deploy_id` precisam consultar a história mais nova, não parar na
-    /// primeira cópia encontrada.
+    /// The coordinator may have an old copy in its own database while a
+    /// participating peer has already received the current version. Operations
+    /// aimed at a `deploy_id` must consult the newest history, not stop at the
+    /// first copy found.
     #[tokio::test]
     async fn find_record_chooses_the_current_copy_over_local_history() {
         let mut old = record("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
@@ -122,9 +122,9 @@ mod deployments_tests {
         assert_eq!(found.versions.len(), 2);
     }
 
-    /// "No ar" e "padrão" são coisas diferentes, e a tela não pode confundir:
-    /// duas implantações do mesmo modelo podem estar **as duas** servindo, mas
-    /// só uma atende quem pede o nome pelado.
+    /// "Up" and "default" are different things, and the screen must not confuse
+    /// them: two deployments of the same model can **both** be serving, but
+    /// only one answers whoever asks for the bare name.
     #[tokio::test]
     async fn serving_and_default_are_not_the_same_thing() {
         let old = record("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
@@ -135,8 +135,8 @@ mod deployments_tests {
         p1.model = "qwen3:8b".into();
         p1.deploy_id = "d-aaaaaaaa".into();
         p1.total_layers = 32;
-        // Só a `d-aaaaaaaa` tem peer vivo; a `d-bbbbbbbb` está registrada mas
-        // ninguém a está servindo.
+        // Only `d-aaaaaaaa` has a live peer; `d-bbbbbbbb` is registered but
+        // nobody is serving it.
         let state = state_with("eu", vec![p1]).await;
 
         let resp = list_deployments(
@@ -166,9 +166,9 @@ mod deployments_tests {
         assert_eq!(b["is_default"], true, "it is the one with the most recent activation");
     }
 
-    /// `?local=true` responde do disco e **não** varre o cluster - é o que
-    /// impede a varredura de se chamar em círculo, um nó perguntando ao outro
-    /// que pergunta de volta.
+    /// `?local=true` answers from disk and does **not** sweep the cluster - it
+    /// is what keeps the sweep from calling itself in a circle, one node asking
+    /// the other, which asks back.
     #[tokio::test]
     async fn the_local_answer_does_not_fan_out() {
         let port = peer_with_records(vec![record(
@@ -188,7 +188,7 @@ mod deployments_tests {
         .await;
         let body = body_of(resp).await;
 
-        // O registro do peer não aparece: esta resposta é só do disco local.
+        // The peer's record does not appear: this answer is from the local disk only.
         assert!(body["deployments"].as_array().unwrap().is_empty());
         assert!(body.get("node_id").is_some());
     }
@@ -225,8 +225,8 @@ mod deployments_tests {
         }
     }
 
-    /// `resolve` com `version` reativa uma versão registrada sem anexar outra;
-    /// com `params` novos, anexa. Sem nenhum dos dois, recusa.
+    /// `resolve` with `version` reactivates a recorded version without appending
+    /// another; with new `params`, it appends. With neither, it refuses.
     #[test]
     fn redeploy_request_resolve_picks_or_creates_a_version() {
         let mut d = record("d-aaaaaaaa", "qwen3:8b", "2026-08-19T00:00:00Z");
@@ -234,7 +234,7 @@ mod deployments_tests {
         d.upsert_version(params_with_ctx(16384), d.nodes.clone(), "n1");
         assert_eq!(d.active_version, 2);
 
-        // version -> volta para a 1, sem anexar.
+        // version -> goes back to 1, without appending.
         let base = RedeployRequest {
             params: None,
             version: Some(1),
@@ -246,7 +246,7 @@ mod deployments_tests {
         assert_eq!(d.versions.len(), 2);
         assert_eq!(base.n_ctx, 8192);
 
-        // params novos -> v3.
+        // new params -> v3.
         let base = RedeployRequest {
             params: Some(params_with_ctx(4096)),
             version: None,
@@ -258,7 +258,7 @@ mod deployments_tests {
         assert_eq!(d.versions.len(), 3);
         assert_eq!(d.active_version, 3);
 
-        // nem version nem params -> erro.
+        // neither version nor params -> error.
         assert!(RedeployRequest {
             params: None,
             version: None,
@@ -268,8 +268,8 @@ mod deployments_tests {
         .is_err());
     }
 
-    /// Pedir o redeploy de uma versão que não existe é recusado antes de
-    /// derrubar máquina nenhuma.
+    /// Asking for the redeploy of a version that does not exist is refused
+    /// before taking any machine down.
     #[tokio::test]
     async fn redeploying_a_missing_version_is_refused() {
         let state = state_with("eu", vec![]).await;

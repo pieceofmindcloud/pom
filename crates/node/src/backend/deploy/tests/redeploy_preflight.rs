@@ -226,9 +226,9 @@ mod redeploy_preflight_tests {
         );
     }
 
-    /// Um nó (`peer-a`) que não está servindo nada: `/api/ui/node` diz
-    /// `config: null` até `/api/ui/reconfigure` ser chamado, e aí passa a
-    /// dizer `ready`. É o caso que quebrava o `redeploy` antigo.
+    /// A node (`peer-a`) that is serving nothing: `/api/ui/node` says
+    /// `config: null` until `/api/ui/reconfigure` is called, and from then on
+    /// says `ready`. It is the case that broke the old `redeploy`.
     async fn peer_not_serving() -> (u16, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
         let seq = Arc::new(AtomicU32::new(0));
         let reconfigured_at = Arc::new(AtomicU32::new(0));

@@ -1,23 +1,23 @@
 /**
- * Tudo que está implantado no cluster, e o que dá para mexer sem refazer.
+ * Everything that is deployed in the cluster, and what can be changed without redoing it.
  *
- * Uma implantação liga um conjunto de máquinas a um modelo, de uma forma
- * (fatias, modelo inteiro ou tensor parallelism) e com uma configuração por
- * máquina. O mesmo modelo pode estar no ar mais de uma vez — em máquinas
- * diferentes, ou com parâmetros diferentes —, e antes desta tela isso era
- * invisível: o painel mostrava uma pipeline só, deduzida do nome do modelo.
+ * A deployment links a set of machines to a model, in one form (slices,
+ * whole model or tensor parallelism) and with one configuration per
+ * machine. The same model can be in service more than once - on different
+ * machines, or with different parameters -, and before this screen that was
+ * invisible: the dashboard showed a single pipeline, deduced from the model name.
  *
- * Duas palavras que a tela **não** pode confundir, porque não são a mesma:
+ * Two words the screen must **not** confuse, because they are not the same:
  *
- * * **no ar** — há máquina viva anunciando esta implantação.
- * * **padrão** — é esta que atende quem pede só `"qwen3:8b"`, sem o sufixo
- *   `@<deploy_id>`. Uma implantação pode estar no ar sem ser a padrão, e a
- *   padrão pode estar fora do ar (registrada, mas com as máquinas caídas).
+ * * **in service** - there is a live machine announcing this deployment.
+ * * **default** - the one that serves whoever asks for just `"qwen3:8b"`, without
+ *   the `@<deploy_id>` suffix. A deployment can be in service without being the
+ *   default, and the default can be out of service (registered, but with its machines down).
  *
- * Reimplantar aqui é só mexer em parâmetro: as máquinas recarregam o mesmo
- * arquivo com outra configuração, mantendo o `deploy_id`. Trocar de máquina ou
- * de faixa continua sendo assunto da tela de implantar, que é onde há o que
- * planejar e o que copiar.
+ * Redeploying here is only changing parameters: the machines reload the same
+ * file with another configuration, keeping the `deploy_id`. Changing machine or
+ * range remains a matter for the deploy screen, which is where there is
+ * something to plan and something to copy.
  */
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Layers, RefreshCw, Star, Terminal, X } from "lucide-react";
@@ -45,10 +45,10 @@ import {
 import type { DeploymentKind, DeploymentVersion, RuntimeParams } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
-/** Que versão de que implantação está aberta no inspetor da direita. */
+/** Which version of which deployment is open in the inspector on the right. */
 type Inspected = { deployId: string; version: DeploymentVersion };
 
-/** A reimplantação em edição à direita: de que implantação, a partir de que valores. */
+/** The redeploy being edited on the right: of which deployment, starting from which values. */
 type Editing = { deployId: string; seed: RuntimeParams; fromVersion: number };
 
 const KIND_TONE: Record<DeploymentKind, "iris" | "aqua" | "sky"> = {
@@ -68,14 +68,14 @@ function dateTimeLabel(iso: string, locale: string) {
 }
 
 /**
- * Reimplantar: o mesmo inspetor da tela de implantar, editável, à direita da
- * lista, mais os dois ajustes que são de verdade por máquina.
+ * Redeploy: the same inspector as the deploy screen, editable, to the right of
+ * the list, plus the two adjustments that really are per machine.
  *
- * Os campos vêm preenchidos com a versão escolhida (a ativa, por padrão) - que
- * é o que o registro guarda -, então mexer num campo é mexer num valor real, e
- * não preencher um formulário do zero torcendo para acertar o resto. Um só
- * inspetor nas duas telas é o que impede uma propriedade nova de entrar numa e
- * faltar na outra.
+ * The fields come filled with the chosen version (the active one, by default) -
+ * which is what the registry keeps -, so changing a field is changing a real
+ * value, and not filling a form from scratch hoping to get the rest right. A
+ * single inspector on both screens is what keeps a new property from entering
+ * one and missing from the other.
  */
 function RedeployPanel({
   row,
@@ -233,9 +233,9 @@ function useEngineCatalog() {
   return useMemo(() => inferenceServiceCatalog(cluster.data?.peers), [cluster.data]);
 }
 
-/** Um resumo curto dos parâmetros que quase sempre mudam entre versões. Com o
- *  motor de um plugin, os números do llama.cpp não se aplicam: o resumo diz o
- *  motor, o contexto, as sessões e as configurações dele. */
+/** A short summary of the parameters that almost always change between versions. With
+ *  a plugin's engine, the llama.cpp numbers do not apply: the summary states the
+ *  engine, the context, the sessions and its settings. */
 function versionSummary(p: RuntimeParams, engineName?: string): string {
   if (p.inference_service) {
     const settings = Object.entries(p.engine_settings ?? {}).map(([key, value]) => `${key}=${String(value)}`);
@@ -299,8 +299,8 @@ function VersionList({
                 open ? "bg-iris/10" : ""
               }`}
             >
-              {/* A linha inteira é o gesto de "mostre-me com o que ela subiu";
-                  o botão de reimplantar fica fora dela, porque é outro ato. */}
+              {/* The whole row is the gesture of "show me what it came up with";
+                  the redeploy button stays outside it, because it is another act. */}
               <button
                 type="button"
                 aria-label={t("deployments.versionPick", { n: v.version })}
@@ -425,8 +425,8 @@ function Row({
             )}
           </div>
         </td>
-        {/* Coluna estreita e ações que não quebram: o rótulo partido ao meio
-            deixava o ícone solto à esquerda, e a linha inteira crescia. */}
+        {/* Narrow column and actions that do not wrap: the label broken in half
+            left the icon loose on the left, and the whole row grew. */}
         <td className="whitespace-nowrap px-5 py-3">
           <div className="flex flex-col items-start gap-1">
             <a
@@ -486,15 +486,15 @@ export function Deployments() {
   const node = useNode();
   const pomDevMode = node.data?.pom_dev_mode === true;
   /*
-   * A versão aberta no inspetor da direita. Guarda a versão inteira, e não só
-   * o número: o registro de uma versão não muda depois de gravado, então uma
-   * cópia aqui não envelhece, e o inspetor não precisa reencontrar a linha a
-   * cada refresh da lista.
+   * The version open in the inspector on the right. It keeps the whole version,
+   * and not just the number: a version's record does not change once written, so
+   * a copy here does not age, and the inspector does not need to find the row
+   * again on every refresh of the list.
    */
   const [inspected, setInspected] = useState<Inspected | null>(null);
   const engineCatalog = useEngineCatalog();
   const inspectedEngine = engineOfParams(inspected?.version.params.inference_service, engineCatalog);
-  // O lado direito mostra uma coisa de cada vez: a versão lida ou a reimplantação.
+  // The right side shows one thing at a time: the version being read or the redeploy.
   const [editing, setEditing] = useState<Editing | null>(null);
   const inspect = (next: Inspected | null) => {
     setEditing(null);
@@ -609,10 +609,10 @@ export function Deployments() {
               {t("deployments.versionPropertiesHint")}
             </p>
             {/*
-              O mesmo inspetor da tela de implantar, em somente leitura. O cache
-              KV não entra: ele é da instalação e do momento, não da versão -
-              mostrar o valor de hoje ao lado do que subiu ontem seria inventar
-              um registro que ninguém guardou.
+              The same inspector as the deploy screen, read-only. The KV cache
+              is left out: it belongs to the installation and the moment, not to the
+              version - showing today's value next to what came up yesterday would be
+              inventing a record nobody kept.
             */}
             <DeploymentInspector
               value={inspected.version.params}

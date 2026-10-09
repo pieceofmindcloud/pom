@@ -12,11 +12,11 @@ import { useProfile } from "../lib/profile";
 import type { ApiKey, IssuedApiKey } from "../lib/types";
 
 /**
- * O token recém-criado, na única vez em que ele existe fora do cliente.
+ * The newly created token, the only time it exists outside the client.
  *
- * A rede guarda só o hash e o trecho visível: fechar esta janela sem copiar é
- * perder o token, e por isso ela não fecha clicando fora nem tem "cancelar" -
- * só o botão que diz que a cópia foi feita.
+ * The network keeps only the hash and the visible fragment: closing this window without copying
+ * loses the token, and that is why it does not close by clicking outside nor has a "cancel" -
+ * only the button that says the copy was made.
  */
 function IssuedSecret({ issued, onDone }: { issued: IssuedApiKey | null; onDone: () => void }) {
   const { t } = useI18n();
@@ -74,7 +74,7 @@ export function ApiKeysTable() {
         try {
           await Promise.all(previousKeys.map((key) => api.del(`/admin/api-keys/${encodeURIComponent(key.id)}`)));
         } catch (error) {
-          try { await api.del(`/admin/api-keys/${encodeURIComponent(created.id)}`); } catch { /* A próxima leitura expõe o estado. */ }
+          try { await api.del(`/admin/api-keys/${encodeURIComponent(created.id)}`); } catch { /* The next read exposes the state. */ }
           throw error;
         }
       }

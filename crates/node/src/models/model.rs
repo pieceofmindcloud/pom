@@ -60,11 +60,11 @@ impl ModelProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerAssignment {
     pub model: String,
-    /// A implantação de que este nó faz parte, quando ele veio de uma.
+    /// The deployment this node is part of, when it came from one.
     ///
-    /// Vazio no que um peer de versão anterior anuncia - e é justamente esse
-    /// vazio que faz o agrupamento cair de volta no rótulo do modelo. Ver
-    /// `deployment.rs`.
+    /// Empty in what a peer of an earlier version announces - and it is
+    /// precisely that emptiness that makes the grouping fall back to the model
+    /// label. See `deployment.rs`.
     #[serde(default)]
     pub deploy_id: String,
     pub total_layers: u32,

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * Máquina sem fatia não vira uma máquina com a fatia "0-0".
+ * A machine without a slice does not become a machine with the slice "0-0".
  *
- * O card foi escrito para quem serve uma faixa, e a aba Detalhes agora mostra
- * também quem está na rede sem servir nada. O que se afirma aqui é que nesse
- * caso ele não escreve faixa nenhuma, diz por quê, e não oferece o botão que
- * tira do modelo uma máquina que não está em modelo nenhum.
+ * The card was written for whoever serves a range, and the Details tab now shows
+ * also whoever is on the network without serving anything. What is asserted here is that in that
+ * case it writes no range at all, says why, and does not offer the button that
+ * takes out of the model a machine that is in no model.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -44,10 +44,10 @@ describe("PeerDetailCard without a slice", () => {
   });
 
   /**
-   * A frase saiu da faixa que ocupava uma linha inteira do card e entrou no
-   * `[i]` do próprio distintivo. O que se afirma continua sendo o mesmo: quem
-   * perguntar "por que sem fatia?" recebe resposta, sem que o card gaste uma
-   * linha com ela em toda máquina ociosa da rede.
+   * The sentence left the strip that took up a whole line of the card and went into the
+   * `[i]` of the badge itself. What is asserted remains the same: whoever
+   * asks "why no slice?" gets an answer, without the card spending a
+   * line on it for every idle machine on the network.
    */
   it("says the machine is on the network and serves no layer", () => {
     mount(withoutSlice);
@@ -58,7 +58,7 @@ describe("PeerDetailCard without a slice", () => {
   it("does not offer to remove from the model a machine that is in no model", () => {
     mount(withoutSlice);
     expect(screen.queryByRole("button", { name: /remover/i })).toBeNull();
-    // Sair da rede continua valendo: é do cluster que ela sai.
+    // Leaving the network still applies: it is the cluster it leaves.
     expect(screen.getByRole("button", { name: /sair da rede/i })).toBeTruthy();
   });
 
@@ -201,8 +201,8 @@ describe("PeerDetailCard · load parameters", () => {
   it("shows the batch and the microbatch the context started with", () => {
     mountWith(params);
     expect(screen.getByText("Parâmetros de carga do llama.cpp")).toBeTruthy();
-    // O microlote é o que governa o prefill, e ele não é o n_batch: com o fit
-    // ligado o llama.cpp o corta. Mostrar os dois é o ponto da seção.
+    // The microbatch is what governs prefill, and it is not n_batch: with fit
+    // on, llama.cpp cuts it. Showing both is the point of the section.
     expect(screen.getByText("512 / 128")).toBeTruthy();
   });
 
@@ -217,13 +217,13 @@ describe("PeerDetailCard · load parameters", () => {
   });
 
   it("says it does not know when the diagnostic bridge did not answer", () => {
-    // O caminho que não pode existir é o `null` virar "desligado": isso faria
-    // o operador caçar um problema de Flash Attention que ninguém reportou.
+    // The path that must not exist is `null` turning into "off": that would make
+    // the operator hunt for a Flash Attention problem that nobody reported.
     mountWith({ ...params, flash_attn: null, flash_attn_auto: null });
     expect(screen.getByText("não sei")).toBeTruthy();
   });
 
-  /** O aviso do fit virou o `[i]` do próprio título da seção. */
+  /** The fit warning became the `[i]` of the section's own title. */
   it("warns that the fit changed the requested values", () => {
     mountWith(params);
     fireEvent.click(
@@ -241,11 +241,11 @@ describe("PeerDetailCard · load parameters", () => {
 describe("PeerDetailCard without GPU (Linux node, e.g. in a Docker container)", () => {
   afterEach(cleanup);
 
-  /// `wired_mb` só é populado no macOS (`sysmon.rs`); um nó Linux sem NVIDIA
-  /// caía no mesmo ramo que mostrava "Wired memory (Metal buffers)" com
-  /// `value={null}`, que trava o `Progress` no modo indeterminado para
-  /// sempre — a barra "fica saltando e nunca se resolve", já que nada nesse
-  /// nó jamais vai preencher `wired_mb`.
+  /// `wired_mb` is only populated on macOS (`sysmon.rs`); a Linux node without NVIDIA
+  /// fell into the same branch that showed "Wired memory (Metal buffers)" with
+  /// `value={null}`, which locks the `Progress` in indeterminate mode
+  /// forever - the bar "keeps jumping and never resolves", since nothing on that
+  /// node will ever fill `wired_mb`.
   const withoutGpu = fakePeer({
     node_id: "cpu-only",
     node: fakeNode({
@@ -282,8 +282,8 @@ describe("PeerDetailCard without GPU (Linux node, e.g. in a Docker container)", 
   it("shows a bar in a defined state, not indeterminate forever", () => {
     mount(withoutGpu);
     const bars = screen.getAllByRole("progressbar");
-    // Toda barra desta máquina tem que ter um valor definido — nenhuma pode
-    // ficar sem `aria-valuenow`, que é como o indeterminado se denuncia.
+    // Every bar of this machine must have a defined value - none may
+    // be left without `aria-valuenow`, which is how the indeterminate gives itself away.
     for (const bar of bars) {
       expect(bar.getAttribute("aria-valuenow")).not.toBeNull();
     }
@@ -341,9 +341,9 @@ describe("GPU temperature", () => {
 });
 
 /**
- * O card é lido numa tela, e a máquina reporta muito. O que se afirma aqui é a
- * arrumação: o que se **faz** com a máquina fica no topo, e o que ela **tem**
- * aparece inteiro - todas as partições, não só a do projeto.
+ * The card is read on a screen, and the machine reports a lot. What is asserted here is the
+ * arrangement: what you **do** with the machine stays at the top, and what it **has**
+ * appears in full - all the partitions, not only the project's.
  */
 describe("PeerDetailCard · card layout", () => {
   afterEach(cleanup);
@@ -352,14 +352,14 @@ describe("PeerDetailCard · card layout", () => {
     mount(fakeSlicePeer("a", 0, 15));
     const leaveButton = screen.getByRole("button", { name: /sair da rede/i });
     const ram = screen.getByText("RAM");
-    // `DOCUMENT_POSITION_FOLLOWING` = a RAM vem depois do botão no documento.
+    // `DOCUMENT_POSITION_FOLLOWING` = the RAM comes after the button in the document.
     expect(leaveButton.compareDocumentPosition(ram) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   /**
-   * Uma máquina com NVMe e HDD, ou com `/` e `/dados` separados, aparecia como
-   * um volume só - e quem decide onde cabe um GGUF de 40 GB não via o disco
-   * onde ele caberia.
+   * A machine with NVMe and HDD, or with `/` and `/data` separate, showed up as
+   * a single volume - and whoever decides where a 40 GB GGUF fits did not see the disk
+   * where it would fit.
    */
   it("shows one bar per mounted partition", () => {
     const peer = fakeSlicePeer("discos", 0, 15, {
@@ -381,7 +381,7 @@ describe("PeerDetailCard · card layout", () => {
     expect(screen.getByText("Disco · /dados")).toBeTruthy();
   });
 
-  /** Um nó que ainda não publica a lista não perde o disco que já publicava. */
+  /** A node that does not publish the list yet does not lose the disk it already published. */
   it("falls back to the project volume when the node does not list the partitions", () => {
     const peer = fakeSlicePeer("antigo", 0, 15, {
       node: fakeNode({
@@ -470,13 +470,13 @@ describe("PeerDetailCard · card layout", () => {
 });
 
 /**
- * Um endereço que morre não pode virar um aviso permanente.
+ * An address that dies must not become a permanent warning.
  *
- * Endereços IPv6 temporários rodam sozinhos (privacy extensions), então o
- * endereço que um par anunciou ontem pode não existir em máquina nenhuma hoje.
- * O nó esquece esse endereço, pergunta o atual e recupera o par sozinho - e é
- * isso que a tela tem de dizer enquanto acontece, em vez de "nada abaixo pode
- * ser lido", que manda o utilizador procurar um defeito que se conserta só.
+ * Temporary IPv6 addresses rotate on their own (privacy extensions), so the
+ * address that a peer announced yesterday may not exist on any machine today.
+ * The node forgets that address, asks for the current one and recovers the peer on its own - and
+ * that is what the screen must say while it happens, instead of "nothing below can
+ * be read", which sends the user hunting for a defect that fixes itself.
  */
 describe("PeerDetailCard with the address being rediscovered", () => {
   afterEach(cleanup);
@@ -494,9 +494,9 @@ describe("PeerDetailCard with the address being rediscovered", () => {
   });
 
   /**
-   * A cobertura sai do gossip, não da leitura: o par ilegível continua
-   * contribuindo camadas. A tela tem de dizer que a cobertura não está
-   * confirmada em vez de ficar calada.
+   * The coverage comes from gossip, not from reading: the unreadable peer keeps
+   * contributing layers. The screen must say that the coverage is not
+   * confirmed instead of staying silent.
    */
   it("warns that the coverage is not confirmed", () => {
     mount(fakePeer({ node_id: "z", rediscovering: true }));

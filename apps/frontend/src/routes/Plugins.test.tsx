@@ -609,7 +609,7 @@ describe("Plugins", () => {
     const leaseDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date("2026-09-28T12:00:00.000Z"));
 
-    // O card compacto não repete a última consulta de update nem as features.
+    // The compact card does not repeat the last update lookup nor the features.
     expect(within(card as HTMLElement).queryByText(updateDate)).toBeNull();
     expect(within(card as HTMLElement).queryByText("Funcionalidades")).toBeNull();
     expect(within(card as HTMLElement).getByText("Última instalação")).toBeTruthy();

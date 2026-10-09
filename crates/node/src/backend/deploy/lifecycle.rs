@@ -30,7 +30,7 @@ pub(super) async fn run(
         target_host: String,
         source_node_id: String,
         source_path: String,
-        /// Hash da parte, quando a origem a tem endereçada por conteúdo.
+        /// Hash of the part, when the source has it content-addressed.
         source_sha256: Option<String>,
         source_needs_split: bool,
         name: String,
@@ -248,11 +248,11 @@ pub(super) async fn run(
                 "remote_path": pull.source_path,
                 "name": pull.name,
             });
-            // Por hash sempre que a origem souber o dela. É o que faz a
-            // fatia cair em `<shard_dir>/<modelo>/<sha>.gguf` com o `.pom`
-            // ao lado, em vez de solta na raiz parecendo um modelo
-            // inteiro. O pedido por caminho fica para a fatia sem hash -
-            // um arquivo que ninguém endereçou por conteúdo ainda.
+            // By hash whenever the source knows its own. That is what makes the
+            // slice land in `<shard_dir>/<model>/<sha>.gguf` with the `.pom`
+            // beside it, instead of loose at the root looking like a whole
+            // model. The request by path is left for the slice without a hash -
+            // a file nobody has addressed by content yet.
             let body: serde_json::Value = state
                 .control_post_json(&target, "/api/transfer/pull", &pull_body, PEER_TIMEOUT * 4)
                 .await
@@ -355,9 +355,9 @@ pub(super) async fn run(
         }
     }
     if params.no_embeddings {
-        // O planner já validou atomicamente a topologia. Marcar cada alvo
-        // explicitamente evita que um interruptor global seja reinterpretado
-        // de forma diferente por um peer.
+        // The planner already validated the topology atomically. Marking each target
+        // explicitly keeps a global switch from being reinterpreted
+        // differently by a peer.
         for target in &mut targets {
             target.no_embeddings = Some(true);
         }
@@ -377,15 +377,15 @@ pub(super) async fn run(
         .total_layers
         .ok_or_else(|| format!("the slices of {} do not state the total number of layers", plan.group))?;
 
-    // O registro da implantação nasce aqui, com os alvos já resolvidos: é o
-    // último ponto em que se sabe, de uma vez só, quem recebeu qual faixa e com
-    // que configuração. Depois do `launch` essa intenção se dissolvia em N
-    // `NodeConfig` espalhados, e ninguém no cluster sabia mais dizer que
-    // aqueles nós eram *a mesma* implantação.
+    // The deployment record is born here, with the targets already resolved: it is the
+    // last point where it is known, all at once, who received which range and with
+    // what configuration. After `launch` that intent dissolved into N
+    // scattered `NodeConfig`s, and nobody in the cluster could say anymore that
+    // those nodes were *the same* deployment.
     //
-    // `New` monta a v1; `ReuseVersion` anexa (ou reativa) uma versão sob o
-    // `deploy_id` que já existe, para reimplantar a mesma forma não cunhar um id
-    // novo a cada vez.
+    // `New` builds v1; `ReuseVersion` appends (or reactivates) a version under the
+    // `deploy_id` that already exists, so redeploying the same shape does not mint a new id
+    // every time.
     let record = match record_plan {
         RecordPlan::New { .. } => build_record(
             deploy_id,
@@ -428,22 +428,22 @@ pub(super) async fn run(
         return Err(refusal(response).await);
     }
 
-    // Só depois do launch dar certo: um registro de implantação que não subiu
-    // seria uma implantação fantasma na listagem, e a tela de desimplantar
-    // ofereceria algo que não está no ar.
+    // Only after the launch succeeds: a deployment record that did not come up
+    // would be a phantom deployment in the listing, and the undeploy screen
+    // would offer something that is not on the air.
     publish_record(&state, &record).await;
     Ok(())
 }
 
-/// Monta o registro a partir do que o plano e os alvos já dizem.
+/// Builds the record from what the plan and the targets already say.
 ///
-/// Nada aqui é recalculado: as faixas, a posição no pipeline e os ajustes por
-/// máquina são exatamente os que foram para o `launch`. Guardar o **resultado**
-/// é o que faz "com que configuração aquela máquina subiu?" ser uma leitura em
-/// vez de uma reconstrução.
-/// Os nós de uma versão: quem recebeu qual faixa e com que configuração
-/// efetiva. Igual para a v1 de um deployment novo e para uma versão anexada a
-/// um `deploy_id` reaproveitado.
+/// Nothing here is recomputed: the ranges, the position in the pipeline and the per-machine
+/// adjustments are exactly the ones that went to `launch`. Storing the **result**
+/// is what makes "with what configuration did that machine come up?" a read
+/// instead of a reconstruction.
+/// The nodes of a version: who received which range and with what effective
+/// configuration. The same for the v1 of a new deployment and for a version appended to
+/// a reused `deploy_id`.
 pub(super) fn build_version_nodes(
     plan: &Plan,
     targets: &[LaunchTarget],
@@ -473,14 +473,14 @@ pub(super) fn build_version_nodes(
             source_model_path: (!t.source_model_path.is_empty())
                 .then(|| t.source_model_path.clone()),
             tp_rank: t.tp.as_ref().map(|tp| tp.rank),
-            // A mesma função que o `launch` usa para decidir o que cada máquina
-            // recebe, para o registro não poder divergir do que subiu.
+            // The same function that `launch` uses to decide what each machine
+            // receives, so the record cannot diverge from what came up.
             config: crate::webui::params_for(params, t),
         })
         .collect()
 }
 
-/// O kind do registro a partir do kind do plano.
+/// The record's kind from the plan's kind.
 pub(super) fn record_kind(kind: DeployKind) -> crate::deployment::DeploymentKind {
     match kind {
         DeployKind::Shards => crate::deployment::DeploymentKind::Shards,
@@ -489,13 +489,13 @@ pub(super) fn record_kind(kind: DeployKind) -> crate::deployment::DeploymentKind
     }
 }
 
-/// Monta o registro de um deployment **novo** (v1), a partir do que o plano e
-/// os alvos já dizem.
+/// Builds the record of a **new** deployment (v1), from what the plan and
+/// the targets already say.
 ///
-/// Nada aqui é recalculado: as faixas, a posição no pipeline e os ajustes por
-/// máquina são exatamente os que foram para o `launch`. Guardar o **resultado**
-/// é o que faz "com que configuração aquela máquina subiu?" ser uma leitura em
-/// vez de uma reconstrução.
+/// Nothing here is recomputed: the ranges, the position in the pipeline and the per-machine
+/// adjustments are exactly the ones that went to `launch`. Storing the **result**
+/// is what makes "with what configuration did that machine come up?" a read
+/// instead of a reconstruction.
 pub(super) fn build_record(
     deploy_id: &str,
     plan: &Plan,
@@ -528,12 +528,12 @@ pub(super) fn build_record(
     .with_params(params.clone())
 }
 
-/// Grava o registro neste nó e manda uma cópia para cada participante.
+/// Writes the record on this node and sends a copy to each participant.
 ///
-/// Cada nó guarda o próprio exemplar: não há dono único que, ao cair, leve a
-/// implantação junto, e um nó que reinicia lê no disco de que implantação ele
-/// fazia parte. Uma cópia que não chega não derruba a implantação - ela já está
-/// no ar; o que se perde é aquele nó saber se explicar depois de um reinício.
+/// Each node keeps its own copy: there is no single owner that, on going down, takes
+/// the deployment with it, and a node that restarts reads from disk which deployment it
+/// was part of. A copy that does not arrive does not bring the deployment down - it is already
+/// on the air; what is lost is that node being able to explain itself after a restart.
 pub(super) async fn publish_record(state: &GatewayState, record: &crate::deployment::Deployment) {
     if let Err(e) = state.database.save_deployment(record) {
         warn!(
@@ -545,9 +545,9 @@ pub(super) async fn publish_record(state: &GatewayState, record: &crate::deploym
     let self_id = state.network.node_id.clone();
     let peers = state.all_peers().await;
 
-    // Atualizações de topologia também precisam alcançar quem saiu. O peer
-    // só aceita a cópia se já conhecia o deployment, então fan-out não cria
-    // registros em máquinas que nunca participaram.
+    // Topology updates must also reach whoever left. The peer
+    // only accepts the copy if it already knew the deployment, so the fan-out does not create
+    // records on machines that never took part.
     for peer in peers.iter().filter(|peer| peer.node_id != self_id) {
         let send_result = state
             .control_post_json(peer, "/api/ui/deployments", record, PEER_TIMEOUT)
@@ -561,12 +561,12 @@ pub(super) async fn publish_record(state: &GatewayState, record: &crate::deploym
     }
 }
 
-// ── Mexer numa implantação que já está no ar ─────────────────────────────────
+// ── Touching a deployment that is already on the air ─────────────────────────
 
-/// Acha o registro de uma implantação, aqui ou em quem tiver.
+/// Finds the record of a deployment, here or on whoever has it.
 ///
-/// Nem todo nó guarda todo registro - só os participantes guardam -, então o
-/// coordenador de um `redeploy` pode perfeitamente não ter a cópia.
+/// Not every node keeps every record - only the participants do -, so the
+/// coordinator of a `redeploy` may well not have the copy.
 pub(super) async fn find_record(
     state: &GatewayState,
     deploy_id: &str,
@@ -607,11 +607,11 @@ pub(super) async fn find_record(
     newest_deployment(local.into_iter().chain(remote))
 }
 
-/// Torna esta a implantação que atende quem pede só o nome do modelo.
+/// Makes this the deployment that serves whoever asks only by model name.
 ///
-/// Mexe no `activated_at` e reespalha. Como a escolha da padrão é **derivada**
-/// (a de ativação mais recente), não há eleição nem quórum: basta o carimbo
-/// novo chegar, e quem receber converge sozinho. Ver `deployment::active`.
+/// Touches `activated_at` and re-spreads. Since the choice of the default is **derived**
+/// (the most recently activated one), there is no election or quorum: it is enough for the new
+/// stamp to arrive, and whoever receives it converges on its own. See `deployment::active`.
 pub(super) async fn activate_deployment(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -635,7 +635,7 @@ pub(super) async fn activate_deployment(
     .into_response()
 }
 
-/// Ajuste por máquina, para os dois botões que são de verdade por máquina.
+/// Per-machine adjustment, for the two knobs that are truly per machine.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PerNodeParams {
     #[serde(default)]
@@ -646,23 +646,23 @@ pub struct PerNodeParams {
 
 #[derive(Debug, Deserialize)]
 pub struct RedeployRequest {
-    /// Parâmetros novos do deployment inteiro. Ausente exige `version`.
-    /// Presentes e iguais aos de uma versão existente -> aquela versão volta a
-    /// ser a ativa; diferentes -> versão nova anexada ao mesmo `deploy_id`.
+    /// New parameters of the whole deployment. Absent requires `version`.
+    /// Present and equal to those of an existing version -> that version becomes
+    /// the active one again; different -> new version appended to the same `deploy_id`.
     #[serde(default)]
     pub params: Option<RuntimeParams>,
-    /// Reimplanta uma versão já registrada, sem anexar outra. Mutuamente
-    /// exclusivo com `params` na prática; se os dois vierem, `version` vence.
+    /// Redeploys an already registered version, without appending another. Mutually
+    /// exclusive with `params` in practice; if both come, `version` wins.
     #[serde(default)]
     pub version: Option<u32>,
-    /// Ajustes por máquina, por `node_id`. Ausente = todo mundo com os mesmos.
+    /// Per-machine adjustments, by `node_id`. Absent = everyone with the same ones.
     #[serde(default)]
     pub per_node: HashMap<String, PerNodeParams>,
 }
 
 impl RedeployRequest {
-    /// Resolve o pedido contra o registro: escolhe/cria a versão, muta o
-    /// registro para refleti-la e devolve os parâmetros base de cada máquina.
+    /// Resolves the request against the record: picks/creates the version, mutates the
+    /// record to reflect it and returns the base parameters of each machine.
     pub(super) fn resolve(
         &self,
         record: &mut crate::deployment::Deployment,
@@ -704,7 +704,7 @@ impl RedeployRequest {
     }
 }
 
-/// O que aconteceu com **uma** máquina numa reconfiguração.
+/// What happened to **one** machine in a reconfiguration.
 #[derive(Debug, Serialize)]
 pub struct RedeployOutcome {
     pub node_id: String,
@@ -713,20 +713,20 @@ pub struct RedeployOutcome {
     pub error: Option<String>,
 }
 
-/// Reimplanta um `deploy_id` que já existe: `version` reativa uma versão
-/// registrada, `params` reimplanta anexando - ou reativando - uma versão.
+/// Redeploys a `deploy_id` that already exists: `version` reactivates a registered
+/// version, `params` redeploys by appending - or reactivating - a version.
 ///
-/// A mesma implantação, o mesmo `deploy_id`, as mesmas máquinas e as mesmas
-/// faixas. Por isso **não** re-planeja: re-planejar cunharia uma implantação
-/// nova, quebrando todo cliente preso a `modelo@deploy_id`.
+/// The same deployment, the same `deploy_id`, the same machines and the same
+/// ranges. That is why it does **not** re-plan: re-planning would mint a new
+/// deployment, breaking every client tied to `model@deploy_id`.
 ///
-/// Descarrega toda máquina que ainda anuncia este `deploy_id` e sobe cada uma
-/// de novo, uma de cada vez, esperando cada uma voltar a servir antes da
-/// próxima. Funciona mesmo se uma máquina não estava servindo nada (o bug
-/// antigo): a identidade da fatia vem do registro mais a fotografia do que
-/// cada nó rodava, não de um `NodeConfig` vivo. Tensor Parallelism ainda usa
-/// o caminho antigo (`reconfigure` no lugar). O registro é reescrito
-/// **depois** de os nós aceitarem.
+/// Unloads every machine that still announces this `deploy_id` and brings each one up
+/// again, one at a time, waiting for each to serve again before the
+/// next. Works even if a machine was not serving anything (the old bug):
+/// the slice's identity comes from the record plus the snapshot of what
+/// each node was running, not from a live `NodeConfig`. Tensor Parallelism still uses
+/// the old path (`reconfigure` in place). The record is rewritten
+/// **after** the nodes accept.
 pub(super) async fn redeploy_endpoint(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -830,9 +830,9 @@ pub(super) async fn run_redeploy(
         record.kind
     );
 
-    // Escolhe/cria a versão pedida e muta `record` para refleti-la. `base` é
-    // o `RuntimeParams` do deployment inteiro dessa versão; os ajustes por
-    // máquina de `req.per_node` entram por cima na hora do reconfigure.
+    // Picks/creates the requested version and mutates `record` to reflect it. `base` is
+    // the `RuntimeParams` of the whole deployment of that version; the per-machine
+    // adjustments of `req.per_node` go on top at reconfigure time.
     let base = req.resolve(&mut record, &self_id)?;
 
     // Re-deploy does not build a new plan, but changing the wire precision is
@@ -848,19 +848,19 @@ pub(super) async fn run_redeploy(
     )
     .await?;
 
-    // Tensor parallelism: a coletiva não sobrevive a um unload e o registro
-    // não guarda o `TpLaunch` inteiro, só o `tp_rank` de cada nó. Mantém o
-    // caminho antigo (reconfigure no lugar), que exige o rank já servindo.
+    // Tensor parallelism: the collective does not survive an unload and the record
+    // does not keep the whole `TpLaunch`, only the `tp_rank` of each node. Keeps the
+    // old path (reconfigure in place), which requires the rank to be already serving.
     if record.kind == crate::deployment::DeploymentKind::TensorParallel {
         return run_redeploy_in_place(&state, &peers, &mut record, &req, &self_id, &key, job_id)
             .await;
     }
 
-    // ── 1. Fotografa a identidade viva de cada nó antes de derrubar nada ──────
+    // ── 1. Snapshot each node's live identity before taking anything down ─────
     //
-    // O registro tem faixa, posição e `part_sha256`, mas não o caminho do
-    // arquivo nem o nome operacional da implantação. Esses vêm do `NodeConfig`
-    // vivo, lido agora, enquanto ainda dá.
+    // The record has range, position and `part_sha256`, but not the file path
+    // nor the operational name of the deployment. Those come from the live
+    // `NodeConfig`, read now, while it is still possible.
     let mut identity: HashMap<String, NodeIdentitySnapshot> = HashMap::new();
     for no in &record.nodes {
         let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) else {
@@ -909,7 +909,7 @@ pub(super) async fn run_redeploy(
         }
     }
 
-    // ── 2. Descarrega toda máquina que anuncia este deploy_id ────────────────
+    // ── 2. Unload every machine that announces this deploy_id ────────────────
     let target = UndeployTarget::Deployment {
         deploy_id: record.deploy_id.clone(),
         label: record.model.label.clone(),
@@ -952,11 +952,11 @@ pub(super) async fn run_redeploy(
         }
     }
 
-    // ── 3. Sobe uma máquina de cada vez, esperando cada uma voltar ───────────
+    // ── 3. Bring up one machine at a time, waiting for each to come back ──────
     //
-    // Sequencial de propósito: recarregar o modelo é o pico de memória do nó,
-    // e mandar o cluster inteiro fazer isso junto é o caminho mais curto para
-    // várias quedas por falta de VRAM ao mesmo tempo.
+    // Sequential on purpose: reloading the model is the node's memory peak,
+    // and telling the whole cluster to do it together is the shortest path to
+    // several crashes from lack of VRAM at the same time.
     let mut results: Vec<RedeployOutcome> = Vec::new();
     let mut accepted: HashMap<String, RuntimeParams> = HashMap::new();
     for (i, no) in record.nodes.iter().enumerate() {
@@ -969,10 +969,10 @@ pub(super) async fn run_redeploy(
         .await;
         set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
 
-        // `no.config` já é a configuração efetiva da versão ativa (os
-        // parâmetros do deployment com os ajustes por máquina embutidos), então
-        // uma reimplantação de versão devolve a cada máquina exatamente o que
-        // ela rodava. `req.per_node` re-aplica por cima o que a tela mexeu.
+        // `no.config` is already the effective configuration of the active version (the
+        // deployment parameters with the per-machine adjustments embedded), so
+        // a version redeploy gives each machine back exactly what
+        // it was running. `req.per_node` re-applies on top what the screen changed.
         let mut params = no.config.clone();
         if let Some(adjustment) = req.per_node.get(&no.node_id) {
             if let Some(g) = adjustment.n_gpu_layers {
@@ -1036,7 +1036,7 @@ pub(super) async fn run_redeploy(
     finish_redeploy(&state, &mut record, accepted, results, job_id).await
 }
 
-/// A fotografia do que um nó estava rodando, tirada antes do unload.
+/// The snapshot of what a node was running, taken before the unload.
 pub(super) struct NodeIdentitySnapshot {
     pub(super) model_path: Option<String>,
     pub(super) mmproj_path: Option<String>,
@@ -1050,7 +1050,7 @@ pub(super) struct NodeIdentitySnapshot {
     pub(super) no_embeddings: bool,
 }
 
-/// Grava os parâmetros aceitos no registro, publica e monta o resultado do job.
+/// Writes the accepted parameters to the record, publishes and builds the job's result.
 pub(super) async fn finish_redeploy(
     state: &GatewayState,
     record: &mut crate::deployment::Deployment,
@@ -1058,16 +1058,16 @@ pub(super) async fn finish_redeploy(
     results: Vec<RedeployOutcome>,
     job_id: &str,
 ) -> Result<usize, String> {
-    // Só o que a máquina de fato aceitou entra no registro. Uma que recusou
-    // continua descrita com a configuração antiga - o registro tem que dizer o
-    // que **é**, não o que se pediu.
+    // Only what the machine actually accepted goes into the record. One that refused
+    // stays described with the old configuration - the record has to say what
+    // **is**, not what was asked for.
     for no in record.nodes.iter_mut() {
         if let Some(p) = accepted.remove(&no.node_id) {
             no.config = p;
         }
     }
-    // O que cada máquina de fato aceitou entra também no snapshot da versão
-    // ativa, para o histórico não divergir da lista que o runtime lê.
+    // What each machine actually accepted also goes into the snapshot of the
+    // active version, so the history does not diverge from the list the runtime reads.
     record.commit_active_nodes();
     publish_record(state, record).await;
 
@@ -1088,8 +1088,8 @@ pub(super) async fn finish_redeploy(
     Ok(failures)
 }
 
-/// Sobe **uma** máquina para a faixa que ela já tem, com os parâmetros novos,
-/// e espera ela voltar a servir antes de devolver.
+/// Brings **one** machine up for the range it already has, with the new parameters,
+/// and waits for it to serve again before returning.
 pub(super) async fn relaunch_one(
     state: &GatewayState,
     peers: &[PeerInfo],
@@ -1110,7 +1110,7 @@ pub(super) async fn relaunch_one(
             return Some("peer not found".to_string());
         };
         let body = json!({ "params": params, "slice": slice });
-        // Recarregar pesos é minutos, não segundos.
+        // Reloading weights takes minutes, not seconds.
         match state
             .control_post_json(peer, "/api/ui/reconfigure", &body, REDEPLOY_READY_TIMEOUT)
             .await
@@ -1125,7 +1125,7 @@ pub(super) async fn relaunch_one(
         }
     }
 
-    // A chamada só dispara a carga; espera a máquina reportar `ready`.
+    // The call only triggers the load; wait for the machine to report `ready`.
     if let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) {
         if let Err(e) =
             wait_for_peer_serving_with_timeout(state, peer, REDEPLOY_READY_TIMEOUT).await
@@ -1136,8 +1136,8 @@ pub(super) async fn relaunch_one(
     None
 }
 
-/// O `redeploy` antigo: reconfigura cada nó no lugar, sem unload. Só o Tensor
-/// Parallelism ainda usa este caminho - ver `run_redeploy`.
+/// The old `redeploy`: reconfigures each node in place, without unload. Only Tensor
+/// Parallelism still uses this path - see `run_redeploy`.
 pub(super) async fn run_redeploy_in_place(
     state: &GatewayState,
     peers: &[PeerInfo],
@@ -1161,7 +1161,7 @@ pub(super) async fn run_redeploy_in_place(
         .await;
         set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
 
-        // Ver `run_redeploy`: `no.config` é a configuração efetiva da versão.
+        // See `run_redeploy`: `no.config` is the effective configuration of the version.
         let mut params = no.config.clone();
         if let Some(adjustment) = req.per_node.get(&no.node_id) {
             if let Some(g) = adjustment.n_gpu_layers {
@@ -1273,7 +1273,7 @@ pub(super) async fn validate_redeploy_wire_dtype(
     }
 }
 
-/// Manda **uma** máquina recarregar com outros parâmetros.
+/// Sends **one** machine to reload with other parameters.
 pub(super) async fn reconfigure_one(
     state: &GatewayState,
     peers: &[PeerInfo],
@@ -1290,9 +1290,9 @@ pub(super) async fn reconfigure_one(
     }
 
     let peer = peers.iter().find(|p| p.node_id == node_id)?;
-    // Recarregar pesos é minutos, não segundos: o `PEER_TIMEOUT` de uma
-    // chamada de controle mataria a conexão no meio de um carregamento que
-    // vai terminar bem.
+    // Reloading weights takes minutes, not seconds: the `PEER_TIMEOUT` of a
+    // control call would kill the connection in the middle of a load that
+    // will end fine.
     match state
         .control_post_json(
             peer,

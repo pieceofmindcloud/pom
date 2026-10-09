@@ -102,7 +102,7 @@ function ClusterStat({
   );
 }
 
-/** O rótulo de um dos dois grupos de cards da aba Detalhes. */
+/** The label of one of the two card groups of the Details tab. */
 function GroupHeading({
   id,
   title,
@@ -125,7 +125,7 @@ function GroupHeading({
   );
 }
 
-/** Faixas das *outras* máquinas do pipeline, que é o que `RemoveNode` compara. */
+/** Ranges of the *other* machines of the pipeline, which is what `RemoveNode` compares. */
 function otherRangesFor(pipeline: PeerView[], peer: PeerView): [number, number][] {
   return pipeline
     .filter((o) => o.node_id !== peer.node_id)
@@ -148,14 +148,14 @@ export function Dashboard() {
   const isPrincipal = isAdmin && !secondary;
   // The process log is kept by the logs plugin; without it there is no dock.
   const logsPluginActive = useEnterpriseStatus().data.active;
-  // Sem os Detalhes sobra o Fluxo, e uma vista só não é uma escolha: o seletor
-  // sai da tela junto com a aba que ele abria.
+  // Without Details only Flow is left, and a single view is not a choice: the
+  // selector leaves the screen along with the tab it opened.
   const detailed = canSeePeerDetails(profile);
 
   const c = cluster.data;
-  // Duas listas: quem serve o modelo ativo, na ordem do pipeline, e o resto da
-  // rede. A aba Detalhes mostra as duas - uma máquina conectada e sem fatia é
-  // exatamente a que não aparece em lugar nenhum quando só se olha o pipeline.
+  // Two lists: who serves the active model, in pipeline order, and the rest of
+  // the network. The Details tab shows both - a connected machine with no slice
+  // is exactly the one that shows up nowhere when one only looks at the pipeline.
   const { pipeline: peers, others } = c
     ? networkPeers(c)
     : { pipeline: [] as PeerView[], others: [] as PeerView[] };
@@ -194,9 +194,9 @@ export function Dashboard() {
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlightKnown = peers.every((p) => p.load != null);
   const inFlight = inFlightKnown ? peers.reduce((sum, p) => sum + (p.load ?? 0), 0) : null;
-  // As máquinas que a desimplantação vai alcançar, na ordem do pipeline. O nó
-  // re-varre o cluster antes de agir; esta lista é só o que a confirmação
-  // mostra, para o operador ver de quem está falando.
+  // The machines the undeploy will reach, in pipeline order. The node
+  // re-surveys the cluster before acting; this list is only what the
+  // confirmation shows, so the operator sees who it is talking about.
   const undeployTargets = peers
     .filter((p) => p.model === group && p.total_layers > 0)
     .map((p) => ({
@@ -215,7 +215,7 @@ export function Dashboard() {
     return <div className="grid h-full place-items-center p-6"><div className="w-full max-w-xl space-y-4"><Skeleton className="h-16 w-full" /><Skeleton className="h-[32rem] w-full" /></div></div>;
   }
 
-  // Quantas máquinas o modelo ativo depende e este nó não conseguiu ler.
+  // How many machines the active model depends on and this node could not read.
   const coverageUnconfirmed =
     (c.model_inventory ?? []).find((entry) => entry.model_id === c.active_model)
       ?.unreadable_nodes?.length ?? 0;
@@ -257,10 +257,10 @@ export function Dashboard() {
         {isAdmin ? (
           <>
             {/*
-              A cobertura sai do que os pares anunciam no gossip, não da leitura de
-              cada um: uma máquina cujo endereço morreu continua contribuindo
-              camadas. Verde de "completo" enquanto metade do modelo está ilegível
-              é o pior estado possível da tela - por isso o âmbar vence.
+              The coverage comes from what the peers announce in the gossip, not from
+              reading each one: a machine whose address died keeps contributing
+              layers. The green of "complete" while half the model is unreadable
+              is the worst possible state of the screen - that is why amber wins.
             */}
             <ClusterStat label={t("dashboard.coverage")} value={c.total_layers > 0 ? pct((c.covered_layers / c.total_layers) * 100) : "—"} detail={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : c.total_layers > 0 ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers }) : t("dashboard.noModelAssigned")} progress={c.total_layers > 0 ? (c.covered_layers / c.total_layers) * 100 : null} tone={c.complete && coverageUnconfirmed === 0 ? "aqua" : "amber"} />
             <ClusterStat label={t("dashboard.machines")} value={num(c.peers.length)} detail={num(serving) + " " + t("dashboard.serving")} tone="iris" />
@@ -287,9 +287,9 @@ export function Dashboard() {
               <Plus className="h-3.5 w-3.5" />
               {t("deploy.addNode")}
             </Button>
-            {/* Ao lado de "Adicionar nó" porque são o mesmo nível de decisão: uma
-                soma uma máquina à pipeline, a outra desfaz a pipeline inteira. Só
-                aparece quando há uma no ar - um botão que só sabe recusar é ruído. */}
+            {/* Next to "Add node" because they are the same level of decision: one
+                adds a machine to the pipeline, the other undoes the whole pipeline. It
+                only shows when one is in service - a button that can only refuse is noise. */}
             {undeployTargets.length > 0 && (
               <UndeployPipeline
                 group={group}
@@ -315,9 +315,9 @@ export function Dashboard() {
           <div className="space-y-6">
             {peers.length > 0 && (
               <section aria-labelledby="detalhes-pipeline">
-                {/* O título só aparece quando há um segundo grupo para separar:
-                    com a rede inteira dentro da implantação, ele seria uma
-                    legenda para a única coisa na tela. */}
+                {/* The title only shows when there is a second group to separate:
+                    with the whole network inside the deployment, it would be a
+                    caption for the only thing on the screen. */}
                 {others.length > 0 && (
                   <GroupHeading
                     id="detalhes-pipeline"

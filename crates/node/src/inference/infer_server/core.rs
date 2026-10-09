@@ -46,12 +46,12 @@ pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
 const PROFILE_SPAN_LIMIT: usize = 64;
 
-/// Resolve a preferência persistida pelo deploy para o seletor operacional.
+/// Resolves the preference persisted by the deploy into the operational selector.
 ///
-/// Uma escolha explícita na UI não pode ser sobrescrita por uma variável do
-/// processo. `Auto` continua aceitando `POM_INFERENCE_MODE` para preservar o
-/// override operacional existente; sem ele, `executor::select` decide pela
-/// metadata GGUF real.
+/// An explicit choice in the UI cannot be overridden by a process
+/// variable. `Auto` keeps accepting `POM_INFERENCE_MODE` to preserve the
+/// existing operational override; without it, `executor::select` decides by the
+/// real GGUF metadata.
 pub(super) fn configured_inference_mode(
     mode: crate::webui::InferenceMode,
 ) -> Result<crate::executor::InferenceMode> {
@@ -135,41 +135,41 @@ impl MoeTimings {
 
 #[derive(Default)]
 pub(super) struct NodeTimings {
-    /// Identidade lógica recebida no frame. O peer nunca cria uma identidade
-    /// nova para um item que já tem session_id no envelope.
+    /// Logical identity received in the frame. The peer never creates a new
+    /// identity for an item that already has a session_id in the envelope.
     pub(super) session_id: Option<String>,
     pub(super) frame_decode_us: u64,
     pub(super) input_prepare_us: u64,
     pub(super) queue_us: u64,
-    /// Parte da fila medida desde o submit até a seleção pelo scheduler.
-    /// Quando `scheduler_wait_reason` é `retained-session-reclaim-grace`, a
-    /// fila ficou parada porque só havia sessões retidas e o scheduler
-    /// aguardou a carência de 5 s antes de reclamá-las.
+    /// Part of the queue measured from submit until selection by the scheduler.
+    /// When `scheduler_wait_reason` is `retained-session-reclaim-grace`, the
+    /// queue sat idle because there were only retained sessions and the scheduler
+    /// waited out the 5 s grace period before reclaiming them.
     pub(super) scheduler_wait_us: u64,
     pub(super) scheduler_wait_reason: Option<&'static str>,
-    /// Estado observado pelo scheduler no momento da admissão.
+    /// State observed by the scheduler at the moment of admission.
     pub(super) scheduler_session_existing: bool,
     /// The frame carried the gateway's one logical pipeline-session marker.
     /// This is distinct from `scheduler_session_existing`: the first prefill
     /// necessarily creates a local KV session on a downstream peer.
     pub(super) pipeline_session: bool,
-    /// Espera pelo mutex do motor, antes de qualquer trabalho.
+    /// Wait for the engine mutex, before any work.
     ///
-    /// O `llama_context` não é seguro para uso concorrente, então todo decode
-    /// deste nó serializa aqui. Sem este contador a espera caía no vão entre a
-    /// entrada do handler e o primeiro medidor, e aparecia na tela só como
-    /// "não atribuído" - 194 ms por token numa medição de 2026-08-14, 63% do
-    /// tempo da requisição, invisível.
+    /// The `llama_context` is not safe for concurrent use, so every decode
+    /// of this node serializes here. Without this counter the wait fell into the gap between the
+    /// handler's entry and the first meter, and showed up on the screen only as
+    /// "unattributed" - 194 ms per token in a measurement of 2026-08-14, 63% of the
+    /// request's time, invisible.
     pub(super) lock_wait_us: u64,
     pub(super) setup_us: u64,
     pub(super) decode_us: u64,
-    /// Tempo síncrono gasto pelo bloco `nextn` para montar o draft. Fica
-    /// separado de `decode_us` para não classificar produção do próximo
-    /// token como rede, fila ou espera do scheduler.
+    /// Synchronous time spent by the `nextn` block assembling the draft. Kept
+    /// separate from `decode_us` so as not to classify the production of the next
+    /// token as network, queue or scheduler wait.
     pub(super) mtp_draft_us: u64,
-    /// `observe` da cabeça `nextn` depois do decode do alvo (um segundo
-    /// `llama_decode`, na CPU quando o MTP foi para a RAM). Zero nas rodadas
-    /// que não especulam, onde o `observe` é pulado.
+    /// `observe` of the `nextn` head after the target's decode (a second
+    /// `llama_decode`, on the CPU when the MTP went to RAM). Zero in rounds
+    /// that do not speculate, where `observe` is skipped.
     pub(super) mtp_observe_us: u64,
     /// Wall time spent in the llama.cpp evaluation entry point. Queue and
     /// mutex waits are measured separately; this may include host-side graph
@@ -214,13 +214,13 @@ pub(super) struct NodeTimings {
     pub(super) executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub(super) moe: MoeTimings,
     pub(super) tp: Option<crate::tp::TpDecodeTelemetry>,
-    /// Contadores de tokens do MTP neste hop e nesta chamada de step.
-    /// Incrementos acontecem uma vez por lote, nunca no laço por token.
+    /// MTP token counters on this hop and in this step call.
+    /// Increments happen once per batch, never in the per-token loop.
     pub(super) mtp_draft_tokens_proposed: u64,
     pub(super) mtp_draft_tokens_accepted: u64,
     pub(super) mtp_draft_tokens_rejected: u64,
-    /// Spans por fronteira de um step, somente no modo profiling. O modo
-    /// normal mantém apenas os contadores acima e não aloca um vetor por
+    /// Spans per boundary of a step, only in profiling mode. Normal mode
+    /// keeps only the counters above and does not allocate a vector per
     /// token.
     pub(super) profiling_spans: Option<Vec<crate::prefill::TelemetrySpan>>,
 }
@@ -483,38 +483,38 @@ pub(super) struct PrefillJob {
     pub(super) chunk_index: u32,
     pub(super) chunk_size: u32,
     pub(super) reuse_prefix: bool,
-    /// A decisão da cabeça que os hops intermediários só repassam. Um hop que
-    /// não tokeniza não pode substituir `true` por seu `PrefixDecision::default`.
+    /// The head's decision that the intermediate hops only relay. A hop that
+    /// does not tokenize must not replace `true` with its `PrefixDecision::default`.
     pub(super) cached_tokens: u32,
-    /// Candidato de prefixo comum, inclusive quando a decisão foi fria.
+    /// Common prefix candidate, including when the decision was cold.
     pub(super) prefix_match_tokens: u32,
     pub(super) start_pos: Option<u32>,
-    /// Posição lógica seguinte produzida pelo head. Necessária nos hops para
-    /// não tentar deduzi-la pela quantidade de células físicas M-RoPE.
+    /// Next logical position produced by the head. Needed in the hops so they do
+    /// not try to deduce it from the number of physical M-RoPE cells.
     pub(super) next_pos: Option<u32>,
-    /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
-    /// por quem tokenizou - ver `Session::stable_len`.
+    /// Boundary between the reusable prompt and the tail of this turn, decided
+    /// by whoever tokenized - see `Session::stable_len`.
     pub(super) stable_len: Option<u32>,
-    /// Bloco local onde parar, quando o remetente pediu menos que a fatia
-    /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
+    /// Local block to stop at, when the sender asked for less than the whole
+    /// slice. `None` is the whole slice. See `resolve_exec_range`.
     pub(super) capture_block: Option<u32>,
     pub(super) is_last: bool,
     pub(super) is_final_chunk: bool,
     pub(super) wire_dtype: WireDtype,
     pub(super) prompt: Option<String>,
-    /// Imagens só existem no chunk 0 da cabeça; os hops seguintes recebem
-    /// apenas o estado oculto já produzido pelo projector.
+    /// Images only exist in the head's chunk 0; the following hops receive
+    /// only the hidden state already produced by the projector.
     pub(super) images: Option<Vec<Vec<u8>>>,
-    /// Posições físicas M-RoPE produzidas pelo head e ecoadas pelos hops.
-    /// `n_tokens`/células físicas e `n_past`/posição lógica não são
-    /// intercambiáveis neste caminho.
+    /// M-RoPE physical positions produced by the head and echoed by the hops.
+    /// `n_tokens`/physical cells and `n_past`/logical position are not
+    /// interchangeable on this path.
     pub(super) mrope_positions: Option<Vec<[u32; 4]>>,
     pub(super) chat_template: Option<bool>,
-    /// Escolha do Chat que a cabeça deve aplicar ao template. Hops apenas
-    /// repassam o campo junto do estado oculto.
+    /// Chat choice that the head must apply to the template. Hops only
+    /// relay the field along with the hidden state.
     pub(super) thinking_enabled: Option<bool>,
-    /// Rótulos-candidatos de uma decisão tipada. Só o último hop usa: devolve
-    /// em `probe_result` a probabilidade de cada rótulo no lugar de decidir.
+    /// Candidate labels of a typed decision. Only the last hop uses it: it returns
+    /// in `probe_result` the probability of each label instead of deciding.
     pub(super) probe: Option<super::prefill::HeadProbe>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
@@ -532,8 +532,8 @@ pub(super) struct StepJob {
     pub(super) wire_dtype: WireDtype,
     pub(super) token_id: Option<i32>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
-    /// Bloco local onde parar, quando o remetente pediu menos que a fatia
-    /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
+    /// Local block to stop at, when the sender asked for less than the whole
+    /// slice. `None` is the whole slice. See `resolve_exec_range`.
     pub(super) capture_block: Option<u32>,
     pub(super) speculate: Option<Speculate>,
     pub(super) incoming_draft: Option<Vec<i32>>,
@@ -911,20 +911,20 @@ pub(super) fn spawn_scheduler(
     handle
 }
 
-/// Quanto tempo um prefill de sessão nova espera antes de reclamar o slot de
-/// uma sessão retida.
+/// How long a new-session prefill waits before reclaiming the slot of
+/// a retained session.
 ///
-/// É o preço de um pedido avulso contra o prefixo de uma conversa viva. Curto
-/// demais e voltamos ao defeito de produção - um pedido de 35 caracteres
-/// despejando 62 mil tokens quentes e reingerindo tudo do zero. Longo demais e
-/// uma segunda janela do cliente demora a ser servida.
+/// It is the price of a standalone request against the prefix of a live conversation. Too short
+/// and we are back to the production defect - a 35-character request
+/// evicting 62 thousand warm tokens and re-ingesting everything from zero. Too long and
+/// a second client window takes a long time to be served.
 pub(super) const RETAINED_RECLAIM_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Quantas sessões **novas** cabem agora.
+/// How many **new** sessions fit right now.
 ///
-/// Só sequência realmente livre conta. Sessão retida é KV quente de uma
-/// conversa viva, não capacidade: contá-la como slot livre era admitir um
-/// prefill que, no worker, só entrava despejando o prefixo de outra conversa.
+/// Only a really free sequence counts. A retained session is the warm KV of a
+/// live conversation, not capacity: counting it as a free slot was admitting a
+/// prefill that, in the worker, only got in by evicting another conversation's prefix.
 pub(super) fn new_session_slots(free_slots: usize, _retained: usize) -> usize {
     free_slots
 }
@@ -991,10 +991,10 @@ pub(super) async fn run_scheduler(
             continue;
         };
 
-        // Admissão de sessão: um prefill de sessão nova só entra se houver slot
-        // realmente livre. Sessão retida é cache quente, não capacidade - ver
-        // `new_session_slots`. Sem slot, o item fica na fila FIFO em vez de ir
-        // ao worker e voltar com "seq pool esgotado".
+        // Session admission: a new-session prefill only enters if there is a
+        // really free slot. A retained session is warm cache, not capacity - see
+        // `new_session_slots`. Without a slot, the item stays in the FIFO queue instead of going
+        // to the worker and coming back with "seq pool exhausted".
         let (present, new_slots, retained) = {
             let guard = state.lock().unwrap_or_else(|e| e.into_inner());
             let present: std::collections::HashSet<String> =
@@ -1021,9 +1021,9 @@ pub(super) async fn run_scheduler(
             }
         }
 
-        // A classe da frente primeiro (FIFO por chegada); depois as demais, para
-        // que a decodificação de uma sessão viva não fique presa atrás de um
-        // prefill de sessão nova que está esperando um slot.
+        // The front class first (FIFO by arrival); then the others, so that
+        // the decoding of a live session does not get stuck behind a
+        // new-session prefill that is waiting for a slot.
         let mut selection = crate::scheduler::BatchSelection {
             items: Vec::new(),
             total_tokens: 0,
@@ -1043,11 +1043,11 @@ pub(super) async fn run_scheduler(
         }
 
         if selection.items.is_empty() {
-            // Só há prefill de sessão nova esperando slot. Se a espera já
-            // passou da carência e o que segura o slot é uma sessão retida
-            // (cache, não trabalho vivo), reclama uma: a conversa quente teve
-            // a sua chance de voltar, e nenhuma requisição aceita pode ficar
-            // pendurada até o `reap_idle` de 15 minutos.
+            // There is only a new-session prefill waiting for a slot. If the wait has already
+            // passed the grace period and what holds the slot is a retained session
+            // (cache, not live work), reclaim one: the warm conversation had
+            // its chance to come back, and no accepted request can stay
+            // hanging until the 15-minute `reap_idle`.
             let waited = queue.oldest_new_session_wait(Instant::now(), is_existing);
             if retained > 0 && waited.is_some_and(|w| w >= RETAINED_RECLAIM_GRACE) {
                 let reclaimed = reclaim_retained(&state).await;
@@ -1057,9 +1057,9 @@ pub(super) async fn run_scheduler(
                 }
             }
 
-            // Aguarda trabalho novo OU um slot liberado, sem busy-loop. O
-            // `sleep` fecha o laço da carência: sem ele, uma fila parada não
-            // teria quem reavaliasse o prazo.
+            // Waits for new work OR a freed slot, without a busy-loop. The
+            // `sleep` closes the grace loop: without it, a stalled queue would
+            // have nobody to re-evaluate the deadline.
             stats.queue_depth.store(queue.len(), Ordering::Relaxed);
             tokio::select! {
                 command = rx.recv() => match command {
@@ -1637,17 +1637,17 @@ mod tests {
             .is_empty());
     }
 
-    /// O socket tem que atender IPv4 mesmo estando ligado em `[::]`, e é isso
-    /// que `IPV6_V6ONLY=0` compra. O teste conecta por 127.0.0.1 de verdade,
-    /// porque o defeito que ele guarda não aparece na leitura do código: o
-    /// caminho antigo desligava a opção *depois* do bind, o que não tem efeito
-    /// nenhum. No Linux passava por acidente (o padrão do sistema já é 0) e no
-    /// Windows deixaria o servidor mudo para todo peer IPv4 da LAN.
+    /// The socket has to serve IPv4 even while bound on `[::]`, and that is what
+    /// `IPV6_V6ONLY=0` buys. The test connects through 127.0.0.1 for real,
+    /// because the defect it guards does not show up in reading the code: the
+    /// old path turned the option off *after* the bind, which has no effect
+    /// at all. On Linux it passed by accident (the system default is already 0) and on
+    /// Windows it would leave the server mute to every IPv4 peer on the LAN.
     #[test]
     fn an_ipv6_listener_also_serves_ipv4() {
         let l = match listener_dual_stack(0) {
             Ok(l) => l,
-            // Máquina sem IPv6 cai no IPv4 puro, e aí não há o que provar.
+            // A machine without IPv6 falls back to pure IPv4, and then there is nothing to prove.
             Err(_) => return,
         };
         let port = l.local_addr().unwrap().port();
@@ -1679,18 +1679,18 @@ mod tests {
         assert!(accepted.join().unwrap(), "the IPv6 connection was not accepted");
     }
 
-    /// O socket tem que pedir `SO_REUSEADDR`, como o `TcpListener::bind` da std
-    /// pede sozinho.
+    /// The socket has to ask for `SO_REUSEADDR`, as std's `TcpListener::bind`
+    /// does by itself.
     ///
-    /// Sem isso, toda conexao que ficou em TIME_WAIT naquela porta - e sempre
-    /// ha, porque o gateway sonda `/health` e manda inferencia o tempo todo -
-    /// impede o proximo servidor de ligar por ate um minuto. O sintoma e
-    /// "Address already in use" com `lsof` sem achar dono nenhum: TIME_WAIT nao
-    /// tem processo. Foi o que travou toda implantacao de versao nova, dez
-    /// tentativas seguidas.
+    /// Without it, every connection left in TIME_WAIT on that port - and there always
+    /// is one, because the gateway probes `/health` and sends inference all the time -
+    /// prevents the next server from binding for up to a minute. The symptom is
+    /// "Address already in use" with `lsof` finding no owner at all: TIME_WAIT has
+    /// no process. It is what blocked every deployment of a new version, ten
+    /// attempts in a row.
     ///
-    /// A flag se perdeu quando o socket passou a ser montado a mao com
-    /// `socket2` para o dual-stack; um socket cru nao herda o padrao da std.
+    /// The flag was lost when the socket started being assembled by hand with
+    /// `socket2` for dual-stack; a raw socket does not inherit std's default.
     #[test]
     fn the_listener_asks_for_reuse_address() {
         let l = match listener_dual_stack(0) {
@@ -1704,17 +1704,17 @@ mod tests {
         );
     }
 
-    /// Porta ocupada tem que falhar *antes* de o modelo ser carregado.
+    /// A busy port has to fail *before* the model is loaded.
     ///
-    /// O `run` ligava o socket depois do `LlmEngine::load_with_cache`, então cada uma das
-    /// 10 tentativas do supervisor carregava um modelo inteiro na VRAM para
-    /// descobrir, no fim, que a porta estava tomada - minutos por tentativa, e
-    /// memória de GPU presa em cargas descartadas. O sintoma no log era
-    /// "encerrou com erro: Address already in use" logo depois de
+    /// `run` used to bind the socket after `LlmEngine::load_with_cache`, so each of the
+    /// supervisor's 10 attempts loaded a whole model into VRAM only to
+    /// find out, at the end, that the port was taken - minutes per attempt, and
+    /// GPU memory stuck in discarded loads. The symptom in the log was
+    /// "exited with error: Address already in use" right after
     /// "llama context ready".
     ///
-    /// Aqui isso vira uma garantia estrutural: `serve_port` é o primeiro passo
-    /// do `run`, e devolve `Err` sem que nada caro tenha acontecido.
+    /// Here that becomes a structural guarantee: `serve_port` is the first step
+    /// of `run`, and returns `Err` before anything expensive has happened.
     #[tokio::test]
     async fn a_busy_port_fails_immediately() {
         let occupant = match listener_dual_stack(0) {
@@ -1723,9 +1723,9 @@ mod tests {
         };
         let port = occupant.local_addr().unwrap().port();
 
-        // O caminho de um modelo que nao existe: se o `run` carregasse antes de
-        // ligar, o erro falaria do arquivo (ou o processo morreria dentro do
-        // llama.cpp). Falar de porta ocupada e a prova de que a ordem esta certa.
+        // The path of a model that does not exist: if `run` loaded before
+        // binding, the error would talk about the file (or the process would die inside
+        // llama.cpp). Talking about a busy port is the proof that the order is right.
         let mut cfg = crate::runtime::NodeConfig {
             deploy_id: String::new(),
             model_path: "/nao/existe/modelo.gguf".into(),

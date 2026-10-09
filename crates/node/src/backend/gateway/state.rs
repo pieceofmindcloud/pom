@@ -7,44 +7,44 @@ pub const DEFAULT_MAX_TOKENS: u32 = 512;
 /// A peer that cannot answer its inference health endpoint is not eligible for
 /// a new pipeline. UDP discovery is deliberately lightweight and may still
 /// hear an isolated or old node, so it is not sufficient proof of a usable hop.
-/// Este é o teto **da sonda de admissão**, curto de propósito.
+/// This is the ceiling **of the admission probe**, short on purpose.
 ///
-/// Um peer vivo na LAN responde `/health` em poucos milissegundos - as próprias
-/// chamadas de decode da inferência medem 12-18 ms de ida e volta. Quem não
-/// respondeu em 100 ms não é "lento": ou engoliu o SYN, ou está desligado, e nos
-/// dois casos ele não vai servir esta requisição. Antes deste teto quem mandava
-/// era o `peer_client::CONNECT_TIMEOUT` de 2 s, e como `join_all` só termina com
-/// o mais lento, **um** anunciante inalcançável custava 2,005 s a toda
-/// inferência do cluster - medido em produção, constante entre motores, tamanhos
-/// de prompt e frio/quente.
+/// A live peer on the LAN answers `/health` in a few milliseconds - the inference's own
+/// decode calls measure 12-18 ms round trip. Whoever did not
+/// answer in 100 ms is not "slow": either it swallowed the SYN, or it is off, and in
+/// both cases it will not serve this request. Before this ceiling, what ruled
+/// was `peer_client::CONNECT_TIMEOUT` of 2 s, and since `join_all` only finishes with
+/// the slowest, **one** unreachable announcer cost 2.005 s on every
+/// inference of the cluster - measured in production, constant across engines, prompt
+/// sizes and cold/warm.
 ///
-/// Eram 300 ms. O teto vale por endereço, e os endereços de um peer são
-/// tentados em sequência: dois endereços mortos de um peer que nem servia o
-/// modelo custavam 609 ms de TTFT a uma requisição cujos hops respondiam em
-/// 6 ms (2026-10-05). Um peer vivo mais distante que este teto ainda entra
-/// pelo túnel (`TUNNEL_HEALTH_TIMEOUT`).
+/// It used to be 300 ms. The ceiling applies per address, and a peer's addresses are
+/// tried in sequence: two dead addresses of a peer that was not even serving the
+/// model cost 609 ms of TTFT on a request whose hops answered in
+/// 6 ms (2026-10-05). A live peer farther away than this ceiling still gets in
+/// through the tunnel (`TUNNEL_HEALTH_TIMEOUT`).
 pub(crate) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Quanto tempo um peer que falhou a sonda fica fora sem ser sondado de novo.
+/// How long a peer that failed the probe stays out without being probed again.
 ///
-/// A defesa não enfraquece: o peer em quarentena é **excluído** do plano, que é
-/// exatamente o que a sonda queria. O que a quarentena remove é o custo de
-/// redescobrir a cada requisição que o morto continua morto. A volta é
-/// automática - passado o prazo, a próxima requisição paga uma sonda e o peer
-/// reentra se responder -, então nenhum estado precisa ser limpo à mão.
-/// É a janela única de memória de falha (`peer_client::FAILURE_MEMORY`).
+/// The defense does not weaken: the peer in quarantine is **excluded** from the plan, which is
+/// exactly what the probe wanted. What the quarantine removes is the cost of
+/// rediscovering on every request that the dead one is still dead. The return is
+/// automatic - once the period passes, the next request pays one probe and the peer
+/// re-enters if it answers -, so no state needs to be cleaned by hand.
+/// It is the single failure-memory window (`peer_client::FAILURE_MEMORY`).
 pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = crate::peer_client::FAILURE_MEMORY;
 
-/// Quem falhou a sonda de admissão, e até quando fica fora.
+/// Who failed the admission probe, and until when it stays out.
 ///
-/// Só guarda o negativo. O peer saudável continua sendo sondado a cada
-/// requisição - a frescura da admissão é o ponto da sonda e custa milissegundos.
+/// Only keeps the negative. The healthy peer is still probed on every
+/// request - the freshness of the admission is the point of the probe and costs milliseconds.
 #[derive(Default)]
 pub struct AdmissionHealth {
     quarantine: tokio::sync::RwLock<std::collections::HashMap<String, Instant>>,
-    /// Velocidade, fila e RTTs que o `/health` de cada peer publicou na última
-    /// sonda de admissão. É a entrada do planejador por tempo de entrega
-    /// (`fastest::plan_fastest`) e do Painel.
+    /// Speed, queue and RTTs that each peer's `/health` published at the last
+    /// admission probe. It is the input of the delivery-time planner
+    /// (`fastest::plan_fastest`) and of the Dashboard.
     perf: std::sync::RwLock<std::collections::HashMap<String, (Instant, crate::fastest::PeerPerf)>>,
 }
 
@@ -87,9 +87,9 @@ impl AdmissionHealth {
             .unwrap_or_default()
     }
 
-    /// `true` quando `node_id` nunca foi sondado ou a última sonda tem mais de
-    /// `max_age`. O planejador sonda a cada requisição; quem só lê (o Painel)
-    /// usa isto para não mostrar o que um peer publicava minutos atrás.
+    /// `true` when `node_id` was never probed or the last probe is older than
+    /// `max_age`. The planner probes on every request; whoever only reads (the Dashboard)
+    /// uses this to avoid showing what a peer published minutes ago.
     pub(crate) fn perf_older_than(&self, node_id: &str, max_age: Duration) -> bool {
         self.perf
             .read()
@@ -412,38 +412,38 @@ pub struct GatewayState {
     pub local_assignment: Arc<tokio::sync::RwLock<Option<LayerAssignment>>>,
     /// Tracks in-flight inference requests per peer (for pipeline load balancing).
     pub loads: Arc<LoadTracker>,
-    /// Prefixos de conversas que continuam vivos entre turnos. A entrada só
-    /// guarda uma sessão KV já existente, nunca pesos ou estado oculto.
+    /// Prefixes of conversations that stay alive between turns. The entry only
+    /// holds an already existing KV session, never weights or hidden state.
     pub prefix_cache: Arc<crate::prefix_cache::PrefixCache>,
-    /// Índice em disco dos snapshots automáticos de prefixo (`--slot-save-path`
-    /// + `slot_persist_prefix_cache`). `None` quando o recurso está desligado.
-    /// Ver `crate::prefix_cache::PrefixDiskIndex` e `build_prefix_disk_index`.
+    /// Disk index of the automatic prefix snapshots (`--slot-save-path`
+    /// + `slot_persist_prefix_cache`). `None` when the feature is off.
+    /// See `crate::prefix_cache::PrefixDiskIndex` and `build_prefix_disk_index`.
     pub prefix_disk: Option<Arc<crate::prefix_cache::PrefixDiskIndex>>,
-    /// Perfil adaptativo por rota, atualizado apenas depois de um prefill
-    /// concluído; escolher o chunk não aguarda I/O nem sonda de rede.
+    /// Adaptive profile per route, updated only after a completed
+    /// prefill; choosing the chunk does not wait on I/O or on a network probe.
     pub(crate) adaptive_chunk_tuner: Arc<crate::gateway::AdaptiveChunkTuner>,
-    /// Clientes HTTP de saída, **um por peer**, com o certificado do destino
-    /// fixado pelo node_id (`peer_client::PeerClients`).
+    /// Outbound HTTP clients, **one per peer**, with the destination's certificate
+    /// pinned by node_id (`peer_client::PeerClients`).
     ///
-    /// Aqui havia também um `http` compartilhado e sem pinning. Ele saiu de
-    /// propósito: com o cluster em TLS ele não tem como verificar o certificado
-    /// de ninguém, e todo ponto de chamada que o pegasse por hábito falhava
-    /// calado - foi assim que a tela de implantar parou de enxergar as fatias
-    /// dos peers. Para destino que não é peer (loopback, Ollama) use
-    /// `peer_http.plain()`, que diz o que está fazendo.
+    /// There used to be a shared `http` without pinning here as well. It left on
+    /// purpose: with the cluster on TLS it has no way to verify anyone's
+    /// certificate, and every call site that picked it up out of habit failed
+    /// silently - that is how the deploy screen stopped seeing the peers'
+    /// slices. For a destination that is not a peer (loopback, Ollama) use
+    /// `peer_http.plain()`, which says what it is doing.
     pub peer_http: Arc<crate::peer_client::PeerClients>,
-    /// Quem reprovou a sonda de admissão do pipeline, e até quando fica fora.
-    /// Ver `AdmissionHealth` e `ready_for_pipeline`.
+    /// Who failed the pipeline's admission probe, and until when it stays out.
+    /// See `AdmissionHealth` and `ready_for_pipeline`.
     pub admission_health: Arc<AdmissionHealth>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
-    /// Gerenciador dos plugins independentes (licença, host de processo por
-    /// plugin, atualização própria). Ver `crate::plugins`.
+    /// Manager of the independent plugins (license, process host per
+    /// plugin, own update). See `crate::plugins`.
     pub(crate) plugins: Arc<crate::plugins::PluginManager>,
-    /// Detecção/instalação da release do próprio binário `pom`. Fronteira de
-    /// produto separada dos plugins de propósito - ver `crate::pom_core_update`.
+    /// Detection/installation of the release of the `pom` binary itself. A product
+    /// boundary separate from the plugins on purpose - see `crate::pom_core_update`.
     pub(crate) pom_core_update: Arc<crate::pom_core_update::PomCoreUpdater>,
     /// Single durable store for local operational state.
     pub database: Arc<crate::db::PomDb>,
@@ -474,19 +474,19 @@ pub struct GatewayState {
     /// (disabled or failed to start); every prefill/decode call site treats
     /// that exactly like "the fallback wasn't available this time."
     pub tunnel_tx: Option<crate::infer_tunnel::TunnelOutboundSender>,
-    /// Certificado deste nó e a política de texto claro, quando o binário
-    /// conseguiu derivá-los da identidade. `None` só nos servidores de teste,
-    /// que sobem em `127.0.0.1:0` e não têm par de chaves a apresentar.
+    /// This node's certificate and the cleartext policy, when the binary
+    /// managed to derive them from the identity. `None` only on test servers,
+    /// which come up on `127.0.0.1:0` and have no key pair to present.
     pub tls_server: Option<crate::serve::TlsServer>,
-    /// Certificado HTTP/3 do gateway, independente da política TLS sobre TCP.
+    /// The gateway's HTTP/3 certificate, independent of the TLS policy over TCP.
     pub quic_server: Option<crate::serve::QuicServerConfig>,
-    /// Porta UDP dedicada anunciada para o endpoint HTTP/3 do gateway.
+    /// Dedicated UDP port announced for the gateway's HTTP/3 endpoint.
     pub quic_port: Option<u16>,
-    /// Captura, transporte e persistência dos logs de processo do cluster.
+    /// Capture, transport and persistence of the cluster's process logs.
     pub cluster_logs: Arc<crate::cluster_logs::ClusterLogs>,
-    /// Canal global da rede, validado e retransmitido pelo principal.
+    /// Global channel of the network, validated and relayed by the principal.
     pub network_chat: Arc<crate::network_chat::NetworkChat>,
-    /// Retrato curto do cluster, isolado por gateway e por instância de teste.
+    /// Short snapshot of the cluster, isolated per gateway and per test instance.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
@@ -582,22 +582,22 @@ impl GatewayState {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(bytes))
     }
-    /// Endereços do gateway de `peer`, o que já respondeu primeiro. Ver
+    /// Gateway addresses of `peer`, the one that answered first. See
     /// `Network::gateway_bases`.
     pub(crate) fn gateway_bases(&self, peer: &crate::network::PeerInfo) -> Vec<String> {
         self.network.gateway_bases(peer)
     }
 
-    /// O primeiro de `gateway_bases`: o endereço do gateway de `peer` para
-    /// quem só pode usar um (um download, o endereço de volta de uma oferta).
+    /// The first of `gateway_bases`: the address of `peer`'s gateway for
+    /// whoever can only use one (a download, the return address of an offer).
     pub(crate) fn gateway_base(&self, peer: &crate::network::PeerInfo) -> Option<String> {
         self.gateway_bases(peer).into_iter().next()
     }
 
-    /// GET de controle assinado ao gateway de `peer`, por todos os caminhos
-    /// que ele anuncia (endereços e, por último, o túnel libp2p - ver
-    /// `peer_client::send_to_gateway_over`). `path` pode trazer query string; a
-    /// assinatura cobre só o caminho, como em `control_get_request`.
+    /// Signed control GET to `peer`'s gateway, over all the paths
+    /// it announces (addresses and, last, the libp2p tunnel - see
+    /// `peer_client::send_to_gateway_over`). `path` may carry a query string; the
+    /// signature covers only the path, as in `control_get_request`.
     pub(crate) async fn control_get(
         &self,
         peer: &crate::network::PeerInfo,
@@ -608,8 +608,8 @@ impl GatewayState {
             .await
     }
 
-    /// POST JSON de controle assinado ao gateway de `peer`, pelos mesmos
-    /// caminhos de `control_get`.
+    /// Signed JSON control POST to `peer`'s gateway, over the same
+    /// paths as `control_get`.
     pub(crate) async fn control_post_json<T: serde::Serialize>(
         &self,
         peer: &crate::network::PeerInfo,
@@ -680,8 +680,8 @@ impl GatewayState {
         .await
     }
 
-    /// `control_get` só pelo túnel, para quem já tentou os endereços do peer
-    /// com critério próprio (ver `send_to_gateway_over`).
+    /// `control_get` only over the tunnel, for whoever already tried the peer's addresses
+    /// with its own criteria (see `send_to_gateway_over`).
     pub(crate) async fn control_get_via_tunnel(
         &self,
         peer: &crate::network::PeerInfo,
@@ -692,7 +692,7 @@ impl GatewayState {
             .await
     }
 
-    /// POST sem corpo (assinado sobre corpo vazio), como `/api/ui/unload`.
+    /// POST without a body (signed over an empty body), like `/api/ui/unload`.
     pub(crate) async fn control_post_empty(
         &self,
         peer: &crate::network::PeerInfo,
@@ -761,8 +761,8 @@ impl GatewayState {
 pub(super) struct AdminAccessStatus {
     pub(super) admin_exposure: crate::config::AdminExposure,
     pub(super) requires_password: bool,
-    /// A senha em vigor é a padrão do primeiro acesso: a interface entra sem
-    /// perguntar e pede para trocá-la.
+    /// The password in force is the first-access default: the interface goes in without
+    /// asking and asks to change it.
     pub(super) default_password: bool,
     /// Identifies this run of the process (`boot_id`). The interface warns
     /// about the default password once per start, and this is how it tells a
@@ -1231,13 +1231,13 @@ fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<
     Some(current)
 }
 
-/// Prazo da sonda `/health` pelo túnel: um circuito pelo relé na internet não
-/// cabe no teto da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
+/// Deadline of the `/health` probe through the tunnel: a circuit through the relay on the
+/// internet does not fit in the direct probe's ceiling (`ADMISSION_PROBE_TIMEOUT`).
 const TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// A sonda de admissão segue a rota fixada (`route_plan`): rota de túnel vai
-/// direto ao túnel, rota HTTP/QUIC põe o endereço medido na frente. Sem isto a
-/// sonda, que roda a cada requisição, pagaria o endereço morto antes do túnel.
+/// The admission probe follows the pinned route (`route_plan`): a tunnel route goes
+/// straight to the tunnel, an HTTP/QUIC route puts the measured address in front. Without this, the
+/// probe, which runs on every request, would pay for the dead address before the tunnel.
 fn bases_by_route_plan(node_id: &str, bases: Vec<String>) -> Vec<String> {
     use crate::route_plan::{book, Plane, RouteKind};
     match book().active(node_id, Plane::Inference) {
@@ -1259,14 +1259,14 @@ pub(crate) async fn ready_for_pipeline(
     timeout: Duration,
 ) -> Vec<PeerInfo> {
     futures::future::join_all(peers.into_iter().map(|peer| {
-        // Um cliente por peer: a sonda tem que falar a mesma língua que a
-        // inferência vai falar com aquele nó, senão ela mede - ou recusa - um
-        // caminho que a requisição de verdade não percorre.
+        // One client per peer: the probe has to speak the same language that the
+        // inference will speak with that node, otherwise it measures - or refuses - a
+        // path that the real request does not take.
         let client = http.for_peer(&peer.node_id);
-        // Todos os endereços de inferência, o que já respondeu primeiro. Só o
-        // primeiro anunciado - um IPv6 inalcançável, por exemplo - deixava o
-        // peer em quarentena e fora do plano ("Gap at layer 0") mesmo
-        // alcançável por outro endereço ou pelo túnel.
+        // All the inference addresses, the one that answered first. Only the
+        // first announced - an unreachable IPv6, for example - left the
+        // peer in quarantine and out of the plan ("Gap at layer 0") even though
+        // reachable through another address or through the tunnel.
         let bases = bases_by_route_plan(&peer.node_id, network.inference_bases(&peer));
         async move {
             if bases.is_empty() && crate::peer_client::TunnelPeer::from_peer(&peer).is_none() {
@@ -1281,8 +1281,8 @@ pub(crate) async fn ready_for_pipeline(
             let Ok(client) = client else {
                 return None;
             };
-            // Quem falhou há pouco não volta a ser sondado a preço inteiro: ele
-            // continua fora do plano, e a requisição não paga por isso.
+            // Whoever failed recently is not probed again at full price: it
+            // stays out of the plan, and the request does not pay for it.
             if health.quarantined(&peer.node_id).await {
                 return None;
             }
@@ -1318,8 +1318,8 @@ pub(crate) async fn ready_for_pipeline(
                     body = Some(value);
                 }
             }
-            // Nenhum endereço respondeu: o túnel libp2p, que a inferência
-            // também usa quando o HTTP direto não chega.
+            // No address answered: the libp2p tunnel, which inference
+            // also uses when direct HTTP does not get through.
             if body.is_none() {
                 if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
                     body = crate::infer_tunnel::health_via_tunnel(&tunnel, TUNNEL_HEALTH_TIMEOUT)
@@ -1388,12 +1388,12 @@ impl GatewayState {
         Some(prompt_budget(&self.runtime.config().await?))
     }
 
-    /// Endereços por onde um peer alcança **este** nó, na ordem de preferência.
+    /// Addresses through which a peer reaches **this** node, in order of preference.
     ///
-    /// Mesmo insumo que o nó já anuncia de si (`self_dial_host` primeiro, os
-    /// candidatos enumerados depois): é o que a cauda de um pipeline usa para
-    /// devolver o resultado direto, e errar aqui é a diferença entre uma
-    /// resposta e um prazo estourado.
+    /// Same input the node already announces about itself (`self_dial_host` first, the
+    /// enumerated candidates after): it is what a pipeline's tail uses to
+    /// return the result directly, and getting it wrong here is the difference between a
+    /// reply and a blown deadline.
     pub fn self_reply_hosts(&self) -> Vec<String> {
         let mut hosts = vec![self_dial_host(
             self.network.effective_host(),
@@ -1413,23 +1413,23 @@ impl GatewayState {
         // on a node configured through the web UI.
         {
             let local = self.local_assignment.read().await.clone();
-            // Não é `127.0.0.1`: esta entrada viaja como está dentro de
-            // `next_hops` para o repasse em anel, e um hop de outra máquina
-            // discando "127.0.0.1" alcança a si mesmo, não a nós. O modo hub
-            // discando a própria máquina pelo IP real em vez do loopback
-            // continua funcionando (o servidor de inferência liga em
-            // `0.0.0.0`), então não há troca a fazer aqui.
+            // It is not `127.0.0.1`: this entry travels as is inside
+            // `next_hops` for the ring handoff, and a hop on another machine
+            // dialing "127.0.0.1" reaches itself, not us. The hub mode
+            // dialing its own machine by the real IP instead of the loopback
+            // keeps working (the inference server binds to
+            // `0.0.0.0`), so there is no swap to make here.
             //
-            // E não é o IP da LAN quando existe `advertise_addr`: entre sites,
-            // um `192.168.x.y` é tão inalcançável para o outro lado quanto o
-            // loopback. O sintoma era mudo e assimétrico - com este nó de
-            // cabeça o pipeline ia, porque o gateway falava consigo mesmo pela
-            // LAN; com ele de sucessor, o hop remoto recebia um endereço
-            // privado e a requisição morria sem chegar a lugar nenhum.
-            // `effective_host` já vem com colchetes quando é IPv6. Pinado
-            // pelo operador vence; sem pin, o endereço público atual da
-            // interface vence o endereço antigo observado por `identify`.
-            // O observado continua sendo fallback para NAT.
+            // And it is not the LAN IP when `advertise_addr` exists: between sites,
+            // a `192.168.x.y` is as unreachable for the other side as the
+            // loopback. The symptom was silent and asymmetric - with this node as
+            // head the pipeline went through, because the gateway talked to itself over the
+            // LAN; with it as successor, the remote hop received a private
+            // address and the request died without getting anywhere.
+            // `effective_host` already comes with brackets when it is IPv6. Pinned
+            // by the operator wins; without a pin, the interface's current public address
+            // wins over the old address observed by `identify`.
+            // The observed one remains a fallback for NAT.
             let self_host = self_dial_host(
                 self.network.effective_host(),
                 crate::addrs::outbound_local_ip(),
@@ -1520,9 +1520,9 @@ impl GatewayState {
         peers
     }
 
-    /// Capacidade deste processo. Depois que o `/health` local confirma o
-    /// motor, usa o valor efetivo que o llama.cpp reportou; antes disso cai no
-    /// alvo configurado para manter os testes e a validação local honestos.
+    /// Capacity of this process. After the local `/health` confirms the
+    /// engine, it uses the effective value that llama.cpp reported; before that it falls back
+    /// to the configured target to keep tests and local validation honest.
     pub(super) async fn local_runtime_capacity(&self) -> Option<RuntimeCapacity> {
         if let Some(capacity) = self.network.runtime_capacity() {
             return Some(capacity);
@@ -1534,17 +1534,17 @@ impl GatewayState {
         })
     }
 
-    /// Menor capacidade entre os peers da pipeline planejada que podem atender
-    /// o seletor. Peers ociosos dessa pipeline são acordados pelo caminho de
-    /// geração antes do primeiro salto.
+    /// Lowest capacity among the peers of the planned pipeline that can serve
+    /// the selector. Idle peers of that pipeline are woken by the generation path
+    /// before the first hop.
     ///
-    /// A geração atravessa todos os estágios do pipeline, então anunciar o
-    /// maior peer seria uma mentira quando outro ainda está em 8192. Um peer
-    /// sem anúncio de capacidade é um nó antigo ou ainda inicializando; nesse
-    /// caso a configuração local continua sendo o fallback conservador só
-    /// quando não há peer correspondente. Só um peer não ocioso da pipeline
-    /// sem anúncio deixa a requisição pendente: aceitar com a capacidade local
-    /// poderia esconder um estágio antigo no pipeline.
+    /// Generation crosses all the stages of the pipeline, so announcing the
+    /// largest peer would be a lie when another is still at 8192. A peer
+    /// without a capacity announcement is an old node or one still initializing; in that
+    /// case the local configuration remains the conservative fallback only
+    /// when there is no corresponding peer. Only a non-idle peer of the pipeline
+    /// without an announcement leaves the request pending: accepting with the local capacity
+    /// could hide an old stage in the pipeline.
     pub(super) async fn runtime_capacity_for_model(
         &self,
         model: Option<&str>,
@@ -1610,21 +1610,21 @@ impl GatewayState {
     }
 }
 
-/// Host que os outros nós devem discar para chegar a este.
+/// Host that the other nodes must dial to reach this one.
 ///
-/// A ordem importa e é a razão do defeito de 2026-08-13: o endereço anunciado
-/// vem primeiro porque é o único que vale fora da LAN. Cair para o IP local é
-/// correto num cluster de uma rede só, e o loopback é o último recurso, bom
-/// apenas para um nó sozinho na própria máquina.
+/// The order matters and is the reason for the 2026-08-13 defect: the announced address
+/// comes first because it is the only one that counts outside the LAN. Falling back to
+/// the local IP is correct in a single-network cluster, and the loopback is the last resort, good
+/// only for a node alone on its own machine.
 pub(super) fn self_dial_host(advertised: Option<String>, local_ip: Option<String>) -> String {
     advertised
         .or(local_ip)
         .unwrap_or_else(|| "127.0.0.1".into())
 }
 
-/// Reduz uma fotografia de peers para a capacidade do modelo selecionado.
-/// Manter essa função sobre um slice permite que `/v1/models` use exatamente
-/// o mesmo snapshot para descobrir IDs e publicar seus limites.
+/// Reduces a snapshot of peers to the capacity of the selected model.
+/// Keeping this function over a slice lets `/v1/models` use exactly
+/// the same snapshot to discover IDs and publish its limits.
 pub(super) fn runtime_capacity_from_peers(
     peers: &[PeerInfo],
     model: &str,

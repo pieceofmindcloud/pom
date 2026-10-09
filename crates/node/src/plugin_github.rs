@@ -32,8 +32,8 @@ pub(crate) struct GithubRepositoryManifest {
     pub artifacts: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub preferences: Option<PluginPreferencesSchema>,
-    /// Capturas de tela: caminhos relativos à raiz do repositório ou URLs
-    /// `https://`, com as mesmas regras de `pom-plugin-ui/v1`.
+    /// Screenshots: paths relative to the repository root or `https://` URLs,
+    /// with the same rules as `pom-plugin-ui/v1`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screenshots: Vec<String>,
 }
@@ -61,12 +61,13 @@ pub(crate) struct GithubRepository {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_manifest: Option<serde_json::Value>,
     pub releases: Vec<GithubRepositoryRelease>,
-    /// Descrição por idioma, vinda do manifesto do repositório.
+    /// Description per language, from the repository's manifest.
     #[serde(default)]
     pub description: std::collections::BTreeMap<String, String>,
-    /// URLs públicas das capturas de tela. Caminhos relativos viram
-    /// `raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>`: o navegador
-    /// as carrega direto do GitHub, sem passar pelo nó nem pelo license-server.
+    /// Public URLs of the screenshots. Relative paths become
+    /// `raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>`: the browser loads
+    /// them straight from GitHub, without going through the node or the
+    /// license-server.
     #[serde(default)]
     pub screenshot_urls: Vec<String>,
     pub checked_at: String,
@@ -1164,8 +1165,8 @@ fn canonical_repository_parts(value: &str) -> Result<CanonicalRepository, String
     Ok(CanonicalRepository { owner, repo })
 }
 
-/// Resolve uma captura de tela declarada pelo repositório. Os caminhos já
-/// foram validados por `plugin_ui::valid_screenshot`.
+/// Resolves a screenshot declared by the repository. The paths were already
+/// validated by `plugin_ui::valid_screenshot`.
 fn screenshot_url(repository: &CanonicalRepository, shot: &str) -> String {
     if shot.starts_with("https://") {
         shot.to_owned()

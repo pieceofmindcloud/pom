@@ -21,11 +21,11 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/deployments/:id/redeploy", post(redeploy_endpoint))
 }
 
-// ── O registro das implantações ──────────────────────────────────────────────
+// ── The deployment record ────────────────────────────────────────────────────
 
-/// A ativação é a versão corrente de um `deploy_id` no cluster. Quando dois
-/// nós ainda discordam, o carimbo mais novo vence; a versão desempata cópias
-/// produzidas no mesmo instante.
+/// The activation is the current version of a `deploy_id` in the cluster. When
+/// two nodes still disagree, the newest stamp wins; the version breaks the tie
+/// between copies produced at the same instant.
 pub(super) fn deployment_is_newer(
     candidate: &crate::deployment::Deployment,
     current: &crate::deployment::Deployment,
@@ -46,10 +46,11 @@ pub(super) fn newest_deployment(
     })
 }
 
-/// Só as implantações que este nó guarda em disco, sem perguntar a ninguém.
+/// Only the deployments this node keeps on disk, without asking anyone.
 ///
-/// É o que um peer responde quando o coordenador vem juntar a visão do cluster
-/// (`?local=1`), e é o que impede a varredura de se chamar em círculo.
+/// It is what a peer answers when the coordinator comes to gather the cluster
+/// view (`?local=1`), and it is what keeps the sweep from calling itself in a
+/// circle.
 pub(super) fn local_deployments(
     self_id: &str,
     database: &crate::db::PomDb,
@@ -60,26 +61,26 @@ pub(super) fn local_deployments(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ListDeploymentsQuery {
-    /// Responder só com os registros deste nó, sem varrer o cluster.
+    /// Answer only with this node's records, without sweeping the cluster.
     #[serde(default)]
     pub local: bool,
 }
 
-/// Todas as implantações do cluster, com o estado de cada uma.
+/// Every deployment of the cluster, with the state of each one.
 ///
-/// O registro de uma implantação vive numa cópia por nó participante, então
-/// **nenhuma máquina sozinha sabe a lista inteira**: esta rota pergunta a cada
-/// peer e junta, que é o mesmo desenho de `survey`. Cópias do mesmo
-/// `deploy_id` são deduplicadas ficando com a de `activated_at` mais recente -
-/// um nó que estava fora do ar durante um `activate` tem a cópia velha.
+/// A deployment's record lives in one copy per participating node, so
+/// **no single machine knows the whole list**: this route asks each peer and
+/// joins the answers, which is the same design as `survey`. Copies of the same
+/// `deploy_id` are deduplicated by keeping the one with the latest
+/// `activated_at` - a node that was down during an `activate` has the old copy.
 ///
-/// Duas palavras que **não** são sinônimos, e a tela não pode confundir:
+/// Two words that are **not** synonyms, and the screen must not confuse them:
 ///
-/// * `serving` - há peer vivo anunciando este `deploy_id`. É "está no ar".
-/// * `is_default` - é esta que atende quem pede só o nome do modelo, sem
-///   sufixo `@`. Ver `deployment::active`.
+/// * `serving` - a live peer announces this `deploy_id`. It means "it is up".
+/// * `is_default` - this is the one that answers whoever asks only for the
+///   model name, with no `@` suffix. See `deployment::active`.
 ///
-/// Uma implantação pode estar no ar sem ser a padrão do seu modelo.
+/// A deployment can be up without being the default one of its model.
 pub(super) async fn list_deployments(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -97,7 +98,7 @@ pub(super) async fn list_deployments(
     }
 
     let peers = state.all_peers().await;
-    // Por `deploy_id`, ficando com a cópia mais recentemente ativada.
+    // By `deploy_id`, keeping the most recently activated copy.
     let mut by_id: HashMap<String, crate::deployment::Deployment> = HashMap::new();
     let mut stored_by: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -161,9 +162,9 @@ pub(super) async fn list_deployments(
         v
     };
 
-    // "No ar" é o que os peers anunciam, não o que o registro diz: o registro
-    // sobrevive a um nó cair, e mostrá-lo como servindo seria mentir para quem
-    // está tentando entender por que a inferência parou.
+    // "Up" is what the peers announce, not what the record says: the record
+    // survives a node going down, and showing it as serving would be lying to
+    // whoever is trying to understand why inference stopped.
     let announced: std::collections::BTreeSet<String> = peers
         .iter()
         .filter(|p| p.is_alive() && !p.deploy_id.is_empty())
@@ -192,21 +193,21 @@ pub(super) async fn list_deployments(
     Json(json!({ "node_id": self_id, "deployments": lines })).into_response()
 }
 
-/// Recebe do coordenador o registro de uma implantação de que este nó faz parte.
+/// Receives from the coordinator the record of a deployment this node is part of.
 ///
-/// Guardar é o que permite a este nó, depois de um reinício, dizer de que
-/// conjunto ele fazia parte - e é o que faz a listagem do cluster sobreviver à
-/// queda de quem coordenou.
+/// Storing it is what lets this node, after a restart, say which set it was
+/// part of - and it is what makes the cluster listing survive the fall of
+/// whoever coordinated.
 pub(super) async fn receive_deployment(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(record): Json<crate::deployment::Deployment>,
 ) -> Response {
     let self_id = state.network.node_id.clone();
-    // Um registro que não menciona esta máquina não é dela para guardar. A
-    // exceção é uma atualização que ela já conhecia: depois de remover uma
-    // máquina, o snapshot precisa chegar também ao peer removido para que ele
-    // não anuncie uma versão antiga no próximo fan-out.
+    // A record that does not mention this machine is not its to keep. The
+    // exception is an update it already knew about: after removing a
+    // machine, the snapshot must also reach the removed peer so that it does
+    // not announce an old version on the next fan-out.
     let already_knew = state
         .database
         .deployment(&record.deploy_id)
@@ -218,11 +219,11 @@ pub(super) async fn receive_deployment(
             "error": "this node is not part of the deployment"
         }));
     }
-    // Aceita mesmo incompleto - uma implantação que não fecha o modelo é um
-    // estado real do cluster, e recusar o registro só faria a máquina esquecer
-    // de que conjunto ela faz parte. Mas dizer em voz alta, porque uma
-    // cobertura furada só se manifestaria muito depois, como "Gap at layer N"
-    // na primeira requisição.
+    // Accept it even when incomplete - a deployment that does not close the
+    // model is a real state of the cluster, and refusing the record would only
+    // make the machine forget which set it is part of. But say it out loud,
+    // because a coverage with a hole would only show up much later, as
+    // "Gap at layer N" on the first request.
     if !record.covers_the_model() {
         warn!(
             "deployment {} does not cover the {} layers of {}",
@@ -235,25 +236,26 @@ pub(super) async fn receive_deployment(
     }
 }
 
-/// Camadas que a faixa nova compartilha com as que ja estao no ar.
+/// Layers the new range shares with the ones already up.
 ///
-/// Nao e recusa: e o que a tela mostra ao operador para ele saber que esta
-/// criando uma rota paralela em vez de preencher um buraco.
+/// It is not a refusal: it is what the screen shows the operator so he knows
+/// he is creating a parallel route instead of filling a gap.
 pub fn overlapping_layers(existing: &[(u32, u32)], new: (u32, u32)) -> Vec<u32> {
     (new.0..=new.1)
         .filter(|c| existing.iter().any(|(i, f)| c >= i && c <= f))
         .collect()
 }
 
-/// Posicao desta faixa na ordem das camadas, e quantas faixas ficam no total.
+/// Position of this range in layer order, and how many ranges there are in total.
 ///
-/// `peer_index`/`peer_count` nao sao a lista de alvos de uma implantacao: sao
-/// a posicao no pipeline, que e a ordem das camadas. Quem soma um no de cada
-/// vez precisa dizer isso explicitamente, senao o unico alvo da requisicao
-/// vira "peer 1 de 1" e todo no somado se declara o ultimo da divisao.
+/// `peer_index`/`peer_count` are not the target list of a deployment: they are
+/// the position in the pipeline, which is the layer order. Whoever adds one
+/// node at a time has to say so explicitly, otherwise the request's only
+/// target becomes "peer 1 of 1" and every added node declares itself the last
+/// of the split.
 ///
-/// Réplicas da mesma faixa ocupam o mesmo estágio lógico, mesmo quando entram
-/// pelo endpoint incremental de adicionar uma máquina.
+/// Replicas of the same range occupy the same logical stage, even when they
+/// come in through the incremental endpoint that adds one machine.
 pub fn split_position(existing: &[(u32, u32)], new: (u32, u32)) -> (u32, u32) {
     let mut ranges: Vec<(u32, u32)> = existing.to_vec();
     ranges.push(new);
@@ -263,11 +265,11 @@ pub fn split_position(existing: &[(u32, u32)], new: (u32, u32)) -> (u32, u32) {
     (index, ranges.len() as u32)
 }
 
-/// Camadas que ficam sem ninguem depois de tirar esta maquina.
+/// Layers left with nobody after taking this machine out.
 ///
-/// Vazio significa que outra maquina cobre a mesma faixa - a rede perde uma
-/// rota paralela e segue servindo, e o aviso ao operador e ameno. Nao vazio
-/// significa buraco, e ai a confirmacao e explicita.
+/// Empty means another machine covers the same range - the network loses a
+/// parallel route and keeps serving, and the notice to the operator is mild.
+/// Non-empty means a gap, and then the confirmation is explicit.
 pub fn uncovered_after_removal(remaining: &[(u32, u32)], removed: (u32, u32)) -> Vec<u32> {
     (removed.0..=removed.1)
         .filter(|c| !remaining.iter().any(|(i, f)| c >= i && c <= f))

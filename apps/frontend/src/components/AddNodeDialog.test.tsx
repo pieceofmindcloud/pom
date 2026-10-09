@@ -83,8 +83,8 @@ describe("AddNodeDialog", () => {
   });
 
   it("keeps the chosen machine when the panel re-polls the cluster", () => {
-    // O painel remonta `peers`/`slices` a cada resposta do cluster: arrays
-    // novos, mesmo conteudo. A escolha do operador tem que sobreviver a isso.
+    // The panel remounts `peers`/`slices` on every cluster response: new
+    // arrays, same content. The operator's choice has to survive that.
     const peers = () => [
       { node_id: "n1", short_id: "n1", hostname: "maq1" },
       { node_id: "n2", short_id: "n2", hostname: "maq2" },

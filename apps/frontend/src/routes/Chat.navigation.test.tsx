@@ -1,18 +1,18 @@
 // @vitest-environment jsdom
 /**
- * Depois de uma pergunta no chat, o menu parava de responder: a URL do link
- * clicado entrava na barra de endereços e a tela continuava sendo o chat. Só um
- * F5 devolvia a navegação.
+ * After a question in the chat, the menu stopped responding: the URL of the
+ * clicked link went into the address bar and the screen remained the chat. Only
+ * an F5 brought navigation back.
  *
- * A causa não estava no menu. Ao fim do stream o chat congela um retrato da
- * telemetria daquela execução, e o efeito que grava esse retrato comparava por
- * **referência** um mapa que nascia novo a cada render - `useQueries` devolve um
- * array novo toda vez. O efeito gravava estado, o estado disparava outro render,
- * e o React abortava a árvore com "Maximum update depth exceeded". Nada mais
- * commitava, inclusive a troca de rota.
+ * The cause was not in the menu. At the end of the stream the chat freezes a
+ * snapshot of that run's telemetry, and the effect that stores that snapshot
+ * compared by **reference** a map that was born new on every render -
+ * `useQueries` returns a new array every time. The effect stored state, the
+ * state triggered another render, and React aborted the tree with "Maximum
+ * update depth exceeded". Nothing else committed, the route change included.
  *
- * O teste percorre o caminho do usuário: abre `/chat`, envia uma pergunta, e
- * clica em "Painel" no menu. O que ele exige é a tela nova na tela.
+ * The test walks the user's path: it opens `/chat`, sends a question, and
+ * clicks "Painel" in the menu. What it requires is the new screen on screen.
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,8 +33,8 @@ const nodeData = {
 };
 
 /**
- * O `x_pom` que o nó manda no último chunk. Um salto basta: o laço nascia do
- * mapa de runtimes por nó, e um nó já monta o mapa.
+ * The `x_pom` the node sends in the last chunk. One hop is enough: the loop was
+ * born from the per-node runtimes map, and one node already builds the map.
  */
 const trace: RequestTrace = {
   model: "qwen",
@@ -71,9 +71,9 @@ vi.mock("../lib/imageResize", () => ({
 }));
 
 /**
- * Um laço de render trava o worker para sempre - o defeito original queimava
- * 100% de CPU sem nunca devolver -, e teste que não termina não avisa ninguém.
- * O corte transforma a regressão numa falha legível.
+ * A render loop hangs the worker forever - the original defect burned 100% of
+ * CPU without ever returning -, and a test that does not finish warns nobody.
+ * The cut turns the regression into a readable failure.
  */
 const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
 
@@ -83,10 +83,10 @@ const chatScenario = vi.hoisted(() => ({
 }));
 
 /**
- * `usePeerRuntimes` devolve um array novo a cada chamada de propósito: é o que
- * `useQueries` faz de verdade, e é a instabilidade que o defeito explorava. Um
- * dublê que devolvesse sempre o mesmo array esconderia o defeito em vez de
- * prová-lo.
+ * `usePeerRuntimes` returns a new array on every call on purpose: it is what
+ * `useQueries` really does, and it is the instability the defect exploited. A
+ * double that always returned the same array would hide the defect instead of
+ * proving it.
  */
 vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
@@ -165,7 +165,7 @@ describe("navigation after the chat", () => {
       fireEvent.click(screen.getByRole("button", { name: /enviar/i }));
     });
 
-    // A resposta chegou: o turno terminou e a telemetria foi congelada.
+    // The response arrived: the turn ended and the telemetry was frozen.
     await screen.findByText("Olá");
 
     act(() => {

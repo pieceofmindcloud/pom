@@ -1,8 +1,8 @@
 use super::super::*;
 
-/// Rotas de operação da máquina local e de preparação de modelos. O
-/// middleware mantém a autorização para `node` e `admin` independente deste
-/// agrupamento de apresentação.
+/// Routes for operating the local machine and preparing models. The
+/// middleware keeps authorization for `node` and `admin` independent of this
+/// presentation grouping.
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/models", get(models))

@@ -1,11 +1,11 @@
-//! Supervisor IPC de um plugin, via processo auxiliar.
+//! IPC supervisor of a plugin, through a helper process.
 //!
-//! Este módulo não carrega biblioteca dinâmica. Ele inicia o executável
-//! `pom-plugin-host` apontado para o binário de UM plugin, envia frames JSON
-//! enquadrados e encerra o circuito quando o processo auxiliar falha ou não
-//! responde dentro do timeout. Cada instância é um processo próprio: nada
-//! aqui é global, então `crate::plugins::PluginManager` pode manter uma
-//! instância por plugin_code ativo, concorrentes, sem se pisarem.
+//! This module does not load a dynamic library. It starts the `pom-plugin-host`
+//! executable pointed at the binary of ONE plugin, sends framed JSON frames and
+//! breaks the circuit when the helper process fails or does not answer within
+//! the timeout. Each instance is its own process: nothing here is global, so
+//! `crate::plugins::PluginManager` can keep one instance per active plugin_code,
+//! concurrent, without stepping on each other.
 
 use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -21,13 +21,13 @@ use tokio::time::{timeout, Duration};
 
 const MAX_FRAME_BYTES: usize = enterprise_protocol::MAX_IPC_FRAME_BYTES;
 const IPC_TIMEOUT: Duration = Duration::from_secs(3);
-/// O handshake inicial de "ready" pode competir com um boot pesado (modelo
-/// grande carregando, máquina ainda se recuperando de um OOM) e demorar bem
-/// mais que uma chamada IPC comum. Um timeout curto aqui não falha o plugin
-/// de verdade - só descarta a conexão e, sem `kill_on_drop`, deixava o
-/// processo `pom-plugin-host` órfão rodando sem que o `PluginRuntime`
-/// apontasse para ele: os eventos de auditoria caíam silenciosamente no
-/// fallback legado enquanto o processo continuava vivo no SO.
+/// The initial "ready" handshake can compete with a heavy boot (a large model
+/// loading, a machine still recovering from an OOM) and take much longer than
+/// an ordinary IPC call. A short timeout here does not really fail the plugin -
+/// it only drops the connection and, without `kill_on_drop`, left the
+/// `pom-plugin-host` process orphaned and running with no `PluginRuntime`
+/// pointing at it: audit events silently fell into the legacy fallback while
+/// the process stayed alive in the OS.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,9 +295,9 @@ impl PluginHost {
         }
     }
 
-    /// Mata o processo auxiliar sem passar pelo protocolo `shutdown` - usado
-    /// quando o handshake inicial falha e não há conexão IPC íntegra para
-    /// negociar um encerramento limpo.
+    /// Kills the helper process without going through the `shutdown` protocol -
+    /// used when the initial handshake fails and there is no healthy IPC
+    /// connection to negotiate a clean shutdown.
     async fn kill(&self) {
         let _lifecycle = self.process.lifecycle.write().await;
         self.process

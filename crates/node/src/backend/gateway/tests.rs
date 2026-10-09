@@ -274,9 +274,9 @@ mod tests {
                     state,
                     require_admin_for_surface,
                 ));
-            // Bloquear ou promover uma máquina continua administrativo mesmo
-            // depois de a leitura do mesmo prefixo (`GET /admin/nodes`) abrir
-            // para `node`.
+            // Blocking or promoting a machine stays administrative even after
+            // the read of the same prefix (`GET /admin/nodes`) opens up
+            // to `node`.
             for path in [
                 "/admin/nodes/outra/block",
                 "/admin/nodes/outra/promote-admin",
@@ -666,8 +666,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    /// Uma requisição pelo middleware, no perfil pedido, sem credencial
-    /// interna: é assim que o navegador do operador chega ao seu próprio nó.
+    /// A request through the middleware, in the requested profile, with no internal
+    /// credential: this is how the operator's browser reaches its own node.
     #[cfg(test)]
     async fn browser_request(
         profile: crate::profile::NodeProfile,
@@ -701,47 +701,47 @@ mod tests {
         app.oneshot(request).await.unwrap().status()
     }
 
-    /// A recusa que interessa é a do perfil. Qualquer outro estado - a rota
-    /// existir, o corpo agradar, o banco responder - é assunto do handler.
+    /// The refusal that matters is the profile's. Any other state - the route
+    /// existing, the body being acceptable, the database answering - is the handler's business.
     fn refused_by_profile(status: StatusCode) -> bool {
         status == StatusCode::FORBIDDEN
     }
 
-    /// Cada rota que este trabalho reclassificou: quem deve alcançar alcança,
-    /// e quem não deve continua recusado. Uma tabela só, para a próxima
-    /// mudança de escopo ter onde encostar.
+    /// Each route this work reclassified: whoever should reach it does,
+    /// and whoever should not stays refused. A single table, so the next
+    /// scope change has somewhere to attach.
     #[tokio::test]
     async fn the_reclassified_routes_open_for_the_right_profiles_only() {
         use crate::profile::NodeProfile::{Admin, Infer, Node};
 
-        // (método, caminho, perfis que **entram**)
+        // (method, path, profiles that **get in**)
         let cases: &[(&str, &str, &[crate::profile::NodeProfile])] = &[
-            // A tela Rede do `node` lê o retrato da rede.
+            // The `node` Network screen reads the network snapshot.
             ("GET", "/admin/nodes", &[Node, Admin]),
-            // Administrar aquelas máquinas continua sendo do administrador.
+            // Administering those machines stays with the administrator.
             ("POST", "/admin/nodes/outra/block", &[Admin]),
             ("POST", "/admin/nodes/outra/unblock", &[Admin]),
             ("DELETE", "/admin/nodes/outra", &[Admin]),
             ("POST", "/admin/nodes/outra/promote-admin", &[Admin]),
-            // Girar a chave do cluster corta todos os outros nós.
+            // Rotating the cluster key cuts off every other node.
             ("POST", "/admin/regenerate-key", &[Admin]),
-            // A API key é a credencial de quem atende `/v1`, e todo perfil
-            // atende - inclusive o `infer`, cujo rodapé abre esta tela.
+            // The API key is the credential of whoever serves `/v1`, and every profile
+            // serves - including `infer`, whose footer opens this screen.
             ("GET", "/admin/api-keys", &[Infer, Node, Admin]),
             ("POST", "/admin/api-keys", &[Infer, Node, Admin]),
             ("DELETE", "/admin/api-keys/abc", &[Infer, Node, Admin]),
-            // Sair da rede é abdicar do próprio posto.
+            // Leaving the network is abdicating one's own post.
             ("POST", "/api/ui/leave", &[Infer, Node, Admin]),
             ("POST", "/api/ui/rejoin", &[Infer, Node, Admin]),
-            // Corrigir o endereço anunciado descreve esta própria máquina.
+            // Fixing the announced address describes this very machine.
             (
                 "POST",
                 "/api/ui/network/advertise-addr",
                 &[Infer, Node, Admin],
             ),
-            // E o nome dela também.
+            // And so does its name.
             ("POST", "/api/ui/network/node-name", &[Infer, Node, Admin]),
-            // O que não foi tocado continua onde estava.
+            // What was not touched stays where it was.
             ("GET", "/api/ui/deployments", &[Node, Admin]),
             ("GET", "/api/ui/models", &[Node, Admin]),
         ];
@@ -1060,10 +1060,10 @@ mod tests {
         );
     }
 
-    /// Sair é abdicar; mandar **outra** máquina sair é ato de administrador.
-    /// Sem esta trava, o escopo mais largo da rota daria a qualquer nó o poder
-    /// de expulsar um peer - o repasse viaja com a credencial interna, que o
-    /// alvo não julga pelo perfil de quem pediu.
+    /// Leaving is abdicating; telling **another** machine to leave is an administrator's act.
+    /// Without this lock, the route's wider scope would give any node the power
+    /// to expel a peer - the relay travels with the internal credential, which the
+    /// target does not judge by the profile of whoever asked.
     #[tokio::test]
     async fn only_an_administrator_takes_another_machine_off_the_network() {
         use crate::profile::NodeProfile::{Infer, Node};
@@ -1106,9 +1106,9 @@ mod tests {
         }
     }
 
-    /// A frase da recusa é para a pessoa e muda com o idioma; o navegador
-    /// precisa de um valor estável para saber que a sessão administrativa
-    /// acabou e voltar ao portão, em vez de imprimir o 401 cru dentro da tela.
+    /// The refusal phrase is for the person and changes with the language; the browser
+    /// needs a stable value to know that the administrative session
+    /// ended and go back to the gate, instead of printing the raw 401 inside the screen.
     #[tokio::test]
     async fn a_dead_administrative_session_names_itself_to_the_browser() {
         let state = testkit::state_with("connection-secret", vec![]).await;
@@ -1161,9 +1161,9 @@ mod tests {
         );
     }
 
-    /// A chave de conexão volta ao `/api/ui/node`: a tela "Chave de Conexão" a
-    /// mostra e o navegador a guarda para autenticar o que exige
-    /// `ConnectionAuth`. Sem ela, aquela tela lia `undefined.length`.
+    /// The connection key comes back to `/api/ui/node`: the "Connection Key" screen
+    /// shows it and the browser keeps it to authenticate what requires
+    /// `ConnectionAuth`. Without it, that screen read `undefined.length`.
     #[tokio::test]
     async fn the_node_view_carries_the_connection_key_for_the_operator_browser() {
         let state = testkit::state_with("connection-secret", vec![]).await;
@@ -1460,8 +1460,8 @@ mod tests {
         assert_eq!(many.into_vec(), vec!["END", "DONE"]);
     }
 
-    /// O orçamento pedido pelo cliente é validado aqui; capacidade e contexto
-    /// efetivos são resolvidos a partir do runtime ativo.
+    /// The budget requested by the client is validated here; effective capacity and
+    /// context are resolved from the active runtime.
     #[test]
     fn api_generate_max_tokens_defaults_accepts_and_rejects_zero_only() {
         let absent: GenerateRequest = serde_json::from_str(r#"{"prompt":"oi"}"#).unwrap();
@@ -1582,10 +1582,10 @@ mod tests {
         assert_eq!(audit_status_for_summary(&decision), "partial");
     }
 
-    /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
-    /// dentro de `next_hops`, e um hop noutro site que receba `192.168.x.y`
-    /// disca um endereco que nao existe para ele - a requisicao morre sem
-    /// chegar a lugar nenhum, e so quando este no NAO e a cabeca do pipeline.
+    /// The announced address has to win over the LAN IP. This entry travels
+    /// inside `next_hops`, and a hop at another site that receives `192.168.x.y`
+    /// dials an address that does not exist for it - the request dies without
+    /// getting anywhere, and only when this node is NOT the head of the pipeline.
     #[test]
     fn an_advertised_address_beats_the_lan_ip_for_the_self_entry() {
         assert_eq!(
@@ -1597,8 +1597,8 @@ mod tests {
         );
     }
 
-    /// Sem endereco anunciado o IP da LAN continua valendo: num cluster de uma
-    /// rede so ele e alcancavel, e o loopback nao seria.
+    /// Without an announced address the LAN IP still holds: in a single-network
+    /// cluster only it is reachable, and loopback would not be.
     #[test]
     fn without_an_advertised_address_the_lan_ip_is_kept() {
         assert_eq!(
@@ -1704,13 +1704,13 @@ mod tests {
         assert!(error.contains("Increase n_ctx"));
     }
 
-    /// Reprodução do defeito de 2026-09-08 na ksia, ponta a ponta: um gateway
-    /// **sem modelo local** recebe um prompt de 30 mil caracteres para um
-    /// modelo que só o peer serve. Antes, a admissão só existia quando havia
-    /// config local, o prompt seguia para o prefill e o decode do peer abortava
-    /// o processo inteiro em `ggml-cuda.cu` com `CUDA error: out of memory`.
-    /// Agora a capacidade anunciada pelo peer recusa antes de qualquer peso ser
-    /// tocado, e o nó continua de pé.
+    /// Reproduction of the 2026-09-08 defect on ksia, end to end: a gateway
+    /// **with no local model** receives a 30 thousand character prompt for a
+    /// model that only the peer serves. Before, admission only existed when there was
+    /// a local config, the prompt went on to prefill and the peer's decode aborted
+    /// the whole process in `ggml-cuda.cu` with `CUDA error: out of memory`.
+    /// Now the capacity announced by the peer refuses before any weight is
+    /// touched, and the node stays up.
     #[tokio::test]
     async fn a_gateway_without_a_local_model_refuses_a_prompt_above_the_peer_capacity() {
         let mut peer = testkit::peer("peer-gpu", "ksia", 39_991);
@@ -1829,9 +1829,9 @@ mod budget_tests {
     use super::*;
     use crate::runtime::NodeConfig;
 
-    /// A reprodução do defeito, em forma de conta: a implantação **não** pode
-    /// mais decidir quanto a requisição inteira gera. Era exatamente isto que
-    /// devolvia 1000 tokens a quem pediu 4000, calado.
+    /// The reproduction of the defect, in the form of an equation: the deployment **cannot**
+    /// decide anymore how much the whole request generates. That was exactly what
+    /// returned 1000 tokens to whoever asked for 4000, silently.
     #[test]
     fn the_deployment_ceiling_bounds_a_leg_and_no_longer_bounds_the_request() {
         let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18);
@@ -1844,10 +1844,10 @@ mod budget_tests {
         assert_eq!(limit.effective.div_ceil(limit.leg), 4, "quatro pernas");
     }
 
-    /// O contexto que sobrou continua apertando sem recusar - ele sai de uma
-    /// **estimativa** do prompt, e recusar por estimativa rejeitaria pedido
-    /// válido. O `x_pom` conta a verdade (`was_clamped`), que é o canal certo
-    /// para um número aproximado.
+    /// The context that remains still tightens without refusing - it comes from an
+    /// **estimate** of the prompt, and refusing by estimate would reject a valid
+    /// request. `x_pom` tells the truth (`was_clamped`), which is the right channel
+    /// for an approximate number.
     #[test]
     fn the_remaining_context_still_clamps_because_it_is_an_estimate() {
         let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000);
@@ -2005,8 +2005,8 @@ mod budget_tests {
         );
     }
 
-    /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não
-    /// divide o total, e a perna nunca pode ser zero (divisão por zero no
+    /// The loop has to stay within the total budget even when the leg does not
+    /// divide the total, and the leg can never be zero (division by zero in
     /// `note_leg_boundary`).
     #[test]
     fn the_budget_normalizes_to_usable_numbers() {
@@ -2028,9 +2028,9 @@ mod budget_tests {
         );
     }
 
-    /// A contagem de pernas é o que torna a costura inspecionável. Ela avança
-    /// ao fechar a perna, e **não** avança na última - `legs` é quantas
-    /// pernas a resposta usou, não quantas caberiam.
+    /// The leg count is what makes the seam inspectable. It advances
+    /// when a leg closes, and does **not** advance on the last one - `legs` is how many
+    /// legs the response used, not how many would fit.
     #[test]
     fn legs_are_counted_as_the_loop_crosses_each_deployment_budget() {
         let budget = OutputBudget { total: 10, leg: 4 };
@@ -2513,8 +2513,8 @@ mod peer_visibility_tests {
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
 
-        // A defesa tem que continuar de pé na requisição seguinte: o peer que
-        // reprovou fica fora, agora sem custar sequer a sonda.
+        // The defense has to stay up on the next request: the peer that
+        // failed stays out, now without even costing the probe.
         let start = std::time::Instant::now();
         let reachable = ready_for_pipeline(
             &clients,
@@ -2534,9 +2534,9 @@ mod peer_visibility_tests {
         );
     }
 
-    /// Um peer cujo primeiro endereço anunciado não responde - o IPv6 que
-    /// ninguém alcança, no caso real - entra no plano pelo endereço seguinte,
-    /// e esse endereço fica lembrado como o que respondeu.
+    /// A peer whose first announced address does not answer - the IPv6 that
+    /// nobody reaches, in the real case - enters the plan through the next address,
+    /// and that address is remembered as the one that answered.
     #[tokio::test]
     async fn the_admission_probe_tries_every_inference_address() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3098,20 +3098,20 @@ mod replicated_admin_logs_tests {
     }
 }
 
-/// Um nó de verdade, montado à mão, para os testes que exercitam rotas.
+/// A real node, assembled by hand, for the tests that exercise routes.
 ///
-/// Existe porque três módulos precisavam do mesmo andaime — `transfer`,
-/// `deploy` e `webui` todos testam handlers que só falam a verdade com um
-/// `GatewayState` inteiro atrás deles. A tabela de peers é semeada à mão e o
-/// socket de teste fica preso à loopback, então um teste nunca anuncia na LAN
-/// nem esbarra num cluster de verdade.
+/// It exists because three modules needed the same scaffolding - `transfer`,
+/// `deploy` and `webui` all test handlers that only tell the truth with a whole
+/// `GatewayState` behind them. The peer table is seeded by hand and the test
+/// socket is bound to loopback, so a test never announces on the LAN
+/// nor bumps into a real cluster.
 #[cfg(test)]
 pub(crate) mod testkit {
     use super::*;
     use crate::config::Config;
     use tokio::sync::RwLock;
 
-    /// Um peer alcançável no `gateway_port` dado, na loopback.
+    /// A peer reachable at the given `gateway_port`, on loopback.
     pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
         let authority_pubkey = hex::encode(
             ed25519_dalek::SigningKey::from_bytes(&[7; 32])
@@ -3158,15 +3158,15 @@ pub(crate) mod testkit {
         }
     }
 
-    /// Este nó, com `peers` já na tabela.
+    /// This node, with `peers` already in the table.
     pub(crate) async fn state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
         state_named(node_id, "", peers).await
     }
 
-    /// Um estado cujo nó local é admin secundário de uma cadeia real de teste.
-    /// A âncora pertence a outro nó e a concessão local é assinada pelo
-    /// principal antes de ser aplicada, então mudar apenas `profile` não pode
-    /// transformar este estado em principal.
+    /// A state whose local node is a secondary admin of a real test chain.
+    /// The anchor belongs to another node and the local grant is signed by the
+    /// principal before being applied, so changing only `profile` cannot
+    /// turn this state into the principal.
     pub(crate) async fn state_with_secondary_admin(
         node_id: &str,
         peers: Vec<PeerInfo>,
@@ -3202,15 +3202,15 @@ pub(crate) mod testkit {
         state
     }
 
-    /// Um admin secundário com uma cadeia de confiança válida, usado para
-    /// provar que as leituras dependem da réplica local e não do principal.
+    /// A secondary admin with a valid trust chain, used to
+    /// prove that reads depend on the local replica and not on the principal.
     pub(crate) async fn secondary_admin_state(node_id: &str) -> GatewayState {
         state_with_secondary_admin(node_id, vec![]).await
     }
 
-    /// O mesmo, com um **nome anunciado** — o que `node_name` do `pom.json`
-    /// produz em `with_identity`, e o nome pelo qual o cluster inteiro chama
-    /// esta máquina. Distinto do hostname cru do sistema operacional.
+    /// The same, with an **announced name** - what `node_name` in `pom.json`
+    /// produces in `with_identity`, and the name by which the whole cluster calls
+    /// this machine. Distinct from the operating system's raw hostname.
     pub(crate) async fn state_named(
         node_id: &str,
         hostname: &str,
@@ -3349,8 +3349,8 @@ pub(crate) mod testkit {
         }
     }
 
-    /// Uma configuração de nó com a decodificação especulativa ligada — o
-    /// interruptor do operador que o gateway lê antes de cada geração.
+    /// A node configuration with speculative decoding turned on - the
+    /// operator's switch that the gateway reads before each generation.
     pub(crate) fn spec_config() -> crate::runtime::NodeConfig {
         crate::runtime::NodeConfig {
             deploy_id: String::new(),
@@ -3425,12 +3425,12 @@ pub(crate) mod testkit {
         }
     }
 
-    /// Faz o estado saber um endereço de si mesmo que responde de verdade.
+    /// Makes the state know an address of itself that really answers.
     ///
-    /// A resposta direta só existe quando a cauda tem para onde entregar
-    /// (`DirectReply::new`), e o endereço sai de `self_reply_hosts` + o
-    /// `gateway_port`. Sem um servidor ali o modo direto de um teste esperaria
-    /// prazo do frame inteiro.
+    /// The direct reply only exists when the tail has somewhere to deliver to
+    /// (`DirectReply::new`), and the address comes from `self_reply_hosts` + the
+    /// `gateway_port`. Without a server there, a test's direct mode would wait for the
+    /// whole frame's deadline.
     pub(crate) async fn with_self_reachable_gateway(mut state: GatewayState) -> GatewayState {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -3458,8 +3458,8 @@ pub(crate) mod testkit {
         let net = Network::testkit("eu".into(), "pk".into(), vec![], None, None, Some(port))
             .await
             .expect("UDP socket on an ephemeral port");
-        // Primeiro da lista de `self_reply_hosts`, então a cauda acerta na
-        // primeira tentativa em vez de esperar o timeout de um IP de LAN.
+        // First in the `self_reply_hosts` list, so the tail hits on the
+        // first try instead of waiting for the timeout of a LAN IP.
         net.set_advertise_addr(Some("127.0.0.1:42777"));
         {
             let old_ones = state.network.peers.read().await.clone();
@@ -3469,7 +3469,7 @@ pub(crate) mod testkit {
         state
     }
 
-    /// O corpo JSON de uma resposta, para o teste poder afirmar sobre ele.
+    /// The JSON body of a response, so the test can assert on it.
     pub(crate) async fn body_of(response: axum::response::Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
             .await

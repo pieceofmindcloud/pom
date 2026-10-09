@@ -18,13 +18,13 @@ pub async fn run_with_options(
     cancellation: &Cancellation,
     reuse_prefix: bool,
     max_inflight_chunks: usize,
-    // `Some` descreve um ponto de retomada que o chamador conhece como seguro.
-    // O gateway não o usa para uma resposta de transporte ambígua: nesses
-    // casos ele recria a sessão a frio desde o pedaço 0. Só hub e resposta
-    // direta sabem retomar; o anel ignora e roda do início.
+    // `Some` describes a resume point that the caller knows to be safe.
+    // The gateway does not use it for an ambiguous transport reply: in those
+    // cases it recreates the session cold from chunk 0. Only hub and direct
+    // reply know how to resume; the ring ignores it and runs from the start.
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
-    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    // Labels of a typed decision; the last peer returns `probe_result`.
     probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
@@ -96,15 +96,15 @@ pub async fn run_with_options(
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && n_peers > 1;
     trace.prefill_max_inflight_chunks = window as u32;
-    // Retomada explícita: o laço parte deste pedaço/posição em vez do zero, e
-    // os totais do pedaço 0 (que não será revisto) vêm do ponto informado.
+    // Explicit resume: the loop starts from this chunk/position instead of zero, and
+    // the totals of chunk 0 (which will not be seen again) come from the given point.
     let first_chunk = resume.as_ref().map(|r| r.from_chunk).unwrap_or(0);
     let first_start_pos = resume.as_ref().map(|r| r.start_pos);
     let resume_cached_tokens = resume.as_ref().map(|r| r.cached_tokens).unwrap_or(0);
 
-    // Um pedaço a caminho da cadeia: a resposta da cabeça (com o estado oculto)
-    // mais o permit da janela, que segura a vaga até o downstream deste pedaço
-    // terminar. É `_permit` que limita profundidade e memória.
+    // A chunk on its way down the chain: the head's reply (with the hidden state)
+    // plus the window's permit, which holds the slot until this chunk's
+    // downstream finishes. It is `_permit` that bounds depth and memory.
     struct HeadChunk {
         chunk_index: u32,
         meta: serde_json::Value,
@@ -127,15 +127,15 @@ pub async fn run_with_options(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<HeadPumpMessage>(window.max(1));
 
-    // Bomba da cabeça: despacha os pedaços em série - cada um é uma perna de
-    // rede + o decode da cabeça - e entrega o estado oculto de cada um à bomba
-    // de downstream. A `next_pos` sai sempre da resposta do pedaço anterior,
-    // nunca do índice (ver `observed_prefill_start`).
+    // Head pump: dispatches the chunks serially - each one is a network leg
+    // + the head's decode - and hands each one's hidden state to the downstream
+    // pump. `next_pos` always comes from the previous chunk's reply,
+    // never from the index (see `observed_prefill_start`).
     let head_pump = async {
         let mut idx: u32 = first_chunk;
         let mut start_pos: Option<u32> = first_start_pos;
-        // Últimos totais confirmados, para o ponto de retomada quando a chamada
-        // à cabeça de um pedaço posterior falha.
+        // Last confirmed totals, for the resume point when the call
+        // to the head of a later chunk fails.
         let mut last_prompt_tokens: u32 = resume.as_ref().map(|r| r.prompt_tokens).unwrap_or(0);
         let mut last_cached_tokens: u32 = resume_cached_tokens;
         loop {
@@ -253,8 +253,8 @@ pub async fn run_with_options(
                 chunk_start_pos
             };
             let stable_len = meta.get("stable_len").and_then(|value| value.as_u64());
-            // Bytes de estado oculto que este pedaço vai segurar em RAM até o
-            // downstream dele terminar - `f32` em memória, não o f16 do fio.
+            // Bytes of hidden state that this chunk will hold in RAM until its
+            // downstream finishes - `f32` in memory, not the wire's f16.
             let tensor_bytes = tensor
                 .as_ref()
                 .map(|(values, _shape)| values.len() * std::mem::size_of::<f32>())
@@ -290,9 +290,9 @@ pub async fn run_with_options(
         Ok::<(), anyhow::Error>(())
     };
 
-    // Bomba de downstream: leva cada estado oculto pelos hops restantes, até
-    // `window` pedaços ao mesmo tempo, e colhe os resultados na ordem de envio
-    // (`FuturesOrdered`). O pedaço final é o que produz o token e o resultado.
+    // Downstream pump: carries each hidden state through the remaining hops, up to
+    // `window` chunks at a time, and collects the results in send order
+    // (`FuturesOrdered`). The final chunk is the one that produces the token and the result.
     let drain = async {
         let mut inflight = FuturesOrdered::new();
         let mut head_closed = false;
@@ -326,8 +326,8 @@ pub async fn run_with_options(
                     let is_final = hc.is_final;
                     let chunk_start_pos = hc.start_pos;
                     inflight.push_back(async move {
-                        // Segura a vaga e os bytes deste pedaço até o forward
-                        // dele terminar - é o que libera a próxima entrada.
+                        // Holds the slot and the bytes of this chunk until its forward
+                        // finishes - it is what frees the next entry.
                         let _permit = hc._permit;
                         let _byte_permit = hc._byte_permit;
                         let r = forward_hub_chunk(
@@ -360,17 +360,17 @@ pub async fn run_with_options(
                 Some((ci, is_final, chunk_start_pos, r)) = inflight.next(), if !inflight.is_empty() => {
                     let (meta, _tensor, downstream_trace) = match r {
                         Ok(v) => v,
-                        // Sessão perdida no peer: o KV para retomar não existe
-                        // mais, então vai direto para a reconstrução fria.
+                        // Session lost on the peer: the KV to resume from no longer
+                        // exists, so it goes straight to the cold rebuild.
                         Err(e)
                             if is_cancelled(&e)
                                 || crate::relay::is_unknown_session_error(&e) =>
                         {
                             return Err(e)
                         }
-                        // A cabeça já aceitou este chunk. Uma falha em qualquer
-                        // peer downstream pode ter avançado o KV e não autoriza
-                        // repetir a posição sem reconstruir a sessão.
+                        // The head has already accepted this chunk. A failure on any
+                        // downstream peer may have advanced the KV and does not authorize
+                        // repeating the position without rebuilding the session.
                         Err(e) if ci > 0 => {
                             return Err(e.context(PrefillRebuildRequired {
                                 from_chunk: ci,
@@ -545,16 +545,16 @@ pub(super) async fn run_ring(
     overlap_window: PrefillOverlapWindow,
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
-    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    // Labels of a typed decision; the last peer returns `probe_result`.
     probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
-    // No anel, a sobreposição é feita pelos hops: cada um responde a um
-    // pedaço intermediário logo após o próprio compute e repassa em segundo
-    // plano, em ordem (`ring_overlap` em `infer_server/prefill.rs`). O
-    // gateway continua mandando um pedaço por vez; o compute do hop no
-    // pedaço k+1 corre enquanto o seguinte processa o k.
+    // On the ring, the overlap is done by the hops: each one answers an
+    // intermediate chunk right after its own compute and forwards in the
+    // background, in order (`ring_overlap` in `infer_server/prefill.rs`). The
+    // gateway still sends one chunk at a time; the hop's compute on
+    // chunk k+1 runs while the next one processes k.
     let ring_overlap = overlap_window.max_inflight_chunks() > 1 && !next_hops.is_empty();
 
     let mut chunk_index = resume.as_ref().map(|r| r.from_chunk).unwrap_or(0);
@@ -572,7 +572,7 @@ pub(super) async fn run_ring(
                 .unwrap_or_else(|| RequestTrace::from_plan(model, plan))
         });
     trace.prefill_overlap_enabled = ring_overlap;
-    // Um pedaço em compute e um em repasse por hop: a profundidade efetiva.
+    // One chunk in compute and one in forwarding per hop: the effective depth.
     trace.prefill_max_inflight_chunks = if ring_overlap { 2 } else { 1 };
 
     loop {
@@ -609,7 +609,7 @@ pub(super) async fn run_ring(
                 None,
                 dtype,
                 dtype.frame_encoding(),
-                crate::relay::CHUNK_ATTEMPTS, // repete só falhas provadas antes da entrega
+                crate::relay::CHUNK_ATTEMPTS, // retries only failures proven to precede delivery
                 &head.node_id,
                 |_issue| {},
             ),
@@ -652,8 +652,8 @@ pub(super) async fn run_ring(
         if let Some(n) = sent.meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
-        // No anel a cabeça repassa a própria decisão adiante; aqui só se lê o
-        // que ela executou, para a telemetria. Ver `cached_tokens_of`.
+        // On the ring the head forwards its own decision onward; here we only read
+        // what it executed, for telemetry. See `cached_tokens_of`.
         if chunk_index == 0 {
             cached_tokens = cached_tokens_of(&sent.meta);
             trace.record_prefix_decision(&sent.meta, reuse_prefix);
@@ -747,7 +747,7 @@ pub(super) async fn run_direct(
     overlap_window: PrefillOverlapWindow,
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
-    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    // Labels of a typed decision; the last peer returns `probe_result`.
     probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
@@ -775,8 +775,8 @@ pub(super) async fn run_direct(
     let first_start_pos = resume.as_ref().map(|r| r.start_pos);
     let resume_cached_tokens = resume.as_ref().map(|r| r.cached_tokens).unwrap_or(0);
 
-    // Um pedaço despachado à cabeça, aguardando o resultado que a cauda entrega
-    // direto neste processo (`await_result_with_ack` sobre o `ticket`).
+    // A chunk dispatched to the head, awaiting the result that the tail delivers
+    // directly in this process (`await_result_with_ack` on the `ticket`).
     struct HeadChunkDirect {
         chunk_index: u32,
         start_pos: u32,
@@ -793,12 +793,12 @@ pub(super) async fn run_direct(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<HeadPumpMessageDirect>(window.max(1));
 
-    // Bomba da cabeça: despacha cada pedaço à cabeça em série. A `next_pos` do
-    // pedaço seguinte sai do `prompt_progress` do ACK da cabeça, publicado
-    // adiante justamente para o despacho não esperar o resultado do anterior.
-    // Só o gate por contagem vale aqui: na resposta direta a cabeça repassa o
-    // estado oculto ao próximo hop e o gateway não retém tensor nenhum, então
-    // `reserve_bytes` não é chamado.
+    // Head pump: dispatches each chunk to the head serially. The next chunk's
+    // `next_pos` comes from the `prompt_progress` of the head's ACK, published
+    // ahead precisely so the dispatch does not wait for the previous result.
+    // Only the count gate applies here: in the direct reply the head forwards the
+    // hidden state to the next hop and the gateway retains no tensor at all, so
+    // `reserve_bytes` is not called.
     let head_pump = async {
         let mut idx: u32 = first_chunk;
         let mut start_pos: Option<u32> = first_start_pos;
@@ -911,9 +911,9 @@ pub(super) async fn run_direct(
         Ok::<(), anyhow::Error>(())
     };
 
-    // Bomba de downstream: espera o resultado de cada pedaço na ordem de envio.
-    // A cadeia já mantém a ordem do repasse por `prefill_sequence_id`
-    // (`DirectForwardSequence` no peer); aqui só se colhe em ordem.
+    // Downstream pump: waits for the result of each chunk in send order.
+    // The chain already keeps the forwarding order by `prefill_sequence_id`
+    // (`DirectForwardSequence` on the peer); here we only collect in order.
     let drain = async {
         let mut inflight = FuturesOrdered::new();
         let mut head_closed = false;
@@ -984,10 +984,10 @@ pub(super) async fn run_direct(
                     }
                 }
                 Some((ci, chunk_start_pos, more_from_head, ticket_id, r)) = inflight.next(), if !inflight.is_empty() => {
-                    // Pedaços anteriores já foram aceitos pela cadeia: em vez de
-                    // refazer o prompt inteiro, marca de onde o gateway retoma.
-                    // Sessão perdida no peer não é retomável (o KV sumiu) e cai
-                    // no retry frio.
+                    // Previous chunks have already been accepted by the chain: instead of
+                    // redoing the whole prompt, it marks where the gateway resumes.
+                    // A session lost on the peer is not resumable (the KV is gone) and falls
+                    // into the cold retry.
                     let mark_resumable = |e: anyhow::Error| {
                         if ci > 0 && crate::relay::is_pre_delivery_error(&e) {
                             e.context(PrefillResumable {
@@ -1002,9 +1002,9 @@ pub(super) async fn run_direct(
                             && !is_cancelled(&e)
                             && !crate::relay::is_unknown_session_error(&e)
                         {
-                            // O resultado direto pode ter vindo de qualquer
-                            // hop da cadeia; nesse ponto o KV do chunk pode
-                            // ter avançado, então uma repetição exige rebuild.
+                            // The direct result may have come from any
+                            // hop of the chain; at that point the chunk's KV may
+                            // have advanced, so a repeat requires a rebuild.
                             e.context(PrefillRebuildRequired {
                                 from_chunk: ci,
                                 start_pos: chunk_start_pos,
@@ -1125,7 +1125,7 @@ pub(super) async fn dispatch_direct_prefill(
     ticket: &str,
     prefill_sequence_id: &str,
     trace_id: Option<&str>,
-    // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
+    // Labels of a typed decision; the last peer returns `probe_result`.
     probe: Option<&DecisionProbe>,
 ) -> Result<crate::relay::SentFrame> {
     let head = &plan.steps[0];
@@ -1174,10 +1174,10 @@ pub(super) async fn dispatch_direct_prefill(
     })
 }
 
-/// A cadeia respondeu, mas com a falha de um hop no lugar do resultado.
+/// The chain answered, but with a hop's failure in place of the result.
 ///
-/// Vale mais que o prazo estourado: nomeia o nó que morreu — que quase nunca é
-/// aquele para quem despachamos — e marca **esse** para nova medição de rota.
+/// It is worth more than the expired deadline: it names the node that died - which is almost never
+/// the one we dispatched to - and marks **that one** for route re-measurement.
 pub(super) fn direct_failure(
     plan: &PipelinePlan,
     routes: &crate::route::RouteTable,
@@ -1199,11 +1199,11 @@ pub(super) fn direct_failure(
     ))
 }
 
-/// Dobra a telemetria acumulada na ida para dentro do `RequestTrace`.
+/// Folds the telemetry accumulated on the way out into the `RequestTrace`.
 ///
-/// O modo direto recebe uma evidência por travessia em uma mensagem separada.
-/// Sem essa lista, o tempo total não pode ser dividido com segurança entre os
-/// hops e o trace deve permanecer incompleto em vez de inventar uma atribuição.
+/// Direct mode receives one piece of evidence per traversal in a separate message.
+/// Without this list, the total time cannot be safely divided among the
+/// hops and the trace must stay incomplete rather than invent an attribution.
 pub(super) fn record_direct_hops(
     trace: &mut RequestTrace,
     phase: Phase,
@@ -1421,10 +1421,10 @@ pub(super) async fn send_chunk(
     }
 
     let sent = result.map_err(|e| {
-        // Esperar o ciclo de 5 minutos significaria falhar tudo que chegasse
-        // nesse meio tempo. A proxima medicao reescolhe. Uma recuperação bem
-        // sucedida via túnel nunca chega aqui — só o insucesso final marca a
-        // rota como ruim.
+        // Waiting for the 5-minute cycle would mean failing everything that arrived
+        // in the meantime. The next measurement re-picks. A successful recovery
+        // via tunnel never gets here - only the final failure marks the
+        // route as bad.
         if !is_cancelled(&e) {
             routes.mark_failure(node_id, &step.inference_url);
         }

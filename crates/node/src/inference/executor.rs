@@ -1,16 +1,16 @@
-//! Seleção do caminho de inferência a partir do cabeçalho GGUF.
+//! Selection of the inference path from the GGUF header.
 //!
-//! A seleção é deliberadamente pequena: o caminho denso continua sendo o
-//! `llama.cpp` existente, e o caminho MoE entra no runtime próprio de experts
-//! Q4_0. A atenção e as operações que ainda não são próprias continuam no
-//! contexto local, mas o FFN roteado não é delegado silenciosamente.
+//! The selection is deliberately small: the dense path remains the existing
+//! `llama.cpp`, and the MoE path enters the own Q4_0 expert runtime. Attention
+//! and the operations that are not yet own remain in the local context, but
+//! the routed FFN is not silently delegated.
 
 use anyhow::{bail, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InferenceMode {
-    /// llama.cpp é o padrão seguro do produto; Auto continua sendo um modo
-    /// explícito.
+    /// llama.cpp is the product's safe default; Auto remains an explicit
+    /// mode.
     #[default]
     Dense,
     Auto,
@@ -46,11 +46,11 @@ pub enum InferencePath {
     MoeQ4_0,
 }
 
-/// O motor que de fato executou um hop, separado do caminho selecionado.
+/// The engine that actually executed a hop, separate from the selected path.
 ///
-/// Este valor vai para a telemetria por hop. `Unknown` é deliberado: um peer
-/// antigo ou uma resposta sem o campo não autoriza a interface a adivinhar
-/// que foi llama.cpp ou o runtime MoE.
+/// This value goes into the per-hop telemetry. `Unknown` is deliberate: an old
+/// peer or a response without the field does not allow the interface to guess
+/// that it was llama.cpp or the MoE runtime.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub enum ExecutionEngine {
     #[serde(rename = "llama.cpp")]
@@ -97,8 +97,8 @@ impl InferencePath {
         matches!(self, Self::MoeQ4_0)
     }
 
-    /// Retorna o executor real desta seleção. Não deve ser reconstruído na
-    /// interface a partir de `as_str()` ou da arquitetura do modelo.
+    /// Returns the real executor of this selection. It must not be rebuilt in
+    /// the interface from `as_str()` or from the model architecture.
     pub fn execution_engine(self) -> ExecutionEngine {
         match self {
             Self::DenseLlamaCpp => ExecutionEngine::LlamaCpp,

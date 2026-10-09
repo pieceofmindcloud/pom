@@ -91,11 +91,11 @@ pub struct DiscoveredModel {
     /// No source payload hash is read to build this list.
     #[serde(default)]
     pub mmproj_candidates: Vec<String>,
-    /// Motivo pelo qual o catálogo não conseguiu sugerir um projetor para este modelo.
+    /// Reason why the catalog could not suggest a projector for this model.
     #[serde(default)]
     pub mmproj_reason: Option<String>,
-    /// Nomes de identidade do cabeçalho, mantidos só em memória para relacionar
-    /// fatias ao modelo lógico sem expor metadados duplicados na API.
+    /// Identity names from the header, kept only in memory to relate
+    /// slices to the logical model without exposing duplicated metadata in the API.
     #[serde(skip)]
     pub(crate) identity_names: Vec<String>,
     pub size_bytes: u64,
@@ -110,8 +110,8 @@ pub struct DiscoveredModel {
     /// Concrete reason a declared multipart source cannot currently be used.
     #[serde(default)]
     pub multipart_error: Option<String>,
-    /// Erro terminal ao ler o cabeçalho deste arquivo nesta geração do
-    /// catálogo. Um modelo quebrado não impede os demais de aparecerem.
+    /// Terminal error reading this file's header in this generation of the
+    /// catalog. A broken model does not keep the others from showing up.
     #[serde(default)]
     pub metadata_error: Option<String>,
     /// Identity of the file for which the metadata fields below were read.
@@ -134,15 +134,15 @@ pub struct DiscoveredModel {
     pub shard_range: Option<(u32, u32)>,
     /// Shards of the same model share this key.
     pub shard_group: Option<String>,
-    /// sha256 da parte, quando este arquivo é uma parte endereçada por
-    /// conteúdo (`<sha256>.gguf`). É a identidade que atravessa máquinas: dois
-    /// nós com o mesmo hash têm, byte a byte, o mesmo arquivo.
+    /// sha256 of the part, when this file is a content-addressed part
+    /// (`<sha256>.gguf`). It is the identity that crosses machines: two
+    /// nodes with the same hash have, byte for byte, the same file.
     pub sha256: Option<String>,
-    /// O rótulo do modelo de que esta parte saiu, tal como o `.pom` o guarda.
-    /// `None` num arquivo que não pertence a manifesto nenhum.
+    /// The label of the model this part came from, as the `.pom` stores it.
+    /// `None` on a file that belongs to no manifest.
     #[serde(default)]
     pub model_label: Option<String>,
-    /// O manifesto do modelo original que produziu esta parte.
+    /// The manifest of the original model that produced this part.
     #[serde(default)]
     pub pom_id: Option<String>,
     /// True when the file is a Tensor Parallelism shard, not a layer slice.
@@ -153,9 +153,9 @@ pub struct DiscoveredModel {
     pub tp_rank: Option<u32>,
     #[serde(default)]
     pub tp_size: Option<u32>,
-    /// Evidência de capacidades derivada do cabeçalho do GGUF. A confirmação
-    /// estrutural pela tabela de tensores fica nos leitores que precisam dela,
-    /// fora da varredura geral do catálogo.
+    /// Capability evidence derived from the GGUF header. The structural
+    /// confirmation through the tensor table stays in the readers that need
+    /// it, outside the catalog's general scan.
     #[serde(default)]
     pub capabilities: Option<ModelCapabilityEvidence>,
 }
@@ -181,24 +181,24 @@ impl DiscoveredModel {
 /// A set of slices that together (may) cover one model.
 #[derive(Debug, Clone, Serialize)]
 pub struct ShardSet {
-    /// A chave do manifesto: `<modelo>-<hash curto>`, o mesmo nome da pasta em
-    /// disco. Alternativas do mesmo modelo compartilham este conjunto.
+    /// The manifest's key: `<modelo>-<hash curto>`, the same name as the folder
+    /// on disk. Alternatives of the same model share this set.
     pub group: String,
-    /// O rótulo do modelo, para a tela. O `group` identifica; este é o que se
-    /// lê. Vazio numa fatia sem manifesto.
+    /// The model's label, for the screen. The `group` identifies; this is what
+    /// is read. Empty on a slice without a manifest.
     #[serde(default)]
     pub model_label: String,
     /// Projector adjacent to a shard or to the whole model that originated it.
     /// The path is local to this peer and is only used by the pipeline head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmproj_path: Option<String>,
-    /// Projetores compatíveis herdados do modelo inteiro ou encontrados nas fatias.
+    /// Compatible projectors inherited from the whole model or found in the slices.
     #[serde(default)]
     pub mmproj_candidates: Vec<String>,
-    /// Motivo acionável quando nenhuma associação pôde ser provada.
+    /// Actionable reason when no association could be proven.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmproj_reason: Option<String>,
-    /// O hash do modelo original. Identificação, não nome.
+    /// The hash of the original model. Identification, not a name.
     #[serde(default)]
     pub pom_id: String,
     pub total_layers: Option<u32>,
@@ -461,11 +461,11 @@ fn cached_info(path: &Path, size: u64, mtime: u64) -> Result<GgufInfo, String> {
 
 // ── Path resolution ──────────────────────────────────────────────────────────
 
-/// O diretório do usuário, do jeito que cada sistema o chama.
+/// The user's directory, the way each system calls it.
 ///
-/// No Windows não existe `HOME`: quem responde é `USERPROFILE`. Sem isto o
-/// catálogo não achava nem o LM Studio nem o Ollama daquela máquina e a tela
-/// de Modelos voltava vazia, sem nada que explicasse por quê.
+/// On Windows there is no `HOME`: the one that answers is `USERPROFILE`. Without
+/// this the catalog found neither LM Studio nor Ollama on that machine and the
+/// Models screen came back empty, with nothing to explain why.
 pub(crate) fn home_dir() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("HOME") {
         return Some(PathBuf::from(h));
@@ -684,9 +684,9 @@ fn is_secondary_part(path: &Path) -> bool {
 
 /// Pull a quantisation tag such as `Q4_K_M`, `IQ3_XXS` or `BF16` from a filename.
 ///
-/// Só faz sentido no nome de um modelo inteiro. Uma parte se chama pelo hash,
-/// que não tem tag nenhuma para achar - a quantização dela vem do `.pom`, que a
-/// copiou daqui na hora de fatiar.
+/// It only makes sense in the name of a whole model. A part is named by its
+/// hash, which has no tag to find - its quantization comes from the `.pom`,
+/// which copied it from here at slicing time.
 pub fn parse_quant(filename: &str) -> Option<String> {
     let stem = filename.trim_end_matches(".gguf").to_string();
 
@@ -714,11 +714,11 @@ pub fn parse_quant(filename: &str) -> Option<String> {
 
 // ── Building the catalog ─────────────────────────────────────────────────────
 
-/// O que o `.pom` diz sobre um arquivo que é parte de um fatiamento.
+/// What the `.pom` says about a file that is part of a slicing.
 ///
-/// É a fonte de verdade da identidade de uma parte: nome do modelo, faixa de
-/// camadas e total. O arquivo em si se chama pelo hash - e hash não é nome de
-/// nada que um operador precise ler.
+/// It is the source of truth of a part's identity: model name, layer
+/// range and total. The file itself is named by its hash - and a hash is not
+/// the name of anything an operator needs to read.
 #[derive(Debug, Clone)]
 pub struct PartContext {
     pub model_label: String,
@@ -727,11 +727,11 @@ pub struct PartContext {
     pub end_layer: u32,
     pub sha256: String,
     pub pom_id: String,
-    /// Identifica o manifesto: `<modelo>-<hash curto>`, o mesmo nome da pasta.
-    /// É a chave pela qual as fatias alternativas se agrupam.
+    /// Identifies the manifest: `<modelo>-<hash curto>`, the same name as the folder.
+    /// It is the key by which the alternative slices are grouped.
     pub run_key: String,
-    /// Quantização do modelo de origem, copiada pelo fatiador para o manifesto.
-    /// O nome de uma parte é o hash, então não há de onde deduzi-la.
+    /// Quantization of the source model, copied by the slicer into the manifest.
+    /// A part's name is the hash, so there is nowhere to deduce it from.
     pub quant: Option<String>,
     pub tensor_parallel: bool,
     pub tp_rank: Option<u32>,
@@ -739,12 +739,12 @@ pub struct PartContext {
 }
 
 impl PartContext {
-    /// Como esta parte se chama na tela: o modelo e as camadas que ela traz.
+    /// What this part is called on the screen: the model and the layers it carries.
     ///
-    /// **Nunca o hash.** O nome do arquivo é o conteúdo porque isso resolve
-    /// identidade entre máquinas; para quem lê, `a3de…f1.gguf` não diz nem de
-    /// que modelo é nem que pedaço dele. O hash continua no `sha256`, para
-    /// quem precisar casar duas cópias.
+    /// **Never the hash.** The file name is the content because that solves
+    /// identity across machines; to a reader, `a3de…f1.gguf` says neither
+    /// which model it is from nor which piece of it. The hash stays in `sha256`,
+    /// for whoever needs to match two copies.
     pub fn display_name(&self) -> String {
         format!(
             "{} · L{}-{}",
@@ -781,10 +781,10 @@ fn describe(
         return None;
     }
 
-    // Quem manda é o `.pom`. O nome do arquivo é o hash, e hash não diz de que
-    // modelo é nem que pedaço dele traz; o manifesto diz as duas coisas. Sem
-    // manifesto o arquivo não é parte de fatiamento nenhum - é um GGUF que
-    // alguém deixou na pasta, e aparece pelo nome dele mesmo.
+    // The `.pom` is in charge. The file name is the hash, and a hash says
+    // neither which model it is from nor which piece of it it carries; the
+    // manifest says both. Without a manifest the file is part of no slicing -
+    // it is a GGUF someone left in the folder, and it shows up under its own name.
     let sha256 = part.map(|c| c.sha256.clone()).or_else(|| {
         path.file_stem()
             .and_then(|s| s.to_str())
@@ -794,21 +794,21 @@ fn describe(
 
     let shard_range = match part {
         Some(c) => Some((c.start_layer, c.end_layer)),
-        // Sem manifesto, o carimbo do cabeçalho GGUF ainda identifica uma
-        // fatia solta - é o que sobra de um `.pom` perdido.
+        // Without a manifest, the stamp in the GGUF header still identifies a
+        // loose slice - it is what is left of a lost `.pom`.
         None => None,
     };
-    // A chave do conjunto é o manifesto do modelo original. Fatiar o mesmo
-    // modelo duas vezes com cortes diferentes adiciona alternativas ao mesmo
-    // inventário, que é exatamente o que o planejador pode escolher.
+    // The set's key is the original model's manifest. Slicing the same
+    // model twice with different cuts adds alternatives to the same
+    // inventory, which is exactly what the planner can choose from.
     let shard_group = part.map(|c| c.run_key.clone());
 
     // Header-derived layer information is filled by `enrich` after the fast
     // inventory is published. Manifest-backed slices already know their total.
     let total_layers = part.map(|c| c.total_layers);
 
-    // O nome que o operador lê. Numa parte ele vem do manifesto; sem manifesto
-    // é o nome do arquivo, como sempre foi.
+    // The name the operator reads. On a part it comes from the manifest; without
+    // a manifest it is the file name, as it always was.
     let name = match part {
         Some(c) => c.display_name(),
         None => name,
@@ -834,8 +834,8 @@ fn describe(
         embedding_length: None,
         is_moe: false,
         total_layers,
-        // Numa parte o nome do arquivo é o hash, e hash não tem tag de
-        // quantização para achar: quem sabe é o manifesto.
+        // On a part the file name is the hash, and a hash has no quantization
+        // tag to find: the one that knows is the manifest.
         quant: match part {
             Some(c) => c.quant.clone(),
             None => parse_quant(&filename),
@@ -1628,21 +1628,22 @@ fn collect_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// A pasta de fatias: um diretório por modelo, e dentro dele as partes
-/// (`<sha256>.gguf`) mais os manifestos (`.pom`) das rodadas de fatiamento.
+/// The slice folder: one directory per model, and inside it the parts
+/// (`<sha256>.gguf`) plus the manifests (`.pom`) of the slicing runs.
 ///
-/// Quem manda aqui é o manifesto, não o nome do arquivo. Uma parte listada num
-/// `.pom` entra no catálogo sabendo de qual modelo é e que faixa cobre; um
-/// `.gguf` solto na pasta continua aparecendo (o operador pode ter largado um
-/// modelo inteiro ali), só que sem grupo - e sem grupo ele não é fatia de nada.
+/// The manifest is in charge here, not the file name. A part listed in a
+/// `.pom` enters the catalog knowing which model it is from and what range it
+/// covers; a loose `.gguf` in the folder still shows up (the operator may have
+/// dropped a whole model there), only without a group - and without a group it
+/// is a slice of nothing.
 fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<ScannedRoot>) {
     let exists = dir.is_dir();
     let mut found = 0;
 
-    // Os manifestos primeiro, sempre. É deles que sai a identidade de cada
-    // parte - de que modelo é, que camadas traz, qual a quantização -, e sem
-    // isso um `<sha256>.gguf` no catálogo é um arquivo de nome ilegível que a
-    // tela mostraria como se fosse um modelo inteiro.
+    // The manifests first, always. They are where each part's identity comes
+    // from - which model it is from, which layers it carries, what the
+    // quantization is -, and without that a `<sha256>.gguf` in the catalog is a
+    // file with an unreadable name that the screen would show as a whole model.
     let index = part_index(dir);
 
     let mut files = Vec::new();
@@ -1672,15 +1673,15 @@ fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Sc
     });
 }
 
-/// Todo arquivo de parte que os `.pom` da pasta de fatias descrevem.
+/// Every part file the `.pom`s of the slice folder describe.
 ///
-/// Varre `<shard_dir>/<modelo>/*.pom` e devolve, por caminho de arquivo, o que
-/// o manifesto diz sobre aquela parte. É esta varredura que faz o nó, ao
-/// arrancar, reconstruir o catálogo a partir dos manifestos em vez de tentar
-/// adivinhar coisa nenhuma pelo nome dos arquivos.
+/// Scans `<shard_dir>/<modelo>/*.pom` and returns, per file path, what
+/// the manifest says about that part. It is this scan that makes the node,
+/// on startup, rebuild the catalog from the manifests instead of trying to
+/// guess anything at all from the file names.
 ///
-/// Uma parte listada num manifesto mas ausente do disco simplesmente não entra:
-/// o índice descreve o que existe.
+/// A part listed in a manifest but absent from disk simply does not enter:
+/// the index describes what exists.
 pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
     let mut index = HashMap::new();
     let rd = match std::fs::read_dir(shard_dir) {
@@ -2786,8 +2787,8 @@ pub(crate) mod tests {
         let plain = base.join("sdcard/models");
         std::fs::create_dir_all(&plain).unwrap();
 
-        // LM Studio também tem `blobs/` e `manifests/`, vazios — o layout do
-        // Ollama sozinho leria a biblioteca dele como se não tivesse nada.
+        // LM Studio also has `blobs/` and `manifests/`, empty - the Ollama
+        // layout alone would read its library as if it had nothing.
         let lmstudio = base.join("home/.lmstudio/models");
         std::fs::create_dir_all(lmstudio.join("manifests")).unwrap();
         std::fs::create_dir_all(lmstudio.join("blobs")).unwrap();
@@ -2824,8 +2825,8 @@ pub(crate) mod tests {
         let filler = vec![0u8; 4096];
         std::fs::write(listed.join("visivel.gguf"), &filler).unwrap();
         std::fs::write(unlisted.join("invisivel.gguf"), &filler).unwrap();
-        // Um GGUF de verdade: a faixa da fatia agora sai do cabeçalho que o
-        // fatiador carimba, não do nome do arquivo.
+        // A real GGUF: the slice's range now comes from the header the
+        // slicer stamps, not from the file name.
         std::fs::write(
             shards.join("m_0_3.gguf"),
             crate::splitter::test_gguf_bytes(4),
@@ -2845,8 +2846,8 @@ pub(crate) mod tests {
             .find(|m| m.name == "m_0_3.gguf")
             .unwrap();
         assert_eq!(shard.source, ModelSource::Local);
-        // Sem carimbo `pom.start_layer` no cabeçalho não há faixa: o nome do
-        // arquivo deixou de ser prova de coisa nenhuma.
+        // Without a `pom.start_layer` stamp in the header there is no range: the
+        // file name stopped being proof of anything.
         assert_eq!(shard.shard_range, None);
 
         std::fs::remove_dir_all(&base).ok();
@@ -3056,26 +3057,26 @@ pub(crate) mod tests {
     }
 }
 
-/// O catálogo se reconstrói a partir dos `.pom`, e o hash nunca vira nome.
+/// The catalog rebuilds itself from the `.pom`s, and the hash never becomes a name.
 #[cfg(test)]
 mod part_naming_tests {
     use super::*;
     use crate::pom::{PomKind, PomManifest, PomModel, PomPart};
 
-    /// Grava um GGUF de verdade nomeado pelo próprio hash e o manifesto ao lado.
+    /// Writes a real GGUF named by its own hash and the manifest beside it.
     fn sliced_model(root: &Path) -> (PomManifest, Vec<String>) {
-        // Como a produção faz: corta numa pasta de trabalho e, com o manifesto
-        // pronto, muda a rodada para `<modelo>-<id da rodada>`.
+        // As production does: it cuts in a work folder and, with the manifest
+        // ready, moves the run to `<modelo>-<id da rodada>`.
         let folder = crate::pom::scratch_dir(root);
         std::fs::create_dir_all(&folder).unwrap();
 
         let mut parts = Vec::new();
         let mut hashes = Vec::new();
-        // Contagens de camadas diferentes de propósito: `test_gguf_bytes(n)` é
-        // determinística, então duas fatias de 16 camadas dariam **o mesmo
-        // hash** - e, com o nome sendo o conteúdo, um arquivo só. O que
-        // importa aqui é a identidade vir do manifesto, e é ele que declara as
-        // faixas.
+        // Different layer counts on purpose: `test_gguf_bytes(n)` is
+        // deterministic, so two 16-layer slices would give **the same
+        // hash** - and, with the name being the content, a single file. What
+        // matters here is the identity coming from the manifest, and it is the
+        // one that declares the ranges.
         for (start, end, layers) in [(0u32, 15u32, 16u32), (16, 31, 12)] {
             let bytes = crate::splitter::test_gguf_bytes(layers);
             let tmp = folder.join(format!("tmp-{start}"));
@@ -3110,9 +3111,9 @@ mod part_naming_tests {
         (m, hashes)
     }
 
-    /// O defeito relatado: a fatia aparecia com nome de hash, como se fosse um
-    /// modelo inteiro. O nome que o operador lê tem que dizer **qual modelo** e
-    /// **quais camadas**; o hash é identificação interna.
+    /// The reported defect: the slice showed up with a hash name, as if it were
+    /// a whole model. The name the operator reads has to say **which model** and
+    /// **which layers**; the hash is internal identification.
     #[test]
     fn a_part_is_named_by_the_model_and_the_layers_never_by_the_hash() {
         let root = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
@@ -3132,7 +3133,7 @@ mod part_naming_tests {
                 "the model label: {}",
                 m.name
             );
-            // E o hash continua disponível, como informação lateral.
+            // And the hash stays available, as side information.
             assert!(m
                 .sha256
                 .as_deref()
@@ -3149,30 +3150,30 @@ mod part_naming_tests {
             .expect("the range comes from the manifest");
         assert!(first.name.contains("L0-15"), "{}", first.name);
 
-        // E o conjunto se fecha, que é o que a tela de implantar precisa.
+        // And the set closes, which is what the deploy screen needs.
         assert_eq!(cat.shard_sets.len(), 1);
         let set = &cat.shard_sets[0];
         assert!(set.complete);
-        // A chave do conjunto é a fonte original, para todas as alternativas
-        // de pipeline e os shards TP do mesmo modelo compartilharem o grupo.
+        // The set's key is the original source, so that all the pipeline
+        // alternatives and the TP shards of the same model share the group.
         assert_eq!(
             set.group,
             format!("qwen3-8b-{}", crate::pom::short_id(&_m.pom_id))
         );
-        // ...mas quem a tela mostra é o rótulo do modelo.
+        // ...but what the screen shows is the model's label.
         assert_eq!(set.model_label, "qwen3:8b");
         assert_eq!(set.pom_id, _m.pom_id);
 
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// O mesmo arquivo original, fatiado de duas formas, compartilha a pasta e
-    /// o manifesto; o catálogo preserva todas as alternativas de `parts`.
+    /// The same original file, sliced in two ways, shares the folder and
+    /// the manifest; the catalog preserves all the alternatives of `parts`.
     #[test]
     fn two_slicings_of_the_same_file_land_in_the_same_folder() {
         let root = std::env::temp_dir().join(format!("pom-col-{}", uuid::Uuid::new_v4().simple()));
 
-        // Duas rodadas do mesmo modelo, com cortes diferentes.
+        // Two runs of the same model, with different cuts.
         let one = make_slice(
             &root,
             "qwen3-8b",
@@ -3194,7 +3195,7 @@ mod part_naming_tests {
         assert_eq!(one_folder, other_folder, "a single manifest per source");
         assert!(one_folder.is_dir());
 
-        // As quatro partes aparecem no mesmo manifesto, cada uma com sua faixa.
+        // The four parts appear in the same manifest, each with its range.
         let cat = discover(&[], &root);
         assert_eq!(cat.models.len(), 4);
         assert_eq!(cat.shard_sets.len(), 1, "one set per original file");
@@ -3204,7 +3205,7 @@ mod part_naming_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Corta um modelo em faixas e sela a rodada, como a produção faz.
+    /// Cuts a model into ranges and seals the run, as production does.
     fn make_slice(
         root: &Path,
         name: &str,
@@ -3249,8 +3250,8 @@ mod part_naming_tests {
         m
     }
 
-    /// Sem manifesto o arquivo não é fatia de nada: é um GGUF que alguém
-    /// deixou na pasta, e continua aparecendo pelo nome dele.
+    /// Without a manifest the file is a slice of nothing: it is a GGUF someone
+    /// left in the folder, and it still shows up under its own name.
     #[test]
     fn a_loose_gguf_in_the_slices_folder_does_not_become_a_part() {
         let root = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
@@ -3270,8 +3271,8 @@ mod part_naming_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Uma parte listada no manifesto mas ausente do disco não entra no índice:
-    /// ele descreve o que existe, não o que deveria existir.
+    /// A part listed in the manifest but absent from disk does not enter the
+    /// index: it describes what exists, not what should exist.
     #[test]
     fn the_index_only_knows_parts_that_are_on_disk() {
         let root = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));

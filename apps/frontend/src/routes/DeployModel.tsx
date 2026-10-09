@@ -326,9 +326,9 @@ export function DeployModel() {
   /** `null` means "the node's default" — merged units off. */
   const [merge, setMerge] = useState<boolean | null>(null);
   const [asked, setAsked] = useState(false);
-  /** Segundo confirm, separado do de cobertura parcial: a projeção de VRAM
-   *  passa da capacidade de alguma máquina. Avisa, não bloqueia - o operador
-   *  pode reduzir contexto/sessões ou implantar mesmo assim. */
+  /** Second confirm, separate from the partial coverage one: the VRAM projection
+   *  exceeds the capacity of some machine. It warns, it does not block - the
+   *  operator can reduce context/sessions or deploy anyway. */
   const [capacityAsked, setCapacityAsked] = useState(false);
   const [running, setRunning] = useState(false);
   const [cacheTypeK, setCacheTypeK] = useState<KvCacheType>("f16");
@@ -533,8 +533,8 @@ export function DeployModel() {
       merge == null ? "merge-padrão" : `merge-${merge}`,
       strategy,
       JSON.stringify(preferredNodeIds),
-      // TP: o plano revalida quando o primary/workers mudam — a checagem de
-      // shardabilidade roda no nó, então a troca precisa re-disparar a query.
+      // TP: the plan revalidates when the primary/workers change - the shardability
+      // check runs on the node, so the change has to re-trigger the query.
       isTp ? JSON.stringify(tpPayload()) : "sem-tp",
       // The plan answers where the projector and the MTP draft come from, so a
       // new choice (or vision turned on) asks again.
@@ -637,9 +637,9 @@ export function DeployModel() {
     if (p?.params && nodeParams.current == null) nodeParams.current = p.params;
   }, [p]);
   /**
-   * O plano é uma fotografia cara do catálogo. As métricas de capacidade vêm
-   do cluster, que é atualizado a cada 5 s, para os cards não ficarem presos
-   ao momento em que o planner foi consultado.
+   * The plan is an expensive snapshot of the catalog. The capacity metrics come
+   from the cluster, which is updated every 5 s, so the cards do not stay stuck
+   at the moment the planner was queried.
    */
   const liveMachines = useMemo(() => {
     if (!p) return [];
@@ -657,8 +657,8 @@ export function DeployModel() {
         gpu_used_pct: gpu?.vram_used_pct ?? machine.gpu_used_pct ?? null,
         ram_used_pct: system?.ram.used_pct ?? machine.ram_used_pct ?? null,
         load: peer ? peer.load : machine.load,
-        // O RTT de uma máquina vem do survey direcional do backend. A rota
-        // do cluster é a medição HTTP do gateway e não deve sobrescrevê-lo.
+        // A machine's RTT comes from the backend's directional survey. The
+        // cluster route is the gateway's HTTP measurement and must not overwrite it.
         rtt_ms: machine.rtt_ms,
       };
     });
@@ -904,12 +904,12 @@ export function DeployModel() {
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
   /**
-   * `hidden_state_dtype` só faz algo quando o estado oculto atravessa a
-   * fronteira de um peer - ou seja, num pipeline de fatias com faixas
-   * adjacentes distintas. Modelo inteiro (uma máquina), Tensor Parallelism
-   * (troca por coletiva, não por frame) e um plano de fatias que caiu numa
-   * máquina só nunca serializam o estado, então o seletor seria um controle
-   * sem efeito. Duas máquinas na mesma faixa são réplicas, não hop.
+   * `hidden_state_dtype` only does something when the hidden state crosses a
+   * peer's boundary - that is, in a slice pipeline with distinct adjacent
+   * ranges. A whole model (one machine), Tensor Parallelism (exchange by
+   * collective, not by frame) and a slice plan that landed on a single machine
+   * never serialize the state, so the selector would be a control with no
+   * effect. Two machines on the same range are replicas, not a hop.
    */
   const crossesPeerBoundary =
     kind === "shards" &&
@@ -957,7 +957,7 @@ export function DeployModel() {
     );
   }
 
-  /** Adiciona uma rota para a faixa, preservando réplicas existentes. */
+  /** Adds a route for the range, preserving existing replicas. */
   function assignRangeToMachine(startLayer: number, endLayer: number, nodeId: string) {
     const candidate = p?.available.find(
       (item) => item.start_layer === startLayer && item.end_layer === endLayer,
@@ -980,8 +980,8 @@ export function DeployModel() {
           row.end_layer === candidate.end_layer,
       );
       if (alreadyAssigned) return base;
-      // Atribuir uma faixa a outro peer cria uma réplica explícita. Nunca
-      // remova silenciosamente as faixas que o peer já serve.
+      // Assigning a range to another peer creates an explicit replica. Never
+      // silently remove the ranges the peer already serves.
       return [
         ...base,
         {
@@ -996,13 +996,13 @@ export function DeployModel() {
   }
 
   /**
-   * Tira a faixa desta máquina - o inverso exato de `assignRangeToMachine`.
+   * Takes the range off this machine - the exact inverse of `assignRangeToMachine`.
    *
-   * Remove só a linha que o operador clicou (faixa **e** máquina), então as
-   * réplicas da mesma faixa em outras máquinas ficam onde estavam, pelo mesmo
-   * motivo que atribuir preserva as vizinhas. A máquina continua no canvas
-   * mesmo sem faixa nenhuma: um peer sem faixa ainda é uma possibilidade, e
-   * tirar uma camada não é o mesmo gesto que "Remover da implantação".
+   * Removes only the row the operator clicked (range **and** machine), so the
+   * replicas of the same range on other machines stay where they were, for the
+   * same reason assigning preserves the neighbours. The machine stays on the
+   * canvas even with no range at all: a peer with no range is still a possibility,
+   * and taking a layer away is not the same gesture as "Remove from deployment".
    */
   function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
     edit((base) =>
@@ -1125,9 +1125,9 @@ export function DeployModel() {
       current.includes(nodeId) ? current : [...current, nodeId],
     );
     if (isWhole && mapMachineIds.length === 0) {
-      // A resposta de fatias anterior pode continuar visível enquanto a
-      // consulta `whole` chega. Nunca use essa faixa velha para montar o
-      // modelo inteiro: o catálogo é a fonte do intervalo completo.
+      // The previous slices response can stay visible while the `whole`
+      // query arrives. Never use that old range to build the whole
+      // model: the catalog is the source of the full interval.
       const candidate = wholeModel?.total_layers != null
         ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
         : p?.kind === "whole"
@@ -1143,9 +1143,9 @@ export function DeployModel() {
         }]);
       }
     }
-    // Um peer sem faixa ainda é apenas uma possibilidade no canvas. A seleção
-    // só muda quando o operador atribui uma camada, evitando redesenhar a
-    // sugestão por causa de um simples arrastar e soltar.
+    // A peer with no range is still only a possibility on the canvas. The selection
+    // only changes when the operator assigns a layer, which avoids redrawing the
+    // suggestion because of a simple drag and drop.
   }
 
   function removePeerFromDeployment(nodeId: string) {
@@ -1172,19 +1172,19 @@ export function DeployModel() {
   const bottomMachines = liveMachines.filter(
     (machine) => !mapNodeIds.has(machine.node_id) && (!service || service.nodeIds.includes(machine.node_id)),
   );
-  /** Máquinas cuja projeção estoura a VRAM (rósea) ou que só cabem porque o
-   *  "Ajustar à memória" apararia o pedido (amber) - as duas pedem um aviso
-   *  antes de implantar. */
+  /** Machines whose projection overflows the VRAM (rose) or that only fit because
+   *  "Fit to memory" would trim the request (amber) - both call for a warning
+   *  before deploying. */
   const capacityWarnMachines = (displayPlan?.machines ?? []).filter(
     (machine) =>
       machine.capacity && (!machine.capacity.fits || machine.capacity.degraded),
   );
   const anyOverCapacity = capacityWarnMachines.some((m) => !m.capacity?.fits);
 
-  /** O gesto de implantar, com os confirms possíveis no caminho: cobertura
-   *  parcial (o modelo não fica inteiro no ar) e a projeção de capacidade
-   *  (estoura a VRAM, ou o fit apararia o pedido). O primeiro é mais
-   *  fundamental, então vem antes. */
+  /** The deploy gesture, with the possible confirms on the way: partial coverage
+   *  (the model is not wholly in service) and the capacity projection (it
+   *  overflows the VRAM, or the fit would trim the request). The first is more
+   *  fundamental, so it comes first. */
   function attemptDeploy() {
     if (!p?.complete) {
       setAsked(true);
@@ -1226,10 +1226,10 @@ export function DeployModel() {
   function selectKind(value: DeployKind) {
     if (value === kind) return;
     setPickedKind(value);
-    // Trocar de fatias para um GGUF inteiro muda a unidade da decisão. A
-    // seleção anterior não pode escolher uma máquina por acidente enquanto o
-    // novo plano chega: [] significa mapa vazio e deixa a próxima escolha ao
-    // operador. Os outros modos continuam usando a sugestão do nó.
+    // Switching from slices to a whole GGUF changes the unit of the decision. The
+    // previous selection cannot pick a machine by accident while the new plan
+    // arrives: [] means an empty map and leaves the next choice to the
+    // operator. The other modes keep using the node's suggestion.
     setSelection(value === "whole" ? [] : null);
     setSettled(value === "whole" ? [] : null);
     setPreferredNodeIds([]);
@@ -1673,11 +1673,11 @@ export function DeployModel() {
                       </div>
                     </>
                   )}
-                  {/* As duas propriedades por máquina usam a mesma linha das
-                      globais: o `[i]` antes do nome, na mesma coluna, e o
-                      controle à direita. A explicação do KV cache era um
-                      parágrafo fixo debaixo do interruptor; agora está no `[i]`,
-                      como todas as outras. */}
+                  {/* The two per-machine properties use the same row as the
+                      global ones: the `[i]` before the name, in the same column, and
+                      the control on the right. The KV cache explanation was a fixed
+                      paragraph under the switch; now it is in the `[i]`,
+                      like all the others. */}
                   {first && (
                     <div className="mt-3 space-y-1 border-t border-line pt-2">
                       <InspectorRow label={t("deployStudio.gpuLayers")} tip={t("deploy.knob.n_gpu_layersHint")}>

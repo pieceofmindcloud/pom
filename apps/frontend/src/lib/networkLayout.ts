@@ -12,16 +12,16 @@ export interface DeploymentPeer {
 const STORAGE_PREFIX = storageKey("network-layout");
 
 /**
- * Identifica a implantação que este navegador está desenhando, para um arranjo
- * feito à mão não vazar para outra rede.
+ * Identifies the deployment this browser is drawing, so a hand-made arrangement
+ * does not leak into another network.
  *
- * O modelo e o conjunto de faixas entram na impressão digital, porque mudar
- * qualquer um deles desenha outra rede. O **`changed_at` não entra**, e isso é
- * a correção de um defeito real: ele muda a cada reinício de nó, o que mudava a
- * chave, o que fazia `readPositions` devolver vazio - o arranjo do operador não
- * era reorganizado, era perdido, e a tela voltava para a grade toda vez que uma
- * máquina reiniciava. O campo continua no tipo porque quem chama já o tem em
- * mãos e um dia pode voltar a precisar dele.
+ * The model and the set of ranges go into the fingerprint, because changing
+ * either draws another network. **`changed_at` does not**, and that is the fix
+ * for a real defect: it changes on every node restart, which changed the key,
+ * which made `readPositions` return empty - the operator's arrangement was not
+ * reorganized, it was lost, and the screen went back to the grid every time a
+ * machine restarted. The field stays in the type because the caller already has
+ * it at hand and may need it again one day.
  */
 export function deploymentLayoutKey(model: string, peers: DeploymentPeer[]) {
   const fingerprint = peers
@@ -31,13 +31,13 @@ export function deploymentLayoutKey(model: string, peers: DeploymentPeer[]) {
   return `${STORAGE_PREFIX}:${model}:${fingerprint}`;
 }
 
-/** Medidas do card em `ModelNetworkCanvas`. Mudou lá, muda aqui. */
+/** Card measurements in `ModelNetworkCanvas`. Changed there, change here. */
 export const CARD_WIDTH = 264;
 export const CARD_HEIGHT = 204;
 /**
- * O card minimizado: nome, estado, faixa, velocidade e uma linha de VRAM.
- * Altura fixa, e não mínima, porque a aresta se prende no meio dela - um card
- * que crescesse com o conteúdo soltaria a seta da borda.
+ * The minimized card: name, state, range, speed and one VRAM line.
+ * Fixed height, not minimum, because the edge attaches to its middle - a card
+ * that grew with its content would pull the arrow off the border.
  */
 export const COMPACT_CARD_WIDTH = 228;
 export const COMPACT_CARD_HEIGHT = 84;
@@ -50,14 +50,14 @@ export const COMPACT_CARD_SIZE: CardSize = { width: COMPACT_CARD_WIDTH, height: 
 export const GATEWAY_SIZE: CardSize = { width: GATEWAY_WIDTH, height: GATEWAY_HEIGHT };
 
 /**
- * A chave do gateway no mesmo mapa de posições das máquinas. Arrastado, ele
- * fica onde foi posto; sem arrasto, segue o último estágio como antes.
+ * The gateway's key in the same position map as the machines. Dragged, it
+ * stays where it was put; without dragging, it follows the last stage as before.
  */
 export const GATEWAY_LAYOUT_ID = "__gateway__";
 const GAP_X = 148;
 const GAP_Y = 40;
 const ORIGIN_X = 48;
-/** Eixo horizontal em torno do qual cada coluna é centrada. */
+/** Horizontal axis around which each column is centered. */
 const AXIS_Y = 300;
 
 export type RouteGeometry = {
@@ -94,7 +94,7 @@ export function routeGeometry(
   return { x1, y1, c1x, c1y: y1, c2x, c2y: y2, x2, y2, labelX, labelY };
 }
 
-/** Põe o gateway virtual depois do último estágio, alinhado ao seu centro. */
+/** Puts the virtual gateway after the last stage, aligned with its center. */
 export function pipelineGatewayPosition(
   peers: CanvasPosition[],
   sizes: CardSize[] = [],
@@ -107,9 +107,9 @@ export function pipelineGatewayPosition(
 }
 
 /**
- * Geometria da perna final do ciclo. Para a direita quando o gateway está
- * depois do último estágio, que é o arranjo de sempre; arrastado para trás,
- * a curva sai e chega pelos lados que se olham, como `routeGeometry`.
+ * Geometry of the cycle's final leg. To the right when the gateway is after the
+ * last stage, which is the usual arrangement; dragged backwards, the curve
+ * leaves and arrives through the sides that face each other, like `routeGeometry`.
  */
 export function gatewayRouteGeometry(
   from: CanvasPosition,
@@ -140,10 +140,10 @@ export function gatewayRouteGeometry(
 }
 
 /**
- * Posição de último recurso, quando não há como calcular nada melhor.
+ * Last-resort position, when there is no way to compute anything better.
  *
- * Continua sendo uma grade: ela não conta a história do pipeline, e é por isso
- * que `autoLayout` existe. Fica só para quem não aparece no arranjo calculado.
+ * It is still a grid: it does not tell the pipeline's story, and that is why
+ * `autoLayout` exists. It is kept only for whoever is absent from the computed arrangement.
  */
 export function fallbackPosition(index: number): CanvasPosition {
   return { left: 48 + (index % 3) * 310, top: 96 + Math.floor(index / 3) * 240 };
@@ -156,19 +156,19 @@ export interface LayoutNode {
 }
 
 /**
- * Arruma a rede como o pipeline realmente é: uma coluna por estágio, da
- * esquerda para a direita. Réplicas de uma faixa e faixas alternativas que
- * começam no mesmo ponto ficam empilhadas na mesma coluna.
+ * Arranges the network as the pipeline really is: one column per stage, from
+ * left to right. Replicas of a range and alternative ranges that start at the
+ * same point are stacked in the same column.
  *
- * A grade que existia antes ignorava a topologia, então uma rede de quatro
- * máquinas saía com três em fila e a quarta na linha de baixo, e a aresta que
- * ligava as duas pontas cruzava o canvas inteiro. O desenho aqui é o que faz a
- * bifurcação parecer uma bifurcação: quem se ramifica fica lado a lado no
- * mesmo x, e quem recebe de volta fica no eixo dos dois.
+ * The grid that existed before ignored the topology, so a four-machine network
+ * came out with three in a row and the fourth on the line below, and the edge
+ * linking the two ends crossed the whole canvas. The layout here is what makes
+ * a fork look like a fork: whatever branches sits side by side at the same x,
+ * and whatever receives back sits on the axis between the two.
  *
- * **A ordem de entrada não influi.** A lista de peers se reordena a cada
- * refresh do cluster, e um arranjo que dependesse dela tremeria na tela a cada
- * poll - o desempate é por `start_layer`, depois `end_layer`, depois `id`.
+ * **The input order does not matter.** The peer list reorders itself on every
+ * cluster refresh, and an arrangement that depended on it would jitter on the
+ * screen on every poll - ties are broken by `start_layer`, then `end_layer`, then `id`.
  */
 export function autoLayout(
   nodes: LayoutNode[],
@@ -176,9 +176,9 @@ export function autoLayout(
 ): Record<string, CanvasPosition> {
   if (nodes.length === 0) return {};
 
-  // A coluna é a profundidade no pipeline, não a faixa exata: 16-30 e 16-40
-  // começam no mesmo ponto e são caminhos alternativos, então ficam lado a
-  // lado. A profundidade é a cadeia mais longa de faixas anteriores.
+  // The column is the depth in the pipeline, not the exact range: 16-30 and 16-40
+  // start at the same point and are alternative paths, so they sit side by
+  // side. The depth is the longest chain of earlier ranges.
   const byStart = [...nodes].sort(
     (a, b) => a.start_layer - b.start_layer || a.end_layer - b.end_layer || a.id.localeCompare(b.id),
   );
@@ -201,11 +201,11 @@ export function autoLayout(
   }
   const sorted = [...columns.entries()].sort(([a], [b]) => a - b);
 
-  // Cards minimizados ocupam menos: a coluna tem a largura do seu card mais
-  // largo e a pilha soma as alturas reais, então uma rede minimizada cabe
-  // inteira numa tela que a rede aberta não cabia. Numa coluna, as réplicas
-  // da primeira faixa ficam centradas no eixo - é o caminho que segue reto -
-  // e as faixas alternativas descem abaixo dela.
+  // Minimized cards take less room: the column has the width of its widest card
+  // and the stack sums the real heights, so a minimized network fits on a
+  // screen that the open network did not fit. In a column, the replicas
+  // of the first range are centered on the axis - it is the path that goes straight -
+  // and the alternative ranges go below it.
   const positions: Record<string, CanvasPosition> = {};
   let left = ORIGIN_X;
   sorted.forEach(([, column]) => {
@@ -234,11 +234,11 @@ export function autoLayout(
 }
 
 /**
- * Reidrata um canvas sem mover quem já estava desenhado.
+ * Rehydrates a canvas without moving whoever was already drawn.
  *
- * A entrada de um peer é uma mudança de topologia, mas não é um pedido para
- * reorganizar a composição inteira. Posições da sessão têm precedência sobre
- * as persistidas; o arranjo automático só fornece lugares para nós novos.
+ * A peer joining is a topology change, but it is not a request to reorganize
+ * the whole composition. Session positions take precedence over the persisted
+ * ones; the automatic arrangement only provides places for new nodes.
  */
 export function mergePositions(
   current: Record<string, CanvasPosition>,
@@ -286,11 +286,11 @@ export function clearPositions(key: string) {
 }
 
 /**
- * Quais cards do Fluxo estão minimizados. Um padrão para todos (o botão da
- * barra de modelos) e exceções por card (o botão de cada um); o botão global
- * apaga as exceções, porque "minimizar todos" que deixasse um aberto não
- * seria "todos". Fica no navegador, como o arranjo: é preferência de quem
- * olha, não estado da rede.
+ * Which Flow cards are minimized. One default for all (the model bar's button)
+ * and per-card exceptions (each card's button); the global button erases the
+ * exceptions, because a "minimize all" that left one open would not be "all".
+ * It stays in the browser, like the arrangement: it is the viewer's preference,
+ * not network state.
  */
 export type CardModes = { compact: boolean; overrides: Record<string, boolean> };
 

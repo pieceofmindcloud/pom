@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 /**
- * O card manda a maquina certa embora, e so depois de perguntar.
+ * The card sends the right machine away, and only after asking.
  *
- * O `node_id` no corpo e o que separa "esta maquina sai" de "aquela sai": sem
- * ele o no local se desliga, e o operador que clicou no card do peer ficaria
- * sem painel e com o peer ainda no ar.
+ * The `node_id` in the body is what separates "this machine leaves" from "that one leaves": without
+ * it the local node shuts itself down, and the operator who clicked on the peer's card would be
+ * left without a panel and with the peer still up.
  *
- * A confirmacao e botao proprio "Confirmar saída", separado do gatilho "Sair
- * da rede" - os dois nao compartilham mais o mesmo rotulo.
+ * The confirmation is its own button "Confirmar saída", separate from the trigger "Sair
+ * da rede" - the two no longer share the same label.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

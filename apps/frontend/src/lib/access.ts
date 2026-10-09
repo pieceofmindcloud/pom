@@ -1,31 +1,31 @@
 /**
- * Que rota cada perfil enxerga.
+ * Which route each profile sees.
  *
- * Uma tabela só, e o menu e o roteador leem a mesma. Rotas de produto Enterprise
- * são a exceção de descoberta: continuam abertas para que o menu possa
- * apresentar o recurso mesmo antes da ativação. O bloqueio de dados acontece
- * no backend e o App mostra o estado de compra quando o entitlement falta.
+ * A single table, and the menu and the router read the same one. Enterprise product routes
+ * are the discovery exception: they stay open so that the menu can
+ * present the feature even before activation. The data blocking happens
+ * in the backend and the App shows the purchase state when the entitlement is missing.
  *
- * **Escopo:** isto é apresentação, não autorização - ver o cabeçalho de
- * `profile.tsx`. Bloquear aqui evita que a interface ofereça um trabalho que
- * não é daquele perfil. A autorização da superfície administrativa é feita no
- * servidor com o token de acesso; a connection key é uma credencial separada
- * para os nós e a pipeline.
+ * **Scope:** this is presentation, not authorization - see the header of
+ * `profile.tsx`. Blocking here prevents the interface from offering work that
+ * does not belong to that profile. Authorization of the administrative surface is done
+ * on the server with the access token; the connection key is a separate credential
+ * for the nodes and the pipeline.
  *
- * Rota que não aparece em `RESTRICTED` é livre para todo perfil, exceto o
- * `infer`, que tem uma vista reduzida explícita abaixo. O padrão é
- * permissivo de propósito: a restrição é a exceção que alguém escreveu
- * deliberadamente, e uma tela nova não deixa de abrir porque foi esquecida
- * numa lista.
+ * A route that does not appear in `RESTRICTED` is free for every profile, except
+ * `infer`, which has an explicit reduced view below. The default is
+ * permissive on purpose: the restriction is the exception that someone wrote
+ * deliberately, and a new screen does not stop opening because it was forgotten
+ * in a list.
  */
 import type { Profile } from "./profile";
 import { pluginRouteProfiles } from "./pluginUi";
 
 /**
- * Prefixo de rota -> perfis que entram.
+ * Route prefix -> profiles that get in.
  *
- * A chave casa por prefixo de segmento, então uma futura filha de `/logs`
- * continua protegida, e `/deploy` **não** cobre `/deployx`.
+ * The key matches by segment prefix, so a future child of `/logs`
+ * remains protected, and `/deploy` **does not** cover `/deployx`.
  */
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/deploy": ["admin"],
@@ -38,9 +38,9 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
 };
 
 /**
- * Vista local do infer. A rota de rede permanece visível para que o nó possa
- * pedir entrada no processamento, mas o backend retorna somente dados desta
- * máquina.
+ * Local view of infer. The network route stays visible so that the node can
+ * ask to join the processing, but the backend returns only data from this
+ * machine.
  */
 const INFER_ROUTES = [
   "/public-networks",
@@ -56,9 +56,9 @@ const INFER_ROUTES = [
   "/config/my-machine",
   "/config/sharing",
   "/config/preferences",
-  // Ancorar a confiança precede a autoridade e não é privilégio de perfil
-  // nenhum: um `infer` também recebe a âncora do admin. A trava dessa tela é
-  // do servidor (loopback, nó por ancorar, impressão digital conferida).
+  // Anchoring trust precedes authority and is not the privilege of any
+  // profile: an `infer` also receives the admin's anchor. The lock on this screen belongs
+  // to the server (loopback, node yet to be anchored, fingerprint checked).
   "/config/trust",
 ] as const;
 
@@ -73,7 +73,7 @@ const INFER_DENIED_ROUTES = [
   "/deployments",
 ] as const;
 
-/** `/deployx` não está sob `/deploy`. */
+/** `/deployx` is not under `/deploy`. */
 function isUnder(path: string, prefix: string): boolean {
   const pathname = path.split(/[?#]/, 1)[0];
   return pathname === prefix || pathname.startsWith(prefix + "/");
@@ -83,9 +83,9 @@ export function isEnterprisePath(path: string): boolean {
   return isUnder(path, "/logs") || isUnder(path, "/statistics");
 }
 
-/** Os perfis que entram nesta rota, ou `null` quando ela é livre. */
+/** The profiles that get into this route, or `null` when it is free. */
 export function routeProfiles(path: string): readonly Profile[] | null {
-  // A chave mais específica vence para qualquer futura exceção de rota.
+  // The most specific key wins for any future route exception.
   let best: { prefix: string; profiles: readonly Profile[] } | null = null;
   for (const [prefix, profiles] of Object.entries(RESTRICTED)) {
     if (!isUnder(path, prefix)) continue;
@@ -94,10 +94,10 @@ export function routeProfiles(path: string): readonly Profile[] | null {
   return best?.profiles ?? null;
 }
 
-/** Se este perfil pode abrir esta rota, incluindo superfícies Enterprise. */
+/** Whether this profile can open this route, including Enterprise surfaces. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
-  // UIs de plugins são locais a este nó e ficam abertas a todos os perfis.
-  // Os bloqueios explícitos de superfícies nativas do infer continuam valendo.
+  // Plugin UIs are local to this node and open to every profile.
+  // The explicit blocks on native `infer` surfaces still apply.
   if (profile === "infer" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
   const pluginProfiles = pluginRouteProfiles(path);
   if (pluginProfiles) return pluginProfiles.includes(profile);
@@ -113,32 +113,32 @@ export function canAccessEnterprise(path: string, _active: boolean): boolean {
 }
 
 /**
- * A tela inicial de cada perfil.
+ * The home screen of each profile.
  *
- * O `/` é o Painel, que o `infer` não abre. Sem isto, um nó de inferência
- * abre a interface direto na tela de recusa - um beco, ainda por cima
- * mandando trocar de perfil, coisa que deixou de existir. Fica aqui, ao lado
- * da tabela de rotas, para não virar uma segunda lista.
+ * The `/` is the Dashboard, which `infer` does not open. Without this, an inference node
+ * opens the interface straight on the refusal screen - a dead end, on top of
+ * telling you to switch profile, something that no longer exists. It stays here, beside
+ * the route table, so as not to become a second list.
  */
 export function homeRoute(profile: Profile): string {
   return canAccessRoute("/", profile) ? "/" : "/chat";
 }
 
 /**
- * Se este perfil enxerga o detalhe máquina a máquina do Painel.
+ * Whether this profile sees the machine-by-machine detail of the Dashboard.
  *
- * O Painel tem duas vistas do mesmo cluster: o **Fluxo**, que é o desenho da
- * rede, e os **Detalhes**, que são os cards com o estado interno de cada
- * máquina - runtime, memória, faixa de camadas, e os botões de liberar fatia,
- * remover do pipeline e tirar da rede. O mesmo card abre pelo Fluxo, ao clicar
- * numa máquina. Isso é operação do cluster, não do próprio nó: fora do `admin`
- * resta uma vista só, e onde há uma vista só não há o que escolher - o seletor
- * também não aparece.
+ * The Dashboard has two views of the same cluster: the **Flow**, which is the drawing of the
+ * network, and the **Details**, which are the cards with each machine's internal
+ * state - runtime, memory, layer range, and the buttons to release a slice,
+ * remove from the pipeline and leave the network. The same card opens through the Flow, by clicking
+ * on a machine. That is cluster operation, not the node's own: outside `admin`
+ * only one view remains, and where there is only one view there is nothing to choose - the selector
+ * does not appear either.
  *
- * Fica ao lado da tabela de rotas porque é a mesma pergunta ("o que este perfil
- * enxerga"), e porque o Painel e o canvas precisam responder igual: esconder o
- * seletor e continuar abrindo o card pelo clique seria a mesma tela em dois
- * estados diferentes.
+ * It stays beside the route table because it is the same question ("what does this profile
+ * see"), and because the Dashboard and the canvas must answer the same: hiding the
+ * selector and still opening the card by click would be the same screen in two
+ * different states.
  */
 export function canSeePeerDetails(profile: Profile): boolean {
   return profile === "admin";

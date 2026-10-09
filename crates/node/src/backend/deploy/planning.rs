@@ -39,23 +39,23 @@ pub struct MachineView {
     pub(super) holds: Vec<[u32; 2]>,
     /// Range it takes in the plan being shown, if any.
     pub(super) taking: Option<[u32; 2]>,
-    /// Projeção de capacidade desta máquina para o plano em preparo - soma dos
-    /// passos que ela levaria, por GPU. `None` até a pré-visualização
-    /// terminar (ou quando nenhum passo desta máquina está materializado
-    /// localmente ainda). Ver `enrich_capacity_previews`.
+    /// Capacity projection of this machine for the plan being prepared - the sum of the
+    /// steps it would take, per GPU. `None` until the preview
+    /// finishes (or when no step of this machine is materialized
+    /// locally yet). See `enrich_capacity_previews`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) capacity: Option<MachineCapacity>,
 }
 
-/// Projeção de VRAM de uma máquina inteira: a soma, por GPU, de todo passo do
-/// plano que ela levaria. Uma máquina com dois passos não-adjacentes (dois
-/// arquivos, dois processos) soma os dois sobre o mesmo inventário de
-/// dispositivos - é a mesma placa física recebendo os dois.
+/// VRAM projection of a whole machine: the sum, per GPU, of every step of the
+/// plan it would take. A machine with two non-adjacent steps (two
+/// files, two processes) sums both over the same inventory of
+/// devices - it is the same physical card receiving both.
 #[derive(Debug, Clone, Serialize)]
 pub struct MachineCapacity {
     pub(super) fits: bool,
-    /// Algum passo desta máquina foi marcado pela heurística de que o
-    /// `fit_memory` pode aparar o pedido (contexto ou camadas de GPU).
+    /// Some step of this machine was flagged by the heuristic that
+    /// `fit_memory` may trim the request (context or GPU layers).
     pub(super) degraded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) note: Option<String>,
@@ -91,9 +91,9 @@ pub struct StepPart {
     pub(super) source_node_id: Option<String>,
     pub(super) source_host: Option<String>,
     pub(super) source_path: Option<String>,
-    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
-    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
-    /// arquivo solto, e sabe conferir o que chegou.
+    /// Hash of the part at the source. It is what the copy is requested by: this way the
+    /// target writes to `<shard_dir>/<model>/<sha>.gguf` instead of dropping the
+    /// file loose, and knows how to check what arrived.
     pub(super) source_sha256: Option<String>,
     /// True when the source is a virtual range that still has to be cut out
     /// of its whole GGUF before it can be transferred or launched.
@@ -120,9 +120,9 @@ pub struct Step {
     pub(super) source_node_id: Option<String>,
     pub(super) source_host: Option<String>,
     pub(super) source_path: Option<String>,
-    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
-    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
-    /// arquivo solto, e sabe conferir o que chegou.
+    /// Hash of the part at the source. It is what the copy is requested by: this way the
+    /// target writes to `<shard_dir>/<model>/<sha>.gguf` instead of dropping the
+    /// file loose, and knows how to check what arrived.
     pub(super) source_sha256: Option<String>,
     /// True when the source is a virtual range backed by a whole GGUF.
     pub(super) source_needs_split: bool,
@@ -147,17 +147,17 @@ pub struct Step {
     /// The slices this step is assembled from, in layer order. Empty for a
     /// plain step.
     pub(super) parts: Vec<StepPart>,
-    /// Projeção de VRAM/RAM que este passo levaria neste alvo, com os
-    /// parâmetros do plano em preparo. `None` até um passo materializado
-    /// localmente (`target_path.is_some() && !merged`) ser consultado, ou
-    /// quando essa consulta falhou - ver `enrich_capacity_previews`.
+    /// VRAM/RAM projection this step would take on this target, with the
+    /// parameters of the plan being prepared. `None` until a locally materialized
+    /// step (`target_path.is_some() && !merged`) is queried, or
+    /// when that query failed - see `enrich_capacity_previews`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) capacity: Option<crate::webui::CapacityPreview>,
 }
 
-/// Um rank de uma rodada TP já fatiada. Diferente de um `Step`, cada rank
-/// cobre o modelo inteiro e deve ser iniciado no peer correspondente da
-/// coletiva, sem passar novamente pelo extrator de shards.
+/// One rank of an already sliced TP round. Unlike a `Step`, each rank
+/// covers the whole model and must be started on the corresponding peer of the
+/// collective, without going through the shard extractor again.
 #[derive(Debug, Clone, Serialize)]
 pub struct TpTarget {
     pub(super) rank: u32,
@@ -192,7 +192,7 @@ pub struct Plan {
     pub(super) mmproj_path: Option<String>,
     /// All compatible projectors reported by the selected pipeline head.
     pub(super) mmproj_candidates: Vec<String>,
-    /// Motivo do catálogo quando nenhum projetor pôde ser associado.
+    /// Catalog reason when no projector could be associated.
     pub(super) mmproj_reason: Option<String>,
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
@@ -201,13 +201,13 @@ pub struct Plan {
     pub(super) inference_mode_supported: bool,
     /// Explicit reason when the selected execution mode cannot be honored.
     pub(super) inference_mode_reason: Option<String>,
-    /// Capacidades condicionais apuradas para os alvos deste plano.
+    /// Conditional capabilities determined for the targets of this plan.
     pub(super) capabilities: crate::capabilities::DeploymentCapabilities,
     /// Real cut points from the whole GGUF proposer, when this model can be
     /// split locally for a destination that lacks the selected slice.
     pub(super) layer_options: Option<WholeLayerOptions>,
-    /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
-    /// usa isto para gerar os alvos dos workers.
+    /// Tensor parallelism group, when kind == tensor_parallel. The launch
+    /// uses this to generate the workers' targets.
     pub(super) tp: Option<TpLaunch>,
     /// How many layers the original model has. `None` means nobody could say —
     /// which is a refusal (`blocked`), never a zero passed down the line.
@@ -218,8 +218,8 @@ pub struct Plan {
     /// the model has 32 layers or 40 and the tail is missing from the cluster.
     pub(super) total_layers_inferred: bool,
     pub(super) steps: Vec<Step>,
-    /// Alvos por rank quando o grupo foi obtido de `tp_parts`. Fica vazio no
-    /// caminho de fallback que extrai os ranks de modelos inteiros.
+    /// Targets per rank when the group was obtained from `tp_parts`. Stays empty on the
+    /// fallback path that extracts the ranks from whole models.
     pub(super) tp_targets: Vec<TpTarget>,
     /// Every layer from 0 to `total_layers` is covered exactly once.
     pub(super) complete: bool,
@@ -253,8 +253,8 @@ pub struct Plan {
     pub(super) prompt_tokens: u32,
     /// Prompt tokens per round trip through the pipeline, under `params`.
     pub(super) chunk_tokens: u32,
-    /// Rotas candidatas entre os hops escolhidos. A latência pode ser nula
-    /// quando o gateway ainda não mediu o peer.
+    /// Candidate routes between the chosen hops. The latency may be null
+    /// when the gateway has not measured the peer yet.
     pub(super) route_options: Vec<RouteOption>,
     pub(super) load_distribution: Vec<LoadDistribution>,
     /// Vision projector for the head and MTP draft for the tail: the
@@ -283,8 +283,8 @@ pub struct LoadDistribution {
 #[derive(Debug, Clone)]
 pub(super) struct RequestedModelIdentity {
     pub(super) proof: Option<crate::deployment::DeploymentIdentity>,
-    /// Caminhos só valem como prova no peer que os anunciou. Eles existem
-    /// mesmo quando o hash não pôde ser calculado, para a reserva aprovada.
+    /// Paths only count as proof on the peer that announced them. They exist
+    /// even when the hash could not be computed, for the approved reservation.
     pub(super) paths_by_peer: HashMap<String, String>,
 }
 
@@ -352,9 +352,9 @@ pub(super) fn node_state_detail(snapshot: &serde_json::Value) -> String {
 
 pub(super) const DEPLOY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const DEPLOY_IDLE_POLL: Duration = Duration::from_millis(250);
-/// Recarregar um modelo é minutos; um `redeploy` espera cada máquina voltar a
-/// servir antes de mexer na próxima. O mesmo teto da chamada HTTP de
-/// reconfiguração.
+/// Reloading a model takes minutes; a `redeploy` waits for each machine to come back to
+/// serving before touching the next. The same ceiling as the HTTP call for
+/// reconfiguration.
 pub(super) const REDEPLOY_READY_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Every distinct range anyone holds, in layer order.
@@ -1173,23 +1173,23 @@ pub(super) fn plan_with_rtt_options(
         }
     }
 
-    // ── Tensor parallelism: o primary é quem o operador escolheu ─────────────
+    // ── Tensor parallelism: the primary is who the operator chose ────────────
     //
-    // O modelo inteiro é um candidato só; o alvo dele é o primary (rank 0), não
-    // a máquina que o planejador automático sugeriria. As checagens do grupo
-    // (tamanho, workers no cluster, modelo inteiro presente) recusam o plano
-    // antes da checagem de shardabilidade, que lê o GGUF e roda no endpoint
+    // The whole model is a single candidate; its target is the primary (rank 0), not
+    // the machine the automatic planner would suggest. The group checks
+    // (size, workers in the cluster, whole model present) refuse the plan
+    // before the shardability check, which reads the GGUF and runs on the endpoint
     // `/api/ui/tp/check`.
     if kind == DeployKind::TensorParallel {
         if let Some(tp) = &tp {
             if let Some(reason) = tp_group_checks(tp, machines, group) {
                 blocked.get_or_insert(reason);
             }
-            // A seleção da tela pode conter o modelo inteiro uma vez para o
-            // primary e outra vez para um worker. Worker é rank da coletiva,
-            // não etapa adicional do pipeline. Mantemos somente a linha do
-            // primary, preservando seus overrides, e `launch_targets` cria os
-            // workers exatamente uma vez abaixo.
+            // The screen's selection may contain the whole model once for the
+            // primary and once more for a worker. A worker is a rank of the collective,
+            // not an additional pipeline stage. We keep only the primary's row,
+            // preserving its overrides, and `launch_targets` creates the
+            // workers exactly once below.
             if let Some(primary_index) = chosen
                 .iter()
                 .position(|(_, target, _)| target == &tp.primary_node_id)
@@ -1523,9 +1523,9 @@ pub(super) fn plan_with_rtt_options(
                 start_layer,
                 end_layer,
                 total_layers,
-                // O que o operador lê. A identidade de verdade é o hash da
-                // parte, que viaja em `part_sha256`; um "qwen3-8b L0-15" aqui
-                // é rótulo de tela, não chave de nada.
+                // What the operator reads. The real identity is the hash of the
+                // part, which travels in `part_sha256`; a "qwen3-8b L0-15" here
+                // is a screen label, not the key of anything.
                 name: format!("{group} L{start_layer}-{end_layer}"),
                 size_bytes,
                 target_node_id: target_id.clone(),
@@ -1545,8 +1545,8 @@ pub(super) fn plan_with_rtt_options(
                 note,
                 merged: true,
                 parts,
-                // A junção ainda não aconteceu - não há arquivo local para
-                // consultar (ver `enrich_capacity_previews`).
+                // The join has not happened yet - there is no local file to
+                // query (see `enrich_capacity_previews`).
                 capacity: None,
             });
         } else {
@@ -1754,9 +1754,9 @@ pub(super) fn plan_with_rtt_options(
                 .iter()
                 .find(|s| s.target_node_id == m.node_id)
                 .map(|s| [s.start_layer, s.end_layer]),
-            // Preenchida depois, de forma assíncrona, por
-            // `enrich_capacity_previews` - este planejador é síncrono e não
-            // fala com a rede.
+            // Filled in later, asynchronously, by
+            // `enrich_capacity_previews` - this planner is synchronous and does not
+            // talk to the network.
             capacity: None,
         })
         .collect();
@@ -1989,12 +1989,12 @@ pub(super) fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> V
         .collect()
 }
 
-/// Checagem remota de shardabilidade: pergunta ao primary (o dono do modelo
-/// inteiro) se o GGUF dele dá para partir em `tp_size` ranks, sem escrever nada.
+/// Remote shardability check: asks the primary (the owner of the whole
+/// model) whether its GGUF can be split into `tp_size` ranks, without writing anything.
 ///
-/// `Some(motivo)` = o plano deve ser recusado. A checagem falha fechada: se o
-/// primary não responder (ou for um binário antigo sem a rota), o plano é
-/// recusado com um motivo honesto, em vez de deixar o job falhar na metade do
+/// `Some(reason)` = the plan must be refused. The check fails closed: if the
+/// primary does not answer (or is an old binary without the route), the plan is
+/// refused with an honest reason, instead of letting the job fail halfway through the
 /// apply.
 pub(super) async fn tp_shardability_check(
     state: &GatewayState,
@@ -2020,11 +2020,11 @@ pub(super) async fn tp_shardability_check(
         ));
     };
 
-    // `/api/ui/tp/check` é autenticada como todo `/api/ui/*` de operador: sem a
-    // chave, o primary responde 401 e a checagem nunca passa - em nenhuma
-    // máquina, porque isto não depende de quem é o primary. `for_peer` resolve
-    // só o TLS (cliente pinado por node_id); credencial é por requisição, como
-    // no resto do arquivo.
+    // `/api/ui/tp/check` is authenticated like every operator `/api/ui/*`: without the
+    // key, the primary answers 401 and the check never passes - on no
+    // machine, because this does not depend on who the primary is. `for_peer` resolves
+    // only the TLS (client pinned by node_id); the credential is per request, as
+    // in the rest of the file.
     let body = json!({ "model_path": path, "tp_size": tp.size });
     let resp = match state
         .control_post_json(&primary_peer, "/api/ui/tp/check", &body, PEER_TIMEOUT * 4)
@@ -2050,17 +2050,17 @@ pub(super) async fn tp_shardability_check(
     tp_check_verdict(&body, &primary.label())
 }
 
-/// Como se lê a resposta de `/api/ui/tp/check`.
+/// How the response of `/api/ui/tp/check` is read.
 ///
-/// Separado da chamada para ser testável sem peer vivo - e porque o ramo sem
-/// `ok` já mentiu uma vez. `/api/ui/tp/check` é rota autenticada
-/// (`webui::tp_check` recebe `ConnectionAuth`), e um peer que recusa devolve
-/// `{"error":"missing Authorization header"}`: JSON válido, sem `ok`. Chamar
-/// isso de "binário antigo" mandou o operador conferir a versão do binário nas
-/// duas máquinas enquanto o defeito real era a credencial que
-/// `tp_shardability_check` nem enviava (17/08, com Mac e ksia no mesmo commit).
-/// Quem recusa costuma dizer por quê; repetir a razão dele é sempre melhor que
-/// adivinhar a nossa.
+/// Separated from the call to be testable without a live peer - and because the branch without
+/// `ok` has lied once already. `/api/ui/tp/check` is an authenticated route
+/// (`webui::tp_check` receives `ConnectionAuth`), and a peer that refuses returns
+/// `{"error":"missing Authorization header"}`: valid JSON, without `ok`. Calling
+/// that "old binary" sent the operator to check the binary version on
+/// both machines while the real defect was the credential that
+/// `tp_shardability_check` did not even send (17/08, with Mac and ksia on the same commit).
+/// Whoever refuses usually says why; repeating their reason is always better than
+/// guessing ours.
 pub(super) fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<String> {
     match body.get("ok").and_then(|v| v.as_bool()) {
         Some(true) => None,

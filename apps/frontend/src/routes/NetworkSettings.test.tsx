@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 /**
- * Quem pode virar o TLS do cluster, e o que vê quem não pode.
+ * Who can flip the cluster's TLS, and what someone who cannot sees.
  *
- * A autoridade de verdade é do servidor (`save_tls` responde 403 fora do
- * principal). O que se afirma aqui é que a tela não mente antes do clique: no
- * principal o interruptor funciona, e num nó comum ele aparece desligado para
- * uso mas o **estado** continua visível - esconder o painel faria o operador de
- * um nó comum não ter onde ver se o tráfego da máquina dele está cifrado.
+ * The real authority is the server's (`save_tls` answers 403 outside the
+ * principal). What is asserted here is that the screen does not lie before the
+ * click: on the principal the switch works, and on an ordinary node it shows
+ * disabled for use but the **state** stays visible - hiding the panel would leave
+ * the operator of an ordinary node nowhere to see whether their machine's traffic is encrypted.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -458,7 +458,7 @@ describe("NetworkParticipants", () => {
     expect(screen.getByText(/relé 82\.25\.69\.187:52777/)).toBeTruthy();
     expect(screen.getByText(/relé membro 198\.51\.100\.4:52777/)).toBeTruthy();
     expect(screen.getByText(/189\.75\.167\.63:28515/)).toBeTruthy();
-    // O anunciado fica só no `title`, para comparação.
+    // The announced one stays only in the `title`, for comparison.
     expect(screen.queryByText(/2804:d55::1/)).toBeNull();
     expect(screen.getByTitle("anunciado: [2804:d55::1]:42777")).toBeTruthy();
   });

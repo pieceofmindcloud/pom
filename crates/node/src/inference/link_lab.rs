@@ -1,21 +1,21 @@
-//! Bancada do custo de rede por ficha no **salto interno**.
+//! Bench of the network cost per token on the **internal hop**.
 //!
-//! O que ela mede não é o motor nem a latência: é quantos bytes uma ficha
-//! custa **no soquete**, por travessia de aresta da pipeline, e quantas
-//! ligações o caminho abre para produzir N fichas. Por isso cada hop falso é
-//! servido por cima de um `TcpStream` embrulhado num contador
-//! ([`Counted`]) - o número não sai de estimativa nem de `Content-Length`, sai
-//! dos bytes que realmente passaram.
+//! What it measures is not the engine nor the latency: it is how many bytes a
+//! token costs **on the socket**, per pipeline-edge traversal, and how many
+//! connections the path opens to produce N tokens. That is why each fake hop is
+//! served on top of a `TcpStream` wrapped in a counter
+//! ([`Counted`]) - the number comes from neither an estimate nor `Content-Length`, it comes
+//! from the bytes that really passed.
 //!
-//! O motor é falso de propósito: um hop que decodifica de verdade mediria a
-//! GPU, não o transporte. O que é real aqui é tudo que o transporte usa -
-//! [`crate::wire`], o [`crate::relay::BatchCoordinator`], o
-//! [`crate::relay::send_frame_or_tunnel`] e o canal de [`crate::link`].
+//! The engine is fake on purpose: a hop that really decodes would measure the
+//! GPU, not the transport. What is real here is everything the transport uses -
+//! [`crate::wire`], the [`crate::relay::BatchCoordinator`], the
+//! [`crate::relay::send_frame_or_tunnel`] and the [`crate::link`] channel.
 //!
-//! As duas configurações comparadas são a **mesma bancada com um bit de
-//! diferença**: o hop anuncia ou não `transport/link-v1`. Sem ele, cada ficha
-//! reconstrói um `POST /v1/step`; com ele, as fichas sucessivas viajam como
-//! quadros num único corpo em fluxo.
+//! The two configurations compared are the **same bench with a one-bit
+//! difference**: the hop advertises `transport/link-v1` or it does not. Without it, each token
+//! rebuilds a `POST /v1/step`; with it, successive tokens travel as
+//! frames in a single streamed body.
 
 #![cfg(test)]
 
@@ -38,11 +38,11 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tower::Service;
 
-/// Igual ao Qwen3.8-27B do cluster do captain, como em `direct_lab`.
+/// Same as the captain cluster's Qwen3.8-27B, as in `direct_lab`.
 const HIDDEN_DIM: usize = 5120;
 const DECODE_TOKENS: usize = 40;
 
-// ── Contador de bytes no soquete ─────────────────────────────────────────────
+// ── Byte counter on the socket ───────────────────────────────────────────────
 
 #[derive(Default)]
 struct Counters {
@@ -105,9 +105,9 @@ struct Hop {
     clients: crate::peer_client::PeerClients,
 }
 
-/// Responde um quadro de lote com um item por item recebido, repassando ao
-/// próximo hop quando o quadro carrega `next_hops` - exatamente a forma do
-/// `relay_and_bubble` de produção, com o motor trocado por nada.
+/// Answers a batch frame with one item per item received, forwarding to the
+/// next hop when the frame carries `next_hops` - exactly the shape of
+/// production's `relay_and_bubble`, with the engine swapped for nothing.
 async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
     let (header, items) = match wire::decode_batch_items(&body) {
         Ok(decoded) => decoded,
@@ -208,8 +208,8 @@ async fn handle_link(State(hop): State<Hop>, body: axum::body::Body) -> Response
     })
 }
 
-/// Sobe um hop e devolve `(url, contadores)`. O `serve_connection` é chamado
-/// à mão porque é o único jeito de pôr o contador **debaixo** do HTTP.
+/// Brings up a hop and returns `(url, counters)`. `serve_connection` is called
+/// by hand because it is the only way to put the counter **under** the HTTP.
 async fn spawn_hop(hop: Hop) -> (String, Arc<Counters>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -269,19 +269,19 @@ fn step_for(node_id: &str, url: &str, layer: u32, link: bool) -> PipelineStep {
     }
 }
 
-// ── A medição ────────────────────────────────────────────────────────────────
+// ── The measurement ──────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 struct Measurement {
-    /// Bytes lidos e escritos no soquete do primeiro hop, por ficha.
+    /// Bytes read and written on the first hop's socket, per token.
     bytes_per_token_first_hop: f64,
-    /// Idem, somando todos os hops da cadeia.
+    /// Same, summing all the hops of the chain.
     bytes_per_token_all_hops: f64,
-    /// Conexões TCP abertas contra o primeiro hop.
+    /// TCP connections opened against the first hop.
     connections_first_hop: u64,
-    /// Tamanho do quadro de aplicação enviado na primeira travessia, e quanto
-    /// dele é o estado oculto. É o que separa o custo do transporte do custo
-    /// irredutível do tensor.
+    /// Size of the application frame sent on the first traversal, and how much
+    /// of it is the hidden state. It is what separates the transport cost from the
+    /// irreducible cost of the tensor.
     frame_bytes: u64,
     hidden_state_bytes: u64,
     ms_per_token: f64,
@@ -310,8 +310,8 @@ async fn measure(hops: usize, link: bool, tokens: usize) -> Measurement {
     let residual = vec![0.25f32; HIDDEN_DIM];
     let shape = vec![1usize, HIDDEN_DIM];
 
-    // Aquecimento: a primeira travessia abre a conexão (e o canal), e o custo
-    // de estabelecimento não é custo por ficha.
+    // Warm-up: the first traversal opens the connection (and the channel), and the
+    // setup cost is not a per-token cost.
     let mut transport = "";
     let warm = forward(&clients, &steps, &session, (&residual, shape.clone()))
         .await
@@ -384,13 +384,13 @@ async fn measure(hops: usize, link: bool, tokens: usize) -> Measurement {
     }
 }
 
-/// A lei desta bancada: **a ligação persistente não pode custar mais bytes por
-/// ficha que a requisição por ficha**, e tem que atravessar sem abrir conexão
-/// nova por ficha.
+/// The law of this bench: **the persistent link must not cost more bytes per
+/// token than the per-token request**, and it must cross without opening a new
+/// connection per token.
 ///
-/// O número absoluto é registrado por `println!` para entrar no commit e na
-/// documentação; o que o teste guarda é a comparação, que não depende da
-/// máquina.
+/// The absolute number is recorded by `println!` to go into the commit and the
+/// documentation; what the test guards is the comparison, which does not depend
+/// on the machine.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_persistent_link_costs_fewer_bytes_per_token() {
     for hops in [1usize, 2, 3] {
@@ -427,8 +427,8 @@ async fn the_persistent_link_costs_fewer_bytes_per_token() {
     }
 }
 
-/// O handoff MTP tem metadados extras, mas continua sendo um frame de
-/// `/v1/step` compatível com o envelope do canal persistente.
+/// The MTP handoff has extra metadata, but it is still a `/v1/step` frame
+/// compatible with the persistent channel's envelope.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mtp_handoff_uses_the_persistent_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
@@ -463,9 +463,9 @@ async fn mtp_handoff_uses_the_persistent_link() {
     assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
 }
 
-/// O prefill direto leva `reply_to`, por isso não pode entrar no
-/// `BatchCoordinator`. Ele ainda precisa usar a mesma ligação persistente do
-/// decode, ou o primeiro handoff continuaria pagando libp2p por chunk.
+/// The direct prefill carries `reply_to`, so it cannot enter the
+/// `BatchCoordinator`. It still needs to use the same persistent link as the
+/// decode, or the first handoff would keep paying libp2p per chunk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn direct_prefill_handoff_uses_the_persistent_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
@@ -501,14 +501,14 @@ async fn direct_prefill_handoff_uses_the_persistent_link() {
     assert_eq!(crate::link::channels_opened(&node_id, &url), 1);
 }
 
-/// Um hop que anuncia o canal mas não o serve não pode matar a geração: a
-/// travessia degrada para o caminho por requisição e a telemetria diz isso.
+/// A hop that advertises the channel but does not serve it must not kill the generation: the
+/// traversal degrades to the per-request path and the telemetry says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unavailable_channel_degrades_to_the_per_request_path() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    // Só `/v1/step`: `/v1/link` responde 404 e o canal não abre.
+    // Only `/v1/step`: `/v1/link` answers 404 and the channel does not open.
     let app = Router::new()
         .route("/v1/step", post(fake_step))
         .with_state(Hop {
@@ -557,10 +557,10 @@ async fn an_unavailable_channel_degrades_to_the_per_request_path() {
     );
 }
 
-/// O hop interno de um `remote-stream` continua sendo autoregressivo, mas não
-/// precisa reconstruir um POST a cada ativação. A capability do link deve
-/// valer também quando a flag `remote_stream` impede a coalescência entre
-/// sessões.
+/// The internal hop of a `remote-stream` is still autoregressive, but it does not
+/// need to rebuild a POST on every activation. The link capability must
+/// also hold when the `remote_stream` flag prevents coalescing between
+/// sessions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_internal_remote_stream_reuses_the_persistent_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(30));
@@ -617,8 +617,8 @@ async fn the_internal_remote_stream_reuses_the_persistent_link() {
     );
 }
 
-/// Duas sessões atravessando a mesma aresta compartilham **uma** ligação, e o
-/// `batch_id` é o que as mantém separadas.
+/// Two sessions crossing the same edge share **one** link, and the
+/// `batch_id` is what keeps them separate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_sessions_share_the_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(30));

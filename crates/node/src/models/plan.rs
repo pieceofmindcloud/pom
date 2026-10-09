@@ -40,7 +40,7 @@ pub struct PeerBudget {
     pub has_model: bool,
 }
 
-/// Parâmetros do cache usados para transformar a geometria GGUF em bytes.
+/// Cache parameters used to turn the GGUF geometry into bytes.
 #[derive(Debug, Clone, Copy)]
 pub struct KvPlanParams {
     pub n_ctx: u32,
@@ -92,8 +92,8 @@ pub struct SplitPlan {
 
 // ── Planner ──────────────────────────────────────────────────────────────────
 
-/// Variante do planejador que recusa uma faixa quando peso + KV não cabem no
-/// orçamento de memória do peer.
+/// Planner variant that refuses a range when weight + KV do not fit in the
+/// peer's memory budget.
 pub fn plan_split_with_kv(
     model_path: &str,
     layout: &GgufLayout,
@@ -263,10 +263,9 @@ fn usable_memory_bytes(budget_mb: f64, reserve: f64) -> Result<u64> {
     Ok(bytes.floor() as u64)
 }
 
-/// `pub(crate)`: também usado pela pré-visualização de capacidade do
-/// planejador de implantação (`crate::deploy::capacity_preview_endpoint`),
-/// que cobra peso e KV de uma faixa exatamente como o planejador de
-/// fatiamento faz aqui.
+/// `pub(crate)`: also used by the capacity preview of the deployment
+/// planner (`crate::deploy::capacity_preview_endpoint`), which charges the
+/// weight and KV of a range exactly as the slicing planner does here.
 pub(crate) fn range_cost(
     layout: &GgufLayout,
     info: Option<&GgufInfo>,
@@ -296,12 +295,12 @@ pub(crate) fn range_cost(
     Ok((weight_bytes, kv_bytes, total_bytes))
 }
 
-/// O nome do modelo tirado do caminho do arquivo, sem diretório nem `.gguf`.
+/// The model name taken from the file path, without directory or `.gguf`.
 ///
-/// Já teve uma segunda função - descascar um sufixo `_<inicio>_<fim>` para que
-/// refatiar uma fatia não empilhasse faixas no nome. Isso morreu junto com a
-/// convenção: a faixa de uma parte mora no `.pom`, e o arquivo se chama pelo
-/// próprio hash.
+/// It once had a second job - peeling off a `_<inicio>_<fim>` suffix so that
+/// re-slicing a slice would not stack ranges in the name. That died together
+/// with the convention: the range of a part lives in the `.pom`, and the file
+/// is named after its own hash.
 pub fn base_name_of(model_path: &str) -> String {
     Path::new(model_path)
         .file_stem()
@@ -315,19 +314,19 @@ pub fn base_name_of(model_path: &str) -> String {
 pub struct SliceOutcome {
     pub output_path: String,
     pub bytes: u64,
-    /// sha256 do arquivo — o nome dele em disco e a identidade dele no `.pom`.
+    /// sha256 of the file - its name on disk and its identity in the `.pom`.
     pub sha256: String,
     /// True when the slice already existed and was reused.
     pub reused: bool,
 }
 
-/// Grava a fatia num temporário e só a batiza depois de saber o hash.
+/// Writes the slice to a temporary file and only names it once the hash is known.
 ///
-/// O nome final é o conteúdo, e o conteúdo só se conhece no fim: por isso o
-/// corte sai para `<uuid>.part` e vira `<sha256>.gguf` num `rename`, que é
-/// atômico no mesmo sistema de arquivos. É também o que impede um corte
-/// interrompido de ficar parecendo fatia boa - o defeito que o critério antigo
-/// ("existe e tem mais de 1 KB") não conseguia enxergar.
+/// The final name is the content, and the content is only known at the end:
+/// that is why the cut goes out to `<uuid>.part` and becomes `<sha256>.gguf`
+/// in a `rename`, which is atomic on the same file system. It is also what
+/// keeps an interrupted cut from looking like a good slice - the defect the
+/// old criterion ("exists and is larger than 1 KB") could not see.
 async fn write_then_name<F>(output_dir: &Path, cut: F) -> Result<SliceOutcome>
 where
     F: FnOnce(PathBuf) -> tokio::task::JoinHandle<Result<crate::splitter::WrittenSlice>>,
@@ -344,8 +343,8 @@ where
         })?;
 
     let destination = crate::pom::part_path(output_dir, &written.sha256)?;
-    // Já existir é o caso bom: outra rodada produziu bytes idênticos, e o
-    // endereço de conteúdo diz que um dos dois arquivos é redundante.
+    // Already existing is the good case: another round produced identical
+    // bytes, and the content address says one of the two files is redundant.
     if destination.exists() {
         let _ = std::fs::remove_file(&temp);
         info!(
@@ -365,12 +364,12 @@ where
     })
 }
 
-/// A parte já está aqui, com este hash exato?
+/// Is the part already here, with this exact hash?
 ///
-/// Reaproveitar passa a exigir saber **qual** parte se quer, e não adivinhar um
-/// nome: é o `.pom` que diz o hash. Em troca some a classe inteira de defeito
-/// em que um arquivo com o nome certo e o conteúdo errado era carregado como se
-/// estivesse bom.
+/// Reusing now requires knowing **which** part is wanted, rather than guessing
+/// a name: it is the `.pom` that states the hash. In exchange, the whole class
+/// of defect where a file with the right name and the wrong content was loaded
+/// as if it were good disappears.
 fn already_have(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
     let path = crate::pom::part_path(output_dir, sha256).ok()?;
     let meta = std::fs::metadata(&path).ok()?;
@@ -393,9 +392,9 @@ fn already_have(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
 ///
 /// `on_progress` is called with 0..=100 as the slicer writes bytes.
 ///
-/// `expected_sha256` é o que o `.pom` diz que esta parte tem que ser. Com ele,
-/// reaproveitar é uma checagem de endereço de conteúdo; sem ele (uma rodada
-/// nova, que ainda não conhece o hash), corta-se e o hash sai do corte.
+/// `expected_sha256` is what the `.pom` says this part has to be. With it,
+/// reusing is a content address check; without it (a new round, which does not
+/// know the hash yet), the cut is made and the hash comes out of the cut.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_shard(
     source_model: &str,
@@ -454,19 +453,19 @@ pub async fn extract_shard(
     .await
 }
 
-/// Extrai o shard de tensor de um rank de tensor parallelism (caminho C).
+/// Extracts the tensor shard of one tensor parallelism rank (path C).
 ///
-/// Espelho de `extract_shard`: roda `splitter::shard_tensor_parallel` num
-/// `spawn_blocking`, reaproveita arquivo já completo e apaga o parcial no
-/// erro. O shard NÃO é carregável pelo llama.cpp de hoje; é a metade que o
-/// fork do caminho C carrega junto com a coletiva all-reduce.
+/// Mirror of `extract_shard`: runs `splitter::shard_tensor_parallel` in a
+/// `spawn_blocking`, reuses an already complete file and deletes the partial
+/// one on error. The shard is NOT loadable by today's llama.cpp; it is the
+/// half that the path C fork loads together with the all-reduce collective.
 ///
-/// O carimbo `pom.tp_format` continua sendo gravado, mas deixou de ser o que
-/// decide reaproveitar: um shard escrito por uma regra antiga tem **outros
-/// bytes**, logo outro hash, logo outro nome. O defeito de 17/08 - a ksia
-/// carregando o mesmo shard obsoleto durante três correções seguidas, com o log
-/// anunciando "reaproveitando" a cada tentativa - não tem como se repetir
-/// quando o nome do arquivo é o conteúdo dele.
+/// The `pom.tp_format` stamp is still written, but it is no longer what
+/// decides reuse: a shard written by an old rule has **other bytes**, hence
+/// another hash, hence another name. The defect of 17/08 - the ksia loading
+/// the same obsolete shard through three fixes in a row, with the log
+/// announcing "reusing" on every attempt - cannot repeat itself when
+/// the file name is its content.
 pub async fn extract_tp_shard(
     source_model: &str,
     output_dir: &Path,
@@ -488,12 +487,12 @@ pub async fn extract_tp_shard(
     .await
 }
 
-// ── Fatias de tamanhos diferentes ────────────────────────────────────────────
+// ── Slices of different sizes ────────────────────────────────────────────────
 //
-// As máquinas do cluster não são parecidas, então dividir em partes iguais é a
-// resposta errada quase sempre: quem manda no tamanho de uma fatia é a memória
-// da máquina que vai recebê-la. Aqui o pedido é em bytes e a resposta é em
-// camadas, porque camada é a unidade que `split_model.py` conhece.
+// The machines of the cluster are not alike, so splitting into equal parts is
+// almost always the wrong answer: what dictates the size of a slice is the
+// memory of the machine that will receive it. Here the request is in bytes and
+// the answer is in layers, because the layer is the unit `split_model.py` knows.
 
 /// One slice the operator asked for.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -510,8 +509,8 @@ impl SizedSlice {
         }
     }
 
-    /// "O resto do modelo" — a conveniência que evita erro de arredondamento na
-    /// última fatia.
+    /// "The rest of the model" - the convenience that avoids a rounding error
+    /// in the last slice.
     fn rest() -> Self {
         Self { target_mb: None }
     }
@@ -616,7 +615,7 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
             continue;
         }
 
-        // "O resto" takes everything left. The final entry is always the rest,
+        // "The rest" takes everything left. The final entry is always the rest,
         // even when an older client still sends a numeric target for it.
         let take_rest = slice.target_mb.is_none() || last_requested;
         let (end, too_small) = if take_rest {
@@ -636,8 +635,8 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
             if fits_one {
                 (end - 1, false)
             } else {
-                // Uma camada é o mínimo indivisível: entregamos uma e dizemos
-                // que o alvo não cabia, em vez de inventar meia camada.
+                // One layer is the indivisible minimum: we deliver one and say
+                // the target did not fit, instead of inventing half a layer.
                 (pos, true)
             }
         };
@@ -676,8 +675,8 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
 
         pos = end + 1;
         if take_rest && !last_requested {
-            // "O resto" no meio da lista engole tudo; as seguintes ficam vazias
-            // e o aviso acima explica por quê.
+            // "The rest" in the middle of the list swallows everything; the
+            // following ones are left empty and the warning above explains why.
             continue;
         }
     }
@@ -693,9 +692,9 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         )
     };
 
-    // A cobertura não vira aviso: ela já está aqui em número (`covered_layers`,
-    // `missing_range`, `missing_bytes`), e quem mostra escreve uma frase só. Dois
-    // textos dizendo a mesma falta é ruído.
+    // Coverage does not become a warning: it is already here as numbers
+    // (`covered_layers`, `missing_range`, `missing_bytes`), and whoever shows it
+    // writes a single sentence. Two texts stating the same gap is noise.
     let blocked = ranges.iter().any(|r| r.empty || r.too_small);
 
     // NextN/MTP (Qwen3.5+): the predictor block lives only in the model's very
@@ -1112,7 +1111,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!outcome.reused);
-        // O nome é o conteúdo: `<sha256>.gguf`, e nada mais.
+        // The name is the content: `<sha256>.gguf`, and nothing else.
         assert!(outcome
             .output_path
             .ends_with(&format!("{}.gguf", outcome.sha256)));
@@ -1125,7 +1124,7 @@ mod tests {
             "the hash of the write pass must match that of the file on disk"
         );
 
-        // Sabendo o hash, reaproveita sem reescrever.
+        // Knowing the hash, it reuses without rewriting.
         let again = extract_tp_shard(
             whole.to_str().unwrap(),
             &dir,
@@ -1145,14 +1144,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Shard escrito por uma regra antiga **não** é reaproveitado.
+    /// A shard written by an old rule is **not** reused.
     ///
-    /// Este é o teste que impede a repetição de 17/08: três correções seguidas
-    /// no fatiamento por tensor, e a ksia carregando o mesmo shard obsoleto em
-    /// todas, porque o critério de reuso era "existe e tem mais de 1 KB".
-    /// Agora o nome do arquivo é o hash do conteúdo, então "regra antiga"
-    /// e "regra atual" nem disputam o mesmo nome - o reuso só acerta quando os
-    /// bytes são exatamente os pedidos.
+    /// This is the test that prevents a repeat of 17/08: three fixes in a row
+    /// to the tensor slicing, and the ksia loading the same obsolete shard in
+    /// all of them, because the reuse criterion was "exists and is larger than
+    /// 1 KB". Now the file name is the hash of the content, so "old rule" and
+    /// "current rule" do not even compete for the same name - reuse only hits
+    /// when the bytes are exactly the ones requested.
     #[tokio::test]
     async fn a_shard_from_an_older_rule_is_rewritten_not_reused() {
         let dir = std::env::temp_dir().join(format!("pom-tp-stale-{}", std::process::id()));
@@ -1161,9 +1160,9 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, crate::splitter::test_gguf_bytes(32)).unwrap();
 
-        // Um "shard" grande que nunca passou pelo fatiador, gravado sob um hash
-        // que não é o dele - exatamente o que uma regra antiga deixava para
-        // trás.
+        // A large "shard" that never went through the slicer, written under a
+        // hash that is not its own - exactly what an old rule used to leave
+        // behind.
         let lying_hash = "b".repeat(64);
         let old = crate::pom::part_path(&dir, &lying_hash).unwrap();
         std::fs::write(&old, vec![0u8; 4096]).unwrap();
@@ -1180,7 +1179,7 @@ mod tests {
             "the new shard cannot inherit the name of the junk that was in the folder"
         );
 
-        // E o que saiu tem o carimbo da regra atual.
+        // And what came out carries the stamp of the current rule.
         let info = crate::gguf::read_info(std::path::Path::new(&outcome.output_path)).unwrap();
         let stamp = info
             .tp_stamp
@@ -1191,11 +1190,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    // ── Fatias de tamanhos diferentes ────────────────────────────────────────
+    // ── Slices of different sizes ────────────────────────────────────────────
     //
-    // Layout de referência: 32 camadas de 200 MB, embedding de 100 MB em toda
-    // fatia, cabeça de 100 MB só na última. Uma fatia de N camadas que não é a
-    // última custa 100 + 200N MB.
+    // Reference layout: 32 layers of 200 MB, a 100 MB embedding in every
+    // slice, a 100 MB head only in the last one. A slice of N layers that is
+    // not the last costs 100 + 200N MB.
 
     #[test]
     fn sizes_become_layer_ranges_and_the_rounding_is_visible() {
@@ -1210,18 +1209,18 @@ mod tests {
         )
         .unwrap();
 
-        // 100 de embedding + 5×200 = 1100 → camadas 0-4, exatamente no alvo.
+        // 100 of embedding + 5×200 = 1100 → layers 0-4, exactly on target.
         assert_eq!(
             (plan.ranges[0].start_layer, plan.ranges[0].end_layer),
             (0, 4)
         );
         assert_eq!(plan.ranges[0].bytes as f64 / MB, 1100.0);
-        // 100 + 10×200 = 2100 → camadas 5-14.
+        // 100 + 10×200 = 2100 → layers 5-14.
         assert_eq!(
             (plan.ranges[1].start_layer, plan.ranges[1].end_layer),
             (5, 14)
         );
-        // O resto leva 15-31 e paga a cabeça.
+        // The rest takes 15-31 and pays for the head.
         assert!(plan.ranges[2].is_rest);
         assert_eq!(
             (plan.ranges[2].start_layer, plan.ranges[2].end_layer),
@@ -1235,7 +1234,7 @@ mod tests {
     #[test]
     fn a_target_that_falls_between_layers_rounds_down_and_says_so() {
         let l = layout(32, 200.0);
-        // 1250 MB dá para 5 camadas (1100) mas não para 6 (1300).
+        // 1250 MB is enough for 5 layers (1100) but not for 6 (1300).
         let plan = plan_by_size(&l, &[SizedSlice::of_mb(1250.0), SizedSlice::rest()]).unwrap();
         assert_eq!(plan.ranges[0].layers, 5);
         assert_eq!(plan.ranges[0].target_mb, Some(1250.0));
@@ -1309,7 +1308,7 @@ mod tests {
         assert!(plan.complete && !plan.blocked);
         for (i, r) in plan.ranges.iter().enumerate() {
             assert_eq!(r.layers, 8);
-            // A última entrada é o resto, mesmo no atalho de partes iguais.
+            // The last entry is the rest, even in the equal parts shortcut.
             assert_eq!(r.target_mb, (i < 3).then_some(r.bytes as f64 / MB));
         }
         assert!(plan.ranges[3].bytes > plan.ranges[0].bytes);
@@ -1369,7 +1368,7 @@ mod tests {
 
     #[test]
     fn a_catalog_name_becomes_a_readable_base() {
-        // O caso que motiva isto: o peso do Ollama é um blob por digest.
+        // The case that motivates this: Ollama's weight is one blob per digest.
         assert_eq!(
             base_name_from_label("qwen3:8b").as_deref(),
             Some("qwen3-8b")
@@ -1378,8 +1377,8 @@ mod tests {
             base_name_from_label("lmstudio-community/Qwen3.6-35B").as_deref(),
             Some("lmstudio-community-Qwen3.6-35B")
         );
-        // Um rótulo com números no fim já não significa nada: a faixa mora no
-        // `.pom`, não no nome.
+        // A label with numbers at the end no longer means anything: the range
+        // lives in the `.pom`, not in the name.
         assert_eq!(
             base_name_from_label("modelo_0_15").as_deref(),
             Some("modelo_0_15")
@@ -1387,8 +1386,8 @@ mod tests {
         assert_eq!(base_name_from_label("  ").as_deref(), None);
         assert_eq!(base_name_from_label("///").as_deref(), None);
 
-        // Numa pasta comum o modelo se chama pelo arquivo, extensão e tudo, e
-        // empilhar outra daria `modelo.gguf_0_15.gguf`.
+        // In a common folder the model is named after the file, extension and
+        // all, and stacking another one would give `modelo.gguf_0_15.gguf`.
         assert_eq!(
             base_name_from_label("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf").as_deref(),
             Some("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S")
@@ -1399,7 +1398,7 @@ mod tests {
     fn even_split_covers_every_layer_without_a_gap() {
         assert_eq!(even_split(32, 2), vec![(0, 15), (16, 31)]);
         assert_eq!(even_split(32, 1), vec![(0, 31)]);
-        // 32 em 3: 11 + 11 + 10, e o resto vai para as primeiras.
+        // 32 in 3: 11 + 11 + 10, and the remainder goes to the first ones.
         assert_eq!(even_split(32, 3), vec![(0, 10), (11, 21), (22, 31)]);
 
         for parts in 1..=9u32 {
@@ -1414,8 +1413,8 @@ mod tests {
 
     #[test]
     fn even_split_never_produces_an_empty_slice() {
-        // Mais fatias do que camadas seria uma fatia vazia — que o servidor de
-        // inferência não carrega.
+        // More slices than layers would mean an empty slice - which the
+        // inference server does not load.
         assert_eq!(even_split(3, 8).len(), 3);
         assert!(even_split(0, 4).is_empty());
         assert!(even_split(10, 0).is_empty());

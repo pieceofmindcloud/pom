@@ -1,15 +1,15 @@
 /**
- * SDK que o POM entrega às telas de plugin (`globalThis.__POM_HOST__`).
+ * SDK that POM hands to plugin screens (`globalThis.__POM_HOST__`).
  *
- * Uma tela de plugin é um módulo ES empacotado pelo próprio plugin. Ele **não**
- * carrega segunda cópia de React: os imports de `react`, `react-dom`,
- * `react/jsx-runtime`, `@tanstack/react-query` e do kit de design do POM são
- * trocados, na hora de empacotar, por leituras deste objeto. Assim hooks e
- * contextos (idioma, tema, QueryClient) são os mesmos da aplicação e a tela
- * herda o visual sem copiar o design system. A superfície é versionada
- * (`version`): só cresce de forma compatível. A versão 2 acrescentou o
- * protocolo `pom-plugin-events/v1` (`events`, `notifications`, `plugin(code)`
- * e `context()`); ver `lib/pluginEvents.ts`. Version 3 adds the basic
+ * A plugin screen is an ES module bundled by the plugin itself. It does **not**
+ * load a second copy of React: the imports of `react`, `react-dom`,
+ * `react/jsx-runtime`, `@tanstack/react-query` and POM's design kit are
+ * replaced, at bundling time, by reads of this object. That way hooks and
+ * contexts (language, theme, QueryClient) are the application's own and the
+ * screen inherits the look without copying the design system. The surface is
+ * versioned (`version`): it only grows in a compatible way. Version 2 added the
+ * `pom-plugin-events/v1` protocol (`events`, `notifications`, `plugin(code)`
+ * and `context()`); see `lib/pluginEvents.ts`. Version 3 adds the basic
  * `TelemetryLine` and the `chat.telemetry` slot contract (`lib/chatTelemetry.ts`);
  * `ExecutionTelemetry` now renders that basic line. Version 4 adds
  * `plugin(code).rpc(op, params)`, the plugin's own read/write API. Version 5
@@ -63,26 +63,26 @@ export function buildPluginHost() {
     hooks: { useI18n, useTheme, useCluster },
     api: { get: api.get },
     storageKey,
-    /** Contrato de eventos e comandos entre POM e plugins. */
+    /** Events and commands contract between POM and plugins. */
     protocol: {
       name: PLUGIN_EVENTS_PROTOCOL,
       domEvent: PLUGIN_EVENT_DOM,
       domRequest: PLUGIN_REQUEST_DOM,
     },
-    /** Idioma e tema atuais, para quem monta fora do React do host. */
+    /** Current language and theme, for whoever mounts outside the host's React. */
     context: () => ({
       locale: getActiveLocale(),
       theme: document.documentElement.dataset.theme === "light" ? "light" : "dark",
     }),
     events: { subscribe: subscribePluginEvents, last: lastPluginEvent },
-    /** API com escopo do plugin: eventos filtrados e comandos assinados pelo código. */
+    /** Plugin-scoped API: filtered events and commands signed by the code. */
     plugin: scopedPluginApi,
   };
 }
 
 export type PluginHost = ReturnType<typeof buildPluginHost>;
 
-/** Instala o SDK uma vez; idempotente. */
+/** Installs the SDK once; idempotent. */
 export function installPluginHost(): PluginHost {
   const scope = globalThis as unknown as { __POM_HOST__?: PluginHost };
   scope.__POM_HOST__ ??= buildPluginHost();

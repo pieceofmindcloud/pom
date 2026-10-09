@@ -1,8 +1,8 @@
-//! Catraca autenticada da política de coleta de logs.
+//! Authenticated ratchet of the log collection policy.
 //!
-//! O booleano no `Announce` só desperta uma consulta. A resposta do principal,
-//! protegida pela chave de conexão, é a única fonte que pode mudar o valor
-//! local.
+//! The boolean in the `Announce` only triggers a query. The principal's answer,
+//! protected by the connection key, is the only source that can change the
+//! local value.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -217,11 +217,11 @@ mod tests {
         );
     }
 
-    /// Dois nós reais do testkit usam listeners TCP reais. O endereço primário
-    /// do principal aponta para um processo fantasma que responde 403, enquanto
-    /// o candidato anunciado aponta para o gateway correto. A sonda precisa
-    /// manter a identidade do principal, o marcador interno e a chave ao cair
-    /// para o segundo endereço.
+    /// Two real testkit nodes use real TCP listeners. The principal's primary
+    /// address points to a ghost process that answers 403, while the announced
+    /// candidate points to the correct gateway. The probe must keep the
+    /// principal's identity, the internal marker and the key when it falls
+    /// back to the second address.
     #[tokio::test]
     async fn probe_from_secondary_retries_a_ghost_gateway_candidate() {
         let principal = std::sync::Arc::new(

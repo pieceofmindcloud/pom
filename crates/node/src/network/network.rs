@@ -20,25 +20,25 @@ pub const DISCOVERY_PORT: u16 = 42777;
 pub const GOSSIP_INTERVAL_SECS: u64 = 5;
 pub const PEER_TIMEOUT_SECS: i64 = 30;
 
-/// De quantos em quantos tiques de gossip sai uma varredura de descoberta.
+/// How many gossip ticks between discovery sweeps.
 ///
-/// 6 tiques x 5 s = 30 s. Não pode ser todo tique: responder a um `PeerRequest`
-/// custa 1 `Announce` + os `PeerList` fatiados por MTU, então perguntar a todo
-/// peer a cada 5 s é tráfego O(peers²) num intervalo curto.
+/// 6 ticks x 5 s = 30 s. It cannot be every tick: answering a `PeerRequest`
+/// costs 1 `Announce` + the `PeerList`s sliced by MTU, so asking every
+/// peer every 5 s is O(peers^2) traffic in a short interval.
 pub const DISCOVERY_SWEEP_TICKS: u64 = 6;
 
-/// Quantos peers vivos são perguntados por varredura.
+/// How many live peers are asked per sweep.
 ///
-/// É um rodízio, não uma amostra: a varredura de índice `k` começa em
-/// `k * SWEEP_FANOUT` sobre a lista de peers ordenada por `node_id`, de modo que
-/// o cluster inteiro é coberto em `ceil(peers / SWEEP_FANOUT)` varreduras
-/// (2 minutos num cluster de 8) sem nunca passar de 3 perguntas por tique.
+/// It is a round-robin, not a sample: the sweep with index `k` starts at
+/// `k * SWEEP_FANOUT` over the peer list sorted by `node_id`, so that
+/// the whole cluster is covered in `ceil(peers / SWEEP_FANOUT)` sweeps
+/// (2 minutes in a cluster of 8) without ever exceeding 3 questions per tick.
 ///
-/// Custo num cluster de 8 nós: cada nó manda 3 `PeerRequest` a cada 30 s; cada
-/// resposta é 1 `Announce` (~700 B) + ~4 `PeerList` de 1200 B, ou seja ~5,5 kB.
-/// Por nó: ~16,5 kB / 30 s. Cluster todo: ~132 kB / 30 s ≈ 4,4 kB/s. Não há
-/// amplificação: a resposta a um `PeerRequest` são `Announce` e `PeerList`, e
-/// nenhuma das duas provoca outro `PeerRequest`.
+/// Cost in a cluster of 8 nodes: each node sends 3 `PeerRequest`s every 30 s; each
+/// answer is 1 `Announce` (~700 B) + ~4 `PeerList`s of 1200 B, i.e. ~5.5 kB.
+/// Per node: ~16.5 kB / 30 s. Whole cluster: ~132 kB / 30 s ≈ 4.4 kB/s. There is no
+/// amplification: the answer to a `PeerRequest` is an `Announce` and `PeerList`s, and
+/// neither of them provokes another `PeerRequest`.
 pub const SWEEP_FANOUT: usize = 3;
 
 #[cfg(not(test))]
@@ -47,9 +47,9 @@ const ADMISSION_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const ADMISSION_TIMEOUT: Duration = Duration::from_millis(200);
 
-/// A sonda pelo túnel pode ter de montar um circuito por um relé na internet
-/// antes de mandar o pedido, e roda fora do laço do swarm
-/// (`admit_in_background`): não precisa do orçamento curto das diretas.
+/// The probe through the tunnel may have to build a circuit through a relay on the internet
+/// before sending the request, and it runs outside the swarm loop
+/// (`admit_in_background`): it does not need the short budget of the direct ones.
 #[cfg(not(test))]
 const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -59,11 +59,11 @@ const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_millis(500);
 const ADMISSION_CACHE_TTL: Duration = Duration::from_secs(30);
 const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
 
-/// Quanto tempo um peer que já provou pertencimento continua admitido enquanto
-/// as sondas seguintes não chegam a ele. Um par que só o relé alcança perde a
-/// rota a cada circuito que cai; sem esta folga, uma sonda nesse intervalo o
-/// tirava da tabela (`Removed timed-out peers`) e ele voltava minutos depois.
-/// Recusa explícita não usa a folga.
+/// How long a peer that already proved membership stays admitted while
+/// the following probes do not reach it. A peer that only the relay reaches loses the
+/// route every time a circuit drops; without this slack, a probe in that interval
+/// took it off the table (`Removed timed-out peers`) and it came back minutes later.
+/// An explicit refusal does not use the slack.
 const ADMISSION_UNREACHABLE_GRACE: Duration = Duration::from_secs(10 * 60);
 
 /// What a node offers as a circuit relay, as it announces it. Present only
@@ -202,40 +202,40 @@ impl RelayGate {
     }
 }
 
-/// Uma conexão libp2p viva com um par.
+/// A live libp2p connection with a peer.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Libp2pLink {
-    /// `host:porta (transporte)` da outra ponta; num circuito, o do relé.
-    /// Vazio quando o circuito entrou por um relé que este nó não conhece.
+    /// `host:port (transport)` of the other end; in a circuit, the relay's.
+    /// Empty when the circuit came in through a relay this node does not know.
     pub address: String,
     pub relayed: bool,
-    /// PeerId do relé, quando a conexão é um circuito.
+    /// PeerId of the relay, when the connection is a circuit.
     pub relay_peer_id: Option<String>,
-    /// Conexão direta nascida de um hole punch (DCuTR) bem-sucedido.
+    /// Direct connection born from a successful hole punch (DCuTR).
     pub hole_punched: bool,
 }
 
-/// Por onde este nó fala de fato com um peer - observado, não anunciado.
+/// How this node actually talks to a peer - observed, not announced.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PeerRoute {
-    /// `http`: um endereço direto respondeu há pouco (`RouteTable::last_success`).
-    /// `p2p_direct`: conexão libp2p direta, discada ou por hole punch.
-    /// `relayed`: só um circuito pelo relé - o hole punch não fechou.
-    /// `none`: nenhuma das três.
+    /// `http`: a direct address answered a moment ago (`RouteTable::last_success`).
+    /// `p2p_direct`: direct libp2p connection, dialed or by hole punch.
+    /// `relayed`: only a circuit through the relay - the hole punch did not close.
+    /// `none`: none of the three.
     pub kind: &'static str,
-    /// O endereço da rota; em `relayed`, o do relé.
+    /// The route's address; in `relayed`, the relay's.
     pub address: Option<String>,
     /// In `relayed`: `dedicated` (configured relay) or `member` (another
     /// cluster node acting as a relay, the last rung of the ladder).
     pub relay_kind: Option<&'static str>,
-    /// Alguma conexão direta com o par saiu de um hole punch.
+    /// Some direct connection with the peer came from a hole punch.
     pub hole_punched: bool,
-    /// Todas as conexões libp2p vivas, para o detalhe da tela.
+    /// All live libp2p connections, for the screen's detail.
     pub links: Vec<Libp2pLink>,
 }
 
-/// Host de `http(s)://host:porta[/...]`, com os colchetes do IPv6, para
-/// comparar endereços do mesmo peer em portas diferentes.
+/// Host of `http(s)://host:port[/...]`, with the IPv6 brackets, to
+/// compare addresses of the same peer on different ports.
 fn url_host(url: &str) -> &str {
     let rest = url
         .trim_start_matches("http://")
@@ -247,10 +247,10 @@ fn url_host(url: &str) -> &str {
     rest.rsplit_once(':').map_or(rest, |(host, _)| host)
 }
 
-/// `host:porta (transporte)` de um multiaddress, e o relé quando é circuito.
+/// `host:port (transport)` of a multiaddress, and the relay when it is a circuit.
 ///
-/// Num circuito o host e a porta são os do relé, que vêm antes de
-/// `/p2p-circuit`; o que vem depois é o próprio par.
+/// In a circuit the host and port are the relay's, which come before
+/// `/p2p-circuit`; what comes after is the peer itself.
 pub(crate) fn describe_multiaddr(address: &libp2p::Multiaddr) -> (String, bool, Option<String>) {
     use libp2p::multiaddr::Protocol;
     let mut host: Option<String> = None;
@@ -287,99 +287,99 @@ pub(crate) fn describe_multiaddr(address: &libp2p::Multiaddr) -> (String, bool, 
     (text, relayed, relay)
 }
 
-/// Resultado de uma sonda `/handshake`.
+/// Result of a `/handshake` probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdmissionProbe {
     Approved,
-    /// O próprio peer disse não: pelo túnel (PeerId autenticado) ou por HTTPS
-    /// com o certificado fixado no `node_id`. Uma resposta HTTP em claro não
-    /// conta - qualquer máquina naquele endereço poderia tê-la dado.
+    /// The peer itself said no: through the tunnel (authenticated PeerId) or over HTTPS
+    /// with the certificate pinned to the `node_id`. A cleartext HTTP answer does not
+    /// count - any machine at that address could have given it.
     Refused,
-    /// Nenhuma resposta autêntica chegou.
+    /// No authentic answer arrived.
     Unreachable,
 }
 
-/// De quanto em quanto tempo, no máximo, se repergunta o endereço de um peer
-/// ilegível.
+/// How often, at most, the address of an unreadable peer is asked
+/// again.
 ///
-/// O `Announce` sai a cada `GOSSIP_INTERVAL_SECS`, então uma janela de 30 s dá
-/// tempo de a resposta chegar e ainda mantém o Painel, que relê o cluster em
-/// ciclo curto, longe de virar gerador de tráfego UDP.
+/// The `Announce` goes out every `GOSSIP_INTERVAL_SECS`, so a 30 s window leaves
+/// time for the answer to arrive and still keeps the Dashboard, which re-reads the cluster in a
+/// short cycle, from becoming a UDP traffic generator.
 pub const REDISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Até quando a tela pode dizer "reencontrando".
+/// Until when the screen may say "rediscovering".
 ///
-/// Três perguntas à rede sem resposta não são mais trabalho em curso: são um
-/// peer que anuncia por UDP e não atende no HTTP. Chamar isso de "reencontrando"
-/// para sempre seria a mesma desonestidade do aviso permanente que este trabalho
-/// veio remover, só com outra palavra - a partir daqui a tela volta a dizer que
-/// não consegue ler o par, e diz por quê.
+/// Three questions to the network with no answer are no longer work in progress: they are a
+/// peer that announces over UDP and does not answer on HTTP. Calling that "rediscovering"
+/// forever would be the same dishonesty as the permanent warning this work
+/// came to remove, just with another word - from here on the screen goes back to saying it
+/// cannot read the peer, and says why.
 pub const REDISCOVERY_GIVE_UP: Duration = Duration::from_secs(90);
 
-/// Identidade de um nó num grupo de tensor parallelism (caminho C).
+/// Identity of a node in a tensor parallelism group (path C).
 ///
-/// `role` é `"primary"` (dono do GGUF e hop do pipeline) ou `"worker"`
-/// (compartilha o compute daquele estágio). `group_id` identifica o grupo;
-/// `size`/`rank` dizem quantos somos e qual é a minha posição. Um nó sem
-/// TP anuncia `None`.
+/// `role` is `"primary"` (owner of the GGUF and pipeline hop) or `"worker"`
+/// (shares the compute of that stage). `group_id` identifies the group;
+/// `size`/`rank` say how many we are and which position is mine. A node without
+/// TP announces `None`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TpIdentity {
     pub role: String,
     pub group_id: String,
     pub size: u32,
     pub rank: u32,
-    /// URL do primary (rank 0) da coletiva, por onde todos os ranks fazem o
-    /// POST /v1/tp/reduce. O deploy preenche para todos os membros do grupo.
+    /// URL of the collective's primary (rank 0), through which all ranks do the
+    /// POST /v1/tp/reduce. The deploy fills it in for every member of the group.
     #[serde(default)]
     pub rank0_url: Option<String>,
-    /// `node_id` do primary, que é **o que pina o certificado** do cliente da
-    /// coletiva (`SHA256(pubkey) == node_id`).
+    /// `node_id` of the primary, which is **what pins the certificate** of the
+    /// collective's client (`SHA256(pubkey) == node_id`).
     ///
-    /// Sem isto o `tp.rs` usava um `reqwest::Client::new()` padrão contra um
-    /// `rank0_url` https com certificado autoassinado: todo POST da coletiva
-    /// morria em 13 ms por certificado inválido, o erro era engolido, e a
-    /// parcial seguia como se fosse a soma (18/08).
+    /// Without it `tp.rs` used a default `reqwest::Client::new()` against an
+    /// https `rank0_url` with a self-signed certificate: every collective POST
+    /// died in 13 ms with an invalid certificate, the error was swallowed, and the
+    /// partial went on as if it were the sum (18/08).
     #[serde(default)]
     pub rank0_node_id: Option<String>,
-    /// Todos os membros do grupo, **indexados pelo rank** (0 = primary).
+    /// All members of the group, **indexed by rank** (0 = primary).
     ///
-    /// É o que permite o rank 0 pôr os workers para rodar o mesmo decode: TP
-    /// exige que todos os ranks executem o mesmo grafo sobre os mesmos tokens
-    /// ao mesmo tempo, e sem esta lista o rank 0 não tem para quem transmitir.
-    /// Sem lockstep as parciais nunca se encontram na barreira e o decode
-    /// trava - o estado de 18/08.
+    /// It is what lets rank 0 set the workers running the same decode: TP
+    /// requires all ranks to execute the same graph over the same tokens
+    /// at the same time, and without this list rank 0 has no one to broadcast to.
+    /// Without lockstep the partials never meet at the barrier and the decode
+    /// hangs - the state of 18/08.
     #[serde(default)]
     pub members: Vec<TpMember>,
 }
 
-/// Um membro de um grupo de tensor parallelism.
+/// A member of a tensor parallelism group.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TpMember {
-    /// Pina o certificado deste membro (`SHA256(pubkey) == node_id`).
+    /// Pins this member's certificate (`SHA256(pubkey) == node_id`).
     pub node_id: String,
-    /// Base da URL do servidor de inferência (onde o decode é disparado).
+    /// Base URL of the inference server (where the decode is triggered).
     pub url: String,
-    /// Endereços alternativos do servidor de inferência. O primeiro é mantido
-    /// em `url` para o formato antigo; quem disca tenta os demais quando o
-    /// endereço preferido não é alcançável a partir deste rank.
+    /// Alternative addresses of the inference server. The first is kept
+    /// in `url` for the old format; whoever dials tries the others when the
+    /// preferred address is not reachable from this rank.
     #[serde(default)]
     pub url_candidates: Vec<String>,
-    /// Endereços UDP anunciados pelo membro, para o túnel reconstruir as
-    /// multiaddresses TCP mesmo quando o swarm local ainda não viu o anúncio.
+    /// UDP addresses announced by the member, so the tunnel can rebuild the
+    /// TCP multiaddresses even when the local swarm has not yet seen the announce.
     #[serde(default)]
     pub addr_candidates: Vec<String>,
-    /// PeerId usado pelo fallback de transporte libp2p.
+    /// PeerId used by the libp2p transport fallback.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
-    /// O membro anunciou que seu swarm atende o túnel de inferência.
+    /// The member announced that its swarm serves the inference tunnel.
     #[serde(default)]
     pub supports_tunnel: bool,
 }
 
-/// Capacidade efetiva anunciada por um servidor de inferência pronto.
+/// Effective capacity announced by a ready inference server.
 ///
-/// `max_new_tokens` é o tamanho de uma perna do backend. `n_ctx` é a janela
-/// efetiva que limita a soma de prompt e saída neste peer.
+/// `max_new_tokens` is the size of one backend leg. `n_ctx` is the effective
+/// window that bounds the sum of prompt and output on this peer.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeCapacity {
@@ -387,24 +387,24 @@ pub struct RuntimeCapacity {
     pub max_new_tokens: u32,
 }
 
-/// O que este nó sabe sobre a própria travessia de NAT.
+/// What this node knows about its own NAT traversal.
 ///
-/// Existe porque diagnosticar "os dois nós não se falam" dependia de
-/// `RUST_LOG=debug` na máquina certa no momento certo. Estado do AutoNAT,
-/// reservas de circuito e resultado do DCuTR são exatamente o que diz em que
-/// degrau a travessia parou.
+/// It exists because diagnosing "the two nodes do not talk to each other" depended on
+/// `RUST_LOG=debug` on the right machine at the right moment. AutoNAT state,
+/// circuit reservations and the DCuTR result are exactly what says on which
+/// rung the traversal stopped.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TraversalStatus {
-    /// `unknown`, `public` ou `private`, como o AutoNAT reportou.
+    /// `unknown`, `public` or `private`, as AutoNAT reported it.
     pub nat: String,
-    /// Multiaddresses que este nó publica hoje (inclui circuito).
+    /// Multiaddresses this node publishes today (includes circuit).
     pub addrs: Vec<String>,
-    /// `PeerId` dos relés que aceitaram reserva.
+    /// `PeerId` of the relays that accepted a reservation.
     pub reservations: Vec<String>,
-    /// Hole punches concluídos e falhados desde o arranque.
+    /// Hole punches completed and failed since startup.
     pub hole_punch_ok: u64,
     pub hole_punch_failed: u64,
-    /// Última falha de DCuTR, para dizer *por que* parou.
+    /// Last DCuTR failure, to say *why* it stopped.
     pub last_hole_punch_error: Option<String>,
 }
 
@@ -440,14 +440,14 @@ struct PeerAdmission {
 struct AdmissionCacheEntry {
     allowed: bool,
     expires_at: Instant,
-    /// Última aprovação de verdade, para `ADMISSION_UNREACHABLE_GRACE`.
+    /// Last real approval, for `ADMISSION_UNREACHABLE_GRACE`.
     proven_at: Option<Instant>,
 }
 
-/// O que entra no cache depois de uma sonda. Aprovado vale por
-/// `ADMISSION_CACHE_TTL`; recusado sai. Sem resposta, um peer aprovado há menos
-/// de `ADMISSION_UNREACHABLE_GRACE` continua admitido, com validade curta para
-/// a sonda tentar de novo logo; sem prova recente, sai.
+/// What enters the cache after a probe. Approved is valid for
+/// `ADMISSION_CACHE_TTL`; refused leaves. With no answer, a peer approved less than
+/// `ADMISSION_UNREACHABLE_GRACE` ago stays admitted, with a short validity so that
+/// the probe tries again soon; without recent proof, it leaves.
 fn admission_verdict(
     probe: AdmissionProbe,
     previous_proof: Option<Instant>,
@@ -489,13 +489,13 @@ pub enum P2PMessage {
         /// that signs the gossip and the pkarr key derive from it.
         pubkey: String,
         addr: String,
-        /// Todos os enderecos deste no. `serde(default)` mantem um no antigo
-        /// parseavel: sem candidatos, o `addr` unico continua valendo.
+        /// All of this node's addresses. `serde(default)` keeps an old node
+        /// parseable: without candidates, the single `addr` still applies.
         #[serde(default)]
         addr_candidates: Vec<String>,
         model: String,
-        /// A implantação que este nó serve. Vazio num peer de versão anterior,
-        /// que faz o agrupamento cair de volta no rótulo do modelo.
+        /// The deployment this node serves. Empty on a peer of an earlier version,
+        /// which makes the grouping fall back to the model label.
         #[serde(default)]
         deploy_id: String,
         start_layer: u32,
@@ -525,14 +525,14 @@ pub enum P2PMessage {
         gateway_quic_port: Option<u16>,
         #[serde(default)]
         profile: crate::profile::NodeProfile,
-        /// Se este nó fala TLS com os peers.
+        /// Whether this node speaks TLS with the peers.
         ///
-        /// **Gatilho, não valor**: quem recebe não grava isto. Ver
-        /// `tls_policy` - o gossip é em claro e não autenticado, então obedecer
-        /// a ele seria oferecer o rebaixamento que o TLS existe para impedir.
+        /// **Trigger, not value**: the receiver does not store this. See
+        /// `tls_policy` - gossip is cleartext and unauthenticated, so obeying
+        /// it would be offering the downgrade that TLS exists to prevent.
         #[serde(default)]
         tls: bool,
-        /// Gatilho da catraca autenticada da política QUIC.
+        /// Trigger for the QUIC policy's authenticated gate.
         #[serde(default)]
         quic: bool,
         #[serde(default)]
@@ -551,35 +551,35 @@ pub enum P2PMessage {
         /// libp2p NAT-tunnel fallback (`transport/libp2p-tunnel-v1`).
         #[serde(default)]
         libp2p_peer_id: Option<String>,
-        /// Multiaddresses libp2p que este nó publica, já com `/p2p/<peer-id>`.
+        /// libp2p multiaddresses this node publishes, already with `/p2p/<peer-id>`.
         ///
-        /// É a única forma capaz de expressar um circuito de relay
-        /// (`.../p2p/<relé>/p2p-circuit/p2p/<self>`): a convenção `host:port`
-        /// com porta `UDP+10000` não tem como carregar um, e era por isso que
-        /// uma reserva aceita nunca chegava ao outro lado e o DCuTR nunca
-        /// tinha conexão relayed para coordenar o hole punch. Vazio num peer
-        /// antigo, e aí quem disca volta a derivar o endereço do `addr`.
+        /// It is the only form able to express a relay circuit
+        /// (`.../p2p/<relay>/p2p-circuit/p2p/<self>`): the `host:port` convention
+        /// with port `UDP+10000` has no way to carry one, and that is why
+        /// an accepted reservation never reached the other side and DCuTR never
+        /// had a relayed connection to coordinate the hole punch. Empty on an
+        /// old peer, in which case whoever dials goes back to deriving the address from `addr`.
         #[serde(default)]
         libp2p_addrs: Vec<String>,
-        /// Identidade de tensor parallelism, quando este nó é primary/worker de
-        /// um grupo. Ausente = nó sem TP (o caso de hoje).
+        /// Tensor parallelism identity, when this node is primary/worker of
+        /// a group. Absent = node without TP (today's case).
         #[serde(default)]
         tp: Option<TpIdentity>,
-        /// Capacidade presente somente depois de `/health` provar que o
-        /// modelo carregou. Ausente em anúncios antigos ou durante o boot.
+        /// Capacity present only after `/health` proves the
+        /// model loaded. Absent in old announces or during boot.
         #[serde(default)]
         runtime_capacity: Option<RuntimeCapacity>,
-        /// Gatilho para a catraca autenticada da coleta de logs.
+        /// Trigger for the log collection's authenticated gate.
         #[serde(default)]
         cluster_logs_enabled: bool,
-        /// Modelo descarregado por idle, mantendo a implantação anunciada.
+        /// Model unloaded by idle, keeping the deployment announced.
         #[serde(default)]
         idle: bool,
-        /// Gatilho para a catraca autenticada do Chat da rede.
+        /// Trigger for the network Chat's authenticated gate.
         #[serde(default)]
         network_chat_enabled: bool,
-        /// Identificador da cadeia de confiança do enxame público.
-        /// O valor sozinho não autentica o peer.
+        /// Identifier of the public swarm's trust chain.
+        /// The value alone does not authenticate the peer.
         #[serde(default)]
         cluster_id: Option<String>,
         /// The version of the trust chain this node holds
@@ -616,8 +616,8 @@ pub struct PeerInfo {
     /// The node's single public key (see `identity.rs`): `node_id`, `PeerId`,
     /// pkarr key and authority key.
     pub pubkey: String,
-    /// Cadeia de confiança alegada pelo peer. Só é aceita junto com a tupla
-    /// de autoridade validada localmente.
+    /// Trust chain claimed by the peer. It is only accepted together with the
+    /// locally validated authority tuple.
     #[serde(default)]
     pub cluster_id: Option<String>,
     /// The trust chain version the peer announces; a hint, never proof.
@@ -627,18 +627,18 @@ pub struct PeerInfo {
     #[serde(default)]
     pub relay: Option<RelayOffer>,
     pub addr: String,
-    /// Todos os enderecos em que este peer pode ser encontrado.
+    /// All the addresses at which this peer can be found.
     ///
-    /// `addr` continua sendo o preferido historico e o unico que um no antigo
-    /// entende. Este conjunto e o que permite a quem vai discar escolher, em
-    /// vez de aceitar a escolha de quem planejou de outro lugar da rede.
+    /// `addr` remains the historical preferred one and the only one that an old node
+    /// understands. This set is what lets whoever is going to dial choose, instead
+    /// of accepting the choice of whoever planned from elsewhere in the network.
     #[serde(default)]
     pub addr_candidates: Vec<String>,
     pub model: String,
-    /// A implantação que este nó serve. É por ele que `plan_pipeline` agrupa,
-    /// e é o que permite o mesmo modelo estar no ar duas vezes em conjuntos de
-    /// máquinas diferentes. Vazio num peer de versão anterior, e aí o
-    /// agrupamento cai de volta no rótulo. Ver `models/deployment.rs`.
+    /// The deployment this node serves. `plan_pipeline` groups by it,
+    /// and it is what allows the same model to be up twice on different sets of
+    /// machines. Empty on a peer of an earlier version, in which case the
+    /// grouping falls back to the label. See `models/deployment.rs`.
     #[serde(default)]
     pub deploy_id: String,
     pub start_layer: u32,
@@ -666,7 +666,7 @@ pub struct PeerInfo {
     pub gateway_quic_port: Option<u16>,
     #[serde(default)]
     pub profile: crate::profile::NodeProfile,
-    /// Ver `P2PMessage::Announce::tls`: gatilho para a catraca, nunca valor.
+    /// See `P2PMessage::Announce::tls`: trigger for the gate, never a value.
     #[serde(default)]
     pub tls: bool,
     #[serde(default)]
@@ -684,17 +684,17 @@ pub struct PeerInfo {
     /// See `P2PMessage::Announce::libp2p_peer_id`.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
-    /// Ver `P2PMessage::Announce::libp2p_addrs`.
+    /// See `P2PMessage::Announce::libp2p_addrs`.
     #[serde(default)]
     pub libp2p_addrs: Vec<String>,
-    /// Ver `P2PMessage::Announce::tp`.
+    /// See `P2PMessage::Announce::tp`.
     #[serde(default)]
     pub tp: Option<TpIdentity>,
-    /// Capacidade do runtime depois que o servidor de inferência ficou pronto.
-    /// `None` não é zero: significa que a capacidade ainda não foi provada.
+    /// Runtime capacity after the inference server became ready.
+    /// `None` is not zero: it means the capacity has not been proven yet.
     #[serde(default)]
     pub runtime_capacity: Option<RuntimeCapacity>,
-    /// O peer está vivo e anunciado, mas sem os pesos na memória.
+    /// The peer is alive and announced, but without the weights in memory.
     #[serde(default)]
     pub idle: bool,
 }
@@ -733,13 +733,13 @@ fn bare_host(host: &str) -> &str {
 /// Destinations may be private or loopback when the cluster is local, but an
 /// unspecified, multicast, broadcast, or `0.0.0.0/8` address is never a peer.
 /// Hostnames remain valid here and are checked by `lookup_host` at send time.
-/// Porta UDP/p2p deste processo, anotada quando o socket abre. Com ela e os
-/// IPs das interfaces, `is_self_endpoint` reconhece um candidato de outro peer
-/// que na verdade aponta para este nó.
+/// UDP/p2p port of this process, recorded when the socket opens. With it and the
+/// IPs of the interfaces, `is_self_endpoint` recognizes a candidate of another peer
+/// that actually points to this node.
 static SELF_P2P_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
-/// IPs das interfaces locais, sem loopback. `addrs::local_addrs` executa um
-/// processo (`ip -o addr`), então o resultado vale por alguns segundos.
+/// IPs of the local interfaces, without loopback. `addrs::local_addrs` runs a
+/// process (`ip -o addr`), so the result is valid for a few seconds.
 fn local_interface_ips() -> std::collections::HashSet<String> {
     static CACHE: std::sync::Mutex<Option<(Instant, std::collections::HashSet<String>)>> =
         std::sync::Mutex::new(None);
@@ -763,14 +763,14 @@ fn local_interface_ips() -> std::collections::HashSet<String> {
     ips
 }
 
-/// `host:porta` que é este próprio processo: IP de uma interface local com a
-/// porta p2p deste nó.
+/// `host:port` that is this very process: IP of a local interface with this
+/// node's p2p port.
 ///
-/// Dois nós em Docker com rede bridge costumam receber o mesmo IP interno
-/// (`172.18.0.2`) e a mesma porta. O candidato `172.18.0.2:42778` que a ksia
-/// anuncia, visto do salem, é o próprio salem: o Painel mostrava a mesma
-/// máquina duas vezes (o `/health` "da ksia" era respondido pelo salem) e o
-/// deploy planejado para a ksia caía no salem.
+/// Two nodes in Docker with bridge networking usually get the same internal IP
+/// (`172.18.0.2`) and the same port. The candidate `172.18.0.2:42778` that ksia
+/// announces, seen from salem, is salem itself: the Dashboard showed the same
+/// machine twice (the "ksia" `/health` was answered by salem) and the
+/// deploy planned for ksia landed on salem.
 pub(crate) fn is_self_endpoint(addr: &str) -> bool {
     let port = SELF_P2P_PORT.load(std::sync::atomic::Ordering::Relaxed);
     if port == 0 {
@@ -787,9 +787,9 @@ fn split_host_port(addr: &str) -> Option<(String, u16)> {
     Some((host.to_string(), port.parse().ok()?))
 }
 
-/// `is_valid_destination` para um candidato de **outro** peer: recusa também
-/// o endereço que é este próprio processo. A entrada deste nó na tabela
-/// continua com todos os seus endereços.
+/// `is_valid_destination` for a candidate of **another** peer: it also refuses
+/// the address that is this very process. This node's own entry in the table
+/// keeps all of its addresses.
 fn is_peer_destination(node_id: &str, addr: &str) -> bool {
     is_valid_destination(addr)
         && (crate::infer_tunnel::is_local_node(node_id) || !is_self_endpoint(addr))
@@ -933,9 +933,9 @@ impl PeerInfo {
         self.end_layer - self.start_layer + 1
     }
 
-    /// Este peer é um worker de tensor parallelism (não é hop do pipeline)?
-    /// O planejador exclui workers dos candidatos: só o primary de um grupo
-    /// entra na cadeia.
+    /// Is this peer a tensor parallelism worker (not a pipeline hop)?
+    /// The planner excludes workers from the candidates: only the primary of a group
+    /// enters the chain.
     pub fn is_tp_worker(&self) -> bool {
         self.tp.as_ref().is_some_and(|t| t.role == "worker")
     }
@@ -948,10 +948,10 @@ impl PeerInfo {
 
     /// Full Ollama HTTP URL for this peer (None if no ollama_port advertised).
     ///
-    /// **Continua em `http://` mesmo com o cluster em TLS, de propósito**: o
-    /// Ollama é um servidor de terceiros rodando na máquina do peer, não um nó
-    /// deste cluster. Ele não tem o nosso certificado nem a nossa identidade, e
-    /// pedir TLS a ele só produziria conexão recusada.
+    /// **It stays `http://` even with the cluster on TLS, on purpose**: Ollama
+    /// is a third-party server running on the peer's machine, not a node
+    /// of this cluster. It has neither our certificate nor our identity, and
+    /// asking it for TLS would only produce a refused connection.
     pub fn ollama_url(&self) -> Option<String> {
         self.ollama_port
             .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
@@ -977,10 +977,10 @@ impl PeerInfo {
             })
     }
 
-    /// Todos os destinos UDP conhecidos, sem transformar o primeiro endereço
-    /// anunciado em verdade permanente. A ordem mantém os candidatos
-    /// anunciados e usa `addr` como fallback para peers antigos ou para um
-    /// snapshot em que ele já foi atualizado.
+    /// All known UDP destinations, without turning the first announced
+    /// address into permanent truth. The order keeps the announced
+    /// candidates and uses `addr` as a fallback for old peers or for a
+    /// snapshot in which it was already updated.
     pub fn dialable_addrs(&self) -> Vec<String> {
         let mut addresses = Vec::with_capacity(self.addr_candidates.len() + 1);
         for address in self
@@ -1002,13 +1002,13 @@ impl PeerInfo {
     /// listen interface, while the pipeline must dial the endpoint selected
     /// by the peer's Announce. Keep the multi-address fallback policy for UDP
     /// control traffic, but use one announced endpoint for the tunnel.
-    /// Endereços que o swarm pode discar para alcançar este peer.
+    /// Addresses the swarm can dial to reach this peer.
     ///
-    /// Os multiaddresses anunciados vêm primeiro e são devolvidos **todos**:
-    /// é onde mora o endereço de circuito, e devolver só o primeiro endereço
-    /// deixava um peer atrás de NAT sem nenhum destino alcançável. A derivação
-    /// por `addr`/`addr_candidates` fica como compatibilidade com um peer que
-    /// ainda não publica `libp2p_addrs`.
+    /// The announced multiaddresses come first and **all** of them are returned:
+    /// that is where the circuit address lives, and returning only the first address
+    /// left a peer behind NAT with no reachable destination at all. The derivation
+    /// by `addr`/`addr_candidates` stays as compatibility with a peer that
+    /// does not yet publish `libp2p_addrs`.
     pub fn libp2p_dialable_addrs(&self) -> Vec<String> {
         if !self.libp2p_addrs.is_empty() {
             return self.libp2p_addrs.clone();
@@ -1026,10 +1026,10 @@ impl PeerInfo {
             .collect()
     }
 
-    /// URLs do servidor de inferencia, uma por candidato.
+    /// URLs of the inference server, one per candidate.
     ///
-    /// Cai no `addr` unico quando o peer nao anunciou candidatos, que e o caso
-    /// de um no rodando binario anterior.
+    /// Falls back to the single `addr` when the peer did not announce candidates, which is the case
+    /// of a node running an earlier binary.
     pub fn inference_candidates(&self) -> Vec<String> {
         let Some(port) = self.inference_port else {
             return Vec::new();
@@ -1072,9 +1072,9 @@ impl PeerInfo {
         self.inference_candidates().into_iter().next()
     }
 
-    /// Endereços `host:porta` do endpoint QUIC de inferência, construídos a
-    /// partir do endereço público anunciado pelo peer e da porta UDP dedicada.
-    /// Este caminho não lê nem faz parse de `inference_url`.
+    /// `host:port` addresses of the inference QUIC endpoint, built from
+    /// the public address announced by the peer and the dedicated UDP port.
+    /// This path neither reads nor parses `inference_url`.
     pub fn quic_addr_candidates(&self) -> Vec<String> {
         let Some(port) = self.inference_quic_port else {
             return Vec::new();
@@ -1087,36 +1087,36 @@ impl PeerInfo {
 
     /// Base URL of this peer's HTTP API / web UI.
     ///
-    /// É o **primeiro** candidato, não o único. Quem tem como tentar mais de
-    /// um endereço deve chamar `gateway_candidates()` e consultar a memória de
-    /// falha (`RouteTable::usable`): um endereço que deixou de responder não
-    /// pode ser o fim da linha do plano de controle só porque é o preferido.
+    /// It is the **first** candidate, not the only one. Whoever can try more than
+    /// one address must call `gateway_candidates()` and consult the failure
+    /// memory (`RouteTable::usable`): an address that stopped answering
+    /// cannot be the end of the line for the control plane just because it is the preferred one.
     pub fn gateway_url(&self) -> Option<String> {
         self.gateway_candidates().into_iter().next()
     }
 
-    /// URLs do gateway, uma por endereço conhecido, em ordem de preferência.
+    /// Gateway URLs, one per known address, in order of preference.
     ///
-    /// `addr` vem primeiro porque é **fato conhecido**: é o endereço de onde os
-    /// pacotes deste peer chegaram, ou o que ele anunciou de si. Os demais
-    /// candidatos vêm depois, na ordem em que o peer os anunciou. É a mesma
-    /// disciplina de `pipeline::resolve_step_url` - palpite não passa na frente
-    /// de fato conhecido, porque `merge_observed` acrescenta o observado ao
-    /// **fim** da lista e o primeiro candidato costuma ser a LAN do peer.
+    /// `addr` comes first because it is a **known fact**: it is the address the
+    /// packets of this peer came from, or the one it announced for itself. The other
+    /// candidates come after, in the order in which the peer announced them. It is the same
+    /// discipline as `pipeline::resolve_step_url` - a guess does not go ahead
+    /// of a known fact, because `merge_observed` appends the observed one to the
+    /// **end** of the list and the first candidate is usually the peer's LAN.
     ///
-    /// Ter mais de uma entrada aqui é o que separa esta lista do que ela era:
-    /// enquanto `gateway_url()` era só `addr`, um endereço que morria deixava o
-    /// Painel, o `deploy` e a transferência sem para onde cair, mesmo com um
-    /// endereço vivo já anunciado em `addr_candidates`.
+    /// Having more than one entry here is what separates this list from what it used to be:
+    /// while `gateway_url()` was just `addr`, an address that died left the
+    /// Dashboard, the `deploy` and the transfer with nowhere to fall back to, even with a
+    /// live address already announced in `addr_candidates`.
     pub fn gateway_candidates(&self) -> Vec<String> {
         self.gateway_candidates_with_tls(crate::peer_client::tls_enabled())
     }
 
-    /// URLs do gateway usando explicitamente o esquema de um anúncio.
+    /// Gateway URLs explicitly using the scheme of an announce.
     ///
-    /// As catracas de TLS, logs e Chat consultam o principal antes de adotar o
-    /// valor anunciado localmente, então não podem depender da flag global que
-    /// ainda está em processo de confirmação.
+    /// The TLS, logs and Chat gates consult the principal before adopting the
+    /// announced value, so they cannot depend on the global flag that
+    /// is still being confirmed.
     pub fn gateway_candidates_with_tls(&self, tls: bool) -> Vec<String> {
         let Some(port) = self.gateway_port else {
             return Vec::new();
@@ -1141,8 +1141,8 @@ pub struct Network {
     pub node_id: String,
     pub pubkey: String,
     pub bind_addr: SocketAddr,
-    /// Destino do anúncio local. Em produção é o broadcast IPv4 global; o
-    /// testkit injeta um destino loopback para nunca alcançar a LAN.
+    /// Destination of the local announce. In production it is the global IPv4 broadcast; the
+    /// testkit injects a loopback destination so it never reaches the LAN.
     broadcast_addr: SocketAddr,
     pub peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
     pub bootstrap_nodes: Vec<String>,
@@ -1156,12 +1156,12 @@ pub struct Network {
     pub gateway_port: Option<u16>,
     /// Dedicated UDP port of the local gateway HTTP/3 endpoint.
     pub gateway_quic_port: Option<u16>,
-    /// Anúncios públicos que ainda não provaram pertencimento à rede local.
+    /// Public announces that have not yet proven membership in the local network.
     ///
-    /// Esta tabela é deliberadamente separada de `peers`: candidatos públicos
-    /// podem ser consultados pelo diretório e pelo pkarr, mas nunca entram no
-    /// Painel, no planejamento de pipeline ou em qualquer superfície de
-    /// controle de membro antes da admissão normal.
+    /// This table is deliberately separate from `peers`: public candidates
+    /// may be consulted by the directory and by pkarr, but never enter the
+    /// Dashboard, pipeline planning or any member control
+    /// surface before normal admission.
     public_discovery: Arc<RwLock<HashMap<String, PeerInfo>>>,
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
@@ -1185,12 +1185,12 @@ pub struct Network {
     /// change this live, via `POST /api/ui/network/advertise-addr`, without a
     /// process restart.
     advertise_addr: std::sync::RwLock<Option<String>>,
-    /// Identidade de tensor parallelism deste nó (caminho C). `None` fora de
-    /// um grupo TP. Mutável como `advertise_addr`: o `apply` pode ligar o
-    /// nó como primary/worker sem reiniciar o processo.
+    /// Tensor parallelism identity of this node (path C). `None` outside
+    /// a TP group. Mutable like `advertise_addr`: `apply` can turn the
+    /// node on as primary/worker without restarting the process.
     tp: std::sync::RwLock<Option<TpIdentity>>,
-    /// Capacidade que o último `/health` local confirmou. Fit de memória pode
-    /// reduzir o contexto efetivo depois que o llama.cpp carrega o GGUF.
+    /// Capacity that the last local `/health` confirmed. Memory fit may
+    /// reduce the effective context after llama.cpp loads the GGUF.
     runtime_capacity: std::sync::RwLock<RuntimeCapacityState>,
     idle: AtomicBool,
     socket: Arc<UdpSocket>,
@@ -1207,10 +1207,10 @@ pub struct Network {
     /// second half it would be re-discovered on the next gossip tick and the
     /// button would look like it did nothing.
     detached: AtomicBool,
-    /// Por onde este no fala com cada peer, medido por este processo.
+    /// How this node talks to each peer, as measured by this process.
     pub routes: Arc<crate::route::RouteTable>,
-    /// RTT direcional deste nó para cada peer, medido pelo transporte de
-    /// inferência libp2p quando disponível.
+    /// Directional RTT from this node to each peer, measured by the libp2p
+    /// inference transport when available.
     pub rtts: Arc<crate::route::RttTable>,
     /// This node's libp2p `PeerId` (base58), when the swarm derived a stable
     /// one from the pkarr identity — see `Discovery::new`. Set once, after
@@ -1229,29 +1229,29 @@ pub struct Network {
     /// Mutable through `&self` (mirrors `detached`) because it's known only
     /// after `Network` is already behind an `Arc` and shared.
     libp2p_tunnel_ready: AtomicBool,
-    /// A cabeça de rascunho `nextn` (MTP) está mesmo montada no motor deste
-    /// nó? Só o servidor de inferência sabe - depende do GGUF carregado, não
-    /// da configuração: um modelo sem bloco `nextn`, ou qualquer fatia que não
-    /// seja a final, não tem o que anexar. Por isso o `Arc`: o motor mora em
-    /// outra task e é ele quem escreve aqui, enquanto o anúncio (`self_announce`)
-    /// e a entrada local do gateway leem. Anunciar `speculate/v1-mtp` sem
-    /// cabeça mandaria o gateway pedir um rascunho que nunca vem.
+    /// Is the `nextn` (MTP) draft head actually mounted in this node's engine?
+    /// Only the inference server knows - it depends on the loaded GGUF, not
+    /// on the configuration: a model without a `nextn` block, or any slice that is not
+    /// the final one, has nothing to attach. Hence the `Arc`: the engine lives on
+    /// another task and is the one that writes here, while the announce (`self_announce`)
+    /// and the gateway's local entry read. Announcing `speculate/v1-mtp` without a
+    /// head would make the gateway ask for a draft that never comes.
     mtp_ready: Arc<AtomicBool>,
-    /// O servidor de inferência carregou um modelo e está com o scheduler
-    /// multi-item ativo. Fica falso durante setup, carregamento, TP e queda;
-    /// anunciar a capability antes disso faria um peer enviar v3 para uma
-    /// porta que só sabe responder o protocolo antigo.
+    /// The inference server loaded a model and has the multi-item scheduler
+    /// active. It is false during setup, loading, TP and teardown;
+    /// announcing the capability before that would make a peer send v3 to a
+    /// port that only knows how to answer the old protocol.
     batching_ready: Arc<AtomicBool>,
-    /// Catraca de admissão. Ausente apenas no `testkit` legado; processos
-    /// reais sempre a configuram antes de iniciar a Network.
+    /// Admission gate. Absent only in the legacy `testkit`; real processes
+    /// always configure it before starting the Network.
     admission: Option<Arc<PeerAdmission>>,
     admission_cache: std::sync::RwLock<HashMap<String, AdmissionCacheEntry>>,
-    /// Peers com sonda de admissão em andamento fora do laço do swarm (ver
-    /// `admit_in_background`), para um anúncio a cada 5 s não empilhar sondas.
+    /// Peers with an admission probe in progress outside the swarm loop (see
+    /// `admit_in_background`), so an announce every 5 s does not pile up probes.
     pending_admissions: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Conexões libp2p vivas por PeerId, alimentadas pelo laço do swarm
-    /// (`discovery.rs`). É o que diz se um par é alcançado direto ou só pelo
-    /// relé - ver `peer_route`.
+    /// Live libp2p connections per PeerId, fed by the swarm loop
+    /// (`discovery.rs`). It is what says whether a peer is reached directly or only through the
+    /// relay - see `peer_route`.
     libp2p_links:
         std::sync::RwLock<HashMap<String, Vec<(libp2p::swarm::ConnectionId, Libp2pLink)>>>,
     /// PeerIds of the dedicated relays (`relay_peers`). A circuit through any
@@ -1259,49 +1259,49 @@ pub struct Network {
     dedicated_relays: std::sync::RwLock<std::collections::HashSet<String>>,
     /// Whom this node relays for.
     relay_gate: Arc<RelayGate>,
-    /// Conexões que o DCuTR anunciou como fruto de hole punch. O evento pode
-    /// chegar antes ou depois do `ConnectionEstablished` da mesma conexão,
-    /// então a marca fica guardada até a conexão fechar.
+    /// Connections that DCuTR announced as the fruit of a hole punch. The event may
+    /// arrive before or after the `ConnectionEstablished` of the same connection,
+    /// so the mark is kept until the connection closes.
     hole_punched_links: std::sync::Mutex<std::collections::HashSet<libp2p::swarm::ConnectionId>>,
-    /// Este nó tem `slot_save_path` configurado e serve `POST
-    /// /v1/session/slot`. Vira verdadeiro no `apply` de uma implantação e volta
-    /// a falso ao parar; o gateway exige a cap de todos os hops antes de
-    /// orquestrar um snapshot de implantação.
+    /// This node has `slot_save_path` configured and serves `POST
+    /// /v1/session/slot`. It becomes true on the `apply` of a deployment and goes back
+    /// to false on stop; the gateway requires the cap from all hops before
+    /// orchestrating a deployment snapshot.
     slot_persist_ready: Arc<AtomicBool>,
     /// The plugin whose inference service serves this node's model, when it
     /// is not POM's own engine. While set, the announce carries
     /// `engine/plugin-v1:<code>` instead of the hidden-state capabilities, so
     /// no gateway plans this peer as a pipeline hop. See `plugin_engine`.
     external_engine: std::sync::RwLock<Option<String>>,
-    /// Se este nó fala TLS com os peers, na forma que o anúncio lê.
+    /// Whether this node speaks TLS with the peers, in the form the announce reads.
     ///
-    /// A fonte de verdade é `Config.tls_required`; isto é a cópia que o gossip
-    /// e o laço de accept consultam sem tocar no lock da configuração.
+    /// The source of truth is `Config.tls_required`; this is the copy that gossip
+    /// and the accept loop consult without touching the configuration lock.
     tls: Arc<AtomicBool>,
-    /// Por onde a catraca é acionada: recebe o node_id do principal quando um
-    /// anúncio dele discorda da política local.
+    /// How the gate is triggered: it receives the principal's node_id when an
+    /// announce from it disagrees with the local policy.
     ///
-    /// É um canal, e não uma chamada direta, porque o `Network` não conhece a
-    /// configuração nem a chave de conexão - quem sabe buscar e gravar é a task
-    /// montada no `main.rs`. Ver `tls_policy`.
+    /// It is a channel, and not a direct call, because `Network` does not know the
+    /// configuration nor the connection key - whoever knows how to fetch and store is the task
+    /// set up in `main.rs`. See `tls_policy`.
     tls_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
-    /// Canal da catraca autenticada da política QUIC.
+    /// Channel of the QUIC policy's authenticated gate.
     quic_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
-    /// Canal da catraca autenticada da política de logs.
+    /// Channel of the logs policy's authenticated gate.
     cluster_logs_probe:
         std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
-    /// Política local de captura de logs. O valor do anúncio é gatilho, nunca
-    /// é adotado diretamente.
+    /// Local log capture policy. The announced value is a trigger, never
+    /// adopted directly.
     cluster_logs_enabled: Arc<AtomicBool>,
-    /// Política local do canal global de conversa. O booleano anunciado é
-    /// apenas gatilho; a fonte é a leitura autenticada no principal.
+    /// Local policy of the global conversation channel. The announced boolean is
+    /// only a trigger; the source is the authenticated read on the principal.
     network_chat_probe:
         std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     network_chat_enabled: Arc<AtomicBool>,
-    /// A UI de um nó precisa do documento completo de `NetworkSettings`, mas
-    /// o diretório público só carrega o subconjunto necessário para entrar na
-    /// rede. Este flag faz o primeiro Announce autenticado do principal
-    /// disparar a busca do documento completo.
+    /// A node's UI needs the full `NetworkSettings` document, but
+    /// the public directory only carries the subset needed to join the
+    /// network. This flag makes the principal's first authenticated Announce
+    /// trigger the fetch of the full document.
     network_settings_probe:
         std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     network_settings_sync_needed: AtomicBool,
@@ -1311,8 +1311,8 @@ pub struct Network {
     policy_principal_pubkey: std::sync::RwLock<Option<String>>,
     /// The version of the local trust chain, announced to the peers.
     trust_version: std::sync::RwLock<Option<String>>,
-    /// Evita repetir no gossip um aviso permanente, como o broadcast global
-    /// indisponível dentro de um container.
+    /// Avoids repeating in gossip a permanent warning, such as the global broadcast
+    /// being unavailable inside a container.
     broadcast_warning_logged: AtomicBool,
     /// This node's own address, as reported by a peer's libp2p `identify`
     /// response (`info.observed_addr` — the address *that peer* saw us
@@ -1324,37 +1324,37 @@ pub struct Network {
     /// node with nothing to offer remote peers but a private LAN IP from
     /// local-interface enumeration. See `set_observed_addr`.
     observed_addr: std::sync::RwLock<Option<String>>,
-    /// Multiaddresses que o swarm libp2p publica hoje, mantidas por
-    /// `Discovery` (ver `set_libp2p_addrs`). Vivem aqui, e não no `Discovery`,
-    /// porque quem monta o `Announce` é o `Network`.
+    /// Multiaddresses that the libp2p swarm publishes today, maintained by
+    /// `Discovery` (see `set_libp2p_addrs`). They live here, and not in `Discovery`,
+    /// because whoever builds the `Announce` is `Network`.
     libp2p_addrs: std::sync::RwLock<Vec<String>>,
-    /// Diagnóstico da travessia, mantido por `Discovery`. Ver `TraversalStatus`.
+    /// Traversal diagnostics, maintained by `Discovery`. See `TraversalStatus`.
     traversal: std::sync::RwLock<TraversalStatus>,
-    /// Peers cujo endereço este nó está a reencontrar. Ver
+    /// Peers whose address this node is rediscovering. See
     /// `request_peer_addresses`.
     rediscovery: std::sync::RwLock<HashMap<String, Rediscovery>>,
 }
 
-/// Uma busca em curso pelo endereço atual de um peer.
+/// An ongoing search for a peer's current address.
 struct Rediscovery {
-    /// Quando a busca começou. É o que decide até quando a tela pode dizer
-    /// "reencontrando" (`REDISCOVERY_GIVE_UP`).
+    /// When the search started. It is what decides until when the screen may say
+    /// "rediscovering" (`REDISCOVERY_GIVE_UP`).
     since: Instant,
-    /// Quando a última pergunta saiu, para não repetir antes de
+    /// When the last question went out, so as not to repeat before
     /// `REDISCOVERY_INTERVAL`.
     last_question: Instant,
 }
 
-/// Os primeiros 12 bytes de um id, para o log, **sem cortar no meio de um
-/// caractere e sem estourar em id curto**.
+/// The first 12 bytes of an id, for the log, **without cutting in the middle of a
+/// character and without blowing up on a short id**.
 ///
-/// `&node_id[..12]` num id de dois caracteres derrubou o cluster do captain em
-/// 2026-08-16: um `PeerList` com um id curto chegou por broadcast na LAN, o
-/// `receive_loop` entrou em pânico em `byte index 12 is out of bounds of 'eu'`,
-/// **a task morreu** e o nó parou de receber UDP para sempre - enquanto o HTTP,
-/// o gossip e a TUI seguiam saudáveis, e a única pista era um socket com a fila
-/// de recepção cheia. O id vem da rede: qualquer coisa que o outro lado mande
-/// tem que ser tratada como texto arbitrário, não como um SHA256 de 64 hexas.
+/// `&node_id[..12]` on a two-character id brought down the captain's cluster on
+/// 2026-08-16: a `PeerList` with a short id arrived by broadcast on the LAN, the
+/// `receive_loop` panicked at `byte index 12 is out of bounds of 'eu'`,
+/// **the task died** and the node stopped receiving UDP forever - while HTTP,
+/// gossip and the TUI stayed healthy, and the only clue was a socket with a full
+/// receive queue. The id comes from the network: anything the other side sends
+/// has to be treated as arbitrary text, not as a 64-hex SHA256.
 pub(crate) fn short(id: &str) -> &str {
     let mut end = id.len().min(12);
     while end > 0 && !id.is_char_boundary(end) {
@@ -1365,9 +1365,9 @@ pub(crate) fn short(id: &str) -> &str {
 
 const PANIC_LOG_INTERVAL: StdDuration = StdDuration::from_secs(10);
 
-/// Limita a frequência dos avisos quando uma entrada defeituosa faz o handler
-/// entrar em pânico em todos os datagramas. O primeiro pânico é sempre visível;
-/// os seguintes são contados e aparecem no próximo aviso permitido.
+/// Limits the frequency of warnings when a defective entry makes the handler
+/// panic on every datagram. The first panic is always visible;
+/// the following ones are counted and show up in the next permitted warning.
 #[derive(Debug, Default)]
 struct PanicLogLimiter {
     last_logged: Option<Instant>,
@@ -1526,20 +1526,20 @@ pub fn advertised_addr(raw: &str, default_port: u16) -> Option<String> {
 }
 
 impl Network {
-    /// Socket UDP que enxerga IPv6 e IPv4 no mesmo descritor.
+    /// UDP socket that sees IPv6 and IPv4 on the same descriptor.
     ///
-    /// `IPV6_V6ONLY` só tem efeito se for desligado **antes** do `bind`, e o
-    /// `UdpSocket::bind` da std já liga. No Linux e no macOS o padrão do
-    /// sistema é 0 e a descoberta funcionava por acidente; no Windows o padrão
-    /// é 1, e um nó ligado em `[::]` não receberia anúncio nenhum de peer IPv4
-    /// - ou seja, nenhum peer da LAN. É o mesmo tipo de defeito silencioso e
-    /// só-numa-plataforma que o `normalize` abaixo já guarda com teste.
+    /// `IPV6_V6ONLY` only takes effect if turned off **before** the `bind`, and std's
+    /// `UdpSocket::bind` already turns it on. On Linux and macOS the system
+    /// default is 0 and discovery worked by accident; on Windows the default
+    /// is 1, and a node bound to `[::]` would receive no announce at all from an IPv4 peer
+    /// - that is, no LAN peer. It is the same kind of silent,
+    /// single-platform defect that the `normalize` below already guards with a test.
     fn bind_udp_dual_stack(addr: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
         use socket2::{Domain, Protocol, Socket, Type};
 
         let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
         sock.set_only_v6(false)?;
-        // Broadcast v4 sai deste socket justamente por causa do only_v6=false.
+        // v4 broadcast leaves this socket precisely because of only_v6=false.
         let _ = sock.set_broadcast(true);
         sock.bind(&addr.into())?;
         sock.set_nonblocking(true)?;
@@ -1774,10 +1774,10 @@ impl Network {
         *self.hostname.write().expect("hostname lock") = hostname;
     }
 
-    /// Configura a prova de pertencimento antes de iniciar as tasks de
-    /// descoberta. Um processo em produção nunca usa o modo aberto do
-    /// `testkit`: sem chave privada válida ou cadeia pública ancorada, a
-    /// admissão recusa o peer.
+    /// Configures the proof of membership before starting the discovery
+    /// tasks. A production process never uses the `testkit`'s open mode:
+    /// without a valid private key or an anchored public chain, admission
+    /// refuses the peer.
     pub(crate) fn with_admission(
         mut self,
         auth: crate::auth::AuthState,
@@ -1896,9 +1896,9 @@ impl Network {
         self
     }
 
-    /// Configura as portas UDP dedicadas do HTTP/3 antes de o nó entrar no
-    /// cluster. Elas são anunciadas junto do endereço público, nunca
-    /// inferidas a partir da URL TCP de inferência.
+    /// Configures the dedicated HTTP/3 UDP ports before the node joins the
+    /// cluster. They are announced together with the public address, never
+    /// inferred from the TCP inference URL.
     pub fn with_quic_ports(mut self, inference: Option<u16>, gateway: Option<u16>) -> Self {
         self.inference_quic_port = inference;
         self.gateway_quic_port = gateway;
@@ -1919,14 +1919,14 @@ impl Network {
         *self.advertise_addr.write().expect("advertise_addr lock") = normalized;
     }
 
-    /// Liga (ou desliga, com `None`) a identidade de tensor parallelism deste
-    /// nó. O `apply` chama isto quando implanta o nó como primary/worker de
-    /// um grupo TP, sem reiniciar o processo.
+    /// Turns on (or off, with `None`) this node's tensor parallelism
+    /// identity. `apply` calls this when it deploys the node as primary/worker of
+    /// a TP group, without restarting the process.
     pub fn set_tp(&self, tp: Option<TpIdentity>) {
         *self.tp.write().expect("tp lock") = tp;
     }
 
-    /// Identidade de tensor parallelism anunciada por este nó, se houver.
+    /// Tensor parallelism identity announced by this node, if any.
     pub fn tp_identity(&self) -> Option<TpIdentity> {
         self.tp.read().expect("tp lock").clone()
     }
@@ -1947,12 +1947,12 @@ impl Network {
     /// `host_port`'s host is still private/loopback/link-local
     /// (`addrs::is_private_or_local`) — that's not new information, just a
     /// peer on the same LAN or a NAT rewriting within another private range.
-    /// Publica no `Announce` os multiaddresses que o swarm escuta hoje.
+    /// Publishes in the `Announce` the multiaddresses the swarm listens on today.
     ///
-    /// Chamado por `Discovery` sempre que um listener, um endereço externo
-    /// confirmado ou uma reserva de circuito entra ou sai. Devolve `true`
-    /// quando a lista mudou, para o chamador logar a mudança; o anúncio novo
-    /// sai no gossip seguinte, em no máximo 5 s.
+    /// Called by `Discovery` whenever a listener, a confirmed external
+    /// address or a circuit reservation comes in or goes out. Returns `true`
+    /// when the list changed, so the caller logs the change; the new announce
+    /// goes out on the next gossip, in at most 5 s.
     pub fn set_libp2p_addrs(&self, addrs: Vec<String>) -> bool {
         let mut guard = self.libp2p_addrs.write().expect("libp2p_addrs lock");
         if *guard == addrs {
@@ -1964,7 +1964,7 @@ impl Network {
         true
     }
 
-    /// Retrato da travessia para a UI e para o operador.
+    /// Snapshot of the traversal for the UI and for the operator.
     pub fn traversal_status(&self) -> TraversalStatus {
         self.traversal.read().expect("traversal lock").clone()
     }
@@ -2063,13 +2063,13 @@ impl Network {
         )
     }
 
-    /// Enderecos que este no anuncia de si.
+    /// Addresses this node announces about itself.
     ///
-    /// O endereço fixado pelo operador vem primeiro. Sem fixação, os
-    /// endereços públicos atuais das interfaces vêm antes do observado por
-    /// identify, e os endereços locais restantes fecham a lista. Assim, uma
-    /// rotação de IPv6 no macOS não deixa um endereço observado antigo na
-    /// frente, mas um nó atrás de NAT ainda conserva seu fallback público.
+    /// The address pinned by the operator comes first. Without a pin, the current
+    /// public addresses of the interfaces come before the one observed by
+    /// identify, and the remaining local addresses close the list. That way, an
+    /// IPv6 rotation on macOS does not leave an old observed address
+    /// in front, but a node behind NAT still keeps its public fallback.
     pub fn self_addr_candidates(&self) -> Vec<String> {
         let pinned = self
             .advertise_addr
@@ -2176,9 +2176,9 @@ impl Network {
         Ok(())
     }
 
-    /// Envia para os endereços conhecidos até um envio ser aceito pelo socket.
-    /// O endereço anunciado é cache, então uma rotação de IPv6 não pode
-    /// impedir o anúncio aos demais caminhos vivos.
+    /// Sends to the known addresses until one send is accepted by the socket.
+    /// The announced address is a cache, so an IPv6 rotation cannot
+    /// prevent the announce from reaching the other live paths.
     async fn send_to_candidates(&self, msg: &P2PMessage, addresses: &[String]) -> Result<()> {
         let data = serde_json::to_vec(msg)?;
         let mut last_error = None;
@@ -2217,18 +2217,18 @@ impl Network {
     /// model is bound to it. It must still announce itself, otherwise it is
     /// invisible to the rest of the cluster — it just announces zero layers.
     ///
-    /// Este é o **único** construtor de `Announce` do nó: o UDP (bootstrap,
-    /// peers, broadcast e a resposta a `PeerRequest`) e o publish periódico no
-    /// gossipsub passam todos por aqui. Um segundo construtor em `main.rs`
-    /// anunciava menos capabilities, com `role`/`hostname` vazios e só quando
-    /// havia assignment, então um peer que chegasse pela internet via um nó
-    /// diferente do que a LAN via.
+    /// This is the node's **only** `Announce` builder: UDP (bootstrap,
+    /// peers, broadcast and the reply to `PeerRequest`) and the periodic publish on
+    /// gossipsub all go through here. A second builder in `main.rs`
+    /// announced fewer capabilities, with empty `role`/`hostname` and only when
+    /// there was an assignment, so a peer that arrived over the internet through a
+    /// different node saw something different from what the LAN saw.
     fn self_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
-        // A enumeração é deliberadamente feita aqui, em cada anúncio. O
-        // gossip anuncia a cada 5 s; a operação é apenas leitura local de
-        // interfaces, não uma sonda de rede. O mesmo snapshot alimenta `addr`
-        // e `addr_candidates`, evitando publicar duas fotografias diferentes
-        // se o IPv6 temporário rodar durante a montagem.
+        // The enumeration is deliberately done here, on each announce. Gossip
+        // announces every 5 s; the operation is only a local read of
+        // interfaces, not a network probe. The same snapshot feeds `addr`
+        // and `addr_candidates`, avoiding publishing two different photographs
+        // if the temporary IPv6 rotates during assembly.
         let local = crate::addrs::local_addrs();
         let pinned = self
             .advertise_addr
@@ -2277,10 +2277,10 @@ impl Network {
                     "relay/v1-chain".into(),
                     "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),
-                    // Todo binário novo fala o protocolo do MTP fatiado
-                    // (rascunho pré-fabricado + tokens + mtp_k na wire);
-                    // `supports_mtp` exige a cap de todos os passos para
-                    // excluir peer velho do anel.
+                    // Every new binary speaks the sliced MTP protocol
+                    // (prefabricated draft + tokens + mtp_k on the wire);
+                    // `supports_mtp` requires the cap from all steps to
+                    // exclude an old peer from the ring.
                     "speculate/v1-mtp-sliced".into(),
                 ];
                 if self.mtp_ready() {
@@ -2330,11 +2330,11 @@ impl Network {
         }
     }
 
-    /// O anúncio serializado que o publish periódico do gossipsub manda.
+    /// The serialized announce that the periodic gossipsub publish sends.
     ///
-    /// Existe para que o caminho libp2p não tenha construtor próprio: é o mesmo
-    /// `self_announce` do UDP, com as mesmas capabilities, o mesmo `role` e o
-    /// mesmo `hostname`, e sai também quando não há assignment.
+    /// It exists so that the libp2p path has no builder of its own: it is the same
+    /// `self_announce` as UDP, with the same capabilities, the same `role` and the same
+    /// `hostname`, and it also goes out when there is no assignment.
     pub fn gossip_announce_bytes(&self, assignment: Option<&LayerAssignment>) -> Option<Vec<u8>> {
         serde_json::to_vec(&self.self_announce(assignment)).ok()
     }
@@ -2369,8 +2369,8 @@ impl Network {
             .and_then(|admission| admission.trust.cluster_id())
     }
 
-    /// A alça que o servidor de inferência escreve quando (não) conseguiu
-    /// anexar a cabeça `nextn`. Ver o campo `mtp_ready`.
+    /// The handle the inference server writes when it did (not) manage to
+    /// attach the `nextn` head. See the `mtp_ready` field.
     pub fn mtp_ready_handle(&self) -> Arc<AtomicBool> {
         self.mtp_ready.clone()
     }
@@ -2429,9 +2429,9 @@ impl Network {
         Some(caps)
     }
 
-    /// Muda a geração dona da capacidade e a retira enquanto o novo runtime
-    /// ainda não respondeu ao `/health`. O lock cobre geração e capacidade
-    /// juntos, para um watcher antigo não ressuscitar um anúncio depois de um
+    /// Changes the generation that owns the capacity and withdraws it while the new runtime
+    /// has not yet answered `/health`. The lock covers generation and capacity
+    /// together, so an old watcher does not resurrect an announce after an
     /// `apply`.
     pub fn set_runtime_generation(&self, generation: u64) {
         if let Ok(mut state) = self.runtime_capacity.write() {
@@ -2440,16 +2440,16 @@ impl Network {
         }
     }
 
-    /// Atualiza a capacidade que será enviada no próximo anúncio. Reservado a
-    /// testes e a mudanças que já controlam a geração; o watcher de saúde usa
-    /// `set_runtime_capacity_for_generation` para não publicar valor antigo.
+    /// Updates the capacity that will be sent in the next announce. Reserved for
+    /// tests and for changes that already control the generation; the health watcher uses
+    /// `set_runtime_capacity_for_generation` so as not to publish an old value.
     pub fn set_runtime_capacity(&self, capacity: Option<RuntimeCapacity>) {
         if let Ok(mut state) = self.runtime_capacity.write() {
             state.capacity = capacity;
         }
     }
 
-    /// Publica somente se este health watcher ainda pertence ao runtime atual.
+    /// Publishes only if this health watcher still belongs to the current runtime.
     pub fn set_runtime_capacity_for_generation(
         &self,
         generation: u64,
@@ -2462,7 +2462,7 @@ impl Network {
         }
     }
 
-    /// Retorna a capacidade confirmada pelo `/health` local.
+    /// Returns the capacity confirmed by the local `/health`.
     pub fn runtime_capacity(&self) -> Option<RuntimeCapacity> {
         self.runtime_capacity
             .read()
@@ -2474,14 +2474,14 @@ impl Network {
         self.tls.load(Ordering::Relaxed)
     }
 
-    /// Ligado ou desligado pela rota do principal, ou pela catraca depois de
-    /// confirmar com ele. Nunca a partir de um Announce.
+    /// Turned on or off by the principal's route, or by the gate after
+    /// confirming with it. Never from an Announce.
     pub fn set_tls(&self, on: bool) {
         self.tls.store(on, Ordering::Relaxed);
     }
 
-    /// Liga o canal da catraca. Sem isto, discordância de anúncio é ignorada -
-    /// que é o comportamento certo para um nó de teste, sem config para gravar.
+    /// Wires up the gate's channel. Without it, an announce disagreement is ignored -
+    /// which is the right behavior for a test node, with no config to write.
     pub fn set_tls_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
         if let Ok(mut slot) = self.tls_probe.write() {
             *slot = Some(tx);
@@ -2498,8 +2498,8 @@ impl Network {
         self.cluster_logs_enabled.load(Ordering::Acquire)
     }
 
-    /// A política só muda pela interface do principal ou pela resposta
-    /// autenticada da catraca. Nunca pelo booleano recebido no gossip.
+    /// The policy only changes through the principal's interface or through the gate's
+    /// authenticated answer. Never through the boolean received in gossip.
     pub fn set_cluster_logs_enabled(&self, enabled: bool) {
         self.cluster_logs_enabled.store(enabled, Ordering::Release);
     }
@@ -2514,8 +2514,8 @@ impl Network {
         self.network_chat_enabled.load(Ordering::Acquire)
     }
 
-    /// A política só muda pela interface do principal ou pela resposta
-    /// autenticada da catraca. Nunca pelo booleano recebido no gossip.
+    /// The policy only changes through the principal's interface or through the gate's
+    /// authenticated answer. Never through the boolean received in gossip.
     pub fn set_network_chat_enabled(&self, enabled: bool) {
         self.network_chat_enabled.store(enabled, Ordering::Release);
     }
@@ -2565,8 +2565,8 @@ impl Network {
         }
     }
 
-    /// Identifica o principal real para as catracas de política. O valor vem
-    /// da cadeia administrativa local, nunca de um campo não autenticado do
+    /// Identifies the real principal for the policy gates. The value comes
+    /// from the local administrative chain, never from an unauthenticated field of
     /// gossip.
     pub fn set_policy_principal_pubkey(&self, pubkey: impl Into<String>) {
         let pubkey = pubkey.into();
@@ -2598,9 +2598,9 @@ impl Network {
         {
             if let Ok(slot) = self.quic_probe.read() {
                 if let Some(tx) = slot.as_ref() {
-                    // O valor anunciado continua sendo só o gatilho. A task
-                    // da política busca o valor no endpoint autenticado do
-                    // principal antes de o adotar.
+                    // The announced value remains only the trigger. The policy
+                    // task fetches the value from the principal's authenticated endpoint
+                    // before adopting it.
                     let _ = tx.send((principal, tls));
                 }
             }
@@ -2664,8 +2664,8 @@ impl Network {
         }
     }
 
-    /// Retorna todos os peers admin vivos e seus endereços libp2p. A lista é
-    /// usada para replicar dados locais em cada autoridade, não só no
+    /// Returns all live admin peers and their libp2p addresses. The list is
+    /// used to replicate local data to every authority, not only to the
     /// principal.
     pub async fn admin_peers(&self) -> Vec<(libp2p::PeerId, Vec<String>)> {
         let peers = self.peers.read().await;
@@ -2679,8 +2679,8 @@ impl Network {
             .collect()
     }
 
-    /// Retorna o principal conhecido e seu endereço libp2p para os fluxos que
-    /// ainda precisam de um único próximo salto, como o Chat da rede.
+    /// Returns the known principal and its libp2p address for flows that
+    /// still need a single next hop, such as the network Chat.
     pub async fn principal_peer(&self) -> Option<(libp2p::PeerId, Vec<String>)> {
         let peers = self.peers.read().await;
         peers
@@ -2755,17 +2755,17 @@ impl Network {
         Ok(())
     }
 
-    /// Varredura periódica de descoberta: repergunta quem são os peers dos
-    /// outros, para os bootstrap nodes e para um subconjunto rotativo dos peers
-    /// vivos.
+    /// Periodic discovery sweep: re-asks who the other peers' peers are, to the
+    /// bootstrap nodes and to a rotating subset of the live
+    /// peers.
     ///
-    /// Sem isto a descoberta transitiva é um retrato do arranque: `PeerRequest`
-    /// só saía uma vez, e só para os bootstrap nodes. Na LAN o broadcast IPv4
-    /// escondia o defeito; entre sites, um nó que entrou depois no cluster do
-    /// vizinho nunca era aprendido.
+    /// Without this, transitive discovery is a snapshot of startup: `PeerRequest`
+    /// only went out once, and only to the bootstrap nodes. On the LAN the IPv4 broadcast
+    /// hid the defect; across sites, a node that joined the neighbor's cluster later
+    /// was never learned.
     ///
-    /// Devolve quantos peers foram perguntados neste tique (0 fora da varredura,
-    /// 0 se destacado), o que é o que os testes observam.
+    /// Returns how many peers were asked on this tick (0 outside the sweep,
+    /// 0 if detached), which is what the tests observe.
     pub async fn discovery_sweep(&self, tick: u64) -> Result<usize> {
         if self.is_detached() || tick == 0 || tick % DISCOVERY_SWEEP_TICKS != 0 {
             return Ok(0);
@@ -2778,8 +2778,8 @@ impl Network {
             self.send_to(&msg, bootstrap).await?;
         }
 
-        // Ordem estável (por node_id) para que o rodízio avance de fato em vez
-        // de sortear os mesmos peers a cada volta.
+        // Stable order (by node_id) so the round-robin actually advances instead
+        // of drawing the same peers on every round.
         let mut targets: Vec<Vec<String>> = {
             let peers = self.peers.read().await;
             let mut v: Vec<(&String, &PeerInfo)> = peers
@@ -2805,30 +2805,30 @@ impl Network {
         Ok(targets.len())
     }
 
-    /// Repergunta o endereço atual de um peer que ficou ilegível.
+    /// Re-asks the current address of a peer that became unreadable.
     ///
-    /// Chamado quando **todo** endereço conhecido de um peer está
-    /// desacreditado. Insistir num endereço morto não o ressuscita; o que
-    /// ressuscita o peer é a rede voltar a dizer onde ele está. Duas frentes,
-    /// porque nenhuma sozinha basta:
+    /// Called when **every** known address of a peer is
+    /// discredited. Insisting on a dead address does not resurrect it; what
+    /// resurrects the peer is the network saying again where it is. Two fronts,
+    /// because neither alone is enough:
     ///
-    /// 1. `PeerRequest` para os bootstrap nodes e para os outros peers vivos -
-    ///    quem responde manda o próprio `Announce` **e** o `PeerList`, e é dali
-    ///    que sai o endereço que o peer perdido anuncia hoje;
-    /// 2. os candidatos desacreditados saem da entrada local, para que o
-    ///    próximo `Announce` do peer a repovoe do zero em vez de somar-se ao
-    ///    cadáver - `merge_observed` só acrescenta.
+    /// 1. `PeerRequest` to the bootstrap nodes and to the other live peers -
+    ///    whoever answers sends its own `Announce` **and** the `PeerList`, and that is
+    ///    where the address the lost peer announces today comes from;
+    /// 2. the discredited candidates leave the local entry, so that the
+    ///    peer's next `Announce` repopulates it from scratch instead of adding to
+    ///    the corpse - `merge_observed` only appends.
     ///
-    /// Não há broadcast na LAN aqui, de propósito: o peer continua vivo (é ele
-    /// que está em `alive_peers`) e o `Announce` dele chega a cada
-    /// `GOSSIP_INTERVAL_SECS` de qualquer modo. O broadcast não traria nada que
-    /// esse `Announce` não traga, e transmitir na LAN a partir de um handler de
-    /// leitura quebraria a regra de que a suíte de rotas nunca fala UDP de
-    /// verdade.
+    /// There is no LAN broadcast here, on purpose: the peer is still alive (it is the one
+    /// in `alive_peers`) and its `Announce` arrives every
+    /// `GOSSIP_INTERVAL_SECS` anyway. The broadcast would bring nothing that
+    /// this `Announce` does not bring, and transmitting on the LAN from a read
+    /// handler would break the rule that the route suite never speaks real
+    /// UDP.
     ///
-    /// Limitado a uma vez por `REDISCOVERY_INTERVAL` por peer: o Painel relê o
-    /// cluster em ciclo curto, e sem freio isto viraria uma tempestade de UDP
-    /// por atualização de tela. Devolve `true` quando a busca saiu de fato.
+    /// Limited to once per `REDISCOVERY_INTERVAL` per peer: the Dashboard re-reads the
+    /// cluster in a short cycle, and without a brake this would become a UDP storm
+    /// per screen refresh. Returns `true` when the search actually went out.
     pub async fn request_peer_addresses(&self, node_id: &str) -> bool {
         if self.is_detached() {
             return false;
@@ -2857,9 +2857,9 @@ impl Network {
             }
         }
 
-        // O cadáver sai da entrada local. Sem isto o `Announce` seguinte cai no
-        // `merge_observed`, que só acrescenta, e o endereço morto seguiria na
-        // frente da fila para sempre.
+        // The corpse leaves the local entry. Without this the next `Announce` falls into
+        // `merge_observed`, which only appends, and the dead address would stay
+        // at the front of the queue forever.
         {
             let mut peers = self.peers.write().await;
             if let Some(peer) = peers.get_mut(node_id) {
@@ -2894,14 +2894,14 @@ impl Network {
         true
     }
 
-    /// Se este nó está agora reencontrando o peer: já pediu o endereço atual e
-    /// ainda está dentro da janela em que faz sentido esperar a resposta.
+    /// Whether this node is now rediscovering the peer: it already asked for the current address and
+    /// is still inside the window in which it makes sense to wait for the answer.
     ///
-    /// É o que separa "não dá para ler" de "estou reencontrando". A tela
-    /// precisa da diferença: a primeira é um beco sem saída, a segunda é
-    /// trabalho em curso - e depois de `REDISCOVERY_GIVE_UP` volta a ser a
-    /// primeira, porque chamar de trabalho em curso o que já não anda seria o
-    /// mesmo aviso desonesto com outra palavra.
+    /// It is what separates "cannot be read" from "I am rediscovering". The screen
+    /// needs the difference: the first is a dead end, the second is
+    /// work in progress - and after `REDISCOVERY_GIVE_UP` it goes back to being the
+    /// first, because calling work in progress what no longer moves would be the
+    /// same dishonest warning with another word.
     pub fn is_rediscovering(&self, node_id: &str) -> bool {
         self.rediscovery
             .read()
@@ -2910,7 +2910,7 @@ impl Network {
             .is_some_and(|since| since.elapsed() < REDISCOVERY_GIVE_UP)
     }
 
-    /// Envelhece a busca em curso, para um teste alcançar o prazo sem esperar.
+    /// Ages the ongoing search, so a test can reach the deadline without waiting.
     #[cfg(test)]
     pub fn age_rediscovery_for_test(&self, node_id: &str, amount: Duration) {
         if let Ok(mut requests) = self.rediscovery.write() {
@@ -2921,10 +2921,10 @@ impl Network {
         }
     }
 
-    /// O peer voltou a ser lido: a busca acabou.
+    /// The peer became readable again: the search is over.
     ///
-    /// Sem isto, uma máquina que se recuperou depois de uma rotação continuaria
-    /// a contar o tempo da busca antiga, e a busca seguinte já nasceria velha.
+    /// Without this, a machine that recovered after a rotation would keep
+    /// counting the time of the old search, and the next search would be born old.
     pub fn note_peer_read(&self, node_id: &str) {
         if let Ok(mut requests) = self.rediscovery.write() {
             requests.remove(node_id);
@@ -2957,22 +2957,22 @@ impl Network {
                 // made of nodes that only listen and never speak.
                 let asgn = assignment_gossip.read().await.clone();
                 let _ = net_gossip.announce(asgn.as_ref()).await;
-                // Descoberta contínua: sem isto, quem só é alcançável fora da
-                // LAN nunca é aprendido depois do arranque.
+                // Continuous discovery: without this, whoever is only reachable outside the
+                // LAN is never learned after startup.
                 let _ = net_gossip.discovery_sweep(tick).await;
                 net_gossip.cleanup_dead_peers().await;
             }
         });
 
-        // Medicao de rotas, em task propria: uma sonda lenta nao pode segurar o
-        // anuncio nem a limpeza de peers mortos. Com 9 peers e ate 4 candidatos
-        // cada, o timeout de 3 s por sonda passaria de um minuto - e o laco de
-        // gossip e quem expira peer morto.
+        // Route measurement, in its own task: a slow probe cannot hold the
+        // announce nor the cleanup of dead peers. With 9 peers and up to 4 candidates
+        // each, the 3 s timeout per probe would exceed a minute - and the gossip
+        // loop is what expires dead peers.
         let net_routes = self.clone();
         tokio::spawn(async move {
-            // Um cache próprio, e não o do gateway: esta task nasce dentro do
-            // `Network`, que não conhece o `GatewayState`. O timeout curto é o
-            // da sonda, não o de inferência.
+            // A cache of its own, and not the gateway's: this task is born inside
+            // `Network`, which does not know the `GatewayState`. The short timeout is
+            // the probe's, not inference's.
             let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
             let mut ticker = interval(Duration::from_secs(30));
             loop {
@@ -2980,11 +2980,11 @@ impl Network {
                 if net_routes.is_detached() {
                     continue;
                 }
-                // A sonda nova começa sem política própria. Sem sincronizar o
-                // cliente com o estado atual do cluster, os candidatos HTTPS
-                // falham silenciosamente no TLS e o painel fica sem RTT dos
-                // peers remotos. Atualizar só o cliente mantém o esquema das
-                // URLs sob responsabilidade da política global já confirmada.
+                // The new probe starts with no policy of its own. Without syncing the
+                // client with the cluster's current state, the HTTPS candidates
+                // fail silently on TLS and the dashboard is left without RTT of the
+                // remote peers. Updating only the client keeps the URL scheme
+                // under the responsibility of the already confirmed global policy.
                 clients.set_tls(net_routes.tls_enabled());
                 for peer in net_routes.alive_peers().await {
                     let needs_route = net_routes.routes.needs_measuring(&peer.node_id);
@@ -3026,11 +3026,11 @@ impl Network {
                                 _ => None,
                             };
 
-                        // A capability anunciada não garante que o swarm local
-                        // ainda esteja pronto. Se a medição pelo túnel falhar,
-                        // mede a própria rota HTTP de inferência como fallback.
-                        // Isso também renova o direct-health a cada intervalo
-                        // de RTT, sem esperar o intervalo mais lento de rota.
+                        // The announced capability does not guarantee that the local swarm
+                        // is still ready. If the measurement through the tunnel fails,
+                        // it measures the inference HTTP route itself as a fallback.
+                        // This also renews the direct-health at each RTT
+                        // interval, without waiting for the slower route interval.
                         let direct_health_rtt = if tunnel_rtt.is_none() {
                             net_routes
                                 .routes
@@ -3052,9 +3052,9 @@ impl Network {
             }
         });
 
-        // Plano de rotas por aresta: mede em segundo plano o transporte até
-        // cada peer vivo, para o frame usar uma rota fixada em vez de
-        // redescobrir a escada a cada chamada. Ver `route_plan`.
+        // Per-edge route plan: measures in the background the transport to
+        // each live peer, so the frame uses a pinned route instead of
+        // rediscovering the ladder on every call. See `route_plan`.
         crate::route_plan::spawn_planner(self.clone());
 
         // Reach out to the configured bootstrap nodes right away. This belongs
@@ -3241,9 +3241,9 @@ impl Network {
                     );
                 }
 
-                // A catraca do TLS. O anúncio é **gatilho, nunca valor**: nada
-                // aqui grava a política. Discordar do principal só pede uma
-                // busca autenticada nele, e é a resposta dela que vale. Ver
+                // The TLS gate. The announce is a **trigger, never a value**: nothing
+                // here stores the policy. Disagreeing with the principal only asks for an
+                // authenticated fetch from it, and it is that answer that counts. See
                 // `tls_policy`.
                 if let crate::tls_policy::PolicyOutcome::Fetch { principal } =
                     crate::tls_policy::on_announce(
@@ -3255,13 +3255,13 @@ impl Network {
                 {
                     if let Ok(slot) = self.tls_probe.read() {
                         if let Some(tx) = slot.as_ref() {
-                            // O `tls` anunciado vai junto, e serve para **uma
-                            // coisa só**: saber por qual esquema discar a
-                            // sonda. Sem isso um nó que ainda acha o cluster em
-                            // claro discaria `http://` num principal estrito,
-                            // seria recusado, e a catraca nunca conseguiria
-                            // ligar. Forjar a dica não muda o que é gravado -
-                            // só faz a sonda bater na porta errada e falhar.
+                            // The announced `tls` goes along, and serves **one
+                            // thing only**: knowing which scheme to dial the
+                            // probe with. Without it a node that still thinks the cluster is in
+                            // cleartext would dial `http://` on a strict principal,
+                            // be refused, and the gate could never
+                            // turn on. Forging the hint does not change what is stored -
+                            // it only makes the probe knock on the wrong door and fail.
                             let _ = tx.send((principal, tls));
                         }
                     }
@@ -3373,16 +3373,16 @@ impl Network {
                     let address_changed = peer_address_changed(previous, &peer);
                     let connection_verified = previous.connection_verified;
                     let api_keys_active = previous.api_keys_active;
-                    // O snapshot de outro nó é a lista que o peer anuncia
-                    // **hoje**; o que se herda daqui é só o que este nó sabe e
-                    // o outro não - o endereço observado, que enxerga NAT.
+                    // The other node's snapshot is the list the peer announces
+                    // **today**; what is inherited from here is only what this node knows and
+                    // the other does not - the observed address, which sees through NAT.
                     //
-                    // Herdar a lista inteira tornava candidato morto imortal:
-                    // um endereço que o peer deixou de anunciar voltava em todo
-                    // `PeerList`, e o conjunto só crescia. Com IPv6 temporário,
-                    // que roda sozinho, isso é um cadáver novo por rotação.
-                    // Quem já provou que o endereço não atende não o traz de
-                    // volta.
+                    // Inheriting the whole list made a dead candidate immortal:
+                    // an address the peer stopped announcing came back in every
+                    // `PeerList`, and the set only grew. With temporary IPv6,
+                    // which rotates on its own, that is a new corpse per rotation.
+                    // Whoever already proved the address does not answer does not bring it
+                    // back.
                     if peer.addr_candidates.is_empty() {
                         for addr in &previous.addr_candidates {
                             if self.routes.endpoint_is_discredited(&peer.node_id, addr) {
@@ -3451,8 +3451,8 @@ impl Network {
         if dead.is_empty() {
             return;
         }
-        // O peer saiu: a memória de endereço dele vai junto. Guardá-la faria um
-        // nó que volta com o mesmo endereço nascer desacreditado.
+        // The peer left: its address memory goes with it. Keeping it would make a
+        // node that comes back with the same address be born discredited.
         for node_id in &dead {
             self.routes.forget(node_id);
             if let Ok(mut requests) = self.rediscovery.write() {
@@ -3511,13 +3511,13 @@ impl Network {
         let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
             return false;
         };
-        // `anyone_with_anchor`: o operador declarou que qualquer nó que segura a
-        // âncora correspondente participa. Um worker comum nunca recebe
-        // concessão de autoridade, então `admits_participant` o recusaria. Aqui a
-        // barra é uma âncora local válida para o `cluster_id` anunciado, somada
-        // ao vínculo de identidade já conferido acima (node_id ↔ pubkey ↔ chave
-        // de autoridade ↔ PeerId, e o Announce do gossip vem assinado por esse
-        // PeerId). As políticas mais estritas continuam exigindo concessão.
+        // `anyone_with_anchor`: the operator declared that any node that holds the
+        // matching anchor participates. An ordinary worker never receives an
+        // authority grant, so `admits_participant` would refuse it. Here the
+        // bar is a valid local anchor for the announced `cluster_id`, added
+        // to the identity binding already checked above (node_id <-> pubkey <-> authority
+        // key <-> PeerId, and the gossip Announce comes signed by that
+        // PeerId). The stricter policies keep requiring a grant.
         if matches!(
             access_policy,
             crate::config::NetworkAccessPolicy::AnyoneWithAnchor
@@ -3603,10 +3603,10 @@ impl Network {
                 return AdmissionProbe::Refused;
             }
         }
-        // Último recurso, e para um par atrás de NAT/CGNAT o **único** que
-        // chega: a sonda pelo túnel libp2p. Sem ela a admissão nunca conclui
-        // para esse par, ele não entra na tabela `peers`, e roteamento, UI e
-        // pipeline continuam cegos para ele mesmo com o hole punch pronto.
+        // Last resort, and for a peer behind NAT/CGNAT the **only** one that
+        // gets through: the probe through the libp2p tunnel. Without it admission never concludes
+        // for that peer, it does not enter the `peers` table, and routing, UI and
+        // pipeline stay blind to it even with the hole punch ready.
         let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(peer) else {
             return AdmissionProbe::Unreachable;
         };
@@ -3641,11 +3641,11 @@ impl Network {
         }
     }
 
-    /// Confere pertencimento antes de qualquer efeito derivado do peer.
+    /// Checks membership before any effect derived from the peer.
     ///
-    /// A resposta `challenge_required` do handshake já prova a chave
-    /// compartilhada; concluir a assinatura do nonce seria uma prova de
-    /// identidade adicional, não necessária para a admissão privada atual.
+    /// The handshake's `challenge_required` answer already proves the shared
+    /// key; completing the nonce signature would be an additional identity
+    /// proof, not necessary for the current private admission.
     /// The network's signed trust document, as an admission grant carries it.
     pub(crate) fn trust_document_json(&self) -> Option<String> {
         let admission = self.admission.as_ref()?;
@@ -3685,7 +3685,7 @@ impl Network {
         allowed
     }
 
-    /// Uma conexão libp2p com `peer` abriu (`ConnectionEstablished`).
+    /// A libp2p connection with `peer` opened (`ConnectionEstablished`).
     pub(crate) fn note_libp2p_link(
         &self,
         peer: &libp2p::PeerId,
@@ -3718,7 +3718,7 @@ impl Network {
         }
     }
 
-    /// A conexão `id` com `peer` fechou (`ConnectionClosed`).
+    /// The connection `id` with `peer` closed (`ConnectionClosed`).
     pub(crate) fn drop_libp2p_link(&self, peer: &libp2p::PeerId, id: libp2p::swarm::ConnectionId) {
         if let Ok(mut punched) = self.hole_punched_links.lock() {
             punched.remove(&id);
@@ -3734,7 +3734,7 @@ impl Network {
         }
     }
 
-    /// O DCuTR fechou o hole punch com `peer` e a conexão direta é `id`.
+    /// DCuTR closed the hole punch with `peer` and the direct connection is `id`.
     pub(crate) fn mark_hole_punched(&self, peer: &libp2p::PeerId, id: libp2p::swarm::ConnectionId) {
         if let Ok(mut punched) = self.hole_punched_links.lock() {
             punched.insert(id);
@@ -3750,9 +3750,9 @@ impl Network {
         }
     }
 
-    /// Conexões libp2p vivas com o par de PeerId `peer_id`. Um circuito que
-    /// entrou sem o endereço do relé ganha o endereço da conexão deste nó com
-    /// o próprio relé, quando existe.
+    /// Live libp2p connections with the peer of PeerId `peer_id`. A circuit that
+    /// came in without the relay's address gets the address of this node's connection to
+    /// the relay itself, when one exists.
     pub fn libp2p_links(&self, peer_id: &str) -> Vec<Libp2pLink> {
         let Ok(links) = self.libp2p_links.read() else {
             return Vec::new();
@@ -3777,27 +3777,27 @@ impl Network {
         out
     }
 
-    /// Endereços do gateway de `peer`, na ordem em que vale tentar: primeiro o
-    /// do host que respondeu por último a este nó (`RouteTable::last_success`),
-    /// depois os que não falharam há pouco, na ordem anunciada, e por último
-    /// os desacreditados.
+    /// Gateway addresses of `peer`, in the order worth trying: first the
+    /// host that last answered this node (`RouteTable::last_success`),
+    /// then those that did not fail recently, in the announced order, and lastly
+    /// the discredited ones.
     ///
-    /// O primeiro endereço anunciado pode ser um IPv6 que ninguém alcança; um
-    /// endereço que já respondeu é fato, não palpite. `last_success` pode ter
-    /// vindo da porta de inferência (o caminho de inferência também o
-    /// alimenta), por isso a comparação é pelo host.
+    /// The first announced address may be an IPv6 that nobody reaches; an
+    /// address that already answered is fact, not guess. `last_success` may have
+    /// come from the inference port (the inference path feeds it too),
+    /// which is why the comparison is by host.
     pub fn gateway_bases(&self, peer: &PeerInfo) -> Vec<String> {
         self.order_by_proven_host(&peer.node_id, peer.gateway_candidates())
     }
 
-    /// `gateway_bases` para o servidor de inferência do peer.
+    /// `gateway_bases` for the peer's inference server.
     pub fn inference_bases(&self, peer: &PeerInfo) -> Vec<String> {
         self.order_by_proven_host(&peer.node_id, peer.inference_candidates())
     }
 
-    /// A mesma ordem para uma lista de endereços do gateway montada por quem
-    /// chama - com o esquema anunciado pelo peer, por exemplo, como fazem as
-    /// catracas de política.
+    /// The same order for a list of gateway addresses assembled by whoever
+    /// calls - with the scheme announced by the peer, for example, as the
+    /// policy gates do.
     pub fn order_gateway_bases(&self, node_id: &str, bases: Vec<String>) -> Vec<String> {
         self.order_by_proven_host(node_id, bases)
     }
@@ -3884,9 +3884,9 @@ impl Network {
         (allowed, links.len())
     }
 
-    /// A rota em uso para `peer`, na ordem em que o plano de controle a tenta:
-    /// endereço HTTP direto que respondeu, conexão libp2p direta, circuito
-    /// pelo relé.
+    /// The route in use for `peer`, in the order the control plane tries it:
+    /// direct HTTP address that answered, direct libp2p connection, circuit
+    /// through the relay.
     pub fn peer_route(&self, peer: &PeerInfo) -> PeerRoute {
         let links = peer
             .libp2p_peer_id
@@ -3936,9 +3936,9 @@ impl Network {
         }
     }
 
-    /// O que `admit_peer` responde sem abrir conexão: a rede pública e a chave
-    /// vazia se decidem localmente, e a rede privada pelo cache. `None` quando
-    /// a resposta depende da sonda `/handshake`.
+    /// What `admit_peer` answers without opening a connection: the public network and the empty
+    /// key are decided locally, and the private network from the cache. `None` when
+    /// the answer depends on the `/handshake` probe.
     pub(crate) async fn admission_without_probe(&self, peer: &PeerInfo) -> Option<bool> {
         let Some(admission) = self.admission.as_ref() else {
             return Some(true);
@@ -3984,17 +3984,17 @@ impl Network {
             .map(|entry| entry.allowed)
     }
 
-    /// Roda a sonda de admissão numa tarefa própria e só aquece o cache: o
-    /// próximo anúncio do peer (no máximo 5 s depois) encontra o veredito e
-    /// segue o caminho normal de `discovery.rs`.
+    /// Runs the admission probe on a task of its own and only warms the cache: the
+    /// peer's next announce (at most 5 s later) finds the verdict and
+    /// follows the normal path in `discovery.rs`.
     ///
-    /// Existe por causa do laço do swarm. A sonda cai, por último, no túnel
-    /// libp2p, e o pedido do túnel é atendido por esse mesmo laço. Aguardada
-    /// dentro dele, a sonda esperava por si mesma até o `ADMISSION_TIMEOUT` e
-    /// falhava sempre: um peer que só o relé alcança era admitido uma vez
-    /// enquanto alguma rota direta funcionava, e saía da tabela (`Removed
-    /// timed-out peers`) quando o cache vencia. As sondas diretas, 2 s por
-    /// endereço, também paravam o swarm inteiro enquanto esperavam.
+    /// It exists because of the swarm loop. The probe falls back, last, to the libp2p
+    /// tunnel, and the tunnel request is served by that same loop. Awaited
+    /// inside it, the probe waited for itself until `ADMISSION_TIMEOUT` and
+    /// always failed: a peer that only the relay reaches was admitted once
+    /// while some direct route worked, and left the table (`Removed
+    /// timed-out peers`) when the cache expired. The direct probes, 2 s per
+    /// address, also stopped the whole swarm while they waited.
     pub(crate) fn admit_in_background(self: &Arc<Self>, peer: PeerInfo) {
         match self.pending_admissions.lock() {
             Ok(mut pending) => {
@@ -4018,11 +4018,11 @@ impl Network {
         });
     }
 
-    /// A rede pública tem uma porta de descoberta aberta, mas isso não é uma
-    /// concessão para participar do enxame. Guardamos somente candidatos que
-    /// conseguem provar a ligação entre identidade, chave de autoridade e
-    /// PeerId. A cadeia de confiança continua sendo exigida por
-    /// `admit_peer` antes de qualquer efeito de membro.
+    /// The public network has an open discovery door, but that is not a
+    /// grant to take part in the swarm. We store only candidates that
+    /// can prove the link between identity, authority key and
+    /// PeerId. The trust chain is still required by
+    /// `admit_peer` before any member effect.
     fn is_public_discovery_candidate(peer: &PeerInfo) -> bool {
         peer.gateway_port.is_some()
             && peer
@@ -4126,18 +4126,18 @@ impl Network {
 mod tests {
     use super::*;
 
-    /// Um id curto na rede não pode derrubar o `receive_loop`.
+    /// A short id on the network cannot bring down the `receive_loop`.
     ///
-    /// Reproduz o que tirou o cluster do captain do ar em 2026-08-16: um
-    /// `PeerList` chegou com `node_id` de dois caracteres, `&id[..12]` entrou em
-    /// pânico, a task do `receive_loop` morreu e o nó parou de receber UDP
-    /// enquanto continuava respondendo HTTP - indistinguível de saudável na tela.
+    /// Reproduces what took the captain's cluster down on 2026-08-16: a
+    /// `PeerList` arrived with a two-character `node_id`, `&id[..12]` panicked,
+    /// the `receive_loop` task died and the node stopped receiving UDP
+    /// while still answering HTTP - indistinguishable from healthy on the screen.
     #[test]
     fn a_short_node_id_from_the_wire_never_panics() {
         assert_eq!(short("eu"), "eu");
         assert_eq!(short(""), "");
         assert_eq!(short("0123456789abcdef"), "0123456789ab");
-        // Não corta no meio de um caractere multibyte.
+        // Does not cut in the middle of a multibyte character.
         assert_eq!(short("ááááááá"), "áááááá");
     }
 
@@ -4153,11 +4153,11 @@ mod tests {
         assert_eq!(limiter.record(later), Some(2));
     }
 
-    /// O gossipsub e o UDP têm que publicar o mesmo anúncio, inclusive quando o
-    /// nó ainda não tem modelo. O publish do libp2p já teve construtor próprio,
-    /// que omitia `relay/v1-chain` e `speculate/v1-lookup`, mandava `role` e
-    /// `hostname` vazios e **só** publicava com assignment: um nó sem modelo
-    /// ficava invisível pela internet enquanto a LAN o via normalmente.
+    /// Gossipsub and UDP have to publish the same announce, even when the
+    /// node does not have a model yet. The libp2p publish once had a builder of its own,
+    /// which omitted `relay/v1-chain` and `speculate/v1-lookup`, sent empty `role` and
+    /// `hostname` and **only** published with an assignment: a node without a model
+    /// was invisible over the internet while the LAN saw it normally.
     #[tokio::test]
     async fn gossipsub_and_udp_publish_the_same_announce() {
         let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
@@ -4200,7 +4200,7 @@ mod tests {
             .unwrap();
             let udp: serde_json::Value =
                 serde_json::to_value(net.self_announce(assignment)).unwrap();
-            // `timestamp` é o único campo que muda entre as duas construções.
+            // `timestamp` is the only field that changes between the two constructions.
             let mut gossip = gossip;
             let mut udp = udp;
             gossip["timestamp"] = serde_json::Value::Null;
@@ -4218,16 +4218,16 @@ mod tests {
                 assert!(caps.iter().any(|c| c == cap), "missing {cap} in {caps:?}");
             }
             assert_eq!(gossip["profile"], "admin");
-            // Os dois anúncios (UDP e gossipsub) têm que carregar a flag: se só
-            // um carregasse, a virada chegaria por um caminho e não pelo outro,
-            // e o cluster ficaria meio cifrado sem ninguém notar.
+            // Both announces (UDP and gossipsub) have to carry the flag: if only
+            // one carried it, the switch would arrive through one path and not the other,
+            // and the cluster would end up half encrypted without anyone noticing.
             assert_eq!(gossip["tls"], false);
             assert_eq!(gossip["inference_quic_port"], 8182);
             assert_eq!(gossip["gateway_quic_port"], 8081);
             assert_eq!(gossip["hostname"], "macbook");
         }
 
-        // E a flag ligada aparece nos dois caminhos, não só num deles.
+        // And the flag turned on shows up on both paths, not just one.
         net.set_tls(true);
         let udp: serde_json::Value = serde_json::to_value(net.self_announce(None)).unwrap();
         let gossip: serde_json::Value =
@@ -4235,9 +4235,9 @@ mod tests {
         assert_eq!(udp["tls"], true);
         assert_eq!(gossip["tls"], true);
 
-        // O estado de ociosidade também precisa ser idêntico nos dois
-        // transportes: um peer não pode parecer `serving` pela LAN e `idle`
-        // pelo gossipsub.
+        // The idle state also has to be identical on both
+        // transports: a peer cannot look `serving` over the LAN and `idle`
+        // over gossipsub.
         net.set_idle(true);
         let udp: serde_json::Value = serde_json::to_value(net.self_announce(None)).unwrap();
         let gossip: serde_json::Value =
@@ -4457,8 +4457,8 @@ mod tests {
         }
     }
 
-    /// Quando o IPv6 da interface muda, o último endereço observado por
-    /// identify não pode continuar vencendo o endereço público atual.
+    /// When the interface's IPv6 changes, the last address observed by
+    /// identify cannot keep winning over the current public address.
     #[test]
     fn a_current_public_local_address_outranks_a_stale_observed_address() {
         let local = vec![
@@ -4487,10 +4487,10 @@ mod tests {
         );
     }
 
-    /// O host efetivo sai sempre com o IPv6 entre colchetes, venha de onde
-    /// vier. O da interface local vinha cru, e a entrada do próprio nó virava
-    /// `2804:...:5eb8:42777` na tela de participantes e `2804` para quem
-    /// passa o host por `ip_host`.
+    /// The effective host always comes out with the IPv6 in brackets, wherever it
+    /// comes from. The local interface's one came raw, and the node's own entry became
+    /// `2804:...:5eb8:42777` on the participants screen and `2804` for whoever
+    /// passes the host through `ip_host`.
     #[test]
     fn the_effective_host_brackets_ipv6_from_every_source() {
         let local = |ip: &str| {
@@ -4523,9 +4523,9 @@ mod tests {
         );
     }
 
-    /// A troca de endereço local entre dois anúncios deve aparecer no anúncio
-    /// seguinte sem reiniciar o processo. O teste usa duas fotografias de
-    /// interface para não depender do estado IPv6 desta máquina.
+    /// The change of local address between two announces must show up in the next
+    /// announce without restarting the process. The test uses two interface
+    /// snapshots so as not to depend on this machine's IPv6 state.
     #[test]
     fn a_new_local_address_is_used_by_the_next_announce() {
         let first = announce_addresses(
@@ -4644,9 +4644,9 @@ mod tests {
         );
     }
 
-    /// O que o peer publicou vence a derivação por `host:port`, e vem
-    /// inteiro: o endereço de circuito costuma ser o segundo da lista, e
-    /// devolver só o primeiro deixava um par atrás de NAT sem destino.
+    /// What the peer published wins over the derivation by `host:port`, and comes
+    /// whole: the circuit address is usually the second in the list, and
+    /// returning only the first left a peer behind NAT with no destination.
     #[test]
     fn the_announced_multiaddresses_win_and_all_come_through() {
         let mut peer = peer_with_candidates(vec!["192.168.100.210:42777"]);
@@ -4903,9 +4903,9 @@ mod tests {
         }
     }
 
-    /// Uma lista transitiva também é uma atualização, não só descoberta. Se o
-    /// registro antigo ficar preso, dois gateways que conheceram o mesmo peer
-    /// em momentos diferentes calculam buracos diferentes para a mesma fatia.
+    /// A transitive list is also an update, not just discovery. If the old
+    /// record stays stuck, two gateways that learned of the same peer
+    /// at different times compute different holes for the same slice.
     #[tokio::test]
     async fn a_peer_list_refreshes_existing_peer_coverage() {
         let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
@@ -4978,12 +4978,12 @@ mod tests {
         }
     }
 
-    /// O `PeerList` de outro no traz a lista que o peer anuncia hoje. Herdar a
-    /// lista local inteira por cima dela tornava candidato morto **imortal**: o
-    /// endereco que o peer deixou de anunciar voltava a cada volta de gossip, e
-    /// o conjunto so crescia. Com IPv6 temporario, que roda sozinho, isso e um
-    /// cadaver novo por rotacao - e foi assim que o cluster do captain ficou a
-    /// discar um endereco que nao existia em maquina nenhuma.
+    /// The `PeerList` of another node brings the list the peer announces today. Inheriting the
+    /// whole local list on top of it made a dead candidate **immortal**: the
+    /// address the peer stopped announcing came back on every gossip round, and
+    /// the set only grew. With temporary IPv6, which rotates on its own, that is a
+    /// new corpse per rotation - and that is how the captain's cluster ended up
+    /// dialing an address that existed on no machine.
     #[tokio::test]
     async fn gossip_does_not_resurrect_an_address_already_proved_dead() {
         let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
@@ -4998,7 +4998,7 @@ mod tests {
         old.addr = dead.into();
         let seen_at = old.last_seen;
         net.insert_peer(old).await;
-        // Uma requisicao real ja provou que esse endereco nao atende.
+        // A real request already proved that this address does not answer.
         net.routes.mark_failure(
             "peer",
             "http://[2804:d55:5579:1000:1c20:e551:6a95:9a0d]:8080",
@@ -5030,9 +5030,9 @@ mod tests {
         );
     }
 
-    /// Uma lista explicita anunciada pelo peer substitui a fotografia anterior;
-    /// não se herda endereço observado, porque isso reintroduziria LAN, bridge
-    /// ou um endereço antigo que o operador já deixou de anunciar.
+    /// An explicit list announced by the peer replaces the previous snapshot;
+    /// the observed address is not inherited, because that would reintroduce LAN, bridge
+    /// or an old address that the operator already stopped announcing.
     #[tokio::test]
     async fn gossip_drops_an_observed_candidate_when_the_peer_announces_a_set() {
         let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
@@ -5065,9 +5065,9 @@ mod tests {
         assert_eq!(stored.addr_candidates, vec![announced]);
     }
 
-    /// Quando o peer envia candidatos explícitos, a origem efetiva do pacote
-    /// não entra na lista: ela pode ser LAN, bridge ou outro endereço que não
-    /// seja o `advertise_addr` que o peer quer publicar.
+    /// When the peer sends explicit candidates, the packet's effective source
+    /// does not enter the list: it may be LAN, bridge or another address that is not
+    /// the `advertise_addr` the peer wants to publish.
     #[tokio::test]
     async fn an_announce_does_not_add_the_socket_source_to_an_explicit_set() {
         let net = Network::new(
@@ -5132,9 +5132,9 @@ mod tests {
         assert_eq!(peer.addr_candidates, vec![stale]);
     }
 
-    /// `gateway_url()` era so `peer.addr`, entao o plano de controle tinha um
-    /// endereco e nenhum plano B. `inference_url()` ja preferia candidatos ha
-    /// tempo; o gateway nunca aprendeu.
+    /// `gateway_url()` was just `peer.addr`, so the control plane had one
+    /// address and no plan B. `inference_url()` already preferred candidates for
+    /// a long time; the gateway never learned.
     #[test]
     fn the_gateway_has_one_url_per_known_address_with_the_proven_one_first() {
         let mut peer = peer_with_candidates(vec![
@@ -5146,7 +5146,7 @@ mod tests {
         assert_eq!(
             peer.gateway_candidates(),
             vec![
-                // O `addr` primeiro: e de onde os pacotes do peer chegaram.
+                // `addr` first: it is where the peer's packets came from.
                 "http://192.168.1.9:8080".to_string(),
                 "http://10.0.0.5:8080".to_string(),
                 "http://[2804:f30::1]:8080".to_string(),
@@ -5159,9 +5159,9 @@ mod tests {
         );
     }
 
-    /// Uma rotacao de IPv6 muda `addr_candidates` e chama `invalidate`. Apagar
-    /// ali a memoria de falha era apagar a prova exatamente no evento que mata
-    /// o endereco: o cluster voltava a discar o cadaver na volta seguinte.
+    /// An IPv6 rotation changes `addr_candidates` and calls `invalidate`. Erasing
+    /// the failure memory there would erase the proof exactly at the event that kills
+    /// the address: the cluster would go back to dialing the corpse on the next round.
     #[test]
     fn an_address_rotation_does_not_erase_the_proof_that_the_old_one_died() {
         let table = crate::route::RouteTable::new();
@@ -5178,10 +5178,10 @@ mod tests {
         );
     }
 
-    /// O endereco de origem do pacote e acrescentado, nao substitui: e o unico
-    /// caminho comprovadamente funcional, mas nao e o unico que existe.
-    /// Substituir era o que fazia dois nos da mesma LAN, que se conheceram pela
-    /// internet, nunca descobrirem que tambem eram vizinhos.
+    /// The packet's source address is appended, it does not replace: it is the only
+    /// path proven to work, but it is not the only one that exists.
+    /// Replacing was what made two nodes on the same LAN, who met over the
+    /// internet, never discover that they were also neighbors.
     #[test]
     fn the_observed_address_joins_the_candidate_set() {
         let mut peer = peer_with_candidates(vec!["192.168.1.9:42777"]);
@@ -5202,9 +5202,9 @@ mod tests {
         assert_eq!(peer.addr_candidates.len(), 1);
     }
 
-    /// Um no rodando binario anterior nao manda `addr_candidates`. O campo cai
-    /// no default e o `addr` unico dele vira o unico candidato: o cluster de
-    /// versoes misturadas continua funcionando.
+    /// A node running an earlier binary does not send `addr_candidates`. The field falls
+    /// to the default and its single `addr` becomes the only candidate: the
+    /// mixed-version cluster keeps working.
     #[test]
     fn a_peer_without_candidates_falls_back_to_its_single_addr() {
         let peer = peer_with_candidates(vec![]);
@@ -5255,12 +5255,12 @@ mod tests {
         assert_eq!(peer.dialable_addr(), Some("[2804:d55::2]:42777"));
     }
 
-    /// `inference_url()` costumava ler só `addr` — um valor que podia estar
-    /// atrás do melhor endereço já disponível em `addr_candidates` (o pinado
-    /// pelo operador, ou o público observado por `identify`). Painel e o
-    /// campo de fallback de `PipelineStep` usam exatamente este método, então
-    /// um `addr` desatualizado bastava para exibir/discar um IP privado
-    /// mesmo com o endereço certo já conhecido.
+    /// `inference_url()` used to read only `addr` - a value that could be
+    /// behind the best address already available in `addr_candidates` (the one pinned
+    /// by the operator, or the public one observed by `identify`). The Dashboard and the
+    /// `PipelineStep` fallback field use exactly this method, so
+    /// a stale `addr` was enough to show/dial a private IP
+    /// even with the right address already known.
     #[test]
     fn inference_url_prefers_the_first_candidate_over_the_legacy_addr() {
         let peer = peer_with_candidates(vec!["203.0.113.5:42777", "192.168.1.9:42777"]);
@@ -5274,7 +5274,7 @@ mod tests {
         );
     }
 
-    /// Cada candidato vira uma URL de inferencia, com o IPv6 entre colchetes.
+    /// Each candidate becomes an inference URL, with the IPv6 in brackets.
     #[test]
     fn every_candidate_becomes_an_inference_url() {
         let peer = peer_with_candidates(vec!["192.168.1.9:42777", "[2804:f30::1]:42777"]);
@@ -5287,8 +5287,8 @@ mod tests {
         );
     }
 
-    /// Um no antigo manda Announce sem o campo novo. Se isso deixasse de
-    /// parsear, o cluster partiria ao meio numa atualizacao parcial.
+    /// An old node sends an Announce without the new field. If that stopped
+    /// parsing, the cluster would split in half during a partial upgrade.
     #[test]
     fn an_announce_without_candidates_still_parses() {
         let old = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
@@ -5387,8 +5387,8 @@ mod tests {
         assert!(net.peers.read().await.is_empty());
     }
 
-    /// Uma sonda: sobe um socket UDP local fingindo ser um peer, e devolve o
-    /// primeiro datagrama que chegar dentro do prazo.
+    /// A probe: brings up a local UDP socket pretending to be a peer, and returns the
+    /// first datagram that arrives within the deadline.
     async fn probe() -> (Arc<UdpSocket>, String) {
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = sock.local_addr().unwrap().to_string();
@@ -5599,8 +5599,8 @@ mod tests {
         server.abort();
     }
 
-    /// O endereço que já respondeu vem antes do primeiro anunciado, mesmo que
-    /// tenha respondido na porta de inferência; os que falharam vão para o fim.
+    /// The address that already answered comes before the first announced one, even if
+    /// it answered on the inference port; those that failed go to the end.
     #[tokio::test]
     async fn gateway_bases_put_the_proven_host_first() {
         let _policy = crate::peer_client::GLOBAL_POLICY
@@ -5673,7 +5673,7 @@ mod tests {
                 Some(relay.to_string())
             )
         );
-        // Circuito que chegou: sem host, só o relé.
+        // A circuit that arrived: no host, only the relay.
         let inbound: libp2p::Multiaddr = format!("/p2p/{relay}/p2p-circuit/p2p/{peer}")
             .parse()
             .unwrap();
@@ -5683,16 +5683,16 @@ mod tests {
         );
     }
 
-    /// Dois nós em Docker bridge recebem o mesmo IP interno e a mesma porta:
-    /// o candidato que o outro anuncia com esse IP é este próprio processo e
-    /// não pode virar destino de controle, de inferência nem de QUIC.
+    /// Two nodes on a Docker bridge get the same internal IP and the same port:
+    /// the candidate the other announces with that IP is this very process and
+    /// cannot become a control, inference or QUIC destination.
     #[test]
     fn a_peer_candidate_that_is_this_node_is_never_a_destination() {
         let Some(local_ip) = local_interface_ips()
             .into_iter()
             .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
         else {
-            return; // máquina sem IPv4 de interface: nada a provar aqui
+            return; // machine without an interface IPv4: nothing to prove here
         };
         let previous = SELF_P2P_PORT.swap(59_931, std::sync::atomic::Ordering::Relaxed);
         let mut peer = admission_peer(8081);
@@ -5705,7 +5705,7 @@ mod tests {
         let gateway = peer.gateway_candidates();
         let inference = peer.inference_candidates();
         let quic = peer.quic_addr_candidates();
-        // Mesmo IP local em outra porta é outro processo nesta máquina.
+        // The same local IP on another port is another process on this machine.
         let mut neighbour = peer.clone();
         neighbour.addr_candidates = vec![format!("{local_ip}:59932")];
         let neighbour_ok = neighbour.dialable_addrs();
@@ -5727,8 +5727,8 @@ mod tests {
         assert!(neighbour_ok.contains(&format!("{local_ip}:59932")));
     }
 
-    /// A rota mostrada é a observada: HTTP que respondeu, depois conexão
-    /// libp2p direta, depois o relé - nunca o endereço anunciado.
+    /// The route shown is the observed one: HTTP that answered, then direct
+    /// libp2p connection, then the relay - never the announced address.
     /// The rule of file transfers: a direct connection carries them, a
     /// circuit only through a member relay that allows it, a public relay
     /// never - whether it is configured as one or just not a member.
@@ -5855,8 +5855,8 @@ mod tests {
         peer.libp2p_peer_id = Some(remote.to_string());
         assert_eq!(network.peer_route(&peer).kind, "none");
 
-        // Este nó falando com o relé direto; o par chega por um circuito que
-        // não traz o endereço do relé.
+        // This node talking to the relay directly; the peer arrives through a circuit that
+        // does not carry the relay's address.
         network.note_libp2p_link(
             &relay,
             ConnectionId::new_unchecked(1),
@@ -5881,7 +5881,7 @@ mod tests {
         network.set_dedicated_relays([relay.to_string()]);
         assert_eq!(network.peer_route(&peer).relay_kind, Some("dedicated"));
 
-        // O DCuTR avisa antes de a conexão direta aparecer: a marca vale igual.
+        // DCuTR warns before the direct connection shows up: the mark counts all the same.
         network.mark_hole_punched(&remote, ConnectionId::new_unchecked(3));
         network.note_libp2p_link(
             &remote,
@@ -5902,7 +5902,7 @@ mod tests {
         assert_eq!(route.address.as_deref(), Some("192.168.0.37:8080"));
         assert_eq!(route.relay_kind, None);
 
-        // A rota HTTP que falha sai; a direta fecha; sobra o relé.
+        // The failing HTTP route drops out; the direct one closes; the relay remains.
         network
             .routes
             .mark_failure(&peer.node_id, "http://192.168.0.37:8080");
@@ -5910,8 +5910,8 @@ mod tests {
         assert_eq!(network.peer_route(&peer).kind, "relayed");
     }
 
-    /// Sem veredito no cache a resposta é `None`, sem sonda: é o que o laço do
-    /// swarm consulta, e ali uma sonda esperaria pelo próprio laço (ver
+    /// With no verdict in the cache the answer is `None`, with no probe: it is what the
+    /// swarm loop consults, and there a probe would wait for the loop itself (see
     /// `admit_in_background`).
     #[tokio::test]
     async fn a_cache_miss_is_answered_without_probing() {
@@ -5930,7 +5930,7 @@ mod tests {
             admission_config("correct", crate::config::NetworkVisibility::Private),
             Arc::new(crate::admin_trust::AdminTrust::empty()),
         );
-        // Porta 1: nada escuta ali, a sonda direta falha.
+        // Port 1: nothing listens there, the direct probe fails.
         let peer = admission_peer(1);
 
         assert_eq!(network.admission_without_probe(&peer).await, None);
@@ -5938,7 +5938,7 @@ mod tests {
         assert_eq!(network.admission_without_probe(&peer).await, Some(false));
     }
 
-    /// Sem resposta, só a prova recente segura o peer; recusa nunca segura.
+    /// With no answer, only recent proof holds the peer; a refusal never does.
     #[test]
     fn an_unreachable_recheck_keeps_only_a_recently_proven_peer() {
         let now = Instant::now();
@@ -5959,8 +5959,8 @@ mod tests {
         assert_eq!(approved.proven_at, Some(now));
     }
 
-    /// Ponta a ponta: aprovado pelo `/handshake`, o gateway some e o cache
-    /// vence; a nova sonda não chega a ninguém e o peer continua admitido.
+    /// End to end: approved by `/handshake`, the gateway disappears and the cache
+    /// expires; the new probe reaches no one and the peer stays admitted.
     #[tokio::test]
     async fn a_proven_peer_survives_a_recheck_that_reaches_nobody() {
         let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
@@ -6003,8 +6003,8 @@ mod tests {
         );
     }
 
-    /// A sonda em segundo plano só aquece o cache, uma vez por peer, e não
-    /// mexe na tabela: quem insere é o próximo anúncio.
+    /// The background probe only warms the cache, once per peer, and does not
+    /// touch the table: whoever inserts is the next announce.
     #[tokio::test]
     async fn background_admission_warms_the_cache_once() {
         let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
@@ -6188,11 +6188,11 @@ mod tests {
         state
     }
 
-    /// Um worker co-locado só tem a âncora e a `connection_key`, nunca uma
-    /// concessão de autoridade. Sob `anyone_with_anchor` o Announce dele — com a
-    /// identidade amarrada (node_id ↔ pubkey ↔ chave de autoridade ↔ PeerId) e o
-    /// `cluster_id` da âncora local — basta para entrar em `peers`. Foi isto que
-    /// `6c3b19db` quebrou: só o primário/secundário passava.
+    /// A co-located worker only has the anchor and the `connection_key`, never an
+    /// authority grant. Under `anyone_with_anchor` its Announce - with the
+    /// identity bound (node_id <-> pubkey <-> authority key <-> PeerId) and the
+    /// local anchor's `cluster_id` - is enough to enter `peers`. This is what
+    /// `6c3b19db` broke: only the primary/secondary got through.
     #[tokio::test]
     async fn public_anyone_with_anchor_admits_anchored_worker_without_grant() {
         let local = crate::identity::Identity::generate();
@@ -6210,7 +6210,7 @@ mod tests {
         )
         .unwrap();
 
-        // Peer worker: chave de autoridade própria, distinta do primário.
+        // Worker peer: its own authority key, distinct from the primary's.
         let worker_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let mut seed = worker_key.to_bytes();
         let worker_peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
@@ -6244,9 +6244,9 @@ mod tests {
         assert_eq!(net.peer_count().await, 1);
     }
 
-    /// A relaxação vale só para `anyone_with_anchor`. Com `authorized` (padrão) o
-    /// mesmo worker sem concessão continua fora, e um `cluster_id` que não é o da
-    /// âncora nunca entra sob nenhuma política.
+    /// The relaxation only applies to `anyone_with_anchor`. With `authorized` (the default) the
+    /// same worker without a grant stays out, and a `cluster_id` that is not the
+    /// anchor's never enters under any policy.
     #[tokio::test]
     async fn public_authorized_still_requires_a_grant_and_anchor_rejects_wrong_cluster() {
         let local = crate::identity::Identity::generate();
@@ -6279,7 +6279,7 @@ mod tests {
             (trust, peer)
         };
 
-        // authorized + worker sem concessão => recusado.
+        // authorized + worker without a grant => refused.
         let (trust, peer) = build(Some("cluster"));
         let net = Network::testkit(
             local.node_id.0.clone(),
@@ -6302,7 +6302,7 @@ mod tests {
         net.insert_peer(peer).await;
         assert_eq!(net.peer_count().await, 0);
 
-        // anyone_with_anchor + cluster_id que não é o da âncora => recusado.
+        // anyone_with_anchor + cluster_id that is not the anchor's => refused.
         let (trust, peer) = build(Some("outro-enxame"));
         let net = Network::testkit(
             local.node_id.0.clone(),
@@ -6368,11 +6368,11 @@ mod tests {
         assert_eq!(network.public_discovered_peers().await.len(), 1);
     }
 
-    /// A descoberta transitiva era de tiro único: `PeerRequest` só saía no
-    /// arranque e só para os bootstrap nodes. Fora da LAN (sem o broadcast IPv4
-    /// para mascarar) um peer conhecido nunca era perguntado de novo, então os
-    /// peers *dele* nunca eram aprendidos. O laço de gossip tem que voltar a
-    /// perguntar, periodicamente, também aos peers vivos.
+    /// Transitive discovery was one-shot: `PeerRequest` only went out at
+    /// startup and only to the bootstrap nodes. Outside the LAN (without the IPv4 broadcast
+    /// to mask it) a known peer was never asked again, so *its*
+    /// peers were never learned. The gossip loop has to go back to
+    /// asking, periodically, the live peers too.
     #[tokio::test]
     async fn a_known_peer_is_asked_for_its_peers_periodically() {
         let (sock, addr) = probe().await;
@@ -6384,7 +6384,7 @@ mod tests {
             .await
             .insert("peer-a".into(), dummy_peer("peer-a", &addr));
 
-        // Tique que cai numa varredura de descoberta.
+        // A tick that falls on a discovery sweep.
         net.discovery_sweep(DISCOVERY_SWEEP_TICKS).await.unwrap();
 
         let msg = recv_msg(&sock, 500).await.expect("nothing arrived at the peer");
@@ -6394,10 +6394,10 @@ mod tests {
         );
     }
 
-    /// A varredura não pode perguntar a todo mundo em todo tique: isso é
-    /// O(peers²) de PeerList. Cada tique de varredura fala com no máximo
-    /// `SWEEP_FANOUT` peers, e o rodízio cobre o cluster inteiro ao longo do
-    /// tempo.
+    /// The sweep cannot ask everyone on every tick: that is
+    /// O(peers^2) of PeerList. Each sweep tick talks to at most
+    /// `SWEEP_FANOUT` peers, and the round-robin covers the whole cluster over
+    /// time.
     #[tokio::test]
     async fn the_sweep_rotates_over_a_bounded_subset() {
         let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
@@ -6416,7 +6416,7 @@ mod tests {
 
         let mut asked: std::collections::HashSet<String> = Default::default();
         let mut sweeps = 0u64;
-        // Percorre tiques suficientes para o rodízio dar a volta.
+        // Runs enough ticks for the round-robin to go all the way around.
         for tick in 1..=(DISCOVERY_SWEEP_TICKS * 8) {
             let sent = net.discovery_sweep(tick).await.unwrap();
             if tick % DISCOVERY_SWEEP_TICKS == 0 {
@@ -6439,8 +6439,8 @@ mod tests {
         assert_eq!(asked.len(), 8, "the rotation must cover all the peers");
     }
 
-    /// Mesma guarda de `a_detached_node_neither_announces_nor_looks_for_bootstrap`,
-    /// agora para o caminho novo.
+    /// Same guard as `a_detached_node_neither_announces_nor_looks_for_bootstrap`,
+    /// now for the new path.
     #[tokio::test]
     async fn a_detached_node_does_not_sweep() {
         let (sock, addr) = probe().await;
@@ -6457,8 +6457,8 @@ mod tests {
         assert!(recv_msg(&sock, 300).await.is_none(), "detached node spoke");
     }
 
-    /// Um pânico no tratamento de um datagrama não pode matar a task que drena
-    /// o socket: o datagrama seguinte ainda precisa atualizar o peer conhecido.
+    /// A panic while handling a datagram cannot kill the task that drains
+    /// the socket: the next datagram still needs to update the known peer.
     #[tokio::test]
     async fn receive_loop_survives_a_panicking_message_and_processes_the_next() {
         let net = Arc::new(
@@ -6527,15 +6527,15 @@ mod tests {
         assert_eq!(net.normalize(v6), v6);
     }
 
-    /// O nó liga em `[::]` e precisa receber de um peer IPv4 - que é como toda
-    /// a LAN fala. Desligar `IPV6_V6ONLY` depois do bind não tem efeito, e no
-    /// Windows o padrão é ligado: sem este socket montado à mão, um nó lá não
-    /// veria anúncio nenhum e a descoberta ficaria muda sem dizer por quê.
+    /// The node binds on `[::]` and needs to receive from an IPv4 peer - which is how the whole
+    /// LAN talks. Turning off `IPV6_V6ONLY` after the bind has no effect, and on
+    /// Windows the default is on: without this hand-assembled socket, a node there would
+    /// see no announce at all and discovery would go silent without saying why.
     #[tokio::test]
     async fn a_dual_stack_socket_receives_from_an_ipv4_sender() {
         let target: SocketAddr = "[::]:0".parse().unwrap();
         let Ok(std_sock) = Network::bind_udp_dual_stack(target) else {
-            return; // máquina sem IPv6: o caminho v4 puro cobre esse caso
+            return; // machine without IPv6: the pure v4 path covers that case
         };
         let port = std_sock.local_addr().unwrap().port();
         let sock = UdpSocket::from_std(std_sock).unwrap();

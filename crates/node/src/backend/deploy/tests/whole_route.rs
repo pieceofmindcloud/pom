@@ -1,17 +1,17 @@
-/// A rota de plano lendo o inventário de verdade de peers de verdade.
+/// The plan route reading the real inventory of real peers.
 ///
-/// Os testes de `plan` montam `Machine` à mão, o que prova a decisão mas não
-/// prova de onde ela lê. Aqui a resposta vem por HTTP, do mesmo
-/// `/api/ui/models` que cada máquina serve, e é por isto que "o modelo inteiro
-/// aparece" e "a fatia de mesmo nome não entra no lugar dele" são fatos e não
-/// suposições.
+/// The `plan` tests build `Machine` by hand, which proves the decision but does
+/// not prove where it reads from. Here the answer comes over HTTP, from the
+/// same `/api/ui/models` each machine serves, and that is why "the whole model
+/// shows up" and "the slice of the same name does not take its place" are
+/// facts and not assumptions.
 #[cfg(test)]
 mod whole_route_tests {
     use super::*;
     use crate::gateway::testkit::{body_of, state_with};
     use axum::routing::{get as axum_get, post as axum_post};
 
-    /// Uma máquina servindo o catálogo dado, com memória e disco de sobra.
+    /// A machine serving the given catalog, with memory and disk to spare.
     async fn catalog_machine(catalog: serde_json::Value) -> u16 {
         let metadata_catalog = catalog.clone();
         let app = Router::new()
@@ -67,8 +67,8 @@ mod whole_route_tests {
         port
     }
 
-    /// O catálogo de uma máquina que tem o GGUF inteiro **e** fatias de outro
-    /// modelo, que é o estado normal de uma máquina do cluster.
+    /// The catalog of a machine that has the whole GGUF **and** slices of
+    /// another model, which is the normal state of a cluster machine.
     fn catalog() -> serde_json::Value {
         json!({
             "hostname": "ksia",
@@ -122,13 +122,13 @@ mod whole_route_tests {
         })
     }
 
-    /// Um estado cujo único inventário é a máquina de mentira.
+    /// A state whose only inventory is the fake machine.
     ///
-    /// `all_peers` sempre inclui esta máquina, e o `gateway_port` do testkit é
-    /// 8080 - o mesmo em que um nó de verdade escuta na máquina do captain. Sem
-    /// apontá-lo para uma porta morta, a varredura sai da suíte e lê o catálogo
-    /// do cluster real: o teste passa ou falha conforme o que estiver no disco
-    /// de quem o roda.
+    /// `all_peers` always includes this machine, and the testkit's `gateway_port`
+    /// is 8080 - the same one a real node listens on in the captain's machine.
+    /// Without pointing it at a dead port, the sweep leaves the suite and reads
+    /// the real cluster's catalog: the test passes or fails depending on what is
+    /// on the disk of whoever runs it.
     async fn state_seeing_only(port: u16) -> GatewayState {
         let dead = {
             let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -161,8 +161,8 @@ mod whole_route_tests {
         plan_body(state, json!({ "group": group, "kind": kind })).await
     }
 
-    /// O caminho inteiro: a rota pergunta à máquina, acha o GGUF inteiro e
-    /// devolve um plano de um passo cobrindo o modelo todo.
+    /// The whole path: the route asks the machine, finds the whole GGUF and
+    /// returns a one-step plan covering the entire model.
     #[tokio::test]
     async fn the_route_plans_a_whole_model_from_the_machines_own_catalog() {
         let body = plan_for("whole", "qwen3.5-9b").await;
@@ -180,15 +180,15 @@ mod whole_route_tests {
         assert_eq!(steps[0]["ready"], true);
         assert_eq!(steps[0]["primary"], true);
 
-        // A fatia da mesma máquina não entrou no inventário desta pergunta.
+        // The slice on the same machine did not enter this question's inventory.
         let available = body["available"].as_array().unwrap();
         assert_eq!(available.len(), 1, "only the whole model: {available:?}");
         assert_eq!(available[0]["name"], "qwen3.5-9b");
     }
 
-    /// Reproduz a listagem observada na Salem com os dois projetores ao lado
-    /// dos modelos. Exercita a rota HTTP de planejamento via testkit local, sem
-    /// credenciais, Docker ou envio de implantação a outro peer.
+    /// Reproduces the listing observed on Salem with the two projectors beside
+    /// the models. Exercises the planning HTTP route through the local testkit,
+    /// without credentials, Docker or sending a deployment to another peer.
     #[tokio::test]
     async fn salem_ornith_plan_keeps_its_own_projector_beside_qwen() {
         let mut catalog = catalog();
@@ -364,9 +364,9 @@ mod whole_route_tests {
         assert!(blocked.contains("GGUF metadata"), "{blocked}");
     }
 
-    /// A pergunta padrão continua sendo a das fatias, e ela não enxerga o
-    /// modelo inteiro - as duas listas saem da mesma varredura, e trocá-las
-    /// faria um `plan` antigo mudar de resposta.
+    /// The default question is still the one about slices, and it does not see
+    /// the whole model - both lists come out of the same sweep, and swapping
+    /// them would make an old `plan` change its answer.
     #[tokio::test]
     async fn the_slice_question_is_untouched_and_still_the_default() {
         let body = plan_for("shards", "qwen").await;
@@ -376,15 +376,15 @@ mod whole_route_tests {
         assert_eq!(available[0]["end_layer"], 15);
         assert_eq!(body["kind"], "shards");
 
-        // Sem `kind` nenhum, o mesmo resultado: `shards` é o padrão.
+        // With no `kind` at all, the same result: `shards` is the default.
         let port = catalog_machine(catalog()).await;
         let without_kind = plan_body(state_seeing_only(port).await, json!({ "group": "qwen" })).await;
         assert_eq!(without_kind["kind"], "shards");
         assert_eq!(without_kind["available"].as_array().unwrap().len(), 1);
     }
 
-    /// Um modelo que nenhuma máquina tem é recusa nomeando o modelo, não uma
-    /// lista vazia que se lê como "está tudo certo, mas não dá".
+    /// A model no machine has is a refusal naming the model, not an empty list
+    /// that reads as "everything is fine, but it cannot be done".
     #[tokio::test]
     async fn a_model_nobody_has_is_refused_by_name() {
         let body = plan_for("whole", "llama3-70b").await;

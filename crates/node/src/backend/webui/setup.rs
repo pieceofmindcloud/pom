@@ -476,8 +476,8 @@ pub async fn start_setup_auto_discovery(
 
 #[derive(Deserialize, Default)]
 pub struct SetupAutoDiscoverySearchRequest {
-    /// Nome que o wizard mostra desta máquina; vai no pedido para o
-    /// administrador ver quem está entrando.
+    /// Name the wizard shows for this machine; it goes in the request so the
+    /// administrator can see who is joining.
     #[serde(default)]
     pub node_name: String,
 }
@@ -821,9 +821,9 @@ pub async fn save_setup(
             .into_response();
     }
 
-    // A interface sai do primeiro acesso aberta à rede com a senha padrão:
-    // o wizard não pergunta senha, e o painel pede a troca no primeiro uso.
-    // Uma senha enviada explicitamente continua valendo.
+    // The interface leaves the first access open to the network with the default
+    // password: the wizard does not ask for a password, and the panel asks for
+    // the change on first use. A password sent explicitly remains valid.
     let admin_password = if req.admin_password.is_empty() {
         crate::auth::DEFAULT_ADMIN_PASSWORD.to_string()
     } else {
@@ -973,12 +973,12 @@ pub async fn save_setup(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Um blob do store do Ollama: `<raiz>/blobs/sha256-…`, com `<raiz>/manifests`
-/// ao lado.
+/// A blob of the Ollama store: `<root>/blobs/sha256-...`, with `<root>/manifests`
+/// beside it.
 ///
-/// O manifesto é que dá nome ao modelo, e ele não é reescrito quando o blob é
-/// apagado por fora. A conferência do `manifests/` ao lado importa porque a
-/// biblioteca do LM Studio também tem uma pasta `blobs/` — vazia (ver
+/// The manifest is what names the model, and it is not rewritten when the blob
+/// is deleted from outside. Checking for the neighbouring `manifests/` matters
+/// because the LM Studio library also has a `blobs/` folder - empty (see
 /// `catalog::detect_source`).
 pub(super) fn is_ollama_blob(path: &std::path::Path) -> bool {
     let Some(parent) = path.parent() else {
@@ -996,15 +996,16 @@ pub(super) fn is_ollama_blob(path: &std::path::Path) -> bool {
 #[derive(Debug, Deserialize)]
 pub struct DeleteRequest {
     pub path: String,
-    /// Sem isto, avisos viram 409 e nada é apagado.
+    /// Without this, warnings become 409 and nothing is deleted.
     #[serde(default)]
     pub force: bool,
 }
 
-/// Apaga um GGUF do disco desta máquina.
+/// Deletes a GGUF from this machine's disk.
 ///
-/// Avisa, mas não impede: quem opera decide. O que não se faz é apagar em
-/// silêncio algo que está no ar — a resposta nomeia o que segura o arquivo.
+/// It warns but does not prevent: whoever operates decides. What is not done
+/// is silently deleting something that is live - the response names what
+/// holds the file.
 pub(super) async fn delete_model(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1021,7 +1022,7 @@ pub(super) async fn delete_model(
         }
     };
 
-    // O mesmo portão que governa o que sai da máquina governa o que some dela.
+    // The same gate that governs what leaves the machine governs what disappears from it.
     if let Err(e) = crate::transfer::ensure_gguf(&path) {
         return bad_request(e);
     }
@@ -1032,8 +1033,9 @@ pub(super) async fn delete_model(
         .unwrap_or(0);
     let mut warnings = Vec::new();
 
-    // Servindo agora: apagar tira o modelo do ar sem que nada na tela diga, e
-    // o nó segue anunciando cobertura até a próxima requisição quebrar.
+    // Serving now: deleting takes the model offline without anything on the
+    // screen saying so, and the node keeps announcing coverage until the next
+    // request breaks.
     if let Some(cfg) = state.runtime.config().await {
         if std::path::Path::new(&cfg.model_path)
             .canonicalize()
@@ -1050,7 +1052,7 @@ pub(super) async fn delete_model(
         }
     }
 
-    // Em trânsito: apagar por baixo de uma transferência em curso.
+    // In transit: deleting from under a transfer in progress.
     let target = path.to_string_lossy().to_string();
     let in_flight: Vec<String> = state
         .transfers

@@ -1,6 +1,6 @@
 /**
- * Preferências locais deste nó: fronteira administrativa, TLS entre nós,
- * proteção térmica e credencial opcional do provedor Hugging Face.
+ * Local preferences of this node: administrative boundary, TLS between nodes,
+ * thermal protection and optional credential for the Hugging Face provider.
  */
 import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";

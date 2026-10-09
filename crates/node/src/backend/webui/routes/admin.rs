@@ -1,7 +1,7 @@
 use super::super::*;
 
-/// Rotas administrativas e de ciclo de vida. A autorização efetiva continua
-/// no middleware do gateway e nas políticas operacionais dos handlers.
+/// Administrative and lifecycle routes. The effective authorization remains
+/// in the gateway middleware and in the handlers' operational policies.
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route(
@@ -94,8 +94,8 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/plugins/:code/preferences",
             post(crate::plugins::save_plugin_preferences),
         )
-        // Interface web servida pelo próprio plugin (ver `crate::plugin_proxy`).
-        // Uploads atravessam o proxy, então o corpo não tem o teto padrão.
+        // Web interface served by the plugin itself (see `crate::plugin_proxy`).
+        // Uploads cross the proxy, so the body does not have the default cap.
         .route(
             "/api/ui/plugins/:code/proxy",
             axum::routing::any(crate::plugin_proxy::plugin_proxy)

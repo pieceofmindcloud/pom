@@ -1,19 +1,19 @@
-/// Um endereço anunciado que deixou de responder.
+/// An announced address that stopped answering.
 ///
-/// O defeito que estes testes travam: enquanto `gateway_url()` era só
-/// `peer.addr`, o plano de controle tinha **um** endereço e nenhuma memória de
-/// falha. Um IPv6 temporário que roda (macOS gera um novo e aposenta o antigo
-/// sozinho) deixava o Painel a discar um endereço que não existe em máquina
-/// nenhuma, para sempre, com a mensagem "nada abaixo pode ser lido" - enquanto
-/// o mesmo peer estava vivo e anunciado noutro endereço, já dentro de
+/// The defect these tests pin down: while `gateway_url()` was just
+/// `peer.addr`, the control plane had **one** address and no memory of
+/// failure. A rotating temporary IPv6 (macOS generates a new one and retires the old
+/// one by itself) left the Dashboard dialing an address that exists on no machine
+/// at all, forever, with the message "nothing below can be read" - while
+/// the same peer was alive and announced on another address, already inside
 /// `addr_candidates`.
 #[cfg(test)]
 mod dead_address_tests {
     use super::*;
     use crate::gateway::testkit::{body_of, peer, state_with};
 
-    /// Um `/api/ui/node` de verdade na loopback, que conta quantas vezes foi
-    /// lido. Devolve `(porta, contador)`.
+    /// A real `/api/ui/node` on the loopback, which counts how many times it was
+    /// read. Returns `(port, counter)`.
     async fn live_node(hostname: &str) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
         let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = hits.clone();
@@ -43,17 +43,17 @@ mod dead_address_tests {
         (port, hits)
     }
 
-    /// `127.0.0.2` na mesma porta é o endereço morto: no macOS o SYN some
-    /// (nenhum alias na lo0), no Linux ele é recusado. Os dois chegam ao mesmo
-    /// lugar - erro de transporte - que é o que um endereço aposentado produz.
+    /// `127.0.0.2` on the same port is the dead address: on macOS the SYN vanishes
+    /// (no alias on lo0), on Linux it is refused. Both arrive at the same
+    /// place - a transport error - which is what a retired address produces.
     fn dead_host() -> &'static str {
         "127.0.0.2"
     }
 
     fn peer_with_dead_address(port: u16) -> PeerInfo {
         let mut p = peer("outro", "macbook", port);
-        // O que o cluster guardou: o endereço morto na frente, porque é o que
-        // o peer anunciou quando ainda era o dele.
+        // What the cluster stored: the dead address in front, because it is what
+        // the peer announced when it was still its own.
         p.addr = format!("{}:{port}", dead_host());
         p.addr_candidates = vec![
             format!("{}:{port}", dead_host()),
@@ -73,9 +73,9 @@ mod dead_address_tests {
         p
     }
 
-    /// O teste do defeito: uma única leitura do Painel já recupera o peer pelo
-    /// endereço vivo, **sem intervenção manual**, e o endereço morto fica
-    /// registado como tal para não voltar a ser discado.
+    /// The test of the defect: a single Dashboard read already recovers the peer through
+    /// the live address, **without manual intervention**, and the dead address is
+    /// recorded as such so it is not dialed again.
     #[tokio::test]
     async fn a_dead_announced_address_is_forgotten_and_the_peer_is_read_at_the_new_one() {
         let _scheme_lock = crate::peer_client::GLOBAL_POLICY.lock();
@@ -129,9 +129,9 @@ mod dead_address_tests {
         );
     }
 
-    /// Quando **todo** endereço conhecido morre, o nó para de insistir e passa
-    /// a reencontrar o par. A tela precisa disso: "reencontrando" é trabalho em
-    /// curso, "não dá para ler" é beco sem saída.
+    /// When **every** known address dies, the node stops insisting and moves on
+    /// to rediscovering the peer. The screen needs this: "rediscovering" is work in
+    /// progress, "cannot be read" is a dead end.
     #[tokio::test]
     async fn when_every_address_is_dead_the_node_asks_for_the_current_one() {
         let (port, _) = live_node("macbook").await;
@@ -139,7 +139,7 @@ mod dead_address_tests {
         p.addr_candidates = vec![format!("{}:{port}", dead_host())];
         let state = state_with("eu", vec![p]).await;
 
-        // Primeira leitura: descobre que o único endereço não responde.
+        // First read: discovers that the only address does not answer.
         let body = body_of(cluster(HeaderMap::new(), State(state.clone())).await).await;
         let other = body["peers"]
             .as_array()
@@ -161,8 +161,8 @@ mod dead_address_tests {
             "the node must have asked for the current address of the peer"
         );
 
-        // E o cadáver saiu da entrada local, para que o próximo `Announce` do
-        // peer a repovoe em vez de somar-se a ele.
+        // And the corpse left the local entry, so that the peer's next `Announce`
+        // repopulates it instead of adding to it.
         let stored = state.network.peers.read().await["outro"]
             .addr_candidates
             .clone();
@@ -172,10 +172,10 @@ mod dead_address_tests {
         );
     }
 
-    /// "Reencontrando" tem prazo. Três perguntas à rede sem resposta não são
-    /// mais trabalho em curso: são um par que anuncia por UDP e não atende no
-    /// HTTP. Insistir na palavra seria repor o aviso desonesto que este
-    /// trabalho veio remover, só que otimista em vez de pessimista.
+    /// "Rediscovering" has a deadline. Three unanswered questions to the network are no
+    /// longer work in progress: they are a peer that announces over UDP and does not answer
+    /// on HTTP. Insisting on the word would restore the dishonest warning this
+    /// work came to remove, only optimistic instead of pessimistic.
     #[tokio::test]
     async fn rediscovering_gives_up_and_says_so_instead_of_promising_forever() {
         let (port, _) = live_node("macbook").await;
@@ -196,7 +196,7 @@ mod dead_address_tests {
 
         assert_eq!(read_file(state.clone()).await["rediscovering"], true);
 
-        // Envelhecer a busca para além do prazo, sem esperar em tempo real.
+        // Age the search past the deadline, without waiting in real time.
         state
             .network
             .age_rediscovery_for_test("outro", crate::network::REDISCOVERY_GIVE_UP);
@@ -215,10 +215,10 @@ mod dead_address_tests {
         );
     }
 
-    /// A cobertura sai do gossip, não da leitura. Um par ilegível continua a
-    /// contribuir camadas - e é honesto que continue, porque o servidor de
-    /// inferência dele pode estar perfeito e só o endereço de controle é que
-    /// morreu - mas isso não pode ficar invisível.
+    /// Coverage comes from gossip, not from the read. An unreadable peer keeps
+    /// contributing layers - and it is honest that it does, because its
+    /// inference server may be perfectly fine and only the control address
+    /// died - but this cannot stay invisible.
     #[tokio::test]
     async fn an_unreadable_peer_cannot_pass_for_healthy_coverage() {
         let (port, _) = live_node("macbook").await;

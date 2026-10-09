@@ -24,9 +24,9 @@ describe("canAccessRoute", () => {
   });
 
   /**
-   * A restrição casa segmento inteiro. Se casasse por `startsWith` cru, uma
-   * rota futura chamada `/deploy-draft` nasceria fechada sem ninguém ter
-   * decidido isso - e o contrário, uma filha de `/logs`, ficaria aberta.
+   * The restriction matches a whole segment. If it matched by raw `startsWith`, a future
+   * route called `/deploy-draft` would be born closed with nobody having
+   * decided that - and the opposite, a child of `/logs`, would stay open.
    */
   it("matches by segment, not by text prefix", () => {
     expect(canAccessRoute("/deployx", "node")).toBe(true);
@@ -40,7 +40,7 @@ describe("canAccessRoute", () => {
   });
 
   it("sends each profile to a home screen it can open", () => {
-    // O `/` é o Painel: o infer cairia na recusa, que é um beco.
+    // The `/` is the Dashboard: infer would fall into the refusal, which is a dead end.
     expect(homeRoute("infer")).toBe("/chat");
     expect(canAccessRoute(homeRoute("infer"), "infer")).toBe(true);
     expect(homeRoute("admin")).toBe("/");
@@ -48,10 +48,10 @@ describe("canAccessRoute", () => {
   });
 
   /**
-   * A tela da raiz de confiança é o trabalho anterior à autoridade: um nó
-   * `admin` por ancorar ainda não tem capacidade de admin, e quem recebe a
-   * âncora costuma ser `node` ou `infer`. Fechá-la a algum perfil deixaria o
-   * operador sem caminho justamente onde ele precisa dela.
+   * The trust-root screen is the work that precedes authority: an
+   * `admin` node yet to be anchored has no admin capability yet, and whoever receives the
+   * anchor is usually `node` or `infer`. Closing it to some profile would leave the
+   * operator with no path precisely where they need it.
    */
   it("opens the trust root for the three profiles", () => {
     for (const profile of ["admin", "node", "infer"] as const) {
@@ -92,16 +92,16 @@ describe("canAccessRoute", () => {
   });
 
   /**
-   * Os Detalhes do Painel são operação do cluster: estado interno de cada
-   * máquina, liberar fatia, remover do pipeline, tirar da rede. O `node` abre
-   * o Painel e fica com o Fluxo - e onde há uma vista só, não há o que
-   * escolher.
+   * The Dashboard's Details are cluster operation: each machine's internal
+   * state, release a slice, remove from the pipeline, leave the network. The `node` opens
+   * the Dashboard and gets the Flow - and where there is only one view, there is nothing to
+   * choose.
    */
   it("reserves the machine-by-machine detail of the Dashboard for the administrator", () => {
     expect(canSeePeerDetails("admin")).toBe(true);
     expect(canSeePeerDetails("node")).toBe(false);
     expect(canSeePeerDetails("infer")).toBe(false);
-    // O Painel em si continua aberto ao `node`: o que muda é a vista.
+    // The Dashboard itself stays open to `node`: what changes is the view.
     expect(canAccessRoute("/", "node")).toBe(true);
   });
 });

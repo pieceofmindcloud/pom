@@ -22,7 +22,7 @@ interface PublicNetwork {
   cluster_id: string;
   name: string;
   fingerprint: string;
-  /** Chave `pk:` do principal que publica a rede. A rede é achada por ela, nunca por IP. */
+  /** `pk:` key of the principal that publishes the network. Found by that key, never by IP. */
   publisher_key: string;
   relay_hints?: string[];
   trust_document: string;

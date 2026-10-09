@@ -1,31 +1,32 @@
 #!/usr/bin/env bash
 #
-# Migra uma máquina do nome antigo do projeto para POM.
+# Migrates a machine from the project's old name to POM.
 #
 # The binary no longer knows the old name: it looks for `pom.json` and
 # `.pom-node.key` (the node's only key), and reads the `POM_*` variables. This
 # script carries the compatibility by renaming what is already on disk. Once it
 # has run on every machine, it can be deleted.
 #
-# Rode a partir do diretório do projeto (ou passe o caminho como argumento):
+# Run it from the project directory (or pass the path as an argument):
 #
 #     ./scripts/migrate-to-pom.sh [diretorio]
 #
-# O que ele faz, e só isso:
+# What it does, and only that:
 #   - <dir>/rdma-p2p*.json      -> <dir>/pom*.json
 #   - <dir>/.rdma-p2p-node.key  -> <dir>/.pom-node.key
-#   - <dir>/*.last-slice.json   -> renomeado junto com a config a que pertence
+#   - <dir>/*.last-slice.json   -> renamed along with the config it belongs to
 #
-# Não toca em modelo, fatia, nem em nada dentro dos GGUF. Uma fatia cortada
-# antes do rename perde o `original_block_count` (o metadado agora se chama
-# `pom.original_block_count`): o cluster volta a tratá-la como "total de camadas
-# desconhecido", que é o mesmo caso das fatias antigas e já é suportado - a
-# implantação continua funcionando, e refatiar o modelo restaura o metadado.
+# It does not touch models, slices, or anything inside the GGUF files. A slice
+# cut before the rename loses `original_block_count` (the metadata is now called
+# `pom.original_block_count`): the cluster goes back to treating it as "total
+# layers unknown", which is the same case as the old slices and is already
+# supported - the deployment keeps working, and re-slicing the model restores
+# the metadata.
 set -euo pipefail
 
-# --quiet: so fala quando renomeou alguma coisa, e cala o lembrete do fim. E o
-# modo que os scripts de deploy usam, porque eles rodam a migracao em toda
-# subida e numa maquina ja migrada nao ha o que dizer.
+# --quiet: only speaks when it renamed something, and silences the reminder at
+# the end. It is the mode the deploy scripts use, because they run the migration
+# on every startup and on an already migrated machine there is nothing to say.
 QUIET=0
 if [ "${1:-}" = "--quiet" ]; then
   QUIET=1
@@ -51,21 +52,21 @@ mover() {
 
 [ "$QUIET" = 1 ] || echo "Migrando $dir para POM"
 
-# Config: o nome exato e as variantes (rdma-p2p-cpu.json e afins).
+# Config: the exact name and the variants (rdma-p2p-cpu.json and the like).
 for old in rdma-p2p*.json; do
     [ -e "$old" ] || continue
     mover "$old" "pom${old#rdma-p2p}"
 done
 
-# A anotação da última fatia é derivada do nome da config.
+# The last slice annotation is derived from the config name.
 for old in rdma-p2p*.last-slice.json; do
     [ -e "$old" ] || continue
     mover "$old" "pom${old#rdma-p2p}"
 done
 
-# Chaves de identidade, incluindo as variantes por papel
-# (`.rdma-p2p-node-cpu.key` e afins - o proprio .gitignore do projeto sempre
-# usou o padrao `.rdma-p2p-node*.key`, entao elas existem no campo).
+# Identity keys, including the per-role variants
+# (`.rdma-p2p-node-cpu.key` and the like - the project's own .gitignore always
+# used the `.rdma-p2p-node*.key` pattern, so they exist in the field).
 for old in .rdma-p2p-node*.key; do
     [ -e "$old" ] || continue
     mover "$old" ".pom-node${old#.rdma-p2p-node}"

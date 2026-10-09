@@ -1,60 +1,60 @@
-//! Bancada do laço de continuação: **o teto de uma geração de backend não pode
-//! virar o fim da resposta do cliente.**
+//! Bench for the continuation loop: **the ceiling of a backend generation cannot
+//! become the end of the client's response.**
 //!
-//! ## O que ela reproduz
+//! ## What it reproduces
 //!
-//! Medido no cluster vivo em 2026-08-27, `POST /v1/chat/completions` com
-//! `max_tokens: 4000` contra uma implantação de `max_new_tokens: 1000`:
+//! Measured on the live cluster on 2026-08-27, `POST /v1/chat/completions` with
+//! `max_tokens: 4000` against a deployment of `max_new_tokens: 1000`:
 //!
 //! ```text
 //! finish_reason: "length"      usage.completion_tokens: 1000
 //! x_pom.output_limits: {requested: 4000, deployment: 1000, effective: 1000}
 //! ```
 //!
-//! O corte era calado: o cliente recebia menos do que pediu e o único lugar
-//! onde isso aparecia era o bloco não-padrão `x_pom`, que cliente
-//! OpenAI-compatível ignora. Na mesma medição, com uma ferramenta declarada, o
-//! corte caiu **dentro** da chamada: a resposta voltou sem `tool_calls`, com o
-//! `<tool_call>` inacabado degradado em 4366 caracteres de texto solto. É o
-//! caso do captain: o opencode lê `max_tokens` como condição terminal, larga o
-//! turno e o arquivo fica pela metade.
+//! The cut was silent: the client received less than it asked for and the only place
+//! where that showed up was the non-standard `x_pom` block, which an
+//! OpenAI-compatible client ignores. In the same measurement, with a tool declared, the
+//! cut fell **inside** the call: the response came back without `tool_calls`, with the
+//! unfinished `<tool_call>` degraded into 4366 characters of loose text. It is the
+//! captain's case: opencode reads `max_tokens` as a terminal condition, drops the
+//! turn and the file is left half-written.
 //!
-//! ## O que ela prova
+//! ## What it proves
 //!
-//! Cada teste sobe dois hops falsos, um `GatewayState` de verdade e serve as
-//! rotas `/v1` de verdade num socket TCP, e fala com elas por HTTP com
-//! `reqwest` - inclusive o SSE, lido byte a byte como um cliente lê. O caminho
-//! exercitado é o de produção inteiro: `openai::chat_completions`,
+//! Each test brings up two fake hops, a real `GatewayState` and serves the real
+//! `/v1` routes on a TCP socket, and talks to them over HTTP with
+//! `reqwest` - SSE included, read byte by byte the way a client reads it. The path
+//! exercised is the whole production one: `openai::chat_completions`,
 //! `gateway::generate_stream_with_stops`, `prefill::run`, `prefill::step`,
 //! `relay::send_frame`, `tool_call::TagScanner`.
 //!
-//! ## As duas fronteiras
+//! ## The two boundaries
 //!
-//! O laço de continuação resolveu o corte na fronteira da **perna**: ela é
-//! invisível, e costurar pernas para honrar o pedido do cliente é o certo. A
-//! de fora - o teto que o cliente pediu - é outra coisa: ela é **imposta e
-//! inviolável**, e atingi-la é parada terminal. Nada a ultrapassa, nem uma
-//! chamada de ferramenta aberta no token do corte.
+//! The continuation loop resolved the cut at the boundary of the **leg**: it is
+//! invisible, and stitching legs together to honor the client's request is the right thing. The
+//! outer one - the ceiling the client asked for - is something else: it is **enforced and
+//! inviolable**, and reaching it is a terminal stop. Nothing exceeds it, not even a tool
+//! call left open at the cut token.
 //!
-//! O que sobrava a resolver era a **forma** da resposta quando o corte cai
-//! dentro de uma chamada. Duas respostas erradas já foram medidas aqui: a
-//! marcação crua vazada como texto (335 caracteres de `<tool_call>…` no
-//! `content`, com `x_pom.partial: false` mentindo) e o descarte silencioso do
-//! fragmento. A certa é a dos dois provedores, verificada na documentação viva
-//! em 2026-08-29: a chamada volta **estruturada e incompleta**, ao lado do
-//! motivo de parada terminal - `finish_reason: "length"` na OpenAI,
-//! `stop_reason: "max_tokens"` com o último bloco `tool_use` na Anthropic. O
-//! cliente lê o motivo e repete o pedido com um teto maior; nenhum dos dois
-//! continua, transborda ou descarta.
+//! What was left to resolve was the **shape** of the response when the cut falls
+//! inside a call. Two wrong answers have already been measured here: raw
+//! markup leaked as text (335 characters of `<tool_call>…` in the
+//! `content`, with `x_pom.partial: false` lying) and silently discarding the
+//! fragment. The right one is that of the two providers, checked against the live documentation
+//! on 2026-08-29: the call comes back **structured and incomplete**, next to the
+//! terminal stop reason - `finish_reason: "length"` at OpenAI,
+//! `stop_reason: "max_tokens"` with the last `tool_use` block at Anthropic. The
+//! client reads the reason and repeats the request with a larger ceiling; neither of the two
+//! continues, overflows or discards.
 //!
-//! No lugar do transbordo os dois oferecem o **orçamento de tarefa**
-//! (`output_config.task_budget`), que avisa o modelo em vez de esticar o teto.
-//! Ele é advisory e está coberto aqui também.
+//! In place of overflow both offer the **task budget**
+//! (`output_config.task_budget`), which warns the model instead of stretching the ceiling.
+//! It is advisory and is covered here too.
 //!
-//! **Limite declarado:** o motor é falso. Ele lê um roteiro de pedaços de texto
-//! em vez de decodificar, então o que a bancada prova é o contrato entre
-//! gateway, adaptador e peers - que é onde o defeito morava. O que o llama.cpp
-//! faz com o lote não está aqui; isso é medição em cluster.
+//! **Declared limit:** the engine is fake. It reads a script of text pieces
+//! instead of decoding, so what the bench proves is the contract between
+//! gateway, adapter and peers - which is where the defect lived. What llama.cpp
+//! does with the batch is not here; that is cluster measurement.
 
 #![cfg(test)]
 
@@ -73,18 +73,18 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// Pequeno de propósito: a bancada mede protocolo, não memória.
+/// Small on purpose: the bench measures protocol, not memory.
 const HIDDEN_DIM: usize = 8;
-/// Tokens que o prompt vale para a cabeça falsa.
+/// Tokens that the prompt is worth for the fake head.
 const PROMPT_TOKENS: u32 = 6;
 
 // ── O motor falso ─────────────────────────────────────────────────────────────
 
-/// O roteiro que a cauda falsa "amostra", um pedaço por token.
+/// The script that the fake tail "samples", one piece per token.
 ///
-/// Uma chamada de ferramenta inteira, deliberadamente mais longa que o
-/// orçamento de uma perna: nenhum pedaço isolado é uma chamada válida, e só a
-/// saída costurada fecha as tags. É a forma exata do corte que o captain viu.
+/// A whole tool call, deliberately longer than a leg's
+/// budget: no isolated piece is a valid call, and only the stitched
+/// output closes the tags. It is the exact shape of the cut the captain saw.
 fn tool_call_script() -> Vec<String> {
     let mut script = vec![
         "Vou escrever o arquivo.\n".to_string(),
@@ -104,10 +104,10 @@ fn tool_call_script() -> Vec<String> {
     script
 }
 
-/// A forma reduzida da reprodução do captain: 847 linhas de HTML, quebradas
-/// em pedaços pequenos como um tokenizer real faria. O número de linhas é
-/// deliberado - a bancada precisa atravessar tanto 8192 quanto 50000 tokens
-/// sem confundir tamanho do arquivo com a capacidade de contexto do nó.
+/// The reduced form of the captain's reproduction: 847 lines of HTML, broken
+/// into small pieces the way a real tokenizer would. The number of lines is
+/// deliberate - the bench needs to cross both 8192 and 50000 tokens
+/// without confusing file size with the node's context capacity.
 fn large_html_tool_script() -> Vec<String> {
     let mut script = vec![
         "<tool_call>\n".to_string(),
@@ -131,40 +131,40 @@ fn large_html_tool_script() -> Vec<String> {
     script
 }
 
-/// Texto corrido, também mais longo que uma perna. O `TagScanner` não acha
-/// tag nenhuma aqui, então este roteiro mede o caminho de texto puro sem o
-/// caminho de ferramenta por perto.
+/// Running text, also longer than a leg. The `TagScanner` finds no
+/// tag here, so this script measures the pure-text path without the
+/// tool path nearby.
 fn plain_script() -> Vec<String> {
     (0..51).map(|i| format!("palavra{i} ")).collect()
 }
 
-/// Um roteiro sem fim: o modelo que entra em laço, contra o qual o teto
-/// absoluto existe.
+/// A script with no end: the model that goes into a loop, against which the absolute
+/// ceiling exists.
 fn runaway_script() -> Vec<String> {
     Vec::new()
 }
 
-/// Um peer de inferência falso.
+/// A fake inference peer.
 #[derive(Clone)]
 struct Hop {
     is_head: bool,
-    /// Pedaços de texto que a cauda entrega, em ordem. Vazio quer dizer
-    /// "nunca para": a cauda repete um pedaço fixo e jamais sinaliza EOS.
+    /// Text pieces that the tail delivers, in order. Empty means
+    /// "never stops": the tail repeats a fixed piece and never signals EOS.
     script: Arc<Vec<String>>,
-    /// Quantos pedaços já saíram. Compartilhado entre prefill (o primeiro
-    /// token) e step (o resto), como no motor de verdade.
+    /// How many pieces have already gone out. Shared between prefill (the first
+    /// token) and step (the rest), as in the real engine.
     emitted: Arc<AtomicUsize>,
-    /// O prompt que a cabeça recebeu no quadro de prefill. É por aqui que a
-    /// bancada confere que o marcador do orçamento de tarefa chegou mesmo à
-    /// geração, e não só ao adaptador.
+    /// The prompt the head received in the prefill frame. It is through here that the
+    /// bench checks that the task budget marker really reached the
+    /// generation, and not only the adapter.
     seen_prompt: Arc<std::sync::Mutex<String>>,
-    /// Reutilizado entre tokens para que a reprodução longa meça o gateway,
-    /// não a exaustão de sockets causada por criar um cliente por passo.
+    /// Reused between tokens so that the long reproduction measures the gateway,
+    /// not the socket exhaustion caused by creating a client per step.
     peer_http: Arc<crate::peer_client::PeerClients>,
 }
 
 impl Hop {
-    /// O próximo token do roteiro e se ele foi o último.
+    /// The next token of the script and whether it was the last.
     fn next_token(&self) -> (usize, String, bool) {
         let i = self.emitted.fetch_add(1, Ordering::Relaxed);
         if self.script.is_empty() {
@@ -199,8 +199,8 @@ async fn fake_release() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-/// `gateway::rewind_sessions` lê o corpo, não o status: só `rewound: true` com
-/// o `n_past` pedido conta como sessão arrumada para o turno seguinte.
+/// `gateway::rewind_sessions` reads the body, not the status: only `rewound: true` with
+/// the requested `n_past` counts as a session tidied up for the next turn.
 async fn fake_rewind(body: Bytes) -> impl IntoResponse {
     let request: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
     let n = request.get("n_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -230,8 +230,8 @@ fn read(body: &Bytes) -> Incoming {
     }
 }
 
-/// Espelha `infer_server::relay_and_bubble`: o anel, que é o transporte que
-/// esta bancada exercita.
+/// Mirrors `infer_server::relay_and_bubble`: the ring, which is the transport that
+/// this bench exercises.
 async fn bubble(
     http: &crate::peer_client::PeerClients,
     hops: &[crate::pipeline::PipelineStep],
@@ -392,15 +392,15 @@ async fn spawn_hop(hop: Hop) -> String {
     format!("http://{addr}")
 }
 
-// ── O nó, com as rotas `/v1` de verdade num socket ────────────────────────────
+// ── The node, with the real `/v1` routes on a socket ────────────────────────────
 
 const API_KEY: &str = "api-chave";
 
 struct No {
     base: String,
-    /// O prompt que a cabeça recebeu - ver `Hop::seen_prompt`.
+    /// The prompt the head received - see `Hop::seen_prompt`.
     seen_prompt: Arc<std::sync::Mutex<String>>,
-    /// Vivo enquanto o teste roda; largar isto derruba o nó.
+    /// Alive while the test runs; dropping this brings the node down.
     _server: tokio::task::JoinHandle<()>,
 }
 
@@ -410,10 +410,10 @@ impl No {
     }
 }
 
-/// Sobe dois hops falsos e um nó de verdade servindo `/v1` por HTTP.
+/// Brings up two fake hops and a real node serving `/v1` over HTTP.
 ///
-/// `deployment_max_new_tokens` é o teto de **uma** geração de backend. A
-/// capacidade total deriva do contexto efetivo, sem um teto absoluto separado.
+/// `deployment_max_new_tokens` is the ceiling of **one** backend generation. The total
+/// capacity derives from the effective context, without a separate absolute ceiling.
 async fn no(script: Vec<String>, deployment_max_new_tokens: u32) -> No {
     no_with_context(script, deployment_max_new_tokens, 8_192).await
 }
@@ -459,8 +459,8 @@ async fn no_with_peer_capacities(
         );
     }
 
-    // Só o anel: é o transporte que os hops falsos implementam, e anunciar
-    // outro faria a bancada prometer o que não cumpre.
+    // Only the ring: it is the transport that the fake hops implement, and announcing
+    // another would make the bench promise what it does not deliver.
     let caps = vec![crate::pipeline::CAP_RELAY_CHAIN.to_string()];
     let peers: Vec<crate::network::PeerInfo> = urls
         .iter()
@@ -558,8 +558,8 @@ async fn post_json(no: &No, body: Value) -> Value {
         .expect("JSON body")
 }
 
-/// `/v1/messages`, para o que só o adaptador Anthropic diz: o `stop_reason`,
-/// os blocos `tool_use` e o `output_config`.
+/// `/v1/messages`, for what only the Anthropic adapter says: the `stop_reason`,
+/// the `tool_use` blocks and the `output_config`.
 async fn post_messages(no: &No, body: Value) -> Value {
     reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
@@ -603,9 +603,9 @@ async fn messages_events(no: &No, body: Value) -> Vec<Value> {
     events
 }
 
-/// O SSE da rota Anthropic, que tem nomes de evento próprios. Devolve os
-/// `partial_json` de `input_json_delta`, na ordem - é onde os argumentos da
-/// chamada de ferramenta chegam ali.
+/// The SSE of the Anthropic route, which has event names of its own. Returns the
+/// `partial_json` of `input_json_delta`, in order - it is where the arguments of the
+/// tool call arrive there.
 async fn messages_fragments(no: &No, body: Value) -> Vec<String> {
     let events = messages_events(no, body).await;
     let mut fragments = Vec::new();
@@ -622,8 +622,8 @@ async fn messages_fragments(no: &No, body: Value) -> Vec<String> {
     fragments
 }
 
-/// O pedido Anthropic da bancada, com a ferramenta declarada. `eager` liga
-/// `eager_input_streaming` nela.
+/// The bench's Anthropic request, with the tool declared. `eager` turns on
+/// `eager_input_streaming` on it.
 fn messages_request(max_tokens: u32, eager: Option<bool>) -> Value {
     let mut tool = json!({
         "name": "write_file",
@@ -642,22 +642,22 @@ fn messages_request(max_tokens: u32, eager: Option<bool>) -> Value {
     })
 }
 
-/// O que um cliente SSE vê: os quadros na ordem em que chegaram, num único
-/// fluxo. Nada aqui reabre conexão - se a costura fechasse o stream, o `while`
-/// abaixo terminaria cedo e os testes veriam menos texto.
+/// What an SSE client sees: the frames in the order they arrived, in a single
+/// flow. Nothing here reopens a connection - if the stitching closed the stream, the `while`
+/// below would end early and the tests would see less text.
 struct Flow {
-    /// Cada `data:` do stream, já desembrulhado, exceto `[DONE]`.
+    /// Each `data:` of the stream, already unwrapped, except `[DONE]`.
     chunks: Vec<Value>,
     /// Quantos `[DONE]` chegaram.
     done_sentinels: usize,
-    /// Em que instante cada quadro chegou, contado do começo do pedido. É o
-    /// que separa "chegou em vários pedaços" de "chegou cedo".
+    /// At what instant each frame arrived, counted from the start of the request. It is
+    /// what separates "arrived in several pieces" from "arrived early".
     instants: Vec<std::time::Duration>,
 }
 
 impl Flow {
-    /// Todo `finish_reason` não-nulo que atravessou o fluxo. Mais de um quer
-    /// dizer que o cliente viu o fim da resposta antes da hora.
+    /// Every non-null `finish_reason` that crossed the flow. More than one means
+    /// the client saw the end of the response ahead of time.
     fn finish_reasons(&self) -> Vec<String> {
         self.chunks
             .iter()
@@ -681,7 +681,7 @@ impl Flow {
             .collect()
     }
 
-    /// Os fragmentos de argumento, na ordem, com o instante de cada um.
+    /// The argument fragments, in order, with the instant of each one.
     fn argument_fragments(&self) -> Vec<(std::time::Duration, String)> {
         self.chunks
             .iter()
@@ -745,12 +745,12 @@ async fn post_sse(no: &No, body: Value) -> Flow {
     flow
 }
 
-// ── O que a bancada afirma ────────────────────────────────────────────────────
+// ── What the bench asserts ────────────────────────────────────────────────────
 
-/// A reprodução, virada de cabeça para baixo. Pedindo 100 contra uma
-/// implantação de 8, o cliente recebia 8 tokens e `finish_reason: "length"`;
-/// agora recebe a resposta inteira e um `stop` honesto - **sem** que o
-/// `max_new_tokens` da implantação tenha sido alterado.
+/// The reproduction, turned upside down. Asking for 100 against a
+/// deployment of 8, the client used to receive 8 tokens and `finish_reason: "length"`;
+/// now it receives the whole response and an honest `stop` - **without** the
+/// deployment's `max_new_tokens` having been changed.
 #[tokio::test]
 async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
     let script = plain_script();
@@ -763,13 +763,13 @@ async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
     assert_eq!(choice["finish_reason"], "stop");
     assert_eq!(choice["message"]["content"], expected);
     assert_eq!(body["usage"]["completion_tokens"], script.len() as u64);
-    // O número da implantação continua o que era: o laço passou por cima dele
-    // sem levantá-lo.
+    // The deployment's number remains what it was: the loop went over it
+    // without raising it.
     assert_eq!(body["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
     assert_eq!(body["x_pom"]["output_limits"]["leg_max_tokens"], 8);
     assert_eq!(body["x_pom"]["output_limits"]["effective_max_tokens"], 100);
     assert_eq!(body["x_pom"]["output_limits"]["requested_max_tokens"], 100);
-    // E a costura é inspecionável: 51 tokens em pernas de 8.
+    // And the stitching is inspectable: 51 tokens in legs of 8.
     assert_eq!(
         body["x_pom"]["continuation_legs"],
         script.len().div_ceil(8) as u64
@@ -777,9 +777,9 @@ async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
     assert_eq!(body["x_pom"]["partial"], false);
 }
 
-/// O requisito central: um fluxo só. A costura entre pernas não pode aparecer
-/// como fim de resposta - nem como `finish_reason` intermediário, nem como um
-/// segundo `[DONE]`, nem como conexão fechada no meio.
+/// The central requirement: a single flow. The stitching between legs cannot show up
+/// as the end of a response - neither as an intermediate `finish_reason`, nor as a
+/// second `[DONE]`, nor as a connection closed midway.
 #[tokio::test]
 async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
     let script = plain_script();
@@ -801,9 +801,9 @@ async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
     );
 }
 
-/// O caso do captain, ponta a ponta: a chamada de ferramenta atravessa o teto
-/// da implantação e chega com o JSON de argumentos inteiro e válido. Nenhum
-/// pedaço intermediário é JSON: só a saída costurada fecha as tags.
+/// The captain's case, end to end: the tool call crosses the deployment's
+/// ceiling and arrives with the whole, valid arguments JSON. No intermediate
+/// piece is JSON: only the stitched output closes the tags.
 #[tokio::test]
 async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
     let script = tool_call_script();
@@ -833,9 +833,9 @@ async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
     );
 }
 
-/// A mesma chamada, em streaming: o cliente recebe um `tool_calls` com
-/// argumentos completos, não um `<tool_call>` inacabado degradado em texto -
-/// que é exatamente o que o cluster devolvia.
+/// The same call, in streaming: the client receives a `tool_calls` with
+/// complete arguments, not an unfinished `<tool_call>` degraded into text -
+/// which is exactly what the cluster used to return.
 #[tokio::test]
 async fn the_streamed_tool_call_carries_complete_arguments() {
     let script = tool_call_script();
@@ -845,7 +845,7 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
     assert_eq!(flow.finish_reasons(), vec!["tool_calls".to_string()]);
 
     let deltas = flow.tool_call_deltas();
-    // A abertura traz o nome, e os argumentos vêm em MUITOS fragmentos.
+    // The opening brings the name, and the arguments come in MANY fragments.
     assert_eq!(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
@@ -857,7 +857,7 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
         fragments.len()
     );
 
-    // Concatenar reproduz o argumento inteiro e válido.
+    // Concatenating reproduces the whole, valid argument.
     let whole: String = fragments.iter().map(|(_, s)| s.as_str()).collect();
     let arguments: Value = serde_json::from_str(&whole).expect("arguments is valid JSON");
     assert_eq!(arguments["path"], "/tmp/calc.py");
@@ -865,13 +865,13 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
         .as_str()
         .unwrap()
         .ends_with("linha_39 = 39 * 2"));
-    // Nada do `<tool_call>` sobrou como texto solto.
+    // Nothing of the `<tool_call>` was left over as loose text.
     assert!(!flow.text().contains("<tool_call>"), "{}", flow.text());
 }
 
-/// A reprodução grande do caso do captain: com contexto efetivo suficiente,
-/// as 847 linhas cabem e a chamada chega completa mesmo atravessando várias
-/// pernas de 1024 tokens.
+/// The large reproduction of the captain's case: with enough effective context,
+/// the 847 lines fit and the call arrives complete even crossing several
+/// legs of 1024 tokens.
 #[tokio::test]
 async fn a_large_html_tool_call_fits_the_context_capacity() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
@@ -892,9 +892,9 @@ async fn a_large_html_tool_call_fits_the_context_capacity() {
         .contains("data-line=\"846\""));
 }
 
-/// O cenário do captain com a capacidade que o deployment pretende publicar:
-/// 32000 tokens de uma requisição em contexto efetivo de 100000. O HTML não
-/// pode sumir apenas porque atravessou várias pernas de 1024 tokens.
+/// The captain's scenario with the capacity the deployment intends to publish:
+/// 32000 tokens of a request in an effective context of 100000. The HTML
+/// cannot vanish just because it crossed several legs of 1024 tokens.
 #[tokio::test]
 async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
     let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
@@ -920,8 +920,8 @@ async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
         .contains("data-line=\"846\""));
 }
 
-/// E o mesmo limite é verificável no caminho incremental que o Pi consome:
-/// concatenar os fragmentos de argumentos ainda produz a chamada inteira.
+/// And the same limit is verifiable on the incremental path that Pi consumes:
+/// concatenating the argument fragments still produces the whole call.
 #[tokio::test]
 async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
     let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
@@ -943,9 +943,9 @@ async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
     assert_eq!(flow.last_with_x_pom()["x_pom"]["partial"], false);
 }
 
-/// A mesma reprodução em 8192 tokens não pode ser "resolvida" com folga:
-/// o cliente recebe exatamente o teto, a chamada volta estruturada e os
-/// argumentos ficam deliberadamente incompletos para não serem executados.
+/// The same reproduction at 8192 tokens cannot be "resolved" with room to spare:
+/// the client receives exactly the ceiling, the call comes back structured and the
+/// arguments are left deliberately incomplete so they are not executed.
 #[tokio::test]
 async fn a_large_openai_tool_call_at_8192_is_structured_and_terminal() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
@@ -988,10 +988,10 @@ async fn a_large_openai_tool_call_at_5000_is_structured_and_terminal_non_streami
     assert!(!arguments.contains("data-line=\"846\""));
 }
 
-/// A reprodução em streaming do write grande do Pi: quando o teto terminal
-/// corta o parâmetro HTML, o cliente ainda recebe um `tool_calls` estruturado
-/// e pode guardar o prefixo recuperável para uma nova tentativa. O fluxo não
-/// pode fechar sem argumentos nem despejar `<tool_call>` em `content`.
+/// The streaming reproduction of Pi's large write: when the terminal ceiling
+/// cuts the HTML parameter, the client still receives a structured `tool_calls`
+/// and can keep the recoverable prefix for a new attempt. The flow cannot
+/// close without arguments nor dump `<tool_call>` into `content`.
 #[tokio::test]
 async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
@@ -1022,8 +1022,8 @@ async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
     assert_eq!(x_pom["partial"], true);
 }
 
-/// O mesmo caminho com o limite local de 5000 tokens reproduz o corte visto
-/// pelo Pi: não existe uma continuação escondida depois do evento terminal.
+/// The same path with the local limit of 5000 tokens reproduces the cut seen
+/// by Pi: there is no hidden continuation after the terminal event.
 #[tokio::test]
 async fn a_large_openai_tool_call_at_5000_has_one_recoverable_terminal_cut() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
@@ -1041,9 +1041,9 @@ async fn a_large_openai_tool_call_at_5000_has_one_recoverable_terminal_cut() {
     assert_eq!(flow.last_with_x_pom()["x_pom"]["partial"], true);
 }
 
-/// O adaptador Anthropic expõe a mesma chamada grande como bloco `tool_use`:
-/// completa quando cabe, e incompleta com `stop_reason: max_tokens` quando o
-/// teto de 8192 cai dentro do parâmetro.
+/// The Anthropic adapter exposes the same large call as a `tool_use` block:
+/// complete when it fits, and incomplete with `stop_reason: max_tokens` when the
+/// 8192 ceiling falls inside the parameter.
 #[tokio::test]
 async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
     let tool = json!({
@@ -1091,10 +1091,10 @@ async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
     assert!(!content.contains("data-line=\"846\""));
 }
 
-/// Reproduz o limite configurado pelo Pi na mesma rota que o Claude Code usa:
-/// `max_tokens: 5000` chega inteiro ao gateway, corta exatamente nesse total e
-/// ainda fecha o stream com um `tool_use` estruturado. O contexto de 100k não
-/// aumenta o teto de saída do cliente.
+/// Reproduces the limit configured by Pi on the same route that Claude Code uses:
+/// `max_tokens: 5000` arrives whole at the gateway, cuts exactly at that total and
+/// still closes the stream with a structured `tool_use`. The 100k context does not
+/// raise the client's output ceiling.
 #[tokio::test]
 async fn pi_5000_limit_is_forwarded_and_large_write_is_structured_when_cut() {
     let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
@@ -1140,10 +1140,10 @@ async fn pi_5000_limit_is_forwarded_and_large_write_is_structured_when_cut() {
     );
 }
 
-/// **O defeito do captain, virado do avesso.** Medido no ksia vivo: 2 pedaços,
-/// os dois aos 11,01 s - os 663 caracteres chegavam todos de uma vez, no fim,
-/// e o usuário encarava uma tela parada. Agora o primeiro fragmento chega
-/// muito antes do último.
+/// **The captain's defect, turned inside out.** Measured on the live ksia: 2 pieces,
+/// both at 11.01 s - the 663 characters all arrived at once, at the end,
+/// and the user stared at a frozen screen. Now the first fragment arrives
+/// well before the last.
 #[tokio::test]
 async fn the_first_argument_fragment_arrives_well_before_the_last() {
     let no = no(tool_call_script(), 8).await;
@@ -1158,20 +1158,20 @@ async fn the_first_argument_fragment_arrives_well_before_the_last() {
         first < last,
         "first and last at the same instant ({first:?}) - it is the defect again"
     );
-    // O relógio de parede deste teste inclui escalonamento do processo, filas
-    // do kernel e agrupamento de bytes pelo socket. Esses fatores podem fazer
-    // o primeiro quadro parecer tardio mesmo quando o servidor já o emitiu
-    // separado. A prova estável de que o streaming não represou a chamada é
-    // haver muitos fragmentos e o primeiro ser observado antes do último.
+    // This test's wall clock includes process scheduling, kernel queues
+    // and byte grouping by the socket. These factors can make
+    // the first frame look late even when the server already emitted it
+    // separately. The stable proof that streaming did not dam up the call is
+    // there being many fragments and the first being observed before the last.
     assert!(
         first < last,
         "the first frame did not arrive before the last"
     );
 }
 
-/// O freio contra o modelo em laço: o teto que o cliente pediu é o único que
-/// produz `length`, e a implantação (8) não encerra nada - ela só divide a
-/// resposta em pernas invisíveis, cinco delas aqui.
+/// The brake against the looping model: the ceiling the client asked for is the only one that
+/// produces `length`, and the deployment's (8) ends nothing - it only splits the
+/// response into invisible legs, five of them here.
 #[tokio::test]
 async fn the_client_ceiling_stops_a_runaway_model_and_is_the_only_length() {
     let no = no(runaway_script(), 8).await;
@@ -1186,8 +1186,8 @@ async fn the_client_ceiling_stops_a_runaway_model_and_is_the_only_length() {
     assert_eq!(body["x_pom"]["continuation_legs"], 5);
 }
 
-/// O mesmo estouro em streaming: um `length` só, no fim, e um `[DONE]` só. A
-/// costura das cinco pernas segue invisível.
+/// The same overflow in streaming: a single `length`, at the end, and a single `[DONE]`. The
+/// stitching of the five legs stays invisible.
 #[tokio::test]
 async fn the_client_ceiling_ends_the_stream_exactly_once() {
     let no = no(runaway_script(), 8).await;
@@ -1199,8 +1199,8 @@ async fn the_client_ceiling_ends_the_stream_exactly_once() {
     assert_eq!(flow.last_with_x_pom()["x_pom"]["continuation_legs"], 5);
 }
 
-/// Quando o pedido cabe numa perna nada muda: uma perna, sem costura, e o
-/// `length` continua sendo dito na hora certa.
+/// When the request fits in one leg nothing changes: one leg, no stitching, and the
+/// `length` is still said at the right time.
 #[tokio::test]
 async fn a_request_that_fits_one_leg_is_untouched() {
     let no = no(runaway_script(), 8).await;
@@ -1212,8 +1212,8 @@ async fn a_request_that_fits_one_leg_is_untouched() {
     assert_eq!(body["x_pom"]["output_limits"]["leg_max_tokens"], 5);
 }
 
-/// `/v1/models` anuncia o teto da requisição, não o de uma perna: anunciar o
-/// da implantação faria o cliente pedir menos do que este nó entrega.
+/// `/v1/models` announces the request's ceiling, not a leg's: announcing the
+/// deployment's would make the client ask for less than this node delivers.
 #[tokio::test]
 async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
     let no = no(runaway_script(), 8).await;
@@ -1303,8 +1303,8 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
     assert_eq!(x_api_key.status(), reqwest::StatusCode::OK);
 }
 
-/// A lista precisa ser autodetectável por Claude Code e OpenCode ao mesmo
-/// tempo. Os campos Anthropic extras são ignorados pelos clientes OpenAI.
+/// The list must be auto-detectable by Claude Code and OpenCode at the same
+/// time. The extra Anthropic fields are ignored by OpenAI clients.
 #[tokio::test]
 async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
     let no = no_with_context(runaway_script(), 8, 100_000).await;
@@ -1330,9 +1330,9 @@ async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
     assert_eq!(model["top_provider"]["max_completion_tokens"], 100_000);
 }
 
-/// A capacidade derivada da rede é a capacidade do pipeline inteiro: um peer
-/// com contexto 8192 não pode ser escondido por outro com contexto 100000.
-/// A lista usa o menor valor entre os peers da pipeline planejada.
+/// The capacity derived from the network is the capacity of the whole pipeline: a peer
+/// with context 8192 cannot be hidden by another with context 100000.
+/// The list uses the smallest value among the peers of the planned pipeline.
 #[tokio::test]
 async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
     let no = no_with_peer_capacities(
@@ -1379,9 +1379,9 @@ async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
     assert_eq!(status, reqwest::StatusCode::OK, "{body}");
 }
 
-/// Depois que todos os peers reiniciam com a nova configuração, o gateway
-/// deixa de anunciar a capacidade antiga e aceita 32000 sem confundi-la com
-/// o teto por perna.
+/// After all peers restart with the new configuration, the gateway
+/// stops announcing the old capacity and accepts 32000 without confusing it with
+/// the per-leg ceiling.
 #[tokio::test]
 async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
     let no = no_with_peer_capacities(
@@ -1426,9 +1426,9 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
-/// Reproduz a configuração do captain: `max_new_tokens: 32000` continua sendo
-/// uma perna, enquanto a capacidade publicada vem do contexto efetivo do
-/// modelo e da rede, sem um segundo teto absoluto escondido.
+/// Reproduces the captain's configuration: `max_new_tokens: 32000` remains
+/// one leg, while the published capacity comes from the effective context of the
+/// model and of the network, without a second hidden absolute ceiling.
 #[tokio::test]
 async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
     let no = no_with_context(plain_script(), 32_000, 100_000).await;
@@ -1458,9 +1458,9 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
-/// OpenCode envia o nome novo do limite e pode acrescentar campos opcionais
-/// do protocolo OpenAI. O gateway deve honrar `max_completion_tokens` sem
-/// exigir que o cliente também mande o nome antigo.
+/// OpenCode sends the new name of the limit and may add optional fields
+/// of the OpenAI protocol. The gateway must honor `max_completion_tokens` without
+/// requiring the client to also send the old name.
 #[tokio::test]
 async fn openai_chat_completions_accepts_max_completion_tokens() {
     let no = no(runaway_script(), 8).await;
@@ -1509,19 +1509,19 @@ async fn max_completion_tokens_above_the_former_50k_ceiling_is_accepted() {
 
 // ── O teto do CLIENTE caindo dentro da chamada ───────────────────────────────
 
-/// Teto escolhido para cair **dentro** da chamada de ferramenta.
+/// Ceiling chosen to fall **inside** the tool call.
 ///
-/// `tool_call_script()` tem 50 pedaços: índice 0 é prosa, 1 abre
-/// `<tool_call>`, 7..=46 são as 40 linhas do `content`, 49 fecha
-/// `</tool_call>`. Com 20, a geração chega ao teto logo depois do pedaço 19 -
-/// `linha_12` - dezoito pedaços depois da abertura e vinte e nove antes do
-/// fechamento. `the_cut_lands_inside_the_call()` prova isso, para ninguém depois
-/// achar que o ponto caiu em outro lugar por acidente.
+/// `tool_call_script()` has 50 pieces: index 0 is prose, 1 opens
+/// `<tool_call>`, 7..=46 are the 40 lines of the `content`, 49 closes
+/// `</tool_call>`. With 20, generation reaches the ceiling right after piece 19 -
+/// `linha_12` - eighteen pieces after the opening and twenty-nine before the
+/// closing. `the_cut_lands_inside_the_call()` proves this, so nobody later
+/// thinks the point fell somewhere else by accident.
 const CAP_INSIDE_CALL: u32 = 20;
 
-/// Prova aritmética do ponto de corte, independente dos testes de HTTP: com
-/// `CAP_INSIDE_CALL` tokens gerados, a saída bruta abriu a chamada e
-/// não a fechou.
+/// Arithmetic proof of the cut point, independent of the HTTP tests: with
+/// `CAP_INSIDE_CALL` tokens generated, the raw output opened the call and
+/// did not close it.
 #[test]
 fn the_cut_lands_inside_the_call() {
     let script = tool_call_script();
@@ -1539,17 +1539,17 @@ fn the_cut_lands_inside_the_call() {
         !truncated.contains("</tool_call>"),
         "the cut landed after the closing"
     );
-    // E cai no miolo do `content`, não numa fronteira de tag.
+    // And it falls in the middle of the `content`, not on a tag boundary.
     assert!(truncated.ends_with("linha_12 = 12 * 2\n"), "{truncated:?}");
 }
 
-/// **O teto do cliente é inviolável, inclusive com uma chamada aberta.**
+/// **The client's ceiling is inviolable, even with an open call.**
 ///
-/// Era aqui que uma folga removida deixava a geração ultrapassar o que o
-/// cliente pediu. Nenhum dos dois provedores faz isso:
-/// `max_tokens` é teto por resposta imposto, atingi-lo é parada terminal, e a
-/// saída trunca no meio. O que eles oferecem no lugar do transbordo é o
-/// orçamento de tarefa, coberto mais abaixo.
+/// This is where a removed slack let generation exceed what the
+/// client asked for. Neither of the two providers does that:
+/// `max_tokens` is an enforced per-response ceiling, reaching it is a terminal stop, and the
+/// output is truncated midway. What they offer in place of overflow is the
+/// task budget, covered further below.
 #[tokio::test]
 async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
     let no = no(tool_call_script(), 8).await;
@@ -1563,8 +1563,8 @@ async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
     assert_eq!(body["choices"][0]["finish_reason"], "length");
 }
 
-/// O mesmo em streaming, e com a garantia que só o streaming dá: nem um token
-/// a mais atravessou o fluxo.
+/// The same in streaming, and with the guarantee that only streaming gives: not one extra
+/// token crossed the flow.
 #[tokio::test]
 async fn the_streamed_client_ceiling_is_never_exceeded_with_an_open_tool_call() {
     let no = no(tool_call_script(), 8).await;
@@ -1579,16 +1579,16 @@ async fn the_streamed_client_ceiling_is_never_exceeded_with_an_open_tool_call() 
     );
 }
 
-/// **A forma da resposta quando o corte cai dentro da chamada** (OpenAI).
+/// **The shape of the response when the cut falls inside the call** (OpenAI).
 ///
-/// Apurado na documentação viva em 2026-08-29: a chamada parcial volta
-/// **estruturada**, com `function.arguments` sendo a string JSON inacabada, ao
-/// lado de `finish_reason: "length"`. `arguments` é documentado como string
-/// que "nem sempre é JSON válido", e o cliente é obrigado a validar antes de
-/// executar - é isso que impede um harness de escrever meio arquivo.
+/// Verified against the live documentation on 2026-08-29: the partial call comes back
+/// **structured**, with `function.arguments` being the unfinished JSON string,
+/// next to `finish_reason: "length"`. `arguments` is documented as a string
+/// that "is not always valid JSON", and the client is obliged to validate before
+/// executing - that is what keeps a harness from writing half a file.
 ///
-/// As duas respostas erradas que já foram medidas aqui estão asseridas contra:
-/// marcação crua vazada como texto, e o descarte silencioso do fragmento.
+/// The two wrong answers that have already been measured here are asserted against:
+/// raw markup leaked as text, and the silent discarding of the fragment.
 #[tokio::test]
 async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
     let no = no(tool_call_script(), 8).await;
@@ -1596,19 +1596,19 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
     let body = post_json(&no, request(CAP_INSIDE_CALL, false, true)).await;
     let choice = &body["choices"][0];
 
-    // Parada terminal, com o motivo correspondente.
+    // Terminal stop, with the corresponding reason.
     assert_eq!(choice["finish_reason"], "length");
 
-    // A chamada NÃO foi descartada: ela volta estruturada.
+    // The call was NOT discarded: it comes back structured.
     let calls = choice["message"]["tool_calls"]
         .as_array()
         .expect("the cut call comes back structured, not discarded");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["function"]["name"], "write_file");
 
-    // E os argumentos são a string JSON inacabada - de propósito: um cliente
-    // que ignore o `length` e tente parsear falha, em vez de executar meia
-    // chamada com o `content` pela metade.
+    // And the arguments are the unfinished JSON string - on purpose: a client
+    // that ignores the `length` and tries to parse fails, instead of executing half a
+    // call with the `content` half-written.
     let raw = calls[0]["function"]["arguments"]
         .as_str()
         .expect("arguments is a string");
@@ -1620,12 +1620,12 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
         raw.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
         "{raw:?}"
     );
-    // O último parâmetro entra com a aspa de abertura e **sem** a de
-    // fechamento, e nada do que o modelo escreveu é aparado: a quebra de linha
-    // final é conteúdo, não sobra.
+    // The last parameter comes in with the opening quote and **without** the
+    // closing one, and nothing the model wrote is trimmed: the final
+    // line break is content, not leftover.
     assert!(raw.ends_with(r"linha_12 = 12 * 2\n"), "{raw:?}");
 
-    // E nada de marcação crua no conteúdo - o defeito original.
+    // And no raw markup in the content - the original defect.
     let content = choice["message"]["content"].as_str().unwrap_or("");
     assert_eq!(content, "Vou escrever o arquivo.\n");
     assert!(
@@ -1635,7 +1635,7 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
         "{content:?}"
     );
 
-    // `x_pom` honesto: o corte caiu dentro da chamada, e a resposta é parcial.
+    // Honest `x_pom`: the cut fell inside the call, and the response is partial.
     assert_eq!(body["x_pom"]["truncated_tool_call"], true);
     assert_eq!(body["x_pom"]["partial"], true);
     assert_eq!(body["x_pom"]["finish_reason"], "length");
@@ -1645,10 +1645,10 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
     );
 }
 
-/// A mesma forma em streaming: os dois deltas de sempre - abertura com o nome,
-/// depois os argumentos -, só que os argumentos são a string inacabada. Nada
-/// de dentro da tag vazou como `content` antes disso, porque o scanner segura
-/// o corpo até a tag fechar.
+/// The same shape in streaming: the usual two deltas - opening with the name,
+/// then the arguments -, only the arguments are the unfinished string. Nothing
+/// from inside the tag leaked as `content` before that, because the scanner holds
+/// the body until the tag closes.
 #[tokio::test]
 async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete() {
     let no = no(tool_call_script(), 8).await;
@@ -1663,8 +1663,8 @@ async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
     );
-    // Os fragmentos que já tinham sido transmitidos contam: o corte não
-    // repete o que o cliente já acumulou. A concatenação é a string inacabada.
+    // The fragments that had already been transmitted count: the cut does not
+    // repeat what the client already accumulated. The concatenation is the unfinished string.
     let raw: String = flow
         .argument_fragments()
         .iter()
@@ -1694,10 +1694,10 @@ async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete(
     assert_eq!(x_pom["partial"], true);
 }
 
-/// A mesma forma no vocabulário da Anthropic: o **último bloco** é um
-/// `tool_use` com o `input` incompleto, e o `stop_reason` é `max_tokens`. É
-/// exatamente o par que a documentação manda o cliente conferir para saber que
-/// precisa repetir o pedido com um teto maior.
+/// The same shape in Anthropic's vocabulary: the **last block** is a
+/// `tool_use` with an incomplete `input`, and the `stop_reason` is `max_tokens`. It is
+/// exactly the pair that the documentation tells the client to check to know that it
+/// needs to repeat the request with a larger ceiling.
 #[tokio::test]
 async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block() {
     let no = no(tool_call_script(), 8).await;
@@ -1725,14 +1725,14 @@ async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block
         "the last block must be the cut call: {blocks:?}"
     );
     assert_eq!(last["name"], "write_file");
-    // `input` é objeto por contrato, com o que deu para recuperar.
+    // `input` is an object by contract, with what could be recovered.
     assert_eq!(last["input"]["path"], "/tmp/calc.py");
     assert!(last["input"]["content"]
         .as_str()
         .expect("partial content")
         .ends_with("linha_12 = 12 * 2\n"));
 
-    // E nada de marcação crua nos blocos de texto.
+    // And no raw markup in the text blocks.
     let text: String = blocks
         .iter()
         .filter_map(|b| b["text"].as_str())
@@ -1749,9 +1749,9 @@ async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block
 
 // ── Capacidade derivada do runtime ──────────────────────────────────────────
 
-/// Não existe mais um teto absoluto paralelo ao deployment. Um pedido que
-/// ultrapassaria o antigo default 8192 continua válido quando o contexto
-/// efetivo comporta a saída; `max_new_tokens` só divide as pernas.
+/// There is no longer an absolute ceiling parallel to the deployment. A request that
+/// would exceed the old default 8192 remains valid when the effective
+/// context holds the output; `max_new_tokens` only splits the legs.
 #[tokio::test]
 async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
     let no = no_with_context(plain_script(), 8, 100_000).await;
@@ -1782,16 +1782,16 @@ async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
     assert!(limits.contains_key("context_available_tokens"));
 }
 
-// ── Orçamento de tarefa ──────────────────────────────────────────────────────
+// ── Task budget ──────────────────────────────────────────────────────────────
 
-/// **O marcador chega à geração.**
+/// **The marker reaches the generation.**
 ///
-/// `output_config.task_budget` é o mecanismo que os provedores oferecem no
-/// lugar do transbordo: o servidor injeta um marcador de contagem regressiva
-/// que o modelo enxerga, para ele se organizar e terminar de forma graciosa
-/// dentro do limite. Este teste confere o caminho inteiro - o marcador sai do
-/// adaptador, atravessa o gateway e chega ao quadro de prefill que a cabeça
-/// recebe, que é onde o modelo de verdade o leria.
+/// `output_config.task_budget` is the mechanism the providers offer in
+/// place of overflow: the server injects a countdown marker
+/// that the model sees, so it organizes itself and finishes gracefully
+/// within the limit. This test checks the whole path - the marker leaves the
+/// adapter, crosses the gateway and reaches the prefill frame that the head
+/// receives, which is where the real model would read it.
 #[tokio::test]
 async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
     let no = no(plain_script(), 8).await;
@@ -1812,8 +1812,8 @@ async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
     assert!(prompt.contains("remaining_tokens: 64000"), "{prompt:?}");
     assert!(prompt.contains("total_tokens: 64000"), "{prompt:?}");
 
-    // Advisory: não corta nada. Quem corta é `max_tokens`, e o roteiro acabou
-    // antes dele.
+    // Advisory: it cuts nothing. What cuts is `max_tokens`, and the script ended
+    // before it.
     assert_eq!(body["stop_reason"], "end_turn");
     assert_eq!(body["x_pom"]["task_budget"]["total"], 64_000);
     assert_eq!(
@@ -1826,9 +1826,9 @@ async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
     );
 }
 
-/// `remaining` é o resto vindo de uma requisição anterior: é ele que o
-/// marcador anuncia, não o `total`. É como o cliente costura o laço agêntico
-/// deste lado, já que o nó não guarda estado entre requisições.
+/// `remaining` is the remainder coming from a previous request: it is what the
+/// marker announces, not the `total`. It is how the client stitches the agentic loop
+/// on its side, since the node keeps no state between requests.
 #[tokio::test]
 async fn a_carried_over_remaining_is_what_the_marker_announces() {
     let no = no(plain_script(), 8).await;
@@ -1851,8 +1851,8 @@ async fn a_carried_over_remaining_is_what_the_marker_announces() {
     assert!(prompt.contains("total_tokens: 128000"), "{prompt:?}");
 }
 
-/// **Ausente, nada muda.** O marcador não aparece no prompt, e o `x_pom` não
-/// inventa orçamento nenhum.
+/// **Absent, nothing changes.** The marker does not appear in the prompt, and the `x_pom` does not
+/// invent any budget.
 #[tokio::test]
 async fn without_a_task_budget_the_generation_is_untouched() {
     let no = no(plain_script(), 8).await;
@@ -1877,8 +1877,8 @@ async fn without_a_task_budget_the_generation_is_untouched() {
     );
 }
 
-/// O mínimo é o dos provedores: abaixo dele a API responde 400, porque um
-/// orçamento pequeno demais para a tarefa faz o modelo recusar ou parar cedo.
+/// The minimum is the providers': below it the API answers 400, because a
+/// budget too small for the task makes the model refuse or stop early.
 #[tokio::test]
 async fn a_task_budget_below_the_minimum_is_refused() {
     let no = no(plain_script(), 8).await;
@@ -1902,9 +1902,9 @@ async fn a_task_budget_below_the_minimum_is_refused() {
     assert!(message.contains("20000"), "{message}");
 }
 
-/// O orçamento de tarefa **nunca corta**: quem corta é `max_tokens`. Um
-/// orçamento generoso não estende o teto nem por um token - se estendesse,
-/// teríamos reinventado a folga que esta tarefa removeu.
+/// The task budget **never cuts**: what cuts is `max_tokens`. A
+/// generous budget does not extend the ceiling by even one token - if it did,
+/// we would have reinvented the slack this task removed.
 #[tokio::test]
 async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
     let no = no(runaway_script(), 8).await;
@@ -1924,10 +1924,10 @@ async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
     assert_eq!(body["usage"]["output_tokens"], 30);
 }
 
-// ── `eager_input_streaming`, por ferramenta ─────────────────────────────────
+// ── `eager_input_streaming`, per tool ─────────────────────────────────
 
-/// **Ligado, os fragmentos saem conforme o modelo gera.** É a forma da
-/// Anthropic: campo opcional na definição da ferramenta, sem cabeçalho beta.
+/// **Turned on, the fragments go out as the model generates.** It is Anthropic's
+/// shape: an optional field on the tool definition, with no beta header.
 #[tokio::test]
 async fn eager_input_streaming_on_a_tool_streams_the_argument_in_fragments() {
     let no = no(tool_call_script(), 8).await;
@@ -1948,14 +1948,14 @@ async fn eager_input_streaming_on_a_tool_streams_the_argument_in_fragments() {
         .ends_with("linha_39 = 39 * 2"));
 }
 
-/// **Ausente, o comportamento represado é preservado.** É o padrão da
-/// Anthropic, e o represamento é por **valor de parâmetro**: o parâmetro
-/// grande sai inteiro, num fragmento só.
+/// **Absent, the dammed-up behavior is preserved.** It is Anthropic's
+/// default, and the damming is by **parameter value**: the large
+/// parameter goes out whole, in a single fragment.
 #[tokio::test]
 async fn without_eager_input_streaming_each_parameter_arrives_whole() {
     for absent in [None, Some(false)] {
-        // Um nó por pedido: o motor falso tem um contador de tokens só, e ele
-        // não volta ao começo entre requisições.
+        // One node per request: the fake engine has a single token counter, and it
+        // does not go back to the start between requests.
         let no = no(tool_call_script(), 8).await;
         let fragments = messages_fragments(&no, messages_request(100, absent)).await;
         assert_eq!(fragments.len(), 3, "{absent:?}: {fragments:?}");

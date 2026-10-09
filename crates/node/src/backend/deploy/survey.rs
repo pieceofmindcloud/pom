@@ -4,9 +4,9 @@ use super::*;
 /// One slice of the chosen set, as it exists on one machine.
 #[derive(Debug, Clone)]
 pub(super) struct HeldShard {
-    /// O mesmo intervalo pode existir como GGUF inteiro e como fatia. A
-    /// distinção precisa sobreviver ao survey para o diálogo não oferecer a
-    /// escolha errada quando os dois arquivos estão na máquina.
+    /// The same range can exist as a whole GGUF and as a slice. The
+    /// distinction has to survive the survey so the dialog does not offer the
+    /// wrong choice when both files are on the machine.
     pub(super) kind: HeldKind,
     pub(super) start_layer: u32,
     pub(super) end_layer: u32,
@@ -25,29 +25,29 @@ pub(super) struct HeldShard {
     pub(super) mmproj_path: Option<String>,
     /// All compatible projectors exposed by the catalog for operator choice.
     pub(super) mmproj_candidates: Vec<String>,
-    /// Motivo retornado pelo catálogo se a associação não pôde ser provada.
+    /// Reason returned by the catalog if the association could not be proven.
     pub(super) mmproj_reason: Option<String>,
     pub(super) size_bytes: u64,
-    /// sha256 da parte, quando ela é endereçada por conteúdo.
+    /// sha256 of the part, when it is content-addressed.
     ///
-    /// É esta a identidade que o `launch` manda para o destino: com ela o nó
-    /// resolve o caminho local sozinho, e duas fatias de modelos diferentes que
-    /// por acaso cobrem a mesma faixa deixam de ser a mesma coisa aos olhos de
-    /// `Machine::holds`. `None` num modelo inteiro, que não é parte de rodada
-    /// nenhuma.
+    /// This is the identity `launch` sends to the destination: with it the node
+    /// resolves the local path on its own, and two slices of different models
+    /// that happen to cover the same range stop being the same thing in the
+    /// eyes of `Machine::holds`. `None` on a whole model, which is not a part
+    /// of any round.
     pub(super) sha256: Option<String>,
-    /// Identidade da rodada de fatiamento que produziu a parte.
+    /// Identity of the slicing round that produced the part.
     pub(super) pom_id: Option<String>,
     /// Planner-only range backed by a whole GGUF that still needs local
     /// materialization before it can be transferred or loaded.
     pub(super) virtual_slice: bool,
-    /// Rank TP desta parte, quando a rodada foi fatiada para tensor parallelism.
+    /// TP rank of this part, when the round was sliced for tensor parallelism.
     pub(super) tp_rank: Option<u32>,
-    /// Número total de ranks desta rodada TP.
+    /// Total number of ranks of this TP round.
     pub(super) tp_size: Option<u32>,
     /// Whether the actual GGUF metadata identifies this model as MoE.
     pub(super) is_moe: bool,
-    /// Evidência do modelo lida no GGUF, quando o peer conseguiu apurá-la.
+    /// Model evidence read from the GGUF, when the peer managed to establish it.
     pub(super) model_capabilities: Option<crate::gguf::ModelCapabilityEvidence>,
 }
 
@@ -61,18 +61,18 @@ pub(super) enum HeldKind {
 pub(super) struct Machine {
     pub(super) node_id: String,
     pub(super) hostname: String,
-    /// URL do servidor de inferência do peer (rank 0 de um grupo TP).
+    /// URL of the peer's inference server (rank 0 of a TP group).
     pub(super) inference_url: Option<String>,
-    /// Todos os endereços anunciados para o servidor de inferência, na ordem
-    /// em que este coordenador os conhece.
+    /// Every address announced for the inference server, in the order in
+    /// which this coordinator knows them.
     pub(super) inference_candidates: Vec<String>,
-    /// Endereços UDP anunciados pelo peer, para reidratar o túnel libp2p.
+    /// UDP addresses announced by the peer, to rehydrate the libp2p tunnel.
     pub(super) addr_candidates: Vec<String>,
-    /// Identidade e capacidade do transporte alternativo do servidor de
-    /// inferência, preservadas para o grupo TP.
+    /// Identity and capability of the inference server's alternative
+    /// transport, preserved for the TP group.
     pub(super) libp2p_peer_id: Option<String>,
     pub(super) supports_tunnel: bool,
-    /// Capacidades runtime anunciadas pelo peer selecionado.
+    /// Runtime capabilities announced by the selected peer.
     pub(super) inference_capabilities: Option<Vec<String>>,
     /// Memory the weights would have to fit in: free VRAM on a machine with a
     /// discrete GPU, available RAM anywhere else. `0` means the machine did not
@@ -256,8 +256,8 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
 /// cluster catalog screen shows — a machine is the only honest source for where
 /// its own files are, and for a path we would otherwise have to guess — and its
 /// `/api/ui/node`, which is the only honest source for how much room it has.
-/// Porta de teste para `survey`, que e privado: a suite precisa provar que o
-/// levantamento fala com os peers pelo cliente pinado. Ver
+/// Test door for `survey`, which is private: the suite has to prove that the
+/// survey talks to the peers through the pinned client. See
 /// `webui::catalog_under_tls_tests`.
 #[cfg(test)]
 pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize {
@@ -488,9 +488,9 @@ pub(super) async fn survey(
         .into_iter()
         .map(|(node_id, route)| (node_id, route.rtt_ms))
         .collect();
-    // A medição libp2p deste gateway é a fonte correta para os cards das
-    // máquinas. A RouteTable HTTP fica somente como fallback para peers
-    // antigos ou enquanto a primeira sonda libp2p ainda não respondeu.
+    // This gateway's libp2p measurement is the correct source for the machine
+    // cards. The HTTP RouteTable stays only as a fallback for old peers or
+    // while the first libp2p probe has not answered yet.
     for measurement in state.network.rtts.snapshot() {
         route_rtt.insert(measurement.target_node_id, measurement.rtt_ms);
     }
@@ -515,9 +515,9 @@ pub(super) async fn survey(
         let group = group.to_string();
         let state = state;
         async move {
-            // `control_get` prende o cliente no node_id do destino (com o
-            // cluster em TLS, sem isso o levantamento falhava calado) e cai no
-            // túnel quando nenhum endereço anunciado responde.
+            // `control_get` pins the client to the destination's node_id (with
+            // the cluster on TLS, without this the survey failed silently) and
+            // falls back to the tunnel when no announced address answers.
             let (models, node, rtt) = futures::future::join3(
                 state.control_get(&peer, "/api/ui/models", PEER_TIMEOUT * 4),
                 state.control_get(&peer, "/api/ui/node", PEER_TIMEOUT),
@@ -1029,7 +1029,7 @@ pub(super) fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShar
             .and_then(|value| value.as_str())
             .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
-        // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
+        // A whole model is not a part of any round: it has no part hash.
         sha256: None,
         pom_id: None,
         virtual_slice: false,

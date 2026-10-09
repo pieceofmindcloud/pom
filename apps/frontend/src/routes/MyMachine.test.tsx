@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * "Esta máquina" e "Endereço anunciado" saíram de NetworkSettings.tsx para
- * cá, numa tela própria de menu ("Minha Máquina"). Ver `NetworkSettings.test.tsx`
- * para a tela de retrato geral da rede.
+ * "Esta máquina" and "Endereço anunciado" left NetworkSettings.tsx for
+ * here, a menu screen of their own ("Minha Máquina"). See `NetworkSettings.test.tsx`
+ * for the screen with the overall picture of the network.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

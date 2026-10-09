@@ -1,15 +1,15 @@
-//! Contrato de fio contra o servidor de licenças real.
+//! Wire contract against the real license server.
 //!
-//! As fixtures em `tests/fixtures/` são corpos de resposta capturados de uma
-//! execução real do `license-server` (pom-website), não escritos à mão. Se o
-//! servidor parar de emitir um campo que estas structs exigem, o POM quebra em
-//! produção com `missing field ...` na ativação - foi exatamente assim que a
-//! ativação de plugin quebrou quando o servidor virou catálogo de plugins e
-//! renomeou `entitlements` para `licensed_plugins`. Este teste faz essa quebra
-//! aparecer aqui, e não na máquina de quem comprou.
+//! The fixtures in `tests/fixtures/` are response bodies captured from a real
+//! run of the `license-server` (pom-website), not written by hand. If the
+//! server stops emitting a field these structs require, POM breaks in
+//! production with `missing field ...` at activation - that is exactly how
+//! plugin activation broke when the server became a plugin catalog and
+//! renamed `entitlements` to `licensed_plugins`. This test makes that breakage
+//! show up here, and not on the machine of whoever bought it.
 //!
-//! Para regravar as fixtures, rode o gerador descrito em
-//! `license-server/test/wire-contract.test.ts` no repositório pom-website.
+//! To re-record the fixtures, run the generator described in
+//! `license-server/test/wire-contract.test.ts` in the pom-website repository.
 
 use enterprise_protocol::{
     decode_response, ActivationResponse, LicenseStatusResponse, ValidateResponse,
@@ -27,8 +27,8 @@ fn validate_discovery_lists_the_plugin_codes_the_license_grants() {
 
     assert_eq!(response.protocol, enterprise_protocol::LICENSE_PROTOCOL);
     assert_eq!(response.payload.status, "active");
-    // A descoberta é o que o cliente faz primeiro: sem plugin_code, o servidor
-    // responde só com a lista de códigos que a chave concede.
+    // Discovery is what the client does first: without plugin_code, the server
+    // answers only with the list of codes the key grants.
     assert_eq!(response.payload.licensed_plugins, vec!["logs"]);
     assert!(response.payload.activation_required);
     assert_eq!(response.payload.activation_id, None);
@@ -58,8 +58,8 @@ fn activation_carries_the_lease_the_grant_and_the_plugin_manifest() {
         payload.plugin_manifest.plugin_abi,
         enterprise_protocol::PLUGIN_ABI_VERSION
     );
-    // As features de um plugin vêm do release instalado, não da licença: é o
-    // manifesto que diz o que aquela versão entrega.
+    // A plugin's features come from the installed release, not from the license: it
+    // is the manifest that says what that version delivers.
     assert_eq!(
         payload.plugin_manifest.feature_set,
         vec!["logs.request_logs", "logs.statistics"]
@@ -152,7 +152,7 @@ fn status_reports_the_lease_and_what_the_license_still_grants() {
     assert_eq!(response.payload.plugin_release_id, "logs-0.8.0-linux-x86_64");
 }
 
-/// base64url sem padding, o mesmo que o servidor usa para o corpo do grant.
+/// base64url without padding, the same the server uses for the grant body.
 fn base64_url_decode(value: &str) -> Vec<u8> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = Vec::with_capacity(value.len() * 3 / 4);

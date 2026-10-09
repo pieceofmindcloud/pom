@@ -34,7 +34,7 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [failed, setFailed] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
-  /** Balança o formulário numa senha recusada, salvo com movimento reduzido. */
+  /** Shakes the form on a refused password, except with reduced motion. */
   function shake() {
     const form = formRef.current;
     if (!form || typeof form.animate !== "function") return;
@@ -74,17 +74,17 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     }
   }
 
-  // Mesma assinatura visual da página inicial do pieceofmind.cloud: o painel
-  // escuro flutuante com a marca, sobre o fundo do tema. Só a senha é pedida.
+  // Same visual signature as the pieceofmind.cloud home page: the floating
+  // dark panel with the brand, over the theme background. Only the password is asked.
   return (
     <main className="pom-login">
-      {/* O idioma sai do navegador (inglês para quem não usa português); as
-          bandeiras trocam na hora, como na página inicial do site. */}
+      {/* The language comes from the browser (English for those not using Portuguese); the
+          flags switch instantly, as on the site's home page. */}
       <BrandLanguageSwitch />
       <section className="pom-login-panel">
         <img className="pom-login-mark" src={pomMark} alt="POM" width={815} height={320} />
         <p className="pom-login-sub">PIECE OF MIND</p>
-        {/* Um pedaço da mente viajando entre máquinas: decorativo. */}
+        {/* A piece of mind traveling between machines: decorative. */}
         <span className="pom-login-link" aria-hidden="true"><i /><i /><i /></span>
         <form ref={formRef} className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
           <label className="sr-only" htmlFor="admin-access-password">{t("accessGate.passwordLabel")}</label>
@@ -250,29 +250,29 @@ export default function App() {
   const location = useLocation();
   const { profile } = useProfile();
   const pluginUi = usePluginUi();
-  // O registro é lido por `canAccessRoute` e pelo menu; precisa estar em dia
-  // antes de qualquer filho consultar o guarda.
+  // The registry is read by `canAccessRoute` and by the menu; it must be up to date
+  // before any child consults the guard.
   setPluginUi(pluginUi.data?.plugins);
   const pluginRoute = resolvePluginRoute(location.pathname);
-  // Cada plugin traz os próprios textos; acompanha plugins ativos e idioma.
+  // Each plugin brings its own texts; follows active plugins and language.
   const activePlugins = pluginUiSnapshot();
   useEffect(() => {
     void syncPluginCatalogs(activePlugins ?? [], locale);
   }, [activePlugins, locale]);
   /*
-   * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
-   * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
-   * por rota deixaria justamente essa de fora. Esconder o item no menu não
-   * basta - o endereço continua digitável.
+   * The profile guard lives here, and not inside each route, because here it
+   * is a single one: `/chat` renders outside `<Routes>` (see below), so a guard
+   * per route would leave exactly that one out. Hiding the item in the menu is not
+   * enough - the address is still typeable.
    *
-   * Quem decide é `lib/access.ts`, a mesma tabela que filtra o menu.
+   * The decision is made by `lib/access.ts`, the same table that filters the menu.
    */
   const allowed = canAccessRoute(location.pathname, profile);
   /*
-   * Telas fornecidas por plugins (`lib/pluginUi.ts`) usam o namespace do
-   * próprio `plugin_code` dentro do basename `/admin-ui`. Um manifesto pode
-   * reivindicar `/logs` ou `/statistics` para substituir o fallback nativo
-   * correspondente quando não houver outro plugin com a mesma reivindicação.
+   * Screens provided by plugins (`lib/pluginUi.ts`) use the namespace of the
+   * plugin's own `plugin_code` inside the `/admin-ui` basename. A manifest may
+   * claim `/logs` or `/statistics` to replace the corresponding native fallback
+   * when there is no other plugin with the same claim.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
   const isChat = allowed && location.pathname === "/chat";
@@ -280,8 +280,8 @@ export default function App() {
   // Screens that own the whole viewport and scroll inside themselves, instead
   // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
-  // Barrada, a tela volta para a coluna central: o aviso é um cartão pequeno, e
-  // o layout de tela cheia não rola por dentro.
+  // Barred, the screen goes back to the centred column: the notice is a small card, and
+  // the full-screen layout does not scroll internally.
   const isFullBleed =
     allowed &&
     (isDashboard ||
@@ -311,11 +311,11 @@ export default function App() {
   );
 
   /*
-   * A sessão administrativa pode morrer com a aba aberta: ela vive na memória
-   * do nó, e um reinício ou as 8 h de validade a levam. Quem refaz a sonda é
-   * o próprio `useAdminSurface`; aqui só se esquece que esta aba já passou
-   * pelo portão, senão a resposta "requires-password" continuaria escondida
-   * atrás de um `adminReady` que ficou de uma sessão que não existe mais.
+   * The administrative session may die with the tab open: it lives in the node's
+   * memory, and a restart or the 8 h validity takes it away. Who redoes the probe is
+   * `useAdminSurface` itself; here we only forget that this tab already went
+   * through the gate, otherwise the "requires-password" answer would stay hidden
+   * behind an `adminReady` left over from a session that no longer exists.
    */
   useEffect(() => onAdminSessionLost(() => setAdminReady(false)), []);
 
@@ -329,13 +329,13 @@ export default function App() {
   }
 
   /*
-   * O painel nativo da barra de status do macOS carrega esta rota dentro de um
-   * `WKWebView` estreito. Ela renderiza o mesmo Chat sem Sidebar nem Topbar,
-   * porque o chrome administrativo não cabe na largura de um telemóvel.
+   * The native macOS status bar panel loads this route inside a narrow
+   * `WKWebView`. It renders the same Chat without Sidebar or Topbar,
+   * because the administrative chrome does not fit the width of a phone.
    *
-   * Fica deliberadamente **depois** do portão de acesso acima: o painel usa a
-   * mesma sessão com cookie `HttpOnly` que o navegador, e não um caminho de
-   * credencial próprio.
+   * It deliberately sits **after** the access gate above: the panel uses the
+   * same `HttpOnly` cookie session as the browser, and not a credential path
+   * of its own.
    */
   if (isEmbeddedChat) {
     return (
@@ -396,9 +396,9 @@ export default function App() {
               <Suspense fallback={<RouteFallback />}>
                 {!allowed && location.pathname === "/" ? (
                   /*
-                   * O `/` é o Painel, que o `infer` não abre. Mandá-lo para a
-                   * recusa faria a interface abrir num beco: a tela inicial do
-                   * perfil é quem responde por ele.
+                   * The `/` is the Dashboard, which `infer` does not open. Sending it to the
+                   * refusal would make the interface open in a dead end: the profile's
+                   * home screen is what answers for it.
                    */
                   <Navigate to={homeRoute(profile)} replace />
                 ) : !allowed ? (
@@ -408,8 +408,8 @@ export default function App() {
                     </Page>
                   </div>
                 ) : location.pathname === "/logs/statistics" ? (
-                  // Alias antigo, preservado fora do `<Routes>` porque o
-                  // destino também é uma rota de plugin ou a vitrine Enterprise.
+                  // Old alias, kept outside `<Routes>` because the
+                  // destination is also a plugin route or the Enterprise showcase.
                   <Navigate to="/statistics" replace />
                 ) : pluginRoute ? (
                   <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>

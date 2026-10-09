@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Regenera os derivados de ícone a partir de `pom-icon-src.png`.
+"""Regenerates the icon derivatives from `pom-icon-src.png`.
 
-Os três arquivos de arte são fontes manuais. Este script deriva somente os
-formatos e tamanhos consumidos pelos empacotadores web, Linux, Windows e
-macOS, mantendo a mesma arte em todas as plataformas.
+The three art files are manual sources. This script derives only the formats
+and sizes consumed by the web, Linux, Windows and macOS packagers, keeping the
+same art on every platform.
 """
 
 from pathlib import Path
@@ -69,8 +69,8 @@ def main() -> None:
     for size in PNG_SIZES:
         write_png(source, BRAND / f"pom-icon-{size}.png", size)
 
-    # O mark usado pelo manifest é o mesmo ícone quadrado, sem uma segunda
-    # fonte que possa divergir.
+    # The mark used by the manifest is the same square icon, with no second
+    # source that could diverge.
     write_png(source, BRAND / "pom-mark.png", 512)
 
     for size in LINUX_SIZES:

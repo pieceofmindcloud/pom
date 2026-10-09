@@ -17,9 +17,9 @@ import {
 } from "./ui";
 
 /**
- * Configuração local do provider. O campo começa vazio de propósito: a API só
- * devolve uma máscara, e nunca usamos o valor persistido para preencher um
- * input de senha.
+ * Local configuration of the provider. The field starts empty on purpose: the API only
+ * returns a mask, and we never use the persisted value to fill a
+ * password input.
  */
 export function HuggingFaceSettingsPanel() {
   const { t } = useI18n();

@@ -1,10 +1,10 @@
 use super::*;
 use crate::profile::{NodeProfile, ProfileAction};
-// ── Somar ou tirar uma maquina de um modelo ja no ar ─────────────────────────
+// ── Adding or removing a machine of a model already on the air ───────────────
 //
-// Os dois caminhos tocam **uma** maquina. `deploy_endpoint` reimplanta o
-// conjunto inteiro, e usar aquele caminho aqui pararia a inferencia de quem ja
-// esta servindo - exatamente o que somar uma maquina existe para evitar.
+// Both paths touch **one** machine. `deploy_endpoint` redeploys the
+// whole set, and using that path here would stop the inference of whoever is already
+// serving - exactly what adding a machine exists to avoid.
 
 #[derive(Debug, Deserialize)]
 pub struct AddNodeOptionsRequest {
@@ -51,9 +51,9 @@ pub(crate) fn add_node_option_survey_kinds(kind: DeployKind) -> Vec<DeployKind> 
 #[derive(Debug, Deserialize)]
 pub struct AddNodeRequest {
     pub group: String,
-    /// A implantação que ganha a máquina. Vazio enquanto a tela não manda:
-    /// aí o nó entra sem registro, servindo a faixa, e a implantação segue
-    /// sendo identificada pelo rótulo como antes.
+    /// The deployment that gains the machine. Empty while the screen does not send it:
+    /// then the node joins without a record, serving the range, and the deployment keeps
+    /// being identified by the label as before.
     #[serde(default)]
     pub deploy_id: String,
     /// Which catalog the range is looked up in. A whole model already in
@@ -70,9 +70,9 @@ pub struct AddNodeRequest {
     pub n_gpu_layers: Option<u32>,
     #[serde(default)]
     pub offload_kqv: Option<bool>,
-    /// Valores de instalação do destino, aplicados antes do novo processo
-    /// subir. Eles são opcionais para clientes antigos, que mantêm a config
-    /// já persistida no peer.
+    /// Install values of the target, applied before the new process
+    /// comes up. They are optional for old clients, which keep the config
+    /// already persisted on the peer.
     #[serde(default)]
     pub cache_type_k: Option<crate::config::KvCacheType>,
     #[serde(default)]
@@ -82,7 +82,7 @@ pub struct AddNodeRequest {
 pub struct RemoveNodeRequest {
     pub group: String,
     pub target_node_id: String,
-    /// A implantação exata evita misturar duas implantações do mesmo modelo.
+    /// The exact deployment avoids mixing two deployments of the same model.
     #[serde(default)]
     pub deploy_id: String,
 }
@@ -101,8 +101,8 @@ pub(super) fn deployment_authority(
         .ok_or_else(|| refusal.to_string())
 }
 
-/// Encontra a implantação ativa que corresponde ao modelo, inclusive quando
-/// o painel ainda não carregou a tela de histórico e não consegue mandar o id.
+/// Finds the active deployment that matches the model, including when
+/// the panel has not loaded the history screen yet and cannot send the id.
 pub(super) async fn record_for_group(
     state: &GatewayState,
     group: &str,
@@ -306,7 +306,7 @@ pub(super) async fn add_node_options_endpoint(
     .into_response()
 }
 
-/// Faixas que este grupo tem no ar agora, uma por peer que o esta servindo.
+/// Ranges this group has on the air now, one per peer serving it.
 pub(super) async fn live_ranges(
     state: &GatewayState,
     group: &str,
@@ -325,12 +325,12 @@ pub(super) async fn live_ranges(
         .collect()
 }
 
-/// Faixas que pertencem à cabeça fatiada de um deployment misto.
+/// Ranges that belong to the sliced head of a mixed deployment.
 ///
-/// O registro preserva a diferença entre o GGUF inteiro e uma fatia mesmo
-/// quando ambos cobrem todas as camadas. Só o primeiro sai desta lista: a
-/// posição do novo shard não pode contar o modelo inteiro como um estágio do
-/// pipeline fatiado.
+/// The record preserves the difference between the whole GGUF and a slice even
+/// when both cover all the layers. Only the first one leaves this list: the
+/// position of the new shard cannot count the whole model as a stage of the
+/// sliced pipeline.
 fn sliced_route_ranges(
     record: Option<&crate::deployment::Deployment>,
     live: &[(String, u32, u32)],
@@ -411,8 +411,8 @@ pub(super) async fn add_node_endpoint(
         })
         .unwrap_or_default();
 
-    // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
-    // maquina que saiu nesse meio tempo receberia uma fatia.
+    // Re-surveys instead of trusting the screen: the preview may be a minute old, and a
+    // machine that left in the meantime would receive a slice.
     let machines = survey(&state, &req.group, req.kind, None, None)
         .await
         .machines;
@@ -474,11 +474,11 @@ pub(super) async fn add_node_endpoint(
         return bad(json!({ "error": error }));
     }
 
-    // `peer_index`/`peer_count` alimentam duas decisoes so: se este no exporta
-    // o estado residual e se ele pula os embeddings. As duas perguntam "sou o
-    // ultimo?", e a resposta vem da ordem das camadas no cluster - nao da
-    // posicao numa lista de alvos que este caminho, por existir para tocar uma
-    // maquina so, nunca vai montar.
+    // `peer_index`/`peer_count` feed only two decisions: whether this node exports
+    // the residual state and whether it skips the embeddings. Both ask "am I the
+    // last?", and the answer comes from the layer order in the cluster - not from the
+    // position in a list of targets that this path, existing to touch a single
+    // machine, will never build.
     let pipeline_ranges = sliced_route_ranges(existing_record.as_ref(), &live, total_layers);
     let (peer_index, peer_count) = if req.kind == DeployKind::Whole {
         (0, 1)
@@ -496,8 +496,8 @@ pub(super) async fn add_node_endpoint(
             deployment_name: req.group.clone(),
             total_layers,
             use_mmproj: false,
-            // Um alvo so: o `launch` para a inferencia dos alvos que recebe, e
-            // esta lista tem exatamente a maquina que esta entrando.
+            // A single target: `launch` stops the inference of the targets it receives, and
+            // this list has exactly the machine that is joining.
             targets: vec![LaunchTarget {
                 node_id: target_node_id.clone(),
                 source_model_path,
@@ -509,8 +509,8 @@ pub(super) async fn add_node_endpoint(
                 n_gpu_layers: req.n_gpu_layers,
                 offload_kqv: req.offload_kqv,
                 no_embeddings: None,
-                // Um alvo por requisição, mas a posição é a do pipeline: sem
-                // isto o nó somado se diz o último da divisão.
+                // One target per request, but the position is the pipeline's: without
+                // this the added node says it is the last of the split.
                 peer_index: Some(peer_index),
                 peer_count: Some(peer_count),
                 tp: None,
@@ -520,9 +520,9 @@ pub(super) async fn add_node_endpoint(
                 mmproj_file: None,
                 use_mmproj: false,
             }],
-            // Quem e a entrada do pipeline nao muda por isto: so quem fica com
-            // a camada 0 recebe o prompt, e o `launch` so marca `primary` no
-            // alvo que ele recebe.
+            // Who is the pipeline's entry does not change because of this: only whoever holds
+            // layer 0 receives the prompt, and `launch` only marks `primary` on the
+            // target it receives.
             primary_node_id: if req.start_layer == 0 {
                 Some(target_node_id.clone())
             } else {
@@ -638,8 +638,8 @@ pub(super) async fn remove_node_endpoint(
         .collect();
     let discovered = uncovered_after_removal(&remaining, (start, end));
 
-    // Quem libera a memoria e o dono dela, como no botao "Liberar fatia": este
-    // no so encaminha o pedido.
+    // Whoever frees the memory is its owner, as in the "Liberar fatia" button: this
+    // node only forwards the request.
     if req.target_node_id == state.network.node_id {
         state.runtime.stop().await;
     } else {
@@ -696,61 +696,61 @@ pub(super) async fn remove_node_endpoint(
     .into_response()
 }
 
-// ── Tirando a pipeline inteira do ar ─────────────────────────────────────────
+// ── Taking the whole pipeline off the air ───────────────────────────────────
 //
-// O contrário de "Implantar na rede". Remover uma máquina do modelo já existia
-// (`/api/ui/deploy/node/remove`), mas desfazer a implantação inteira era
-// clicar máquina por máquina, na ordem certa, torcendo para não esquecer
-// nenhuma — e uma esquecida é RAM e VRAM presas numa fatia que não serve mais
-// para nada, porque o pipeline só planeja com a cobertura fechada.
+// The opposite of "Implantar na rede". Removing a machine from the model already existed
+// (`/api/ui/deploy/node/remove`), but undoing the whole deployment meant
+// clicking machine by machine, in the right order, hoping not to forget
+// any - and a forgotten one is RAM and VRAM stuck in a slice that serves
+// no purpose anymore, because the pipeline only plans with closed coverage.
 //
-// **O que isto NÃO faz: mexer no disco.** Nenhuma fatia é apagada. Desimplantar
-// é devolver a memória; os arquivos continuam onde estão e a mesma implantação
-// volta com um clique em vez de com 17 minutos de transferência por máquina.
-// Apagar fatias é o que a tela de Modelos faz, com o seu próprio pedido de
-// confirmação, e é uma decisão diferente desta.
+// **What this does NOT do: touch the disk.** No slice is deleted. Undeploying
+// is giving the memory back; the files stay where they are and the same deployment
+// comes back with one click instead of 17 minutes of transfer per machine.
+// Deleting slices is what the Models screen does, with its own confirmation
+// request, and it is a different decision from this one.
 
-/// O perfil do nó que recebeu o pedido decide se a pipeline inteira pode sair
-/// do ar. O descarregamento encaminhado aos peers continua sendo a operação
-/// local de cada máquina e não passa por este portão.
+/// The profile of the node that received the request decides whether the whole pipeline can come
+/// off the air. The unload forwarded to the peers remains the local
+/// operation of each machine and does not go through this gate.
 
 #[derive(Debug, Deserialize)]
 pub struct UndeployRequest {
-    /// Modelo cuja pipeline sai do ar. Vazio significa "a que estiver no ar",
-    /// que é o caso do painel: ele mostra uma pipeline de cada vez.
+    /// Model whose pipeline comes off the air. Empty means "the one that is on the air",
+    /// which is the panel's case: it shows one pipeline at a time.
     #[serde(default)]
     pub group: String,
-    /// A implantação exata que sai do ar.
+    /// The exact deployment that comes off the air.
     ///
-    /// É a saída para o beco em que `resolve_group` batia: com duas
-    /// implantações no ar - inclusive **do mesmo modelo**, que agora é
-    /// possível - o rótulo não distingue, e o id sim.
+    /// It is the way out of the dead end `resolve_group` hit: with two
+    /// deployments on the air - including **of the same model**, which is now
+    /// possible - the label does not distinguish, and the id does.
     #[serde(default)]
     pub deploy_id: String,
 }
 
-/// O que aconteceu com **uma** máquina. Uma linha por máquina, sempre — inclusive
-/// para a que não respondeu.
+/// What happened to **one** machine. One row per machine, always - including
+/// for the one that did not answer.
 #[derive(Debug, Serialize)]
 pub struct UndeployOutcome {
     pub node_id: String,
     pub hostname: String,
     pub start_layer: u32,
     pub end_layer: u32,
-    /// `true` só quando a máquina confirmou. Um peer calado é `false` com o
-    /// motivo em `error`; contá-lo como sucesso seria dizer que a memória foi
-    /// liberada sem ninguém ter dito isso.
+    /// `true` only when the machine confirmed. A silent peer is `false` with the
+    /// reason in `error`; counting it as a success would be saying the memory was
+    /// freed without anyone having said so.
     pub released: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// Descarrega o modelo de todas as máquinas que servem `group`.
+/// Unloads the model from all the machines that serve `group`.
 ///
-/// Responde 200 com o relatório mesmo quando alguma máquina falha: metade
-/// desimplantada é o estado real do cluster, e escondê-lo atrás de um erro
-/// deixaria o operador sem saber em quais máquinas ainda há memória presa.
-/// Só pedido inválido (nenhuma pipeline no ar, ou ambiguidade sobre qual) é 400.
+/// Answers 200 with the report even when some machine fails: half
+/// undeployed is the real state of the cluster, and hiding it behind an error
+/// would leave the operator not knowing on which machines memory is still stuck.
+/// Only an invalid request (no pipeline on the air, or ambiguity about which) is 400.
 pub(super) async fn undeploy_endpoint(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -773,8 +773,8 @@ pub(super) async fn undeploy_endpoint(
         Err(e) => return bad(json!({ "error": e })),
     };
 
-    // Re-varre em vez de confiar na tela, como o `deploy`: uma máquina que saiu
-    // no meio tempo não pode virar uma linha de falha inventada.
+    // Re-surveys instead of trusting the screen, like `deploy`: a machine that left
+    // in the meantime must not become an invented failure row.
     let serving: Vec<PeerInfo> = peers
         .into_iter()
         .filter(|p| p.total_layers > 0 && target.matches(p))
@@ -795,8 +795,8 @@ pub(super) async fn undeploy_endpoint(
     let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
 
-    // Em paralelo: com onze peers e o prazo de um controle por peer, em série a
-    // tela ficaria quase um minuto sem resposta.
+    // In parallel: with eleven peers and the deadline of one control call per peer, in series the
+    // screen would sit almost a minute without an answer.
     let mut results: Vec<UndeployOutcome> =
         futures::future::join_all(serving.into_iter().map(|peer| {
             let state = state.clone();
@@ -827,11 +827,11 @@ pub(super) async fn undeploy_endpoint(
         warn!("{failed} machine(s) did not confirm the undeploy of {group}");
     }
 
-    // O registro só é esquecido depois: um registro apagado com máquinas ainda
-    // servindo deixaria memória presa sem nada que a nomeasse. Neste nó basta
-    // apagar o arquivo; os outros participantes apagam o seu ao serem
-    // descarregados, e um que não respondeu guarda o dele - que é o certo, já
-    // que ele ainda está no ar.
+    // The record is only forgotten afterwards: a record deleted with machines still
+    // serving would leave stuck memory with nothing naming it. On this node it is enough to
+    // delete the file; the other participants delete theirs when they are
+    // unloaded, and one that did not answer keeps its own - which is right, since
+    // it is still on the air.
     if let UndeployTarget::Deployment { deploy_id, .. } = &target {
         if let Err(e) = state.database.remove_deployment(deploy_id) {
             warn!("could not forget the deployment {deploy_id}: {e:#}");
@@ -851,11 +851,11 @@ pub(super) async fn undeploy_endpoint(
     .into_response()
 }
 
-/// Qual pipeline o pedido quer derrubar.
+/// Which pipeline the request wants to take down.
 ///
-/// Vazio e uma só no ar é a intenção óbvia. Vazio com duas é ambiguidade que
-/// esta função se recusa a resolver por conta própria: derrubar a errada custa
-/// uma reimplantação inteira.
+/// Empty and only one on the air is the obvious intent. Empty with two is an ambiguity that
+/// this function refuses to resolve on its own: taking down the wrong one costs
+/// a whole redeployment.
 pub(super) fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<String, String> {
     if !requested.is_empty() {
         return Ok(requested.to_string());
@@ -877,13 +877,13 @@ pub(super) fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<Strin
     }
 }
 
-/// O que uma desimplantação vai derrubar: uma implantação, ou tudo que serve um
-/// rótulo.
+/// What an undeployment will take down: a deployment, or everything that serves a
+/// label.
 pub(super) enum UndeployTarget {
-    /// Escolha exata. É o que distingue duas implantações do mesmo modelo.
+    /// Exact choice. It is what distinguishes two deployments of the same model.
     Deployment { deploy_id: String, label: String },
-    /// Todo mundo que serve este rótulo, que é o comportamento de sempre e o
-    /// único possível com peers que não anunciam implantação.
+    /// Everyone who serves this label, which is the behavior as always and the
+    /// only one possible with peers that do not announce a deployment.
     Label(String),
 }
 
@@ -913,11 +913,11 @@ impl UndeployTarget {
     }
 }
 
-/// Qual implantação o pedido quer derrubar.
+/// Which deployment the request wants to take down.
 ///
-/// Com `deploy_id`, não há o que deduzir - é aquela, e o rótulo serve só para a
-/// mensagem. Sem ele, cai na regra antiga sobre rótulos, que continua sendo a
-/// certa num cluster onde cada modelo está no ar uma vez só.
+/// With `deploy_id`, there is nothing to deduce - it is that one, and the label serves only for the
+/// message. Without it, it falls back to the old rule about labels, which remains
+/// the right one in a cluster where each model is on the air only once.
 pub(super) fn resolve_target(
     deploy_id: &str,
     group: &str,
@@ -940,10 +940,10 @@ pub(super) fn resolve_target(
     resolve_group(group, peers).map(UndeployTarget::Label)
 }
 
-/// Libera a memória de **uma** máquina, pela mesma porta do botão que já existe.
+/// Frees the memory of **one** machine, through the same door as the button that already exists.
 ///
-/// Quem mata o processo de inferência é sempre o dono da memória: este nó só
-/// encaminha, exatamente como `remove_node_endpoint`.
+/// Whoever kills the inference process is always the owner of the memory: this node only
+/// forwards, exactly like `remove_node_endpoint`.
 pub(super) async fn release_one(
     state: &GatewayState,
     peer: &PeerInfo,

@@ -74,31 +74,31 @@ pub struct PipelineStep {
     pub node_id: String,
     /// Full HTTP base URL, e.g. "http://192.168.1.5:8181"
     pub inference_url: String,
-    /// Todos os enderecos por onde este hop pode ser alcancado.
+    /// All the addresses through which this hop can be reached.
     ///
-    /// `inference_url` continua preenchido e e o que um no antigo le. Quem
-    /// disca prefere esta lista, porque a escolha tem que ser de quem mediu: o
-    /// plano pode ter sido montado por uma maquina noutra rede.
+    /// `inference_url` stays filled in and is what an old node reads. Whoever
+    /// dials prefers this list, because the choice has to belong to whoever measured: the
+    /// plan may have been built by a machine on another network.
     #[serde(default)]
     pub inference_candidates: Vec<String>,
-    /// Endereços `host:porta` anunciados para o endpoint HTTP/3 deste hop.
-    /// Nunca é derivado de `inference_url`, que continua sendo exclusivamente
-    /// uma URL TCP para HTTP/1.1 ou HTTPS.
+    /// `host:port` addresses announced for this hop's HTTP/3 endpoint.
+    /// It is never derived from `inference_url`, which remains exclusively
+    /// a TCP URL for HTTP/1.1 or HTTPS.
     #[serde(default)]
     pub quic_addr_candidates: Vec<String>,
     pub start_layer: u32,
     pub end_layer: u32,
-    /// A sub-faixa que **este passo executa**, que nem sempre é a faixa que ele
-    /// carregou.
+    /// The sub-range **this step executes**, which is not always the range it
+    /// loaded.
     ///
-    /// `start_layer`/`end_layer` dizem o que o peer tem em disco; estes dizem o
-    /// que o remetente está mandando ele rodar agora. Os dois separados porque
-    /// um peer com L0-59 pode ser entrada de um ramo (executa L0-59) e cauda de
-    /// outro (executaria L40-59) - a faixa carregada é a mesma, o trabalho não.
+    /// `start_layer`/`end_layer` say what the peer has on disk; these say what
+    /// the sender is telling it to run now. The two are separate because
+    /// a peer with L0-59 can be the entry of one branch (it executes L0-59) and the tail
+    /// of another (it would execute L40-59) - the loaded range is the same, the work is not.
     ///
-    /// Quem manda decide, e manda sempre: sem isto o destinatário rodava a
-    /// fatia inteira que carregou, que é como uma sobreposição virava camada
-    /// executada duas vezes sem erro nenhum.
+    /// The sender decides, and always sends it: without this the recipient ran the
+    /// whole slice it loaded, which is how an overlap became a layer
+    /// executed twice with no error at all.
     pub exec_start: u32,
     pub exec_end: u32,
     /// Capabilities of the canonical inference frame and relay.
@@ -107,9 +107,9 @@ pub struct PipelineStep {
     /// it over the swarm as a NAT-traversal fallback when direct HTTP fails.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
-    /// Endereços UDP anunciados pelo hop para reconstruir o túnel libp2p.
-    /// O plano leva estes endereços porque o processo que executa o hop pode
-    /// não ter recebido o mesmo anúncio na própria tabela de descoberta.
+    /// UDP addresses announced by the hop to rebuild the libp2p tunnel.
+    /// The plan carries these addresses because the process that executes the hop may
+    /// not have received the same announce in its own discovery table.
     #[serde(default)]
     pub libp2p_addr_candidates: Vec<String>,
 }
@@ -133,30 +133,30 @@ pub const CAP_RELAY_DIRECT: &str = "relay/v2-direct";
 /// one token per call. Same all-or-nothing-per-plan fallback rule.
 pub const CAP_SPECULATE_LOOKUP: &str = "speculate/v1-lookup";
 
-/// Anunciada quando o motor daquele nó conseguiu anexar a cabeça de rascunho
-/// `nextn` do próprio modelo - predição multi-token (MTP). Distinta de
-/// [`CAP_SPECULATE_LOOKUP`], que é a busca por repetição em
-/// `infer_server::find_draft` e não usa peso nenhum: ver `crate::mtp`.
+/// Advertised when that node's engine managed to attach the model's own `nextn`
+/// draft head - multi-token prediction (MTP). Distinct from
+/// [`CAP_SPECULATE_LOOKUP`], which is the repetition lookup in
+/// `infer_server::find_draft` and uses no weights at all: see `crate::mtp`.
 ///
-/// Não é all-or-nothing como as outras. O bloco `nextn` mora na última camada
-/// do modelo, então num pipeline fatiado só a **cauda** o tem, e quem monta o
-/// lote é a **cabeça**. Por isso a condição é "a cabeça consegue rascunhar",
-/// que hoje é o mesmo que dizer que uma máquina serve o modelo inteiro; os
-/// demais hops só precisam saber decodificar um lote (`CAP_SPECULATE_LOOKUP`),
-/// que é exatamente o que `supports_mtp` exige deles.
+/// It is not all-or-nothing like the others. The `nextn` block lives in the last
+/// layer of the model, so in a sliced pipeline only the **tail** has it, and the one
+/// that builds the batch is the **head**. So the condition is "the head can draft",
+/// which today is the same as saying that one machine serves the whole model; the
+/// other hops only need to know how to decode a batch (`CAP_SPECULATE_LOOKUP`),
+/// which is exactly what `supports_mtp` requires of them.
 pub const CAP_SPECULATE_MTP: &str = "speculate/v1-mtp";
 
-/// Anunciada por todo binário novo, incondicionalmente, para marcar que ele
-/// fala o protocolo do MTP fatiado: o `speculate` com `draft` pré-fabricado, o
-/// campo `tokens` (que dá à cauda a composição do lote para o `observe`) e o
-/// campo `mtp_k` (a largura de lote pedida pelo gateway).
+/// Advertised by every new binary, unconditionally, to mark that it
+/// speaks the sliced MTP protocol: `speculate` with a prefabricated `draft`, the
+/// `tokens` field (which gives the tail the batch composition for `observe`) and the
+/// `mtp_k` field (the batch width requested by the gateway).
 ///
-/// É **all-or-nothing** de novo, e o motivo é fechamento de buraco: um peer
-/// velho só tem `CAP_SPECULATE_MTP`/`CAP_SPECULATE_LOOKUP` e, sem esta cap,
-/// `supports_mtp` deixaria um anel misto passar — a cabeça velha receberia um
-/// `speculate {source: Mtp, draft}` que ela não entende, e a cauda nova
-/// produziria um `next_draft` que ela ignora. Exigir a cap de **todos** os
-/// passos exclui o cenário de uma vez, em vez de conviver com ele.
+/// It is **all-or-nothing** again, and the reason is closing a hole: an old
+/// peer only has `CAP_SPECULATE_MTP`/`CAP_SPECULATE_LOOKUP` and, without this cap,
+/// `supports_mtp` would let a mixed ring through - the old head would receive a
+/// `speculate {source: Mtp, draft}` it does not understand, and the new tail
+/// would produce a `next_draft` it ignores. Requiring the cap from **all** the
+/// steps rules the scenario out at once, instead of living with it.
 pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 
 /// Advertised when a node's libp2p swarm has actually come up
@@ -233,9 +233,9 @@ pub struct PipelinePlan {
     pub edges: Vec<PipelineEdge>,
 }
 
-/// A rota escolhida para uma sessão. A lista é a afinidade por estágio, não
-/// uma lista de peers alternativos: depois que a sessão entra no KV de uma
-/// réplica, as rodadas seguintes precisam voltar para os mesmos node IDs.
+/// The route chosen for a session. The list is the affinity per stage, not
+/// a list of alternative peers: after the session enters the KV of a
+/// replica, the following rounds have to go back to the same node IDs.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteAffinity {
@@ -270,8 +270,8 @@ impl RouteAffinity {
 
 /// Translates transport-owned peer records into the stable routing-provider
 /// input. Production routing remains on the existing planner until equivalence
-/// coverage permits switching implementations - por isso ainda não tem chamador
-/// fora dos testes, e o `allow` é a marca disso, não descuido.
+/// coverage permits switching implementations - that is why it still has no caller
+/// outside the tests, and the `allow` is the mark of that, not carelessness.
 #[allow(dead_code)]
 pub(crate) fn routing_request_from_peers(total_layers: u32, peers: &[PeerInfo]) -> RoutingRequest {
     RoutingRequest {
@@ -346,17 +346,17 @@ impl PipelinePlan {
         !self.steps.is_empty() && self.steps.iter().all(|s| s.supports(CAP_SPECULATE_LOOKUP))
     }
 
-    /// Este plano pode rascunhar pelo bloco `nextn` do modelo?
+    /// Can this plan draft through the model's `nextn` block?
     ///
-    /// O bloco mora na última camada, portanto na **cauda** do pipeline - é
-    /// ela quem anuncia `CAP_SPECULATE_MTP`. A cabeça (que monta o lote)
-    /// recebe o rascunho pronto do gateway, que por sua vez o colheu da
-    /// resposta direta da cauda na rodada anterior (`docs/subsystems/
-    /// inference.md` §5.2). **Todos** precisam de `CAP_SPECULATE_LOOKUP`
-    /// porque o lote maior que um token passa por eles, e **todos** precisam
-    /// de `CAP_SPECULATE_MTP_SLICED` porque o protocolo novo (rascunho
-    /// pré-fabricado + `tokens` + `mtp_k` na wire) só existe em binários
-    /// novos — um peer velho no anel receberia um `speculate` que não entende.
+    /// The block lives in the last layer, therefore in the **tail** of the pipeline - it
+    /// is the tail that advertises `CAP_SPECULATE_MTP`. The head (which builds the batch)
+    /// receives the ready draft from the gateway, which in turn gathered it from the
+    /// tail's direct response in the previous round (`docs/subsystems/
+    /// inference.md` §5.2). **All** need `CAP_SPECULATE_LOOKUP`
+    /// because the batch larger than one token goes through them, and **all** need
+    /// `CAP_SPECULATE_MTP_SLICED` because the new protocol (prefabricated
+    /// draft + `tokens` + `mtp_k` on the wire) only exists in new
+    /// binaries - an old peer in the ring would receive a `speculate` it does not understand.
     pub fn supports_mtp(&self) -> bool {
         !self.steps.is_empty()
             && self.steps.iter().all(|s| s.supports(CAP_SPECULATE_LOOKUP))
@@ -387,10 +387,10 @@ pub fn wire_dtype_capability(dtype: WireDtype) -> Option<&'static str> {
 /// Scoring: `layers_count * 100 - current_load * 10`
 /// — prefers peers that cover more layers and are less busy.
 ///
-/// `deploy_id` escolhe **qual** implantação atende, quando o mesmo modelo está
-/// no ar mais de uma vez. `None` quer dizer "a que estiver lá": casa pelo
-/// rótulo, que é o comportamento de sempre e o único possível com um peer de
-/// versão anterior, que não anuncia implantação nenhuma.
+/// `deploy_id` chooses **which** deployment serves, when the same model is
+/// up more than once. `None` means "whichever is there": it matches by the
+/// label, which is the usual behavior and the only one possible with a peer of
+/// an earlier version, which announces no deployment at all.
 ///
 /// Returns `None` if there is any gap in layer coverage (0..total_layers).
 pub async fn plan_pipeline(
@@ -411,9 +411,9 @@ pub async fn plan_pipeline(
     .await
 }
 
-/// Retorna os peers vivos que anunciam um servidor de inferência para o
-/// modelo. A resolução de implantação é a mesma usada pelo planejador, para
-/// que a tela de infer não mostre uma cabeça que o gateway jamais escolheria.
+/// Returns the live peers that announce an inference server for the
+/// model. The deployment resolution is the same one the planner uses, so
+/// that the infer screen does not show a head the gateway would never choose.
 pub fn model_pipeline_candidates<'a>(
     peers: &'a [PeerInfo],
     model_name: &str,
@@ -453,9 +453,9 @@ pub fn model_pipeline_candidates<'a>(
     }
 }
 
-/// Cabeças são apenas as faixas que começam na camada zero. O restante da
-/// topologia continua privado ao gateway; este recorte é a única topologia
-/// que o perfil infer precisa conhecer para iniciar uma requisição.
+/// Heads are only the ranges that start at layer zero. The rest of the
+/// topology stays private to the gateway; this cut is the only topology
+/// the infer profile needs to know to start a request.
 pub fn model_head_candidates<'a>(
     peers: &'a [PeerInfo],
     model_name: &str,
@@ -521,15 +521,15 @@ pub async fn plan_pipeline_with_rtt_from_head(
         return None;
     }
 
-    // Um pipeline não pode misturar implantações. Sem isto, duas implantações
-    // do mesmo modelo - que é exatamente o que o `deploy_id` passou a permitir -
-    // virariam um conjunto só de peers, e o passo a passo por camada escolheria
-    // ora de uma ora de outra: metade do prompt numa configuração, metade na
-    // outra, com o operador vendo um pipeline que não implantou.
+    // A pipeline cannot mix deployments. Without this, two deployments
+    // of the same model - which is exactly what `deploy_id` now allows -
+    // would become a single set of peers, and the layer by layer walk would choose
+    // now from one, now from the other: half the prompt in one configuration, half in
+    // the other, with the operator seeing a pipeline they did not deploy.
     //
-    // Quando quem chamou não escolheu, escolhe-se aqui, e de forma determinística:
-    // duas máquinas do cluster têm que chegar à mesma implantação. A ordem por
-    // id é o critério estável até o registro dizer qual é a ativa
+    // When the caller did not choose, the choice is made here, and deterministically:
+    // two machines of the cluster have to arrive at the same deployment. The order by
+    // id is the stable criterion until the registry says which one is active
     // (`deployment::active`).
     let candidates = serving;
 
@@ -608,8 +608,8 @@ pub async fn plan_pipeline_with_rtt_from_head(
     Some(plan_from_steps(steps))
 }
 
-/// O passo que executa `peer` a partir da camada `pos`. `None` quando o peer
-/// não tem endereço de inferência.
+/// The step that executes `peer` starting at layer `pos`. `None` when the peer
+/// has no inference address.
 pub(crate) fn step_for(peer: &PeerInfo, pos: u32) -> Option<PipelineStep> {
     // `PeerInfo::inference_url` is the one place that knows how to turn an
     // address into a URL. Splitting `chosen.addr` on ':' here instead cut
@@ -623,10 +623,10 @@ pub(crate) fn step_for(peer: &PeerInfo, pos: u32) -> Option<PipelineStep> {
         quic_addr_candidates: peer.quic_addr_candidates(),
         start_layer: peer.start_layer,
         end_layer: peer.end_layer,
-        // O que falta cobrir a partir de `pos`, não a fatia inteira. Quando
-        // os dois coincidem - o caso comum - nada muda; quando não, é aqui
-        // que fica registrado que o peer teria de entrar no meio da faixa,
-        // em vez de o destinatário descobrir isso tarde demais.
+        // What is left to cover starting at `pos`, not the whole slice. When
+        // the two coincide - the common case - nothing changes; when they do not, this
+        // is where it gets recorded that the peer would have to enter mid-range,
+        // instead of the recipient finding that out too late.
         exec_start: pos,
         exec_end: peer.end_layer,
         inference_frame_capabilities: peer.inference_frame_capabilities.clone(),
@@ -635,7 +635,7 @@ pub(crate) fn step_for(peer: &PeerInfo, pos: u32) -> Option<PipelineStep> {
     })
 }
 
-/// O plano com as arestas entre passos contíguos.
+/// The plan with the edges between contiguous steps.
 pub(crate) fn plan_from_steps(steps: Vec<PipelineStep>) -> PipelinePlan {
     let edges = steps
         .windows(2)
@@ -650,24 +650,24 @@ pub(crate) fn plan_from_steps(steps: Vec<PipelineStep>) -> PipelinePlan {
     PipelinePlan { steps, edges }
 }
 
-/// Endereco por onde falar com este hop, decidido por quem vai discar.
+/// Address through which to talk to this hop, decided by whoever is going to dial.
 ///
-/// Tres niveis, nesta ordem:
+/// Three levels, in this order:
 ///
-/// 1. a rota medida, se existir e ainda for um candidato anunciado;
-/// 2. o `inference_url`, que sai de `peer.addr` - de onde os pacotes daquele
-///    peer chegaram, e portanto o unico endereco *comprovado* antes da
-///    primeira sonda;
-/// 3. o primeiro candidato anunciado, quando nem isso ha.
+/// 1. the measured route, if it exists and is still an announced candidate;
+/// 2. the `inference_url`, which comes from `peer.addr` - where that peer's
+///    packets arrived from, and therefore the only *proven* address before the
+///    first probe;
+/// 3. the first announced candidate, when not even that exists.
 ///
-/// A ordem dos dois ultimos ja foi a inversa, e custou requisicoes: como
-/// `merge_observed` acrescenta o endereco observado ao **fim** da lista, o
-/// primeiro candidato costuma ser a LAN do peer, e discar nela manda a
-/// requisicao para um `192.168.x.y` de outro site. Palpite nao passa na frente
-/// de fato conhecido; a medicao e que promove um candidato melhor, depois.
+/// The order of the last two used to be the reverse, and it cost requests: since
+/// `merge_observed` appends the observed address to the **end** of the list, the
+/// first candidate is usually the peer's LAN, and dialing it sends the
+/// request to a `192.168.x.y` of another site. A guess does not go ahead
+/// of a known fact; the measurement is what promotes a better candidate, later.
 ///
-/// `pinned` e a memoria da sessao: uma vez escolhido, o endereco daquele no
-/// nao muda ate a sessao acabar.
+/// `pinned` is the session's memory: once chosen, that node's address
+/// does not change until the session ends.
 pub fn resolve_step_url(
     step: &PipelineStep,
     table: &crate::route::RouteTable,
@@ -756,8 +756,8 @@ mod ipv6_tests {
         p
     }
 
-    /// Um worker de tensor parallelism não é hop do pipeline: quem entra na
-    /// cadeia é o primary do grupo, mesmo cobrindo a mesma faixa.
+    /// A tensor parallelism worker is not a pipeline hop: what enters the
+    /// chain is the group's primary, even when covering the same range.
     #[tokio::test]
     async fn a_tp_worker_is_not_a_pipeline_hop() {
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
@@ -772,24 +772,24 @@ mod ipv6_tests {
         assert_eq!(plan.steps[0].node_id, "primary");
     }
 
-    /// Duas implantações do **mesmo modelo**, no mesmo cluster.
+    /// Two deployments of the **same model**, in the same cluster.
     ///
-    /// É o caso que não existia: antes do `deploy_id` os quatro peers eram um
-    /// conjunto só (todos com `model == "qwen35"`), e o pipeline saía com
-    /// metade das camadas de uma implantação e metade da outra - sem que nada
-    /// nem ninguém pudesse notar.
+    /// It is the case that did not exist: before `deploy_id` the four peers were a
+    /// single set (all with `model == "qwen35"`), and the pipeline came out with
+    /// half the layers from one deployment and half from the other - without anything
+    /// or anyone being able to notice.
     #[tokio::test]
     async fn two_deployments_of_one_model_never_mix() {
-        // As faixas se cruzam de propósito: a caminhada gulosa por camada
-        // prefere quem cobre mais camadas, então sem agrupamento ela pegaria
-        // `a1` (0-19, a maior em 0) e depois `b2` (16-31, a maior em 20) -
-        // um pipeline com um pé em cada implantação.
+        // The ranges cross on purpose: the greedy walk per layer
+        // prefers whoever covers more layers, so without grouping it would take
+        // `a1` (0-19, the largest at 0) and then `b2` (16-31, the largest at 20) -
+        // a pipeline with one foot in each deployment.
         let mut a1 = peer("10.0.0.1:42777", 0, 19);
         let mut a2 = peer("10.0.0.2:42777", 20, 31);
         let mut b1 = peer("10.0.0.3:42777", 0, 15);
         let mut b2 = peer("10.0.0.4:42777", 16, 31);
-        // O `peer` de teste dá o mesmo `node_id` a todo mundo; aqui eles
-        // precisam ser distinguíveis, que é o ponto do teste.
+        // The test `peer` gives the same `node_id` to everyone; here they
+        // need to be distinguishable, which is the point of the test.
         for (p, id, dep) in [
             (&mut a1, "a1", "d-aaaaaaaa"),
             (&mut a2, "a2", "d-aaaaaaaa"),
@@ -802,7 +802,7 @@ mod ipv6_tests {
         let all = vec![a1, a2, b1, b2];
         let tracker = LoadTracker::new();
 
-        // Pedindo uma implantação, só as máquinas dela entram.
+        // Asking for one deployment, only its machines get in.
         let plan = plan_pipeline(&all, "qwen35", Some("d-aaaaaaaa"), 32, &tracker)
             .await
             .expect("deployment A covers the whole model");
@@ -829,7 +829,7 @@ mod ipv6_tests {
             .iter()
             .all(|s| s.inference_url.contains("10.0.0.3") || s.inference_url.contains("10.0.0.4")));
 
-        // Sem escolher, ainda assim não se misturam: escolhe-se uma, inteira.
+        // Without choosing, they still do not mix: one is chosen, whole.
         let any = plan_pipeline(&all, "qwen35", None, 32, &tracker)
             .await
             .unwrap();
@@ -847,13 +847,13 @@ mod ipv6_tests {
         assert_eq!(ids.len(), 1, "one pipeline, one deployment: {ids:?}");
     }
 
-    /// Dois modelos **distintos** carregados ao mesmo tempo, cada um na sua
-    /// própria faixa de peers. `model_pipeline_candidates` filtra por
-    /// igualdade exata de rótulo, então pedir um dos dois nomes nunca deve
-    /// misturar hops do outro - é o mecanismo que já dá ao cliente a escolha
-    /// entre modelos carregados, desde que `resolve_model` (camada HTTP)
-    /// valide o nome contra `GET /v1/models` em vez de trocá-lo calado pelo
-    /// ativo.
+    /// Two **distinct** models loaded at the same time, each on its
+    /// own range of peers. `model_pipeline_candidates` filters by
+    /// exact label equality, so asking for one of the two names must never
+    /// mix in hops of the other - it is the mechanism that already gives the client the
+    /// choice between loaded models, as long as `resolve_model` (HTTP layer)
+    /// validates the name against `GET /v1/models` instead of silently swapping it for
+    /// the active one.
     #[tokio::test]
     async fn two_distinct_models_route_independently() {
         let mut a1 = peer("10.0.0.1:42777", 0, 15);
@@ -891,9 +891,9 @@ mod ipv6_tests {
         assert!(candidates_b.iter().all(|p| p.model == "modelo-b"));
     }
 
-    /// Um id que ninguém serve não pode cair de volta no rótulo e devolver a
-    /// outra implantação calado - seria atender numa configuração que o cliente
-    /// explicitamente não pediu.
+    /// An id nobody serves cannot fall back to the label and return the
+    /// other deployment silently - that would be serving on a configuration the client
+    /// explicitly did not ask for.
     #[tokio::test]
     async fn an_unknown_deployment_id_serves_nobody() {
         let mut p1 = peer("10.0.0.1:42777", 0, 31);
@@ -903,14 +903,14 @@ mod ipv6_tests {
         assert!(plan.is_none());
     }
 
-    /// Cluster em atualização: um peer já anuncia implantação, o outro ainda
-    /// não. O que não anuncia continua servindo o rótulo, senão a atualização
-    /// de um nó por vez abriria um buraco de camadas.
+    /// Cluster being updated: one peer already announces a deployment, the other does
+    /// not yet. The one that does not announce keeps serving the label, otherwise the
+    /// one node at a time update would open a hole of layers.
     #[tokio::test]
     async fn a_peer_without_a_deployment_still_serves_its_label() {
         let mut new = peer("10.0.0.1:42777", 0, 15);
         new.deploy_id = "d-aaaaaaaa".into();
-        let old = peer("10.0.0.2:42777", 16, 31); // deploy_id vazio
+        let old = peer("10.0.0.2:42777", 16, 31); // empty deploy_id
 
         let plan = plan_pipeline(&[new, old], "qwen35", None, 32, &LoadTracker::new())
             .await
@@ -1156,9 +1156,9 @@ mod ipv6_tests {
         }
     }
 
-    /// Um step sem candidatos e um no rodando binario anterior. Cair no
-    /// `inference_url` e o que impede um cluster de versoes misturadas de
-    /// partir ao meio.
+    /// A step without candidates is a node running an earlier binary. Falling back to
+    /// `inference_url` is what keeps a cluster of mixed versions from
+    /// splitting in half.
     #[test]
     fn a_step_without_candidates_falls_back_to_the_resolved_url() {
         let table = crate::route::RouteTable::new();
@@ -1170,8 +1170,8 @@ mod ipv6_tests {
         );
     }
 
-    /// A escolha da sessao nao muda no meio: o cache KV do outro lado e por
-    /// sessao, e trocar de endereco na metade e pior que a rota lenta.
+    /// The session's choice does not change midway: the KV cache on the other side is
+    /// per session, and switching address halfway is worse than the slow route.
     #[test]
     fn the_route_is_pinned_for_the_whole_session() {
         let table = crate::route::RouteTable::new();
@@ -1184,18 +1184,18 @@ mod ipv6_tests {
         );
     }
 
-    /// Sem medicao, vale o endereco por onde o peer ja falou conosco.
+    /// Without a measurement, the address through which the peer already talked to us holds.
     ///
-    /// `merge_observed` acrescenta o endereco de origem do pacote **ao fim** da
-    /// lista, entao o primeiro candidato e o que o peer anunciou de si - em
-    /// geral a LAN dele. Discar nele antes de medir manda a requisicao para um
-    /// `192.168.x.y` de outro site, que e inalcancavel daqui: em 2026-08-14 o
-    /// log mostrou tres tentativas em `http://192.168.0.37:8181/v1/prefill`
-    /// para um peer que so responde pelo IPv6 global.
+    /// `merge_observed` appends the packet's source address **to the end** of the
+    /// list, so the first candidate is what the peer announced of itself - in
+    /// general its LAN. Dialing it before measuring sends the request to a
+    /// `192.168.x.y` of another site, which is unreachable from here: on 2026-08-14 the
+    /// log showed three attempts on `http://192.168.0.37:8181/v1/prefill`
+    /// for a peer that only answers through the global IPv6.
     ///
-    /// O `inference_url` nao e um palpite: ele sai de `peer.addr`, que e de
-    /// onde os pacotes daquele peer chegaram. E o unico endereco comprovado que
-    /// temos antes da primeira sonda.
+    /// The `inference_url` is not a guess: it comes from `peer.addr`, which is
+    /// where that peer's packets arrived from. It is the only proven address
+    /// we have before the first probe.
     #[test]
     fn without_a_measurement_the_observed_address_wins_over_an_announced_one() {
         let table = crate::route::RouteTable::new();
@@ -1210,7 +1210,7 @@ mod ipv6_tests {
         );
     }
 
-    /// Medido vence: e o ponto da fase de rota dinamica.
+    /// Measured wins: that is the point of the dynamic route phase.
     #[test]
     fn a_measured_route_beats_the_observed_address() {
         let table = crate::route::RouteTable::new();
@@ -1267,8 +1267,8 @@ mod ipv6_tests {
         }
     }
 
-    /// A exigência do MTP cai na **cauda**, que tem o bloco `nextn`. Todos
-    /// precisam saber decodificar um lote, porque o rascunho viaja para a cabeça.
+    /// The MTP requirement falls on the **tail**, which has the `nextn` block. All need
+    /// to know how to decode a batch, because the draft travels to the head.
     #[test]
     fn mtp_needs_the_tail_to_have_nextn_and_everyone_to_batch() {
         let with_mtp = &[
@@ -1318,12 +1318,12 @@ mod ipv6_tests {
             plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_DIRECT])])
                 .supports_direct_reply()
         );
-        // Um passo antigo no meio derruba a cadeia inteira para o anel.
+        // An old step in the middle brings the whole chain down to the ring.
         assert!(
             !plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_CHAIN])])
                 .supports_direct_reply()
         );
-        // Um hop só já é o mínimo; desviar a resposta não economiza perna.
+        // A single hop is already the minimum; diverting the response saves no leg.
         assert!(!plan_of(vec![step(&[CAP_RELAY_DIRECT])]).supports_direct_reply());
         assert!(!plan_of(vec![]).supports_direct_reply());
     }
@@ -1358,14 +1358,14 @@ mod ipv6_tests {
         assert_eq!(request.cluster.peers[1].end_layer, 31);
     }
 
-    /// O passo do plano tem que virar URL de verdade: com IPv6 o endereco era
-    /// cortado no primeiro ':' e o hop morria com "builder error" no reqwest.
+    /// The plan's step has to become a real URL: with IPv6 the address was
+    /// cut at the first ':' and the hop died with "builder error" in reqwest.
     #[tokio::test]
     async fn an_ipv6_peer_becomes_a_valid_step_url() {
-        // O esquema da URL sai de um estado global do processo
-        // (`peer_client::tls_enabled`), e os testes rodam em paralelo. Sem esta
-        // trava, um teste que liga a política do cluster faz este aqui ver
-        // `https://` onde espera `http://`.
+        // The URL's scheme comes from a global state of the process
+        // (`peer_client::tls_enabled`), and the tests run in parallel. Without this
+        // lock, a test that turns the cluster's policy on makes this one see
+        // `https://` where it expects `http://`.
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let peers = vec![peer(
             "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777",

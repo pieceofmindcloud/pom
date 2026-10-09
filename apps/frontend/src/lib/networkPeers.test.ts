@@ -1,9 +1,9 @@
 /**
- * A aba Detalhes mostra a rede inteira, e não só o pipeline.
+ * The Details tab shows the whole network, not just the pipeline.
  *
- * O que se afirma aqui é a separação: quem serve o modelo ativo continua na
- * ordem de execução e vem primeiro; quem está na rede sem fatia aparece depois,
- * por nome, em vez de simplesmente sumir da tela.
+ * What is asserted here is the separation: whoever serves the active model stays
+ * in execution order and comes first; whoever is on the network without a slice
+ * appears afterwards, by name, instead of simply vanishing from the screen.
  */
 import { describe, expect, it } from "vitest";
 import { hasSlice, networkPeers, pipelinePeers } from "./networkPeers";
@@ -40,8 +40,8 @@ describe("networkPeers", () => {
     expect(networkPeers(fakeCluster([head, tail])).others).toEqual([]);
   });
 
-  // `pipelinePeers` cai para todos os peers quando nenhum casa com o modelo
-  // ativo; sem esta guarda a mesma máquina apareceria nos dois grupos.
+  // `pipelinePeers` falls back to all the peers when none matches the active
+  // model; without this guard the same machine would appear in both groups.
   it("does not repeat a machine when no peer matches the active model", () => {
     const { pipeline, others } = networkPeers(fakeCluster([head, empty], "outro-modelo"));
     expect(pipeline).toHaveLength(2);

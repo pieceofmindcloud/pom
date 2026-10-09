@@ -3,16 +3,16 @@ import type { WizardStage, WizardStep } from "./setupWizardTypes";
 export type SetupProfile = "admin" | "node" | "infer";
 
 /**
- * O primeiro acesso pergunta só o que não dá para decidir depois:
+ * First access asks only what cannot be decided later:
  *
- * - **admin** cria a rede: início (papel e nome da máquina), a rede (nome e se
- *   é privada ou pública; a cidade só quando é pública, para o pkarr) e o
- *   convite, com a descoberta local opcional na mesma tela;
- * - **node** e **infer** entram numa rede: início e entrada (descoberta
- *   automática, ou o `trust.json` e a chave colados à mão).
+ * - **admin** creates the network: start (role and machine name), the network
+ *   (name and whether it is private or public; the city only when it is public,
+ *   for pkarr) and the invite, with optional local discovery on the same screen;
+ * - **node** and **infer** join a network: start and entry (automatic
+ *   discovery, or the `trust.json` and the key pasted by hand).
  *
- * Recursos, pastas, disco, senha e exposição têm padrões e são ajustados
- * depois, dentro do POM.
+ * Resources, folders, disk, password and exposure have defaults and are adjusted
+ * later, inside POM.
  */
 export function setupStepsFor(profile: SetupProfile | null): WizardStep[] {
   const start: WizardStep = { id: "setup-profile", labelKey: "firstRun.stepStart" };

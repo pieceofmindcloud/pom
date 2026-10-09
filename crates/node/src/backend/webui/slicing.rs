@@ -183,12 +183,12 @@ pub(super) async fn layout_of(
     Ok(layout)
 }
 
-/// Checa, sem escrever nada, se um modelo local dá para partir por tensor
-/// parallelism no caminho C (classificação dos tensores, divisibilidade das
-/// dimensões, weight-tying). O coordenador do deploy chama isto no primary
-/// antes de aceitar o grupo; a resposta é sempre 200, com `ok: false` + `reason`
-/// quando o modelo não serve — a checagem em si é uma resposta válida, não um
-/// erro HTTP.
+/// Checks, without writing anything, whether a local model can be split by
+/// tensor parallelism on path C (tensor classification, divisibility of the
+/// dimensions, weight-tying). The deploy coordinator calls this on the primary
+/// before accepting the group; the response is always 200, with `ok: false` +
+/// `reason` when the model does not qualify - the check itself is a valid
+/// response, not an HTTP error.
 #[derive(Debug, Deserialize)]
 pub struct TpCheckRequest {
     pub model_path: String,
@@ -586,8 +586,8 @@ pub(super) async fn slice_locally(
         .as_deref()
         .and_then(plan::base_name_from_label)
         .unwrap_or_else(|| plan::base_name_of(&req.model_path));
-    // A pasta definitiva leva o início do hash do modelo original. Corta-se
-    // aqui e a rodada se muda para o nome definitivo no fim, em
+    // The final folder carries the start of the original model's hash. It is
+    // cut here and the run moves to the final name at the end, in
     // `pom::finalize_run`.
     let shard_dir = state.shard_dir().await;
     let out_dir = crate::pom::scratch_dir(&shard_dir);
@@ -764,12 +764,13 @@ pub(super) fn existing_layer_slice(
     )
 }
 
-/// Corta o modelo inteiro nas faixas pedidas e mescla as partes no manifesto v1.
+/// Cuts the whole model into the requested ranges and merges the parts into the v1 manifest.
 ///
-/// É **aqui** que um fatiamento vira uma coisa só: as partes saem nomeadas pelo
-/// próprio hash e o manifesto, escrito no fim, é o que diz de que modelo cada
-/// parte saiu. Sem ele as partes seriam arquivos soltos de nome
-/// ilegível - o manifesto é o que substitui a faixa que antes vivia no nome.
+/// It is **here** that a slicing becomes a single thing: the parts come out
+/// named by their own hash and the manifest, written last, is what says which
+/// model each part came from. Without it the parts would be loose files with
+/// an illegible name - the manifest is what replaces the range that used to
+/// live in the name.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_slice(
     state: GatewayState,
@@ -898,9 +899,9 @@ pub(super) async fn run_slice(
         source_sha256,
         pieces,
     );
-    // Cobrir o modelo inteiro é o caso normal, mas fatiar só um pedaço é
-    // legítimo (o operador escolhe as faixas). Dizer isso em voz alta evita a
-    // descoberta lá na frente, na implantação, de que o conjunto não fecha.
+    // Covering the whole model is the normal case, but slicing only a piece is
+    // legitimate (the operator chooses the ranges). Saying so out loud avoids
+    // discovering later, at deployment, that the set does not close.
     if !manifesto.complete() {
         warn!(
             "the slices of {} do not cover the {total_layers} layers of the model",
@@ -908,9 +909,9 @@ pub(super) async fn run_slice(
         );
     }
 
-    // A rodada inteira se muda de uma vez para `<modelo>-<hash do modelo>`, e o
-    // `.pom` é selado lá por último: um manifesto na pasta é, por construção,
-    // um fatiamento inteiro que existe em disco.
+    // The whole run moves at once to `<model>-<model hash>`, and the `.pom` is
+    // sealed there last: a manifest in the folder is, by construction, a
+    // complete slicing that exists on disk.
     let destination = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
     info!("slicing stored in {}", destination.display());
     invalidate_catalog(state.database.clone()).await;

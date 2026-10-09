@@ -98,8 +98,8 @@
         assert!(super::normalize_deployment_name(Some(&"x".repeat(129)), "qwen35").is_err());
     }
 
-    /// O tipo tensor-parallel nomeia o grupo, não uma fatia nem um modelo: a
-    /// tela oferece o formato, e a recusa tem que falar a língua do formato.
+    /// The tensor-parallel kind names the group, not a slice or a model: the
+    /// screen offers the format, and the refusal has to speak the format's language.
     #[test]
     fn tensor_parallel_kind_names_the_group() {
         use super::DeployKind;
@@ -128,16 +128,17 @@
         );
     }
 
-    /// Um no somado no meio do pipeline NAO e o ultimo da divisao.
+    /// A node added in the middle of the pipeline is NOT the last of the split.
     ///
-    /// `peer_index`/`peer_count` respondem a uma pergunta so - "sou o ultimo?" -
-    /// e dela saem duas decisoes do llama.cpp: exportar o estado residual e
-    /// pular os embeddings. O caminho incremental manda um alvo por vez, e
-    /// deixar o `launch` deduzir a posicao da lista faria todo no somado se
-    /// declarar o ultimo. O sintoma e o peer do meio responder
+    /// `peer_index`/`peer_count` answer a single question - "am I the last?" -
+    /// and two llama.cpp decisions come out of it: exporting the residual state
+    /// and skipping the embeddings. The incremental path sends one target at a
+    /// time, and letting `launch` deduce the position from the list would make
+    /// every added node declare itself the last. The symptom is the middle peer
+    /// answering
     /// "get_embeddings_ith: invalid embeddings id 0, reason: no embeddings",
-    /// porque o motor subiu sem captura e a inferencia so descobre no primeiro
-    /// token.
+    /// because the engine came up without capture and inference only finds out
+    /// on the first token.
     #[test]
     fn a_node_added_in_the_middle_is_not_the_tail_of_the_split() {
         let (index, count) = super::split_position(&[(0, 11), (32, 39)], (12, 31));
@@ -152,17 +153,17 @@
         assert_eq!((index, count), (2, 3));
     }
 
-    /// Substituir quem ja serve aquela faixa nao inventa um peer a mais.
+    /// Replacing whoever already serves that range does not invent one more peer.
     #[test]
     fn replacing_the_same_range_keeps_the_count() {
         let (index, count) = super::split_position(&[(0, 11), (12, 31)], (12, 31));
         assert_eq!((index, count), (1, 2));
     }
 
-    /// Faixa sobreposta no cluster deixa de ser erro: e assim que se soma uma
-    /// rota paralela. A invariante "uma camada, um no" continua valendo, mas
-    /// dentro de um plano, e quem a garante e `plan_pipeline`, que varre camada
-    /// a camada escolhendo um peer por posicao.
+    /// An overlapping range in the cluster is no longer an error: that is how a
+    /// parallel route is added. The invariant "one layer, one node" still holds,
+    /// but within a plan, and what guarantees it is `plan_pipeline`, which sweeps
+    /// layer by layer choosing one peer per position.
     #[test]
     fn overlapping_ranges_are_reported_but_not_refused() {
         let overlapping = super::overlapping_layers(&[(0, 19), (20, 39)], (0, 19));
@@ -182,15 +183,15 @@
         );
     }
 
-    /// Tirar uma replica nao descobre camada nenhuma: a rede so perde uma rota
-    /// paralela. Avisar de buraco aqui seria mentira.
+    /// Taking a replica out uncovers no layer at all: the network only loses a
+    /// parallel route. Warning of a gap here would be a lie.
     #[test]
     fn removing_a_replica_uncovers_nothing() {
         assert!(super::uncovered_after_removal(&[(0, 19), (20, 39)], (0, 19)).is_empty());
     }
 
-    /// Tirar a ultima daquela faixa descobre as camadas dela, e o pipeline para
-    /// de planejar ate alguem assumir.
+    /// Taking out the last one of that range uncovers its layers, and the
+    /// pipeline stops planning until someone takes over.
     #[test]
     fn removing_the_last_holder_uncovers_its_layers() {
         assert_eq!(
@@ -842,9 +843,9 @@
         assert!(!p.complete);
     }
 
-    /// A mesma faixa em máquinas diferentes é uma réplica deliberada da rota,
-    /// não uma sobreposição de cortes incompatíveis. O pipeline escolhe uma
-    /// das cópias quando chega à camada.
+    /// The same range on different machines is a deliberate replica of the
+    /// route, not an overlap of incompatible cuts. The pipeline picks one of
+    /// the copies when it reaches the layer.
     #[test]
     fn an_exact_range_on_two_machines_is_a_parallel_route() {
         let ms = build(vec![
@@ -1042,8 +1043,8 @@
         assert!(joined.ready);
         assert_eq!(joined.parts.len(), 2, "two slices go into the file");
         assert!(joined.parts.iter().all(|part| part.ready));
-        // Rótulo de tela, não nome de arquivo: o arquivo junto só ganha nome
-        // depois de existir, e o nome dele é o hash.
+        // Screen label, not a file name: the merged file only gets a name
+        // after it exists, and its name is the hash.
         assert_eq!(joined.name, "m L0-15", "label of the merge step");
 
         let solo = p.steps.iter().find(|s| !s.merged).unwrap();
@@ -1188,7 +1189,7 @@
     fn a_target_short_on_memory_warns_and_still_deploys() {
         let ms = build(vec![
             m("a", 100_000, &[(0, 15), (16, 31)]),
-            m("b", 200, &[(16, 31)]), // 200 MB livres para 1 GiB
+            m("b", 200, &[(16, 31)]), // 200 MB free for 1 GiB
         ]);
         let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(16, 31, "b")]));
         assert!(p.blocked.is_none(), "{:?}", p.blocked);

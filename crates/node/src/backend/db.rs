@@ -90,8 +90,8 @@ pub struct ChatMessageRecord {
     pub at: String,
 }
 
-/// Mensagem aceita pelo principal do Chat da rede. Eventos de digitação não
-/// entram nesta tabela: são presença efêmera e nunca devem crescer o banco.
+/// Message accepted by the principal of the network Chat. Typing events do not
+/// enter this table: they are ephemeral presence and must never grow the database.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkChatMessageRecord {
@@ -259,8 +259,8 @@ impl PomDb {
                 .map(|payload| {
                     let mut deployment: Deployment = serde_json::from_str(&payload)
                         .with_context(|| format!("parse deployment {deploy_id}"))?;
-                    // Um registro v1 chega sem `versions`; sintetiza a v1 antes
-                    // de qualquer leitor ver o registro.
+                    // A v1 record arrives without `versions`; synthesize v1 before
+                    // any reader sees the record.
                     deployment.ensure_versions();
                     deployment
                         .validate()
@@ -1067,7 +1067,7 @@ impl PomDb {
         })
     }
 
-    /// Persiste uma ação de texto ou arquivo exatamente uma vez por id.
+    /// Persists a text or file action exactly once per id.
     pub fn append_network_chat(&self, action: &crate::network_chat::ChatAction) -> Result<bool> {
         action
             .validate()
@@ -1792,14 +1792,15 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Bancos de antes do hash guardavam cada segredo, em texto puro, na coluna
-/// `api_keys.key`. Esta migração troca o segredo pelo SHA-256 e pelo trecho
-/// visível, e renomeia a coluna para `key_hash`. O tracking id (`id`) não
-/// muda: os logs continuam ligados às mesmas chaves, e quem já tem o token
-/// continua usando o mesmo, porque a validação compara hashes.
+/// Databases from before the hash stored each secret, in plain text, in the
+/// `api_keys.key` column. This migration replaces the secret with its SHA-256
+/// and the visible excerpt, and renames the column to `key_hash`. The tracking
+/// id (`id`) does not change: the logs stay tied to the same keys, and whoever
+/// already has the token keeps using the same one, because validation compares
+/// hashes.
 ///
-/// O texto antigo não pode sobrar no arquivo: `secure_delete` zera as páginas
-/// liberadas, e o checkpoint e o `VACUUM` reescrevem WAL e banco sem ele.
+/// The old text must not be left in the file: `secure_delete` zeroes the freed
+/// pages, and the checkpoint and the `VACUUM` rewrite WAL and database without it.
 fn migrate_api_key_secrets(connection: &Connection) -> Result<()> {
     let columns = connection
         .prepare("PRAGMA table_info(api_keys)")?
@@ -2488,7 +2489,7 @@ mod tests {
             .unwrap();
         db.insert_api_key(&key("only", "pom-n2", "n2", "2026-01-01"))
             .unwrap();
-        // Chave de produto com dois tokens: não é interna, nada muda.
+        // Product key with two tokens: it is not internal, nothing changes.
         db.insert_api_key(&key("prod-a", "produto", "n1", "2026-01-01"))
             .unwrap();
         db.insert_api_key(&key("prod-b", "produto", "n1", "2026-10-03"))
@@ -2507,9 +2508,9 @@ mod tests {
         remove_database(&path);
     }
 
-    /// Um banco de antes do hash: o segredo em texto puro na coluna `key`.
-    /// Depois de abrir, a chave vale pelo mesmo token, mantém o tracking id, e
-    /// o texto não está mais em nenhum byte do arquivo nem do WAL.
+    /// A database from before the hash: the secret in plain text in the `key`
+    /// column. After opening, the key is valid for the same token, keeps the
+    /// tracking id, and the text is no longer in any byte of the file or the WAL.
     #[test]
     fn migrates_plaintext_api_keys_to_hashes_and_scrubs_the_file() {
         let root = temporary_path("hash-migration");

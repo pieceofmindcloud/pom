@@ -36,9 +36,9 @@ pub(crate) async fn handle_step(
 ) -> Response {
     app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
-    // Só o cabeçalho é lido aqui: um quadro de um item - o caso normal de
-    // todo salto interno - não pode pagar uma cópia do estado oculto inteiro
-    // só para descobrir que não é um lote.
+    // Only the header is read here: a one-item frame - the normal case of every
+    // internal hop - must not pay for a copy of the whole hidden state just to
+    // find out it is not a batch.
     if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
         match wire::decode_batch(&body) {
             Ok(batch) => return handle_step_batch(app, headers, batch).await,
@@ -62,8 +62,8 @@ pub(crate) async fn handle_step(
     let scheduler = app.scheduler.clone();
     open_tp_decode(&state, &headers, "/v1/step", &body);
     let processing_started = Instant::now();
-    // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
-    // mesmo em qualquer ponto do handler.
+    // Read at the start because `state` is consumed further below, and the value
+    // is the same at any point of the handler.
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
@@ -123,14 +123,14 @@ pub(crate) async fn handle_step(
     let incoming_draft: Option<Vec<i32>> = meta
         .get("draft")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    // A composição do lote decodificado na cabeça, ecoada de hop em hop até a
-    // cauda — é o que alimenta o `observe` da cabeça `nextn` (ver o doc de
-    // `batch_tokens` em `step_blocking`). Ausente é peer antigo.
+    // The composition of the batch decoded at the head, echoed from hop to hop
+    // down to the tail - it is what feeds the `nextn` head's `observe` (see the
+    // doc of `batch_tokens` in `step_blocking`). Absent means an old peer.
     let batch_tokens: Option<Vec<i32>> = meta
         .get("tokens")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    // A largura de lote que o gateway quer na rodada seguinte, gerada na
-    // cabeça (do `speculate`) e ecoada até a cauda (ver o doc de `mtp_k`).
+    // The batch width the gateway wants in the next round, generated at the
+    // head (from `speculate`) and echoed to the tail (see the doc of `mtp_k`).
     let mtp_k: Option<u32> = meta.get("mtp_k").and_then(|v| v.as_u64()).map(|v| v as u32);
     let profiling = crate::prefill::TelemetryContext::from_meta(
         &meta,
@@ -160,8 +160,8 @@ pub(crate) async fn handle_step(
         Err(error) => return err400(error),
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
-    // A sub-faixa só é válida se este peer consegue executá-la exatamente.
-    // Sem os campos, o contrato antigo continua rodando a fatia inteira.
+    // The sub-range is only valid if this peer can execute it exactly.
+    // Without the fields, the old contract keeps running the whole slice.
     let capture_block = {
         let (slice_start, slice_end) = match lock_inference_state(&state) {
             Ok(st) => (st.start_layer, st.end_layer),
@@ -269,8 +269,8 @@ pub(crate) async fn handle_step(
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
     preserve_batch_identity(&meta, &mut local_meta);
 
-    // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
-    // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
+    // Direct reply: whoever finishes delivers to the gateway, and what leaves
+    // here is only an ack. Each hop describes itself in a list that travels on the way out.
     if let Some(reply_to) = direct_reply_to(&meta) {
         let outbound_hidden_state_bytes = match wire::tensor_payload_len(
             local_tensor
@@ -295,7 +295,7 @@ pub(crate) async fn handle_step(
         let hops = next_hops.unwrap_or_default();
 
         if hops.is_empty() {
-            // Cauda: o resultado sai daqui direto para quem pediu.
+            // Tail: the result goes from here straight to whoever asked.
             let mut result = local_meta;
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
@@ -305,8 +305,8 @@ pub(crate) async fn handle_step(
         }
 
         let Some((residual, shape)) = local_tensor else {
-            // Não somos a cauda e não temos residual: a cadeia não anda. Dizer
-            // isso ao gateway agora vale mais que deixá-lo esperar o prazo.
+            // We are not the tail and we have no residual: the chain does not move.
+            // Telling the gateway now is worth more than letting it wait for the deadline.
             let failure = crate::relay::RelayFailure {
                 failed_node_id: hops[0].node_id.clone(),
                 kind: "protocol".into(),
@@ -401,19 +401,19 @@ pub(crate) async fn handle_step(
     }
 }
 
-/// Estado do canal persistente: o do servidor de inferência e a configuração
-/// usada para reconferir a `connection_key` a cada quadro.
+/// State of the persistent channel: the inference server's and the configuration
+/// used to re-check the `connection_key` on every frame.
 #[derive(Clone)]
 pub(super) struct LinkState {
     pub(super) app: InferenceAppState,
     pub(super) auth: Option<crate::auth::AuthState>,
 }
 
-/// Serve a ligação persistente da aresta da pipeline. Cada quadro que chega
-/// pelo fluxo é despachado pela mesma tabela de rotas em processo que o
-/// caminho por requisição usa (`InProcessInference::dispatch`), então canal e
-/// requisição executam exatamente o mesmo código de inferência - e passam pela
-/// mesma conferência de credencial.
+/// Serves the persistent connection of the pipeline edge. Each frame that
+/// arrives through the stream is dispatched by the same in-process route table
+/// that the per-request path uses (`InProcessInference::dispatch`), so channel
+/// and request run exactly the same inference code - and go through the same
+/// credential check.
 pub(super) async fn handle_link(
     State(state): State<LinkState>,
     headers: axum::http::HeaderMap,
@@ -556,12 +556,12 @@ pub(super) struct RemoteStreamToken {
     /// includes that hop's compute and its transport, so it is not reported
     /// as local queue time.
     pub(super) downstream_wait_ms: u64,
-    /// Momento monotônico em que o produtor terminou de montar este token.
-    /// Não é serializado: serve apenas para separar produção de espera local.
+    /// Monotonic moment at which the producer finished assembling this token.
+    /// Not serialized: it only serves to separate production from local waiting.
     pub(super) ready_at: Instant,
-    /// Momento monotônico em que o token entrou no canal depois de adquirir
-    /// o permit. Separar este ponto de `ready_at` torna a contrapressão do
-    /// `Sender` observável, sem chamar todo o intervalo de fila.
+    /// Monotonic moment at which the token entered the channel after acquiring
+    /// the permit. Separating this point from `ready_at` makes the `Sender`'s
+    /// backpressure observable, without calling the whole interval queueing.
     pub(super) enqueued_at: Instant,
 }
 
@@ -1061,8 +1061,8 @@ pub(super) async fn remote_stream_emitter(
     .await;
 }
 
-/// Um lote terminal que só carrega o erro. Não tem token: serve para o
-/// gateway parar de esperar e nomear a causa.
+/// A terminal batch that only carries the error. It has no token: it serves so
+/// the gateway stops waiting and names the cause.
 pub(super) fn remote_stream_error_batch(error: Value) -> Value {
     json!({
         "accepted": [],
@@ -1126,13 +1126,13 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
         previous_delivery_ms = delivery_started.elapsed().as_millis() as u64;
         match delivery_result {
             crate::direct::Delivery::Accepted => {}
-            // O gateway já desistiu deste stream: não há a quem reportar.
+            // The gateway has already given up on this stream: there is no one to report to.
             crate::direct::Delivery::GatewayGone => return,
-            // Sem isto o emissor sumia em silêncio e o gateway só percebia
-            // quando o prazo do frame vencia - espera
-            // por uma falha que este lado já conhecia. O aviso é um lote
-            // terminal pequeno, e vai pela mesma escada de endereços, que
-            // agora sempre tem pelo menos uma tentativa a pagar.
+            // Without this the emitter vanished silently and the gateway only noticed
+            // when the frame's deadline expired - waiting
+            // for a failure that this side already knew about. The notice is a small
+            // terminal batch, and goes through the same address ladder, which
+            // now always has at least one attempt to pay for.
             crate::direct::Delivery::Failed => {
                 warn!(
                     "remote stream batch did not reach the gateway; closing the stream with an explicit error instead of letting the deadline expire"
@@ -1586,12 +1586,12 @@ mod remote_stream_tests {
     }
 }
 
-/// Monta o metadado que um hop de decode encaminha ao próximo peer.
+/// Builds the metadata that a decode hop forwards to the next peer.
 ///
-/// A faixa carregada do próximo peer não basta para definir o que ele deve
-/// executar: uma mesma fatia pode ser usada por ramos diferentes. Por isso a
-/// sub-faixa é escolhida pelo `PipelineStep` do próximo hop e viaja em cada
-/// quadro `/v1/step`.
+/// The next peer's loaded range is not enough to define what it must execute:
+/// the same slice may be used by different branches. That is why the
+/// sub-range is chosen by the next hop's `PipelineStep` and travels in every
+/// `/v1/step` frame.
 pub(super) fn step_forward_meta(
     session_id: &str,
     request_meta: &Value,

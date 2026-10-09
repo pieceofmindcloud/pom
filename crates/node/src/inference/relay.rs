@@ -62,9 +62,9 @@ pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
     *local_inference_slot().write().await = local.map(|local| (u64::MAX, local));
 }
 
-/// Tentativas do mesmo chunk quando todos os caminhos provam que não
-/// entregaram o corpo. Uma falha depois do início do envio é ambígua e nunca é
-/// repetida automaticamente, porque o peer pode já ter avançado o KV.
+/// Attempts of the same chunk when every path proves it did not
+/// deliver the body. A failure after the send started is ambiguous and is never
+/// repeated automatically, because the peer may already have advanced the KV.
 pub const CHUNK_ATTEMPTS: u32 = 3;
 
 #[derive(Debug)]
@@ -80,9 +80,9 @@ impl std::fmt::Display for FrameNotDelivered {
 
 impl std::error::Error for FrameNotDelivered {}
 
-/// `true` apenas quando a camada de transporte confirma que o frame não
-/// chegou ao handler remoto. Timeout de resposta e erro durante envio ficam
-/// deliberadamente fora desta classe.
+/// `true` only when the transport layer confirms the frame did not
+/// reach the remote handler. A response timeout and an error during the send are
+/// deliberately outside this class.
 pub fn is_pre_delivery_error(error: &anyhow::Error) -> bool {
     if error.downcast_ref::<FrameNotDelivered>().is_some() {
         return true;
@@ -110,9 +110,9 @@ pub fn is_pre_delivery_error(error: &anyhow::Error) -> bool {
         .is_some_and(|failure| failure.is_connect() || failure.is_builder())
 }
 
-/// `true` quando o transporte pode ter entregue o corpo antes de perder a
-/// resposta. O gateway só deve reconstruir a sessão inteira nesses casos; uma
-/// falha de conexão comprovadamente anterior ao corpo pode retomar o chunk.
+/// `true` when the transport may have delivered the body before losing the
+/// response. The gateway should only rebuild the whole session in these cases; a
+/// connection failure provably before the body may resume the chunk.
 pub fn is_delivery_ambiguous(error: &anyhow::Error) -> bool {
     if error.downcast_ref::<FrameNotDelivered>().is_some()
         || error.downcast_ref::<HttpRefusal>().is_some()
@@ -140,17 +140,17 @@ fn retry_backoff(attempt: u32) -> Duration {
     Duration::from_millis(100u64.saturating_mul(1u64 << attempt.saturating_sub(1).min(3)))
 }
 
-// ── Prazo de um frame ─────────────────────────────────────────────────────────
+// ── Frame deadline ───────────────────────────────────────────────────────────
 //
-// Um frame tem **um** prazo, proporcional ao trabalho que ele pede: uma base
-// fixa mais um custo por token (e por imagem), multiplicados pelos hops que
-// ainda vão processá-lo (este e os de `next_hops`, que respondem por dentro
-// da mesma chamada). Decode de um token em 2 hops = (1 s + 50 ms) x 2 = 2,1 s;
-// um pedaço de prefill de 512 tokens em 2 hops = 53 s. O prazo é fixado em
-// `send_frame_or_tunnel` e vale para todos os transportes da tentativa - QUIC,
-// HTTP, canal persistente e túnel - sem outro timer aninhado. Peer que caiu é
-// pego antes pela vida da conexão (`quic::QUIC_MAX_IDLE`, keep-alive TCP);
-// este prazo é para o processo vivo que travou.
+// A frame has **one** deadline, proportional to the work it asks for: a fixed
+// base plus a cost per token (and per image), multiplied by the hops that
+// will still process it (this one and those in `next_hops`, which answer inside
+// the same call). Decode of one token over 2 hops = (1 s + 50 ms) x 2 = 2.1 s;
+// a 512-token prefill chunk over 2 hops = 53 s. The deadline is fixed in
+// `send_frame_or_tunnel` and holds for every transport of the attempt - QUIC,
+// HTTP, persistent channel and tunnel - with no other nested timer. A peer that went down is
+// caught earlier by the connection's lifetime (`quic::QUIC_MAX_IDLE`, TCP keep-alive);
+// this deadline is for the live process that hung.
 #[cfg(not(test))]
 pub(crate) const FRAME_DEADLINE_BASE: Duration = Duration::from_millis(1000);
 #[cfg(not(test))]
@@ -158,9 +158,9 @@ pub(crate) const FRAME_DEADLINE_PER_TOKEN: Duration = Duration::from_millis(50);
 #[cfg(not(test))]
 pub(crate) const FRAME_DEADLINE_PER_IMAGE: Duration = Duration::from_millis(2000);
 
-// Em teste a base é folgada: os labs simulam enlaces com atraso e rodam em
-// paralelo. O fallback sem escopo (`DIRECT_FRAME_TIMEOUT`) segue curto, que é
-// o que os testes de falha rápida usam.
+// In tests the base is generous: the labs simulate links with delay and run in
+// parallel. The unscoped fallback (`DIRECT_FRAME_TIMEOUT`) stays short, which is
+// what the fast-failure tests use.
 #[cfg(test)]
 pub(crate) const FRAME_DEADLINE_BASE: Duration = Duration::from_secs(5);
 #[cfg(test)]
@@ -168,9 +168,9 @@ pub(crate) const FRAME_DEADLINE_PER_TOKEN: Duration = Duration::from_millis(1);
 #[cfg(test)]
 pub(crate) const FRAME_DEADLINE_PER_IMAGE: Duration = Duration::from_millis(1);
 
-/// Prazo de quem envia sem ter declarado o frame (fora de
-/// `send_frame_or_tunnel`): o de um pedaço de prefill do tamanho padrão em um
-/// hop, o maior trabalho que um frame de um hop costuma pedir.
+/// Deadline for a sender that has not declared the frame (outside
+/// `send_frame_or_tunnel`): that of a default-size prefill chunk over one
+/// hop, the largest work a one-hop frame usually asks for.
 #[cfg(not(test))]
 const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(
     FRAME_DEADLINE_BASE.as_millis() as u64
@@ -234,9 +234,9 @@ pub(crate) fn frame_deadline(tokens: usize, images: usize, hops: usize) -> Durat
     per_hop.saturating_mul(hops.max(1) as u32)
 }
 
-/// Lê do próprio frame quanto trabalho ele pede. Hidden state: as linhas do
-/// tensor. Pedaço de prefill na cabeça: `chunk_size`. Decode: o token mais o
-/// rascunho que vai junto (`draft`) ou que a cabeça vai montar
+/// Reads from the frame itself how much work it asks for. Hidden state: the rows of the
+/// tensor. Prefill chunk at the head: `chunk_size`. Decode: the token plus the
+/// draft that travels with it (`draft`) or that the head will build
 /// (`speculate.k`).
 pub(crate) fn frame_deadline_for(meta: &Value, tensor_rows: Option<usize>) -> Duration {
     let as_len = |key: &str| meta.get(key).and_then(Value::as_array).map(Vec::len);
@@ -261,18 +261,18 @@ pub(crate) fn frame_deadline_for(meta: &Value, tensor_rows: Option<usize>) -> Du
     frame_deadline(tokens, images, hops)
 }
 
-/// Quanto resta do prazo do frame em curso; fora de um frame declarado, o
-/// prazo padrão de um hop.
+/// How much of the current frame's deadline remains; outside a declared frame, the
+/// default deadline of one hop.
 pub(crate) fn frame_time_left() -> Duration {
     FRAME_DEADLINE
         .try_with(|deadline| deadline.saturating_duration_since(Instant::now()))
         .unwrap_or(DIRECT_FRAME_TIMEOUT)
 }
 
-/// Roda `work` sob o prazo `deadline` (um instante absoluto) para todos os
-/// transportes chamados por dentro. O futuro vai para o heap: o de
-/// `send_frame_or_tunnel` é grande, e guardado inline no `scope` ele estourava
-/// a pilha de quem o aninha (visto num teste em debug).
+/// Runs `work` under the deadline `deadline` (an absolute instant) for all the
+/// transports called inside. The future goes to the heap: that of
+/// `send_frame_or_tunnel` is large, and kept inline in the `scope` it overflowed
+/// the stack of whoever nests it (seen in a debug test).
 pub(crate) async fn with_frame_deadline<F: std::future::Future>(
     deadline: Instant,
     work: F,
@@ -287,11 +287,11 @@ pub(crate) async fn with_frame_deadline<F: std::future::Future>(
 /// delivers this way is not a fallback.
 const DIRECT_SKIPPED: &str = "direct skipped: this peer only answers through the tunnel";
 
-/// Transporte que realmente carregou um frame de inferência.
+/// Transport that actually carried an inference frame.
 ///
-/// `tls` continua separado porque o túnel libp2p é cifrado por Noise, mas não
-/// é TLS. O nome do transporte é a evidência necessária para comparar o
-/// caminho de inferência com o caminho HTTP de arquivos.
+/// `tls` stays separate because the libp2p tunnel is encrypted by Noise, but it
+/// is not TLS. The transport name is the evidence needed to compare the
+/// inference path with the HTTP path for files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InferenceTransport {
@@ -303,9 +303,9 @@ pub enum InferenceTransport {
     /// The remote decode stream's callback transport. It carries batches
     /// rather than one request/response per generated token.
     RemoteStream,
-    /// A ligação persistente entre andares (`transport/link-v1`): o mesmo
-    /// HTTP ou HTTPS pinado, mas um corpo em fluxo que carrega quadros
-    /// sucessivos em vez de uma requisição por ativação.
+    /// The persistent link between floors (`transport/link-v1`): the same
+    /// pinned HTTP or HTTPS, but a streaming body that carries successive
+    /// frames instead of one request per activation.
     HttpsLink,
     Unknown,
 }
@@ -372,35 +372,35 @@ pub struct SentFrame {
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
-    /// Estado observável do cliente/pool reqwest usado nesta travessia.
+    /// Observable state of the reqwest client/pool used in this crossing.
     pub connection_state: crate::peer_client::ConnectionState,
-    /// Se este salto foi cifrado.
+    /// Whether this hop was encrypted.
     ///
-    /// Também é o que denuncia uma virada pela metade, ou um ponto de chamada
-    /// que ficou de fora da conversão para o cliente pinado.
+    /// It is also what exposes a half-done switch, or a call site
+    /// that was left out of the conversion to the pinned client.
     pub tls: bool,
-    /// Custo do handshake TLS **medido no servidor**, onde ele é exato
-    /// (`serve.rs` cerca o `TlsAcceptor::accept`).
+    /// Cost of the TLS handshake **measured on the server**, where it is exact
+    /// (`serve.rs` wraps the `TlsAcceptor::accept`).
     ///
-    /// Vem preenchido no salto que abriu conexão nova e **zero nos demais**,
-    /// porque as conexões ficam no pool do reqwest. Isso é a verdade, não falta
-    /// de medição: é custo de estabelecimento de conexão, não custo por token,
-    /// e a tela precisa dizer isso - ver `Chat.tsx`.
+    /// It is filled in on the hop that opened a new connection and **zero on the others**,
+    /// because connections stay in the reqwest pool. That is the truth, not a lack
+    /// of measurement: it is a connection establishment cost, not a per-token cost,
+    /// and the screen needs to say so - see `Chat.tsx`.
     pub tls_handshake_ms: u64,
-    /// RTT suavizado medido pela pilha QUIC, sem o processamento do handler
-    /// remoto. TCP não expõe esse valor pelo reqwest e usa a diferença entre
-    /// wall-clock e `processing_ms` como medição de transporte.
+    /// Smoothed RTT measured by the QUIC stack, without the remote handler's
+    /// processing. TCP does not expose this value through reqwest and uses the difference between
+    /// wall-clock and `processing_ms` as the transport measurement.
     pub transport_rtt_us: Option<u64>,
-    /// Transporte escolhido para esta travessia, sem agregar os hops
-    /// seguintes.
+    /// Transport chosen for this crossing, without aggregating the following
+    /// hops.
     pub transport: InferenceTransport,
-    /// True quando o transporte preferido falhou e o frame usou uma reserva.
+    /// True when the preferred transport failed and the frame used a reserve.
     pub transport_fallback: bool,
-    /// Motivo da queda para HTTPS, preservado para a UI e para o relatório de
-    /// diagnóstico. `None` no caminho normal ou quando não houve fallback.
+    /// Reason for the fall to HTTPS, preserved for the UI and for the diagnostic
+    /// report. `None` on the normal path or when there was no fallback.
     pub transport_fallback_reason: Option<String>,
-    /// Eventos de transporte detalhados, somente quando o profiling está
-    /// ativo. O modo normal não cria esta coleção.
+    /// Detailed transport events, only when profiling is
+    /// active. Normal mode does not create this collection.
     pub profiling_spans: Vec<crate::prefill::TelemetrySpan>,
 }
 
@@ -426,14 +426,14 @@ struct BatchCall {
     attempts: u32,
     peer_label: String,
     item_id: String,
-    /// Prazo do frame de quem entrou no lote; o grupo roda sob o maior deles.
+    /// Deadline of the frame that entered the batch; the group runs under the largest of them.
     deadline: Instant,
     reply: oneshot::Sender<std::result::Result<SentFrame, BatchFailure>>,
 }
 
-/// Falha de um lote repassada a cada chamada. O erro original não é `Clone`,
-/// então viaja o que as chamadas precisam distinguir: se o frame não chegou a
-/// ser entregue (e pode ir por outra rota) e se o peer recusou por HTTP.
+/// Failure of a batch passed on to each call. The original error is not `Clone`,
+/// so what travels is what the calls need to distinguish: whether the frame was never
+/// delivered (and may go by another route) and whether the peer refused over HTTP.
 #[derive(Debug, Clone)]
 struct BatchFailure {
     message: String,
@@ -628,8 +628,8 @@ impl BatchCoordinator {
 }
 
 async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
-    // A tarefa do flush não herda o prazo de quem chamou; o grupo leva o maior
-    // prazo entre os frames que carrega, para não cortar o mais longo deles.
+    // The flush task does not inherit the caller's deadline; the group takes the largest
+    // deadline among the frames it carries, so as not to cut the longest of them.
     let deadline = calls
         .iter()
         .map(|call| call.deadline)
@@ -780,9 +780,9 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
 }
 
 impl SentFrame {
-    /// O canal persistente é uma otimização do hop HTTP, não um transporte
-    /// observável separado. A telemetria pública informa a camada que cifrou
-    /// o tráfego, mantendo `HttpsLink` apenas para a bancada interna.
+    /// The persistent channel is an optimization of the HTTP hop, not a separate
+    /// observable transport. Public telemetry reports the layer that encrypted
+    /// the traffic, keeping `HttpsLink` only for the internal bench.
     pub fn telemetry_transport(&self) -> InferenceTransport {
         match self.transport {
             InferenceTransport::HttpsLink if self.tls => InferenceTransport::Https,
@@ -913,10 +913,10 @@ pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
         || text.contains("frame body exceeds the limit")
 }
 
-/// Identifica a recusa que o gateway consegue reparar reconstruindo o prefill
-/// desde o prompt completo. A mensagem pode vir diretamente de `HttpRefusal`
-/// ou dentro de um `RelayFailure` serializado pelo anel/resposta direta, mas
-/// `anyhow::Error::to_string` preserva o texto nos dois casos.
+/// Identifies the refusal the gateway can repair by rebuilding the prefill
+/// from the complete prompt. The message may come directly from `HttpRefusal`
+/// or inside a `RelayFailure` serialized by the ring/direct response, but
+/// `anyhow::Error::to_string` preserves the text in both cases.
 pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let text = cause.to_string().to_lowercase();
@@ -924,8 +924,8 @@ pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Erros que provam divergência do KV remoto. Diferente de uma falha de
-/// transporte antes da entrega, eles pedem que a sessão inteira seja limpa.
+/// Errors that prove divergence of the remote KV. Unlike a transport
+/// failure before delivery, they ask for the whole session to be cleared.
 pub fn is_prefill_state_error(error: &anyhow::Error) -> bool {
     let text = error.to_string().to_lowercase();
     text.contains("chunk out of order")
@@ -933,16 +933,16 @@ pub fn is_prefill_state_error(error: &anyhow::Error) -> bool {
         || text.contains("does not accept discarding positions from the middle of the cache")
 }
 
-/// Uma falha de repasse entre hops causada pelo **transporte** - caminho
-/// morto, timeout, ou recusa de autenticação 401/403 - e não pelo conteúdo do
-/// pedido. Um gap transitório na propagação da política de rede (TLS/QUIC
-/// ainda não confirmados num peer, credencial interna ainda não adotada) cai
-/// aqui e some sozinho, então vale um único prefill frio antes de desistir.
+/// A hop-to-hop relay failure caused by the **transport** - dead path,
+/// timeout, or a 401/403 authentication refusal - and not by the content of the
+/// request. A transient gap in the propagation of the network policy (TLS/QUIC
+/// not yet confirmed on a peer, internal credential not yet adopted) falls
+/// here and goes away on its own, so a single cold prefill is worth it before giving up.
 ///
-/// Um `400`/`413`/erro de modelo do peer **não** casa: repetir não muda nada.
-/// A mensagem chega achatada por `anyhow::Error::to_string`, venha de um
-/// `HttpRefusal`, de um `RelayFailure` serializado pelo anel/resposta direta
-/// (`"pipeline falhou em <no>: <kind> ..."`) ou do texto do próprio frame.
+/// A `400`/`413`/model error from the peer does **not** match: repeating changes nothing.
+/// The message arrives flattened by `anyhow::Error::to_string`, whether it comes from an
+/// `HttpRefusal`, from a `RelayFailure` serialized by the ring/direct response
+/// (`"pipeline failed at <node>: <kind> ..."`) or from the frame's own text.
 pub fn is_transport_relay_failure(error: &anyhow::Error) -> bool {
     if let Some(failure) = extract_relay_failure(error) {
         let kind = failure.kind.trim().to_ascii_lowercase();
@@ -1238,9 +1238,9 @@ async fn send_frame_with_protocol(
     session_id: Option<&str>,
     transport: HopTransport,
 ) -> Result<SentFrame> {
-    // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
-    // certificado esperado deste destino, e o pinning é o que distingue o peer
-    // de quem se põe no meio dele.
+    // The client comes out of the per-peer cache: with the cluster on TLS it carries the
+    // expected certificate of this destination, and pinning is what tells the peer apart
+    // from whoever puts themselves in the middle.
     let (http, connection_state) = clients.for_peer_with_state(peer_id)?;
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
@@ -1334,11 +1334,11 @@ async fn send_frame_with_protocol(
                         });
                     }
                     Ok(response) if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) => {
-                        // 404/405: peer sem a rota HTTP/3. 401/403: transporte
-                        // sem credencial aceita para este peer (rede pública em
-                        // texto claro, política ainda não propagada) - não é uma
-                        // recusa considerada do pedido, então cai para o próximo
-                        // transporte (TCP e, por fim, o túnel) em vez de morrer.
+                        // 404/405: peer without the HTTP/3 route. 401/403: transport
+                        // without a credential accepted for this peer (public network in
+                        // clear text, policy not yet propagated) - it is not a
+                        // considered refusal of the request, so it falls to the next
+                        // transport (TCP and, finally, the tunnel) instead of dying.
                         transport_fallback = true;
                         transport_fallback_reason = Some(match transport_fallback_reason.take() {
                             Some(previous) => format!("{previous}; quic: HTTP {}", response.status),
@@ -1387,8 +1387,8 @@ async fn send_frame_with_protocol(
                 }
             }
             if !transport.tcp {
-                // Rota QUIC fixada: o TCP não é a rota medida, e cair nele
-                // esconderia do plano que a rota fixada falhou.
+                // Pinned QUIC route: TCP is not the measured route, and falling to it
+                // would hide from the plan that the pinned route failed.
                 last_error = transport_fallback_reason
                     .clone()
                     .unwrap_or_else(|| "the pinned QUIC route did not deliver".to_string());
@@ -1447,8 +1447,8 @@ async fn send_frame_with_protocol(
                         dtype,
                         peer_label,
                     )?;
-                    // O handshake é medido no servidor e volta no meta da resposta:
-                    // é lá que o tempo é exato, porque é lá que o accept acontece.
+                    // The handshake is measured on the server and comes back in the response meta:
+                    // that is where the time is exact, because that is where the accept happens.
                     let tls_handshake_ms = meta
                         .get("tls_handshake_ms")
                         .and_then(|v| v.as_u64())
@@ -1481,10 +1481,10 @@ async fn send_frame_with_protocol(
                     });
                 }
                 Ok(r) if matches!(r.status.as_u16(), 401 | 403) => {
-                    // Rejeição de autenticação do transporte direto: numa rede
-                    // pública sem TLS não há credencial que o peer aceite por
-                    // HTTP em claro. Não é recusa do pedido - deixa a escada
-                    // seguir para o túnel libp2p (Noise), que autentica.
+                    // Authentication rejection of the direct transport: on a public
+                    // network without TLS there is no credential the peer accepts over
+                    // clear HTTP. It is not a refusal of the request - it lets the ladder
+                    // proceed to the libp2p tunnel (Noise), which authenticates.
                     let code = r.status;
                     let text = String::from_utf8_lossy(&r.body).into_owned();
                     last_error = format!("HTTP {code}: {text}");
@@ -1581,10 +1581,11 @@ fn is_transport_timeout(error: &anyhow::Error) -> bool {
             .is_some_and(reqwest::Error::is_timeout)
 }
 
-/// Sonda o caminho direto de um peer que está sendo servido pelo túnel, em
-/// segundo plano. Sucesso apaga a marca `tunnel_first` e o próximo frame volta
-/// a tentar o direto; falha não muda nada. O frame atual segue pelo túnel sem
-/// esperar a sonda, então ela nunca soma espera ao caminho do token.
+/// Probes the direct path of a peer that is being served by the tunnel, in the
+/// background. Success clears the `tunnel_first` mark and the next frame goes back
+/// to trying the direct path; failure changes nothing. The current frame goes
+/// through the tunnel without waiting for the probe, so it never adds waiting
+/// to the token path.
 fn spawn_direct_reprobe(
     clients: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
@@ -1616,11 +1617,11 @@ fn spawn_direct_reprobe(
     });
 }
 
-/// Limita a tentativa HTTP inteira, incluindo os headers e o corpo, ao prazo
-/// do frame - o mesmo que o reqwest recebe, sem um teto menor aninhado. Peer
-/// que sumiu com a conexão aberta é detectado pelo keep-alive TCP dos clientes
-/// (`peer_client::with_liveness`), não por um timer que também mataria
-/// prefill/decode legítimos.
+/// Bounds the whole HTTP attempt, including headers and body, to the frame's
+/// deadline - the same one reqwest receives, with no smaller nested cap. A peer
+/// that vanished with the connection open is detected by the clients' TCP keep-alive
+/// (`peer_client::with_liveness`), not by a timer that would also kill
+/// legitimate prefill/decode.
 async fn send_http_request_with_deadline(
     clients: &crate::peer_client::PeerClients,
     request: reqwest::RequestBuilder,
@@ -1654,8 +1655,8 @@ async fn send_http_request_with_deadline(
     .await;
 
     match response {
-        // O endereço levou a outro nó: para o peer esperado o quadro não foi
-        // entregue, e a escada segue para o próximo caminho.
+        // The address led to another node: for the expected peer the frame was not
+        // delivered, and the ladder proceeds to the next path.
         Ok(Ok(Err(actual))) => Err(anyhow::Error::new(FrameNotDelivered {
             message: format!(
                 "the address answered as node {}, not {}",
@@ -1817,10 +1818,10 @@ async fn send_batch_body(
     let mut transport_fallback_reason = None;
     let mut transport_fallback = false;
 
-    // A ligação persistente vem antes porque é a única que não reconstrói a
-    // abstração de chamada por ativação. Quando ela não serve - peer sem a
-    // capability, endereço direto inalcançável, canal caído - a chamada segue
-    // pela escada de sempre e o `transport_fallback` diz que isso aconteceu.
+    // The persistent link comes first because it is the only one that does not rebuild the
+    // per-activation call abstraction. When it does not serve - peer without the
+    // capability, unreachable direct address, dropped channel - the call proceeds
+    // down the usual ladder and `transport_fallback` says this happened.
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
         && transport.link
         && !crate::infer_tunnel::is_local_node(&step.node_id)
@@ -1887,9 +1888,9 @@ async fn send_batch_body(
     let mut last_error = String::new();
     for attempt in 1..=attempts {
         last_error.clear();
-        // Peer já provado inalcançável pelo caminho direto: a escada direta é
-        // pulada na primeira tentativa e o túnel vai primeiro. Uma falha do
-        // túnel devolve a escada completa na tentativa seguinte.
+        // Peer already proven unreachable by the direct path: the direct ladder is
+        // skipped on the first attempt and the tunnel goes first. A tunnel
+        // failure restores the full ladder on the next attempt.
         let skip_direct = can_use_tunnel
             && (transport.tunnel_first || (attempt == 1 && clients.prefer_tunnel(&step.node_id)));
         let ordered = if skip_direct {
@@ -1948,8 +1949,8 @@ async fn send_batch_body(
                         });
                     }
                     Ok(response) if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) => {
-                        // 404/405: peer sem HTTP/3. 401/403: transporte sem
-                        // credencial aceita - cai para TCP e, por fim, o túnel.
+                        // 404/405: peer without HTTP/3. 401/403: transport without an
+                        // accepted credential - falls to TCP and, finally, the tunnel.
                         transport_fallback = true;
                         transport_fallback_reason = Some(match transport_fallback_reason.take() {
                             Some(previous) => format!("{previous}; quic: HTTP {}", response.status),
@@ -2081,9 +2082,9 @@ async fn send_batch_body(
             },
         });
 
-        // Cada tentativa percorre a escada completa antes do recuo: QUIC,
-        // HTTP e túnel. Falhar em abrir o transporte direto não pode consumir
-        // todas as tentativas antes de experimentar o caminho independente.
+        // Each attempt walks the full ladder before backing off: QUIC,
+        // HTTP and tunnel. Failing to open the direct transport must not consume
+        // all the attempts before trying the independent path.
         if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
             let auth = clients.internal_node_token().await;
             match send_batch_via_tunnel(
@@ -2245,8 +2246,8 @@ async fn send_batch_via_tunnel(
     })
 }
 
-/// Resposta crua de uma chamada HTTP encaminhada sem o enquadramento de uma
-/// mensagem de inferência.
+/// Raw response of an HTTP call forwarded without the framing of an
+/// inference message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteTransport {
     Local,
@@ -2262,12 +2263,12 @@ pub struct RawPeerResponse {
     pub fallback: bool,
 }
 
-/// Envia bytes pelo HTTP(S) direto pinado e, se todos os endereços anunciados
-/// falharem por transporte, tenta o túnel libp2p. O caminho direto vem
-/// primeiro porque a coletiva TP espera a resposta HTTP dentro da barreira e
-/// um túnel indisponível não deve impor seu timeout antes de usar um endereço
-/// HTTPS comprovadamente alcançável. O túnel preserva caminho, corpo e
-/// cabeçalhos, pois o reduce TP carrega a barreira e o rank fora do corpo.
+/// Sends bytes over the pinned direct HTTP(S) and, if all the advertised addresses
+/// fail by transport, tries the libp2p tunnel. The direct path comes
+/// first because the TP collective waits for the HTTP response inside the barrier and
+/// an unavailable tunnel must not impose its timeout before using an
+/// HTTPS address that is provably reachable. The tunnel preserves path, body and
+/// headers, since the TP reduce carries the barrier and the rank outside the body.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub async fn send_bytes_or_tunnel(
@@ -2298,10 +2299,10 @@ pub async fn send_bytes_or_tunnel(
     .await
 }
 
-/// Variante do POST bruto que tenta todos os endereços HTTPS anunciados pelo
-/// peer antes de recorrer ao túnel libp2p. O `base_url` continua sendo o
-/// endereço histórico e o primeiro candidato, para manter o contrato dos
-/// chamadores atuais.
+/// Variant of the raw POST that tries all the HTTPS addresses advertised by the
+/// peer before resorting to the libp2p tunnel. The `base_url` remains the
+/// historical address and the first candidate, to keep the contract of the
+/// current callers.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_bytes_or_tunnel_with_candidates(
     client: &reqwest::Client,
@@ -2436,11 +2437,11 @@ async fn send_bytes_via_tunnel(
     })
 }
 
-/// Quais transportes um hop pode usar, decidido pelo plano de rotas
-/// (`route_plan`). Com rota fixada, só o transporte medido é tentado: cair
-/// noutro dentro da mesma chamada esconderia do plano que a rota falhou, e o
-/// frame pagaria a falha de novo a cada chamada. Sem rota fixada vale a escada
-/// completa de sempre.
+/// Which transports a hop may use, decided by the route plan
+/// (`route_plan`). With a pinned route, only the measured transport is tried: falling to
+/// another within the same call would hide from the plan that the route failed, and the
+/// frame would pay the failure again on every call. Without a pinned route the usual
+/// full ladder applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HopTransport {
     /// Canal persistente `/v1/link`.
@@ -2448,13 +2449,13 @@ pub(crate) struct HopTransport {
     quic: bool,
     tcp: bool,
     tunnel: bool,
-    /// O túnel vai antes do caminho direto.
+    /// The tunnel goes before the direct path.
     tunnel_first: bool,
 }
 
 impl HopTransport {
-    /// A escada completa: QUIC quando o cluster o liga, senão o canal
-    /// persistente; depois HTTP(S) e por último o túnel.
+    /// The full ladder: QUIC when the cluster enables it, otherwise the persistent
+    /// channel; then HTTP(S) and lastly the tunnel.
     pub(crate) fn unplanned(clients: &crate::peer_client::PeerClients) -> Self {
         let quic = clients.effective_quic_enabled();
         Self {
@@ -2504,9 +2505,9 @@ fn hop_transport(
         .unwrap_or_else(|| HopTransport::unplanned(clients))
 }
 
-/// O passo reduzido à rota fixada: um endereço HTTP, ou um endpoint QUIC com a
-/// URL do mesmo host. Numa rota de túnel os endereços ficam como estão - o
-/// túnel não os usa, e a escada de reserva ainda precisa deles.
+/// The step reduced to the pinned route: an HTTP address, or a QUIC endpoint with the
+/// URL of the same host. On a tunnel route the addresses are left as they are - the
+/// tunnel does not use them, and the reserve ladder still needs them.
 fn pin_step(
     step: &crate::pipeline::PipelineStep,
     route: &crate::route_plan::PlannedRoute,
@@ -2529,15 +2530,15 @@ fn pin_step(
     pinned
 }
 
-/// Quantas rotas fixadas um frame percorre antes da escada completa. É o teto
-/// de segurança do laço; na prática a lista medida acaba antes.
+/// How many pinned routes a frame walks before the full ladder. It is the loop's
+/// safety cap; in practice the measured list runs out earlier.
 const MAX_PINNED_ATTEMPTS: usize = 8;
 
-/// Envia um frame pela rota fixada do hop. Falha antes da entrega repete a
-/// mesma rota uma vez, depois passa para a próxima rota medida; com a lista
-/// esgotada o plano pede nova análise e este frame ainda tenta a escada
-/// completa. Falha depois da entrega nunca é repetida em outra rota: o peer
-/// pode ter executado o frame.
+/// Sends a frame over the hop's pinned route. A failure before delivery repeats the
+/// same route once, then moves on to the next measured route; with the list
+/// exhausted the plan asks for a new analysis and this frame still tries the full
+/// ladder. A failure after delivery is never repeated on another route: the peer
+/// may have executed the frame.
 #[allow(clippy::too_many_arguments)]
 async fn send_frame_planned(
     clients: &crate::peer_client::PeerClients,
@@ -2609,11 +2610,11 @@ async fn send_frame_planned(
     .await
 }
 
-/// Seleciona o transporte de um frame na ordem QUIC, HTTP/HTTPS direto e,
-/// somente como último recurso, túnel libp2p. O túnel exige a capability, um
-/// `libp2p_peer_id` conhecido e um swarm local disponível. Ele usa Noise e a
-/// mesma credencial da porta de inferência. Uma recusa HTTP é final e não é
-/// repetida em outro transporte.
+/// Selects a frame's transport in the order QUIC, direct HTTP/HTTPS and,
+/// only as a last resort, the libp2p tunnel. The tunnel requires the capability, a
+/// known `libp2p_peer_id` and an available local swarm. It uses Noise and the
+/// same credential as the inference port. An HTTP refusal is final and is not
+/// repeated over another transport.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_frame_or_tunnel(
     clients: &crate::peer_client::PeerClients,
@@ -2628,12 +2629,12 @@ pub async fn send_frame_or_tunnel(
     peer_label: &str,
     on_issue: impl FnMut(SendIssue),
 ) -> Result<SentFrame> {
-    // O prazo do frame nasce aqui, do trabalho que ele pede, e vale para a
-    // tentativa inteira - transporte, retentativas e fallback. Os transportes
-    // internos leem o que resta dele (`frame_time_left`) em vez de cada um
-    // impor o seu.
-    // Aninhado no prazo de quem chamou (inferência em processo, lote), o frame
-    // nunca passa dele.
+    // The frame's deadline is born here, from the work it asks for, and holds for the
+    // whole attempt - transport, retries and fallback. The inner transports
+    // read what remains of it (`frame_time_left`) instead of each one
+    // imposing its own.
+    // Nested in the caller's deadline (in-process inference, batch), the frame
+    // never goes past it.
     let rows = tensor
         .as_ref()
         .and_then(|(_, shape)| shape.first().copied());
@@ -2828,11 +2829,11 @@ async fn send_frame_or_tunnel_inner(
     let max_attempts = attempts.max(1);
     let mut last_error = String::new();
     for attempt in 1..=max_attempts {
-        // Peer já provado inalcançável pelo caminho direto: a escada direta é
-        // pulada na primeira tentativa e o túnel vai primeiro. Cada frame
-        // queimava timeout de QUIC mais timeout de HTTP antes do único
-        // transporte que entrega. Uma falha do túnel devolve a escada completa
-        // na tentativa seguinte, porque a rota direta pode voltar.
+        // Peer already proven unreachable by the direct path: the direct ladder is
+        // skipped on the first attempt and the tunnel goes first. Each frame
+        // used to burn a QUIC timeout plus an HTTP timeout before the only
+        // transport that delivers. A tunnel failure restores the full ladder
+        // on the next attempt, because the direct route may come back.
         let skip_direct = can_use_tunnel
             && tunnel.is_some()
             && peer_id.is_some()
@@ -2954,10 +2955,10 @@ fn tunnel_is_allowed_for_peer(
     !target_is_local && step_supports_tunnel && peer_id_known && tunnel_available
 }
 
-/// Predicado mantido para os testes e para consumidores que ainda classificam
-/// uma falha antes de decidir o transporte. A seleção de produção já tenta
-/// HTTP/HTTPS antes do túnel; esta função continua descrevendo quais falhas de
-/// transporte podem justificar a última reserva.
+/// Predicate kept for the tests and for consumers that still classify
+/// a failure before deciding the transport. The production selection already tries
+/// HTTP/HTTPS before the tunnel; this function continues to describe which
+/// transport failures may justify the last reserve.
 ///
 /// `Http`-class issues are excluded on purpose: the peer *was* reached and
 /// gave a considered refusal (bad request, model error, …) — retrying over a
@@ -2984,14 +2985,14 @@ pub fn should_attempt_tunnel_fallback(
 
 const DIRECT_BYTES_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Bytes crus pelo túnel usam o mesmo prazo da rota direta de bytes.
+/// Raw bytes through the tunnel use the same deadline as the direct route for bytes.
 const TUNNEL_BYTES_TIMEOUT: Duration = DIRECT_BYTES_TIMEOUT;
 
-/// Uma chamada hop a hop enviada pelo swarm libp2p. O contrato de
-/// encode/decode é o mesmo de `send_frame`, com uma única tentativa. Se o
-/// túnel falhar por transporte, o chamador decide se deve usar o cliente
-/// direto; repetir dentro do túnel duplicaria a latência de uma chamada já
-/// lenta.
+/// A hop-to-hop call sent through the libp2p swarm. The
+/// encode/decode contract is the same as `send_frame`, with a single attempt. If the
+/// tunnel fails by transport, the caller decides whether to use the direct
+/// client; repeating inside the tunnel would duplicate the latency of an already
+/// slow call.
 #[cfg(test)]
 pub async fn send_frame_via_tunnel(
     tunnel: &TunnelOutboundSender,
@@ -3020,10 +3021,10 @@ pub async fn send_frame_via_tunnel(
     .await
 }
 
-/// Uma chamada JSON do ciclo de vida da sessão (`/v1/session/rewind`,
-/// `/v1/session/release`) pelo túnel libp2p, para o peer que só esse caminho
-/// alcança. O servidor de inferência lê JSON nessas rotas, não um quadro, e o
-/// `Content-Type` atravessa o túnel (`infer_tunnel::serve_loopback`).
+/// A JSON call of the session lifecycle (`/v1/session/rewind`,
+/// `/v1/session/release`) through the libp2p tunnel, to the peer that only this path
+/// reaches. The inference server reads JSON on these routes, not a frame, and the
+/// `Content-Type` crosses the tunnel (`infer_tunnel::serve_loopback`).
 pub async fn post_json_via_tunnel(
     clients: &crate::peer_client::PeerClients,
     tunnel: &TunnelOutboundSender,
@@ -3213,9 +3214,9 @@ async fn send_frame_via_tunnel_with_auth(
     Ok(SentFrame {
         meta,
         tensor,
-        // O túnel libp2p já é cifrado por Noise ponta a ponta, mas não é TLS:
-        // dizer `true` aqui faria a tela alegar uma garantia que este salto não
-        // deu. O handshake do túnel também não é o do TLS, e fica em zero.
+        // The libp2p tunnel is already encrypted by Noise end to end, but it is not TLS:
+        // saying `true` here would make the screen claim a guarantee this hop did not
+        // give. The tunnel's handshake is not the TLS one either, and stays at zero.
         tls: false,
         tls_handshake_ms: 0,
         round_trip_ms,
@@ -3253,7 +3254,7 @@ mod tests {
             frame_deadline(32, 1, 1),
             FRAME_DEADLINE_BASE + FRAME_DEADLINE_PER_TOKEN * 32 + FRAME_DEADLINE_PER_IMAGE
         );
-        // Zero token nunca vira prazo só de base: todo frame decodifica algo.
+        // Zero tokens never become a base-only deadline: every frame decodes something.
         assert_eq!(frame_deadline(0, 0, 0), one);
     }
 
@@ -3277,7 +3278,7 @@ mod tests {
             frame_deadline(512, 1, 2)
         );
 
-        // Hidden state: as linhas do tensor mandam, não o `chunk_size`.
+        // Hidden state: the tensor's rows rule, not `chunk_size`.
         assert_eq!(
             frame_deadline_for(&json!({"chunk_size": 512}), Some(32)),
             frame_deadline(32, 0, 1)
@@ -3434,27 +3435,27 @@ mod tests {
         assert!(!is_unknown_session_error(&other));
     }
 
-    /// Regressão: um 401/403 ou falha de transporte no repasse head->tail
-    /// (que `run_direct` trata como terminal no chunk 0) tem que ser
-    /// reconhecível para o gateway conceder **um** prefill frio. Um
-    /// 400/erro de modelo não pode casar - repetir não muda nada.
+    /// Regression: a 401/403 or transport failure in the head->tail relay
+    /// (which `run_direct` treats as terminal on chunk 0) has to be
+    /// recognizable for the gateway to grant **one** cold prefill. A
+    /// 400/model error must not match - repeating changes nothing.
     #[test]
     fn transport_relay_failure_is_classified() {
-        // O achatado que o gateway vê pela resposta direta (kind "http",
-        // corpo do 401 do peer), build pré-fallback.
+        // The flattened form the gateway sees through the direct response (kind "http",
+        // body of the peer's 401), pre-fallback build.
         let direct_http_401 = anyhow!(
             "pipeline failed at 02eb8c40: http — peer refused: 401 {{\"error\":\"missing Authorization header\"}}"
         );
-        // O mesmo caminho já com a classificação de transporte nova.
+        // The same path with the new transport classification.
         let direct_transport =
             anyhow!("pipeline failed at 02eb8c40: transport — quic/http: dead path");
-        // HttpRefusal direto de um hop 403.
+        // Direct HttpRefusal of a 403 hop.
         let refusal_403 = anyhow::Error::new(HttpRefusal {
             status: 403,
             body: "peer-y refused: 403 forbidden".into(),
             peer_label: "peer-y".into(),
         });
-        // Não é falha de transporte: pedido malformado / erro de modelo.
+        // Not a transport failure: malformed request / model error.
         let bad_request = anyhow::Error::new(HttpRefusal {
             status: 400,
             body: "chunk out of order".into(),
@@ -3576,8 +3577,8 @@ mod tests {
         });
 
         let step = step_with(&format!("http://{address}"), false, None);
-        // O prazo de quem chama (250 ms) é menor que a resposta do peer
-        // (350 ms): o frame vence depois de o corpo chegar ao peer.
+        // The caller's deadline (250 ms) is smaller than the peer's response
+        // (350 ms): the frame expires after the body reaches the peer.
         let result = with_frame_deadline(
             Instant::now() + Duration::from_millis(250),
             send_frame_or_tunnel(
@@ -3734,24 +3735,24 @@ mod tests {
         }
     }
 
-    /// O handshake acontece **uma vez por conexão**, e as conexões ficam no pool
-    /// do reqwest. Então zero na maioria dos saltos é a verdade, não falta de
-    /// medição - e é por isso que a tela rotula o campo como custo de
-    /// estabelecimento de conexão, nunca como custo por token.
+    /// The handshake happens **once per connection**, and connections stay in the pool
+    /// of reqwest. So zero on most hops is the truth, not a lack of
+    /// measurement - and that is why the screen labels the field as a connection
+    /// establishment cost, never as a per-token cost.
     #[test]
     fn hop_timing_carries_tls_and_handshake() {
         let e = frame(true, 4).as_hop_timing_entry();
         assert_eq!(e["tls"], true);
         assert_eq!(e["tls_handshake_ms"], 4);
 
-        // Mesmo salto, conexão reaproveitada: cifrado e sem handshake.
+        // Same hop, reused connection: encrypted and without handshake.
         let e = frame(true, 0).as_hop_timing_entry();
         assert_eq!(e["tls"], true);
         assert_eq!(e["tls_handshake_ms"], 0);
     }
 
-    /// Um salto em claro tem que ser visível como tal: é assim que uma virada
-    /// pela metade aparece na tela em vez de passar despercebida.
+    /// A clear-text hop has to be visible as such: that is how a half-done
+    /// switch shows up on screen instead of going unnoticed.
     #[test]
     fn a_plain_hop_reports_tls_false() {
         let e = frame(false, 0).as_hop_timing_entry();
@@ -4229,8 +4230,9 @@ mod tests {
         }
     }
 
-    /// Com a rota fixada no túnel, o frame nem toca o endereço direto: é o que
-    /// tira do prazo do frame a escada que já se sabe inútil.
+    /// With the route pinned to the tunnel, the frame does not even touch the direct
+    /// address: this is what takes out of the frame's deadline the ladder already known
+    /// to be useless.
     #[tokio::test]
     async fn a_pinned_tunnel_route_skips_the_direct_ladder() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4287,8 +4289,8 @@ mod tests {
         );
     }
 
-    /// Rota fixada morta: repete uma vez, passa para a próxima rota medida e
-    /// entrega no mesmo frame. A próxima vira a fixada.
+    /// Dead pinned route: repeats once, moves to the next measured route and
+    /// delivers in the same frame. The next one becomes the pinned one.
     #[tokio::test]
     async fn a_dead_pinned_route_fails_over_to_the_next_measured_route() {
         let port = spawn_fake_inference_server(|_body| {
@@ -4669,10 +4671,10 @@ mod tests {
             .is_some_and(|reason| reason.contains("quic/http") && reason.contains("http")));
     }
 
-    /// Um 401/403 do HTTP direto não é recusa considerada do pedido: numa rede
-    /// pública em texto claro o peer não tem credencial para aceitar o canal
-    /// HTTP. A escada tem que cair para o túnel libp2p (Noise), não devolver
-    /// erro terminal - era isso que pendurava o prefill.
+    /// A 401/403 from the direct HTTP is not a considered refusal of the request: on a
+    /// public clear-text network the peer has no credential to accept the HTTP
+    /// channel. The ladder has to fall to the libp2p tunnel (Noise), not return a
+    /// terminal error - this is what left the prefill hanging.
     #[tokio::test]
     async fn a_direct_http_401_falls_back_to_the_tunnel() {
         let port =
@@ -4713,9 +4715,9 @@ mod tests {
             .is_some_and(|reason| reason.contains("401")));
     }
 
-    /// Um endereço QUIC anunciado que não responde (porta UDP fechada, caminho
-    /// morto) não pode segurar o hop: o handshake tem orçamento de RTT e o
-    /// chamador cai para o próximo transporte em bem menos de 1 s.
+    /// An advertised QUIC address that does not answer (closed UDP port, dead
+    /// path) must not hold the hop: the handshake has an RTT budget and the
+    /// caller falls to the next transport in well under 1 s.
     #[tokio::test]
     async fn a_dead_quic_address_fails_over_fast() {
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
@@ -4725,7 +4727,7 @@ mod tests {
             true,
             Some(PeerId::random().to_string()),
         );
-        // 127.0.0.1:9 (discard) não tem endpoint QUIC: o handshake nunca fecha.
+        // 127.0.0.1:9 (discard) has no QUIC endpoint: the handshake never closes.
         step.quic_addr_candidates = vec!["127.0.0.1:9".to_string()];
         let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
         let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
@@ -4758,10 +4760,10 @@ mod tests {
         );
     }
 
-    /// O fallback TCP também pode aceitar a conexão e nunca devolver headers.
-    /// A tentativa tem um só prazo, o do frame: não há teto menor escondido
-    /// dentro dele, e o erro sai tipado como deadline de transporte quando
-    /// esse prazo vence.
+    /// The TCP fallback may also accept the connection and never return headers.
+    /// The attempt has a single deadline, the frame's: there is no smaller cap hidden
+    /// inside it, and the error comes out typed as a transport deadline when
+    /// that deadline expires.
     #[tokio::test]
     async fn an_unanswered_http_fallback_honors_the_transport_deadline() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5335,12 +5337,12 @@ mod tests {
         assert!(err.to_string().contains("model crashed"));
     }
 
-    /// A troca de transporte, contra uma máquina que está mesmo na rede.
+    /// The transport switch, against a machine that is really on the network.
     ///
-    /// Os testes acima provam a decisão com um canal falso; este prova o que
-    /// eles não podem: que o quadro sai daqui pelo enxame libp2p, chega ao
-    /// servidor de inferência do outro lado e volta com a resposta *dele*. É a
-    /// lacuna que o commit do túnel registrou por escrito ("only loopback and
+    /// The tests above prove the decision with a fake channel; this one proves what
+    /// they cannot: that the frame leaves here through the libp2p swarm, reaches the
+    /// inference server on the other side and comes back with *its* response. It is the
+    /// gap the tunnel commit recorded in writing ("only loopback and
     /// in-process fakes").
     ///
     /// ```sh
@@ -5348,21 +5350,21 @@ mod tests {
     ///   cargo test -p node --bin pom the_tunnel_carries_a_real_frame -- --ignored --nocapture
     /// ```
     ///
-    /// Duas afirmações, nesta ordem:
+    /// Two assertions, in this order:
     ///
-    /// 1. **O desvio abre pelo motivo certo.** O HTTP direto aponta para
-    ///    `192.0.2.1` (TEST-NET-1, RFC 5737, nunca roteável), então a primeira
-    ///    perna falha por `Timeout`/`Transport` - o gatilho real - e não por
-    ///    uma recusa considerada, que nunca deve desviar. O prazo de 600 s do
-    ///    `send_frame` continua reservado para processamento longo, mas o
-    ///    cliente tem teto próprio de 2 s para abrir TCP. Assim um endereço que
-    ///    engole SYN não decide a duração da chamada antes de o desvio começar.
-    /// 2. **O quadro atravessa.** `/v1/session/release` é a rota mais barata do
-    ///    servidor de inferência e não toca o modelo; ela lê JSON, não um
-    ///    quadro, então recusa este com um status *dela*. Uma recusa HTTP vinda
-    ///    do peer prova o caminho inteiro; um erro de transporte provaria o
-    ///    contrário. `/v1/step` não serve aqui: com uma sessão que não existe
-    ///    ele fica esperando, e a sonda mediria a espera em vez do caminho.
+    /// 1. **The bypass opens for the right reason.** The direct HTTP points to
+    ///    `192.0.2.1` (TEST-NET-1, RFC 5737, never routable), so the first
+    ///    leg fails by `Timeout`/`Transport` - the real trigger - and not by
+    ///    a considered refusal, which must never divert. The 600 s deadline of
+    ///    `send_frame` remains reserved for long processing, but the
+    ///    client has its own 2 s cap for opening TCP. This way an address that
+    ///    swallows SYN does not decide the call's duration before the bypass starts.
+    /// 2. **The frame crosses.** `/v1/session/release` is the cheapest route of the
+    ///    inference server and does not touch the model; it reads JSON, not a
+    ///    frame, so it refuses this one with a status of *its own*. An HTTP refusal coming
+    ///    from the peer proves the whole path; a transport error would prove
+    ///    the opposite. `/v1/step` does not fit here: with a session that does not exist
+    ///    it keeps waiting, and the probe would measure the wait instead of the path.
     #[tokio::test]
     #[ignore = "needs a live peer; see the test doc"]
     async fn the_tunnel_carries_a_real_frame_to_a_live_peer() {
@@ -5378,8 +5380,8 @@ mod tests {
             .expect("the multiaddr must end in /p2p/<peer-id>");
 
         let tunnel_tx = crate::infer_tunnel::live_probe_swarm(peer_id, addr);
-        // Um endereço que nunca responde: é assim que se força o `Timeout` sem
-        // mexer na máquina do outro lado.
+        // An address that never answers: this is how `Timeout` is forced without
+        // touching the other side's machine.
         let step = step_with("http://192.0.2.1:8181", true, Some(peer_id.to_string()));
 
         let mut issues = Vec::new();

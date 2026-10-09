@@ -1,4 +1,4 @@
-//! Catraca autenticada da política do Chat da rede.
+//! Authenticated ratchet of the network Chat policy.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;

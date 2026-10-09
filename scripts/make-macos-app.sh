@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# Monta um bundle POM.app em volta do binário já compilado.
+# Builds a POM.app bundle around the already compiled binary.
 #
-# Um executável Unix não tem ícone: no macOS quem carrega o ícone é o bundle
-# `.app`, não o arquivo. Sem isto, o Finder mostra o binário com o ícone
-# genérico de terminal e não há onde pendurar a identidade do produto.
+# A Unix executable has no icon: on macOS what carries the icon is the `.app`
+# bundle, not the file. Without this, Finder shows the binary with the generic
+# terminal icon and there is nowhere to hang the product's identity.
 #
-#     ./scripts/make-macos-app.sh [binario] [destino]
+#     ./scripts/make-macos-app.sh [binary] [destination]
 #
-# Padrões: `target/release/pom` e `dist-release/POM.app`.
+# Defaults: `target/release/pom` and `dist-release/POM.app`.
 #
-# O bundle é um invólucro fino: o binário continua sendo o mesmo programa de
-# linha de comando, e `POM.app/Contents/MacOS/pom` pode ser chamado direto com
-# os mesmos argumentos. `LSUIElement` mantém o nó fora do Dock; a interface
-# principal continua web, com acesso rápido pelo item nativo da barra de status.
+# The bundle is a thin wrapper: the binary is still the same command-line
+# program, and `POM.app/Contents/MacOS/pom` can be called directly with the same
+# arguments. `LSUIElement` keeps the node out of the Dock; the main interface is
+# still web, with quick access through the native status bar item.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,13 +23,13 @@ destination="${2:-$root/dist-release/POM.app}"
 name=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "$root/brand.json")
 slug=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["slug"])' "$root/brand.json")
 icns="$root/$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["app_icons"]["macos"])' "$root/brand.json")"
-# A arte do item de barra e as traduções da tela nativa moram juntas.
+# The status bar item art and the native screen's translations live together.
 macos_resources="$root/assets/brand/macos"
 status_icon="$macos_resources/pom-status-template.png"
 
 [ -x "$bin" ] || { echo "binário não encontrado: $bin" >&2; exit 1; }
-# O pom só inicia plugins pelo `pom-plugin-host` ao lado do próprio executável
-# (`plugin_host::host_executable`); sem ele nenhum plugin instala.
+# pom only starts plugins through the `pom-plugin-host` beside its own
+# executable (`plugin_host::host_executable`); without it no plugin installs.
 host="$(dirname "$bin")/pom-plugin-host"
 [ -x "$host" ] || {
     echo "pom-plugin-host não encontrado: $host" >&2
@@ -37,8 +37,8 @@ host="$(dirname "$bin")/pom-plugin-host"
     exit 1
 }
 [ -f "$icns" ] || { echo "ícone não encontrado: $icns" >&2; exit 1; }
-# Um item de barra sem arte cai para um rótulo de texto, o que é uma entrega
-# pior e silenciosa. `scripts/derive-macos-status-icon.py` gera esta arte.
+# A status bar item without art falls back to a text label, which is a worse and
+# silent delivery. `scripts/derive-macos-status-icon.py` generates this art.
 [ -f "$status_icon" ] || {
     echo "ícone da barra não encontrado: $status_icon" >&2
     echo "gere-o com: python3 scripts/derive-macos-status-icon.py" >&2
@@ -51,8 +51,8 @@ mkdir -p "$destination/Contents/MacOS" "$destination/Contents/Resources"
 cp "$bin" "$destination/Contents/MacOS/$slug"
 cp "$host" "$destination/Contents/MacOS/pom-plugin-host"
 cp "$icns" "$destination/Contents/Resources/$slug.icns"
-# As três resoluções entram com o nome original: o lado nativo procura as
-# companheiras `@2x` e `@3x` ao lado da arte 1x que o Rust lhe indica.
+# The three resolutions go in under their original name: the native side looks
+# for the `@2x` and `@3x` companions beside the 1x art that Rust points it to.
 cp "$macos_resources"/pom-status-template*.png "$destination/Contents/Resources/"
 find "$macos_resources" -mindepth 1 -maxdepth 1 -type d -name '*.lproj' \
     -exec cp -R {} "$destination/Contents/Resources/" \;
@@ -80,8 +80,8 @@ cat > "$destination/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# O Finder guarda em cache o ícone por caminho; sem isto um bundle recriado no
-# mesmo lugar continua mostrando o anterior.
+# Finder caches the icon by path; without this a bundle recreated in the same
+# place keeps showing the previous one.
 touch "$destination"
 
 echo "✓ $destination"

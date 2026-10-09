@@ -46,8 +46,8 @@ describe("wholeModelsOf", () => {
     expect(out[0].holders).toEqual(["ksia", "mac"]);
   });
 
-  /** Fatia não é modelo inteiro: as duas listas saem da mesma varredura, e
-   *  `shard_range` é o que as separa - o mesmo critério do nó. */
+  /** A slice is not a whole model: both lists come out of the same scan, and
+   *  `shard_range` is what separates them - the same criterion as the node. */
   it("ignores slices", () => {
     const out = wholeModelsOf([
       peer("ksia", [
@@ -58,11 +58,11 @@ describe("wholeModelsOf", () => {
   });
 
   /**
-   * Um GGUF cujo cabeçalho não abriu continua na lista.
+   * A GGUF whose header did not open stays in the list.
    *
-   * Ele aparece na tela de Modelos; sumir daqui se leria como o cluster ter
-   * perdido o arquivo. Escolhê-lo rende uma recusa do nó que diz o que está
-   * errado com o arquivo, que é a informação útil.
+   * It shows on the Models screen; vanishing from here would read as the cluster
+   * having lost the file. Choosing it yields a refusal from the node that says
+   * what is wrong with the file, which is the useful information.
    */
   it("keeps a model without a layer count, for the node to explain", () => {
     const out = wholeModelsOf([peer("ksia", [model({ total_layers: null })])]);
@@ -70,8 +70,8 @@ describe("wholeModelsOf", () => {
     expect(out[0].total_layers).toBeNull();
   });
 
-  /** Uma máquina lendo o cabeçalho e outra não é fato sobre um arquivo, não
-   *  sobre o modelo: a resposta que existe vence a ausente. */
+  /** One machine reading the header and another not is a fact about a file, not
+   *  about the model: the answer that exists beats the absent one. */
   it("fills in the data one of the copies did not bring", () => {
     const out = wholeModelsOf([
       peer("ksia", [model({ total_layers: null, quant: null, architecture: null })]),

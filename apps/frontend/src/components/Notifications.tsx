@@ -7,11 +7,11 @@
  * the page in the middle of a 17-minute transfer shows the same bar at the same
  * percentage instead of losing it.
  *
- * O sino lista os **dois sentidos** e também o desfecho recente
- * (`isWorthNotifying`). Antes ele mostrava só o que estava em andamento, e o
- * resultado — concluída, falhada, recusada — sumia da tela no instante em que
- * acontecia: quem recebia via a barra andar e depois nada, quem enviava não
- * via aviso nenhum de que a outra ponta tinha aceitado ou recusado.
+ * The bell lists **both directions** and also the recent outcome
+ * (`isWorthNotifying`). Before, it showed only what was in progress, and the
+ * result - completed, failed, refused - vanished from the screen the instant it
+ * happened: whoever received saw the bar move and then nothing, whoever sent
+ * got no notice at all that the other end had accepted or refused.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
@@ -79,7 +79,7 @@ function admissionDetail(record: AdmissionRecord, t: (key: string, values?: Reco
   ].filter(Boolean).join(" · ");
 }
 
-/** Ícone, tom e chave de estado de uma transferência, num lugar só. */
+/** Icon, tone and status key of a transfer, in one place. */
 function transferLook(job: TransferJob) {
   if (job.state === "done") {
     return { icon: <CheckCircle2 className="h-3.5 w-3.5" />, tone: "aqua" as const };
@@ -112,7 +112,7 @@ function Row({
 }: {
   icon: React.ReactNode;
   title: string;
-  /** Identificação secundária — o hash curto de uma fatia. */
+  /** Secondary identification - the short hash of a slice. */
   aside?: string | null;
   detail?: string;
   progress?: number | null;
@@ -222,18 +222,18 @@ export function Notifications() {
   }
 
   const running = (jobs.data?.jobs ?? []).filter((j) => j.state === "running");
-  // O que anda **e** o que acabou de terminar: o desfecho é a metade da
-  // notificação que faltava, nos dois sentidos.
+  // What is in progress **and** what has just finished: the outcome is the half of the
+  // notification that was missing, in both directions.
   const moving = (transfers.data?.jobs ?? []).filter((transfer) => isWorthNotifying(transfer));
   const waiting = offers.data?.offers ?? [];
   const sliceOffers = waiting.filter(isSliceOffer);
   const authorityOffers = waiting.filter(isAuthorityOffer);
-  // Perguntas de plugins (`notification.confirm`): esperam aqui como uma
-  // oferta, e a resposta volta à janela do plugin que perguntou.
+  // Plugin questions (`notification.confirm`): wait here like an
+  // offer, and the answer goes back to the window of the plugin that asked.
   const pluginConfirms = usePendingPluginConfirms();
-  // Avisos de plugins (`notification.notify`): só mensagem. Contam enquanto
-  // não lidos e ficam lidos quando o sino é aberto; o destaque de "novo" vale
-  // para esta abertura.
+  // Plugin notices (`notification.notify`): message only. They count while
+  // unread and become read when the bell is opened; the "new" highlight applies
+  // to this opening.
   const pluginNotices = usePluginNotices();
   const unreadNotices = pluginNotices.filter((notice) => !notice.read).length;
   const [freshNotices, setFreshNotices] = useState<ReadonlySet<string>>(new Set());
@@ -530,15 +530,15 @@ export function Notifications() {
                           : "notifications.transferFrom",
                         { host: job.peer_host },
                       ),
-                      // O motivo importa quando deu errado, e a etapa enquanto
-                      // corre. Num `done` o detalhe é o caminho de destino —
-                      // ruído para um resumo, e a tela de Transferências o tem.
+                      // The reason matters when it went wrong, and the step while
+                      // it runs. On a `done` the detail is the destination path -
+                      // noise for a summary, and the Transfers screen has it.
                       job.state === "done" ? "" : job.detail,
                     ]
                       .filter(Boolean)
                       .join(" · ")}
-                    // Uma transferência terminada não tem barra: ela não está
-                    // mais andando, e uma barra parada em 100% sugere que sim.
+                    // A finished transfer has no bar: it is no longer
+                    // running, and a bar stuck at 100% suggests that it is.
                     progress={
                       done
                         ? undefined
@@ -569,11 +569,11 @@ export function Notifications() {
                 <Row
                   key={o.id}
                   icon={<Inbox className="h-3.5 w-3.5" />}
-                  // O que está sendo oferecido é o título; quem oferece e
-                  // quanto pesa são o subtítulo. Ao contrário, "atena quer
-                  // enviar qwen3:8b · L0–15" não cabe numa linha e a faixa de
-                  // camadas — a informação que decide — é justamente o que a
-                  // reticência come.
+                  // What is being offered is the title; who offers and
+                  // how much it weighs are the subtitle. Otherwise, "atena wants to
+                  // send qwen3:8b · L0-15" does not fit on one line and the range of
+                  // layers - the information that decides - is precisely what the
+                  // ellipsis eats.
                   title={transferTitle({
                     name: o.name,
                     model_label: o.pom?.model.label,
@@ -581,10 +581,10 @@ export function Notifications() {
                     end_layer: o.end_layer,
                   })}
                   aside={transferHash(o.name)}
-                  // O caminho completo na máquina de origem enchia cinco
-                  // linhas do painel e não ajuda a decidir. O tamanho, sim: é
-                  // o que se aceita gravar em disco. O caminho continua na
-                  // tela de Transferências, onde há largura para ele.
+                  // The full path on the source machine filled five
+                  // lines of the panel and does not help to decide. The size does: it is
+                  // what one agrees to write to disk. The path stays on the
+                  // Transfers screen, where there is width for it.
                   detail={t("notifications.offerTitle", {
                     host: o.from_host,
                     size: bytes(o.size_bytes),

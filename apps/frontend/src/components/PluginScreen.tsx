@@ -1,10 +1,10 @@
 /**
- * Renderiza uma tela fornecida por plugin.
+ * Renders a screen supplied by a plugin.
  *
- * Carrega o módulo ES do asset declarado no manifesto (servido pelo nó em
- * `/api/ui/plugins/<code>/assets/...`, mesma origem, então a sessão vale) e
- * monta o `default` dele como componente React da própria árvore. Falha de
- * carga ou de renderização vira um cartão de erro; nunca derruba o shell.
+ * Loads the ES module of the asset declared in the manifest (served by the node at
+ * `/api/ui/plugins/<code>/assets/...`, same origin, so the session applies) and
+ * mounts its `default` as a React component of the tree itself. A load or
+ * render failure becomes an error card; it never brings down the shell.
  */
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { installPluginHost } from "../lib/pluginHost";
@@ -27,7 +27,7 @@ function loadStyles(code: string, styles: string[] | undefined, version: string 
   }
 }
 
-/** Cada (plugin, versão, módulo) é importado uma única vez. */
+/** Each (plugin, version, module) is imported only once. */
 export function loadPluginScreen(
   resolved: Pick<ResolvedPluginRoute, "code" | "screen" | "version">,
 ): Promise<ComponentType> {

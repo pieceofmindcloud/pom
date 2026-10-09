@@ -25,8 +25,8 @@ describe("transfer status", () => {
     expect(isFinishedTransfer("failed")).toBe(true);
   });
 
-  /// Cancelada é uma transferência terminada, não uma em andamento: ela não
-  /// pode ficar na fila ativa esperando um progresso que nunca vem.
+  /// Cancelled is a finished transfer, not one in progress: it must not
+  /// stay in the active queue waiting for progress that never comes.
   it("treats a cancelled transfer as finished", () => {
     expect(isActiveTransfer("cancelled")).toBe(false);
     expect(isFinishedTransfer("cancelled")).toBe(true);
@@ -44,10 +44,10 @@ describe("canCancel", () => {
 });
 
 /**
- * O sino listava só o que estava em andamento, e o desfecho sumia da tela no
- * instante em que acontecia: quem recebia via a barra andar e depois nada,
- * quem enviava não via aviso de aceite nem de recusa. O resultado só
- * sobrevivia na tela de Transferências — que foi exatamente o relato.
+ * The bell listed only what was in progress, and the outcome vanished from the screen at the
+ * instant it happened: the receiver saw the bar move and then nothing,
+ * the sender saw no notice of acceptance or refusal. The result only
+ * survived on the Transfers screen - which was exactly the report.
  */
 describe("what the bell still needs to show", () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
@@ -96,9 +96,9 @@ describe("what the bell still needs to show", () => {
   });
 
   /**
-   * Um nó de versão anterior não carimba a hora. Ali não dá para saber se
-   * acabou agora ou ontem, e supor "agora" encheria o sino de transferências
-   * velhas a cada carregamento da página.
+   * A node of an earlier version does not stamp the time. There it is impossible to know whether
+   * it ended just now or yesterday, and assuming "now" would fill the bell with old
+   * transfers on every page load.
    */
   it("invents no 'now' for a node that does not stamp the time", () => {
     expect(isWorthNotifying(job({ state: "done" }), now)).toBe(false);

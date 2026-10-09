@@ -2,9 +2,9 @@
 mod delete_tests {
     use super::*;
 
-    /// O aviso do store do Ollama existe porque apagar um blob de lá deixa o
-    /// manifesto apontando para nada — o store fica quebrado, e ele não é
-    /// nosso para consertar.
+    /// The Ollama store warning exists because deleting a blob from there leaves the
+    /// manifest pointing at nothing - the store ends up broken, and it is not
+    /// ours to fix.
     #[test]
     fn an_ollama_blob_is_recognised_by_its_layout() {
         let root = std::env::temp_dir().join(format!("pom-del-{}", std::process::id()));
@@ -16,8 +16,8 @@ mod delete_tests {
 
         assert!(is_ollama_blob(&blob));
 
-        // Um `blobs/` sem `manifests/` ao lado não é o store do Ollama — o
-        // LM Studio também tem uma pasta com esse nome, e vazia.
+        // A `blobs/` without a neighbouring `manifests/` is not the Ollama store -
+        // LM Studio also has a folder with that name, and empty.
         let other = std::env::temp_dir().join(format!("pom-del2-{}", std::process::id()));
         std::fs::create_dir_all(other.join("blobs")).unwrap();
         let loose = other.join("blobs").join("sha256-xyz");
@@ -33,7 +33,7 @@ mod delete_tests {
     }
 }
 
-/// "Sair da rede" no card de uma máquina.
+/// "Leave the network" on a machine's card.
 #[cfg(test)]
 mod leave_tests {
     use super::*;
@@ -41,7 +41,7 @@ mod leave_tests {
     use axum::routing::post as axum_post;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// Uma máquina que atende `/api/ui/leave` e conta os pedidos.
+    /// A machine that serves `/api/ui/leave` and counts the requests.
     async fn fake_machine(status: StatusCode) -> (u16, Arc<AtomicU32>) {
         let hits = Arc::new(AtomicU32::new(0));
         let counter = hits.clone();
@@ -63,17 +63,17 @@ mod leave_tests {
         (port, hits)
     }
 
-    /// Um estado de teste que **tem** autoridade administrativa. Repassar o
-    /// "sair da rede" a outra máquina é ato de administrador; sair sozinho não
-    /// é, e por isso os testes de abdicação usam o estado normal.
+    /// A test state that **has** administrative authority. Relaying
+    /// "leave the network" to another machine is an administrator's act; leaving alone is
+    /// not, and that is why the abdication tests use the normal state.
     async fn admin_state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
         let state = state_with(node_id, peers).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         state
     }
 
-    /// O card de um peer manda o nó local repassar: o painel só fala com o
-    /// próprio nó, e quem se desliga é sempre o dono daquele processo.
+    /// A peer's card makes the local node relay: the panel only talks to its
+    /// own node, and the one that shuts down is always the owner of that process.
     #[tokio::test]
     async fn leaving_for_a_peer_is_forwarded_to_that_peer() {
         let (port, hits) = fake_machine(StatusCode::OK).await;
@@ -91,15 +91,15 @@ mod leave_tests {
         assert_eq!(body_of(resp).await["node_id"], "outro");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
-        // E este nó continua na rede: o pedido era sobre a outra máquina.
+        // And this node stays in the network: the request was about the other machine.
         assert!(
             !state.network.is_detached(),
             "forwarding cannot turn off whoever forwarded"
         );
     }
 
-    /// Corpo ausente e o próprio `node_id` são a mesma coisa: este nó sai. É o
-    /// caminho que o menu "Este nó" e a tela de Rede sempre usaram.
+    /// An absent body and the node's own `node_id` are the same thing: this node leaves. It is the
+    /// path the "This node" menu and the Network screen always used.
     #[tokio::test]
     async fn leaving_without_a_target_still_detaches_this_node() {
         let state = state_with("eu", vec![]).await;
@@ -119,7 +119,7 @@ mod leave_tests {
         assert!(state.network.is_detached());
     }
 
-    /// Uma máquina que não responde é recusa com motivo, não um "saiu" falso.
+    /// A machine that does not answer is a refusal with a reason, not a false "left".
     #[tokio::test]
     async fn a_peer_that_refuses_is_not_reported_as_gone() {
         let (port, _) = fake_machine(StatusCode::INTERNAL_SERVER_ERROR).await;
@@ -136,7 +136,7 @@ mod leave_tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert!(!state.network.is_detached());
 
-        // Peer que nem existe na tabela também não vira sucesso.
+        // A peer that does not even exist in the table does not become a success either.
         let resp = leave_network(
             ConnectionAuth,
             State(state.clone()),
@@ -148,9 +148,9 @@ mod leave_tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// Sair é abdicar do próprio posto: o `infer` e o `node` desligam a
-    /// própria máquina sem licença de ninguém. Só o alvo diferente de si é que
-    /// pede autoridade.
+    /// Leaving is abdicating one's own post: `infer` and `node` shut down their
+    /// own machine without anyone's permission. Only a target other than itself
+    /// asks for authority.
     #[tokio::test]
     async fn any_profile_detaches_its_own_machine() {
         for profile in [
@@ -181,21 +181,21 @@ mod catalog_under_tls_tests {
     use crate::gateway::testkit::state_with;
     use crate::network::PeerInfo;
 
-    /// Porta 1, fechada de proposito: o que se afirma aqui nao e que a chamada
-    /// deu certo, e sim **por qual cliente** ela saiu.
+    /// Port 1, closed on purpose: what is asserted here is not that the call
+    /// succeeded, but **which client** it went out through.
     fn peer_with_gateway(node_id: &str) -> PeerInfo {
         crate::gateway::testkit::peer(node_id, node_id, 1)
     }
 
-    /// A tela de implantar lista as fatias perguntando a cada peer, e essas
-    /// chamadas tem que sair pelo cliente com pinning.
+    /// The deploy screen lists the slices by asking each peer, and those
+    /// calls have to go out through the pinning client.
     ///
-    /// Este teste existe por um defeito real: o plano de controle continuou
-    /// usando o cliente compartilhado e sem pinning depois do TLS entrar, e com
-    /// a politica ligada **toda** consulta a peer falhava calada - a tela dizia
-    /// "nenhuma maquina do cluster tem fatias de <modelo>" e nao havia como
-    /// implantar nada. O cache por peer so ganha entrada quando alguem pediu um
-    /// cliente pinado, entao ele e a prova de que o caminho certo foi usado.
+    /// This test exists because of a real defect: the control plane kept
+    /// using the shared client without pinning after TLS came in, and with
+    /// the policy on **every** peer query failed silently - the screen said
+    /// "no machine in the cluster has slices of <model>" and there was no way to
+    /// deploy anything. The per-peer cache only gains an entry when someone asked for a
+    /// pinned client, so it is the proof that the right path was used.
     #[tokio::test]
     async fn cluster_models_talks_to_the_peers_through_the_pinned_client() {
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
@@ -213,8 +213,8 @@ mod catalog_under_tls_tests {
         state.peer_http.apply_cluster_policy(false);
     }
 
-    /// Mesma prova para o levantamento da tela de implantar (`deploy::survey`),
-    /// que e por onde o defeito apareceu para o operador.
+    /// The same proof for the deploy screen's survey (`deploy::survey`),
+    /// which is where the defect showed up for the operator.
     #[tokio::test]
     async fn the_machine_list_for_deploying_is_pinned_too() {
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
@@ -223,9 +223,9 @@ mod catalog_under_tls_tests {
 
         let _ = crate::deploy::survey_for_tests(&state, "qwen35").await;
 
-        // O proprio no tambem entra: o levantamento pergunta o catalogo dele
-        // pela mesma rota HTTP, e sob TLS isso tambem precisa de certificado
-        // verificado. O que importa e o peer estar la.
+        // The node itself also enters: the survey asks its catalog
+        // through the same HTTP route, and under TLS that also needs a verified
+        // certificate. What matters is that the peer is there.
         assert!(
             state
                 .peer_http
@@ -243,8 +243,8 @@ mod tls_settings_tests {
     use super::*;
     use crate::gateway::testkit::{body_of, state_with};
 
-    /// Só o principal decide. A checagem é **no servidor**: esconder o botão na
-    /// tela é conveniência, não controle.
+    /// Only the principal decides. The check is **on the server**: hiding the button on
+    /// the screen is convenience, not control.
     #[tokio::test]
     async fn a_regular_node_cannot_turn_tls_on() {
         let state = state_with("eu", vec![]).await;
@@ -265,11 +265,11 @@ mod tls_settings_tests {
         assert!(!state.network.tls_enabled());
     }
 
-    /// No principal, virar a flag vale na hora: config gravada, anúncio novo, e
-    /// os clientes trocados. Sem reinício, e nos dois sentidos.
+    /// On the principal, flipping the flag takes effect at once: config saved, new announce, and
+    /// the clients swapped. Without a restart, and in both directions.
     #[tokio::test]
     async fn the_principal_turns_it_on_and_off_without_a_restart() {
-        // Este teste mexe no esquema global das URLs; ver a nota em
+        // This test touches the global URL scheme; see the note in
         // `peer_client::GLOBAL_POLICY`.
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let state = state_with("eu", vec![]).await;
@@ -304,8 +304,8 @@ mod tls_settings_tests {
         assert!(!state.peer_http.tls_enabled());
     }
 
-    /// A tela precisa de duas coisas diferentes: se está ligado, e se **este**
-    /// nó pode mexer.
+    /// The screen needs two different things: whether it is on, and whether **this**
+    /// node may change it.
     #[tokio::test]
     async fn node_info_reports_state_and_authority() {
         let state = state_with("eu", vec![]).await;
@@ -450,8 +450,9 @@ mod advertise_addr_tests {
     use super::*;
     use crate::gateway::testkit::{body_of, state_with};
 
-    /// A resposta já traz o efetivo, para a tela confirmar o efeito sem uma
-    /// segunda volta — é o próprio motivo de existir deste campo na resposta.
+    /// The response already carries the effective value, so the screen confirms the
+    /// effect without a second round trip - it is the very reason this field exists
+    /// in the response.
     #[tokio::test]
     async fn pinning_an_address_takes_effect_immediately_and_live() {
         let state = state_with("eu", vec![]).await;
@@ -470,16 +471,16 @@ mod advertise_addr_tests {
         assert_eq!(body["advertise_addr"], "203.0.113.9:42777");
         assert_eq!(body["effective_address"], "203.0.113.9:42777");
 
-        // Live: o mesmo `Network` já anuncia o valor novo, sem reinício.
+        // Live: the same `Network` already announces the new value, without a restart.
         assert_eq!(state.network.announce_addr(), "203.0.113.9:42777");
-        // E persistido: uma releitura do config em disco vê o mesmo valor.
+        // And persisted: re-reading the config on disk sees the same value.
         assert_eq!(
             state.auth.read().await.advertise_addr.as_deref(),
             Some("203.0.113.9:42777")
         );
     }
 
-    /// String vazia limpa o pino, mesma convenção de `SavePathsRequest.shard_dir`.
+    /// An empty string clears the pin, same convention as `SavePathsRequest.shard_dir`.
     #[tokio::test]
     async fn an_empty_value_clears_the_pin() {
         let state = state_with("eu", vec![]).await;
@@ -497,8 +498,8 @@ mod advertise_addr_tests {
         assert_eq!(state.auth.read().await.advertise_addr, None);
     }
 
-    /// Um valor sem forma reconhecível é recusado, não gravado quebrado —
-    /// mesmo espírito de `check_dir` para pastas de modelo.
+    /// A value with no recognizable form is refused, not stored broken -
+    /// same spirit as `check_dir` for model folders.
     #[tokio::test]
     async fn a_malformed_value_is_rejected_not_saved() {
         let state = state_with("eu", vec![]).await;

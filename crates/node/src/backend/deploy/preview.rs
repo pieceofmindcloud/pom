@@ -78,31 +78,31 @@ pub(super) async fn plan_endpoint(
                     .await;
         }
     }
-    // Um plano já recusado não ganha nada de saber se caberia na VRAM - e
-    // poupa uma rodada de rede por máquina a cada tecla que não muda o
-    // resultado.
+    // A plan already refused gains nothing from knowing whether it would fit
+    // in VRAM - and it saves one network round per machine on every keystroke
+    // that does not change the result.
     if p.blocked.is_none() {
         enrich_capacity_previews(&state, &machines, &mut p).await;
     }
     Json(p).into_response()
 }
 
-// ── Pré-visualização de capacidade ───────────────────────────────────────────
+// ── Capacity preview ─────────────────────────────────────────────────────────
 
-/// Depois que o planejador (síncrono) monta os passos, pergunta a cada alvo já
-/// materializado localmente como aquele passo ocuparia sua VRAM com os
-/// parâmetros deste plano - e soma o resultado por máquina.
+/// After the (synchronous) planner builds the steps, asks each target already
+/// materialized locally how that step would occupy its VRAM with this plan's
+/// parameters - and sums the result per machine.
 ///
-/// Só passos prontos e não fundidos (`target_path.is_some() && !merged`) são
-/// consultados: um passo que ainda depende de cópia ou de junção não tem
-/// arquivo local para a conta analítica examinar, e a pré-visualização nunca
-/// materializa nada para descobrir - ela só lê. Tensor Parallelism fica de
-/// fora desta primeira versão: a divisão real é `split-mode tensor`, que a
-/// conta por faixa não representa (o mesmo motivo que desliga `fit_memory` em
-/// TP, ver `effective_params_for_kind`).
+/// Only steps that are ready and not merged (`target_path.is_some() && !merged`)
+/// are queried: a step that still depends on a copy or a merge has no local
+/// file for the analytic calculation to examine, and the preview never
+/// materializes anything to find out - it only reads. Tensor Parallelism stays
+/// out of this first version: the real split is `split-mode tensor`, which the
+/// per-range calculation does not represent (the same reason that turns
+/// `fit_memory` off in TP, see `effective_params_for_kind`).
 ///
-/// Uma máquina que serve duas faixas não-adjacentes soma os dois passos sobre
-/// o mesmo inventário de GPUs - são dois processos na mesma placa física.
+/// A machine that serves two non-adjacent ranges sums the two steps over the
+/// same GPU inventory - they are two processes on the same physical card.
 pub(super) async fn enrich_capacity_previews(
     state: &GatewayState,
     machines: &[Machine],

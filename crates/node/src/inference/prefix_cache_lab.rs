@@ -1,10 +1,10 @@
-//! Harness diferencial do cache de prefixo.
+//! Differential harness for the prefix cache.
 //!
-//! A referência é uma lista simples e lenta. A implementação em teste é o
-//! cache real. O proxy quebrado altera deliberadamente o tamanho retornado no
-//! hit; o autoteste exige que a comparação encontre a divergência, para que
-//! uma regressão silenciosa não seja confundida com uma bateria que nunca
-//! detecta nada.
+//! The reference is a simple, slow list. The implementation under test is the
+//! real cache. The broken proxy deliberately alters the size returned on a
+//! hit; the self-test requires the comparison to find the divergence, so that
+//! a silent regression is not mistaken for a suite that never detects
+//! anything.
 
 #![cfg(test)]
 
@@ -170,8 +170,8 @@ impl CacheProxy for RealProxy {
     }
 }
 
-/// Um adapter que simula uma regressão silenciosa no valor de `cached_tokens`.
-/// Ele continua usando o cache real para que a bateria teste o mesmo contrato.
+/// An adapter that simulates a silent regression in the value of `cached_tokens`.
+/// It keeps using the real cache so that the suite tests the same contract.
 struct BrokenProxy {
     inner: RealProxy,
 }

@@ -1,4 +1,4 @@
-//! Limite e retenção do armazenamento de modelos fatiados.
+//! Limit and retention of the sliced model storage.
 
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::debug;
 
-/// Espaço padrão reservado para fatias novas quando a configuração ainda não
-/// tem o campo introduzido nesta versão.
+/// Default space reserved for new slices when the configuration does not yet
+/// have the field introduced in this version.
 pub const DEFAULT_SHARD_MAX_GB: f64 = 100.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

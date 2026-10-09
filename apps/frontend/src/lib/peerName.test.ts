@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { peerDisplayName, uniquePeerName } from "./peerName";
 
 /**
- * O seletor "Enviar para..." da tela de fatias mostrava o rótulo errado: ele
- * lia `/api/ui/cluster/models`, que respondia com o hostname cru do sistema
- * operacional em vez do nome que o nó anuncia (`node_name` do pom.json). Numa
- * máquina com dois nós era pior — os dois relatavam o mesmo hostname do SO, a
- * lista via colisão e desempatava com o prefixo do `node_id`.
+ * The "Send to..." selector on the slices screen showed the wrong label: it
+ * read `/api/ui/cluster/models`, which answered with the operating system's
+ * raw hostname instead of the name the node announces (`node_name` from
+ * pom.json). On a machine with two nodes it was worse - both reported the same
+ * OS hostname, the list saw a collision and broke the tie with the `node_id` prefix.
  */
 describe("peerDisplayName", () => {
   it("uses the name the machine announces", () => {
@@ -14,8 +14,8 @@ describe("peerDisplayName", () => {
   });
 
   /**
-   * O `node_id` encurtado é o último recurso, não o nome: é um prefixo
-   * hexadecimal, e não diz para qual máquina o arquivo vai.
+   * The shortened `node_id` is the last resort, not the name: it is a hexadecimal
+   * prefix, and does not say which machine the file is going to.
    */
   it("falls back to the short id only when there is no name at all", () => {
     expect(peerDisplayName({ node_id: "83bee8670abc2155" })).toBe("83bee8670abc");
@@ -35,9 +35,9 @@ describe("uniquePeerName", () => {
   });
 
   /**
-   * Dois nós na mesma máquina compartilham hostname de propósito — é o modo
-   * de dar janela grande sem arriscar a RAM da menor. Aí só o `node_id`
-   * distingue um do outro.
+   * Two nodes on the same machine share a hostname on purpose - it is the way
+   * to give a large window without risking the smaller one's RAM. Then only the
+   * `node_id` tells one from the other.
    */
   it("tie-breaks two nodes of the same machine by id", () => {
     const peers = [

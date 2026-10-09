@@ -181,8 +181,8 @@ describe("DeployNetworkCanvas", () => {
     expect(canvas).not.toBeNull();
 
     await waitFor(() => {
-      // Mesmo com um buraco no meio, o último peer continua tendo a perna de
-      // retorno para o gateway virtual. Nenhuma perna de avanço é inventada.
+      // Even with a hole in the middle, the last peer still has the return leg
+      // to the virtual gateway. No forward leg is invented.
       expect(canvas!.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(1);
     });
     expect(within(canvas!).getByRole("heading", { name: "Gateway" })).toBeTruthy();

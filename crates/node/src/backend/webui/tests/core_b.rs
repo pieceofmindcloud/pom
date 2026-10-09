@@ -1,12 +1,12 @@
-/// **A máquina tem um nome, e é um só.**
+/// **The machine has a name, and only one.**
 ///
-/// `node_name` do `pom.json` é como o operador batiza a máquina, e é o nome
-/// que o nó anuncia aos peers (`network.hostname`). O catálogo respondia com
-/// `sysmon`, o hostname cru do sistema operacional — e o seletor "Enviar
-/// para..." da tela de fatias, que lê daí, era o único lugar do aplicativo que
-/// chamava a máquina por outro nome. Numa máquina com dois nós era pior: os
-/// dois relatavam o mesmo hostname do SO, a tela via colisão e desempatava
-/// com o prefixo do `node_id`.
+/// The `pom.json` `node_name` is how the operator names the machine, and it is the name
+/// the node announces to peers (`network.hostname`). The catalog used to answer with
+/// `sysmon`, the operating system's raw hostname - and the "Send
+/// to..." selector on the slices screen, which reads from there, was the only place in the app that
+/// called the machine by another name. On a machine with two nodes it was worse: both
+/// reported the same OS hostname, the screen saw a collision and broke the tie
+/// with the `node_id` prefix.
 #[cfg(test)]
 mod node_name_tests {
     use super::*;
@@ -35,13 +35,13 @@ mod node_name_tests {
         assert_eq!(eu["hostname"], "atena");
     }
 
-    /// Um peer que não respondeu continua sendo uma máquina com nome: o que
-    /// ele anunciou está na tabela local. Sem isto o objeto saía **sem
-    /// `hostname`** e a tela caía no `node_id` — um prefixo hexadecimal no
-    /// lugar do nome da máquina, que é o rótulo errado do relato.
+    /// A peer that did not answer is still a machine with a name: what it
+    /// announced is in the local table. Without this the object came out **without
+    /// `hostname`** and the screen fell back to the `node_id` - a hexadecimal
+    /// prefix in place of the machine's name, which is the wrong label in the report.
     #[tokio::test]
     async fn a_peer_that_did_not_answer_still_has_a_name() {
-        // A porta do peer falso não tem ninguém ouvindo: a consulta falha.
+        // The fake peer's port has nobody listening: the query fails.
         let mut silent = peer("outro", "ksia", 1);
         silent.hostname = "ksia".into();
         let state = state_named("eu", "atena", vec![silent]).await;
@@ -62,13 +62,13 @@ mod node_name_tests {
     }
 }
 
-/// `/api/ui/peer/:node_id/runtime` - como aquela máquina carregou o modelo.
+/// `/api/ui/peer/:node_id/runtime` - how that machine loaded the model.
 #[cfg(test)]
 mod peer_runtime_tests {
     use super::*;
     use crate::gateway::testkit::{body_of, peer, state_with};
 
-    /// Um servidor de inferência que responde `/health` com a colocação.
+    /// An inference server that answers `/health` with the placement.
     async fn fake_inference() -> u16 {
         let app = Router::new().route(
             "/health",
@@ -107,9 +107,9 @@ mod peer_runtime_tests {
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
     }
 
-    /// Máquina na rede sem servidor de inferência não é falha de rede: é o
-    /// estado normal de quem não recebeu fatia. A tela precisa distinguir os
-    /// dois, então isto responde 200 dizendo que não há o que mostrar.
+    /// A machine on the network without an inference server is not a network failure: it is the
+    /// normal state of one that did not receive a slice. The screen needs to tell the
+    /// two apart, so this answers 200 saying there is nothing to show.
     #[tokio::test]
     async fn a_machine_without_an_inference_server_is_not_an_error() {
         let state = state_with("eu", vec![peer("outro", "ksia", 9)]).await;
@@ -120,9 +120,9 @@ mod peer_runtime_tests {
         assert!(body["reason"].is_string(), "the screen needs the reason");
     }
 
-    /// O `/health` do peer chega inteiro, sem passar por um tipo intermediário:
-    /// um campo novo no servidor de inferência aparece na tela sem que esta
-    /// rota mude.
+    /// The peer's `/health` arrives whole, without passing through an intermediate type:
+    /// a new field on the inference server shows up on the screen without this
+    /// route changing.
     #[tokio::test]
     async fn the_peers_health_is_forwarded_whole() {
         let port = fake_inference().await;
@@ -458,8 +458,8 @@ mod chat_telemetry_tests {
 
         let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
 
-        // Resposta direta: meio RTT de cada perna da ida e meio da volta.
-        // head-fast: (4 + 12) / 2 + 3 / 2 = 9.5 ms, abaixo do anel (16 ms).
+        // Direct answer: half an RTT for each outbound leg and half for the return.
+        // head-fast: (4 + 12) / 2 + 3 / 2 = 9.5 ms, below the ring (16 ms).
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0].node_ids, vec!["head-fast", "tail", "gateway"]);
         assert_eq!(routes[0].legs_ms, vec![Some(4.0), Some(12.0), Some(3.0)]);
@@ -490,9 +490,9 @@ mod chat_telemetry_tests {
 
     #[test]
     fn a_slow_return_leg_is_costed_as_the_ring() {
-        // O gateway é a cabeça; a volta da cauda é tão cara quanto a ida. O
-        // card somava ida e volta inteiras (67 + 67); o planejador paga um
-        // RTT por token, pelo anel.
+        // The gateway is the head; the tail's return is as expensive as the
+        // outbound. The card summed the whole outbound and return (67 + 67); the
+        // planner pays one RTT per token, through the ring.
         let peers = vec![served_peer("gateway", 0, 15), served_peer("tail", 16, 31)];
         let requester_rtt = HashMap::from([("tail".to_string(), 67.0)]);
         let perf = HashMap::from([
@@ -533,14 +533,14 @@ mod chat_telemetry_tests {
             .find(|m| m.from_node_id == "head" && m.to_node_id == "tail")
             .unwrap();
         assert!(edge.relayed);
-        // A volta da cauda é QUIC direto: não é relé.
+        // The tail's return is direct QUIC: it is not a relay.
         let back = measurements
             .iter()
             .find(|m| m.from_node_id == "tail")
             .unwrap();
         assert!(!back.relayed);
 
-        // Túnel com conexão direta (hole punch fechou) não é relé.
+        // A tunnel with a direct connection (hole punch succeeded) is not a relay.
         let mut direct = perf.clone();
         direct.get_mut("head").unwrap().relayed_peers.clear();
         let inputs = route_inputs("gateway", &requester_rtt, &direct, &load);
@@ -549,8 +549,9 @@ mod chat_telemetry_tests {
 
     #[test]
     fn a_relayed_return_leg_does_not_count_when_the_answer_comes_back_by_the_ring() {
-        // Gateway é a cabeça; a ida até a cauda é QUIC e só a volta direta
-        // passa por relé. O planejador escolhe o anel, que não usa essa volta.
+        // The gateway is the head; the outbound leg to the tail is QUIC and only the
+        // direct return goes through a relay. The planner picks the ring, which does
+        // not use that return.
         let peers = vec![served_peer("gateway", 0, 15), served_peer("tail", 16, 31)];
         let requester_rtt = HashMap::from([("tail".to_string(), 30.0)]);
         let mut tail = route_perf(66.0, &[], &[("gateway", 52.0)]);
@@ -585,8 +586,8 @@ mod chat_telemetry_tests {
         assert_eq!(routes[0].node_ids, vec!["head", "gw"]);
         assert_eq!(routes[0].legs_ms, vec![Some(23.0), Some(24.0)]);
         assert_eq!(routes[0].rtt_ms, Some(47.0));
-        // A última aresta é passagem de ida, não volta: no trace ela aparece
-        // com o nó de destino, não como `gateway`.
+        // The last edge is an outbound pass, not a return: in the trace it shows
+        // up with the destination node, not as `gateway`.
         let measurements = planned_route_measurements(&routes, &inputs);
         assert_eq!(measurements.len(), 1);
         assert_eq!(measurements[0].to_node_id, "gw");
@@ -814,8 +815,8 @@ mod capacity_preview_tests {
         assert_eq!(projections[0].vram_used_mb, 2_000);
         assert_eq!(projections[0].vram_projected_mb, 6_000);
         assert!(fits);
-        // Uma única GPU não precisa de nota de divisão estimada - não há
-        // divisão nenhuma a fazer.
+        // A single GPU does not need an estimated split note - there is no
+        // split to make.
         assert!(note.is_none());
     }
 
@@ -834,14 +835,14 @@ mod capacity_preview_tests {
 
     #[test]
     fn without_a_native_split_the_estimate_follows_free_capacity_and_says_so() {
-        // GPU 0 já tem menos livre que a GPU 1, então recebe menos do peso
-        // novo - e a nota tem que dizer que é estimativa.
+        // GPU 0 already has less free than GPU 1, so it receives less of the
+        // new weight - and the note has to say it is an estimate.
         let gpus = vec![gpu(0, 8_000.0, 6_000.0), gpu(1, 8_000.0, 0.0)];
         let (projections, _fits, note) = split_projection(2_000 * 1024 * 1024, &gpus);
         let added0 = projections[0].vram_projected_mb - projections[0].vram_used_mb;
         let added1 = projections[1].vram_projected_mb - projections[1].vram_used_mb;
-        // GPU 0 tinha 2 GiB livres contra 8 GiB da GPU 1, então recebe uma
-        // fatia proporcionalmente menor do peso novo.
+        // GPU 0 had 2 GiB free against 8 GiB for GPU 1, so it receives a
+        // proportionally smaller slice of the new weight.
         assert!(added0 < added1, "added0={added0} added1={added1}");
         assert!(note.is_some());
     }

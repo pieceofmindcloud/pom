@@ -106,7 +106,7 @@ async fn principal_peer_for(
     })
 }
 
-/// Endereços do gateway do peer, o que já respondeu primeiro
+/// Gateway addresses of the peer, the one that already answered first
 /// (`Network::gateway_bases`).
 fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerInfo) -> Vec<String> {
     network.gateway_bases(peer)
@@ -710,8 +710,8 @@ async fn internal_upsert_api_key(
         tracing::warn!("could not register the API key: {error:#}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    // A chave interna nova de um nó aposenta a anterior, cujo segredo o nó já
-    // não tem: sem isto ela ficaria ativa no principal, sem dono.
+    // A node's new internal key retires the previous one, whose secret the node no
+    // longer has: without this it would stay active on the principal, ownerless.
     if let Err(error) = state
         .database
         .revoke_superseded_node_keys(&state.network.node_id)
@@ -809,9 +809,9 @@ async fn internal_validate_api_key(
 
 // ── Snapshots de KV cache (`--slot-save-path`) ───────────────────────────────
 
-/// Lista os snapshots que o **nó local** conhece, lidos do `/health` da própria
-/// porta de inferência. É uma vista rápida; um snapshot de implantação tem uma
-/// fatia por hop e o nome do arquivo carrega o `node_id` de cada um.
+/// Lists the snapshots that the **local node** knows, read from the `/health` of its own
+/// inference port. It is a quick view; a deployment snapshot has one
+/// slice per hop and the file name carries each one's `node_id`.
 async fn list_slots(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
@@ -831,7 +831,7 @@ async fn list_slots(
             }
         }
     }
-    // Cache de prefixo persistente (Phase 3), quando ligado neste gateway.
+    // Persistent prefix cache (Phase 3), when turned on in this gateway.
     if let Some(disk) = &state.prefix_disk {
         let (files, bytes) = disk.stats();
         view["prefix_auto_cache"] = json!({
@@ -847,24 +847,24 @@ async fn list_slots(
 
 #[derive(Debug, Deserialize)]
 struct SlotActionQuery {
-    /// `save`, `restore` ou `erase`.
+    /// `save`, `restore` or `erase`.
     action: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct SlotActionBody {
-    /// Modelo (ou `deploy_id`) cujo pipeline recebe a ação.
+    /// Model (or `deploy_id`) whose pipeline receives the action.
     model: String,
-    /// Sessão viva a fotografar (`save`). Vem do `x_pom` de uma resposta.
+    /// Live session to snapshot (`save`). Comes from the `x_pom` of a response.
     #[serde(default)]
     session_id: String,
-    /// Nova sessão a criar em `restore`.
+    /// New session to create in `restore`.
     #[serde(default)]
     dest_session_id: String,
 }
 
-/// `POST /admin/slots/{name}?action=save|restore|erase` - orquestra um snapshot
-/// de KV pela implantação inteira. Ver `gateway::snapshot_deployment`.
+/// `POST /admin/slots/{name}?action=save|restore|erase` - orchestrates a KV
+/// snapshot across the whole deployment. See `gateway::snapshot_deployment`.
 async fn slot_action(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
@@ -971,8 +971,8 @@ async fn list_nodes(
                 "short_id": &p.node_id[..p.node_id.len().min(12)],
                 "hostname": p.hostname,
                 "addr": p.addr,
-                // Por onde este nó fala com o peer de fato; `addr` é só o que
-                // ele anuncia, e pode ser um endereço que ninguém alcança.
+                // Through where this node actually talks to the peer; `addr` is only what
+                // it announces, and may be an address nobody can reach.
                 "route": (p.node_id != self_id).then(|| state.network.peer_route(p)),
                 "profile": p.profile,
                 "trust_version": p.trust_version,
@@ -1832,7 +1832,7 @@ struct GenerateKeyRequest {
 /// Tokens accumulate rather than replace each other: the operator hands one out
 /// per node (and per harness), and the request log attributes each generation
 /// back to the one that paid for it. Minting used to deactivate every existing
-/// key, which made "a token per node" impossible — the second one silently
+/// key, which made "a token per node" impossible - the second one silently
 /// revoked the first.
 async fn generate_api_key(
     _auth: ConnectionAuth,
@@ -1883,16 +1883,16 @@ pub(crate) async fn chat_key(
     }
 }
 
-/// A API key que este nó usa para chamar a própria `/v1`: a do Chat da
-/// interface e a entregue aos plugins (`host.configure`). É a única classe de
-/// chave que um nó sem autoridade administrativa pode registrar no principal
-/// (`is_self_owned_chat_key`), por isso os plugins não recebem uma própria.
-/// Devolve a chave e se ela acabou de ser criada.
+/// The API key this node uses to call its own `/v1`: the interface's Chat one
+/// and the one handed to plugins (`host.configure`). It is the only class of
+/// key that a node without administrative authority can register on the principal
+/// (`is_self_owned_chat_key`), which is why plugins do not get one of their own.
+/// Returns the key and whether it was just created.
 ///
-/// O segredo fica no cofre local do nó (`PomDb::node_api_key`); o registro
-/// guarda só o hash. Se o cofre não tem segredo, ou o segredo não bate mais
-/// com uma chave ativa (revogada, ou um banco migrado de antes do hash, que
-/// perdeu o texto), uma chave nova é emitida e as antigas do nó são revogadas.
+/// The secret stays in the node's local vault (`PomDb::node_api_key`); the record
+/// keeps only the hash. If the vault has no secret, or the secret no longer matches
+/// an active key (revoked, or a database migrated from before the hash, which
+/// lost the text), a new key is issued and the node's old ones are revoked.
 pub(crate) async fn node_chat_key(
     state: &crate::gateway::GatewayState,
 ) -> anyhow::Result<(IssuedApiKey, bool)> {
@@ -1922,7 +1922,7 @@ pub(crate) async fn node_chat_key(
         .database
         .save_node_api_key(&issued.key.id, &issued.secret)?;
     for id in stale {
-        // A chave anterior não tem mais dono: ninguém sabe o segredo dela.
+        // The previous key no longer has an owner: nobody knows its secret.
         let _ = state.database.revoke_api_key(&id, &node_id);
         if let Err(error) = notify_key_revoked(state, &id, &node_id).await {
             tracing::warn!("central revocation of the old node key failed: {error:#}");
@@ -1967,9 +1967,9 @@ mod tests {
     use axum::http::{HeaderMap, Request};
     use tower::ServiceExt;
 
-    /// A rota `/admin` devolve as mesmas ofertas de `GET /api/transfer/offers`,
-    /// não uma lista vazia fixa: um consumidor da rota de administração tem que
-    /// enxergar o que está esperando resposta.
+    /// The `/admin` route returns the same offers as `GET /api/transfer/offers`,
+    /// not a fixed empty list: a consumer of the administration route has to
+    /// see what is waiting for an answer.
     #[tokio::test]
     async fn transfer_offers_returns_the_real_offers() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -2022,7 +2022,7 @@ mod tests {
         assert!(state.database.api_key_for_token(&secret).unwrap().is_some());
         assert!(secret.starts_with(crate::auth::API_KEY_PREFIX));
 
-        // Depois de criada, a chave só aparece pelo trecho visível.
+        // Once created, the key only shows up through its visible fragment.
         let response = admin_routes()
             .with_state(state.clone())
             .oneshot(
@@ -2063,9 +2063,9 @@ mod tests {
             .any(|key| key.id == key_id && !key.active));
     }
 
-    /// A chave do próprio nó: o segredo fica no cofre local, o registro só
-    /// tem o hash, e um cofre vazio (banco migrado) troca a chave e revoga a
-    /// antiga, que ninguém mais saberia usar.
+    /// The node's own key: the secret stays in the local vault, the record only
+    /// has the hash, and an empty vault (migrated database) swaps the key and revokes the
+    /// old one, which nobody would know how to use any more.
     #[tokio::test]
     async fn node_chat_key_keeps_its_secret_local_and_rotates_an_orphan() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -2277,8 +2277,8 @@ mod tests {
                     if !trusted {
                         return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response();
                     }
-                    // Só o hash chega ao principal; o teste o reconhece
-                    // pelos tokens que conhece.
+                    // Only the hash reaches the principal; the test recognizes it
+                    // by the tokens it knows.
                     let token = ["remote-valid", "admin-error", "admin-timeout"]
                         .into_iter()
                         .find(|token| crate::auth::api_key_hash(token) == request.key_hash)

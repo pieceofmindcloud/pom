@@ -364,11 +364,11 @@ export function Documentation() {
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const readerRef = useRef<HTMLDivElement>(null);
-  // No celular a barra lateral ocupa a tela inteira e o leitor fica escondido
-  // até uma seleção explícita; um deep link (`?doc=`/`?guide=` já na URL ao
-  // montar) conta como essa seleção e abre direto no conteúdo. `Voltar` no
-  // topo do leitor apenas fecha essa vista - o `?doc=`/`?guide=` continua
-  // valendo, então recarregar a página não perde o lugar.
+  // On a phone the sidebar takes the whole screen and the reader stays hidden
+  // until an explicit selection; a deep link (`?doc=`/`?guide=` already in the
+  // URL on mount) counts as that selection and opens straight on the content.
+  // `Voltar` at the top of the reader only closes that view - the
+  // `?doc=`/`?guide=` still holds, so reloading the page does not lose the place.
   const [mobileReaderOpen, setMobileReaderOpen] = useState(
     () => Boolean(params.get("doc") || params.get("guide")),
   );
@@ -505,10 +505,10 @@ export function Documentation() {
   return (
     <div className="flex h-full min-h-0 w-full">
       {/*
-        No celular esta barra ocupa a tela inteira e o leitor fica escondido
-        até uma seleção; a partir de `sm:` as duas colunas voltam a conviver,
-        independentemente de `mobileReaderOpen` - esse estado só existe para o
-        celular.
+        On a phone this bar takes the whole screen and the reader stays hidden
+        until a selection; from `sm:` up the two columns live side by side again,
+        regardless of `mobileReaderOpen` - that state only exists for the
+        phone.
       */}
       <nav
         className={clsx(
@@ -719,10 +719,10 @@ export function Documentation() {
           mobileReaderOpen ? "block" : "hidden",
         )}
       >
-        {/* Só faz sentido abaixo de `sm:` - a partir daí as duas colunas
-            convivem e voltar é só escolher outro item na barra, já visível.
-            Montado apenas quando a vista mobile está aberta, para o estado
-            ficar inspecionável sem depender de um breakpoint real. */}
+        {/* It only makes sense below `sm:` - from there up the two columns live
+            side by side and going back is just picking another item in the bar, already
+            visible. Mounted only when the mobile view is open, so the state
+            stays inspectable without depending on a real breakpoint. */}
         {mobileReaderOpen && (
           <div className="sticky top-0 z-10 flex items-center border-b border-line bg-surface/95 px-2 py-1.5 backdrop-blur-sm sm:hidden">
             <button

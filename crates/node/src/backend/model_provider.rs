@@ -1,8 +1,8 @@
-//! API e jobs de modelos remotos.
+//! API and jobs for remote models.
 //!
-//! Esta camada conhece somente `ModelProvider`. O provider padrão é criado no
-//! bootstrap do nó; o módulo não monta comandos, lê tokens ou fala com o
-//! Hugging Face diretamente.
+//! This layer knows only `ModelProvider`. The default provider is created at
+//! node bootstrap; the module does not build commands, read tokens or talk to
+//! Hugging Face directly.
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;

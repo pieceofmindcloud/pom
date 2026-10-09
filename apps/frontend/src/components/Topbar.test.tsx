@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * O estado da criptografia do cluster tem que ser legível de qualquer tela.
+ * The cluster's encryption state has to be readable from any screen.
  *
- * O que se afirma aqui é que o selo diz as duas coisas - cifrado e não cifrado -
- * em vez de aparecer só quando está ligado. Um selo que some quando o TLS cai é
- * pior que nenhum: o operador lê a ausência como "a tela não mostra isso", não
- * como "o cluster está em texto claro".
+ * What is asserted here is that the badge says both things - encrypted and not encrypted -
+ * instead of appearing only when it is on. A badge that vanishes when TLS drops is
+ * worse than none: the operator reads the absence as "the screen does not show this", not
+ * as "the cluster is in clear text".
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";

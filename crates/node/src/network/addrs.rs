@@ -1,10 +1,10 @@
-//! Enderecos em que esta maquina pode ser encontrada.
+//! Addresses at which this machine can be found.
 //!
-//! Separado de `route.rs` porque e o unico ponto com codigo por plataforma. A
-//! filtragem, que e a parte que erra calado, fica fora do `cfg` e tem teste
-//! que roda em qualquer sistema.
+//! Kept apart from `route.rs` because it is the only place with per-platform
+//! code. The filtering, which is the part that fails silently, lives outside
+//! the `cfg` and has a test that runs on any system.
 
-/// Teto por familia. Ver o teste `at_most_two_candidates_per_family_survive`.
+/// Cap per family. See the test `at_most_two_candidates_per_family_survive`.
 const MAX_PER_FAMILY: usize = 2;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,10 +13,10 @@ pub struct LocalAddr {
     /// Interface that owns the address, when the operating system reports it.
     /// Synthetic callers may leave it empty.
     pub interface: Option<String>,
-    /// Endereco que o sistema marcou como em fim de vida. O macOS mantem estes
-    /// por um tempo depois de rotacionar o IPv6 de privacidade.
+    /// Address the system marked as end-of-life. macOS keeps these around
+    /// for a while after rotating the privacy IPv6.
     pub deprecated: bool,
-    /// IPv6 de privacidade, que roda sozinho. Serve, mas perde para o `secured`.
+    /// Privacy IPv6, which rotates on its own. Usable, but loses to the `secured` one.
     pub temporary: bool,
 }
 
@@ -103,8 +103,8 @@ pub fn is_private_or_local(ip: &str) -> bool {
     false
 }
 
-/// Aplica as regras da spec: descarta o que nao serve, prefere o estavel, e
-/// limita quantos candidatos cada familia contribui.
+/// Applies the spec's rules: drops what is useless, prefers the stable one, and
+/// limits how many candidates each family contributes.
 pub fn filter_candidates(raw: Vec<LocalAddr>, pinned: Option<&str>) -> Vec<String> {
     let mut useful: Vec<LocalAddr> = raw
         .into_iter()
@@ -112,21 +112,21 @@ pub fn filter_candidates(raw: Vec<LocalAddr>, pinned: Option<&str>) -> Vec<Strin
             !a.deprecated && !disposable(&a.ip) && !is_virtual_interface(a.interface.as_deref())
         })
         .collect();
-    // Estavel antes de temporario, e ordem lexicografica para desempatar: o
-    // conjunto anunciado nao pode mudar so porque a enumeracao veio noutra ordem.
+    // Stable before temporary, with lexicographic order as the tiebreaker: the
+    // announced set must not change just because the enumeration came in another order.
     useful.sort_by(|a, b| a.temporary.cmp(&b.temporary).then_with(|| a.ip.cmp(&b.ip)));
 
     let mut output: Vec<String> = Vec::new();
     if let Some(f) = pinned {
-        // Nao conta para o teto: e intencao explicita do operador.
+        // Does not count toward the cap: it is the operator's explicit intent.
         output.push(f.to_string());
     }
     let (mut v4, mut v6) = (0usize, 0usize);
     for a in useful {
-        // Comparado sem colchetes dos dois lados: `pinned` vem de
-        // `effective_host`, que colchetea o IPv6, e `a.ip` e o endereco cru.
-        // Comparar as duas formas nunca casava, e o endereco fixado saia
-        // duplicado no anuncio - num datagrama cujo orcamento e MTU.
+        // Compared without brackets on both sides: `pinned` comes from
+        // `effective_host`, which brackets the IPv6, and `a.ip` is the raw address.
+        // Comparing the two forms never matched, and the pinned address went out
+        // duplicated in the announcement - in a datagram whose budget is the MTU.
         if output
             .iter()
             .any(|s| without_brackets(s) == without_brackets(&a.ip))
@@ -143,14 +143,14 @@ pub fn filter_candidates(raw: Vec<LocalAddr>, pinned: Option<&str>) -> Vec<Strin
     output
 }
 
-/// Escolhe o endereço inicial que o wizard sugere para os peers.
+/// Picks the initial address the wizard suggests for peers.
 ///
-/// A rota UDP pode escolher o IPv6 temporário de privacidade no macOS. A
-/// enumeração das interfaces conhece essa distinção, então a sugestão deve
-/// passar pela mesma filtragem usada pelo anúncio e aplicar a preferência de
-/// produto: IPv6 global estável, depois qualquer IPv4 utilizável. O operador
-/// continua podendo editar o valor, e o anúncio do nó continua redetectando os
-/// endereços atuais.
+/// The UDP route may pick the temporary privacy IPv6 on macOS. The interface
+/// enumeration knows that distinction, so the suggestion must go through the
+/// same filtering used by the announcement and apply the product preference:
+/// stable global IPv6, then any usable IPv4. The operator can still edit the
+/// value, and the node's announcement keeps re-detecting the current
+/// addresses.
 pub fn preferred_advertise_ip(raw: Vec<LocalAddr>) -> Option<String> {
     let candidates = filter_candidates(raw.clone(), None);
     let stable = |ip: &str| {
@@ -181,16 +181,16 @@ pub fn preferred_advertise_ip(raw: Vec<LocalAddr>) -> Option<String> {
         })
 }
 
-/// Retorna a preferência calculada para as interfaces atuais desta máquina.
+/// Returns the preference computed for this machine's current interfaces.
 pub fn preferred_local_advertise_ip() -> Option<String> {
     preferred_advertise_ip(local_addrs())
 }
 
-/// Enderecos das interfaces desta maquina.
+/// Addresses of this machine's interfaces.
 ///
-/// Sem dependencia nova: le a saida de `ifconfig` (macOS) ou `ip -o addr`
-/// (Linux). Windows fica com a lista vazia por ora e cai no endereco observado
-/// pelo peer - que e exatamente o comportamento de hoje, nao uma regressao.
+/// No new dependency: reads the output of `ifconfig` (macOS) or `ip -o addr`
+/// (Linux). Windows gets an empty list for now and falls back to the address
+/// observed by the peer - which is exactly today's behavior, not a regression.
 pub fn local_addrs() -> Vec<LocalAddr> {
     #[cfg(target_os = "macos")]
     {
@@ -213,11 +213,11 @@ fn run(program: &str, args: &[&str]) -> String {
     match std::process::Command::new(program).args(args).output() {
         Ok(o) => String::from_utf8(o.stdout).unwrap_or_default(),
         Err(error) => {
-            // Sem o programa, o no nao conhece nenhum endereco proprio e nao
-            // anuncia candidato algum - nem o IPv6 publico. Os peers da LAN
-            // guardam a origem privada do pacote e a repassam no `PeerList`
-            // a peers remotos, que discam um IP que nao alcancam. Aconteceu na
-            // imagem Docker sem `iproute2`. Chamado a cada anuncio: avisa uma vez.
+            // Without the program, the node knows no address of its own and
+            // announces no candidate at all - not even the public IPv6. LAN peers
+            // keep the packet's private source and relay it in the `PeerList`
+            // to remote peers, who dial an IP they cannot reach. It happened in the
+            // Docker image without `iproute2`. Called on every announcement: warns once.
             static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -243,7 +243,7 @@ fn parse_ifconfig(output: &str) -> Vec<LocalAddr> {
         if fields.len() < 2 || (fields[0] != "inet" && fields[0] != "inet6") {
             continue;
         }
-        // "inet6 fe80::1%en0" - o escopo nao faz parte do endereco.
+        // "inet6 fe80::1%en0" - the scope is not part of the address.
         let ip = fields[1].split('%').next().unwrap_or(fields[1]).to_string();
         out.push(LocalAddr {
             ip,
@@ -320,9 +320,9 @@ mod tests {
         assert_eq!(filter_candidates(raw, None), vec!["192.168.100.240"]);
     }
 
-    /// O macOS cria varios IPv6 sozinho - cinco nesta maquina em 2026-08-13.
-    /// PeerList cresce ~530 bytes por peer e ja e fatiado por MTU, entao o teto
-    /// nao e estetica: sem ele a descoberta vira fragmentacao.
+    /// macOS creates several IPv6 addresses on its own - five on this machine on 2026-08-13.
+    /// PeerList grows ~530 bytes per peer and is already sliced by MTU, so the cap
+    /// is not cosmetic: without it, discovery turns into fragmentation.
     #[test]
     fn at_most_two_candidates_per_family_survive() {
         let raw = vec![
@@ -338,8 +338,8 @@ mod tests {
         assert_eq!(output.iter().filter(|s| !s.contains(':')).count(), 2);
     }
 
-    /// O endereco fixado pelo operador e intencao explicita: vem primeiro e
-    /// nao conta para o teto, senao a filtragem poderia descarta-lo.
+    /// The address pinned by the operator is explicit intent: it comes first and
+    /// does not count toward the cap, otherwise the filtering could drop it.
     #[test]
     fn a_pinned_address_comes_first_and_is_never_dropped() {
         let raw = vec![a("192.168.1.1"), a("192.168.1.2"), a("192.168.1.3")];
@@ -435,9 +435,9 @@ mod tests {
         assert_eq!(filter_candidates(raw, None).len(), 1);
     }
 
-    /// O endereco fixado chega colchetado (vem de `effective_host`) e o local
-    /// vem cru. Medido no cluster em 2026-08-16: o anuncio do no saia com o
-    /// mesmo IPv6 duas vezes, num datagrama cujo teto e o MTU.
+    /// The pinned address arrives bracketed (it comes from `effective_host`) and the
+    /// local one comes raw. Measured on the cluster on 2026-08-16: the node's
+    /// announcement went out with the same IPv6 twice, in a datagram whose cap is the MTU.
     #[test]
     fn a_pinned_ipv6_is_not_repeated_by_the_local_enumeration() {
         let output = filter_candidates(
@@ -478,17 +478,17 @@ mod tests {
         }
     }
 
-    /// A faixa de CGNAT (RFC 6598) e a que a Tailscale usa. Medido em
-    /// 2026-08-16 nesta maquina: o primeiro `identify` veio de um peer
-    /// alcancado pelo tailnet e reportou `100.122.132.97`, que o no adotou
-    /// como endereco *publico*. `Ipv4Addr::is_private` responde so RFC 1918 e
-    /// deixa essa faixa passar.
+    /// The CGNAT range (RFC 6598) is the one Tailscale uses. Measured on
+    /// 2026-08-16 on this machine: the first `identify` came from a peer
+    /// reached over the tailnet and reported `100.122.132.97`, which the node
+    /// adopted as its *public* address. `Ipv4Addr::is_private` answers only RFC 1918
+    /// and lets this range through.
     #[test]
     fn carrier_grade_nat_is_not_a_public_address() {
         for ip in ["100.64.0.1", "100.122.132.97", "100.127.255.255"] {
             assert!(is_private_or_local(ip), "{ip} e CGNAT/tailnet");
         }
-        // As bordas de fora da /10 continuam publicas.
+        // The edges just outside the /10 stay public.
         for ip in ["100.63.255.255", "100.128.0.1"] {
             assert!(!is_private_or_local(ip), "{ip} is outside 100.64/10");
         }
@@ -504,8 +504,8 @@ mod tests {
         assert_eq!(found, vec!["192.168.100.138"]);
     }
 
-    /// Loopback e link-local sao faixas, nao os dois enderecos que
-    /// `disposable` cita pelo nome.
+    /// Loopback and link-local are ranges, not just the two addresses that
+    /// `disposable` names.
     #[test]
     fn the_whole_loopback_and_link_local_ranges_are_local() {
         for ip in [
@@ -530,13 +530,13 @@ mod tests {
         }
     }
 
-    /// A maquina de desenvolvimento tem enderecos de verdade, e a filtragem
-    /// nunca pode devolver algo indiscavel a partir deles.
+    /// The development machine has real addresses, and the filtering must
+    /// never return anything undialable from them.
     #[test]
     fn the_real_machine_yields_only_usable_addresses() {
         let found = filter_candidates(local_addrs(), None);
-        // Sem esta linha o teste passaria por vacuidade numa maquina onde a
-        // enumeracao nao funcionasse, que e justamente o que ele deveria pegar.
+        // Without this line the test would pass vacuously on a machine where the
+        // enumeration did not work, which is exactly what it should catch.
         assert!(
             !found.is_empty(),
             "the enumeration found no address at all"

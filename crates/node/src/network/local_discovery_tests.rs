@@ -140,8 +140,8 @@ async fn admin_requires_proof_before_emitting_secret() {
     };
     admin.handle_for_test(forged, endpoint(42777)).await;
     assert!(admin.take_outbound_for_test().await.is_none());
-    // O computador aparece ao procurar a rede, mas uma prova forjada nunca o
-    // marca como tendo recebido a raiz.
+    // The computer shows up when it looks for the network, but a forged proof
+    // never marks it as having received the root.
     let peers = admin.status().await.peers;
     assert_eq!(peers.len(), 1);
     assert!(!peers[0].joined);

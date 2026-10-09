@@ -8,9 +8,9 @@ export const BRAND_LANGUAGES = [
 ] as const;
 
 /**
- * O seletor de idioma da página inicial do site, usado no portão e no wizard.
- * Mostra só a bandeira e a sigla do idioma atual; um clique abre o submenu com
- * as opções.
+ * The language selector of the site's home page, used in the gate and the wizard.
+ * It shows only the flag and the code of the current language; a click opens the
+ * submenu with the options.
  */
 export function BrandLanguageSwitch() {
   const { locale, setLocale } = useI18n();

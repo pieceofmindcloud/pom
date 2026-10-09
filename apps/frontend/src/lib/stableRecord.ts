@@ -1,6 +1,6 @@
 import { useRef } from "react";
 
-/** Dois mapas com as mesmas chaves e os mesmos valores por identidade. */
+/** Two maps with the same keys and the same values by identity. */
 export function sameRecord<T>(a: Record<string, T>, b: Record<string, T>): boolean {
   if (a === b) return true;
   const keys = Object.keys(a);
@@ -9,17 +9,17 @@ export function sameRecord<T>(a: Record<string, T>, b: Record<string, T>): boole
 }
 
 /**
- * O mesmo mapa, com a **mesma identidade**, enquanto o conteúdo não mudar.
+ * The same map, with the **same identity**, while the content does not change.
  *
- * Existe por causa de um defeito de verdade: um mapa derivado de `useQueries`
- * nasce novo a cada render, porque `useQueries` monta um array novo a cada
- * render. Quem depende desse mapa numa lista de dependências de efeito - ou o
- * compara por referência dentro do efeito - grava estado em todo render, e o
- * React aborta a árvore com "Maximum update depth exceeded": a tela congela e
- * nem a troca de rota commita mais. Ver `Chat.navigation.test.tsx`.
+ * It exists because of a real defect: a map derived from `useQueries`
+ * is born new on every render, because `useQueries` builds a new array on every
+ * render. Whoever depends on that map in an effect's dependency list - or
+ * compares it by reference inside the effect - writes state on every render, and
+ * React aborts the tree with "Maximum update depth exceeded": the screen freezes
+ * and not even a route change commits anymore. See `Chat.navigation.test.tsx`.
  *
- * A comparação é rasa de propósito: os valores vêm do react-query, que já
- * mantém a identidade de `data` estável entre renders.
+ * The comparison is shallow on purpose: the values come from react-query, which already
+ * keeps the identity of `data` stable between renders.
  */
 export function useStableRecord<T>(next: Record<string, T>): Record<string, T> {
   const held = useRef(next);

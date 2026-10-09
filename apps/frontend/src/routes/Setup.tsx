@@ -1,13 +1,13 @@
 /**
- * Primeiro acesso real.
+ * Real first access.
  *
- * Pergunta só o que não dá para decidir depois (ver `setupWizardFlow.ts`):
- * o papel da máquina e o nome dela; para quem cria a rede, o nome da rede e se
- * ela é privada ou pública (a cidade só quando é pública, para o pkarr); para
- * quem entra, a raiz e a chave - de preferência trazidas pela descoberta local.
- * Recursos, pastas, disco, senha e exposição têm padrões e são ajustados depois,
- * dentro do POM. A casca usa a identidade da página inicial do site, a mesma do
- * portão de acesso (`.pom-login*` em `index.css`).
+ * It asks only what cannot be decided later (see `setupWizardFlow.ts`):
+ * the machine's role and its name; for whoever creates the network, the network
+ * name and whether it is private or public (the city only when it is public, for
+ * pkarr); for whoever joins, the root and the key - preferably brought by local
+ * discovery. Resources, folders, disk, password and exposure have defaults and
+ * are adjusted later, inside POM. The shell uses the identity of the site's home
+ * page, the same as the access gate (`.pom-login*` in `index.css`).
  */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -88,12 +88,12 @@ interface TrustNetworkMetadata {
   organization?: string;
   visibility?: NetworkVisibility;
   access_policy?: AccessPolicy;
-  /** Chaves `pk:` dos relés dedicados. O documento não carrega IP de ninguém. */
+  /** `pk:` keys of the dedicated relays. The document carries nobody's IP. */
   relay_hints?: string[];
   directory_replicas?: string[];
 }
 
-/** O que um computador informa de si ao procurar a rede local. */
+/** What a computer reports about itself when looking for the local network. */
 export interface DiscoveredMachine {
   hostname: string;
   os?: string;
@@ -198,7 +198,7 @@ function trustNetworkMetadata(document: string): TrustNetworkMetadata | null {
   }
 }
 
-/** O IP de um endereço `host:porta`, sem colchetes nem porta. */
+/** The IP of a `host:porta` address, without brackets or port. */
 export function addressHost(address: string): string {
   const bracketed = address.match(/^\[([^\]]+)\](?::\d+)?$/);
   if (bracketed) return bracketed[1];
@@ -264,8 +264,8 @@ export function Setup() {
         setHardware(detected);
         setSetup((current) => ({
           ...current,
-          // Pastas, disco, reservas e limite térmico ficam nos padrões da
-          // máquina; todos são ajustáveis depois, dentro do POM.
+          // Folders, disk, reservations and thermal limit stay at the machine's
+          // defaults; all are adjustable later, inside POM.
           modelDirs: [detected.default_model_dir],
           shardDir: detected.default_shard_dir,
           shardMaxGb: Math.min(detected.shard_max_gb || 20, Math.max(0, detected.system.disk.free_mb / 1024)),
@@ -435,7 +435,7 @@ export function directoryReplicas(value: string): string[] {
   return splitList(value).filter((item) => !item.startsWith("pk:"));
 }
 
-/** Casca do wizard com a identidade do site: painel escuro flutuante, marca e trilha de passos. */
+/** Wizard shell with the site's identity: floating dark panel, brand and step trail. */
 function FirstRunShell({ steps, stage, canGoBack, onBack, action, children, t }: { steps: WizardStep[]; stage: WizardStage; canGoBack: boolean; onBack: () => void; action: ReactNode; children: ReactNode; t: Translate }) {
   return (
     <main className="pom-login pom-setup">
@@ -472,7 +472,7 @@ function FirstRunShell({ steps, stage, canGoBack, onBack, action, children, t }:
   );
 }
 
-/** Os passos como os nós ligados do site: o pulso viaja entre eles e o atual acende. */
+/** The steps as the site's linked nodes: the pulse runs between them, the current one lights up. */
 function StepTrail({ steps, stage, t }: { steps: WizardStep[]; stage: WizardStage; t: Translate }) {
   const active = Math.max(0, steps.findIndex((step) => step.id === stage));
   return (
@@ -643,7 +643,7 @@ export function InviteScreen({ setup, anchor, t }: { setup: SetupState; anchor: 
 function SecretCard({ label, value, t }: { label: string; value: string; t: Translate }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    // Sem `copyText` o botão não copiava em HTTP; o conteúdo continua selecionável se falhar.
+    // Without `copyText` the button did not copy over HTTP; the content stays selectable if it fails.
     if (!(await copyText(value))) return;
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
@@ -673,7 +673,7 @@ function TrustActions({ anchor, t }: { anchor: AnchorPreview; t: Translate }) {
     URL.revokeObjectURL(url);
   }
   async function copy() {
-    // Se a cópia falhar, o download continua disponível ao lado.
+    // If the copy fails, the download stays available next to it.
     if (!(await copyText(anchor.document))) return;
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
@@ -688,10 +688,10 @@ function TrustActions({ anchor, t }: { anchor: AnchorPreview; t: Translate }) {
 }
 
 /**
- * A descoberta na rede local, dos dois lados. O administrador espera e vê cada
- * computador que procura a rede (nome, sistema, IP, RAM, GPU) entrar com uma
- * animação; é opcional - concluir sem ninguém é normal. Quem entra procura o
- * administrador e recebe a raiz e a chave sem digitar nada.
+ * Discovery on the local network, from both sides. The administrator waits and sees
+ * each computer looking for the network (name, system, IP, RAM, GPU) come in with
+ * an animation; it is optional - finishing with nobody is normal. Whoever joins looks
+ * for the administrator and receives the root and the key without typing anything.
  */
 export function LocalDiscoveryPanel({ mode, setup, onResult, t }: { mode: "admin" | "join"; setup: SetupState; onResult?: (result: AutoDiscoveryResult) => void; t: Translate }) {
   const toast = useToast();
@@ -735,8 +735,8 @@ export function LocalDiscoveryPanel({ mode, setup, onResult, t }: { mode: "admin
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-    // A procura recomeça só por pedido explícito (`attempt`); editar o nome
-    // no meio não abre outra sessão.
+    // The search restarts only on explicit request (`attempt`); editing the name
+    // midway does not open another session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin, attempt]);
 
@@ -978,8 +978,8 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
           <span>{t("firstRun.manualJoin")}</span>
           <ChevronDown className="h-4 w-4" />
         </summary>
-        {/* Só monta aberto: os campos recalculam a impressão digital, e fechados
-            eles apagariam a que a descoberta local acabou de trazer. */}
+        {/* It only mounts open: the fields recompute the fingerprint, and closed
+            they would erase the one local discovery has just brought. */}
         {manualOpen && (
           <div className="pt-3">
             <TrustFields setup={setup} update={update} applyTrust={applyTrust} t={t} />
@@ -1066,7 +1066,7 @@ function SavedScreen({ t }: { t: Translate }) {
   );
 }
 
-/** O carregamento é a mesma pipeline do portão: três nós e o pulso viajando. */
+/** Loading is the same pipeline as the gate: three nodes and the pulse travelling. */
 function LoadingScreen() {
   return (
     <div className="flex min-h-[260px] items-center justify-center" data-testid="setup-loading">

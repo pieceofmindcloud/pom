@@ -1,17 +1,17 @@
 // @vitest-environment jsdom
 /**
- * A tela de implantar tem que dizer por que o botão está cinza.
+ * The deploy screen has to say why the button is grey.
  *
- * O defeito que estes testes guardam: `validated` comparava as linhas da tela
- * - que a tela mantém em ordem de camada - contra `plan.steps` posição a
- * posição, e o nó devolvia os passos agrupados por máquina de destino. Bastava
- * uma máquina ficar com duas faixas para a ordem divergir. E como *todos* os
- * painéis de explicação renderizavam sob
- * `validated`, o operador ficava exatamente com o que o captain relatou: botão
- * desabilitado e nenhuma explicação na tela.
+ * The defect these tests guard: `validated` compared the rows of the screen
+ * - which the screen keeps in layer order - against `plan.steps` position by
+ * position, and the node returned the steps grouped by target machine. It took
+ * just one machine holding two ranges for the order to diverge. And since *all*
+ * the explanation panels rendered under
+ * `validated`, the operator was left with exactly what the captain reported: a
+ * disabled button and no explanation on screen.
  *
- * Os dois lados entram aqui: a comparação deixou de depender da ordem, e a
- * explicação deixou de depender da comparação.
+ * Both sides come in here: the comparison stopped depending on the order, and
+ * the explanation stopped depending on the comparison.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -86,9 +86,9 @@ function step(
 }
 
 /**
- * O plano como o nó o devolvia: agrupado por máquina, e por isso fora da ordem
- * de camadas. `ksia` fica com duas faixas, então a resposta chega fora da
- * ordem do pipeline.
+ * The plan as the node returned it: grouped by machine, and therefore out of
+ * layer order. `ksia` holds two ranges, so the response arrives out of
+ * pipeline order.
  */
 function planOutOfLayerOrder(): DeployPlan {
   const ranges: Array<[number, number]> = [
@@ -296,7 +296,7 @@ describe("DeployModel", () => {
     });
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
-    // Os combos do cache KV moram na categoria "Configurações padrões".
+    // The KV cache combos live in the "Configurações padrões" category.
     expect(screen.getByText("Configurações padrões")).toBeTruthy();
     const cacheK = screen.getByRole("combobox", { name: "Cache K" });
     const cacheV = screen.getByRole("combobox", { name: "Cache V" });
@@ -446,7 +446,7 @@ describe("DeployModel", () => {
     post.mockResolvedValue(planWithUnassignedMiddleRange());
     mount();
 
-    // O motivo da recusa aparece - era exatamente ele que sumia.
+    // The reason for the refusal shows - it was exactly what went missing.
     await waitFor(() => {
       expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
     });
@@ -573,8 +573,8 @@ describe("DeployModel", () => {
     p.blocked = "a fatia L8-15 está sem máquina";
     p.complete = false;
     p.missing = [[8, 15]];
-    // Agrupado como o nó agrupava: as duas faixas sem máquina saíam juntas,
-    // então L24-31 vinha antes de L16-23.
+    // Grouped as the node grouped: the two ranges with no machine came out together,
+    // so L24-31 came before L16-23.
     p.steps = [
       step(0, 7, "ksia", 1),
       step(8, 15, "", 2),
@@ -717,15 +717,15 @@ describe("DeployModel", () => {
   });
 
   /**
-   * O defeito que este teste guarda: no bloco "Camadas disponíveis neste peer"
-   * a faixa já atribuída virava um botão `disabled`. Selecionar era um caminho
-   * só de ida - o operador conseguia pôr duas faixas na mesma máquina e não
-   * conseguia mais tirar nenhuma delas. Só existia remoção por máquina inteira
-   * ("Remover da implantação"), nunca por faixa.
+   * The defect this test guards: in the "Camadas disponíveis neste peer" block
+   * the range already assigned became a `disabled` button. Selecting was a one
+   * way path - the operator could put two ranges on the same machine and could
+   * no longer take either of them off. Removal existed only per whole machine
+   * ("Remover da implantação"), never per range.
    *
-   * A intenção original do guarda continua valendo: atribuir uma faixa a outro
-   * peer nunca remove *silenciosamente* o que o peer já serve. Um clique do
-   * operador na faixa marcada não é remoção silenciosa - é a ordem dele.
+   * The original intent of the guard still holds: assigning a range to another
+   * peer never *silently* removes what the peer already serves. A click by the
+   * operator on the marked range is not silent removal - it is their order.
    */
   it("deselects a layer already assigned to the machine", async () => {
     const p = planOutOfLayerOrder();
@@ -735,7 +735,7 @@ describe("DeployModel", () => {
 
     await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
 
-    // L0-7 já é de ksia no plano: o botão tem que oferecer a saída, não estar cinza.
+    // L0-7 already belongs to ksia in the plan: the button has to offer the way out, not be grey.
     const selected = screen.getByRole("button", { name: "Remover L0–7 de ksia" });
     expect((selected as HTMLButtonElement).disabled).toBe(false);
 
@@ -747,13 +747,13 @@ describe("DeployModel", () => {
         .reverse()
         .find((body) => Array.isArray(body.selection));
       expect(body?.selection?.some((row) => row.start_layer === 0 && row.target_node_id === "ksia")).toBe(false);
-      // As faixas das outras máquinas ficam onde estavam.
+      // The ranges of the other machines stay where they were.
       expect(body?.selection?.some((row) => row.start_layer === 8 && row.target_node_id === "salem")).toBe(true);
       expect(body?.selection?.some((row) => row.start_layer === 24 && row.target_node_id === "mac")).toBe(true);
     });
   });
 
-  /** Tirar e pôr de volta: o mesmo botão faz os dois sentidos. */
+  /** Take off and put back: the same button does both directions. */
   it("assigns the same layer again after removing it", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
@@ -772,17 +772,17 @@ describe("DeployModel", () => {
   });
 
   /**
-   * O defeito que estes testes guardam: o interruptor de juntar fatias vizinhas
-   * existia, foi apagado na reescrita do canvas (6340c49) e ninguém percebeu,
-   * porque tudo em volta dele sobreviveu - o estado `merge`, o campo da API e
-   * as strings dos dois idiomas. Sobrou uma recusa que manda o operador
-   * "juntar as fatias vizinhas na tela" apontando para um controle que não
-   * existia mais, e a capacidade do backend (`splitter::merge`) ficou
-   * inalcançável pela interface.
+   * The defect these tests guard: the switch to join neighbouring slices
+   * existed, was deleted in the canvas rewrite (6340c49) and nobody noticed,
+   * because everything around it survived - the `merge` state, the API field and
+   * the strings of both languages. What was left was a refusal telling the
+   * operator to "juntar as fatias vizinhas na tela", pointing at a control that
+   * no longer existed, and the backend's capability (`splitter::merge`) became
+   * unreachable through the interface.
    *
-   * Por isso o teste cobre os dois lados: que o controle está na tela e que
-   * ele chega ao nó. Um controle renderizado e desligado da requisição seria
-   * o mesmo defeito com outra cara.
+   * That is why the test covers both sides: that the control is on screen and
+   * that it reaches the node. A control rendered and disconnected from the
+   * request would be the same defect with another face.
    */
   it("offers the switch to merge neighboring slices in the Globals tab", async () => {
     const p = planOutOfLayerOrder();
@@ -794,7 +794,7 @@ describe("DeployModel", () => {
 
     const toggle = screen.getByRole("checkbox", { name: "Juntar fatias vizinhas na mesma máquina" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    // Faixas não contíguas na mesma máquina agora são válidas sem merge.
+    // Non-contiguous ranges on the same machine are now valid without merge.
     expect(screen.queryByText(/ksia ficou com duas faixas/)).toBeNull();
     expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(false);
   });

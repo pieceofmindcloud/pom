@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 /**
- * O defeito que este teste guarda: `clsx` concatena, não resolve conflito de
- * Tailwind. Enquanto o tamanho vinha do `className` do chamador, `h-6 px-1.5
- * text-[0.62rem]` e o padrão `h-9 px-3 text-sm` iam juntos para a marcação, e
- * quem decidia era a ordem da folha de estilo - o padrão. Os campos do inspetor
- * pediam compacto havia meses e renderizavam em tamanho cheio, sem erro nenhum
- * para denunciar.
+ * The defect this test guards: `clsx` concatenates, it does not resolve Tailwind
+ * conflicts. While the size came from the caller's `className`, `h-6 px-1.5
+ * text-[0.62rem]` and the default `h-9 px-3 text-sm` went together into the markup, and
+ * whoever decided was the stylesheet order - the default. The inspector's fields
+ * had asked for compact for months and rendered at full size, with no error at all
+ * to give it away.
  *
- * Por isso o teste é sobre a *ausência* das utilitárias de tamanho padrão: é o
- * empilhamento que causava o defeito, e ele voltaria mudo.
+ * That is why the test is about the *absence* of the default size utilities: it is
+ * the stacking that caused the defect, and it would come back silent.
  */
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,11 +25,11 @@ describe("compact variant", () => {
     expect(cls).toContain("h-6");
     expect(cls).toContain("px-1.5");
     expect(cls).toContain("text-[0.62rem]");
-    // O tamanho padrão não pode viajar junto: era ele que vencia.
+    // The default size must not travel along: it was the one that won.
     expect(cls).not.toContain("h-9");
     expect(cls).not.toContain("px-3");
     expect(cls).not.toContain("text-sm");
-    // O que o chamador manda que não é tamanho continua chegando.
+    // What the caller sends that is not size keeps arriving.
     expect(cls).toContain("text-right");
   });
 

@@ -1,36 +1,36 @@
-//! Velocidade medida da fatia deste peer: quanto ela custa por token de
-//! prefill e por passo de decode.
+//! Measured speed of this peer's slice: how much it costs per prefill token
+//! and per decode step.
 //!
-//! É o dado que o planejador do gateway precisa para escolher a pipeline que
-//! entrega mais cedo, e não só a de menor latência de rede (ver
-//! `routing::pipeline::plan_pipeline_fastest`). Duas fontes:
+//! It is the data the gateway planner needs to pick the pipeline that delivers
+//! soonest, and not only the one with the lowest network latency (see
+//! `routing::pipeline::plan_pipeline_fastest`). Two sources:
 //!
-//! - **Teste ao servir** (`run_bench`): um prefill curto e alguns passos de
-//!   decode na própria fatia, sem rede, logo depois que o modelo carrega. A
-//!   entrada é sintética (tokens fixos na cabeça, estado oculto zerado nos
-//!   demais hops): o custo de um passo não depende do conteúdo.
-//! - **Tráfego real** (`observe_*`): cada prefill e cada decode atualizam uma
-//!   média móvel, para o número acompanhar carga, temperatura e contexto.
+//! - **Test on serving** (`run_bench`): a short prefill and a few decode steps
+//!   on the slice itself, with no network, right after the model loads. The
+//!   input is synthetic (fixed tokens at the head, zeroed hidden state on the
+//!   other hops): the cost of a step does not depend on the content.
+//! - **Real traffic** (`observe_*`): every prefill and every decode updates a
+//!   moving average, so the number tracks load, temperature and context.
 //!
-//! Publicado no `/health` (`perf`).
+//! Published in `/health` (`perf`).
 
 use super::*;
 
-/// Peso de uma amostra nova na média móvel.
+/// Weight of a new sample in the moving average.
 const EWMA_ALPHA: f64 = 0.2;
 
-/// Tokens do prefill do teste. Do tamanho de um pedaço de prefill real.
+/// Prefill tokens of the test. The size of a real prefill chunk.
 const BENCH_PREFILL_TOKENS: usize = 64;
 
-/// Passos de decode do teste; o primeiro é aquecimento e fica fora da conta.
+/// Decode steps of the test; the first is warm-up and is left out of the count.
 const BENCH_DECODE_STEPS: usize = 9;
 
-/// Um prefill com menos tokens que isto mede mais o custo fixo da chamada que
-/// o custo por token, e não entra na média de prefill.
+/// A prefill with fewer tokens than this measures the fixed cost of the call
+/// more than the per-token cost, and does not enter the prefill average.
 const PREFILL_MIN_TOKENS: usize = 8;
 
-/// Um decode com mais tokens que isto é uma verificação larga de rascunho, não
-/// um passo típico, e não entra na média de decode.
+/// A decode with more tokens than this is a wide draft verification, not a
+/// typical step, and does not enter the decode average.
 const DECODE_MAX_TOKENS: usize = 8;
 
 #[derive(Debug, Clone, Default)]
@@ -75,7 +75,7 @@ impl SlicePerf {
         self.decode_samples += 1;
     }
 
-    /// O teste semeia a média; o tráfego real a corrige depois.
+    /// The test seeds the average; real traffic corrects it later.
     fn seed(&mut self, bench: BenchResult) {
         if self.prefill_us_per_token.is_none() {
             self.prefill_us_per_token = Some(bench.prefill_us_per_token);
@@ -108,9 +108,9 @@ impl SlicePerf {
     }
 }
 
-/// Largura por token e forma (sem o eixo de tokens) do estado oculto que uma
-/// fatia do meio recebe. Com vários fluxos de residual, `n_embd_out` é um
-/// múltiplo de `n_embd` e o estado viaja em três eixos.
+/// Per-token width and shape (without the token axis) of the hidden state that a
+/// middle slice receives. With several residual streams, `n_embd_out` is a
+/// multiple of `n_embd` and the state travels along three axes.
 pub(crate) fn hidden_input_layout(
     n_embd: usize,
     n_embd_inp: usize,
@@ -123,8 +123,8 @@ pub(crate) fn hidden_input_layout(
     }
 }
 
-/// Se o teste de velocidade da fatia roda ao carregar o modelo. `POM_SLICE_BENCH=0`
-/// desliga: um defeito aqui não pode derrubar um nó em produção sem saída.
+/// Whether the slice speed test runs when the model loads. `POM_SLICE_BENCH=0`
+/// turns it off: a defect here must not bring down a production node with no way out.
 pub(crate) fn bench_enabled() -> bool {
     !matches!(
         crate::brand::env("SLICE_BENCH")
@@ -136,10 +136,10 @@ pub(crate) fn bench_enabled() -> bool {
     )
 }
 
-/// Mede a fatia com uma sequência descartável. Segura o estado inteiro
-/// enquanto roda (menos de um segundo numa GPU), então é chamado uma vez, logo
-/// depois de o modelo carregar. `None` quando não dá para medir com segurança:
-/// grupo TP (o decode esperaria os workers) ou nenhum slot livre.
+/// Measures the slice with a disposable sequence. Holds the whole state while
+/// it runs (under a second on a GPU), so it is called once, right after the
+/// model loads. `None` when it cannot be measured safely: TP group (the decode
+/// would wait for the workers) or no free slot.
 pub(super) fn run_bench(s: &mut InferState) -> Result<Option<BenchResult>> {
     if s.tp.is_some() || !bench_enabled() {
         return Ok(None);
@@ -159,20 +159,21 @@ fn bench_on_sequence(s: &mut InferState, seq_id: u32) -> Result<BenchResult> {
     let started = Instant::now();
     let is_head = s.start_layer == 0;
     let is_last = s.end_layer + 1 >= s.total_layers;
-    // A forma que a fatia anterior manda de verdade, a mesma da captura do
-    // residual (`capture.rs`): `[tokens, n_embd]` num modelo comum e
-    // `[tokens, n_embd, fluxos]` num com vários fluxos de residual
-    // (hyper-connections, Qwen3.8 "qwen4exp"), com `n_embd_out` floats por
-    // token. Um estado oculto na forma errada aborta o processo dentro do
-    // llama.cpp (`GGML_ASSERT` no reshape), sem erro que dê para tratar.
+    // The shape the previous slice really sends, the same as the residual
+    // capture (`capture.rs`): `[tokens, n_embd]` on an ordinary model and
+    // `[tokens, n_embd, streams]` on one with several residual streams
+    // (hyper-connections, Qwen3.8 "qwen4exp"), with `n_embd_out` floats per
+    // token. A hidden state of the wrong shape aborts the process inside
+    // llama.cpp (`GGML_ASSERT` in the reshape), with no error that can be handled.
     let hidden_layout =
         hidden_input_layout(s.engine.n_embd, s.engine.n_embd_inp, s.engine.n_embd_out);
     let n_vocab = s.engine.n_vocab.max(2) as i32;
     let _ = s.engine.set_capture_layer(None);
 
-    // Uma chamada do motor com o mesmo desfecho que o caminho real: a cauda
-    // lê os logits, os demais leem o estado oculto capturado. As duas leituras
-    // sincronizam a GPU, então o tempo medido é o do trabalho, não o do envio.
+    // One engine call with the same outcome as the real path: the tail reads
+    // the logits, the others read the captured hidden state. Both reads
+    // synchronize the GPU, so the measured time is that of the work, not of the
+    // submission.
     let run = |s: &mut InferState, n: usize, pos: u32| -> Result<std::time::Duration> {
         let call_started = Instant::now();
         if is_head {
@@ -223,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_hidden_state_with_several_streams_travels_on_three_axes() {
-        // Qwen3.8 "qwen4exp": 4 fluxos de 2560.
+        // Qwen3.8 "qwen4exp": 4 streams of 2560.
         assert_eq!(
             hidden_input_layout(2560, 2560, 10240),
             (10240, vec![2560, 4])
@@ -240,12 +241,12 @@ mod tests {
             decode_us_per_step: 20_000.0,
             duration_ms: 1,
         });
-        // Decode típico puxa a média; verificação larga não conta.
+        // A typical decode moves the average; a wide verification does not count.
         perf.observe_decode(Duration::from_millis(30), 1);
         perf.observe_decode(Duration::from_millis(500), 64);
         assert_eq!(perf.decode_samples, 1);
         assert!((perf.decode_us_per_step.unwrap() - 22_000.0).abs() < 1.0);
-        // Pedaço de prefill pequeno demais não conta.
+        // A prefill chunk that is too small does not count.
         perf.observe_prefill(Duration::from_millis(10), 2);
         assert_eq!(perf.prefill_samples, 0);
         perf.observe_prefill(Duration::from_millis(64), 64);

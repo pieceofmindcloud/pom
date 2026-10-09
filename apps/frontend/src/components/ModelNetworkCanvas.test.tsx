@@ -127,7 +127,7 @@ describe("ModelNetworkCanvas: edge RTT", () => {
 
     expect(screen.getByTestId("pipeline-total").textContent).toBe("150.0 ms");
     expect(screen.getByText("rede 110.0 ms · compute 40.0 ms")).toBeTruthy();
-    // As pernas uma a uma ficam na janela do gateway.
+    // The legs one by one stay in the gateway's window.
     fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
     expect(screen.getByTestId("pipeline-total-detail").textContent).toBe("Total do pipeline: 150.0 ms");
     expect(screen.getByTestId("pipeline-gateway-details").textContent).toContain("perna 4");
@@ -153,14 +153,14 @@ describe("ModelNetworkCanvas: edge RTT", () => {
     expect(gateway.textContent).not.toContain("não medido");
     expect(gateway.textContent).toContain("2 rotas");
     expect(screen.getByTestId("pipeline-total").textContent).toBe("9.5 ms");
-    // A lista inteira fica na janela, para o card não crescer com as réplicas.
+    // The whole list stays in the window, so the card does not grow with the replicas.
     fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
     const routes = screen.getAllByTestId("pipeline-route").map((route) => route.textContent ?? "");
-    // A soma das pernas (19 e 33 ms) contaria ida e volta inteiras.
+    // The sum of the legs (19 and 33 ms) would count whole round trips.
     expect(routes[0]).toMatch(/head-fast.*9\.5 ms/);
     expect(routes[0]).toContain("mais rápida");
     expect(routes[1]).toMatch(/head-slow.*16\.5 ms/);
-    // Perna por perna, da entrada no gateway até a volta.
+    // Leg by leg, from the entry at the gateway to the return.
     expect(routes[1]).toMatch(/Gateway → head-slow18\.0 ms/);
     expect(routes[1]).toMatch(/tail → Gateway3\.0 ms/);
   });
@@ -180,7 +180,7 @@ describe("ModelNetworkCanvas: machine speed", () => {
     const cards = screen.getAllByTestId("machine-tps").map((element) => element.textContent);
     expect(cards).toContain("decode66.7tok/sprefill1250tok/s");
     expect(cards).toContain("velocidade não medida");
-    // Uma fatia medida só não tem com quem se comparar: tom neutro.
+    // A single measured slice has nothing to compare with: neutral tone.
     expect(screen.getByTestId("speed-decode").getAttribute("data-tone")).toBe("solo");
     expect(screen.getByTestId("pipeline-throughput-badge").textContent).toBe("20.0 tok/s");
     fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
@@ -211,14 +211,14 @@ describe("ModelNetworkCanvas: relayed route", () => {
     expect(label.getAttribute("title")).toContain("peer de relé");
     expect(container.querySelectorAll('path[data-relayed="true"]').length).toBe(1);
     expect(screen.getByTestId("pipeline-relay-warning").textContent).toContain("Rota por relé");
-    // O texto longo só aparece no card, ao clicar no ícone.
+    // The long text only appears on the card, when clicking the icon.
     expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
     fireEvent.click(screen.getByTestId("pipeline-relay-info"));
     expect(screen.getByTestId("pipeline-relay-legs").textContent).toBe("Pernas por relé: head → tail");
     expect(screen.getByTestId("pipeline-relay-popup").textContent).toContain("não consegue contornar");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
-    // Na janela, a rota marcada e a perna por relé destacada.
+    // In the window, the marked route and the leg through a relay highlighted.
     fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
     expect(screen.getByTestId("pipeline-route-relay").textContent).toBe("RELAY");
     expect(screen.getByTestId("pipeline-route").textContent).toMatch(/head → tail67\.0 ms/);
@@ -263,13 +263,13 @@ describe("ModelNetworkCanvas: deployment properties", () => {
 });
 
 /**
- * Quantas camadas foram parar na CPU tem que aparecer no próprio card.
+ * How many layers ended up on the CPU has to show on the card itself.
  *
- * Antes, isso só existia atrás do duplo clique: a inferência ficava lenta
- * porque parte do modelo não coube na VRAM, e o card - que mostra VRAM, RAM e
- * carga - não dizia nada. O resumo aqui não substitui o detalhe; ele existe
- * para o operador não precisar abrir máquina por máquina para descobrir qual
- * delas está rodando meio na CPU.
+ * Before, this only existed behind the double click: inference was slow
+ * because part of the model did not fit in VRAM, and the card - which shows VRAM, RAM and
+ * load - said nothing. The summary here does not replace the detail; it exists
+ * so the operator does not need to open machine by machine to find out which
+ * of them is running half on the CPU.
  */
 describe("ModelNetworkCanvas: layers on the GPU and on the CPU", () => {
   afterEach(cleanup);
@@ -285,10 +285,10 @@ describe("ModelNetworkCanvas: layers on the GPU and on the CPU", () => {
   }
 
   it("shows the split and highlights what was left on the CPU", () => {
-    // 64 camadas servidas, 55 na GPU: o caso que o captain relatou.
+    // 64 layers served, 55 on the GPU: the case the captain reported.
     mount(withGpuLayers(55));
     expect(screen.getByText("55 GPU · 9 CPU")).toBeTruthy();
-    // Âmbar é o destaque: é o sinal que interessa de relance.
+    // Amber is the highlight: it is the signal that matters at a glance.
     expect(screen.getByText("55 GPU · 9 CPU").className).toContain("text-amber");
     expect(screen.getByLabelText(/9 camadas não couberam na GPU/)).toBeTruthy();
   });
@@ -307,8 +307,8 @@ describe("ModelNetworkCanvas: layers on the GPU and on the CPU", () => {
   });
 
   it("stays quiet on a machine without GPU, even with layers reported on the GPU", () => {
-    // O caso do captain: Windows sem placa nenhuma mostrando "25 na GPU" - o
-    // motor relatava o sentinela do pedido, não uma leitura real do hardware.
+    // The captain's case: Windows with no card at all showing "25 on the GPU" - the
+    // engine reported the request's sentinel, not a real hardware reading.
     const peer = fakeSlicePeer("windows-no-gpu", 0, 63);
     const cluster = fakeCluster([
       {
@@ -360,8 +360,8 @@ describe("ModelNetworkCanvas: temperature", () => {
 });
 
 /**
- * O card do Fluxo e a aba Detalhes mostram a mesma coisa, e o caminho até ela é
- * o duplo clique. Um clique só continua sendo seleção e arrasto.
+ * The Flow card and the Details tab show the same thing, and the way to it is
+ * the double click. A single click remains selection and dragging.
  */
 describe("ModelNetworkCanvas: details on double click", () => {
   afterEach(cleanup);
@@ -409,8 +409,8 @@ describe("ModelNetworkCanvas: details on double click", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  // A janela sai com animação, então "fechou" se afirma esperando a saída — e
-  // não no tique seguinte ao clique.
+  // The window leaves with an animation, so "closed" is asserted by waiting for the exit - and
+  // not on the tick right after the click.
   it("closes with the button and with Esc", async () => {
     mount();
     const card = document.querySelector("article")!;
@@ -449,8 +449,8 @@ describe("ModelNetworkCanvas: details on double click", () => {
 });
 
 /**
- * O duplo clique é do card, não dos controles dentro dele: o card do Fluxo não
- * tem botão hoje, e o gesto não pode virar armadilha para o primeiro que vier.
+ * The double click belongs to the card, not to the controls inside it: the Flow card
+ * has no button today, and the gesture must not become a trap for the first one that comes.
  */
 describe("isControlTarget", () => {
   afterEach(cleanup);
@@ -470,11 +470,11 @@ describe("isControlTarget", () => {
 });
 
 /**
- * Uma implantação nova não tem nada salvo, e é justamente o momento em que a
- * tela precisa se explicar sozinha: ordem das camadas da esquerda para a
- * direita, réplicas empilhadas. A grade de três colunas que existia antes
- * punha três máquinas em fila e a quarta na linha de baixo, com a aresta entre
- * as pontas cruzando o canvas inteiro.
+ * A new deployment has nothing saved, and it is precisely the moment when the
+ * screen needs to explain itself: layer order from left to
+ * right, replicas stacked. The three-column grid that existed before
+ * put three machines in a row and the fourth on the line below, with the edge between
+ * the ends crossing the whole canvas.
  */
 describe("ModelNetworkCanvas: the drawing of a new deployment", () => {
   afterEach(() => {
@@ -511,8 +511,8 @@ describe("ModelNetworkCanvas: the drawing of a new deployment", () => {
     expect(salem.style.top).not.toBe(salem2.style.top);
   });
 
-  /** A entrada e a saída ficam no eixo do meio das réplicas: é o que faz a
-   * bifurcação parecer uma bifurcação em vez de uma escada. */
+  /** The entry and the exit stay on the middle axis of the replicas: that is what makes the
+   * fork look like a fork instead of a ladder. */
   it("centers whoever does not branch on the axis of whoever branches", () => {
     const { container } = mount(fourMachines);
     const top = (name: string) => parseFloat(cardOf(container, name).style.top);
@@ -524,12 +524,12 @@ describe("ModelNetworkCanvas: the drawing of a new deployment", () => {
 });
 
 /**
- * O arranjo feito à mão é uma decisão, e o botão que apaga decisões é o botão
- * que ninguém aperta.
+ * The hand-made arrangement is a decision, and the button that erases decisions is the button
+ * that nobody presses.
  *
- * "Organizar" arruma o resto e respeita quem foi movido; quem quer descartar
- * tem o "Redefinir" ao lado. Antes disto não havia escolha: um reinício de nó
- * mudava a chave do layout e o arranjo sumia sozinho, sem ninguém pedir.
+ * "Organize" tidies up the rest and respects whoever was moved; whoever wants to discard
+ * has the "Reset" next to it. Before this there was no choice: a node restart
+ * changed the layout key and the arrangement vanished on its own, with nobody asking.
  */
 describe("ModelNetworkCanvas: organize and reset", () => {
   afterEach(() => {
@@ -549,8 +549,8 @@ describe("ModelNetworkCanvas: organize and reset", () => {
   }
 
   /**
-   * Simula o que o arrasto grava. A chave do card não é o `node_id` cru: é o
-   * `keyFor` do canvas, que inclui modelo e faixa.
+   * Simulates what the drag writes. The card key is not the raw `node_id`: it is the
+   * canvas's `keyFor`, which includes model and range.
    */
   const cardKey = (node_id: string, start: number, end: number) =>
     `${node_id}:qwen35:${start}:${end}`;
@@ -573,7 +573,7 @@ describe("ModelNetworkCanvas: organize and reset", () => {
 
     expect(cardOf(container, "ksia").style.left).toBe("900px");
     expect(cardOf(container, "ksia").style.top).toBe("640px");
-    // E o resto continua no arranjo por camadas.
+    // And the rest stays in the layer arrangement.
     const left = (name: string) => parseFloat(cardOf(container, name).style.left);
     expect(left("macbook")).toBeLessThan(left("salem"));
   });
@@ -592,10 +592,10 @@ describe("ModelNetworkCanvas: organize and reset", () => {
 });
 
 /**
- * Duas placas na mesma caixa não são um detalhe do card grande: o card em
- * miniatura era onde a segunda GPU sumia. A VRAM aqui é a soma - é o que a
- * máquina tem a oferecer - e a temperatura ganha uma linha por placa, porque
- * uma pode estar fervendo enquanto a outra dorme.
+ * Two cards in the same box are not a detail of the big card: the miniature
+ * card was where the second GPU vanished. The VRAM here is the sum - it is what the
+ * machine has to offer - and the temperature gets one line per card, because
+ * one may be boiling while the other sleeps.
  */
 describe("ModelNetworkCanvas: machine with more than one GPU", () => {
   afterEach(cleanup);
@@ -619,7 +619,7 @@ describe("ModelNetworkCanvas: machine with more than one GPU", () => {
 
   it("sums the VRAM of both cards instead of showing only the first", () => {
     mount(twoGpus);
-    // (8192 + 4096) / 1024 = 12,0 GiB de (32768 + 24576) / 1024 = 56,0 GiB.
+    // (8192 + 4096) / 1024 = 12.0 GiB of (32768 + 24576) / 1024 = 56.0 GiB.
     expect(screen.getByText("12.0 / 56.0 GiB")).toBeTruthy();
     expect(screen.getByText("VRAM · 2 GPUs")).toBeTruthy();
   });
@@ -687,9 +687,9 @@ describe("ModelNetworkCanvas: layout of the smaller card", () => {
 });
 
 /**
- * O que o Painel tem de deixar ver numa rede grande: quem segura o token
- * (cor da velocidade), uma visão menor dos cards e o gateway onde o operador
- * quiser.
+ * What the Dashboard must let you see on a large network: who holds the token
+ * (speed color), a smaller view of the cards and the gateway wherever the operator
+ * wants.
  */
 describe("ModelNetworkCanvas: speed in colored badges", () => {
   afterEach(cleanup);
@@ -730,7 +730,7 @@ describe("ModelNetworkCanvas: minimized cards", () => {
     expect(cardOf(container, "a").getAttribute("data-compact")).toBe("true");
     expect(cardOf(container, "a").style.height).toBe("84px");
     expect(cardOf(container, "b").getAttribute("data-compact")).toBeNull();
-    // Minimizado, continua mostrando o essencial.
+    // Minimized, it still shows the essentials.
     expect(cardOf(container, "a").textContent).toContain("L0 - L15");
     expect(cardOf(container, "a").querySelector('[data-testid="machine-status"]')).not.toBeNull();
 
@@ -745,7 +745,7 @@ describe("ModelNetworkCanvas: minimized cards", () => {
 
     expect(cardOf(container, "a").getAttribute("data-compact")).toBe("true");
     expect(cardOf(container, "b").getAttribute("data-compact")).toBe("true");
-    // O arranjo automático aproxima as colunas de cards menores.
+    // The automatic arrangement brings the columns of smaller cards closer.
     expect(parseFloat(cardOf(container, "b").style.left)).toBeLessThan(leftOpen);
 
     unmount();
@@ -768,7 +768,7 @@ describe("ModelNetworkCanvas: draggable gateway", () => {
   it("moves the gateway to where it was dropped, keeps the position and reset restores it", () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 2000, bottom: 1200, width: 2000, height: 1200, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
     Object.assign(HTMLElement.prototype, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => true });
-    // O jsdom não tem `PointerEvent`; sem ele o evento chega sem `clientX`.
+    // jsdom has no `PointerEvent`; without it the event arrives without `clientX`.
     vi.stubGlobal("PointerEvent", class extends MouseEvent {
       pointerId: number;
       constructor(type: string, init: PointerEventInit = {}) { super(type, init); this.pointerId = init.pointerId ?? 0; }
@@ -821,7 +821,7 @@ describe("ModelNetworkCanvas: machine window", () => {
     expect(decode?.getAttribute("data-tone")).toBe("slow");
     expect(dialog.textContent).toContain("Recursos");
     expect(dialog.textContent).toContain("Implantação");
-    // O título da janela fica para leitores de tela; o cabeçalho visível é o do card.
+    // The window title stays for screen readers; the visible header is the card's.
     expect(dialog.querySelector("h2")?.className).toBe("sr-only");
   });
 });

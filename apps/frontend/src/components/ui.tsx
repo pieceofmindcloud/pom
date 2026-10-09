@@ -188,15 +188,15 @@ export function Button({
 }
 
 /**
- * O tamanho é escolhido aqui, por `compact`, e não acrescentado pelo chamador.
+ * The size is chosen here, by `compact`, and not added by the caller.
  *
- * `clsx` concatena, não resolve conflito de Tailwind: quando duas utilitárias
- * da mesma propriedade caem na mesma classe, quem vence é a ordem da folha de
- * estilo, não a ordem do argumento. Os campos do inspetor pediam
- * `h-6 px-1.5 text-[0.62rem]` e renderizavam `h-9 px-3 text-sm` — o painel
- * inteiro saía em tamanho cheio e as classes passadas eram letra morta. Uma
- * variante troca as utilitárias em vez de empilhá-las, então o pedido do
- * chamador é o que aparece.
+ * `clsx` concatenates, it does not resolve Tailwind conflicts: when two utilities
+ * of the same property land in the same class, the winner is the order of the
+ * stylesheet, not the order of the argument. The inspector's fields asked for
+ * `h-6 px-1.5 text-[0.62rem]` and rendered `h-9 px-3 text-sm` - the whole panel
+ * came out at full size and the classes passed were dead letter. A
+ * variant swaps the utilities instead of stacking them, so the caller's request
+ * is what shows up.
  */
 export function Input({
   className,
@@ -219,8 +219,8 @@ export function Input({
   );
 }
 
-/** Mesma variante do `Input`, e pelo mesmo motivo: os dois vivem lado a lado no
- *  inspetor, e um encolher sem o outro deixa a coluna desalinhada. */
+/** Same variant as `Input`, and for the same reason: the two live side by side in the
+ *  inspector, and one shrinking without the other leaves the column misaligned. */
 export function Select({
   className,
   compact,
@@ -310,11 +310,11 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /**
- * O estado e o posicionamento de um balão de portal, compartilhados por
- * `AlertTooltip` (aviso âmbar) e `InfoTip` (dica neutra). Portal fixo para não
- * ser cortado pelo scroll do inspetor; a largura máxima mais
- * `overflow-wrap:anywhere` seguram ids sem espaços dentro da viewport. Abre
- * por hover e por foco, fixa no clique, fecha no Escape ou num clique fora.
+ * The state and positioning of a portal bubble, shared by
+ * `AlertTooltip` (amber warning) and `InfoTip` (neutral tip). Fixed portal so as not to
+ * be clipped by the inspector's scroll; the maximum width plus
+ * `overflow-wrap:anywhere` keep space-less ids inside the viewport. Opens
+ * on hover and on focus, pins on click, closes on Escape or on a click outside.
  */
 function usePositionedPopover() {
   const [open, setOpen] = useState(false);
@@ -374,12 +374,12 @@ function usePositionedPopover() {
 }
 
 /**
- * Avisos compactos que continuam sendo uma superfície de leitura completa.
+ * Compact warnings that remain a full reading surface.
  */
 export function AlertTooltip({
   label,
   message,
-  /** Densidade do inspetor: mesmo tamanho do `[i]`, sem a moldura do aviso. */
+  /** Inspector density: same size as the `[i]`, without the warning's frame. */
   compact = false,
 }: {
   label: string;
@@ -440,11 +440,11 @@ export function AlertTooltip({
 }
 
 /**
- * Uma dica neutra ao lado de um controle: o `[i]` abre no hover, no foco ou
- * no toque, e o texto explica o que o parâmetro faz e como ele afeta a
- * inferência. Mesma mecânica de portal do `AlertTooltip`, sem o peso visual
- * de um aviso - a informação fica escondida até ser pedida para não poluir o
- * painel.
+ * A neutral tip beside a control: the `[i]` opens on hover, on focus or
+ * on touch, and the text explains what the parameter does and how it affects
+ * inference. Same portal mechanics as `AlertTooltip`, without the visual weight
+ * of a warning - the information stays hidden until asked for so as not to pollute the
+ * panel.
  */
 export function InfoTip({ label, message }: { label: string; message: string }) {
   const { t } = useI18n();
@@ -658,7 +658,7 @@ export function Meter({
   value,
   detail,
   tone = "iris",
-  /** Densidade do card de máquina, onde cabem oito medidores numa tela. */
+  /** Density of the machine card, where eight gauges fit on one screen. */
   compact = false,
 }: {
   label: string;
@@ -826,7 +826,7 @@ export function Footnote({
 export function KeyValue({
   label,
   children,
-  /** Densidade do card de máquina. */
+  /** Density of the machine card. */
   compact = false,
 }: {
   label: string;

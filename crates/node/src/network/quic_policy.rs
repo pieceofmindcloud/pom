@@ -1,5 +1,5 @@
-//! Política de QUIC do cluster. O anúncio só desperta a busca autenticada;
-//! nunca é uma fonte de verdade, pelo mesmo motivo da política de TLS.
+//! QUIC policy of the cluster. The announce only wakes the authenticated fetch;
+//! it is never a source of truth, for the same reason as the TLS policy.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -36,10 +36,10 @@ struct QuicReply {
     quic_enabled: bool,
 }
 
-/// Pergunta ao principal a política QUIC por todos os endereços dele, o que
-/// já respondeu primeiro, e por último pelo túnel libp2p (`/api/cluster/quic`
-/// está na lista do túnel). Só o primeiro endereço anunciado falhava para
-/// sempre com um principal atrás de NAT ou num IPv6 inalcançável.
+/// Asks the principal for the QUIC policy through all of its addresses, the one
+/// that answered first before the others, and last through the libp2p tunnel
+/// (`/api/cluster/quic` is on the tunnel's list). Only the first announced address
+/// failed forever with a principal behind NAT or on an unreachable IPv6.
 pub(crate) async fn fetch_from_principal(
     clients: &PeerClients,
     principal_id: &str,

@@ -66,8 +66,8 @@ describe("navigation structure", () => {
   });
 
   it("gives the plugin catalog its own menu item, right before Documentation", () => {
-    // O catálogo é uma vitrine: tem lugar próprio no menu, fora de
-    // Configurações, e os menus dos plugins instalados entram logo depois dele.
+    // The catalog is a storefront: it has a place of its own in the menu, outside
+    // Settings, and the menus of the installed plugins come right after it.
     const labels = NAV.map((section) => section.labelKey);
     const plugins = NAV.find((section) => section.labelKey === "nav.plugins");
     expect(plugins?.to).toBe("/plugins");
@@ -186,7 +186,7 @@ describe("navForProfile", () => {
     }
   });
 
-  /** Filtrar não pode reescrever `NAV`: o menu do outro perfil viria podado. */
+  /** Filtering must not rewrite `NAV`: the other profile's menu would come out pruned. */
   it("does not modify the source table", () => {
     const before = JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)));
     navForProfile("node");

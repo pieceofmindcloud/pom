@@ -293,7 +293,7 @@ describe("plugin UI registry", () => {
     expect(logsGroup?.children?.find((c) => c.labelKey === "plugin:acme:logs")?.to).toBe("/logs");
     const docsIndex = admin.findIndex((s) => s.labelKey === "nav.documentation");
     expect(admin[docsIndex - 1]).toMatchObject({ labelKey: "plugin:acme:extra", to: "/acme/extra" });
-    // Sem plugin de novo, o fallback do POM volta.
+    // Without a plugin again, POM's fallback comes back.
     setPluginUi([]);
     expect(navForProfile("admin").find((s) => s.labelKey === "nav.logs")?.children?.map((c) => c.labelKey)).toContain("nav.requestLogs");
   });

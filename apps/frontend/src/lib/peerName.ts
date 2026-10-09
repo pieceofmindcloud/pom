@@ -1,14 +1,14 @@
 /**
- * Como uma máquina se chama na tela.
+ * What a machine is called on screen.
  *
- * O nome é o que o nó **anuncia** — `node_name` do `pom.json`, ou o hostname
- * do sistema quando ninguém batizou a máquina. O painel, o pipeline e a tela
- * de nós leem esse nome de `/api/ui/cluster`; a tela de fatias o lê de
- * `/api/ui/cluster/models`, e as duas rotas agora respondem a mesma coisa.
+ * The name is what the node **announces** - `node_name` from `pom.json`, or the
+ * system hostname when nobody named the machine. The panel, the pipeline and the
+ * nodes screen read that name from `/api/ui/cluster`; the slices screen reads it
+ * from `/api/ui/cluster/models`, and the two routes now answer the same thing.
  *
- * O `node_id` encurtado é o último recurso, não o nome: é um prefixo
- * hexadecimal, e ver `83bee8670abc` no lugar de `ksia` num seletor de destino
- * não diz para qual máquina o arquivo vai.
+ * The shortened `node_id` is the last resort, not the name: it is a hexadecimal
+ * prefix, and seeing `83bee8670abc` in place of `ksia` in a destination selector
+ * does not say which machine the file is going to.
  */
 export interface NamedPeer {
   node_id: string;
@@ -20,12 +20,13 @@ export function peerDisplayName(peer: NamedPeer): string {
 }
 
 /**
- * O mesmo nome, desempatado quando dois peers da lista o repetem.
+ * The same name, tie-broken when two peers in the list repeat it.
  *
- * Dois nós na mesma máquina compartilham hostname de propósito (é o modo de
- * dar janela grande sem arriscar a RAM da menor), e aí só o `node_id`
- * distingue um do outro. O desempate é dentro da lista mostrada: acrescentar o
- * prefixo a um nome que já é único só o deixaria mais difícil de ler.
+ * Two nodes on the same machine share a hostname on purpose (it is the way to
+ * give a large window without risking the smaller one's RAM), and then only the
+ * `node_id` tells one from the other. The tie-break is within the displayed
+ * list: adding the prefix to a name that is already unique would only make it
+ * harder to read.
  */
 export function uniquePeerName(peer: NamedPeer, all: NamedPeer[]): string {
   const name = peerDisplayName(peer);

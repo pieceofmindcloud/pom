@@ -28,8 +28,8 @@ mkdirSync(srcDir, { recursive: true });
 // 2. The images, served as static assets (referenced by URL, not bundled: the
 //    logo is 1.5 MB and only the setup screen shows it at full size).
 const publicDir = join(here, "..", "public", "brand");
-// Recriado a cada execução: com hash no nome, uma troca de logo deixaria o
-// arquivo anterior para trás e o `dist` acumularia marcas velhas.
+// Recreated on every run: with a hash in the name, swapping the logo would leave
+// the previous file behind and `dist` would pile up old marks.
 rmSync(publicDir, { recursive: true, force: true });
 mkdirSync(publicDir, { recursive: true });
 
@@ -58,8 +58,8 @@ const manifest = {
   tagline: brand.tagline,
   description: brand.description ?? "",
   slug: brand.slug,
-  // Duas artes do lockup, por tema. Hoje o mesmo arquivo nos dois; quando a
-  // versão para fundo escuro existir, é só trocar `logo.dark` no brand.json.
+  // Two lockup artworks, per theme. Today the same file in both; when the
+  // dark-background version exists, just change `logo.dark` in brand.json.
   logo: Object.fromEntries(
     Object.entries(brand.logo ?? {}).map(([theme, p]) => [theme, publish(p)]),
   ),
@@ -69,8 +69,8 @@ const manifest = {
   icons: Object.fromEntries(
     Object.entries(brand.icons ?? {}).map(([size, p]) => [size, publish(p)]),
   ),
-  // Bandeiras do seletor de idioma: um ícone diz o idioma sem depender de o
-  // leitor saber o que "PT-BR" quer dizer.
+  // Language selector flags: an icon tells the language without depending on the
+  // reader knowing what "PT-BR" means.
   flags: Object.fromEntries(
     Object.entries(brand.flags ?? {}).map(([locale, p]) => [locale, publish(p)]),
   ),

@@ -1,13 +1,13 @@
 /**
- * Ponte entre o shell do POM e os plugins (`pom-plugin-events/v1`).
+ * Bridge between the POM shell and the plugins (`pom-plugin-events/v1`).
  *
- * Publica o idioma e o tema atuais sempre que mudam, repassa às telas os
- * eventos que o nó publica (`GET /api/ui/plugins/events`: implantação
- * iniciada, modelo servindo ou parado, preferências salvas), executa os
- * comandos que os plugins pedem (aviso local, aviso para a rede, confirmação
- * Aceitar/Recusar no sino ou em diálogo) e transforma cada aviso de plugin que
- * chega pela rede em toast e evento `notification.received`. Não desenha nada
- * além do diálogo de confirmação. O protocolo em si está em
+ * Publishes the current language and theme whenever they change, relays to the screens the
+ * events the node publishes (`GET /api/ui/plugins/events`: deployment
+ * started, model serving or stopped, preferences saved), executes the
+ * commands the plugins ask for (local notice, notice to the network, Accept/Refuse
+ * confirmation in the bell or in a dialog) and turns each plugin notice that
+ * arrives over the network into a toast and a `notification.received` event. It draws nothing
+ * besides the confirmation dialog. The protocol itself is in
  * `lib/pluginEvents.ts`.
  */
 import { useEffect, useRef, useState } from "react";
@@ -30,7 +30,7 @@ import { useI18n } from "../i18n/provider";
 import { Modal } from "./Confirm";
 import { Button } from "./ui";
 
-/** Intervalo da leitura dos eventos do nó para as telas de plugin. */
+/** Interval for reading the node's events for the plugin screens. */
 const NODE_EVENTS_POLL_MS = 3000;
 
 interface PendingConfirm {
@@ -57,7 +57,7 @@ export function PluginBridge() {
     publishPluginEvent("theme.changed", { theme });
   }, [theme]);
 
-  // O executor lê sempre os valores mais recentes sem ser reinstalado.
+  // The executor always reads the latest values without being reinstalled.
   const latest = useRef({ toast, nodeId, locale, t });
   latest.current = { toast, nodeId, locale, t };
 
@@ -87,7 +87,7 @@ export function PluginBridge() {
           return;
         }
         const level = request.level ?? "info";
-        // O aviso também fica no sino como não lido, sem botões.
+        // The notice also stays in the bell as unread, without buttons.
         addPluginNotice({
           id: randomId(),
           code,
@@ -105,8 +105,8 @@ export function PluginBridge() {
             setPending((queue) => [...queue, { code, request, resolve }]);
             return;
           }
-          // Como uma oferta de transferência: o pedido fica no sino até a
-          // pessoa aceitar ou recusar; o toast só avisa que ele chegou.
+          // Like a transfer offer: the request stays in the bell until the
+          // person accepts or refuses; the toast only says that it arrived.
           const { toast: show, locale: currentLocale, t: translate } = latest.current;
           addPendingPluginConfirm(
             { id: randomId(), code, request, createdAt: new Date().toISOString() },
@@ -122,7 +122,7 @@ export function PluginBridge() {
     };
   }, []);
 
-  // Eventos do nó. A primeira leitura só aprende a sequência atual.
+  // Node events. The first read only learns the current sequence.
   useEffect(() => {
     let after: number | null = null;
     let stopped = false;
@@ -136,7 +136,7 @@ export function PluginBridge() {
         }
         if (typeof response.latest === "number") after = response.latest;
       } catch {
-        // Sem permissão ou nó indisponível: as telas seguem sem esses eventos.
+        // No permission or node unavailable: the screens carry on without these events.
       }
     };
     void poll();
@@ -147,9 +147,9 @@ export function PluginBridge() {
     };
   }, []);
 
-  // Avisos de plugin recebidos da rede. Todos entram no sino (os já vistos
-  // numa visita anterior entram como lidos); na primeira leitura não há toast
-  // nem evento, para não reapresentar avisos antigos a cada recarga.
+  // Plugin notices received from the network. All of them go into the bell (those already seen
+  // on a previous visit go in as read); on the first read there is no toast
+  // or event, so as not to present old notices again on every reload.
   const notices = chat.data?.notices;
   useEffect(() => {
     if (!notices) return;

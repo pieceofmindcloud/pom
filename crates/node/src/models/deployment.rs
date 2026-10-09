@@ -1,28 +1,28 @@
-//! A implantação como coisa que existe.
+//! The deployment as a thing that exists.
 //!
-//! Até aqui uma implantação não era representada em lugar nenhum: ela era
-//! *deduzida*, em cada ponto de uso, do nome do modelo. Quem escolhe os nós de
-//! uma requisição comparava `p.model == model_name` (`pipeline::plan_pipeline`),
-//! o `deploy.rs` carregava um `group: String` como chave, e desimplantar com
-//! dois modelos no ar respondia "há mais de uma pipeline no ar; diga qual".
-//! Duas implantações **do mesmo modelo** - em máquinas diferentes, ou com
-//! configuração diferente - eram inexprimíveis.
+//! Until now a deployment was not represented anywhere: it was
+//! *deduced*, at each point of use, from the model's name. Whoever picks the nodes
+//! of a request compared `p.model == model_name` (`pipeline::plan_pipeline`),
+//! `deploy.rs` carried a `group: String` as the key, and undeploying with
+//! two models live answered "there is more than one pipeline up; say which one".
+//! Two deployments **of the same model** - on different machines, or with a
+//! different configuration - were inexpressible.
 //!
-//! O `deploy_id` é essa identidade que faltava: liga um conjunto de nós a um
-//! modelo, diz de que forma (modelo inteiro, tensor parallelism ou um conjunto
-//! de fatias) e guarda **qual configuração cada nó recebeu**. Sem isso a
-//! intenção do operador era descartada no instante em que o launch terminava,
-//! e nada no cluster sabia dizer por que uma máquina segurava uma faixa.
+//! The `deploy_id` is that missing identity: it ties a set of nodes to a
+//! model, says in what form (whole model, tensor parallelism or a set
+//! of slices) and keeps **which configuration each node received**. Without it
+//! the operator's intent was discarded the instant the launch finished,
+//! and nothing in the cluster could say why a machine held a range.
 //!
-//! O molde é o `TpIdentity` (`network.rs`), que já fazia exatamente isto para
-//! grupos de tensor parallelism: um id que nomeia um conjunto de nós, cunhado
-//! no deploy, carregado no anúncio e no `NodeConfig`, sobrevivente a reinício.
-//! Aqui a mesma ideia vale para toda implantação.
+//! The mold is `TpIdentity` (`network.rs`), which already did exactly this for
+//! tensor parallelism groups: an id that names a set of nodes, minted
+//! at deploy, carried in the announce and in `NodeConfig`, surviving a restart.
+//! Here the same idea applies to every deployment.
 //!
-//! **Fonte legada:** um arquivo por implantação, em
-//! `<POM_HOME>/deployments/`, em cada nó participante. O runtime atual grava e
-//! lê o registro em `backend::db::PomDb`; estas funções de arquivo continuam
-//! apenas como rede de segurança para a ferramenta descartável de preservação.
+//! **Legacy source:** one file per deployment, in
+//! `<POM_HOME>/deployments/`, on each participating node. The current runtime
+//! writes and reads the record in `backend::db::PomDb`; these file functions
+//! remain only as a safety net for the throwaway preservation tool.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -30,33 +30,33 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Versão do formato. Sobe quando o significado de um campo muda.
+/// Format version. It goes up when the meaning of a field changes.
 ///
-/// v2 acrescentou `versions`/`active_version`: um deployment passou a guardar
-/// o histórico de configurações que já rodou sob o mesmo `deploy_id`. Um
-/// registro v1 (sem esses campos) é lido com `versions` vazio e
-/// [`Deployment::ensure_versions`] sintetiza a v1 a partir de `nodes`.
+/// v2 added `versions`/`active_version`: a deployment started keeping
+/// the history of configurations it has already run under the same `deploy_id`.
+/// A v1 record (without those fields) is read with `versions` empty and
+/// [`Deployment::ensure_versions`] synthesizes v1 from `nodes`.
 pub const DEPLOYMENT_VERSION: u32 = 2;
 
-/// Prefixo do id, para que ele seja reconhecível solto num log ou numa URL.
+/// Prefix of the id, so that it is recognizable loose in a log or in a URL.
 const ID_PREFIX: &str = "d-";
 
-/// Um `deploy_id` novo.
+/// A new `deploy_id`.
 ///
-/// Aleatório, e **não** derivado do conteúdo: duas implantações que só diferem
-/// na escolha de máquinas precisam ser distinguíveis, e implantar o mesmo
-/// arranjo duas vezes de propósito não pode colidir. É o oposto da regra do
-/// `pom_id`, que é derivado justamente porque lá o mesmo conteúdo *é* a mesma
-/// coisa.
+/// Random, and **not** derived from the content: two deployments that differ
+/// only in the choice of machines must be distinguishable, and deploying the
+/// same arrangement twice on purpose must not collide. It is the opposite of
+/// the `pom_id` rule, which is derived precisely because there the same
+/// content *is* the same thing.
 pub fn new_deploy_id() -> String {
     let u = uuid::Uuid::new_v4().simple().to_string();
     format!("{ID_PREFIX}{}", &u[..8])
 }
 
-/// Um id plausível: o prefixo mais 8 dígitos hex.
+/// A plausible id: the prefix plus 8 hex digits.
 ///
-/// Vale como validação de entrada **e** como defesa de caminho — é isto que
-/// impede um id vindo da rede de virar `../` ao nomear um arquivo.
+/// It serves as input validation **and** as a path defense - this is what
+/// keeps an id coming from the network from becoming `../` when naming a file.
 pub fn is_deploy_id(s: &str) -> bool {
     match s.strip_prefix(ID_PREFIX) {
         Some(rest) => {
@@ -69,56 +69,56 @@ pub fn is_deploy_id(s: &str) -> bool {
     }
 }
 
-/// De que forma o modelo está no ar.
+/// In what form the model is live.
 ///
-/// Espelha `deploy::DeployKind`, que é o que a requisição de implantação já
-/// usava; aqui ele vira parte do registro em vez de morrer com o job.
+/// Mirrors `deploy::DeployKind`, which is what the deployment request already
+/// used; here it becomes part of the record instead of dying with the job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentKind {
-    /// Um conjunto de fatias que juntas cobrem o modelo.
+    /// A set of slices that together cover the model.
     Shards,
-    /// Um GGUF inteiro numa máquina só.
+    /// A whole GGUF on a single machine.
     Whole,
-    /// Um modelo dividido por tensor parallelism entre um primary e K workers.
+    /// A model split by tensor parallelism between a primary and K workers.
     TensorParallel,
-    /// Um deployment com uma rota de modelo inteiro e outra de fatias.
+    /// A deployment with one whole-model route and another of slices.
     Mixed,
 }
 
-/// Que modelo esta implantação serve.
+/// Which model this deployment serves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeploymentIdentity {
-    /// Hash do GGUF inteiro, calculado no arquivo escolhido pelo operador.
+    /// Hash of the whole GGUF, computed on the file chosen by the operator.
     Sha256 { sha256: String },
-    /// Identidade do manifesto que produziu as fatias.
+    /// Identity of the manifest that produced the slices.
     PomId { pom_id: String },
 }
 
-/// Que modelo esta implantação serve.
+/// Which model this deployment serves.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentModel {
-    /// O rótulo que o operador vê e que as requisições nomeiam.
+    /// The label the operator sees and that the requests name.
     pub label: String,
     pub total_layers: u32,
-    /// A rodada de fatiamento que produziu as partes, quando há uma. Liga a
-    /// implantação ao artefato exato que ela está rodando. Ver `models/pom.rs`.
+    /// The slicing run that produced the parts, when there is one. It ties the
+    /// deployment to the exact artifact it is running. See `models/pom.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pom_id: Option<String>,
-    /// Prova da identidade do artefato. Registros antigos não têm este campo
-    /// e não podem ser usados para desimplantar com segurança sem uma prova de
-    /// caminho no mesmo peer.
+    /// Proof of the artifact's identity. Old records do not have this field
+    /// and cannot be used to undeploy safely without a path proof
+    /// on the same peer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<DeploymentIdentity>,
 }
 
-/// Um nó da implantação, e a configuração com que ele subiu.
+/// A node of the deployment, and the configuration it came up with.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentNode {
     pub node_id: String,
-    /// Nome legível da máquina no momento da implantação, para a tela não
-    /// precisar resolver um `node_id` de 64 caracteres.
+    /// Readable name of the machine at deployment time, so the screen does
+    /// not have to resolve a 64-character `node_id`.
     #[serde(default)]
     pub hostname: String,
     pub start_layer: u32,
@@ -127,48 +127,49 @@ pub struct DeploymentNode {
     pub peer_count: u32,
     #[serde(default)]
     pub primary: bool,
-    /// A parte que este nó carrega, endereçada por conteúdo.
+    /// The part this node loads, content-addressed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_sha256: Option<String>,
-    /// O arquivo que este nó carregou, no disco dele. Num modelo inteiro é o
-    /// próprio GGUF; numa fatia sem `part_sha256` (rodada antiga) é o único
-    /// ponteiro para o arquivo. Registros antigos não têm este campo e o
-    /// `redeploy` resolve o arquivo pelo catálogo local nesse caso.
+    /// The file this node loaded, on its own disk. For a whole model it is the
+    /// GGUF itself; for a slice without `part_sha256` (old run) it is the only
+    /// pointer to the file. Old records do not have this field and
+    /// `redeploy` resolves the file through the local catalog in that case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_model_path: Option<String>,
-    /// Rank e tamanho do grupo, num deploy de tensor parallelism.
+    /// Rank and size of the group, in a tensor parallelism deploy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tp_rank: Option<u32>,
-    /// A configuração **efetiva** deste nó - já resolvidos os ajustes por
-    /// máquina (`n_gpu_layers`, `offload_kqv`) sobre os parâmetros do deploy.
+    /// The **effective** configuration of this node - with the per-machine
+    /// adjustments (`n_gpu_layers`, `offload_kqv`) already resolved over the
+    /// deploy's parameters.
     ///
-    /// Guardar o resultado, e não os parâmetros de base mais os ajustes, é o
-    /// que faz "com que configuração esta máquina subiu?" ser uma leitura em
-    /// vez de uma reconstrução.
+    /// Storing the result, and not the base parameters plus the adjustments, is
+    /// what makes "with what configuration did this machine come up?" a read
+    /// instead of a reconstruction.
     pub config: crate::webui::RuntimeParams,
 }
 
-/// Uma configuração que este deployment já rodou, sob o mesmo `deploy_id`.
+/// A configuration this deployment has already run, under the same `deploy_id`.
 ///
-/// O que distingue uma versão de outra são **os parâmetros do deployment
-/// inteiro** (`params`). Ajustes por máquina (`n_gpu_layers`/`offload_kqv`)
-/// entram no snapshot `nodes` mas não forkam uma versão. Reimplantar com
-/// parâmetros iguais aos de uma versão existente reativa aquela versão em vez
-/// de anexar outra.
+/// What distinguishes one version from another are **the parameters of the
+/// whole deployment** (`params`). Per-machine adjustments (`n_gpu_layers`/`offload_kqv`)
+/// go into the `nodes` snapshot but do not fork a version. Redeploying with
+/// parameters equal to those of an existing version reactivates that version
+/// instead of appending another.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentVersion {
-    /// Monotônico dentro do deployment, começa em 1.
+    /// Monotonic within the deployment, starts at 1.
     pub version: u32,
     pub created_at: String,
     #[serde(default)]
     pub created_by: String,
-    /// Os parâmetros do deployment inteiro com que esta versão subiu.
+    /// The parameters of the whole deployment this version came up with.
     pub params: crate::webui::RuntimeParams,
-    /// Quem recebeu qual faixa e com que configuração efetiva, nesta versão.
+    /// Who received which range and with what effective configuration, in this version.
     pub nodes: Vec<DeploymentNode>,
 }
 
-/// O registro de uma implantação.
+/// The record of a deployment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Deployment {
     pub deployment_version: u32,
@@ -176,25 +177,25 @@ pub struct Deployment {
     pub kind: DeploymentKind,
     pub model: DeploymentModel,
     pub created_at: String,
-    /// `node_id` de quem coordenou a implantação.
+    /// `node_id` of whoever coordinated the deployment.
     #[serde(default)]
     pub created_by: String,
-    /// Quando esta implantação passou a ser a preferida do seu modelo.
+    /// When this deployment became the preferred one for its model.
     ///
-    /// É o que decide, entre duas implantações do mesmo modelo, qual atende uma
-    /// requisição que só diz `"qwen3:8b"`. **Derivado, nunca eleito**: a ativa é
-    /// a de `activated_at` mais recente, então dois nós que discordem convergem
-    /// para a mesma resposta sem protocolo de consenso nenhum. Ver [`active`].
+    /// It is what decides, between two deployments of the same model, which one
+    /// serves a request that only says `"qwen3:8b"`. **Derived, never elected**: the
+    /// active one is the one with the most recent `activated_at`, so two nodes that
+    /// disagree converge on the same answer with no consensus protocol. See [`active`].
     pub activated_at: String,
-    /// A lista achatada da versão ativa - mantida em sincronia com
-    /// `versions[active_version]` por [`Deployment::sync_active_nodes`]. Todo o
-    /// runtime (redeploy, undeploy, roteamento, tela) lê daqui.
+    /// The flattened list of the active version - kept in sync with
+    /// `versions[active_version]` by [`Deployment::sync_active_nodes`]. The whole
+    /// runtime (redeploy, undeploy, routing, screen) reads from here.
     pub nodes: Vec<DeploymentNode>,
-    /// O histórico de configurações deste `deploy_id`. Um registro v1 chega
-    /// aqui vazio e [`Deployment::ensure_versions`] sintetiza a v1.
+    /// The history of configurations of this `deploy_id`. A v1 record arrives
+    /// here empty and [`Deployment::ensure_versions`] synthesizes v1.
     #[serde(default)]
     pub versions: Vec<DeploymentVersion>,
-    /// Qual versão está no ar. `1` quando `versions` ainda não foi sintetizado.
+    /// Which version is live. `1` when `versions` has not been synthesized yet.
     #[serde(default = "one")]
     pub active_version: u32,
 }
@@ -233,8 +234,8 @@ impl Deployment {
         }
     }
 
-    /// Fixa os parâmetros da v1. Usado por `build_record`, que só conhece os
-    /// parâmetros depois de montar os nós.
+    /// Sets the parameters of v1. Used by `build_record`, which only knows
+    /// the parameters after building the nodes.
     pub fn with_params(mut self, params: crate::webui::RuntimeParams) -> Self {
         if let Some(v1) = self.versions.first_mut() {
             v1.params = params;
@@ -246,16 +247,16 @@ impl Deployment {
         self.nodes.iter().find(|n| n.node_id == node_id)
     }
 
-    /// A versão que está no ar.
+    /// The version that is live.
     pub fn active(&self) -> Option<&DeploymentVersion> {
         self.versions
             .iter()
             .find(|v| v.version == self.active_version)
     }
 
-    /// Escreve `self.nodes` de volta no snapshot da versão ativa. Usado depois
-    /// que o redeploy grava, por nó, a configuração que a máquina de fato
-    /// aceitou.
+    /// Writes `self.nodes` back into the active version's snapshot. Used after
+    /// the redeploy records, per node, the configuration the machine actually
+    /// accepted.
     pub fn commit_active_nodes(&mut self) {
         let active = self.active_version;
         if let Some(v) = self.versions.iter_mut().find(|v| v.version == active) {
@@ -263,7 +264,7 @@ impl Deployment {
         }
     }
 
-    /// Copia os nós da versão ativa para `self.nodes`, a lista que o runtime lê.
+    /// Copies the active version's nodes into `self.nodes`, the list the runtime reads.
     fn sync_active_nodes(&mut self) {
         if let Some(nodes) = self
             .versions
@@ -275,8 +276,8 @@ impl Deployment {
         }
     }
 
-    /// Sintetiza a v1 de um registro v1 legado (ou vindo de um peer antigo),
-    /// que chega com `versions` vazio. Idempotente.
+    /// Synthesizes v1 of a legacy v1 record (or one coming from an old peer),
+    /// which arrives with `versions` empty. Idempotent.
     pub fn ensure_versions(&mut self) {
         if !self.versions.is_empty() {
             return;
@@ -295,8 +296,8 @@ impl Deployment {
         self.active_version = 1;
     }
 
-    /// Torna a versão `v` a ativa, sincroniza `self.nodes` e recarimba
-    /// `activated_at`. Erro se `v` não existe.
+    /// Makes version `v` the active one, syncs `self.nodes` and restamps
+    /// `activated_at`. Error if `v` does not exist.
     pub fn set_active_version(&mut self, v: u32) -> Result<()> {
         if !self.versions.iter().any(|ver| ver.version == v) {
             let available: Vec<u32> = self.versions.iter().map(|ver| ver.version).collect();
@@ -308,12 +309,12 @@ impl Deployment {
         Ok(())
     }
 
-    /// Reimplanta com os `params` do deployment inteiro.
+    /// Redeploys with the whole deployment's `params`.
     ///
-    /// Se já existe uma versão com esses `params`, reaproveita o número dela,
-    /// aplica os `nodes` novos (que carregam os ajustes por máquina) e a torna
-    /// ativa. Senão anexa `max(version) + 1`. Sempre recarimba `activated_at` e
-    /// sincroniza `self.nodes`. Devolve o número da versão ativa.
+    /// If a version with those `params` already exists, it reuses its number,
+    /// applies the new `nodes` (which carry the per-machine adjustments) and makes
+    /// it active. Otherwise it appends `max(version) + 1`. It always restamps
+    /// `activated_at` and syncs `self.nodes`. Returns the active version's number.
     pub fn upsert_version(
         &mut self,
         params: crate::webui::RuntimeParams,
@@ -345,12 +346,12 @@ impl Deployment {
         target
     }
 
-    /// Anexa uma versão mesmo quando os parâmetros não mudaram.
+    /// Appends a version even when the parameters did not change.
     ///
-    /// Alterações de topologia, como adicionar ou remover uma máquina, são
-    /// eventos de histórico por si só. Reusar a versão por igualdade de
-    /// parâmetros apagaria justamente o conjunto de máquinas que a operação
-    /// mudou.
+    /// Topology changes, such as adding or removing a machine, are
+    /// history events in their own right. Reusing the version because the
+    /// parameters are equal would erase precisely the set of machines the
+    /// operation changed.
     pub fn append_version(
         &mut self,
         params: crate::webui::RuntimeParams,
@@ -373,10 +374,10 @@ impl Deployment {
         number
     }
 
-    /// As faixas dos nós cobrem `0..total_layers` sem buraco?
+    /// Do the nodes' ranges cover `0..total_layers` with no gap?
     ///
-    /// Num grupo de tensor parallelism todo mundo cobre o modelo inteiro, então
-    /// a pergunta é outra: basta haver nó.
+    /// In a tensor parallelism group everyone covers the whole model, so
+    /// the question is a different one: it is enough for there to be a node.
     pub fn covers_the_model(&self) -> bool {
         if self.kind == DeploymentKind::TensorParallel {
             return !self.nodes.is_empty();
@@ -460,14 +461,14 @@ impl Deployment {
     }
 }
 
-/// A implantação de mesma **forma** que uma nova requisição: mesmo `kind`,
-/// mesma identidade de modelo provada e o mesmo conjunto exato de
-/// `(node_id, start_layer, end_layer, tp_rank)`. É o que decide se um novo
-/// `POST /api/ui/deploy` reaproveita um `deploy_id` (anexando uma versão) ou
-/// cunha um id novo.
+/// The deployment with the same **shape** as a new request: same `kind`,
+/// same proven model identity and the same exact set of
+/// `(node_id, start_layer, end_layer, tp_rank)`. It is what decides whether a new
+/// `POST /api/ui/deploy` reuses a `deploy_id` (appending a version) or
+/// mints a new id.
 ///
-/// Função pura como `active`: nada de rede, para ser testável e para os nós
-/// convergirem sem protocolo.
+/// A pure function like `active`: no network, so that it is testable and so
+/// the nodes converge without a protocol.
 pub fn matching_shape<'a>(
     deployments: &'a [Deployment],
     kind: DeploymentKind,
@@ -490,11 +491,11 @@ pub fn matching_shape<'a>(
     })
 }
 
-/// Qual implantação atende uma requisição que só diz o nome do modelo.
+/// Which deployment serves a request that only says the model's name.
 ///
-/// A mais recentemente ativada entre as daquele rótulo. Empate resolvido pelo
-/// `deploy_id`, para que a resposta não dependa da ordem em que os registros
-/// foram lidos do disco - duas máquinas têm que chegar à mesma conclusão.
+/// The most recently activated among those with that label. A tie is broken by
+/// the `deploy_id`, so that the answer does not depend on the order in which the
+/// records were read from disk - two machines have to reach the same conclusion.
 pub fn active<'a>(deployments: &'a [Deployment], label: &str) -> Option<&'a Deployment> {
     deployments
         .iter()
@@ -506,13 +507,13 @@ pub fn active<'a>(deployments: &'a [Deployment], label: &str) -> Option<&'a Depl
         })
 }
 
-/// Separa `"qwen3:8b@d-4f2a91c3"` em `("qwen3:8b", Some("d-4f2a91c3"))`.
+/// Splits `"qwen3:8b@d-4f2a91c3"` into `("qwen3:8b", Some("d-4f2a91c3"))`.
 ///
-/// Sem o sufixo, a requisição não escolheu implantação e quem responde é a
-/// ativa - que é como todo cliente escrito antes disto continua funcionando.
-/// Um `@` seguido de coisa que não é um id fica **no nome**: há rótulo de
-/// modelo com `@` no mundo real, e engolir um pedaço dele calado seria pior que
-/// não achar o modelo.
+/// Without the suffix, the request did not choose a deployment and the one that
+/// answers is the active one - which is how every client written before this
+/// keeps working. An `@` followed by something that is not an id stays **in the
+/// name**: there are model labels with `@` in the real world, and silently
+/// swallowing a piece of one would be worse than not finding the model.
 pub fn split_selector(model: &str) -> (&str, Option<&str>) {
     match model.rsplit_once('@') {
         Some((name, id)) if is_deploy_id(id) => (name, Some(id)),
@@ -520,9 +521,9 @@ pub fn split_selector(model: &str) -> (&str, Option<&str>) {
     }
 }
 
-// ── Em disco ─────────────────────────────────────────────────────────────────
+// ── On disk ──────────────────────────────────────────────────────────────────
 
-/// A pasta legada dos registros: `<POM_HOME>/deployments/`.
+/// The legacy folder of the records: `<POM_HOME>/deployments/`.
 #[allow(dead_code)]
 pub fn dir() -> PathBuf {
     crate::config::project_root().join("deployments")
@@ -536,10 +537,10 @@ pub fn path_in(dir: &Path, deploy_id: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{deploy_id}.json")))
 }
 
-/// Grava o registro sem deixar arquivo pela metade se a máquina cair no meio.
+/// Writes the record without leaving a half-written file if the machine goes down midway.
 ///
-/// Mesmo padrão de `pom::write_atomic`: temporário ao lado e `rename`, que é
-/// atômico no mesmo sistema de arquivos.
+/// Same pattern as `pom::write_atomic`: a temporary file beside it and `rename`,
+/// which is atomic on the same file system.
 #[allow(dead_code)]
 pub fn save_in(dir: &Path, d: &Deployment) -> Result<PathBuf> {
     d.validate()?;
@@ -576,8 +577,8 @@ pub fn load(path: &Path) -> Result<Deployment> {
     Ok(d)
 }
 
-/// Todos os registros de uma pasta, ordenados por id para a listagem ser
-/// estável entre chamadas.
+/// All the records of a folder, sorted by id so the listing is
+/// stable across calls.
 #[allow(dead_code)]
 pub fn load_dir(dir: &Path) -> Vec<Deployment> {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -591,8 +592,8 @@ pub fn load_dir(dir: &Path) -> Vec<Deployment> {
         }
         match load(&p) {
             Ok(d) => out.push(d),
-            // Um registro quebrado não pode derrubar a listagem inteira: as
-            // outras implantações seguem no ar e precisam aparecer.
+            // A broken record must not bring down the whole listing: the
+            // other deployments are still live and need to show up.
             Err(e) => tracing::warn!("ignoring record {}: {e:#}", p.display()),
         }
     }
@@ -605,7 +606,7 @@ pub fn all() -> Vec<Deployment> {
     load_dir(&dir())
 }
 
-/// Esquece uma implantação neste nó. Idempotente.
+/// Forgets a deployment on this node. Idempotent.
 #[allow(dead_code)]
 pub fn remove_in(dir: &Path, deploy_id: &str) -> Result<()> {
     let p = path_in(dir, deploy_id)?;
@@ -659,8 +660,8 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    /// Um id vindo da rede vira nome de arquivo: se `..` passasse, um peer
-    /// escolheria onde gravar no disco de quem recebe.
+    /// An id coming from the network becomes a file name: if `..` got through, a
+    /// peer would choose where to write on the receiver's disk.
     #[test]
     fn an_id_that_is_not_an_id_does_not_become_a_path() {
         assert!(!is_deploy_id("../../etc/passwd"));
@@ -671,7 +672,7 @@ mod tests {
         assert!(path_in(Path::new("/tmp/d"), "../x").is_err());
     }
 
-    /// O caso que não existia: **o mesmo modelo**, duas implantações.
+    /// The case that did not exist: **the same model**, two deployments.
     #[test]
     fn two_deployments_of_the_same_model_coexist() {
         let one = deployment("d-aaaaaaaa", "qwen3:8b", vec![no("n1", 0, 31, 0, 1)]);
@@ -691,8 +692,8 @@ mod tests {
         assert!(active(&all, "nao-existe").is_none());
     }
 
-    /// Empate tem que ser resolvido igual nas duas máquinas, senão uma manda a
-    /// requisição para uma implantação e a outra para a outra.
+    /// A tie has to be broken the same way on both machines, otherwise one sends
+    /// the request to one deployment and the other to the other.
     #[test]
     fn an_activation_tie_is_resolved_stably() {
         let mut a = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
@@ -715,7 +716,7 @@ mod tests {
             split_selector("qwen3:8b@d-4f2a91c3"),
             ("qwen3:8b", Some("d-4f2a91c3"))
         );
-        // Rótulo com `@` que não termina em id continua inteiro.
+        // A label with `@` that does not end in an id stays whole.
         assert_eq!(
             split_selector("org@example/modelo"),
             ("org@example/modelo", None)
@@ -732,7 +733,7 @@ mod tests {
             vec![no("n1", 0, 15, 0, 2), no("n2", 16, 31, 1, 2)]
         )
         .covers_the_model());
-        // Buraco em 16-19.
+        // Gap at 16-19.
         assert!(!deployment(
             "d-aaaaaaaa",
             "m",
@@ -757,7 +758,7 @@ mod tests {
 
         remove_in(&tmp, &d.deploy_id).unwrap();
         assert!(load_dir(&tmp).is_empty());
-        // Esquecer o que já foi esquecido não é erro.
+        // Forgetting what was already forgotten is not an error.
         remove_in(&tmp, &d.deploy_id).unwrap();
 
         std::fs::remove_dir_all(&tmp).ok();
@@ -781,12 +782,12 @@ mod tests {
         }
     }
 
-    /// Um registro v1 legado chega sem `versions`; a v1 é sintetizada de `nodes`.
+    /// A legacy v1 record arrives without `versions`; v1 is synthesized from `nodes`.
     #[test]
     fn ensure_versions_synthesizes_the_v1_of_a_legacy_record() {
         let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
         d.versions.clear();
-        d.active_version = 7; // valor lixo de um registro antigo
+        d.active_version = 7; // junk value from an old record
 
         d.ensure_versions();
 
@@ -794,7 +795,7 @@ mod tests {
         assert_eq!(d.versions[0].version, 1);
         assert_eq!(d.active_version, 1);
         assert_eq!(d.versions[0].nodes, d.nodes);
-        // Idempotente.
+        // Idempotent.
         d.ensure_versions();
         assert_eq!(d.versions.len(), 1);
     }
@@ -806,14 +807,14 @@ mod tests {
         d.sync_active_nodes();
         let enabled_v1 = d.activated_at.clone();
 
-        // Mesmos params -> mesma versão, sem anexar.
+        // Same params -> same version, without appending.
         std::thread::sleep(std::time::Duration::from_millis(2));
         let v = d.upsert_version(params_with_ctx(8192), d.nodes.clone(), "n1");
         assert_eq!(v, 1);
         assert_eq!(d.versions.len(), 1);
         assert_ne!(d.activated_at, enabled_v1, "activated_at restamped");
 
-        // Params diferentes -> v2, ativa, nodes sincronizados.
+        // Different params -> v2, active, nodes synced.
         let nodes_v2 = vec![no("n1", 0, 31, 0, 1)];
         let v = d.upsert_version(params_with_ctx(16384), nodes_v2.clone(), "n1");
         assert_eq!(v, 2);
@@ -918,28 +919,28 @@ mod tests {
             pom_id: "pom-1".into(),
         };
 
-        // Mesma forma, ordem dos alvos trocada -> casa.
+        // Same shape, order of the targets swapped -> matches.
         let ranges = vec![
             ("n2".to_string(), 16, 31, None),
             ("n1".to_string(), 0, 15, None),
         ];
         assert!(matching_shape(&all, DeploymentKind::Shards, &id, &ranges).is_some());
 
-        // Uma faixa diferente -> não casa.
+        // A different range -> does not match.
         let others = vec![
             ("n1".to_string(), 0, 19, None),
             ("n2".to_string(), 20, 31, None),
         ];
         assert!(matching_shape(&all, DeploymentKind::Shards, &id, &others).is_none());
 
-        // Identidade diferente -> não casa.
+        // Different identity -> does not match.
         let other_id = DeploymentIdentity::PomId {
             pom_id: "pom-2".into(),
         };
         assert!(matching_shape(&all, DeploymentKind::Shards, &other_id, &ranges).is_none());
     }
 
-    /// Um registro sem `identity` (rodada anterior à prova) nunca deduplica.
+    /// A record without `identity` (a run from before the proof) never deduplicates.
     #[test]
     fn matching_shape_ignores_a_record_without_identity() {
         let d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);

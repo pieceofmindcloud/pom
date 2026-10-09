@@ -25,7 +25,7 @@ pub struct Identity {
     pub node_id: NodeId,
 }
 
-/// Arquivo da identidade do nó, derivado da marca: `.pom-node.key`.
+/// The node's identity file, derived from the brand: `.pom-node.key`.
 ///
 /// It is the node's **only** key: from it come the `node_id`
 /// (`SHA256(pubkey)`), the libp2p `PeerId`, the pkarr record key (`pk:`), the
@@ -86,11 +86,12 @@ impl Identity {
                 path.display()
             );
         } else {
-            // No Windows não há equivalente disto sem mexer em ACL, e a ACL
-            // herdada de um diretório do perfil do usuário já não dá leitura a
-            // outras contas. Não fingimos apertar o que não apertamos: quem
-            // guardar a chave numa pasta compartilhada está exposto, e isso
-            // vale a mesma advertência que vale em Unix.
+            // On Windows there is no equivalent of this without touching ACLs,
+            // and the ACL inherited from a user profile directory already
+            // gives no read access to other accounts. We do not pretend to
+            // tighten what we do not tighten: whoever keeps the key in a
+            // shared folder is exposed, and that deserves the same warning
+            // that applies on Unix.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -112,7 +113,7 @@ impl Identity {
             .expect("a 32-byte Ed25519 seed is always a valid libp2p key")
     }
 
-    /// `PeerId` do libp2p derivado desta identidade.
+    /// libp2p `PeerId` derived from this identity.
     pub fn peer_id(&self) -> String {
         self.libp2p_keypair().public().to_peer_id().to_string()
     }

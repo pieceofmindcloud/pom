@@ -115,9 +115,9 @@ describe("ModelPaths", () => {
   });
 
   /**
-   * Com POM_MODEL_DIRS/POM_SHARD_DIR definidas, a tela mostra o valor da
-   * variável, trava os campos e diz de onde ele vem - editar ali não teria
-   * efeito, e o backend não grava o campo.
+   * With POM_MODEL_DIRS/POM_SHARD_DIR set, the screen shows the variable's
+   * value, locks the fields and says where it comes from - editing there would
+   * have no effect, and the backend does not write the field.
    */
   it("locks the folders set by environment variables and names the variable", () => {
     extra.value = {

@@ -1,11 +1,12 @@
 /**
- * Apagar um GGUF do disco desta máquina.
+ * Deleting a GGUF from this machine's disk.
  *
- * O nó avisa, mas não impede: uma exclusão que esbarra em algo (fatia no ar,
- * transferência em curso, blob do Ollama) volta 409 com a lista de avisos, e só
- * então perguntamos se o operador quer mesmo. Os dois passos moram aqui porque
- * a tela de modelos inteiros e a de fatias fazem exatamente a mesma coisa, e
- * duas cópias divergiriam no texto do aviso — que é a parte que importa.
+ * The node warns but does not prevent: a deletion that bumps into something
+ * (a slice in service, a transfer in progress, an Ollama blob) returns 409 with
+ * the list of warnings, and only then do we ask whether the operator really
+ * wants it. The two steps live here because the whole-models screen and the
+ * slices screen do exactly the same thing, and two copies would diverge in the
+ * warning text - which is the part that matters.
  */
 import { api } from "./api";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
@@ -25,8 +26,9 @@ function warningsOf(error: unknown): DeleteWarning[] {
 }
 
 /**
- * `confirm` recebe o texto e devolve se o operador topou. Injetado para a tela
- * escolher como perguntar — e para o teste não precisar de um `window`.
+ * `confirm` receives the text and returns whether the operator agreed. It is
+ * injected so the screen can choose how to ask - and so the test does not need
+ * a `window`.
  */
 export async function deleteModel(
   path: string,

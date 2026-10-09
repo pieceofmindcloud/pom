@@ -37,9 +37,9 @@ pub enum LocalAutoDiscoveryMessage {
         request_id: String,
         node_ephemeral_public: String,
         node_nonce: String,
-        /// Resumo do computador que procura a rede (nome, sistema, RAM,
-        /// GPUs), para o wizard do administrador mostrá-lo. Informativo: não
-        /// entra no transcript nem autoriza nada.
+        /// Summary of the computer looking for the network (name, system, RAM,
+        /// GPUs), so the administrator's wizard can show it. Informative: it
+        /// does not enter the transcript and authorizes nothing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<DiscoveredMachine>,
     },
@@ -85,15 +85,15 @@ pub struct LocalDiscoveryStatus {
 pub struct LocalDiscoveryPeer {
     pub request_id: String,
     pub address: String,
-    /// O que o computador informou de si ao procurar a rede. O IP é o
-    /// `address`, visto pelo administrador, não declarado.
+    /// What the computer reported about itself when looking for the network.
+    /// The IP is the `address`, as seen by the administrator, not declared.
     pub machine: Option<DiscoveredMachine>,
-    /// `true` depois que ele recebeu a raiz e a chave; antes disso ele só
-    /// apareceu procurando a rede.
+    /// `true` after it received the root and the key; before that it only
+    /// showed up looking for the network.
     pub joined: bool,
 }
 
-/// Resumo de uma máquina que procura a rede local.
+/// Summary of a machine looking for the local network.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiscoveredMachine {
     pub hostname: String,
@@ -116,8 +116,8 @@ pub struct DiscoveredGpu {
     pub vram_mb: Option<u64>,
 }
 
-/// Texto que veio da rede local: sem caracteres de controle e com tamanho
-/// limitado, porque vai direto para a tela.
+/// Text that came from the local network: no control characters and bounded
+/// in size, because it goes straight to the screen.
 fn clean_text(text: &str, limit: usize) -> String {
     text.chars()
         .filter(|c| !c.is_control())
@@ -128,7 +128,7 @@ fn clean_text(text: &str, limit: usize) -> String {
 }
 
 impl DiscoveredMachine {
-    /// O resumo desta máquina. `name` é o nome escolhido no wizard, quando há.
+    /// This machine's summary. `name` is the name chosen in the wizard, if any.
     pub fn from_system(system: &crate::sysmon::SystemLoad, name: Option<String>) -> Self {
         Self {
             hostname: name
@@ -149,7 +149,7 @@ impl DiscoveredMachine {
         }
     }
 
-    /// Limpa e limita o que chegou pela rede. `None` sem nome utilizável.
+    /// Cleans and bounds what arrived over the network. `None` without a usable name.
     fn sanitized(self) -> Option<Self> {
         let hostname = clean_text(&self.hostname, 64);
         if hostname.is_empty() {
@@ -461,8 +461,8 @@ impl LocalDiscoveryRuntime {
                         source,
                     },
                 );
-                // O computador aparece no wizard do administrador assim que
-                // procura a rede; `joined` marca quando ele recebe a raiz.
+                // The computer shows up in the administrator's wizard as soon as
+                // it looks for the network; `joined` marks when it receives the root.
                 let peer = LocalDiscoveryPeer {
                     request_id: request_id.clone(),
                     address: source.to_string(),

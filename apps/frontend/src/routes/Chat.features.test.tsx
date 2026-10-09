@@ -310,7 +310,7 @@ describe("Chat", () => {
     mountChat();
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
-    // /v1/models diz 3; o max_new_tokens da implantação (64) é só a perna.
+    // /v1/models says 3; the deployment's max_new_tokens (64) is only the leg.
     await waitFor(() => expect(streamScenario.lastBody?.max_tokens).toBe(3));
   });
 
@@ -339,7 +339,7 @@ describe("Chat", () => {
     expect(rag.getAttribute("aria-pressed")).toBe("false");
     expect(screen.queryByRole("menu")).toBeNull();
 
-    // Desligado é o padrão, e vai dito no pedido: o gateway não busca nada.
+    // Off is the default, and it is stated in the request: the gateway fetches nothing.
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(false));

@@ -1,25 +1,25 @@
-//! Escolha do endereco por onde falar com cada peer.
+//! Choice of the address through which to talk to each peer.
 //!
-//! Um no tem mais de um endereco valido, e qual deles serve depende de quem
-//! pergunta. Este modulo guarda a medicao de cada candidato e decide qual usar.
-//! A decisao mora aqui, sozinha e pura, porque errar nela nao da erro: o no
-//! sobe, aparece no cluster, e a requisicao morre calada no primeiro salto.
+//! A node has more than one valid address, and which of them works depends on who
+//! is asking. This module stores each candidate's measurement and decides which to use.
+//! The decision lives here, alone and pure, because getting it wrong raises no error:
+//! the node starts, shows up in the cluster, and the request dies silently on hop one.
 
 use serde::{Deserialize, Serialize};
 
-/// Quanto o candidato novo precisa ser melhor para valer a troca.
+/// How much better the new candidate has to be for the switch to be worth it.
 ///
-/// As duas condicoes valem juntas. A relativa sozinha trocaria de rota entre
-/// 0,8 e 1,2 ms; a absoluta sozinha ignoraria uma piora proporcionalmente
-/// enorme num enlace ja lento. Os 25% saem da medicao de 2026-08-13 entre
-/// MacBook e ksia (9,6 contra 7,2 ms de p50), que precisa NAO trocar.
+/// Both conditions hold together. The relative one alone would switch routes between
+/// 0.8 and 1.2 ms; the absolute one alone would ignore a proportionally huge
+/// degradation on an already slow link. The 25% comes from the 2026-08-13 measurement
+/// between MacBook and ksia (9.6 against 7.2 ms of p50), which must NOT switch.
 const RELATIVE_MARGIN: f64 = 0.25;
 const ABSOLUTE_MARGIN_MS: f64 = 2.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Measurement {
     pub addr: String,
-    /// `None` e "nao respondeu", que e diferente de "respondeu devagar".
+    /// `None` is "did not answer", which is different from "answered slowly".
     pub rtt_ms: Option<f64>,
 }
 
@@ -29,10 +29,10 @@ pub struct RouteChoice {
     pub rtt_ms: f64,
 }
 
-/// Escolhe por onde falar, dado o que foi medido e por onde se fala hoje.
+/// Chooses the path to talk through, given what was measured and what is used today.
 ///
-/// Devolve `None` quando nenhum candidato respondeu - o chamador trata isso
-/// como peer inalcancavel, nao como "use o primeiro da lista".
+/// Returns `None` when no candidate answered - the caller treats that
+/// as an unreachable peer, not as "use the first in the list".
 pub fn choose_route(measurements: &[Measurement], current: Option<&str>) -> Option<RouteChoice> {
     let mut alive: Vec<(&str, f64)> = measurements
         .iter()
@@ -41,8 +41,8 @@ pub fn choose_route(measurements: &[Measurement], current: Option<&str>) -> Opti
     if alive.is_empty() {
         return None;
     }
-    // Ordem estavel antes de comparar: sem isto, dois candidatos empatados
-    // saem em ordem de iteracao e dois nos podem escolher caminhos diferentes.
+    // Stable order before comparing: without this, two tied candidates
+    // come out in iteration order and two nodes may choose different paths.
     alive.sort_by(|a, b| {
         a.1.partial_cmp(&b.1)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -50,7 +50,7 @@ pub fn choose_route(measurements: &[Measurement], current: Option<&str>) -> Opti
     });
     let (best_addr, best_rtt) = alive[0];
 
-    // A rota atual so e mantida se ainda responde.
+    // The current route is only kept if it still answers.
     if let Some(current_addr) = current {
         if let Some(&(_, current_rtt)) = alive.iter().find(|(a, _)| *a == current_addr) {
             let relative_gain = (current_rtt - best_rtt) / current_rtt;
@@ -75,9 +75,9 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-/// De quanto em quanto tempo os candidatos sao remedidos.
+/// How often the candidates are measured again.
 pub const MEASURE_INTERVAL: Duration = Duration::from_secs(300);
-/// Uma sonda que passa disso conta como falha.
+/// A probe that goes past this counts as a failure.
 #[cfg(not(test))]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -89,31 +89,31 @@ struct Entry {
     measured_at: Instant,
 }
 
-/// Falha de transporte recente. A entrada permanece até uma nova sonda bem
-/// sucedida ou até expirar, para que uma sessão seguinte não volte a pagar o
-/// timeout do mesmo endereço.
+/// Recent transport failure. The entry remains until a new successful
+/// probe or until it expires, so that a following session does not pay the
+/// timeout of the same address again.
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
-/// Por onde este no fala com cada peer.
+/// The path through which this node talks to each peer.
 ///
-/// Vive so na memoria deste processo e nao e publicada no gossip: publicar
-/// tabela de medicao transformaria enderecamento em estado distribuido, e o
-/// `PeerList` ja esta no limite da MTU.
+/// It lives only in this process's memory and is not published in the gossip:
+/// publishing a measurement table would turn addressing into distributed state, and
+/// the `PeerList` is already at the MTU limit.
 #[derive(Default)]
 pub struct RouteTable {
     by_node: RwLock<HashMap<String, Entry>>,
-    /// Memória de falha por `(node_id, URL)`.
+    /// Failure memory per `(node_id, URL)`.
     ///
-    /// A chave é a URL inteira, então a porta de inferência e a porta do
-    /// gateway do mesmo host convivem sem se confundir - e é de propósito que
-    /// as duas moram aqui. O plano de controle (o Painel lendo
-    /// `/api/ui/node`) sofre do mesmo defeito que o caminho de inferência
-    /// sofria: sem memória, um endereço morto é rediscado em toda leitura.
-    /// Uma segunda tabela seria um mecanismo paralelo com a mesma decisão
-    /// para tomar em dois lugares.
+    /// The key is the whole URL, so the inference port and the gateway port
+    /// of the same host coexist without being confused - and it is on purpose that
+    /// both live here. The control plane (the Dashboard reading
+    /// `/api/ui/node`) suffers from the same defect the inference path
+    /// suffered from: without memory, a dead address is redialed on every read.
+    /// A second table would be a parallel mechanism with the same decision
+    /// to make in two places.
     failures: RwLock<HashMap<(String, String), Instant>>,
-    /// Último endereço HTTP que respondeu de verdade, por peer: é o que a tela
-    /// de participantes mostra como rota direta em uso (ver `last_success`).
+    /// Last HTTP address that actually answered, per peer: it is what the participants
+    /// screen shows as the direct route in use (see `last_success`).
     successes: RwLock<HashMap<String, (String, Instant)>>,
 }
 
@@ -122,7 +122,7 @@ impl RouteTable {
         Self::default()
     }
 
-    /// Endereco escolhido para este peer, se ja medido e ainda valido.
+    /// Address chosen for this peer, if already measured and still valid.
     pub fn resolve(&self, node_id: &str) -> Option<String> {
         self.by_node
             .read()
@@ -132,7 +132,7 @@ impl RouteTable {
             .map(|e| e.choice.addr.clone())
     }
 
-    /// Rota e latencia de cada peer, para a interface mostrar.
+    /// Route and latency of each peer, for the interface to show.
     pub fn snapshot(&self) -> Vec<(String, RouteChoice)> {
         self.by_node
             .read()
@@ -144,10 +144,10 @@ impl RouteTable {
             .unwrap_or_default()
     }
 
-    /// Tira uma rota de uso na hora, sem esperar o ciclo.
+    /// Takes a route out of use right away, without waiting for the cycle.
     ///
-    /// Chamado quando uma requisicao real falhou naquele endereco: esperar 5
-    /// minutos significaria falhar tudo que chegasse nesse meio tempo.
+    /// Called when a real request failed on that address: waiting 5
+    /// minutes would mean failing everything that arrived in the meantime.
     pub fn mark_failure(&self, node_id: &str, addr: &str) {
         if let Ok(mut t) = self.by_node.write() {
             if t.get(node_id)
@@ -167,7 +167,7 @@ impl RouteTable {
         }
     }
 
-    /// Informa se uma requisição real já falhou recentemente neste endereço.
+    /// Tells whether a real request has recently failed on this address.
     pub fn is_failed(&self, node_id: &str, addr: &str) -> bool {
         let Ok(mut failures) = self.failures.write() else {
             return false;
@@ -184,27 +184,27 @@ impl RouteTable {
         }
     }
 
-    /// Descarta a escolha quando o peer anuncia outra topologia de endereços.
+    /// Discards the choice when the peer announces another address topology.
     ///
-    /// Uma rota medida para um endereço antigo não pode sobreviver a uma
-    /// atualização de `addr_candidates`: durante a janela de 5 minutos da
-    /// medição ela faria o pipeline continuar discando um IP de container que
-    /// já deixou de ser anunciado.
+    /// A route measured for an old address cannot survive an
+    /// update of `addr_candidates`: during the 5 minute window of the
+    /// measurement it would make the pipeline keep dialing a container IP that
+    /// is no longer announced.
     ///
-    /// **A memória de falha não é apagada aqui.** Ela é chaveada pelo
-    /// endereço, então um endereço novo simplesmente não está no mapa, e um
-    /// endereço que voltou a responder é limpo por `mark_success` ou pela
-    /// sonda. Apagar por `node_id` era pior que inútil: um IPv6 temporário
-    /// rodando muda `addr_candidates`, e a rotação - que é exatamente o
-    /// evento que mata o endereço antigo - era também o evento que apagava a
-    /// prova de que ele morreu. O cluster voltava a discar o cadáver.
+    /// **The failure memory is not erased here.** It is keyed by the
+    /// address, so a new address simply is not in the map, and an
+    /// address that answers again is cleared by `mark_success` or by the
+    /// probe. Erasing by `node_id` was worse than useless: a rotating temporary
+    /// IPv6 changes `addr_candidates`, and the rotation - which is exactly the
+    /// event that kills the old address - was also the event that erased the
+    /// proof that it died. The cluster went back to dialing the corpse.
     pub fn invalidate(&self, node_id: &str) {
         if let Ok(mut t) = self.by_node.write() {
             t.remove(node_id);
         }
     }
 
-    /// Esquece tudo que se sabe deste peer. Só para quando o peer some.
+    /// Forgets everything known about this peer. Only for when the peer disappears.
     pub fn forget(&self, node_id: &str) {
         self.invalidate(node_id);
         if let Ok(mut failures) = self.failures.write() {
@@ -215,10 +215,10 @@ impl RouteTable {
         }
     }
 
-    /// Uma requisição real que respondeu apaga a memória de falha do endereço.
+    /// A real request that answered erases the address's failure memory.
     ///
-    /// É o contrário de `mark_failure`, e o que permite um endereço voltar ao
-    /// uso antes do fim do `FAILURE_COOLDOWN` quando ele volta a atender.
+    /// It is the opposite of `mark_failure`, and what lets an address return to
+    /// use before the end of `FAILURE_COOLDOWN` when it serves again.
     pub fn mark_success(&self, node_id: &str, addr: &str) {
         if let Ok(mut failures) = self.failures.write() {
             failures.remove(&(node_id.to_string(), addr.to_string()));
@@ -228,22 +228,22 @@ impl RouteTable {
         }
     }
 
-    /// O endereço HTTP que respondeu por último para este peer, se isso foi
-    /// há menos de `FAILURE_COOLDOWN` e ele não falhou desde então. É fato
-    /// observado, não o que o peer anuncia: um IPv6 anunciado que ninguém
-    /// alcança nunca aparece aqui.
+    /// The HTTP address that answered last for this peer, if that was
+    /// less than `FAILURE_COOLDOWN` ago and it has not failed since. It is an
+    /// observed fact, not what the peer announces: an announced IPv6 that nobody
+    /// reaches never shows up here.
     pub fn last_success(&self, node_id: &str) -> Option<String> {
         let (addr, when) = self.successes.read().ok()?.get(node_id).cloned()?;
         (when.elapsed() < FAILURE_COOLDOWN && !self.is_failed(node_id, &addr)).then_some(addr)
     }
 
-    /// Candidatos que ainda não foram desacreditados, na ordem recebida.
+    /// Candidates that have not been discredited yet, in the order received.
     ///
-    /// Devolver vazio é informação, não erro: significa "todo endereço que
-    /// este nó conhece deste peer falhou recentemente". O chamador não deve
-    /// insistir em nenhum deles - deve pedir o endereço atual do par (ver
-    /// `Network::request_peer_addresses`) e dizer na tela que está
-    /// reencontrando o nó.
+    /// Returning empty is information, not an error: it means "every address
+    /// this node knows for this peer failed recently". The caller must not
+    /// insist on any of them - it must ask for the peer's current address (see
+    /// `Network::request_peer_addresses`) and say on the screen that it is
+    /// finding the node again.
     pub fn usable(&self, node_id: &str, candidates: &[String]) -> Vec<String> {
         candidates
             .iter()
@@ -252,12 +252,12 @@ impl RouteTable {
             .collect()
     }
 
-    /// Se a rota para este endpoint exato falhou recentemente.
+    /// Whether the route to this exact endpoint failed recently.
     ///
-    /// Uma falha HTTP na porta do gateway ou da inferência não prova que o
-    /// endpoint P2P/UDP do mesmo host está morto. Comparar somente o host fazia
-    /// o gossip e a redescoberta apagar endereços de transporte que ainda
-    /// serviam o prefill.
+    /// An HTTP failure on the gateway or inference port does not prove that the
+    /// P2P/UDP endpoint of the same host is dead. Comparing only the host made
+    /// the gossip and the rediscovery erase transport addresses that were still
+    /// serving the prefill.
     pub fn endpoint_is_discredited(&self, node_id: &str, addr: &str) -> bool {
         let Some(target) = host_and_port_of(addr) else {
             return false;
@@ -272,7 +272,7 @@ impl RouteTable {
         })
     }
 
-    /// Grava uma escolha direto, sem sondar. Só para teste.
+    /// Writes a choice directly, without probing. For tests only.
     #[cfg(test)]
     pub fn remember_for_test(&self, node_id: &str, addr: &str, rtt_ms: f64) {
         if let Ok(mut t) = self.by_node.write() {
@@ -313,7 +313,7 @@ impl RouteTable {
         self.mark_success(node_id, addr);
     }
 
-    /// Se ja passou tempo suficiente desde a ultima medicao deste peer.
+    /// Whether enough time has passed since this peer's last measurement.
     pub fn needs_measuring(&self, node_id: &str) -> bool {
         self.by_node
             .read()
@@ -324,16 +324,16 @@ impl RouteTable {
             .unwrap_or(true)
     }
 
-    /// Mede todos os candidatos e grava a escolha.
+    /// Measures all the candidates and writes the choice.
     ///
-    /// A sonda e `GET /health` por HTTP(S), nao ICMP: mede exatamente a porta
-    /// de inferência que o pipeline vai usar, com firewall e proxy no meio.
-    /// Sondar o gateway seria insuficiente: ele pode responder enquanto a
-    /// porta de inferência engole SYN.
+    /// The probe is `GET /health` over HTTP(S), not ICMP: it measures exactly the
+    /// inference port the pipeline will use, with firewall and proxy in between.
+    /// Probing the gateway would not be enough: it may answer while the
+    /// inference port swallows SYN.
     ///
-    /// O cliente da sonda aceita o certificado autoassinado do nó. Isso só vale
-    /// para medir latência: os clientes que transportam inferência continuam
-    /// usando pinning por `node_id`.
+    /// The probe's client accepts the node's self-signed certificate. That only holds
+    /// for measuring latency: the clients that carry inference keep
+    /// using pinning by `node_id`.
     pub async fn measure_peer(
         &self,
         clients: &crate::peer_client::PeerClients,
@@ -354,12 +354,12 @@ impl RouteTable {
                     self.mark_success(node_id, route);
                     Some(start.elapsed().as_secs_f64() * 1000.0)
                 }
-                // Uma sonda lenta **não** desacredita o endereço: o timeout
-                // dela é 3 s, muito mais apertado que o de uma requisição
-                // real, e `resolve_step_url` deixa de ter rota quando todos os
-                // candidatos estão desacreditados. Só falha de requisição de
-                // verdade escreve na memória - foi assim que 84e7141 a
-                // desenhou, e é assim que ela fica.
+                // A slow probe does **not** discredit the address: its
+                // timeout is 3 s, much tighter than that of a real
+                // request, and `resolve_step_url` has no route left when all the
+                // candidates are discredited. Only a failure of a real request
+                // writes to the memory - that is how 84e7141 designed
+                // it, and that is how it stays.
                 _ => None,
             };
             measurements.push(Measurement {
@@ -383,12 +383,12 @@ impl RouteTable {
         }
     }
 
-    /// Remede a rota atualmente escolhida sem reordenar os candidatos.
+    /// Measures the currently chosen route again without reordering the candidates.
     ///
-    /// A medição de endereçamento é deliberadamente mais lenta que a medição
-    /// de RTT usada pelo painel. Reusar `RouteChoice.rtt_ms` faria o RTT
-    /// continuar congelado até a próxima troca de rota; sondar a URL escolhida
-    /// mantém as duas cadências independentes.
+    /// The addressing measurement is deliberately slower than the RTT
+    /// measurement used by the dashboard. Reusing `RouteChoice.rtt_ms` would keep the RTT
+    /// frozen until the next route switch; probing the chosen URL
+    /// keeps the two cadences independent.
     pub async fn measure_current_peer(
         &self,
         clients: &crate::peer_client::PeerClients,
@@ -423,14 +423,14 @@ fn host_and_port_of(addr: &str) -> Option<(&str, u16)> {
     Some((host, port.parse().ok()?))
 }
 
-/// Uma medição de latência de ida e volta partindo deste nó para um destino.
-/// O sentido inverso é outra medição, mantida pelo processo remoto.
+/// A round trip latency measurement from this node to a destination.
+/// The opposite direction is another measurement, kept by the remote process.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RttMeasurement {
     pub target_node_id: String,
     pub rtt_ms: f64,
-    /// `libp2p` é o transporte normal. `direct-health` identifica o fallback
-    /// usado quando o peer ainda não oferece o túnel novo.
+    /// `libp2p` is the normal transport. `direct-health` identifies the fallback
+    /// used when the peer does not offer the new tunnel yet.
     pub transport: String,
 }
 
@@ -445,10 +445,10 @@ struct RttEntry {
     measured_at: Instant,
 }
 
-/// RTTs direcionais medidos por este processo.
+/// Directional RTTs measured by this process.
 ///
-/// Não é uma tabela de menor caminho. Cada entrada é uma medição direta
-/// `origem -> destino`; nunca se infere uma aresta pela soma de outras.
+/// It is not a shortest path table. Each entry is a direct measurement
+/// `origin -> destination`; an edge is never inferred from the sum of others.
 #[derive(Default)]
 pub struct RttTable {
     by_destination: RwLock<HashMap<String, RttEntry>>,
@@ -560,13 +560,13 @@ impl RttTable {
     }
 }
 
-/// A medição direcional é renovada junto com a rota de endereçamento.
+/// The directional measurement is renewed together with the addressing route.
 pub const RTT_MEASURE_INTERVAL: Duration = Duration::from_secs(120);
 
-/// Prefere o túnel quando ele respondeu, mas permite que um peer que anunciou
-/// a capability e esteja momentaneamente sem o swarm continue mensurável pelo
-/// `/health` direto. Antes, esse fallback só existia para peers que nunca
-/// anunciavam túnel, então a entrada de RTT era apagada a cada renovação.
+/// Prefers the tunnel when it answered, but lets a peer that announced
+/// the capability and is momentarily without the swarm remain measurable through
+/// the direct `/health`. Before, this fallback only existed for peers that never
+/// announced a tunnel, so the RTT entry was erased on every renewal.
 pub(crate) fn choose_rtt(
     tunnel_rtt_ms: Option<f64>,
     direct_health_rtt_ms: Option<f64>,
@@ -586,8 +586,8 @@ pub mod tests_support {
     use axum::{routing::get, Router};
     use std::time::Duration;
 
-    /// Sobe um `/health` local que responde depois de `delay_ms`, e devolve a
-    /// URL base. E o mesmo endpoint que a sonda usa em producao.
+    /// Starts a local `/health` that answers after `delay_ms`, and returns the
+    /// base URL. It is the same endpoint the probe uses in production.
     pub async fn health_server(delay_ms: u64) -> String {
         let app = Router::new().route(
             "/health",
@@ -618,9 +618,9 @@ mod tests {
         }
     }
 
-    /// Os numeros sao os medidos em 2026-08-13 entre o MacBook e a ksia:
-    /// IPv4 da LAN 9,6 ms de p50 contra 7,2 ms do IPv6 global, empate dentro
-    /// do ruido do Wi-Fi. Sem margem, esse par trocaria de rota a cada ciclo.
+    /// The numbers are the ones measured on 2026-08-13 between the MacBook and ksia:
+    /// LAN IPv4 9.6 ms of p50 against 7.2 ms for the global IPv6, a tie within
+    /// the Wi-Fi noise. Without a margin, this pair would switch routes every cycle.
     #[test]
     fn a_tie_within_the_margin_keeps_the_current_route() {
         let measurements = vec![m("192.168.100.138:8092", 9.6), m("[2804:d55::1]:8092", 7.2)];
@@ -641,8 +641,8 @@ mod tests {
         assert_eq!(choice.addr, "[2804:d55::1]:8092");
     }
 
-    /// Diferenca percentual grande mas absoluta minuscula: 0,8 contra 1,2 ms
-    /// passa dos 25% e nao chega aos 2 ms. Trocar aqui e ruido.
+    /// Large percentage difference but tiny absolute one: 0.8 against 1.2 ms
+    /// goes past 25% and does not reach 2 ms. Switching here is noise.
     #[test]
     fn a_percentage_win_under_two_milliseconds_does_not_switch() {
         let measurements = vec![m("a:1", 1.2), m("b:1", 0.8)];
@@ -656,7 +656,7 @@ mod tests {
         assert_eq!(choose_route(&measurements, None).unwrap().addr, "b:1");
     }
 
-    /// Um candidato que nao respondeu nao e escolhivel, mesmo sendo o atual.
+    /// A candidate that did not answer is not choosable, even if it is the current one.
     #[test]
     fn an_unreachable_current_route_is_replaced_at_once() {
         let measurements = vec![
@@ -734,17 +734,17 @@ mod tests {
         );
     }
 
-    /// Empate exato entre dois candidatos sem rota atual: vence a ordem
-    /// lexicografica, para dois nos chegarem a mesma conclusao em vez de
-    /// divergirem por ordem de HashMap.
+    /// Exact tie between two candidates with no current route: lexicographic
+    /// order wins, so two nodes reach the same conclusion instead of
+    /// diverging by HashMap order.
     #[test]
     fn an_exact_tie_is_broken_deterministically() {
         let measurements = vec![m("b:1", 5.0), m("a:1", 5.0)];
         assert_eq!(choose_route(&measurements, None).unwrap().addr, "a:1");
     }
 
-    /// Dois servidores locais com atrasos diferentes: o mais rapido vence, e a
-    /// tabela passa a resolver aquele node_id para ele.
+    /// Two local servers with different delays: the faster one wins, and the
+    /// table starts resolving that node_id to it.
     #[tokio::test]
     async fn measuring_two_candidates_picks_the_faster_one() {
         let fast = tests_support::health_server(0).await;
@@ -757,8 +757,8 @@ mod tests {
         assert_eq!(table.resolve("n1"), Some(fast));
     }
 
-    /// Uma falha marcada tira o endereco de uso imediatamente, sem esperar o
-    /// ciclo de 5 minutos: a proxima requisicao ja vai por outro caminho.
+    /// A marked failure takes the address out of use immediately, without waiting for
+    /// the 5 minute cycle: the next request already goes through another path.
     #[tokio::test]
     async fn a_failure_drops_the_route_right_away() {
         let alive = tests_support::health_server(0).await;
@@ -793,13 +793,13 @@ mod tests {
         assert_eq!(table.resolve("n1"), None);
     }
 
-    /// Candidato morto nao e escolhido so por estar na lista.
+    /// A dead candidate is not chosen just for being in the list.
     #[tokio::test]
     async fn a_dead_candidate_is_never_chosen() {
         let alive = tests_support::health_server(0).await;
         let table = RouteTable::new();
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
-        // Porta 1 fechada: a sonda falha rapido em vez de esperar o timeout.
+        // Port 1 closed: the probe fails fast instead of waiting for the timeout.
         table
             .measure_peer(
                 &http,
@@ -810,8 +810,8 @@ mod tests {
         assert_eq!(table.resolve("n1"), Some(alive));
     }
 
-    /// A rota com esquema e o endereço cru com a mesma porta comparam iguais,
-    /// mas serviços diferentes no mesmo host continuam independentes.
+    /// The route with a scheme and the raw address with the same port compare equal,
+    /// but different services on the same host stay independent.
     #[test]
     fn endpoint_includes_its_port_with_or_without_a_url_scheme() {
         assert_eq!(
@@ -824,8 +824,8 @@ mod tests {
         );
     }
 
-    /// Uma falha no gateway não apaga o endereço P2P usado pelo túnel ou
-    /// prefill, mesmo quando ambos resolvem para o mesmo host.
+    /// A failure on the gateway does not erase the P2P address used by the tunnel or
+    /// prefill, even when both resolve to the same host.
     #[test]
     fn a_dead_gateway_does_not_discredit_the_peer_transport_port() {
         let table = RouteTable::new();
@@ -836,8 +836,8 @@ mod tests {
         assert!(!table.endpoint_is_discredited("n2", "[2804:d55::9]:42777"));
     }
 
-    /// `usable` devolve vazio quando tudo falhou, e isso é informação: o
-    /// chamador tem de pedir o endereço atual em vez de escolher um cadáver.
+    /// `usable` returns empty when everything failed, and that is information: the
+    /// caller has to ask for the current address instead of choosing a corpse.
     #[test]
     fn usable_is_empty_when_every_candidate_is_discredited() {
         let table = RouteTable::new();
@@ -906,14 +906,14 @@ mod tests {
         assert_eq!(table.resolve("n1"), before);
     }
 
-    /// Um peer nunca medido nao resolve para nada - o chamador cai no
-    /// `inference_url` do plano, que e o comportamento de hoje.
+    /// A never measured peer resolves to nothing - the caller falls back to the
+    /// plan's `inference_url`, which is today's behavior.
     #[test]
     fn an_unmeasured_peer_resolves_to_nothing() {
         assert_eq!(RouteTable::new().resolve("unknown"), None);
     }
 
-    /// Recem-medido nao remede: e o que mantem a sonda barata no regime normal.
+    /// Just measured is not measured again: it keeps the probe cheap in the normal regime.
     #[tokio::test]
     async fn a_freshly_measured_peer_is_not_measured_again() {
         let alive = tests_support::health_server(0).await;

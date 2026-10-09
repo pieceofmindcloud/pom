@@ -1,19 +1,19 @@
 // @vitest-environment jsdom
 /**
- * Implantar um modelo inteiro pela mesma tela.
+ * Deploying a whole model through the same screen.
  *
- * O que estes testes guardam não é uma segunda tela - é que **não** existe uma.
- * A escolha de cima troca a pergunta que vai ao nó (`kind`) e some com as
- * perguntas que passam a ter uma resposta só; tudo o mais - o plano, a
- * validação, os ajustes, o botão - continua sendo o caminho das fatias.
+ * What these tests guard is not a second screen - it is that there is **not** one.
+ * The choice at the top changes the question that goes to the node (`kind`) and
+ * does away with the questions that now have a single answer; everything else -
+ * the plan, the validation, the adjustments, the button - remains the slices path.
  *
- * Os dois erros que fariam a tela mentir estão cobertos aqui:
+ * The two errors that would make the screen lie are covered here:
  *
- * * mandar `kind` errado (ou não mandar), e o nó responder sobre fatias
- *   enquanto a tela mostra um modelo inteiro;
- * * deixar a validação de cobertura por camadas na tela - a fita de cobertura
- *   e a coluna "Entra", que num modelo inteiro são uma barra sólida e uma
- *   caixinha que nunca desmarca. Ruído fantasiado de escolha.
+ * * sending the wrong `kind` (or not sending it), and the node answering about
+ *   slices while the screen shows a whole model;
+ * * leaving the per-layer coverage validation on screen - the coverage ribbon
+ *   and the "Entra" column, which on a whole model are a solid bar and a
+ *   checkbox that never unchecks. Noise dressed up as choice.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -56,7 +56,7 @@ const MACHINES = [
   { node_id: "salem", label: "salem" },
 ];
 
-/** O plano de um modelo inteiro: um passo, todas as camadas, uma máquina. */
+/** The plan of a whole model: one step, every layer, one machine. */
 function wholePlan(target = "ksia", mmproj_path: string | null = null): DeployPlan {
   return {
     group: "qwen3.5-9b",
@@ -145,7 +145,7 @@ function wholePlanWithName(name: string, target = "ksia"): DeployPlan {
   return plan;
 }
 
-/** O mesmo plano, mas sobre fatias - o que a tela pede por padrão. */
+/** The same plan, but over slices - what the screen asks for by default. */
 function shardPlan(): DeployPlan {
   const p = wholePlan();
   p.kind = "shards";
@@ -172,8 +172,8 @@ function moePlan(kind: DeployPlan["kind"] = "whole"): DeployPlan {
   return p;
 }
 
-/** Uma máquina com o GGUF inteiro **e** um conjunto de fatias, para que as
- *  duas opções existam e a troca entre elas seja de verdade. */
+/** A machine with the whole GGUF **and** a set of slices, so that both
+ *  options exist and the switch between them is real. */
 function mount(
   wholeModelName = "qwen3.5-9b",
   shardGroup = "qwen",
@@ -314,7 +314,7 @@ function mount(
   return { ...view, client };
 }
 
-/** Responde cada rota com o plano que corresponde ao `kind` pedido. */
+/** Answers each route with the plan that matches the requested `kind`. */
 function answerPlans() {
   post.mockImplementation((url: string, body: { kind?: string }) => {
     if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -486,9 +486,9 @@ describe("DeployModel · whole model", () => {
   });
 
   /**
-   * O ponto do defeito relatado: num modelo inteiro não existe faixa para
-   * marcar nem camada reivindicada duas vezes, e mostrar esses controles é
-   * inventar uma decisão que não existe.
+   * The point of the reported defect: on a whole model there is no range to
+   * check and no layer claimed twice, and showing those controls is
+   * inventing a decision that does not exist.
    */
   it("shows neither the coverage strip nor the range marking column", async () => {
     answerPlans();
@@ -503,8 +503,8 @@ describe("DeployModel · whole model", () => {
       expect(screen.queryByText(/Cobertura do modelo/)).toBeNull();
     });
     expect(screen.queryByRole("checkbox", { name: /Incluir/ })).toBeNull();
-    // A troca começa com o mapa vazio; a faixa só aparece depois da escolha
-    // explícita de uma máquina.
+    // The switch starts with the map empty; the range only shows after the
+    // explicit choice of a machine.
     expect(screen.queryByText(/L0–31/)).toBeNull();
   });
 
@@ -681,9 +681,9 @@ describe("DeployModel · whole model", () => {
   });
 
   /**
-   * A recusa do nó tem que aparecer aqui como aparece nas fatias. Sem isto o
-   * operador vê um botão cinza e nenhum motivo, que é o defeito que a suíte
-   * irmã guarda para o outro caminho.
+   * The node's refusal has to show here as it shows on slices. Without this the
+   * operator sees a grey button and no reason, which is the defect the sibling
+   * suite guards for the other path.
    */
   it("shows the node refusal and keeps the button gray", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
@@ -719,9 +719,9 @@ describe("DeployModel · whole model", () => {
   });
 
   /**
-   * Um nó de binário antigo não devolve `kind` nenhum, e ele só sabe responder
-   * sobre fatias. Ler a ausência como "fatias" é o que impede a tela de emudecer
-   * durante uma atualização em andamento.
+   * A node on an old binary returns no `kind` at all, and it only knows how to
+   * answer about slices. Reading the absence as "slices" is what keeps the screen
+   * from going mute during an update in progress.
    */
   it("reads a plan without `kind` as a slices plan", async () => {
     post.mockImplementation(() => {
@@ -822,7 +822,7 @@ describe("DeployModel · MTP", () => {
   });
   afterEach(cleanup);
 
-  /** Plano inteiro com MTP desligado, que é o padrão honesto. */
+  /** Whole plan with MTP off, which is the honest default. */
   function mountWhole(mtp = false) {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -868,7 +868,7 @@ describe("DeployModel · MTP", () => {
     );
   }
 
-  /** A especulação é uma escolha só: nenhuma, MTP ou lookup. */
+  /** Speculation is a single choice: none, MTP or lookup. */
   async function chooseSpeculation(mode: "none" | "mtp" | "lookup") {
     const select = await screen.findByRole("combobox", { name: "Especulação" });
     fireEvent.change(select, { target: { value: mode } });
@@ -967,14 +967,14 @@ describe("DeployModel · MTP", () => {
     });
   });
 
-  /// "Voltar ao plano do nó" tem que desfazer **também** o que está meio
-  /// digitado.
+  /// "Voltar ao plano do nó" has to undo what is half typed **as
+  /// well**.
   ///
-  /// O texto em edição vive dentro do `DeploymentInspector` desde que ele saiu
-  /// desta tela. Quem limpava o rascunho aqui era um `setDrafts({})` que deixou
-  /// de existir: sem remontar o formulário, o botão zerava os parâmetros por
-  /// baixo e o campo continuava mostrando o número velho — a tela dizendo uma
-  /// coisa e o pedido levando outra.
+  /// The text being edited lives inside `DeploymentInspector` since it left
+  /// this screen. What cleared the draft here was a `setDrafts({})` that no
+  /// longer exists: without remounting the form, the button zeroed the parameters
+  /// underneath and the field kept showing the old number - the screen saying one
+  /// thing and the request carrying another.
   it("restoring the node plan also clears the half-typed field", async () => {
     post.mockImplementation((url: string) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -1021,7 +1021,7 @@ describe("DeployModel · MTP", () => {
     const field = () =>
       document.querySelector('input[name="n_ctx"]') as HTMLInputElement | null;
     await waitFor(() => expect(field()).toBeTruthy());
-    // O plano do nó traz 4096 (ver `wholePlan`).
+    // The node's plan brings 4096 (see `wholePlan`).
     await waitFor(() => expect(field()!.value).toBe("4096"));
 
     fireEvent.change(field()!, { target: { value: "65536" } });

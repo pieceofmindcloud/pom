@@ -83,13 +83,13 @@ export function SliceModels() {
   const node = useNode();
   const toast = useToast();
   const invalidate = useInvalidate();
-  // Tensor Parallelism é um recurso de desenvolvimento: o backend só o marca
-  // disponível com `POM_DEV_MODE=1` (`NodeInfo.pom_dev_mode`). Fora disso a tela
-  // nem oferece a opção, e o modo nunca sai de "pipeline".
+  // Tensor Parallelism is a development feature: the backend only marks it
+  // available with `POM_DEV_MODE=1` (`NodeInfo.pom_dev_mode`). Outside that the
+  // screen does not even offer the option, and the mode never leaves "pipeline".
   const pomDevMode = node.data?.pom_dev_mode === true;
 
-  // Fatiar é sobre modelos inteiros: fatias têm `shard_range` e não podem ser
-  // fatiadas de novo.
+  // Slicing is about whole models: slices have `shard_range` and cannot be
+  // sliced again.
   const models = (catalog.data?.models ?? []).filter(isWholeModel);
   const [path, setPath] = useState(params.get("path") ?? "");
   const [mode, setMode] = useState<SliceMode>("pipeline");
@@ -109,9 +109,9 @@ export function SliceModels() {
     if (!path && models.length > 0) setPath(models[0].path);
   }, [models, path]);
 
-  // A flag pode chegar depois do primeiro render (a leitura de `/api/ui/node`
-  // é assíncrona); um modo TP escolhido antes disso não pode sobreviver à
-  // confirmação de que o desenvolvimento está desligado.
+  // The flag can arrive after the first render (the read of `/api/ui/node`
+  // is asynchronous); a TP mode chosen before that cannot survive the
+  // confirmation that development is off.
   useEffect(() => {
     if (!pomDevMode && mode === "tensor_parallel") setMode("pipeline");
   }, [pomDevMode, mode]);
@@ -373,10 +373,10 @@ export function SliceModels() {
                   </div>
                 )}
                 {/*
-                  Tensor Parallelism é um recurso de desenvolvimento: o botão
-                  só existe quando o backend confirma `POM_DEV_MODE=1`. Uma vista
-                  só não é escolha, então sem a flag este grupo nem aparece e o
-                  modo nunca sai de "pipeline" (mesmo padrão de
+                  Tensor Parallelism is a development feature: the button
+                  only exists when the backend confirms `POM_DEV_MODE=1`. A single
+                  view is not a choice, so without the flag this group does not even
+                  show and the mode never leaves "pipeline" (same pattern as
                   `DeploymentInspector`).
                 */}
                 {pomDevMode && (

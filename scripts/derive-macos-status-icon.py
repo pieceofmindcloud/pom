@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
-"""Deriva o ícone da barra de status do macOS a partir de `pom-icon-src.png`.
+"""Derives the macOS status bar icon from `pom-icon-src.png`.
 
-A barra de menus não aceita o ícone do produto como ele é. Duas razões, e as
-duas doem se forem ignoradas:
+The menu bar does not accept the product icon as it is. Two reasons, and both
+hurt if ignored:
 
-**Template image.** Um `NSStatusItem` marcado como template usa **somente o
-canal alfa** da imagem e pinta o resultado com a cor da barra - preto no tema
-claro, branco no escuro. A arte do POM é um quadrado azul totalmente opaco, ou
-seja, alfa 255 em toda parte: usada diretamente, ela vira um retângulo preto
-sólido na barra. O que é preciso é o recorte da arte, e é isso que este script
-extrai - o traço branco vira alfa, o fundo azul vira transparência.
+**Template image.** An `NSStatusItem` marked as a template uses **only the
+alpha channel** of the image and paints the result with the bar's color - black
+on the light theme, white on the dark one. The POM art is a fully opaque blue
+square, that is, alpha 255 everywhere: used directly, it becomes a solid black
+rectangle in the bar. What is needed is a cutout of the art, and that is what
+this script extracts - the white stroke becomes alpha, the blue background
+becomes transparency.
 
-**Tamanho.** O glifo mora num quadrado de 18 pontos. O wordmark "POM" que
-acompanha a cabeça ocupa um terço da altura da arte e, reduzido a essa medida,
-não é legível - vira sujeira. O script fica só com a cabeça, que é a parte que
-se reconhece pequena, e descarta o texto.
+**Size.** The glyph lives in an 18-point square. The "POM" wordmark that
+accompanies the head takes up a third of the art's height and, reduced to that
+size, is not legible - it becomes dirt. The script keeps only the head, which is
+the part that is recognizable when small, and discards the text.
 
-A separação entre traço e fundo é limpa porque o traço é branco e tudo o mais
-é azul: `min(R, G, B)` fica acima de 240 na arte e abaixo de 96 no fundo e no
-meio-tom, com pouca coisa entre os dois. Essa faixa intermediária é justamente
-a antisserrilha, e é ela que dá a borda suave depois de normalizada.
+The separation between stroke and background is clean because the stroke is
+white and everything else is blue: `min(R, G, B)` is above 240 in the art and
+below 96 in the background and the midtone, with little in between. That
+intermediate band is precisely the antialiasing, and it is what gives the soft
+edge once normalized.
 
-Saída em 1x, 2x e 3x. `macos_status.m` carrega as três como representações da
-mesma `NSImage` de 18 pontos, para o AppKit escolher a que casa com a tela.
+Output at 1x, 2x and 3x. `macos_status.m` loads the three as representations of
+the same 18-point `NSImage`, so AppKit picks the one that matches the screen.
 
-Uso: `python3 scripts/derive-macos-status-icon.py`
+Usage: `python3 scripts/derive-macos-status-icon.py`
 """
 
 from pathlib import Path
@@ -37,24 +39,24 @@ BRAND = ROOT / "assets" / "brand"
 SOURCE = BRAND / "pom-icon-src.png"
 DESTINATION = BRAND / "macos"
 
-# Pontos do quadrado do item de barra, e a altura que o glifo ocupa dentro
-# dele. A folga vertical evita que o traço encoste na borda da barra.
+# Points of the status bar item's square, and the height the glyph takes up
+# inside it. The vertical margin keeps the stroke from touching the bar's edge.
 BOX_POINTS = 18
 GLYPH_POINTS = 16
 SCALES = (1, 2, 3)
 
-# Limites de `min(R, G, B)`: abaixo de LOW é fundo, acima de HIGH é traço
-# cheio, e o meio é antisserrilha, que vira alfa proporcional.
+# Bounds of `min(R, G, B)`: below LOW is background, above HIGH is full stroke,
+# and the middle is antialiasing, which becomes proportional alpha.
 LOW = 110
 HIGH = 235
 
-# O wordmark começa depois de uma faixa vazia. Qualquer linha com menos traço
-# que isto conta como separação, não como parte do desenho.
+# The wordmark starts after an empty band. Any row with less stroke than this
+# counts as a separation, not as part of the drawing.
 BLANK_ROW_THRESHOLD = 8
 
 
 def artwork_alpha(image: Image.Image) -> np.ndarray:
-    """Alfa 0..255 do traço branco, medido pelo canal mais escuro de cada pixel."""
+    """Alpha 0..255 of the white stroke, measured by the darkest channel of each pixel."""
     channels = np.asarray(image.convert("RGB")).astype(np.float32)
     whiteness = channels.min(axis=2)
     alpha = (whiteness - LOW) / (HIGH - LOW)
@@ -62,7 +64,7 @@ def artwork_alpha(image: Image.Image) -> np.ndarray:
 
 
 def head_only(alpha: np.ndarray) -> np.ndarray:
-    """Recorta a cabeça, cortando no vão horizontal que a separa do wordmark."""
+    """Crops the head, cutting at the horizontal gap that separates it from the wordmark."""
     filled_per_row = (alpha > 127).sum(axis=1)
     drawn = np.flatnonzero(filled_per_row > BLANK_ROW_THRESHOLD)
     if drawn.size == 0:
@@ -78,7 +80,7 @@ def head_only(alpha: np.ndarray) -> np.ndarray:
 
 
 def template_image(glyph: np.ndarray, scale: int) -> Image.Image:
-    """Compõe o glifo, preto e translúcido, centrado no quadrado do item."""
+    """Composes the glyph, black and translucent, centered in the item square."""
     box = BOX_POINTS * scale
     height = GLYPH_POINTS * scale
     width = max(1, round(glyph.shape[1] * height / glyph.shape[0]))
@@ -89,10 +91,11 @@ def template_image(glyph: np.ndarray, scale: int) -> Image.Image:
         )
     ).astype(np.float32)
 
-    # Em 1x o traço é fino demais para sobreviver à redução: o pico do alfa
-    # para nos 195 e o glifo inteiro fica cinzento, sem preto nenhum. Repor o
-    # pico em 255 devolve o peso do traço sem mexer na forma; em 2x e 3x o
-    # pico já é 255 e isto não faz nada.
+    # At 1x the stroke is too thin to survive the reduction: the alpha peak
+    # stops at 195 and the whole glyph turns grey, with no black at all.
+    # Restoring the peak to 255 gives the stroke its weight back without
+    # changing the shape; at 2x and 3x the peak is already 255 and this does
+    # nothing.
     peak = resized.max()
     if peak > 0:
         resized = np.clip(resized * (255.0 / peak), 0.0, 255.0)

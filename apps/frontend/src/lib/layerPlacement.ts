@@ -1,25 +1,26 @@
 /**
- * Onde as camadas desta máquina foram parar: GPU ou CPU.
+ * Where this machine's layers ended up: GPU or CPU.
  *
- * O número que importa é o que o motor **relatou** depois de carregar
- * (`status.reported_gpu_layers`, lido do `/health` do servidor de inferência),
- * nunca o `n_gpu_layers` da config. A config é o *pedido*, e o pedido quase
- * sempre é o sentinela 99 ("descarregue tudo"); quem decide de verdade é o
- * `fit` do llama.cpp, que baixa esse número até caber na VRAM. Derivar a
- * divisão do pedido responde "todas na GPU" exatamente no caso em que algumas
- * não estão - que é o único caso que o operador precisa enxergar.
+ * The number that matters is what the engine **reported** after loading
+ * (`status.reported_gpu_layers`, read from the inference server's `/health`),
+ * never the config's `n_gpu_layers`. The config is the *request*, and the request
+ * is almost always the sentinel 99 ("offload everything"); what really decides is
+ * llama.cpp's `fit`, which lowers that number until it fits in VRAM. Deriving the
+ * split from the request answers "all on the GPU" exactly in the case where some
+ * are not - which is the only case the operator needs to see.
  *
- * Sem o relato do motor a resposta é `null`, e a tela não mostra nada. Um
- * palpite aqui seria pior que o silêncio: diria "tudo na GPU" sem saber.
+ * Without the engine's report the answer is `null`, and the screen shows nothing.
+ * A guess here would be worse than silence: it would say "everything on the GPU"
+ * without knowing.
  *
- * Uma máquina sem GPU (`system.gpu_kind === "none"`) também responde `null`,
- * mesmo que `reported_gpu_layers` traga um número: em máquinas Windows sem
- * GPU o motor relatava camadas na GPU (o sentinela do pedido, não uma leitura
- * real) e o card exibia algo como "25 na GPU" numa máquina que não tem placa
- * nenhuma.
+ * A machine without a GPU (`system.gpu_kind === "none"`) also answers `null`,
+ * even if `reported_gpu_layers` carries a number: on Windows machines without a
+ * GPU the engine reported layers on the GPU (the request's sentinel, not a real
+ * reading) and the card displayed something like "25 on the GPU" on a machine
+ * that has no board at all.
  */
 export interface LayerPlacement {
-  /** Camadas que esta máquina serve. */
+  /** Layers this machine serves. */
   served: number;
   gpu: number;
   cpu: number;
@@ -34,8 +35,8 @@ export function layerPlacement(
   if (!hasGpu || startLayer == null || endLayer == null || reportedGpuLayers == null) return null;
   const served = endLayer - startLayer + 1;
   if (!Number.isFinite(served) || served <= 0) return null;
-  // Negativo é "todas" na convenção do llama.cpp - tratá-lo como zero diria
-  // que a máquina roda inteira na CPU justamente quando ela roda inteira na GPU.
+  // Negative means "all" in llama.cpp's convention - treating it as zero would say
+  // the machine runs entirely on the CPU exactly when it runs entirely on the GPU.
   const gpu = reportedGpuLayers < 0 ? served : Math.min(reportedGpuLayers, served);
   return { served, gpu, cpu: served - gpu };
 }

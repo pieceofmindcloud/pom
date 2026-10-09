@@ -1,9 +1,9 @@
 /**
- * O perfil oficial que o nó entrega à interface.
+ * The official profile the node hands to the interface.
  *
- * A configuração persistida no próprio nó é a fonte de verdade. O contexto
- * continua sendo usado pelas rotas e pelo menu para manter uma única política
- * de apresentação, mas não oferece setter nem lê localStorage.
+ * The configuration persisted on the node itself is the source of truth. The context
+ * is still used by the routes and the menu to keep a single presentation
+ * policy, but it offers no setter and does not read localStorage.
  */
 import { useContext, useEffect, useMemo, createContext, type ReactNode } from "react";
 import { useNode } from "./queries";
@@ -12,7 +12,7 @@ export const PROFILES = ["admin", "node", "infer"] as const;
 
 export type Profile = (typeof PROFILES)[number];
 
-/** Fallback transitório enquanto a tela de setup ainda não expõe `/api/ui/node`. */
+/** Transitional fallback while the setup screen does not yet expose `/api/ui/node`. */
 export const DEFAULT_PROFILE: Profile = "admin";
 
 export function isProfile(value: string | null | undefined): value is Profile {
@@ -39,7 +39,7 @@ export function ProfileProvider({
   initialProfile,
 }: {
   children: ReactNode;
-  /** Fixa o perfil somente nos testes de apresentação. */
+  /** Pins the profile only in presentation tests. */
   initialProfile?: Profile;
 }) {
   if (initialProfile !== undefined) {

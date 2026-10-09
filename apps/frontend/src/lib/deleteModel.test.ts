@@ -24,8 +24,8 @@ describe("deleteModel", () => {
     expect(post).toHaveBeenCalledWith("/api/ui/models/delete", { path: "/m/f.gguf" });
   });
 
-  /// O 409 traz o motivo. Perguntar de novo com o motivo à vista é a diferença
-  /// entre avisar e simplesmente obedecer.
+  /// The 409 carries the reason. Asking again with the reason in view is the
+  /// difference between warning and simply obeying.
   it("shows the 409 warnings and only forces after confirming", async () => {
     const post = vi
       .spyOn(api, "post")
@@ -68,8 +68,8 @@ describe("deleteModel", () => {
     expect(post).toHaveBeenCalledTimes(1);
   });
 
-  /// Um erro sem avisos é um erro de verdade e tem que subir para o toast, em
-  /// vez de virar um "cancelado" silencioso.
+  /// An error without warnings is a real error and has to surface to the toast,
+  /// instead of becoming a silent "cancelled".
   it("propagates an error that is not the 409 of warnings", async () => {
     vi.spyOn(api, "post").mockRejectedValue(new ApiError(500, "disco morreu"));
 

@@ -55,10 +55,10 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const firewall = useWindowsFirewall(Boolean(node.data));
   const isInfer = node.data?.profile === "infer";
   /*
-   * Ler o retrato da rede é de `node` e de `admin`; bloquear e desbloquear
-   * uma máquina continua sendo ato de administrador, e só com a concessão -
-   * `profile: admin` sozinho não concede capacidade. Oferecer o botão a quem
-   * vai levar 403 é o defeito de menu que esta base já nomeia.
+   * Reading the network's picture belongs to `node` and `admin`; blocking and
+   * unblocking a machine remains an administrator's act, and only with the grant -
+   * `profile: admin` alone grants no capability. Offering the button to someone
+   * who will get a 403 is the menu defect this codebase already names.
    */
   // Members, admissions and settings are the principal's: a secondary admin
   // reads this screen as a node does.
@@ -323,11 +323,11 @@ function NetworkMetricsPanel({ metrics, t }: { metrics: ReturnType<typeof networ
 }
 
 /**
- * Em que degrau a travessia de NAT parou. Dois nós atrás de NAT que não se
- * enxergam falham em um de três lugares - o AutoNAT nunca confirmou um
- * endereço, nenhum relé aceitou reserva, ou o hole punch falhou - e antes
- * deste painel a única forma de saber qual era ler o log de depuração na
- * máquina certa no momento certo.
+ * On which rung the NAT traversal stopped. Two nodes behind NAT that cannot
+ * see each other fail in one of three places - AutoNAT never confirmed an
+ * address, no relay accepted a reservation, or the hole punch failed - and
+ * before this panel the only way to know which was to read the debug log on
+ * the right machine at the right moment.
  */
 function TraversalPanel({ traversal, t }: { traversal: TraversalView; t: (key: string, values?: Record<string, string | number>) => string }) {
   const natTone = traversal.nat === "public" ? "aqua" : traversal.nat === "private" ? "amber" : "neutral";
@@ -365,9 +365,9 @@ function TraversalPanel({ traversal, t }: { traversal: TraversalView; t: (key: s
 }
 
 /**
- * Rota em uso com um peer: direta (HTTP ou P2P, esta às vezes por hole punch)
- * ou pelo relé, quando o hole punch não fechou. É o que o operador precisa ver;
- * o endereço anunciado fica no `title` da linha.
+ * Route in use with a peer: direct (HTTP or P2P, the latter sometimes by hole
+ * punch) or through the relay, when the hole punch did not close. It is what the
+ * operator needs to see; the announced address stays in the row's `title`.
  */
 function RouteBadge({ route, t }: { route: PeerRoute | null | undefined; t: (key: string, values?: Record<string, string | number>) => string }) {
   switch (route?.kind) {

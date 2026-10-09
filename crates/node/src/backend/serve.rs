@@ -1,14 +1,14 @@
-//! Um listener, duas falas.
+//! One listener, two protocols.
 //!
-//! O servidor espia o primeiro byte da conexão sem consumi-lo (`peek`) e
-//! decide: `0x16` é handshake TLS, qualquer outra coisa é HTTP em claro. As
-//! duas caem no mesmo router.
+//! The server peeks at the connection's first byte without consuming it
+//! (`peek`) and decides: `0x16` is a TLS handshake, anything else is plain
+//! HTTP. Both land on the same router.
 //!
-//! Por que uma porta só, em vez de uma porta TLS ao lado: nenhum anúncio muda,
-//! nenhum campo novo entra no `PeerInfo` (que já está no limite da MTU do
-//! `PeerList`), nenhuma regra de firewall nova - e, o que importa mais, **a
-//! virada não precisa ser simultânea**. Enquanto uns peers já falam TLS e
-//! outros ainda não, este servidor atende os dois.
+//! Why a single port, instead of a TLS port beside it: no announcement changes,
+//! no new field enters `PeerInfo` (which is already at the MTU limit of
+//! `PeerList`), no new firewall rule - and, what matters most, **the
+//! switchover does not have to be simultaneous**. While some peers already
+//! speak TLS and others do not yet, this server serves both.
 
 use anyhow::Result;
 use axum::Router;
@@ -23,18 +23,19 @@ use tokio::net::{TcpListener, TcpStream};
 use tower::Service;
 use tracing::{debug, warn};
 
-/// Endereço real do socket que trouxe a requisição. A autenticação
-/// administrativa usa isto para manter o modo localhost fora da rede, sem
-/// confiar em cabeçalhos que o cliente pode forjar.
+/// Real address of the socket that brought the request. Administrative
+/// authentication uses this to keep localhost mode off the network, without
+/// trusting headers the client can forge.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PeerAddr(pub SocketAddr);
 
-/// Origem que vale para a autenticação: o pedido que o túnel libp2p entrega
-/// pelo loopback, com a marca deste processo, passa a contar como remoto.
+/// The origin that counts for authentication: a request the libp2p tunnel
+/// delivers over loopback, with this process's mark, counts as remote.
 ///
-/// Sem isso, qualquer par do enxame que alcançasse uma rota pelo túnel seria
-/// "localhost" para `AdminAuth` no modo localhost - administração sem senha.
-/// O cabeçalho sai do pedido sempre, marcado ou não, para nenhuma rota vê-lo.
+/// Without this, any peer of the swarm that reached a route through the tunnel
+/// would be "localhost" to `AdminAuth` in localhost mode - administration
+/// without a password. The header always leaves the request, marked or not, so
+/// that no route sees it.
 pub(crate) fn request_origin<B>(peer: SocketAddr, req: &mut hyper::Request<B>) -> SocketAddr {
     let Some(mark) = req
         .headers_mut()
@@ -49,8 +50,8 @@ pub(crate) fn request_origin<B>(peer: SocketAddr, req: &mut hyper::Request<B>) -
     }
 }
 
-/// Endereço com que um pedido vindo do túnel aparece em `PeerAddr`: não é
-/// loopback, e é tudo que a autenticação consulta.
+/// Address under which a request coming from the tunnel shows up in
+/// `PeerAddr`: it is not loopback, and that is all authentication looks at.
 pub(crate) const TUNNELED_ORIGIN: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
     std::net::Ipv4Addr::UNSPECIFIED,
     0,
@@ -62,33 +63,33 @@ pub(crate) const TUNNELED_ORIGIN: SocketAddr = SocketAddr::V4(std::net::SocketAd
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TransportSecurity(pub bool);
 
-/// O que fazer com uma conexão em texto claro vinda de fora, com a política
-/// ligada.
+/// What to do with a plain text connection coming from outside, with the
+/// policy on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlainPolicy {
-    /// Porta que também serve gente: responde 301 para `https://` na mesma
-    /// porta, para o operador não ficar trancado para fora do painel.
+    /// A port that also serves people: answers 301 to `https://` on the same
+    /// port, so the operator is not locked out of the dashboard.
     Redirect,
-    /// Porta exclusivamente de peers (o servidor de inferência): a conexão é
-    /// fechada. Não há navegador aqui para acomodar, e redirecionar tráfego de
-    /// peer só trocaria uma falha clara por uma confusa.
+    /// A port exclusively for peers (the inference server): the connection is
+    /// closed. There is no browser to accommodate here, and redirecting peer
+    /// traffic would only trade a clear failure for a confusing one.
     Refuse,
 }
 
-/// O que responder a uma requisição que chegou em claro quando o cluster exige
-/// TLS.
+/// What to answer to a request that arrived in plain text when the cluster
+/// requires TLS.
 #[derive(Debug, PartialEq)]
 pub enum PlainAction {
-    /// Manda o cliente refazer em `https://`.
+    /// Tells the client to retry over `https://`.
     Redirect,
-    /// Rota que só peer usa: nada a redirecionar, e o `reqwest` segue
-    /// redirecionamento por padrão - devolver 301 aqui faria um peer antigo
-    /// tentar TLS sem saber verificar nada e falhar com um erro que não diz o
-    /// motivo. O 403 diz.
+    /// A route only peers use: nothing to redirect, and `reqwest` follows
+    /// redirects by default - returning 301 here would make an old peer try
+    /// TLS without knowing how to verify anything and fail with an error that
+    /// does not say why. The 403 does.
     Refuse,
 }
 
-/// Rotas que só existem entre peers, e que por isso nunca são redirecionadas.
+/// Routes that only exist between peers, and that are therefore never redirected.
 pub fn plain_action(path: &str) -> PlainAction {
     const PEER_ONLY: [&str; 4] = [
         "/api/transfer/",
@@ -103,35 +104,36 @@ pub fn plain_action(path: &str) -> PlainAction {
     }
 }
 
-/// Configuração do listener HTTP/3, independente da política TLS sobre TCP.
+/// Configuration of the HTTP/3 listener, independent of the TLS-over-TCP policy.
 pub type QuicServerConfig = Arc<h3_quinn::quinn::ServerConfig>;
 
-/// Deriva a configuração autoassinada do endpoint QUIC a partir da identidade
-/// do nó. QUIC sempre leva TLS 1.3 próprio, mesmo quando o TCP fala HTTP puro.
+/// Derives the self-signed configuration of the QUIC endpoint from the node's
+/// identity. QUIC always carries its own TLS 1.3, even when TCP speaks plain HTTP.
 pub fn quic_server_config(id: &crate::identity::Identity) -> Result<QuicServerConfig> {
     crate::quic::server_config(id)
 }
 
-/// O que o servidor precisa para falar TLS, e o estado que ele publica de volta.
+/// What the server needs to speak TLS, and the state it publishes back.
 #[derive(Clone)]
 pub struct TlsServer {
     pub config: Arc<rustls::ServerConfig>,
-    /// O que fazer com texto claro remoto quando a política está ligada.
+    /// What to do with remote plain text when the policy is on.
     pub plain: PlainPolicy,
-    /// Com `true`, texto claro de fora do loopback é recusado.
+    /// With `true`, plain text from outside loopback is refused.
     pub strict: Arc<AtomicBool>,
-    /// Duração do último handshake aceito, em ms. É daqui que sai o
-    /// `tls_handshake_ms` da telemetria de inferência.
+    /// Duration of the last accepted handshake, in ms. This is where the
+    /// `tls_handshake_ms` of the inference telemetry comes from.
     pub last_handshake_ms: Arc<AtomicU64>,
 }
 
 impl TlsServer {
-    /// Monta o estado do servidor a partir da identidade do nó.
+    /// Builds the server state from the node's identity.
     ///
-    /// `sans` são os endereços por onde este nó é alcançado, e entram no
-    /// certificado que o **navegador** recebe - sem eles o aviso do navegador
-    /// seria "host errado", que faz o operador desconfiar da máquina em vez do
-    /// certificado. Ver `tls::browser_certificate`.
+    /// `sans` are the addresses through which this node is reached, and they
+    /// go into the certificate the **browser** receives - without them the
+    /// browser warning would be "wrong host", which makes the operator
+    /// distrust the machine instead of the certificate. See
+    /// `tls::browser_certificate`.
     pub fn from_identity(
         id: &crate::identity::Identity,
         strict: bool,
@@ -145,7 +147,7 @@ impl TlsServer {
         })
     }
 
-    /// A mesma configuração, para uma porta que só peers usam.
+    /// The same configuration, for a port only peers use.
     pub fn peers_only(&self) -> Self {
         Self {
             plain: PlainPolicy::Refuse,
@@ -153,22 +155,22 @@ impl TlsServer {
         }
     }
 
-    /// Liga ou desliga a recusa de texto claro remoto.
+    /// Turns the refusal of remote plain text on or off.
     pub fn set_strict(&self, on: bool) {
         self.strict.store(on, Ordering::Relaxed);
     }
 
-    /// Duração do último handshake, para a telemetria.
+    /// Duration of the last handshake, for telemetry.
     pub fn last_handshake_ms(&self) -> u64 {
         self.last_handshake_ms.load(Ordering::Relaxed)
     }
 }
 
-/// Endereços que entram no certificado do navegador.
+/// Addresses that go into the browser certificate.
 ///
-/// Os locais da máquina, o endereço fixado pelo operador (se houver) e o
-/// hostname. Loopback entra porque abrir o painel na própria máquina é o caso
-/// mais comum de todos.
+/// The machine's local ones, the address pinned by the operator (if any) and
+/// the hostname. Loopback is included because opening the dashboard on the
+/// machine itself is the most common case of all.
 pub fn browser_sans(pinned: Option<&str>) -> Vec<String> {
     let mut names: Vec<String> = vec!["127.0.0.1".into(), "::1".into()];
     if let Some(p) = pinned {
@@ -199,13 +201,13 @@ fn hostname_local() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// `0x16` é `ContentType::Handshake` do TLS; nenhum método HTTP começa assim.
+/// `0x16` is TLS's `ContentType::Handshake`; no HTTP method starts like that.
 pub fn wants_tls(first_byte: u8) -> bool {
     first_byte == 0x16
 }
 
-/// Texto claro é sempre aceito do loopback, e só de fora dele quando a flag
-/// está desligada.
+/// Plain text is always accepted from loopback, and from outside it only when
+/// the flag is off.
 pub fn plain_allowed(peer: SocketAddr, strict: bool) -> bool {
     if !strict {
         return true;
@@ -222,10 +224,10 @@ pub fn plain_allowed(peer: SocketAddr, strict: bool) -> bool {
     }
 }
 
-/// Serve `app` no `listener`, aceitando TLS e texto claro conforme a política.
+/// Serves `app` on `listener`, accepting TLS and plain text per the policy.
 ///
-/// `tls: None` é o comportamento anterior a esta feature, e é o que o `testkit`
-/// e os servidores de teste em `127.0.0.1:0` usam.
+/// `tls: None` is the behavior from before this feature, and it is what the
+/// `testkit` and the test servers on `127.0.0.1:0` use.
 #[cfg(test)]
 pub(crate) async fn serve(
     listener: TcpListener,
@@ -235,26 +237,26 @@ pub(crate) async fn serve(
     serve_with_shutdown(listener, app, tls, std::future::pending::<()>()).await
 }
 
-/// Quanto tempo uma conexão viva tem para terminar sozinha depois do sinal de
-/// desligamento, antes de ser abortada.
+/// How long a live connection has to finish on its own after the shutdown
+/// signal, before it is aborted.
 const DRAIN_DEADLINE: Duration = Duration::from_secs(3);
 
-/// O endpoint QUIC pode estar esperando uma conexão que nunca termina. O
-/// supervisor não pode transformar esse caso em uma espera sem fim durante o
-/// reload; depois do prazo, abortar a task derruba o endpoint e permite que a
-/// geração nova seja criada. O valor é pouco maior que o idle timeout QUIC de
-/// 1,2 s, com margem para o fechamento do endpoint.
+/// The QUIC endpoint may be waiting on a connection that never ends. The
+/// supervisor cannot turn that case into an endless wait during the reload;
+/// after the deadline, aborting the task brings the endpoint down and lets the
+/// new generation be created. The value is slightly larger than the QUIC idle
+/// timeout of 1,2 s, with margin for the endpoint to close.
 const QUIC_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
 
-/// Como `serve`, mas para de aceitar quando `shutdown` resolve e **encerra as
-/// conexões que sobraram** em vez de deixá-las soltas.
+/// Like `serve`, but it stops accepting when `shutdown` resolves and **closes
+/// the connections that are left** instead of leaving them loose.
 ///
-/// A diferença importa para memória, não para higiene: cada conexão fica numa
-/// task que carrega uma cópia do `Router`, e o `Router` do servidor de
-/// inferência carrega os pesos do modelo. Antes disto as tasks eram
-/// desgarradas (`tokio::spawn` sem dono), então uma conexão em keep-alive
-/// parada — o pool do gateway deixa várias — segurava o motor vivo depois do
-/// `undeploy` e a VRAM nunca voltava. Ver `LlmEngine::unload`.
+/// The difference matters for memory, not for hygiene: each connection lives
+/// in a task that carries a copy of the `Router`, and the inference server's
+/// `Router` carries the model's weights. Before this the tasks were detached
+/// (`tokio::spawn` with no owner), so a stalled keep-alive connection - the
+/// gateway pool leaves several - kept the engine alive after the `undeploy`
+/// and the VRAM never came back. See `LlmEngine::unload`.
 #[cfg(test)]
 pub(crate) async fn serve_with_shutdown(
     listener: TcpListener,
@@ -265,9 +267,9 @@ pub(crate) async fn serve_with_shutdown(
     serve_with_quic(listener, app, tls, None, None, shutdown).await
 }
 
-/// Como `serve_with_shutdown`, mas com um endpoint HTTP/3 independente da
-/// configuração TLS sobre TCP. A porta de inferência usa esta variante para
-/// que `tls_required = false` não impeça o QUIC.
+/// Like `serve_with_shutdown`, but with an HTTP/3 endpoint independent of the
+/// TLS-over-TCP configuration. The inference port uses this variant so that
+/// `tls_required = false` does not prevent QUIC.
 pub async fn serve_with_quic(
     listener: TcpListener,
     app: Router,
@@ -307,8 +309,8 @@ pub async fn serve_with_quic(
     let reason = loop {
         let (stream, peer) = tokio::select! {
             _ = &mut shutdown => break "shutdown requested",
-            // Conexões já encerradas saem do conjunto aqui; sem isto o
-            // `JoinSet` cresceria por toda a vida do servidor.
+            // Connections that already ended leave the set here; without this
+            // the `JoinSet` would grow for the server's whole life.
             Some(_) = conns.join_next(), if !conns.is_empty() => continue,
             accepted = listener.accept() => match accepted {
                 Ok(v) => v,
@@ -318,8 +320,8 @@ pub async fn serve_with_quic(
                 }
             },
         };
-        // Nagle segura a escrita pequena até o ACK anterior; no SSE cada token é
-        // uma escrita pequena. Mesma razão do `tcp_nodelay(true)` que estava no
+        // Nagle holds a small write until the previous ACK; in SSE each token is
+        // a small write. Same reason as the `tcp_nodelay(true)` that was on
         // `axum::serve`.
         let _ = stream.set_nodelay(true);
 
@@ -334,9 +336,9 @@ pub async fn serve_with_quic(
         });
     };
 
-    // Prazo para quem está no meio de uma resposta; depois dele, aborta. Quem
-    // está parada em keep-alive não termina sozinha nunca, e é justamente ela
-    // que segurava a memória.
+    // A deadline for whoever is in the middle of a response; after it, abort.
+    // One stalled in keep-alive never finishes on its own, and it is exactly
+    // the one that was holding the memory.
     debug!("{reason}: draining {} connections", conns.len());
     let drain = async { while conns.join_next().await.is_some() {} };
     if tokio::time::timeout(DRAIN_DEADLINE, drain)
@@ -372,7 +374,7 @@ async fn handle_conn(
     tls: Option<TlsServer>,
 ) -> Result<()> {
     let mut first = [0u8; 1];
-    // `peek` não consome: quem for servir a conexão ainda vê o byte.
+    // `peek` does not consume: whoever serves the connection still sees the byte.
     let n = stream.peek(&mut first).await?;
     if n == 0 {
         return Ok(());
@@ -389,9 +391,9 @@ async fn handle_conn(
             warn!("refused plain text connection from {peer}: the cluster is on TLS");
             return Ok(());
         }
-        // Porta que também serve gente: em vez de fechar na cara do operador,
-        // manda o navegador refazer em https. Ver `plain_action` para o que
-        // continua sendo recusado.
+        // A port that also serves people: instead of slamming the door on the
+        // operator, tell the browser to retry over https. See `plain_action`
+        // for what is still refused.
         debug!("redirecting the plain connection from {peer} to https");
         let svc = hyper::service::service_fn(redirect_to_https);
         return Builder::new(TokioExecutor::new())
@@ -425,8 +427,8 @@ async fn handle_conn(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
         (true, None) => {
-            // Cliente falou TLS com um nó que não tem certificado. Não há o que
-            // servir, e deixar a conexão pendurada esconderia o motivo.
+            // The client spoke TLS to a node that has no certificate. There is
+            // nothing to serve, and leaving the connection hanging would hide why.
             warn!("{peer} tried TLS but this node has no TLS configured");
         }
         (false, _) => {
@@ -439,27 +441,27 @@ async fn handle_conn(
     Ok(())
 }
 
-/// A resposta para quem falou em claro numa porta que exige TLS, decidida sem
-/// tocar em socket nenhum: `(status, Location)`.
+/// The answer for whoever spoke plain text on a port that requires TLS,
+/// decided without touching any socket: `(status, Location)`.
 ///
-/// O destino é a **mesma porta** - o servidor atende as duas falas nela. O host
-/// vem do cabeçalho porque é o nome que o operador digitou; reconstruí-lo a
-/// partir do socket daria o IP, e trocaria o nome dele por um endereço que pode
-/// nem estar no certificado.
+/// The destination is the **same port** - the server serves both protocols on
+/// it. The host comes from the header because it is the name the operator
+/// typed; rebuilding it from the socket would give the IP, and would swap that
+/// name for an address that may not even be in the certificate.
 pub fn plain_reply(host: &str, path_and_query: &str) -> (u16, Option<String>) {
     let path = path_and_query.split('?').next().unwrap_or("/");
     if plain_action(path) == PlainAction::Refuse {
         return (403, None);
     }
     if host.is_empty() {
-        // Sem `Host` não há para onde mandar, e um `Location` quebrado é pior
-        // que uma recusa: o cliente segue e falha longe daqui.
+        // Without `Host` there is nowhere to send it, and a broken `Location`
+        // is worse than a refusal: the client follows it and fails far from here.
         return (403, None);
     }
     (301, Some(format!("https://{host}{path_and_query}")))
 }
 
-/// Resposta para quem falou em claro numa porta que exige TLS.
+/// Answer for whoever spoke plain text on a port that requires TLS.
 async fn redirect_to_https(
     req: hyper::Request<hyper::body::Incoming>,
 ) -> std::result::Result<hyper::Response<String>, std::convert::Infallible> {
@@ -518,8 +520,8 @@ mod integration {
         c
     }
 
-    /// O caminho feliz inteiro: certificado derivado da identidade, cliente que
-    /// fixa o node_id, handshake, resposta.
+    /// The whole happy path: certificate derived from the identity, a client
+    /// that pins the node_id, handshake, response.
     #[tokio::test]
     async fn a_pinned_client_talks_to_the_server() {
         let id = Identity::generate();
@@ -533,9 +535,9 @@ mod integration {
         assert!(r.status().is_success());
     }
 
-    /// HTTP/3 precisa continuar disponível quando o TCP da inferência está em
-    /// HTTP puro. O endpoint recebe sua própria configuração TLS 1.3 e não
-    /// pode depender do `TlsServer` nem de `tls_required`.
+    /// HTTP/3 must stay available when the inference TCP is on plain HTTP.
+    /// The endpoint gets its own TLS 1.3 configuration and cannot depend on
+    /// `TlsServer` or on `tls_required`.
     #[tokio::test]
     async fn quic_starts_without_a_tcp_tls_configuration() {
         let identity = Identity::generate();
@@ -586,9 +588,9 @@ mod integration {
         server.await.unwrap();
     }
 
-    /// Dois peers podem estar ociosos e receber o wake-up ao mesmo tempo. Uma
-    /// requisição QUIC pendurada em cada um não pode transformar o shutdown da
-    /// geração anterior em uma espera sem fim.
+    /// Two peers may be idle and receive the wake-up at the same time. A QUIC
+    /// request hanging on each one cannot turn the shutdown of the previous
+    /// generation into an endless wait.
     #[tokio::test]
     async fn two_idle_peers_can_close_quic_concurrently() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -719,9 +721,9 @@ mod integration {
         );
     }
 
-    /// O reload pode pedir o encerramento antes de a task QUIC ter sido
-    /// escalonada pela primeira vez. O sinal precisa sobreviver a essa
-    /// corrida em cada peer, ou o supervisor fica esperando para sempre.
+    /// The reload may ask for the shutdown before the QUIC task has been
+    /// scheduled for the first time. The signal must survive that race on
+    /// each peer, or the supervisor waits forever.
     #[tokio::test(flavor = "current_thread")]
     async fn two_peers_do_not_lose_the_quic_shutdown_signal_before_the_first_poll() {
         async fn peer_parts(
@@ -776,9 +778,9 @@ mod integration {
         );
     }
 
-    /// E o ataque que o pinning existe para impedir: quem espera outro node_id
-    /// não completa o handshake, mesmo o certificado sendo válido como
-    /// auto assinado.
+    /// And the attack pinning exists to prevent: whoever expects another
+    /// node_id does not complete the handshake, even though the certificate is
+    /// valid as a self-signed one.
     #[tokio::test]
     async fn a_client_expecting_another_node_is_refused() {
         let server = Identity::generate();
@@ -792,8 +794,8 @@ mod integration {
         assert!(r.is_err(), "the handshake had to fail, got {r:?}");
     }
 
-    /// A virada não é simultânea: o mesmo servidor atende texto claro enquanto
-    /// peers ainda não souberam da política nova.
+    /// The switchover is not simultaneous: the same server serves plain text
+    /// while peers have not yet learned of the new policy.
     #[tokio::test]
     async fn the_same_server_serves_plain_text() {
         let id = Identity::generate();
@@ -806,9 +808,9 @@ mod integration {
         assert!(r.status().is_success());
     }
 
-    /// No modo estrito o loopback continua passando em claro - é requisito, não
-    /// descuido: `infer_tunnel::serve_loopback`, a sonda do `runtime` e o
-    /// `testkit` batem em 127.0.0.1 sem par de chaves.
+    /// In strict mode loopback still goes through in plain text - it is a
+    /// requirement, not an oversight: `infer_tunnel::serve_loopback`, the
+    /// `runtime` probe and the `testkit` hit 127.0.0.1 without a key pair.
     #[tokio::test]
     async fn in_strict_mode_loopback_still_speaks_plain() {
         let id = Identity::generate();
@@ -821,21 +823,21 @@ mod integration {
         assert!(r.status().is_success());
     }
 
-    /// O navegador tem que conseguir abrir o painel com o cluster em TLS.
+    /// The browser has to be able to open the dashboard with the cluster on TLS.
     ///
-    /// Este teste existe por uma falha real: o certificado do pinning é
-    /// Ed25519, que navegador não verifica - medido com o curl/LibreSSL do
-    /// macOS, `sslv3 alert handshake failure`. Somado ao modo estrito, ligar o
-    /// TLS deixava a interface inalcançável de qualquer outra máquina. Um
-    /// cliente que **não** oferece o ALPN `pom/1` recebe o certificado ECDSA,
-    /// que ele sabe verificar.
+    /// This test exists because of a real failure: the pinning certificate is
+    /// Ed25519, which browsers do not verify - measured with macOS's
+    /// curl/LibreSSL, `sslv3 alert handshake failure`. Combined with strict
+    /// mode, turning TLS on left the interface unreachable from any other
+    /// machine. A client that does **not** offer the `pom/1` ALPN receives the
+    /// ECDSA certificate, which it knows how to verify.
     #[tokio::test]
     async fn a_browser_can_open_the_interface_over_tls() {
         let id = Identity::generate();
         let addr = start_server(&id, true).await;
 
-        // Como um navegador: sem `pom/1`, e sem confiar em CA nenhuma (é auto
-        // assinado; o navegador de verdade mostra o aviso e o operador segue).
+        // Like a browser: without `pom/1`, and trusting no CA at all (it is self
+        // signed; the real browser shows the warning and the operator proceeds).
         let browser = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
@@ -848,7 +850,7 @@ mod integration {
         assert!(r.status().is_success());
     }
 
-    /// E o peer continua recebendo o certificado do pinning na mesma porta.
+    /// And the peer still receives the pinning certificate on the same port.
     #[tokio::test]
     async fn on_the_same_port_the_peer_gets_the_pinning_certificate() {
         let id = Identity::generate();
@@ -862,7 +864,7 @@ mod integration {
         assert!(r.status().is_success());
     }
 
-    /// E TLS continua funcionando no modo estrito, que é o ponto dele.
+    /// And TLS still works in strict mode, which is the point of it.
     #[tokio::test]
     async fn in_strict_mode_tls_still_goes_through() {
         let id = Identity::generate();
@@ -890,9 +892,9 @@ mod tests {
         req
     }
 
-    /// O que o túnel entrega pelo loopback, com a marca deste processo, não é
-    /// local: é isso que impede um par do enxame de virar administrador no
-    /// modo localhost.
+    /// What the tunnel delivers over loopback, with this process's mark, is
+    /// not local: that is what prevents a peer of the swarm from becoming an
+    /// administrator in localhost mode.
     #[test]
     fn a_tunneled_request_is_never_loopback() {
         let loopback: SocketAddr = "127.0.0.1:51234".parse().unwrap();
@@ -905,8 +907,8 @@ mod tests {
             .is_none());
     }
 
-    /// Marca errada, ou vinda de fora do loopback, não muda a origem - e o
-    /// cabeçalho sai do pedido de qualquer jeito.
+    /// A wrong mark, or one coming from outside loopback, does not change the
+    /// origin - and the header leaves the request either way.
     #[test]
     fn a_forged_tunnel_mark_changes_nothing() {
         let loopback: SocketAddr = "127.0.0.1:51234".parse().unwrap();
@@ -923,9 +925,9 @@ mod tests {
     }
     use std::net::SocketAddr;
 
-    /// `0x16` é `ContentType::Handshake` do TLS. Todo método HTTP começa com
-    /// letra ASCII maiúscula (`G`, `P`, `O`...), então um byte só separa as
-    /// duas falas sem ambiguidade.
+    /// `0x16` is TLS's `ContentType::Handshake`. Every HTTP method starts with
+    /// an uppercase ASCII letter (`G`, `P`, `O`...), so a single byte tells the
+    /// two protocols apart without ambiguity.
     #[test]
     fn the_first_byte_separates_tls_from_http() {
         assert!(wants_tls(0x16));
@@ -934,10 +936,10 @@ mod tests {
         assert!(!wants_tls(b'O')); // OPTIONS
     }
 
-    /// Loopback fala claro sempre: `infer_tunnel::serve_loopback`, a sonda de
-    /// `runtime.rs` e o `gateway::testkit` batem em 127.0.0.1 e não têm par de
-    /// chaves a apresentar. Tráfego que não sai da máquina não tem o que
-    /// proteger.
+    /// Loopback always speaks plain text: `infer_tunnel::serve_loopback`, the
+    /// `runtime.rs` probe and the `gateway::testkit` hit 127.0.0.1 and have no
+    /// key pair to present. Traffic that does not leave the machine has
+    /// nothing to protect.
     #[test]
     fn loopback_speaks_plain_even_in_strict_mode() {
         let local: SocketAddr = "127.0.0.1:5050".parse().unwrap();
@@ -945,12 +947,12 @@ mod tests {
         let mapped: SocketAddr = "[::ffff:127.0.0.1]:5050".parse().unwrap();
         assert!(plain_allowed(local, true));
         assert!(plain_allowed(local6, true));
-        // O socket dual-stack entrega IPv4 como `::ffff:a.b.c.d`, então sem
-        // desmapear o loopback local seria recusado pelo próprio nó.
+        // The dual-stack socket delivers IPv4 as `::ffff:a.b.c.d`, so without
+        // unmapping, local loopback would be refused by the node itself.
         assert!(plain_allowed(mapped, true));
     }
 
-    /// A UI e as rotas de gente são redirecionadas; as de peer, não.
+    /// The UI and the routes for people are redirected; the peer ones are not.
     #[test]
     fn only_a_peer_route_stops_being_redirected() {
         assert_eq!(plain_action("/"), PlainAction::Redirect);
@@ -958,16 +960,16 @@ mod tests {
         assert_eq!(plain_action("/api/ui/node"), PlainAction::Redirect);
         assert_eq!(plain_action("/admin/nodes"), PlainAction::Redirect);
 
-        // Estas o `reqwest` de um peer seguiria em silêncio, e a falha
-        // resultante não diria o motivo. O 403 diz.
+        // A peer's `reqwest` would follow these silently, and the resulting
+        // failure would not say why. The 403 does.
         assert_eq!(plain_action("/api/transfer/download"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/relay-result"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/prefill"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/step"), PlainAction::Refuse);
     }
 
-    /// O painel é redirecionado preservando caminho e query - um 301 que joga
-    /// o operador na raiz perde o link que ele abriu.
+    /// The dashboard is redirected preserving path and query - a 301 that
+    /// drops the operator at the root loses the link they opened.
     #[test]
     fn the_redirect_preserves_the_path_and_the_query() {
         assert_eq!(
@@ -977,7 +979,7 @@ mod tests {
                 Some("https://ksia:8080/config/network?tab=tls".to_string())
             )
         );
-        // A porta vai junto porque é a mesma: o servidor atende as duas falas.
+        // The port goes along because it is the same: the server serves both protocols.
         assert_eq!(
             plain_reply("192.168.100.138:8080", "/"),
             (301, Some("https://192.168.100.138:8080/".to_string()))
@@ -993,14 +995,15 @@ mod tests {
         assert_eq!(plain_reply("ksia:8080", "/v1/relay-result"), (403, None));
     }
 
-    /// Sem `Host` não há para onde mandar, e um `Location` quebrado faria o
-    /// cliente falhar longe daqui, com um erro que não aponta para cá.
+    /// Without `Host` there is nowhere to send it, and a broken `Location`
+    /// would make the client fail far from here, with an error that does not
+    /// point back here.
     #[test]
     fn without_a_host_no_destination_is_invented() {
         assert_eq!(plain_reply("", "/"), (403, None));
     }
 
-    /// De fora, o modo estrito recusa texto claro - é o que faz a flag valer.
+    /// From outside, strict mode refuses plain text - it is what gives the flag teeth.
     #[test]
     fn a_plain_remote_is_refused_in_strict_mode() {
         let remote: SocketAddr = "192.168.100.138:5050".parse().unwrap();
@@ -1008,11 +1011,11 @@ mod tests {
         assert!(plain_allowed(remote, false));
     }
 
-    /// O bug do `undeploy`: uma conexão em keep-alive parada segurava a task
-    /// que a atendia, a task segurava uma cópia do `Router`, e o `Router` do
-    /// servidor de inferência segura os pesos do modelo — a VRAM nunca voltava
-    /// e o próximo modelo não cabia. O `serve` tem de encerrar mesmo com uma
-    /// conexão dessas aberta, e é o que este teste prende.
+    /// The `undeploy` bug: a stalled keep-alive connection held the task that
+    /// served it, the task held a copy of the `Router`, and the inference
+    /// server's `Router` holds the model's weights - the VRAM never came back
+    /// and the next model did not fit. `serve` has to shut down even with one
+    /// of those connections open, and that is what this test pins down.
     #[tokio::test]
     async fn a_stalled_connection_does_not_hold_the_shutdown() {
         use tokio::io::AsyncWriteExt;
@@ -1029,8 +1032,8 @@ mod tests {
             .await
         });
 
-        // Uma requisição de verdade, para a conexão existir do lado do
-        // servidor, e depois nada: é o keep-alive parado do pool do gateway.
+        // A real request, so the connection exists on the server side, and
+        // then nothing: it is the stalled keep-alive of the gateway pool.
         let mut client = TcpStream::connect(addr).await.unwrap();
         client
             .write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -1042,8 +1045,8 @@ mod tests {
             .unwrap();
 
         let _ = stop.send(());
-        // Com folga sobre o `DRAIN_DEADLINE`, e muito abaixo do "para sempre"
-        // que era o comportamento antigo.
+        // With slack over `DRAIN_DEADLINE`, and far below the "forever" that
+        // was the old behavior.
         let output = tokio::time::timeout(DRAIN_DEADLINE * 3, server).await;
         assert!(output.is_ok(), "serve did not stop with a stalled connection");
         assert!(output.unwrap().unwrap().is_ok());

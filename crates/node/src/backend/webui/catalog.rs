@@ -10,8 +10,8 @@ pub struct NodeInfo {
     /// is answerable without a shell on the machine.
     /// test
     pub build_commit: String,
-    /// Este nó aceita atualizar-se pela interface. A tela só desenha o botão
-    /// quando isto é verdade, para nunca oferecer o que vai dar 403.
+    /// This node accepts updating itself through the interface. The screen only
+    /// draws the button when this is true, so it never offers what will give 403.
     pub dev_update: bool,
     /// Controls whether development-only POM deployment settings are exposed.
     pub pom_dev_mode: bool,
@@ -27,22 +27,22 @@ pub struct NodeInfo {
     /// This node's copy of the trust chain: `version`, whether a peer
     /// announces a newer one (`outdated`) and on which hosts (`newer_on`).
     pub cluster_version: serde_json::Value,
-    /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
-    /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
-    /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
-    /// mesma em todo o cluster e já está no `pom.json` desta máquina, e esta
-    /// rota só é servida atrás da fronteira administrativa
-    /// (`require_admin_for_surface`), então quem a lê já provou ser o
-    /// operador desta máquina. Tirá-la daqui deixou o navegador sem
-    /// credencial e a tela a ler `undefined.length`.
+    /// This cluster's connection key. It is not screen decoration: the interface
+    /// shows it under "Connection Key" **and** keeps it to authenticate the calls
+    /// that require `ConnectionAuth` (`lib/queries.ts`, `useNode`). It is the
+    /// same across the whole cluster and is already in this machine's `pom.json`,
+    /// and this route is only served behind the administrative boundary
+    /// (`require_admin_for_surface`), so whoever reads it has already proved to
+    /// be this machine's operator. Removing it from here left the browser
+    /// without a credential and the screen reading `undefined.length`.
     pub connection_key: String,
     pub authority_level: Option<crate::admin_trust::AdminLevel>,
     pub authority_fingerprint: Option<String>,
     pub p2p_port: u16,
-    /// Endereços UDP anunciados pelo nó, necessários para o plano reconstruir
-    /// as multiaddresses TCP do túnel no processo que executar o hop.
+    /// UDP addresses announced by the node, needed for the plan to rebuild
+    /// the tunnel's TCP multiaddresses in the process that runs the hop.
     pub addr_candidates: Vec<String>,
-    /// Identidade e capabilities do túnel libp2p anunciadas por este nó.
+    /// Identity and capabilities of the libp2p tunnel announced by this node.
     pub libp2p_peer_id: Option<String>,
     pub inference_frame_capabilities: Vec<String>,
     pub gateway_port: u16,
@@ -75,23 +75,23 @@ pub struct NodeInfo {
     /// receiver" sentinel. Always present — lets the UI show the fix taking
     /// effect without a second round trip.
     pub effective_address: String,
-    /// Se o cluster fala TLS entre peers agora.
+    /// Whether the cluster speaks TLS between peers right now.
     pub tls_required: bool,
-    /// Se **este** nó pode mudar isso - só o principal pode. A tela usa para
-    /// decidir entre interruptor e leitura; a checagem que vale é a do
-    /// `save_tls`, no servidor.
+    /// Whether **this** node may change that - only the principal may. The screen
+    /// uses it to decide between a switch and a read-only value; the check that
+    /// counts is the one in `save_tls`, on the server.
     pub tls_authority: bool,
-    /// Se o cluster prefere HTTP/3 sobre QUIC nos novos hops.
+    /// Whether the cluster prefers HTTP/3 over QUIC on new hops.
     pub quic_enabled: bool,
-    /// Só o principal pode mudar a preferência QUIC.
+    /// Only the principal may change the QUIC preference.
     pub quic_authority: bool,
-    /// Se este nó recolhe e envia logs de processo do cluster.
+    /// Whether this node collects and sends the cluster's process logs.
     pub cluster_logs_enabled: bool,
-    /// Só o principal pode mudar a política de logs.
+    /// Only the principal may change the logs policy.
     pub cluster_logs_authority: bool,
-    /// Se este nó aceita o canal global de conversa.
+    /// Whether this node accepts the global conversation channel.
     pub network_chat_enabled: bool,
-    /// Só o principal pode mudar a política do Chat da rede.
+    /// Only the principal may change the network Chat policy.
     pub network_chat_authority: bool,
     pub thermal: ThermalPolicy,
 }
@@ -348,9 +348,9 @@ pub(crate) fn next_admin_password_hash(
     crate::auth::hash_admin_password(new_password).map(Some)
 }
 
-/// Persiste a fronteira da interface administrativa. As rotas da pipeline não
-/// são alteradas: o listener do gateway continua dual-stack e o servidor de
-/// inferência segue ouvindo em IPv4/IPv6 para o fallback do túnel.
+/// Persists the boundary of the administrative interface. The pipeline routes
+/// are not changed: the gateway listener stays dual-stack and the inference
+/// server keeps listening on IPv4/IPv6 for the tunnel fallback.
 pub(super) async fn save_admin_access(
     State(state): State<GatewayState>,
     Json(req): Json<SaveAdminAccessRequest>,
@@ -417,7 +417,7 @@ pub(super) async fn save_admin_access(
         // Localhost mode deliberately has no password. Network mode receives
         // the existing hash or the newly derived one, never plaintext.
         next.admin_access_token = next_password_hash;
-        // Trocar a senha pela padrão de novo é permitido, e aí o aviso volta.
+        // Changing the password back to the default is allowed, and then the warning returns.
         next.admin_password_default = req.admin_exposure.requires_password()
             && if req.new_password.is_empty() {
                 cfg.admin_password_default
@@ -875,12 +875,12 @@ pub(super) async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
     catalog
 }
 
-/// Acha, no catálogo desta máquina, o arquivo que uma faixa de uma implantação
-/// deveria carregar - quando não há caminho vivo nem `part_sha256` para
-/// resolver (registro antigo, ou nó que já estava fora do ar num `redeploy`).
+/// Finds, in this machine's catalog, the file that a range of a deployment
+/// should load - when there is neither a live path nor a `part_sha256` to
+/// resolve (old record, or a node that was already down during a `redeploy`).
 ///
-/// Modelo inteiro: casa pelo nome de catálogo, como `deploy::parse_whole`.
-/// Fatia: casa o grupo/rótulo da rodada e a faixa exata de camadas, como
+/// Whole model: matches by catalog name, like `deploy::parse_whole`.
+/// Slice: matches the run's group/label and the exact layer range, like
 /// `find_release_candidate`.
 pub(super) async fn resolve_deployment_slice_file(
     state: &GatewayState,
@@ -987,8 +987,8 @@ pub(super) async fn get_paths(State(state): State<GatewayState>) -> impl IntoRes
             .iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
         "default_shard_dir": crate::config::default_shard_dir().to_string_lossy(),
         "default_workspace_root": crate::config::default_workspace_root().to_string_lossy(),
-        // O nome da variável de ambiente que define o campo, quando ela está
-        // valendo: a tela trava o campo e diz de onde vem o valor.
+        // The name of the environment variable that sets the field, when it is
+        // in effect: the screen locks the field and says where the value comes from.
         "model_dirs_env": crate::config::model_dirs_from_env()
             .map(|_| crate::brand::env_var("MODEL_DIRS")),
         "shard_dir_env": crate::config::shard_dir_from_env()
@@ -1270,10 +1270,10 @@ pub(super) async fn save_paths(
         }
     };
 
-    // `POM_MODEL_DIRS`/`POM_SHARD_DIR` vencem o `pom.json`: com a variável
-    // definida, o campo dela não é gravado (a tela mostra o valor da variável,
-    // e salvá-lo o copiaria para o arquivo) e as conferências usam o valor que
-    // vale de fato.
+    // `POM_MODEL_DIRS`/`POM_SHARD_DIR` win over `pom.json`: with the variable
+    // set, its field is not written (the screen shows the variable's value,
+    // and saving it would copy it into the file) and the checks use the value
+    // that is actually in effect.
     let model_dirs_env = crate::config::model_dirs_from_env();
     let shard_dir_env = crate::config::shard_dir_from_env();
     let effective_model_dirs: Vec<String> = match &model_dirs_env {
@@ -1522,20 +1522,20 @@ pub(super) async fn save_quic(
     Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
 }
 
-/// Liga ou desliga o TLS entre peers, para o cluster inteiro.
+/// Turns TLS between peers on or off, for the whole cluster.
 ///
-/// Não precisa de reinício, e pode ser virado quantas vezes o operador quiser:
-/// o servidor aceita as duas falas desde o arranque (`serve.rs`), e o que muda
-/// aqui é qual delas os clientes usam e se texto claro remoto passa a ser
-/// recusado. Os demais nós descobrem pela catraca de `tls_policy`, dentro de um
-/// ciclo de gossip (5 s), nos dois sentidos.
+/// It needs no restart, and can be flipped as many times as the operator wants:
+/// the server accepts both protocols from startup (`serve.rs`), and what changes
+/// here is which of them the clients use and whether remote plaintext starts
+/// being refused. The other nodes find out through the `tls_policy` ratchet,
+/// within one gossip cycle (5 s), in both directions.
 pub(super) async fn save_tls(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(req): Json<SaveTlsRequest>,
 ) -> Response {
-    // A autoridade é verificada **aqui**, no servidor. Esconder o interruptor
-    // na tela de um nó comum é conveniência; isto é o controle.
+    // Authority is checked **here**, on the server. Hiding the switch on the
+    // screen of an ordinary node is convenience; this is the control.
     if !local_is_primary(&state).await {
         return (
             StatusCode::FORBIDDEN,
@@ -1555,9 +1555,9 @@ pub(super) async fn save_tls(
         }
     }
 
-    // A ordem importa pouco, mas as três têm que acontecer juntas: o esquema
-    // das URLs e o cache de clientes, o que o anúncio diz, e se o servidor
-    // passa a recusar texto claro de fora.
+    // The order matters little, but all three have to happen together: the URL
+    // scheme and the client cache, what the announcement says, and whether the
+    // server starts refusing plaintext from outside.
     state.peer_http.apply_cluster_policy(req.tls_required);
     state.network.set_tls(req.tls_required);
     if let Some(t) = &state.tls_server {
@@ -1580,9 +1580,9 @@ pub struct SaveClusterLogsRequest {
     pub logs_enabled: bool,
 }
 
-/// Liga ou desliga a coleta do cluster sem reinício. O principal grava a
-/// política e os demais nós a adotam apenas após a busca autenticada descrita
-/// em `cluster_logs_policy`.
+/// Turns the cluster's collection on or off with no restart. The principal
+/// writes the policy and the other nodes adopt it only after the authenticated
+/// fetch described in `cluster_logs_policy`.
 pub(super) async fn save_cluster_logs(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1643,9 +1643,9 @@ pub struct SaveNetworkChatRequest {
     pub network_chat_enabled: bool,
 }
 
-/// Repassa a decisão ao principal real quando a tela está aberta num admin
-/// secundário. A cadeia administrativa continua sendo a autoridade, e o
-/// destino grava o valor no próprio pom.json antes de anunciá-lo.
+/// Forwards the decision to the real principal when the screen is open on a
+/// secondary admin. The administrative chain remains the authority, and the
+/// destination writes the value to its own pom.json before announcing it.
 async fn forward_network_chat_to_primary(
     state: &GatewayState,
     req: &SaveNetworkChatRequest,
@@ -1678,9 +1678,9 @@ async fn forward_network_chat_to_primary(
     }
 }
 
-/// Liga ou desliga o Chat da rede para o cluster inteiro. O valor anunciado
-/// só desperta a busca autenticada nos demais nós; apenas o principal real
-/// grava a política, e um admin secundário encaminha a ação para ele.
+/// Turns the network Chat on or off for the whole cluster. The announced value
+/// only triggers the authenticated fetch on the other nodes; only the real
+/// principal writes the policy, and a secondary admin forwards the action to it.
 pub(super) async fn save_network_chat(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1718,12 +1718,12 @@ pub(super) async fn save_network_chat(
 pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     let catalog = local_catalog(&state).await;
     Json(json!({
-        // Não `sysmon`: aquele é o hostname cru do sistema operacional e
-        // ignora o `node_name` do pom.json. `network.hostname` é o nome que
-        // este nó anuncia aos peers, e é o que o resto da tela mostra - ver a
-        // nota gêmea em `node_info`. Quem lia daqui era o seletor "Enviar
-        // para..." da tela de fatias, e ele era o único lugar do aplicativo
-        // que chamava a máquina por outro nome.
+        // Not `sysmon`: that one is the raw operating system hostname and
+        // ignores the `node_name` from pom.json. `network.hostname` is the name
+        // this node announces to peers, and it is what the rest of the screen
+        // shows - see the twin note in `node_info`. What read from here was the
+        // "Send to..." selector of the slices screen, and it was the only place
+        // in the application that called the machine by another name.
         "hostname": state.network.hostname(),
         "node_id": state.network.node_id,
         "models": catalog.models,
@@ -1740,9 +1740,9 @@ pub(super) struct RttReport {
     pub(super) measurements: Vec<crate::route::RttMeasurement>,
 }
 
-/// Publica apenas as medições feitas por este nó. A autenticação é necessária
-/// porque o relatório faz parte da telemetria interna usada para escolher
-/// rotas de inferência.
+/// Publishes only the measurements made by this node. Authentication is needed
+/// because the report is part of the internal telemetry used to choose
+/// inference routes.
 pub(super) async fn network_rtt(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -2008,8 +2008,8 @@ pub(super) async fn inference_heads(
 pub(super) struct ChatTelemetryRequest {
     #[serde(default)]
     pub(super) node_ids: Vec<String>,
-    /// ID OpenAI da execução. Quando ausente, o painel consulta a execução
-    /// concluída mais recente que tiver as arestas pedidas.
+    /// OpenAI ID of the execution. When absent, the dashboard queries the most
+    /// recent completed execution that has the requested edges.
     #[serde(default)]
     pub(super) execution_id: Option<String>,
 }
@@ -2020,8 +2020,8 @@ pub(super) struct ChatTelemetryMeasurement {
     pub(super) to_node_id: String,
     pub(super) rtt_ms: f64,
     pub(super) transport: String,
-    /// A aresta passa por um circuito num relé (túnel libp2p sem conexão
-    /// direta): cada frame atravessa um servidor intermediário.
+    /// The edge goes through a circuit on a relay (libp2p tunnel with no direct
+    /// connection): every frame crosses an intermediate server.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) relayed: bool,
 }
@@ -2033,8 +2033,8 @@ pub(super) struct ChatTelemetryResponse {
     pub(super) pipeline_cost: Option<ChatTelemetryPipelineCost>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) pipeline_routes: Vec<ChatTelemetryPipelineRoute>,
-    /// Velocidade medida de cada peer do modelo ativo (teste ao servir e
-    /// tráfego real), vinda do `/health` dele.
+    /// Measured speed of each peer of the active model (test on serving and
+    /// real traffic), coming from its `/health`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(super) peer_perf: HashMap<String, ChatTelemetryPeerPerf>,
 }
@@ -2054,49 +2054,50 @@ pub(super) struct ChatTelemetryPipelineCost {
 
 #[derive(Debug, Serialize, PartialEq, Clone)]
 pub(super) struct ChatTelemetryPipelineRoute {
-    /// Caminho completo, incluindo o gateway virtual no retorno.
+    /// Full path, including the virtual gateway on the return.
     pub(super) node_ids: Vec<String>,
-    /// Gateway -> cabeça, handoffs e cauda -> gateway, nessa ordem.
+    /// Gateway -> head, handoffs and tail -> gateway, in that order.
     pub(super) legs_ms: Vec<Option<f64>>,
-    /// Soma das pernas quando todas foram medidas; não inclui compute.
+    /// Sum of the legs when all were measured; does not include compute.
     pub(super) rtt_ms: Option<f64>,
-    /// Compute de um passo de decode somado sobre os peers da rota, quando
-    /// todos têm velocidade medida.
+    /// Compute of one decode step summed over the route's peers, when all
+    /// have a measured speed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) compute_ms: Option<f64>,
-    /// Rede paga por token no modo de volta escolhido. Não é a soma das
-    /// pernas: na resposta direta cada perna custa meio RTT, e no anel a volta
-    /// da cauda não é paga.
+    /// Network paid per token in the chosen return mode. It is not the sum of
+    /// the legs: in the direct reply each leg costs half an RTT, and in the ring
+    /// the tail's return is not paid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) network_ms: Option<f64>,
-    /// `direct` ou `ring`, como o planejador decidiria para esta rota.
+    /// `direct` or `ring`, as the planner would decide for this route.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) return_mode: Option<crate::fastest::ReturnMode>,
-    /// Um token de decode pela rota: rede no modo escolhido mais compute.
+    /// One decode token through the route: network in the chosen mode plus compute.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tokens_per_sec: Option<f64>,
-    /// O gateway foi acrescentado no fim como volta da cauda; falso quando ele
-    /// mesmo serve a cauda e a última aresta é passagem de ida.
+    /// The gateway was appended at the end as the tail's return; false when it
+    /// serves the tail itself and the last edge is a forward handoff.
     #[serde(skip)]
     pub(super) returns_to_gateway: bool,
-    /// Alguma perna da rota passa por relé; a rota precisa ser revista.
+    /// Some leg of the route goes through a relay; the route needs to be reviewed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) relayed: bool,
-    /// Quais pernas, como `[de, para]`. A primeira pode ser a do próprio
-    /// gateway: vale só para requisições que entram por este nó.
+    /// Which legs, as `[de, para]`. The first may be the gateway's own: it
+    /// holds only for requests that enter through this node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) relayed_legs: Vec<[String; 2]>,
-    /// A volta direta da cauda passaria por relé, e o modo escolhido é o
-    /// anel: o POM contorna o relé devolvendo a resposta pelas conexões da ida.
+    /// The tail's direct return would go through a relay, and the chosen mode is
+    /// the ring: POM bypasses the relay by returning the reply over the forward
+    /// connections.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) relay_bypassed_by_ring: bool,
 }
 
-/// A perna `from -> to` está fixada no túnel libp2p e `from` só alcança `to`
-/// por circuito num relé. `returns` escolhe o plano do gateway (volta da
-/// cauda) em vez do de inferência.
+/// The `from -> to` leg is pinned to the libp2p tunnel and `from` only reaches
+/// `to` through a circuit on a relay. `returns` picks the gateway plane (the
+/// tail's return) instead of the inference one.
 fn leg_is_relayed(
     from: &str,
     to: &str,
@@ -2147,12 +2148,12 @@ fn collect_pipeline_route_paths(
     }
 }
 
-/// Produz todas as rotas completas do modelo, não apenas a escolhida pelo
-/// planner, estimadas com as mesmas fontes e a mesma conta do planejador
-/// (`fastest::describe_chain`): RTT das rotas fixadas de cada peer, velocidade
-/// medida e modo de volta. Por isso o card mostra o mesmo valor em qualquer nó
-/// da rede. A ordem é o menor tempo por token primeiro, depois o vetor de IDs
-/// como desempate estável.
+/// Produces every complete route of the model, not only the one chosen by the
+/// planner, estimated with the same sources and the same arithmetic as the
+/// planner (`fastest::describe_chain`): RTT of each peer's pinned routes,
+/// measured speed and return mode. That is why the card shows the same value on
+/// any node of the network. The order is the lowest time per token first, then
+/// the ID vector as a stable tie-break.
 pub(super) fn pipeline_routes_for(
     peers: &[crate::network::PeerInfo],
     model: &str,
@@ -2203,9 +2204,9 @@ pub(super) fn pipeline_routes_for(
                 .filter(|pair| leg_is_relayed(pair[0], pair[1], false, inputs))
                 .map(|pair| [pair[0].to_owned(), pair[1].to_owned()])
                 .collect::<Vec<_>>();
-            // A volta da cauda só conta quando o modo escolhido a usa: no
-            // anel a resposta volta pelas conexões da ida, e o relé da volta
-            // direta fica contornado.
+            // The tail's return only counts when the chosen mode uses it: in
+            // the ring the reply returns over the forward connections, and the
+            // relay of the direct return is bypassed.
             let return_relayed = returns_to_gateway
                 && chain.last().is_some_and(|tail| {
                     leg_is_relayed(&tail.node_id, inputs.requester, true, inputs)
@@ -2251,11 +2252,11 @@ pub(super) fn pipeline_routes_for(
     routes
 }
 
-/// RTT e transporte das rotas fixadas em cada aresta das rotas do modelo, no
-/// formato das medições de execução. É informação da rede: o peer de origem
-/// mede a aresta e a publica no `/health`, então qualquer nó vê o mesmo valor,
-/// tenha ou não sido gateway de uma execução. A volta da cauda usa o destino
-/// `gateway`, como no trace.
+/// RTT and transport of the pinned routes on each edge of the model's routes,
+/// in the format of the execution measurements. It is network information: the
+/// source peer measures the edge and publishes it in `/health`, so any node
+/// sees the same value, whether or not it was the gateway of an execution. The
+/// tail's return uses the `gateway` destination, as in the trace.
 pub(super) fn planned_route_measurements(
     routes: &[ChatTelemetryPipelineRoute],
     inputs: &crate::fastest::CostInputs,
@@ -2348,14 +2349,14 @@ fn cycle_legs(trace: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
         .filter(|legs| !legs.is_empty())
 }
 
-/// Extrai a medição da aresta de modelo a partir do trace que a execução
-/// acabou de produzir.
+/// Extracts the model edge measurement from the trace the execution has just
+/// produced.
 ///
-/// `hops` representa nós, enquanto o transporte de uma aresta entra no hop
-/// downstream. Assim, em `head -> tail`, o probe do gateway em `hops[0]` não
-/// pode ser usado para nomear a aresta: a evidência da aresta está em
-/// `hops[1].decode.transport_summary`. O caso `remote-stream` acrescenta uma
-/// entrada sintética no hop zero, e por isso a mesma regra continua válida.
+/// `hops` represents nodes, while the transport of an edge goes into the
+/// downstream hop. So, in `head -> tail`, the gateway's probe in `hops[0]`
+/// cannot be used to name the edge: the evidence of the edge is in
+/// `hops[1].decode.transport_summary`. The `remote-stream` case adds a
+/// synthetic entry at hop zero, and so the same rule still holds.
 pub(super) fn execution_transport_measurements(
     trace: &serde_json::Value,
     requested: &std::collections::HashSet<String>,
@@ -2433,10 +2434,10 @@ pub(super) fn execution_transport_measurements(
         .collect()
 }
 
-/// Retorna as pernas na ordem do ciclo e o compute observado nos peers. Uma
-/// perna ausente permanece `null`: o card não transforma telemetria incompleta
-/// em zero e não fecha o total a partir de uma subtração do wall clock. Sem
-/// `pipeline_cycle`, mantém o contrato antigo sem inventar um custo parcial.
+/// Returns the legs in cycle order and the compute observed on the peers. A
+/// missing leg stays `null`: the card does not turn incomplete telemetry into
+/// zero and does not close the total from a wall clock subtraction. Without
+/// `pipeline_cycle`, it keeps the old contract without inventing a partial cost.
 pub(super) fn execution_pipeline_cost(
     trace: &serde_json::Value,
 ) -> Option<ChatTelemetryPipelineCost> {
@@ -2490,11 +2491,11 @@ pub(super) fn execution_pipeline_cost(
     })
 }
 
-/// Retorna apenas o transporte observado na execução distribuída.
+/// Returns only the transport observed in the distributed execution.
 ///
-/// `RttTable` continua sendo a fonte de probes para seleção de rota, mas não é
-/// uma medida da execução: em particular, uma probe libp2p não pode aparecer
-/// no Chat ou no mapa quando o frame real cruzou por `https-link`.
+/// `RttTable` remains the source of probes for route selection, but it is not
+/// a measurement of the execution: in particular, a libp2p probe must not show
+/// up in the Chat or on the map when the real frame crossed over `https-link`.
 pub(super) async fn chat_telemetry(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -2593,9 +2594,9 @@ pub(super) async fn chat_telemetry(
                 )
             })
             .collect();
-        // A perna que sai deste nó: o transporte e o relé vêm do próprio livro
-        // de rotas, porque um gateway que não serve fatia não tem `/health`
-        // de inferência na sonda de admissão.
+        // The leg that leaves this node: the transport and the relay come from
+        // the route book itself, because a gateway that serves no slice has no
+        // inference `/health` in the admission probe.
         let mut perf = perf;
         {
             let book = crate::route_plan::book();
@@ -2605,7 +2606,7 @@ pub(super) async fn chat_telemetry(
             }
             own.relayed_peers.extend(book.relayed_nodes());
         }
-        // As mesmas entradas do planejador (`plan_by_delivery_time`).
+        // The same inputs as the planner (`plan_by_delivery_time`).
         let mut requester_rtt = state
             .network
             .rtts
@@ -2629,9 +2630,9 @@ pub(super) async fn chat_telemetry(
             forced_return: crate::fastest::forced_return_mode(),
         };
         let routes = pipeline_routes_for(&peers, model, deploy_id, total_layers, &inputs);
-        // O painel mostra a rede, não a última execução deste nó: a rota
-        // planejada vale igual em qualquer nó; o trace só cobre o que ela
-        // ainda não mediu.
+        // The dashboard shows the network, not this node's last execution: the
+        // planned route is the same on any node; the trace only covers what it
+        // has not measured yet.
         let planned = planned_route_measurements(&routes, &inputs);
         measurements.retain(|m| {
             !planned
@@ -2657,12 +2658,12 @@ pub(super) async fn chat_telemetry(
     })
 }
 
-/// Idade máxima da sonda de um peer que o Painel aceita sem sondar de novo.
+/// Maximum age of a peer's probe that the Dashboard accepts without probing again.
 const PANEL_PERF_MAX_AGE: Duration = Duration::from_secs(15);
 
-/// Velocidade dos peers do modelo ativo. Vem da última sonda de admissão; se
-/// algum peer ainda não passou por uma (nenhuma requisição desde que subiu),
-/// a sonda roda aqui, com o mesmo teto curto da admissão.
+/// Speed of the active model's peers. It comes from the last admission probe;
+/// if some peer has not gone through one yet (no request since it came up),
+/// the probe runs here, with the same short ceiling as admission.
 async fn model_peer_perf(
     state: &GatewayState,
     peers: &[crate::network::PeerInfo],
@@ -2674,9 +2675,9 @@ async fn model_peer_perf(
             .into_iter()
             .cloned()
             .collect();
-    // A sonda de admissão só roda quando este nó atende uma requisição; num
-    // nó que ninguém usa como gateway o snapshot envelhecia sem limite e o
-    // Painel mostrava a rota que um peer tinha logo depois de subir.
+    // The admission probe only runs when this node serves a request; on a
+    // node nobody uses as a gateway the snapshot aged without bound and the
+    // Dashboard showed the route a peer had right after coming up.
     if candidates.iter().any(|peer| {
         state
             .admission_health

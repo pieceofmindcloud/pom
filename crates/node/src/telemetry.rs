@@ -1,8 +1,8 @@
-//! Nível de custo da telemetria de inferência.
+//! Cost level of the inference telemetry.
 //!
-//! `POM_PROFILE_SYNC` continua pertencendo ao motor e controla apenas a
-//! sincronização do backend. Este perfil governa a quantidade de trace que o
-//! gateway e o cliente coletam, sem criar outra política para o motor.
+//! `POM_PROFILE_SYNC` still belongs to the engine and controls only the
+//! backend synchronization. This profile governs how much trace the
+//! gateway and the client collect, without creating another policy for the engine.
 
 use serde::Serialize;
 

@@ -25,9 +25,9 @@ import {
 } from "./api";
 
 /**
- * Senha administrativa gravada no primeiro acesso (`auth::DEFAULT_ADMIN_PASSWORD`
- * no nó). Não é segredo: enquanto estiver em vigor, `/api/access` diz
- * `default_password` e a interface entra sem perguntá-la e pede a troca.
+ * Administrative password written on first access (`auth::DEFAULT_ADMIN_PASSWORD`
+ * on the node). It is not a secret: while it is in force, `/api/access` says
+ * `default_password` and the interface enters without asking for it and asks for a change.
  */
 export const DEFAULT_ADMIN_PASSWORD = "admin";
 import { modelDownloadJobs } from "./modelProvider";
@@ -137,21 +137,21 @@ export type AdminSurfaceState = "available" | "requires-password" | "local-only"
 export function useAdminSurface() {
   const client = useQueryClient();
   /*
-   * A sonda decide qual casca é segura desenhar e roda uma vez por
-   * carregamento (`staleTime: Infinity`). Só que a sessão administrativa vive
-   * na memória do nó: um reinício, ou as 8 h de validade, a derrubam com a aba
-   * aberta. Sem refazer a sonda, cada tela passava a imprimir o
-   * "missing administrative access password" cru no lugar do seu conteúdo, e o
-   * operador não tinha caminho de volta ao portão que não fosse recarregar na
-   * mão.
+   * The probe decides which shell is safe to draw and runs once per
+   * load (`staleTime: Infinity`). But the administrative session lives
+   * in the node's memory: a restart, or the 8 h of validity, drops it with the tab
+   * open. Without redoing the probe, each screen started printing the raw
+   * "missing administrative access password" in place of its content, and the
+   * operator had no way back to the gate other than reloading by
+   * hand.
    */
   useEffect(
     () =>
       onAdminSessionLost(() => {
-        // Só uma aba que achava ter sessão sonda de novo. A própria sonda
-        // responde 401 enquanto não há sessão, e esse 401 também avisa
-        // "sessão perdida": sem este filtro cada resposta pedia outra sonda,
-        // milhares por minuto, e o portão remontava sem parar.
+        // Only a tab that believed it had a session probes again. The probe itself
+        // answers 401 while there is no session, and that 401 also signals
+        // "session lost": without this filter each answer asked for another probe,
+        // thousands per minute, and the gate remounted nonstop.
         if (client.getQueryData(keys.adminSurface) !== "available") return;
         if (client.isFetching({ queryKey: keys.adminSurface }) > 0) return;
         void client.invalidateQueries({ queryKey: keys.adminSurface });
@@ -174,8 +174,8 @@ export function useAdminSurface() {
         if (error instanceof ApiError && error.status === 403 && access?.admin_exposure === "localhost") {
           return "local-only";
         }
-        // Enquanto a senha for a padrão do primeiro acesso, o portão não a
-        // pergunta: a aba entra com ela e o aviso pede a troca.
+        // While the password is the first-access default, the gate does not
+        // ask for it: the tab enters with it and the notice asks for the change.
         if (access?.default_password) {
           setAdminAccessToken(DEFAULT_ADMIN_PASSWORD);
           try {
@@ -406,12 +406,12 @@ export function useChatCapabilities() {
 }
 
 /**
- * Como uma máquina carregou o modelo, buscado só com o card aberto.
+ * How a machine loaded the model, fetched only with the card open.
  *
- * `enabled` é o ponto: isto sai do `/health` do peer, e pedir por peer a cada
- * ciclo do Painel seria um leque de chamadas por uma tela que quase sempre está
- * fechada. Um nó antigo sem a rota devolve 404, e aí a seção some em vez de
- * virar erro - mesmo critério do `optional` acima.
+ * `enabled` is the point: this comes from the peer's `/health`, and asking per
+ * peer on every Panel cycle would be a fan of calls for a screen that is almost
+ * always closed. An old node without the route returns 404, and then the section
+ * disappears instead of becoming an error - same criterion as the `optional` above.
  */
 export function usePeerRuntime(nodeId: string, enabled: boolean) {
   return useQuery({
@@ -429,7 +429,7 @@ export function usePeerRuntime(nodeId: string, enabled: boolean) {
   });
 }
 
-/** Snapshot de saúde dos peers que acabaram de participar de uma execução. */
+/** Health snapshot of the peers that have just taken part in an execution. */
 export function usePeerRuntimes(nodeIds: string[], enabled: boolean, executionId?: string) {
   return useQueries({
     queries: nodeIds.map((nodeId) => ({
@@ -448,7 +448,7 @@ export function usePeerRuntimes(nodeIds: string[], enabled: boolean, executionId
   });
 }
 
-/** RTT direcional das arestas da execução, consultado apenas após o stream. */
+/** Directional RTT of the execution's edges, queried only after the stream. */
 export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, executionId?: string) {
   return useQuery({
     queryKey: keys.chatTelemetry(executionId, nodeIds),
@@ -463,7 +463,7 @@ export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, exe
   });
 }
 
-/** Último RTT observado nas arestas de inferência, para o mapa do Painel. */
+/** Last RTT observed on the inference edges, for the Panel's map. */
 export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.networkRtt(nodeIds),
@@ -478,7 +478,7 @@ export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
   });
 }
 
-/** Cabeças do modelo que este nó infer pode escolher, sem abrir a rede toda. */
+/** Heads of the model this infer node can choose, without opening the whole network. */
 export function useInferenceHeads(model: string, enabled: boolean) {
   return useQuery({
     queryKey: keys.inferenceHeads(model),
@@ -572,11 +572,11 @@ export function useJobs() {
 }
 
 /**
- * As implantações do cluster.
+ * The cluster's deployments.
  *
- * Intervalo maior que o do painel: a lista muda quando alguém implanta ou
- * desimplanta, não a cada batida do coração, e cada chamada aqui é um fan-out
- * do nó para todos os peers.
+ * A longer interval than the panel's: the list changes when someone deploys or
+ * undeploys, not on every heartbeat, and each call here is a fan-out from the
+ * node to all the peers.
  */
 export function useDeployments() {
   return useQuery({
@@ -586,7 +586,7 @@ export function useDeployments() {
   });
 }
 
-/** Logs de processo em ordem de chegada à réplica local. */
+/** Process logs in arrival order at the local replica. */
 /** The cluster's process log, kept by the logs plugin; idle while it is not active here. */
 export function useClusterLogs(deployId?: string, enabled = true) {
   const query = new URLSearchParams();
@@ -611,13 +611,13 @@ export function useTransfers() {
 }
 
 /**
- * Ofertas de fatia esperando uma resposta.
+ * Slice offers waiting for an answer.
  *
- * Na mesma cadência das transferências, e não mais lenta: uma oferta é uma
- * pergunta parada esperando por um humano, não uma barra de progresso. Enquanto
- * o remetente hasheava o arquivo antes de oferecer, este intervalo era ruído
- * (medidos 3 min 23 s de MD5 numa fatia de 4,2 GB contra 5 s de polling); com a
- * oferta saindo em milissegundos, o que sobra da espera é justamente isto.
+ * At the same cadence as the transfers, and not slower: an offer is a stalled
+ * question waiting for a human, not a progress bar. While the sender hashed the
+ * file before offering, this interval was noise (3 min 23 s of MD5 measured on a
+ * 4.2 GB slice against 5 s of polling); with the offer going out in milliseconds,
+ * what remains of the wait is precisely this.
  */
 export function useOffers() {
   return useQuery({
@@ -646,10 +646,10 @@ export function useAdminAuthority(enabled = true) {
 }
 
 /**
- * O estado de ancoragem desta máquina.
+ * The anchoring state of this machine.
  *
- * Sem polling curto: uma raiz de confiança muda por um gesto do operador, não
- * sozinha, e a tela refaz a leitura depois de instalar.
+ * No short polling: a trust root changes by an operator's gesture, not on its
+ * own, and the screen rereads after installing.
  */
 export function useTrustAnchor() {
   return useQuery({

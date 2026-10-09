@@ -16,9 +16,9 @@ import { TlsChip } from "./TlsIndicator";
 import { LanguageFlags } from "./LanguageFlags";
 
 /**
- * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
- * logo vira o controle acessível e o clique alterna o estado. No drawer mobile
- * ela permanece uma marca passiva, pois o Topbar controla a abertura por fora.
+ * Header of the bar. When it receives the desktop Sidebar's toggle, the logo
+ * itself becomes the accessible control and the click toggles the state. In the mobile drawer
+ * it stays a passive mark, since the Topbar controls the opening from outside.
  */
 function SidebarBrand({
   collapsed,
@@ -156,21 +156,21 @@ export function ScrollableNav({ className, children }: { className?: string; chi
 }
 
 /**
- * Idioma e tema, no pé da barra.
+ * Language and theme, at the foot of the bar.
  *
- * O idioma é uma bandeira, não "EN"/"PT-BR": o rótulo em texto só ajuda quem já
- * sabe o que a sigla quer dizer, e o alvo aqui é justamente quem abriu a tela
- * no idioma errado. O nome do idioma continua no `aria-label` e no `title`,
- * porque bandeira não é idioma para um leitor de tela.
+ * The language is a flag, not "EN"/"PT-BR": the text label only helps whoever already
+ * knows what the abbreviation means, and the target here is precisely whoever opened the screen
+ * in the wrong language. The language name stays in the `aria-label` and in the `title`,
+ * because a flag is not a language for a screen reader.
  */
 function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   const { t } = useI18n();
   const { profile } = useProfile();
   const { theme, toggle } = useTheme();
-  // O commit deste nó vive aqui, ao lado dos controles: num cluster de várias
-  // máquinas "qual build é esse?" não se responde sem shell, e um peer rodando
-  // binário velho parece sadio até a hora da inferência. Sem a palavra "build"
-  // na frente - é um hash em fonte mono, e o que ele é fica no tooltip.
+  // This node's commit lives here, beside the controls: in a cluster of several
+  // machines "which build is this?" cannot be answered without a shell, and a peer running
+  // an old binary looks healthy until inference time. Without the word "build"
+  // in front - it is a hash in mono font, and what it is stays in the tooltip.
   const { data: node } = useNode();
   const footerLinks = navFooterForProfile(profile);
   return (
@@ -600,12 +600,12 @@ function InferenceMainMenu({
   const { pathname } = useLocation();
 
   /*
-   * Esta lista é o menu principal do perfil `infer`, e é vista de toda rota -
-   * da documentação, das configurações. Trocar a conversa ativa não é
-   * navegar: fora do `/chat` o clique mudava o estado compartilhado e a tela
-   * continuava a mesma, como se o menu tivesse parado de responder. Quem já
-   * está no chat não é enviado de novo, para não empilhar entradas iguais no
-   * histórico do navegador.
+   * This list is the `infer` profile's main menu, and it is seen from every route -
+   * from the documentation, from the settings. Changing the active conversation is not
+   * navigating: outside `/chat` the click changed the shared state and the screen
+   * stayed the same, as if the menu had stopped responding. Whoever is already
+   * in the chat is not sent again, so as not to stack identical entries in the
+   * browser history.
    */
   const openChat = () => {
     if (pathname !== "/chat") navigate("/chat");
@@ -660,8 +660,8 @@ export function SidebarContent({
   collapsed?: boolean;
   onToggle?: () => void;
 }) {
-  // O menu segue o perfil: o que este perfil não abre também não é oferecido.
-  // Ver `navForProfile` e a tabela em `lib/access.ts`.
+  // The menu follows the profile: what this profile does not open is not offered either.
+  // See `navForProfile` and the table in `lib/access.ts`.
   const { profile } = useProfile();
   const { unreadCount, snapshot } = useNetworkChatUnread(false);
   const { data: node } = useNode();

@@ -53,21 +53,21 @@ describe("admin surface with the default password", () => {
         headers: { "x-pom-admin-error": "missing-token" },
       });
     }));
-    // A aba estava dentro: a sonda já tinha dito "available".
+    // The tab was inside: the probe had already said "available".
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(keys.adminSurface, "available");
     const { result } = renderHook(() => useAdminSurface(), {
       wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
     });
 
-    // Outro nó no mesmo host trocou o cookie: a próxima leitura volta 401.
+    // Another node on the same host swapped the cookie: the next read returns 401.
     await expect(api.get("/api/ui/cluster")).rejects.toThrow();
 
     await waitFor(() => expect(result.current.data).toBe("requires-password"));
     await new Promise((resolve) => setTimeout(resolve, 50));
-    // O 401 da própria sonda também avisa "sessão perdida". Invalidar a sonda
-    // em andamento a cancelava e recomeçava: milhares de sondas e a tela
-    // presa no painel.
+    // The probe's own 401 also signals "session lost". Invalidating the probe
+    // in flight cancelled and restarted it: thousands of probes and the screen
+    // stuck on the panel.
     expect(probes).toBe(1);
     vi.unstubAllGlobals();
   });

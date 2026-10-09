@@ -1,9 +1,9 @@
-//! Contrato mínimo para preparar a ativação Enterprise entre peers.
+//! Minimal contract to prepare Enterprise activation between peers.
 //!
-//! A chave de licença nunca aparece nestes pacotes. O admin coleta provas
-//! assinadas de cada peer e usa os fingerprints para uma ativação em lote no
-//! servidor. O artefato é distribuído depois pelo transporte autenticado já
-//! existente do cluster.
+//! The license key never appears in these packets. The admin collects signed
+//! proofs from each peer and uses the fingerprints for a batch activation on
+//! the server. The artifact is distributed afterwards through the cluster's
+//! already existing authenticated transport.
 
 #[cfg(test)]
 use anyhow::{Context, Result};

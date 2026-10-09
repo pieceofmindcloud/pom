@@ -6,11 +6,11 @@ mod common;
 mod infer;
 mod node;
 
-/// Escopo de perfil anexado a uma rota do gateway. `CommonOrInternal` também é
-/// a faixa explícita para protocolos cujo chamador é outro nó e prova a
-/// credencial interna compartilhada. Setup e o listener separado de inferência
-/// são representados de propósito para não desaparecerem do inventário por
-/// omissão.
+/// Profile scope attached to a gateway route. `CommonOrInternal` is also
+/// the explicit band for protocols whose caller is another node and proves the
+/// shared internal credential. Setup and the separate inference listener
+/// are represented on purpose so they do not vanish from the inventory by
+/// omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteScope {
     /// The network's principal only. A secondary admin does not reach these:
@@ -29,23 +29,23 @@ pub(crate) enum RouteScope {
 
 struct RouteRule {
     prefix: &'static str,
-    /// `None` vale para todo método. Um método explícito só casa com ele, e
-    /// existe porque uma rota administrativa pode ter uma leitura de perfil
-    /// mais largo que a sua escrita: `GET /admin/nodes` é o retrato da rede
-    /// que a tela Rede precisa, enquanto bloquear, remover e promover uma
-    /// máquina continuam sendo ato de administrador sob o mesmo prefixo.
+    /// `None` holds for every method. An explicit method only matches it, and
+    /// exists because an administrative route may have a profile read that is
+    /// wider than its write: `GET /admin/nodes` is the snapshot of the network
+    /// that the Network screen needs, while blocking, removing and promoting a
+    /// machine remain an administrator's act under the same prefix.
     method: Option<Method>,
     scope: RouteScope,
 }
 
-/// Uma tabela legível para a fronteira de perfis do backend. Os arquivos de
-/// rotas acima organizam o router da UI para leitura humana; esta tabela é o que
-/// o middleware do gateway aplica, incluindo rotas registradas por módulos
-/// vizinhos do backend.
+/// A readable table for the backend's profile boundary. The route files
+/// above organize the UI router for human reading; this table is what
+/// the gateway middleware applies, including routes registered by neighbouring
+/// backend modules.
 const ROUTE_RULES: &[RouteRule] = &[
-    // Fora desta tarefa de propósito. Setup tem seu próprio router antes de
-    // existir um perfil, e o listener de inferência tem porta e middleware
-    // separados. Na porta 8181, as rotas fora deste mapa são:
+    // Out of this task on purpose. Setup has its own router before a
+    // profile exists, and the inference listener has its own port and middleware.
+    // On port 8181, the routes outside this map are:
     // /v1/prefill, /v1/step, /v1/step-stream, /v1/link, /v1/session/*,
     // /v1/tp/reduce e /health.
     RouteRule {
@@ -53,7 +53,7 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::OutOfScope,
     },
-    // Rotas públicas/comuns do gateway e sondas de política entre nós.
+    // Public/common gateway routes and policy probes between nodes.
     RouteRule {
         prefix: "/api/access",
         method: None,
@@ -124,8 +124,8 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
-    // APIs compatíveis com inferência. Os callbacks acima vencem por
-    // especificidade.
+    // Inference-compatible APIs. The callbacks above win by
+    // specificity.
     RouteRule {
         prefix: "/api/generate",
         method: None,
@@ -141,25 +141,25 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
-    // Rotas comuns da UI. Os handlers ainda reduzem os dados do cluster para
+    // Common UI routes. The handlers still reduce the cluster data for
     // infer.
     RouteRule {
         prefix: "/api/ui/node",
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
-    // Plugins são locais de cada nó (ver `crate::plugins`): ativar uma
-    // licença, cadastrar um repositório GitHub, instalar, atualizar e usar a
-    // interface de um plugin é ato de qualquer perfil sobre a própria máquina.
-    // A regra casa por prefixo de segmento e vale para todo método, inclusive
-    // sob `/api/ui/plugins/:code/...` e no proxy de interfaces.
+    // Plugins are local to each node (see `crate::plugins`): activating a
+    // license, registering a GitHub repository, installing, updating and using a
+    // plugin's interface is an act of any profile on its own machine.
+    // The rule matches by segment prefix and holds for every method, including
+    // under `/api/ui/plugins/:code/...` and in the interface proxy.
     RouteRule {
         prefix: "/api/ui/plugins",
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
-    // Atualização do binário `pom` em si - fronteira separada dos plugins de
-    // propósito, ver `crate::pom_core_update`.
+    // Update of the `pom` binary itself - a boundary separate from plugins on
+    // purpose, see `crate::pom_core_update`.
     RouteRule {
         prefix: "/api/ui/pom-update",
         method: Some(Method::GET),
@@ -231,10 +231,10 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
-    // Ancorar a raiz de confiança é o trabalho anterior a existir autoridade:
-    // um `profile: admin` por ancorar não passa em `AdminOnly`, e quem recebe
-    // a âncora costuma ser `node` ou `infer`. As travas reais são de origem e
-    // de estado, no handler; ver `webui/trust.rs`.
+    // Anchoring the trust root is the work that precedes any authority existing:
+    // an unanchored `profile: admin` does not pass `AdminOnly`, and whoever receives
+    // the anchor is usually `node` or `infer`. The real locks are of origin and
+    // of state, in the handler; see `webui/trust.rs`.
     RouteRule {
         prefix: "/api/ui/network/trust-anchor",
         method: None,
@@ -245,15 +245,15 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
-    // Operações locais do nó e do modelo. O endereço anunciado é a descrição
-    // desta própria máquina, por isso também é permitido ao perfil `infer`.
+    // Local operations of the node and the model. The announced address is the description
+    // of this very machine, so it is also allowed to the `infer` profile.
     RouteRule {
         prefix: "/api/ui/models",
         method: None,
         scope: RouteScope::NodeAdmin,
     },
-    // Qual projetor e qual MTP pertencem a cada modelo: lido por quem vê o
-    // catálogo, gravado só por administrador (e só no principal).
+    // Which projector and which MTP belong to each model: read by whoever sees the
+    // catalog, written only by an administrator (and only on the principal).
     RouteRule {
         prefix: "/api/ui/model-sidecar-links",
         method: Some(Method::GET),
@@ -387,24 +387,24 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::NodeAdmin,
     },
-    // Operações administrativas e de ciclo de vida.
+    // Administrative and lifecycle operations.
     RouteRule {
         prefix: "/admin/",
         method: None,
         scope: RouteScope::AdminOnly,
     },
-    // As API keys são a credencial de quem atende inferência, e todo perfil
-    // atende: `/v1` é `InferNodeAdmin`. Um `infer` troca a própria chave pela
-    // tela de API KEYS, que é o destino do rodapé dele. Negar aqui deixava os
-    // dois perfis sem como emitir o token que o próprio nó exige.
+    // API keys are the credential of whoever serves inference, and every profile
+    // serves: `/v1` is `InferNodeAdmin`. An `infer` swaps its own key through the
+    // API KEYS screen, which is the destination of its footer. Denying here left the
+    // two profiles with no way to issue the token the node itself demands.
     RouteRule {
         prefix: "/admin/api-keys",
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
-    // Ler quem está na rede é o que a tela Rede mostra; bloquear, desbloquear,
-    // remover e promover uma máquina são POST/DELETE e continuam sob
-    // `/admin/`, isto é, `AdminOnly`.
+    // Reading who is on the network is what the Network screen shows; blocking, unblocking,
+    // removing and promoting a machine are POST/DELETE and remain under
+    // `/admin/`, that is, `AdminOnly`.
     RouteRule {
         prefix: "/admin/nodes",
         method: Some(Method::GET),
@@ -496,11 +496,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::AdminOnly,
     },
-    // Sair da rede é abdicar do próprio posto, não um privilégio: qualquer
-    // perfil desliga a própria máquina a qualquer momento, e voltar é a outra
-    // metade do mesmo interruptor. Mandar **outra** máquina sair continua
-    // sendo ato de administrador, e essa trava é do alvo do pedido, não do
-    // caminho: fica em `webui::lifecycle::leave_network`.
+    // Leaving the network is abdicating one's own post, not a privilege: any
+    // profile shuts down its own machine at any time, and coming back is the other
+    // half of the same switch. Telling **another** machine to leave remains
+    // an administrator's act, and that lock belongs to the request's target, not to the
+    // path: it lives in `webui::lifecycle::leave_network`.
     RouteRule {
         prefix: "/api/ui/leave",
         method: None,
@@ -536,10 +536,10 @@ fn is_under(path: &str, prefix: &str) -> bool {
             .is_some_and(|remainder| remainder.starts_with('/'))
 }
 
-/// O escopo desta requisição. Vence a regra mais específica: primeiro o
-/// prefixo mais longo, e no empate a que nomeia o método - assim uma leitura
-/// pode ser mais larga que a escrita no mesmo caminho sem que o resto do
-/// prefixo deixe de ser administrativo.
+/// The scope of this request. The most specific rule wins: first the
+/// longest prefix, and on a tie the one that names the method - so a read
+/// can be wider than the write on the same path without the rest of the
+/// prefix ceasing to be administrative.
 pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
     ROUTE_RULES
         .iter()
@@ -551,8 +551,8 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
             if path.starts_with("/api/setup/") {
                 RouteScope::OutOfScope
             } else if path.starts_with("/api/") || path.starts_with("/admin/") {
-                // Rotas novas de controle falham fechadas até receberem um
-                // perfil nesta tabela.
+                // New control routes fail closed until they receive a
+                // profile in this table.
                 RouteScope::AdminOnly
             } else if path.starts_with("/v1/") {
                 RouteScope::InferNodeAdmin
@@ -599,9 +599,9 @@ pub(crate) const fn profile_can_access(
     }
 }
 
-/// Monta a superfície de controle sem fazer da organização dos arquivos a
-/// única barreira de segurança. A política de perfil fica neste módulo e o
-/// middleware do gateway a aplica depois, no caminho HTTP compartilhado.
+/// Builds the control surface without making the file organization the
+/// only security barrier. The profile policy stays in this module and the
+/// gateway middleware applies it afterwards, on the shared HTTP path.
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         .merge(common::routes())
@@ -614,7 +614,7 @@ pub fn routes() -> Router<GatewayState> {
 mod policy_tests {
     use super::*;
 
-    /// Atalho de leitura: quase toda regra da tabela é indiferente ao método.
+    /// Read shortcut: almost every rule in the table is indifferent to the method.
     fn scope_of(path: &str) -> RouteScope {
         route_scope(&Method::GET, path)
     }
@@ -639,8 +639,8 @@ mod policy_tests {
             scope_of("/api/ui/pom-update/status"),
             RouteScope::CommonOrInternal
         );
-        // Plugins são locais de cada nó: ativar, cadastrar repositório,
-        // instalar e atualizar é permitido a todo perfil.
+        // Plugins are local to each node: activating, registering a repository,
+        // installing and updating is allowed to every profile.
         for path in [
             "/api/ui/plugins/activate",
             "/api/ui/plugins/checkout",
@@ -675,8 +675,8 @@ mod policy_tests {
             ),
             RouteScope::InferNodeAdmin
         );
-        // O proxy de interfaces de plugin atende qualquer método e herda a
-        // regra por prefixo: aberto a todo perfil em todos os métodos.
+        // The plugin interface proxy serves any method and inherits the
+        // prefix rule: open to every profile on every method.
         for method in [
             Method::GET,
             Method::POST,
@@ -818,9 +818,9 @@ mod policy_tests {
         );
     }
 
-    /// A tela Rede do perfil `node` lê o retrato da rede; mudar o que ela
-    /// mostra continua sendo ato de administrador, e as duas coisas moram sob
-    /// o mesmo prefixo.
+    /// The Network screen of the `node` profile reads the network snapshot; changing what it
+    /// shows remains an administrator's act, and the two things live under
+    /// the same prefix.
     #[test]
     fn reading_the_roster_is_wider_than_administering_it() {
         assert_eq!(
@@ -849,7 +849,7 @@ mod policy_tests {
         );
     }
 
-    /// A API key é a credencial de quem atende `/v1`, e todo perfil atende.
+    /// The API key is the credential of whoever serves `/v1`, and every profile serves.
     #[test]
     fn every_profile_can_mint_the_key_its_own_inference_demands() {
         for method in [Method::GET, Method::POST, Method::DELETE] {
@@ -865,7 +865,7 @@ mod policy_tests {
         );
     }
 
-    /// Sair da rede é abdicar: nenhum perfil precisa de licença para isso.
+    /// Leaving the network is abdicating: no profile needs a license for it.
     #[test]
     fn leaving_and_rejoining_belong_to_every_profile() {
         use crate::profile::NodeProfile::{Admin, Infer, Node};

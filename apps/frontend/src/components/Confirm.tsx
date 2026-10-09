@@ -5,10 +5,10 @@
  * is serving, and neither is undone by clicking again — so they are asked about
  * by name, with the consequence spelled out.
  *
- * `Modal` é a casca — véu, painel, cabeçalho e rodapé —, separada de `Confirm`
- * porque nem tudo que aparece assim é uma pergunta: o relatório de uma
- * desimplantação usa a mesma janela e não tem "cancelar". Ter as duas coisas
- * numa função só levaria a um botão "cancelar" que não cancela nada.
+ * `Modal` is the shell - veil, panel, header and footer -, separate from `Confirm`
+ * because not everything that appears this way is a question: the report of an
+ * undeploy uses the same window and has no "cancel". Having both things
+ * in one function would lead to a "cancel" button that cancels nothing.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
@@ -18,12 +18,12 @@ import { Button } from "./ui";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 /**
- * Quem está por cima.
+ * Who is on top.
  *
- * Uma janela pode abrir outra - a confirmação de "Sair da rede" nasce de dentro
- * do card que a janela de detalhes mostra -, e todas escutam o Esc no
- * `document`. Sem esta pilha um Esc fecharia as duas de uma vez, e o operador
- * perderia a tela que estava lendo por ter desistido do que abriu de lá.
+ * One window may open another - the "Leave the network" confirmation is born from inside
+ * the card that the details window shows -, and all of them listen for Esc on
+ * `document`. Without this stack one Esc would close both at once, and the operator
+ * would lose the screen they were reading for having given up on what they opened from there.
  */
 const openModals: string[] = [];
 
@@ -42,14 +42,14 @@ export function Modal({
   footer: React.ReactNode;
   onClose: () => void;
   /**
-   * `lg` para conteúdo que é um painel inteiro, e não um parágrafo; `full`
-   * ocupa quase toda a janela, para quem pediu para ver tudo.
+   * `lg` for content that is a whole panel, and not a paragraph; `full`
+   * takes almost the whole window, for whoever asked to see everything.
    */
   size?: "md" | "lg" | "xl" | "full";
   /**
-   * O título continua sendo o nome da janela para leitores de tela, mas some
-   * da vista quando o conteúdo já abre com o próprio cabeçalho - senão o nome
-   * aparece duas vezes, um em cima do outro.
+   * The title is still the window's name for screen readers, but disappears
+   * from view when the content already opens with its own header - otherwise the name
+   * appears twice, one on top of the other.
    */
   titleHidden?: boolean;
 }) {
@@ -69,16 +69,16 @@ export function Modal({
     };
   }, [open, onClose, id]);
 
-  // Vai para o `body`, não para onde o botão está.
+  // Goes to `body`, not to where the button is.
   //
-  // `position: fixed` deixa de valer contra a janela e passa a valer contra o
-  // ancestral mais próximo que tenha `transform`, `filter` **ou**
-  // `backdrop-filter`. A barra do topo e o cabeçalho do Painel têm
-  // `backdrop-blur`, então uma confirmação aberta de lá era centralizada dentro
-  // de uma faixa de ~76 px de altura: medido no navegador, a janela nascia em
-  // `y = -66` numa viewport de 2029 px, com o título fora da tela. Era assim
-  // desde antes deste botão existir, e é armadilha de quem vier depois - o
-  // portal resolve para todo mundo de uma vez.
+  // `position: fixed` stops applying against the window and starts applying against the
+  // nearest ancestor that has `transform`, `filter` **or**
+  // `backdrop-filter`. The top bar and the Dashboard header have
+  // `backdrop-blur`, so a confirmation opened from there was centered inside
+  // a strip about 76 px tall: measured in the browser, the window was born at
+  // `y = -66` in a viewport of 2029 px, with the title off screen. It was like this
+  // since before this button existed, and it is a trap for whoever comes next - the
+  // portal solves it for everyone at once.
   return createPortal(
     <AnimatePresence>
       {open && (

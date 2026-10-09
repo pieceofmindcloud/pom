@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Gera a config de cada no do cluster do docker-compose.
+"""Generates the config of each node of the docker-compose cluster.
 
-As portas de um no vem da sua config, nao da linha de comando: com o diretorio
-de dados vazio o binario sobe em modo setup e serve so a tela de configuracao,
-sem carregar modelo. Como os cinco nos compartilham a pilha de rede da maquina
-(network_mode: host), gerar as configs e o que evita colisao de porta.
+A node's ports come from its config, not from the command line: with an empty
+data directory the binary starts in setup mode and serves only the
+configuration screen, without loading a model. Since the five nodes share the
+machine's network stack (network_mode: host), generating the configs is what
+avoids port collisions.
 
-A config de referencia (--base, por padrao pom.json na raiz do repo) e a
-fonte da connection_key, das api_keys, do advertise_addr e das pastas de
-modelos. A connection_key e a mesma em todo o cluster: e ela que autentica as
-rotas /admin, /api/ui/{plan,apply,launch} e /v1. Nunca e gerada aqui, para nao
-partir um cluster existente ao meio.
+The reference config (--base, by default pom.json at the repo root) is the
+source of the connection_key, the api_keys, the advertise_addr and the model
+folders. The connection_key is the same across the whole cluster: it is what
+authenticates the /admin, /api/ui/{plan,apply,launch} and /v1 routes. It is
+never generated here, so as not to split an existing cluster in half.
 
-Uso:
+Usage:
     scripts/gen-node-configs.py [--base pom.json] [--nodes 5] [--force]
         [--advertise-addr HOST[:PORT]]
 """
@@ -24,9 +25,9 @@ import json
 import sys
 from pathlib import Path
 
-# O no 1 herda as portas historicas da config principal (inferencia 8092); do 2
-# em diante seguem a serie 818x, que e a que os arquivos pom-cpu*.json ja
-# usavam. Gateway e p2p sao sequenciais a partir do no 1.
+# Node 1 inherits the historical ports of the main config (inference 8092); from
+# 2 onwards they follow the 818x series, which is what the pom-cpu*.json files
+# already used. Gateway and p2p are sequential starting from node 1.
 GATEWAY_BASE = 8080
 P2P_BASE = 42777
 INFERENCE = {1: 8092}
@@ -68,7 +69,7 @@ def _advertise_host_with_node_port(config: dict, advertise_addr: str) -> str:
 
 
 def config_with_advertise_addr(config: dict, advertise_addr: str) -> dict:
-    """Atualiza só o endpoint anunciado, preservando o restante da config.
+    """Updates only the advertised endpoint, preserving the rest of the config.
 
     When a full endpoint is supplied, its host is shared but its port is
     specific to the process described by this config.
@@ -90,12 +91,12 @@ def node_config_for(
     cfg["gateway_port"] = GATEWAY_BASE + n - 1
     cfg["p2p_port"] = P2P_BASE + n - 1
     cfg["inference_port"] = inference_port(n)
-    # So o no 1 escuta na porta de descoberta 42777, entao o broadcast da LAN
-    # nao alcanca os outros quatro: sem bootstrap explicito eles ficariam mudos
-    # entre si. Todos apontam para o principal, que devolve a lista completa.
+    # Only node 1 listens on discovery port 42777, so the LAN broadcast does not
+    # reach the other four: without an explicit bootstrap they would be mute to
+    # each other. They all point to the principal, which returns the full list.
     cfg["bootstrap_nodes"] = [] if n == 1 else [f"127.0.0.1:{P2P_BASE}"]
-    # As chaves de API sao credenciais de harness e vivem no principal; copia-las
-    # para os outros quatro so multiplicaria o segredo sem necessidade.
+    # API keys are harness credentials and live on the principal; copying them to
+    # the other four would only multiply the secret needlessly.
     cfg["api_keys"] = base.get("api_keys", []) if n == 1 else []
     if advertise_addr is not None:
         cfg = config_with_advertise_addr(cfg, advertise_addr)

@@ -34,7 +34,7 @@ vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), fromError: vi.fn() }),
 }));
 
-// Importado depois dos mocks: a tela lê `ApiError` no módulo.
+// Imported after the mocks: the screen reads `ApiError` in the module.
 const { TrustAnchor } = await import("./TrustAnchor");
 
 const view = (overrides: Partial<TrustAnchorView> = {}): TrustAnchorView => ({
@@ -83,7 +83,7 @@ describe("TrustAnchor", () => {
     );
 
     expect(screen.getByTestId("anchor-state").textContent).toContain("Ancorado");
-    // Em blocos de oito, que é como se confere a olho.
+    // In blocks of eight, which is how one checks by eye.
     expect(screen.getByTestId("anchor-fingerprint").textContent?.replace(/\s/g, "")).toBe(
       FINGERPRINT,
     );
@@ -159,7 +159,7 @@ describe("TrustAnchor", () => {
     expect(refusal.textContent).toContain("reancoragem manual");
   });
 
-  /** Vendo o nó de outra máquina, a tela não oferece o que o servidor recusa. */
+  /** Viewing another machine's node, the screen does not offer what the server refuses. */
   it("does not draw the form outside loopback", () => {
     mount(view({ loopback: false, can_install: false }));
 

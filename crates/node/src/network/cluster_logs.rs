@@ -1,8 +1,8 @@
-//! Processo de captura e transporte dos logs de uma implantação.
+//! Capture and transport process for the logs of a deployment.
 //!
-//! Este módulo é deliberadamente independente do túnel de inferência. A camada
-//! de `tracing` só usa `try_send` numa fila limitada; o escritor e o envio por
-//! libp2p vivem em tasks próprias e podem perder linhas quando estão ocupados.
+//! This module is deliberately independent of the inference tunnel. The
+//! `tracing` layer only uses `try_send` on a bounded queue; the writer and the
+//! libp2p send live in their own tasks and may lose lines when they are busy.
 
 use crate::network::Network;
 use anyhow::Result;

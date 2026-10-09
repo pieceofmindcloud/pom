@@ -1,19 +1,20 @@
 /**
- * Contas sobre as placas de uma máquina, no lugar onde as duas telas as leem.
+ * Computations over a machine's boards, in the place where both screens read them.
  *
- * O card em miniatura do Fluxo e o card de detalhes do Painel respondem a
- * perguntas diferentes - "quanta VRAM esta máquina tem" e "como está cada
- * placa" - mas a soma é a mesma, e duas somas divergem.
+ * The Flow's miniature card and the Panel's details card answer different
+ * questions - "how much VRAM does this machine have" and "how is each board
+ * doing" - but the sum is the same, and two sums diverge.
  */
 import type { GpuStat } from "./types";
 
 /**
- * A VRAM somada das placas que a reportam.
+ * The summed VRAM of the boards that report it.
  *
- * `null` quando nenhuma reporta: memória unificada (Apple) e placa sem leitura
- * caem aqui, e um total inventado viraria uma barra cheia de nada. Placas que
- * reportam e placas que não reportam na mesma máquina somam só as primeiras -
- * dizer "80 GiB de 80" seria pior que dizer "16 de 16, e há outra que não sei".
+ * `null` when none reports: unified memory (Apple) and a board with no reading
+ * land here, and an invented total would become a bar full of nothing. Boards
+ * that report and boards that do not on the same machine sum only the first -
+ * saying "80 GiB of 80" would be worse than saying "16 of 16, and there is
+ * another I do not know about".
  */
 export function sumVram(gpus: GpuStat[]): { used: number; total: number } | null {
   let used = 0;
@@ -28,7 +29,7 @@ export function sumVram(gpus: GpuStat[]): { used: number; total: number } | null
   return known ? { used, total } : null;
 }
 
-/** A ocupação somada, em pontos percentuais, ou `null` sem VRAM para medir. */
+/** The summed occupancy, in percentage points, or `null` without VRAM to measure. */
 export function vramUsedPct(gpus: GpuStat[]): number | null {
   const vram = sumVram(gpus);
   if (!vram || vram.total <= 0) return null;

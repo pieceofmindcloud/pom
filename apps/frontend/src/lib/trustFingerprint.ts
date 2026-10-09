@@ -17,10 +17,10 @@ export async function fingerprintFromTrustDocument(document: string): Promise<st
   if (typeof publicKey !== "string" || !publicKey.trim()) return null;
 
   const bytes = new TextEncoder().encode(publicKey);
-  // `crypto.subtle` só existe em contexto seguro (HTTPS ou localhost). O
-  // assistente de primeiro acesso é aberto por HTTP no IP da máquina - o modo
-  // setup escuta em todas as interfaces -, e sem esta alternativa a impressão
-  // digital nunca aparecia e o "Continuar" ficava desligado sem aviso.
+  // `crypto.subtle` only exists in a secure context (HTTPS or localhost). The
+  // first access wizard is opened over HTTP on the machine's IP - setup
+  // mode listens on all interfaces -, and without this alternative the
+  // fingerprint never appeared and "Continue" stayed disabled without notice.
   const subtle = globalThis.crypto?.subtle;
   const digest = subtle ? new Uint8Array(await subtle.digest("SHA-256", bytes)) : sha256(bytes);
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -38,9 +38,9 @@ const SHA256_K = new Uint32Array([
 ]);
 
 /**
- * SHA-256 (FIPS 180-4) em TypeScript puro, para quando `crypto.subtle` não
- * existe. Só calcula a impressão digital que o operador confere a olho; o
- * servidor refaz a conta e valida a cadeia inteira de qualquer jeito.
+ * SHA-256 (FIPS 180-4) in plain TypeScript, for when `crypto.subtle` does not
+ * exist. It only computes the fingerprint the operator checks by eye; the
+ * server redoes the computation and validates the whole chain anyway.
  */
 export function sha256(message: Uint8Array): Uint8Array {
   const bitLength = message.length * 8;

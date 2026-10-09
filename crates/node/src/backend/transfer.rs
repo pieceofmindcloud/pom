@@ -23,26 +23,26 @@
 //! configured roots and the peer receives an opaque grant id. See
 //! [`TransferState::grants`].
 //!
-//! Onde o arquivo cai depende do que ele é:
+//! Where the file lands depends on what it is:
 //!
-//! * uma **parte** de um fatiamento vai para
-//!   `<pasta de fatias>/<modelo>-<hash curto do original>/`, com o nome sendo o
-//!   próprio sha256 e o manifesto nomeado como a pasta, gravado na mesma pasta
-//!   antes dos bytes. O id vem do
-//!   hash do modelo original, e novas alternativas são mescladas no manifesto;
-//!   É o hash pedido que confere o que chegou - não um digest que o remetente
-//!   declarou;
-//! * qualquer outro arquivo - um modelo inteiro, que não pertence a manifesto
-//!   nenhum - cai em `<pasta de fatias>/recebidos/`, e só toma o nome final
-//!   quando o MD5 confere.
+//! * a **part** of a slicing goes to
+//!   `<slice folder>/<model>-<short hash of the original>/`, with the name being
+//!   its own sha256 and the manifest named like the folder, written in the same
+//!   folder before the bytes. The id comes from the
+//!   hash of the original model, and new alternatives are merged into the manifest;
+//!   it is the requested hash that checks what arrived - not a digest that the
+//!   sender declared;
+//! * any other file - a whole model, which belongs to no manifest -
+//!   lands in `<slice folder>/recebidos/`, and only takes its final name
+//!   when the MD5 matches.
 //!
-//! **O `.pom` é obrigatório para uma parte, nos dois sentidos.** Quem manda
-//! recusa oferecer uma fatia órfã; quem serve recusa entregá-la; quem recebe
-//! recusa aceitá-la. Uma parte sem manifesto é um arquivo que ninguém sabe de
-//! que modelo é nem que camadas traz, e que a tela mostraria como um modelo
-//! inteiro - falhar dizendo o que falta é melhor que espalhar o problema.
+//! **The `.pom` is mandatory for a part, in both directions.** The sender
+//! refuses to offer an orphan slice; the server refuses to deliver it; the receiver
+//! refuses to accept it. A part with no manifest is a file nobody knows which
+//! model it is from or which layers it carries, and which the screen would show as a
+//! whole model - failing and saying what is missing is better than spreading the problem.
 //!
-//! A pasta de fatias é a configurada em `pom.json`, `models/` até alguém mudar.
+//! The slice folder is the one configured in `pom.json`, `models/` until someone changes it.
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
@@ -117,12 +117,12 @@ const TRANSFER_DONE: &str = "done";
 const TRANSFER_FAILED: &str = "failed";
 const TRANSFER_CANCELLED: &str = "cancelled";
 
-/// Direções do mesmo job. O id é um só nas duas máquinas; o que muda é de que
-/// lado dele cada uma está.
+/// Directions of the same job. The id is the same on both machines; what changes is which
+/// side of it each one is on.
 const TRANSFER_SENDING: &str = "sending";
 const TRANSFER_RECEIVING: &str = "receiving";
 
-/// Um estado do qual não se sai. A tela usa a mesma regra (`transferStatus.ts`).
+/// A state one does not leave. The screen uses the same rule (`transferStatus.ts`).
 fn is_finished(state: &str) -> bool {
     matches!(state, TRANSFER_DONE | TRANSFER_FAILED | TRANSFER_CANCELLED)
 }
@@ -139,7 +139,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/transfer/offers", get(list_offers))
         .route("/api/transfer/offers/:id/accept", post(accept_offer))
         .route("/api/transfer/offers/:id/reject", post(reject_offer))
-        // O veredito volta para quem ofereceu. Ver `receive_answer`.
+        // The verdict goes back to whoever offered. See `receive_answer`.
         .route("/api/transfer/offers/answer", post(receive_answer))
         .route("/api/transfer/jobs", get(list_jobs))
         .route("/api/transfer/jobs/:id/cancel", post(cancel_job))
@@ -153,13 +153,13 @@ pub fn routes() -> Router<GatewayState> {
 pub struct TransferJob {
     pub id: String,
     pub name: String,
-    /// `sending` ou `receiving`. O mesmo id existe nas duas máquinas, com
-    /// direções opostas — é assim que os dois lados falam da mesma
-    /// transferência sem inventar um segundo vocabulário.
+    /// `sending` or `receiving`. The same id exists on both machines, with
+    /// opposite directions - this is how the two sides talk about the same
+    /// transfer without inventing a second vocabulary.
     pub direction: &'static str,
-    /// A outra máquina. Substitui `from_host`, que mentia na direção de envio.
+    /// The other machine. Replaces `from_host`, which lied about the send direction.
     pub peer_host: String,
-    /// Arquivo local envolvido. A exclusão precisa saber o que está em trânsito.
+    /// Local file involved. Deletion needs to know what is in transit.
     pub path: String,
     pub state: String,
     pub bytes_done: u64,
@@ -167,25 +167,25 @@ pub struct TransferJob {
     pub bytes_per_sec: f64,
     pub eta_secs: Option<u64>,
     pub detail: String,
-    /// De que modelo esta transferência é, e que camadas ela traz.
+    /// Which model this transfer is from, and which layers it carries.
     ///
-    /// **O nome de uma parte é o sha256 dela**, e hash não diz de que modelo é
-    /// nem que pedaço dele traz. Quem sabe as duas coisas é o `.pom`, que já
-    /// viaja com a oferta e é gravado antes do primeiro byte; sem estes campos
-    /// a notificação só tinha o hash para mostrar. O `name` continua aqui como
-    /// identificação secundária - é ele que nomeia o arquivo em disco.
+    /// **A part's name is its sha256**, and a hash does not say which model it is
+    /// from nor which piece of it it carries. What knows both is the `.pom`, which already
+    /// travels with the offer and is written before the first byte; without these fields
+    /// the notification only had the hash to show. The `name` stays here as
+    /// secondary identification - it is what names the file on disk.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_layer: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_layer: Option<u32>,
-    /// Quando o job entrou num estado terminal, em RFC 3339.
+    /// When the job entered a terminal state, in RFC 3339.
     ///
-    /// O sino lista transferência em andamento; sem esta marca ele não tem como
-    /// mostrar a que **acabou de** terminar, e o desfecho - concluída, falhada,
-    /// recusada - some da tela no instante em que acontece. Era esse o buraco:
-    /// o operador só reencontrava o resultado na tela de Transferências.
+    /// The bell lists transfers in progress; without this mark it has no way to
+    /// show the one that **just** finished, and the outcome - completed, failed,
+    /// refused - vanishes from the screen the instant it happens. That was the gap:
+    /// the operator only found the result again on the Transfers screen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
 }
@@ -204,22 +204,22 @@ pub struct TransferOffer {
     pub grant: Option<String>,
     pub name: String,
     pub size_bytes: u64,
-    /// Vazio, e de propósito: **a oferta não carrega digest**.
+    /// Empty, and on purpose: **the offer carries no digest**.
     ///
-    /// Quem confere o arquivo é o receptor, com o MD5 que ele mesmo pede em
-    /// `/api/transfer/manifest` depois de aceitar — este campo nunca foi lido
-    /// por ninguém. Calculá-lo aqui custava uma leitura do arquivo inteiro
-    /// *antes* de a oferta sair, e era isso que segurava a notificação do
-    /// outro lado por minutos. O campo continua na estrutura porque um peer de
-    /// versão anterior o exige no corpo do pedido.
+    /// The receiver is the one who checks the file, with the MD5 it asks for itself at
+    /// `/api/transfer/manifest` after accepting - this field was never read
+    /// by anyone. Computing it here cost a read of the whole file
+    /// *before* the offer went out, and that is what held back the notification on the
+    /// other side for minutes. The field stays in the struct because a peer of a
+    /// previous version requires it in the request body.
     pub md5: String,
-    /// O manifesto do fatiamento a que este arquivo pertence, quando ele é uma
-    /// parte.
+    /// The manifest of the slicing this file belongs to, when it is a
+    /// part.
     ///
-    /// Viaja **junto com a oferta**, e não depois: sem ele o outro lado recebe
-    /// um `<sha256>.gguf` que não sabe de que modelo é nem que camadas traz, e
-    /// acaba guardando como se fosse um modelo inteiro. São alguns kB de JSON
-    /// contra gigabytes de peso - mandar junto é de graça.
+    /// Travels **together with the offer**, and not after: without it the other side receives
+    /// a `<sha256>.gguf` that does not know which model it is from nor which layers it carries, and
+    /// ends up storing it as if it were a whole model. It is a few kB of JSON
+    /// against gigabytes of weights - sending it along is free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pom: Option<crate::pom::PomManifest>,
     pub start_layer: Option<u32>,
@@ -239,23 +239,23 @@ pub struct TransferState {
     /// screen — so the path is always someone's local choice, never a remote
     /// request. See [`grant_path`].
     grants: RwLock<HashMap<String, PathBuf>>,
-    /// Ids cancelados. Guardados mesmo para job que ainda não existe aqui: o
-    /// aviso do outro lado pode chegar antes de o download começar, e sem isso
-    /// a transferência arrancaria já cancelada e ninguém a pararia.
+    /// Cancelled ids. Kept even for a job that does not exist here yet: the
+    /// notice from the other side can arrive before the download starts, and without this
+    /// the transfer would start already cancelled and nobody would stop it.
     cancelled: RwLock<HashSet<String>>,
-    /// O que esta máquina ofereceu e ainda não teve resposta: `grant` → oferta.
+    /// What this machine offered and has not had an answer to yet: `grant` -> offer.
     ///
-    /// Sem isto o remetente não tem como saber de que arquivo o outro lado
-    /// está falando quando o veredito chega - o `grant` é o único id que as
-    /// duas pontas compartilham antes de existir um job. Ver [`receive_answer`].
+    /// Without this the sender has no way of knowing which file the other side
+    /// is talking about when the verdict arrives - the `grant` is the only id that
+    /// both ends share before a job exists. See [`receive_answer`].
     offered: RwLock<HashMap<String, OfferedFile>>,
 }
 
-/// Como uma fatia se apresenta na tela: o modelo e a faixa de camadas.
+/// How a slice presents itself on the screen: the model and the layer range.
 ///
-/// Sai do `.pom`, e só de lá. O nome do arquivo é o sha256 e não afirma nada
-/// sobre camada nenhuma - deduzir a faixa do nome foi um defeito real, e o
-/// manifesto é quem sabe.
+/// It comes from the `.pom`, and only from there. The file name is the sha256 and claims nothing
+/// about any layer - deducing the range from the name was a real defect, and the
+/// manifest is what knows.
 #[derive(Debug, Clone)]
 pub struct SliceLabel {
     pub model_label: String,
@@ -263,7 +263,7 @@ pub struct SliceLabel {
     pub end_layer: u32,
 }
 
-/// O descritor da parte `sha256` dentro de um manifesto, se ele a descreve.
+/// The descriptor of the part `sha256` inside a manifest, if it describes it.
 pub fn slice_label(m: &crate::pom::PomManifest, sha256: &str) -> Option<SliceLabel> {
     m.parts
         .iter()
@@ -276,10 +276,10 @@ pub fn slice_label(m: &crate::pom::PomManifest, sha256: &str) -> Option<SliceLab
         })
 }
 
-/// O descritor de um arquivo em disco, quando ele é parte de um fatiamento.
+/// The descriptor of a file on disk, when it is a part of a slicing.
 ///
-/// O que identifica a parte é o **caminho**: o `.pom` mora ao lado dela, e o
-/// nome com que alguém a está mandando não decide de que rodada ela é.
+/// What identifies the part is the **path**: the `.pom` lives next to it, and the
+/// name under which someone is sending it does not decide which round it belongs to.
 fn slice_label_for_path(path: &Path) -> Option<SliceLabel> {
     let sha = path
         .file_stem()
@@ -290,22 +290,22 @@ fn slice_label_for_path(path: &Path) -> Option<SliceLabel> {
         .find_map(|m| slice_label(m, sha))
 }
 
-/// Uma oferta que saiu daqui, guardada para dar nome ao veredito que voltar.
+/// An offer that left here, kept to give a name to the verdict that comes back.
 #[derive(Debug, Clone)]
 pub struct OfferedFile {
     pub to_node_id: String,
-    /// Nome legível do destino, para a notificação não falar em hash de nó.
+    /// Readable name of the destination, so the notification does not talk about a node hash.
     pub to_host: String,
     pub name: String,
     pub path: String,
     pub size_bytes: u64,
-    /// Modelo e camadas, para o veredito não voltar falando em hash.
+    /// Model and layers, so the verdict does not come back talking about a hash.
     pub slice: Option<SliceLabel>,
 }
 
 impl TransferState {
-    /// Registra uma transferência em curso. Chamado pelos dois lados, com o
-    /// mesmo id.
+    /// Registers a transfer in progress. Called by both sides, with the
+    /// same id.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_job(
         &self,
@@ -339,13 +339,13 @@ impl TransferState {
         );
     }
 
-    /// Fecha um job num estado terminal, carimbando a hora.
+    /// Closes a job in a terminal state, stamping the time.
     ///
-    /// Passa por aqui todo desfecho, e por uma razão só: um estado terminal
-    /// nunca é reescrito por outro. "Cancelado por ksia" é decisão de alguém e
-    /// não pode virar um "falhou" anônimo quando o loop percebe que o stream
-    /// morreu - eram dois lugares diferentes fazendo essa checagem à mão, e o
-    /// lado que envia não fazia nenhuma.
+    /// Every outcome goes through here, and for one reason: a terminal state
+    /// is never rewritten by another. "Cancelled by ksia" is someone's decision and
+    /// cannot become an anonymous "failed" when the loop notices that the stream
+    /// died - there were two different places doing this check by hand, and the
+    /// sending side did none.
     pub async fn finish(&self, id: &str, state: &str, detail: impl Into<String>) {
         let mut jobs = self.jobs.write().await;
         let Some(j) = jobs.get_mut(id) else { return };
@@ -357,11 +357,11 @@ impl TransferState {
         j.finished_at = Some(chrono::Utc::now().to_rfc3339());
     }
 
-    /// Progresso, com a mesma aritmética nos dois lados.
+    /// Progress, with the same arithmetic on both sides.
     ///
-    /// `moved` é o que andou nesta tentativa, que não é `done` quando a
-    /// transferência retomou de um `.part`: usar `done` inflaria a velocidade
-    /// com bytes que já estavam no disco.
+    /// `moved` is what moved in this attempt, which is not `done` when the
+    /// transfer resumed from a `.part`: using `done` would inflate the speed
+    /// with bytes that were already on disk.
     pub async fn progress(&self, id: &str, done: u64, moved: u64, elapsed: Duration) {
         let secs = elapsed.as_secs_f64().max(0.001);
         let rate = moved as f64 / secs;
@@ -381,11 +381,11 @@ impl TransferState {
         self.cancelled.read().await.contains(id)
     }
 
-    /// Marca o cancelamento e rotula o job com quem pediu.
+    /// Marks the cancellation and labels the job with who asked for it.
     ///
-    /// "Cancelado por ksia" e "falhou" são coisas diferentes para quem olha a
-    /// tela: a primeira foi decisão de alguém, a segunda é motivo para tentar
-    /// de novo.
+    /// "Cancelled by ksia" and "failed" are different things to whoever looks at the
+    /// screen: the first was someone's decision, the second is a reason to try
+    /// again.
     pub async fn cancel(&self, id: &str, by: &str) {
         self.cancelled.write().await.insert(id.to_string());
         self.finish(id, TRANSFER_CANCELLED, format!("cancelled by {by}"))
@@ -397,9 +397,9 @@ pub type Transfers = Arc<TransferState>;
 
 // ── Path safety ──────────────────────────────────────────────────────────────
 
-/// O nome que um GGUF pode ter: extensão `.gguf`, ou nenhuma - o Hugging Face
-/// publica arquivos assim, e aí só a assinatura diz o que ele é. Um blob do
-/// Ollama (`sha256-...`) não conta como arquivo sem extensão
+/// The name a GGUF may have: extension `.gguf`, or none - Hugging Face
+/// publishes files like that, and then only the signature says what it is. An
+/// Ollama blob (`sha256-...`) does not count as an extensionless file
 /// (`catalog::is_extensionless_name`).
 fn has_gguf_name(path: &Path) -> bool {
     path.extension()
@@ -410,13 +410,13 @@ fn has_gguf_name(path: &Path) -> bool {
             .is_some_and(crate::catalog::is_extensionless_name)
 }
 
-/// Assinatura de um arquivo GGUF: os 4 primeiros bytes.
+/// Signature of a GGUF file: the first 4 bytes.
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 
-/// O único tipo de arquivo que pode sair desta máquina ou ser apagado por ela.
+/// The only kind of file that may leave this machine or be deleted by it.
 ///
-/// O conteúdo e o nome precisam confirmar que é um GGUF: extensão `.gguf`, ou
-/// nenhuma extensão (`has_gguf_name`). Outra extensão continua recusada.
+/// Both the content and the name must confirm it is a GGUF: extension `.gguf`, or
+/// no extension (`has_gguf_name`). Any other extension is still refused.
 pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
     use std::io::Read;
 
@@ -500,10 +500,10 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
         let short = &sha[..12.min(sha.len())];
         let found = find_part(&state.shard_dir().await, sha)
             .ok_or_else(|| format!("this machine does not have part {short}"))?;
-        // Uma parte só é servível junto com o manifesto que a explica. Servir
-        // os bytes e não ter o `.pom` para acompanhar entrega ao vizinho um
-        // arquivo que ele não vai saber nomear - e o outro lado recusaria
-        // depois de mover gigabytes. A recusa cabe aqui, antes deles.
+        // A part is only servable together with the manifest that explains it. Serving
+        // the bytes without having the `.pom` to go along delivers to the neighbor a
+        // file it will not know how to name - and the other side would refuse
+        // after moving gigabytes. The refusal belongs here, before them.
         let described = found.parent().is_some_and(|folder| {
             crate::pom::load_dir(folder).iter().any(|m| {
                 m.parts
@@ -532,8 +532,8 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
             Err(error) => listed_sidecar(state, requested).await.ok_or(error)?,
         }
     };
-    // Também no caminho da concessão: é por ali que sai um arquivo de fora de
-    // `models/`, e era a única porta sem checagem de tipo.
+    // Also on the grant path: it is the way a file outside
+    // `models/` leaves, and it was the only door with no type check.
     ensure_gguf(&path)?;
     if let Ok(Some(count)) = crate::multipart::declared_split_count(&path) {
         return Err(format!(
@@ -566,15 +566,15 @@ async fn listed_sidecar(state: &GatewayState, requested: &str) -> Option<PathBuf
     .flatten()
 }
 
-/// Onde está a parte com este hash, se esta máquina a tem.
+/// Where the part with this hash is, if this machine has it.
 ///
-/// Procura `<sha256>.gguf` em cada pasta de modelo sob o diretório de fatias.
-/// É de propósito que a busca não use o nome do modelo: o mesmo conteúdo pode
-/// estar arquivado sob rodadas ou nomes diferentes em cada máquina, e o que
-/// identifica a parte é o hash, não onde ela foi parar.
+/// Looks for `<sha256>.gguf` in each model folder under the slices directory.
+/// The search deliberately does not use the model name: the same content may
+/// be filed under different rounds or names on each machine, and what
+/// identifies the part is the hash, not where it ended up.
 ///
-/// A validação do hash em `pom::part_path` é o que impede um `sha` vindo da
-/// rede de virar `../`: sem ela isto seria travessia de diretório servida por
+/// The hash validation in `pom::part_path` is what keeps a `sha` coming from the
+/// network from becoming `../`: without it this would be directory traversal served over
 /// HTTP.
 pub fn find_part(shard_dir: &Path, sha256: &str) -> Option<PathBuf> {
     if !crate::pom::is_sha256_hex(sha256) {
@@ -662,28 +662,28 @@ pub struct PathQuery {
     /// Opaque id of a file our operator offered; may point anywhere.
     #[serde(default)]
     pub grant: Option<String>,
-    /// sha256 de uma parte. É o localizador que não depende de caminho nenhum:
-    /// quem pede não precisa saber como esta máquina organizou o disco, e o que
-    /// chega ou tem esse hash ou é descartado. Ver [`find_part`].
+    /// sha256 of a part. It is the locator that does not depend on any path:
+    /// whoever asks does not need to know how this machine organized its disk, and what
+    /// arrives either has this hash or is discarded. See [`find_part`].
     #[serde(default)]
     pub sha: Option<String>,
-    /// Id cunhado pelo receptor. Ausente quando o peer é de uma versão antiga:
-    /// a transferência funciona igual, só sem visão deste lado.
+    /// Id minted by the receiver. Absent when the peer is of an old version:
+    /// the transfer works the same, just without visibility on this side.
     #[serde(default)]
     pub job: Option<String>,
-    /// `node_id` do receptor. Resolvido para nome pela tabela de peers local —
-    /// nada que descreva o outro lado vem escrito no pedido.
+    /// `node_id` of the receiver. Resolved to a name by the local peer table -
+    /// nothing describing the other side is written in the request.
     #[serde(default)]
     pub peer: Option<String>,
 }
 
-/// O manifesto do fatiamento que contém a parte pedida.
+/// The manifest of the slicing that contains the requested part.
 ///
-/// Existe para o caminho de **puxar**: quem oferece manda o `.pom` junto com a
-/// oferta, mas quem puxa por conta própria (é o que a implantação faz ao mover
-/// fatias) não recebe oferta nenhuma. Sem isto o arquivo chega com nome de
-/// hash e nada que o explique, e o catálogo do destino o mostra como um modelo
-/// inteiro - que era o defeito.
+/// It exists for the **pull** path: whoever offers sends the `.pom` along with the
+/// offer, but whoever pulls on their own (which is what deployment does when moving
+/// slices) receives no offer at all. Without this the file arrives with a hash name and
+/// nothing to explain it, and the destination's catalog shows it as a whole
+/// model - which was the defect.
 async fn serve_pom(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -791,9 +791,9 @@ async fn download(
         return (StatusCode::INTERNAL_SERVER_ERROR, "seek failed").into_response();
     }
 
-    // O lado que envia entra na própria lista de transferências. Ele é quem
-    // transmite os bytes, então já sabe o progresso: não há relato de volta
-    // para se perder, e o número continua certo com a tela do outro fechada.
+    // The sending side enters its own transfer list. It is the one that
+    // transmits the bytes, so it already knows the progress: there is no report back
+    // to get lost, and the number stays right with the other side's screen closed.
     // A download in pieces asks many times for the same job: only the first
     // piece opens it, and a job already closed here (cancelled on this side)
     // is not reopened by the next piece.
@@ -812,8 +812,8 @@ async fn download(
     }
     if let Some(job_id) = q.job.as_deref().filter(|_| known.is_none()) {
         let peer_host = peer_label(&state, q.peer.as_deref()).await;
-        // O `.pom` está ao lado do arquivo: é dele que sai o "qwen3:8b · L0-15"
-        // que a tela mostra no lugar do hash.
+        // The `.pom` is next to the file: it is where the "qwen3:8b · L0-15"
+        // the screen shows in place of the hash comes from.
         let slice = slice_label_for_path(&path);
         state
             .transfers
@@ -867,8 +867,8 @@ async fn download(
     resp.body(body).unwrap().into_response()
 }
 
-/// Nome legível do peer que está do outro lado, a partir do `node_id` que ele
-/// mandou. A tradução sai da tabela local: o pedido nunca traz o nome pronto.
+/// Readable name of the peer on the other side, from the `node_id` it
+/// sent. The translation comes from the local table: the request never carries the ready-made name.
 async fn peer_label(state: &GatewayState, node_id: Option<&str>) -> String {
     let Some(node_id) = node_id else {
         return "unknown".to_string();
@@ -889,20 +889,20 @@ async fn peer_label(state: &GatewayState, node_id: Option<&str>) -> String {
         .unwrap_or_else(|| short(node_id))
 }
 
-/// Envolve o stream do arquivo para contar o que já saiu e para parar cedo
-/// quando o job é cancelado.
+/// Wraps the file stream to count what has gone out and to stop early
+/// when the job is cancelled.
 ///
-/// **É aqui que o lado que envia descobre que acabou.** Sem esse fecho o job do
-/// remetente ficava `running` para sempre, com `bytes_done` congelado no
-/// último relato de 500 ms - numa LAN rápida, zero - e o sino da máquina que
-/// mandou o arquivo mostrava uma transferência eterna que já tinha terminado
-/// do outro lado.
+/// **This is where the sending side finds out it is done.** Without this close the sender's
+/// job stayed `running` forever, with `bytes_done` frozen at the
+/// last 500 ms report - on a fast LAN, zero - and the bell of the machine that
+/// sent the file showed an eternal transfer that had already finished
+/// on the other side.
 ///
-/// O fecho é o **último byte**, e não o fim do stream: quando o corpo satisfaz
-/// o `Content-Length` prometido, o hyper para de puxar e larga o stream sem
-/// nunca pedir o `None` que marcaria o fim. Contar os bytes é o único sinal
-/// que sempre chega. Cancelamento não passa por aqui: `cancel` já fechou o job
-/// com o nome de quem pediu, e `finish` respeita o que é terminal.
+/// The close is the **last byte**, not the end of the stream: when the body satisfies
+/// the promised `Content-Length`, hyper stops pulling and drops the stream without
+/// ever asking for the `None` that would mark the end. Counting the bytes is the only signal
+/// that always arrives. Cancellation does not go through here: `cancel` already closed the job
+/// with the name of whoever asked, and `finish` respects what is terminal.
 fn served_stream(
     state: GatewayState,
     job_id: String,
@@ -925,8 +925,8 @@ fn served_stream(
         ),
         move |(mut inner, state, job_id, mut done, already, started, mut last)| async move {
             if state.transfers.is_cancelled(&job_id).await {
-                // Terminar o corpo aqui corta a transferência: o receptor vê o
-                // stream acabar antes do Content-Length prometido.
+                // Ending the body here cuts the transfer: the receiver sees the
+                // stream end before the promised Content-Length.
                 return None;
             }
             let chunk = inner.next().await?;
@@ -970,13 +970,13 @@ pub struct OfferRequest {
     pub grant: Option<String>,
     pub name: String,
     pub size_bytes: u64,
-    /// Opcional: um remetente atualizado não calcula digest para oferecer, e um
-    /// antigo ainda manda o dele. Nenhum dos dois é lido — ver
+    /// Optional: an updated sender does not compute a digest to offer, and an
+    /// old one still sends its own. Neither is read - see
     /// [`TransferOffer::md5`].
     #[serde(default)]
     pub md5: String,
-    /// O manifesto do fatiamento, quando o que está sendo oferecido é uma
-    /// parte. Ausente numa oferta de peer antigo ou de arquivo avulso.
+    /// The slicing manifest, when what is being offered is a
+    /// part. Absent in an offer from an old peer or for a standalone file.
     #[serde(default)]
     pub pom: Option<crate::pom::PomManifest>,
     #[serde(default)]
@@ -985,20 +985,20 @@ pub struct OfferRequest {
     pub end_layer: Option<u32>,
 }
 
-/// Onde uma oferta aceita vai parar, e o que precisa existir antes.
+/// Where an accepted offer ends up, and what has to exist beforehand.
 ///
-/// Com manifesto, a oferta é uma **parte**: ela cai em
-/// `<shard_dir>/<modelo>/<sha>.gguf`, e o `.pom` é gravado ao lado dela antes
-/// de o primeiro byte chegar. Era este o defeito: sem o manifesto, o arquivo
-/// caía solto na raiz da pasta de fatias e o catálogo daqui o exibia como um
-/// modelo inteiro de nome ilegível.
+/// With a manifest, the offer is a **part**: it lands in
+/// `<shard_dir>/<model>/<sha>.gguf`, and the `.pom` is written next to it before
+/// the first byte arrives. This was the defect: without the manifest, the file
+/// fell loose at the root of the slice folder and the catalog here showed it as a
+/// whole model with an illegible name.
 ///
-/// Gravar o manifesto **antes** é de propósito. Ele é a única coisa que
-/// explica o arquivo, e um download interrompido no meio deixa um `.part` que
-/// ninguém reclama; um manifesto órfão, por outro lado, é inofensivo - descreve
-/// partes que o índice simplesmente não encontra.
+/// Writing the manifest **first** is deliberate. It is the only thing that
+/// explains the file, and a download interrupted midway leaves a `.part` that
+/// nobody claims; an orphan manifest, on the other hand, is harmless - it describes
+/// parts that the index simply does not find.
 ///
-/// Sem manifesto, o caminho antigo: um arquivo avulso em `recebidos/`.
+/// Without a manifest, the old path: a standalone file in `recebidos/`.
 async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<OfferTarget, String> {
     let shard_dir = state.shard_dir().await;
     if let Some(m) = &offer.pom {
@@ -1007,8 +1007,8 @@ async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<Off
             .and_then(|s| s.to_str())
             .filter(|s| crate::pom::is_sha256_hex(s))
             .map(|s| s.to_string())
-            // O nome pode vir de um peer antigo; o manifesto ainda diz qual
-            // parte é, desde que ele descreva exatamente uma.
+            // The name may come from an old peer; the manifest still says which
+            // part it is, as long as it describes exactly one.
             .or_else(|| {
                 m.parts
                     .iter()
@@ -1023,9 +1023,9 @@ async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<Off
                 .chain(m.tp_parts.iter())
                 .any(|p| p.sha256 == sha)
             {
-                // O manifesto recebido é apenas conhecimento remoto. Mescle-o
-                // ao manifesto local para não apagar partes que este peer já
-                // tinha do mesmo modelo original.
+                // The received manifest is only remote knowledge. Merge it
+                // into the local manifest so as not to erase parts this peer already
+                // had of the same original model.
                 let folder = match crate::pom::merge_manifest(&shard_dir, m) {
                     Ok((folder, _)) => folder,
                     Err(e) => {
@@ -1053,9 +1053,9 @@ async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<Off
         ));
     }
 
-    // Sem manifesto, o arquivo só é aceitável se **não** for uma parte. Um
-    // nome de hash sem `.pom` é uma fatia órfã, e aceitá-la seria guardar um
-    // arquivo que ninguém sabe nomear - a regra é a mesma dos dois lados.
+    // Without a manifest, the file is only acceptable if it is **not** a part. A
+    // hash name with no `.pom` is an orphan slice, and accepting it would mean keeping a
+    // file nobody knows how to name - the rule is the same on both sides.
     if std::path::Path::new(&offer.name)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1203,28 +1203,28 @@ async fn sysmon_disk_free_mb() -> u64 {
     crate::sysmon::sample().await.disk.free_mb
 }
 
-/// O veredito do outro lado sobre uma oferta que saiu daqui.
+/// The verdict from the other side on an offer that left here.
 ///
-/// Bater na porta e nunca saber se abriram era metade do defeito: o operador
-/// mandava uma fatia e a tela dele não dizia mais nada - nem "aceitou", nem
-/// "recusou". O receptor agora responde, e o remetente registra o desfecho
-/// como um job, que é o vocabulário que o sino já lê.
+/// Knocking on the door and never knowing whether they opened was half of the defect: the operator
+/// sent a slice and their screen said nothing more - neither "accepted" nor
+/// "refused". The receiver now answers, and the sender records the outcome
+/// as a job, which is the vocabulary the bell already reads.
 #[derive(Debug, Deserialize)]
 pub struct AnswerRequest {
-    /// A concessão que viajou na oferta. É o único id que as duas pontas
-    /// compartilham antes de existir um job.
+    /// The grant that traveled with the offer. It is the only id that both ends
+    /// share before a job exists.
     pub grant: String,
-    /// Quem está respondendo. Confere com o destino registrado: um veredito
-    /// que não vem de quem recebeu a oferta descreve outra conversa.
+    /// Who is answering. Checked against the registered destination: a verdict
+    /// that does not come from whoever received the offer describes another conversation.
     #[serde(default)]
     pub from_node_id: String,
     pub accepted: bool,
-    /// O id que o receptor cunhou para o download, quando aceitou. Registrar o
-    /// mesmo id de um lado e do outro é o que faz o job do remetente ser a
-    /// mesma transferência, e não uma segunda linha na lista.
+    /// The id the receiver minted for the download, when it accepted. Registering the
+    /// same id on both sides is what makes the sender's job the
+    /// same transfer, and not a second line in the list.
     #[serde(default)]
     pub job_id: Option<String>,
-    /// Por que recusou, quando há motivo além da vontade de quem decidiu.
+    /// Why it refused, when there is a reason beyond the will of whoever decided.
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -1234,11 +1234,11 @@ async fn receive_answer(
     State(state): State<GatewayState>,
     Json(req): Json<AnswerRequest>,
 ) -> Response {
-    // A oferta sai do registro em qualquer veredito: ela foi respondida.
+    // The offer leaves the registry on any verdict: it has been answered.
     let offer = {
         let mut record = state.transfers.offered.write().await;
-        // Um `grant` que esta máquina não ofereceu não descreve nada que ela
-        // possa mostrar. Não é erro do outro lado - pode ser um reinício aqui.
+        // A `grant` that this machine did not offer describes nothing it
+        // can show. It is not an error on the other side - it may be a restart here.
         let Some(o) = record.get(&req.grant) else {
             return (
                 StatusCode::NOT_FOUND,
@@ -1261,11 +1261,11 @@ async fn receive_answer(
     };
 
     if req.accepted {
-        // O aceite chega **antes** do primeiro byte, e a distância entre os
-        // dois é o tempo de o receptor pedir o digest - minutos num volume
-        // lento. Registrar o job já aqui é o que tira a tela do remetente do
-        // silêncio nesse intervalo; quando os bytes começarem, `download`
-        // reescreve este mesmo id com o tamanho real.
+        // The accept arrives **before** the first byte, and the distance between
+        // the two is the time for the receiver to ask for the digest - minutes on a
+        // slow volume. Registering the job already here is what takes the sender's screen out of
+        // silence in that interval; when the bytes start, `download`
+        // rewrites this same id with the real size.
         let job_id = req
             .job_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
@@ -1286,8 +1286,8 @@ async fn receive_answer(
         return Json(json!({ "noted": true, "job_id": job_id })).into_response();
     }
 
-    // Recusa não é falha: foi decisão de alguém, e a tela precisa dizer de
-    // quem. `cancelled` é o estado que já carrega esse sentido.
+    // A refusal is not a failure: it was someone's decision, and the screen has to say
+    // whose. `cancelled` is the state that already carries that meaning.
     let job_id = req
         .job_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
@@ -1320,11 +1320,11 @@ async fn receive_answer(
     Json(json!({ "noted": true, "job_id": job_id })).into_response()
 }
 
-/// Conta a quem ofereceu o que foi decidido aqui.
+/// Tells whoever offered what was decided here.
 ///
-/// Best-effort e em segundo plano: o clique de quem decidiu não pode esperar a
-/// outra máquina responder, e um remetente que saiu do ar não é motivo para a
-/// recusa falhar na tela de quem recusou.
+/// Best-effort and in the background: the click of whoever decided cannot wait for the
+/// other machine to answer, and a sender that went offline is no reason for the
+/// refusal to fail on the screen of whoever refused.
 fn notify_offerer(
     state: &GatewayState,
     offer: &TransferOffer,
@@ -1332,8 +1332,8 @@ fn notify_offerer(
     job_id: Option<String>,
 ) {
     let Some(grant) = offer.grant.clone() else {
-        // Oferta de um peer anterior a `grant`: não há id compartilhado para
-        // nomear o veredito, e inventar um só produziria ruído do outro lado.
+        // An offer from a peer older than `grant`: there is no shared id to
+        // name the verdict, and inventing one would only produce noise on the other side.
         return;
     };
     let state = state.clone();
@@ -1434,8 +1434,8 @@ async fn accept_offer(
     let target = match offer_target(&state, &offer).await {
         Ok(a) => a,
         Err(e) => {
-            // A oferta não pôde nem começar: quem ofereceu precisa saber, ou
-            // fica esperando um download que nunca vai acontecer.
+            // The offer could not even start: whoever offered needs to know, or
+            // is left waiting for a download that will never happen.
             notify_offerer(&state, &offer, false, None);
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
         }
@@ -1464,19 +1464,19 @@ async fn accept_offer(
 
 #[derive(Debug, Deserialize)]
 pub struct PullRequest {
-    /// Hash da parte que se quer. Presente, é ele que localiza o arquivo do
-    /// outro lado, e `remote_path` deixa de importar.
+    /// Hash of the part wanted. When present, it is what locates the file on the
+    /// other side, and `remote_path` stops mattering.
     #[serde(default)]
     pub sha256: Option<String>,
-    /// Nome do modelo, para saber em que pasta a parte vai cair aqui. Só é lido
-    /// junto com `sha256`.
+    /// Model name, to know which folder the part will land in here. Only read
+    /// together with `sha256`.
     #[serde(default)]
     pub model: Option<String>,
     /// Peer holding the file.
     pub node_id: String,
-    /// Só para o pedido por caminho; um pedido por `sha256` não tem o que
-    /// dizer aqui, porque não sabe (nem precisa saber) como o outro lado
-    /// organizou o disco.
+    /// Only for the request by path; a request by `sha256` has nothing to
+    /// say here, because it does not know (nor need to know) how the other side
+    /// organized its disk.
     #[serde(default)]
     pub remote_path: String,
     #[serde(default)]
@@ -1488,11 +1488,11 @@ async fn start_pull(
     State(state): State<GatewayState>,
     Json(req): Json<PullRequest>,
 ) -> Response {
-    // A validação do nome vale para o pedido **por caminho**, em que `name` é
-    // o que vira arquivo aqui. Um pedido por `sha256` não manda nome nenhum: o
-    // dele é derivado do hash (`<sha256>.gguf`) e conferido dentro do
-    // `spawn_download`, junto com o resto. Exigir `name` aqui recusava toda
-    // cópia endereçada por conteúdo - inclusive as que a implantação faz.
+    // The name validation applies to the request **by path**, in which `name` is
+    // what becomes a file here. A request by `sha256` sends no name: its
+    // name is derived from the hash (`<sha256>.gguf`) and checked inside
+    // `spawn_download`, along with the rest. Requiring `name` here refused every
+    // content-addressed copy - including the ones deployment makes.
     if req.sha256.is_none() {
         if let Err(e) = valid_transfer_filename(&req.name) {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
@@ -1506,8 +1506,8 @@ async fn start_pull(
         )
             .into_response();
     };
-    // O endereço que já respondeu primeiro, não o primeiro anunciado: o
-    // download é HTTP direto e não tem outro caminho.
+    // The address that already answered first, not the first announced: the
+    // download is direct HTTP and has no other path.
     let Some(base) = state.gateway_base(peer) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -1521,18 +1521,18 @@ async fn start_pull(
         peer.hostname.clone()
     };
 
-    // Duas formas de pedir, e a diferença é quem garante o quê. Com `sha256` a
-    // máquina pede um **conteúdo**: o peer procura quem tem aquele hash, o
-    // arquivo cai direto na pasta do modelo e só recebe o nome depois de
-    // conferido. Sem ele, é o caminho antigo - um arquivo avulso, pelo caminho
-    // que o outro lado expõe, com o digest que ele declarar.
+    // Two ways to ask, and the difference is who guarantees what. With `sha256` the
+    // machine asks for a **content**: the peer looks for whoever has that hash, the
+    // file goes straight into the model folder and only gets its name after being
+    // checked. Without it, it is the old path - a standalone file, through the path
+    // the other side exposes, with the digest it declares.
     let target = match req.sha256.as_deref() {
         Some(sha) if crate::pom::is_sha256_hex(sha) => {
             let model = req.model.as_deref().unwrap_or("parts");
             OfferTarget::Part {
                 sha256: sha.to_string(),
-                // A pasta depende do id da rodada, que vem no manifesto que o
-                // download vai buscar na origem.
+                // The folder depends on the round id, which comes in the manifest the
+                // download will fetch from the origin.
                 model_dir: None,
                 model_hint: model.to_string(),
             }
@@ -1572,19 +1572,19 @@ async fn list_jobs(_auth: ConnectionAuth, State(state): State<GatewayState>) -> 
 
 #[derive(Debug, Deserialize)]
 pub struct CancelRequest {
-    /// Máquina que pediu o cancelamento, para o outro lado poder dizer quem foi.
+    /// Machine that requested the cancellation, so the other side can say who it was.
     #[serde(default)]
     pub by: Option<String>,
-    /// `true` quando a chamada veio do peer. Evita o eco: quem foi avisado não
-    /// avisa de volta.
+    /// `true` when the call came from the peer. Avoids the echo: whoever was notified does not
+    /// notify back.
     #[serde(default)]
     pub from_peer: bool,
 }
 
-/// Cancela uma transferência.
+/// Cancels a transfer.
 ///
-/// A mesma rota serve para a tela local e para o aviso que o outro lado manda —
-/// um verbo só, com a mesma semântica nas duas pontas.
+/// The same route serves the local screen and the notice the other side sends -
+/// one verb, with the same semantics on both ends.
 async fn cancel_job(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1608,9 +1608,9 @@ async fn cancel_job(
     state.transfers.cancel(&id, &by).await;
     info!("🛑 transfer {id} cancelled by {by}");
 
-    // Avisar é o que separa "cancelado" de "caiu a rede" na tela do outro lado.
-    // Se o aviso não chegar, o cancelamento local continua valendo e o outro
-    // lado cai no caminho de conexão morta, que reporta o motivo real.
+    // Notifying is what separates "cancelled" from "network dropped" on the other side's screen.
+    // If the notice does not arrive, the local cancellation still holds and the other
+    // side falls onto the dead-connection path, which reports the real reason.
     if !req.from_peer {
         if let Some(host) = peer_host {
             notify_peer_cancel(&state, &id, &by, &host).await;
@@ -1620,7 +1620,7 @@ async fn cancel_job(
     Json(json!({ "cancelled": true })).into_response()
 }
 
-/// Repassa o cancelamento ao peer que está do outro lado desta transferência.
+/// Passes the cancellation on to the peer on the other side of this transfer.
 async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host: &str) {
     let peers = state.all_peers().await;
     let Some(peer) = peers
@@ -1697,20 +1697,20 @@ fn local_send_path(requested: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
-/// O manifesto do fatiamento a que este arquivo pertence, se ele for uma parte.
+/// The manifest of the slicing this file belongs to, if it is a part.
 ///
-/// Procura pelo caminho: uma parte mora em `<shard_dir>/<modelo>/<sha>.gguf`, e
-/// os `.pom` que a descrevem estão na mesma pasta. Um arquivo fora da pasta de
-/// fatias, ou dentro dela mas não listado em manifesto nenhum, não é parte de
-/// coisa alguma e vai sozinho, como sempre foi.
+/// Looks up by path: a part lives in `<shard_dir>/<model>/<sha>.gguf`, and
+/// the `.pom` files that describe it are in the same folder. A file outside the slice
+/// folder, or inside it but not listed in any manifest, is not a part of
+/// anything and goes alone, as it always did.
 async fn manifest_for(state: &GatewayState, path: &Path) -> Option<crate::pom::PomManifest> {
     let sha = path
         .file_stem()
         .and_then(|s| s.to_str())
         .filter(|s| crate::pom::is_sha256_hex(s))?;
     let folder = path.parent()?;
-    // Só vale um manifesto que esteja na pasta do próprio arquivo: um `.pom`
-    // de outro lugar poderia descrever uma parte homônima de outra rodada.
+    // Only a manifest that is in the file's own folder counts: a `.pom`
+    // from elsewhere could describe a homonymous part of another round.
     let _ = state;
     crate::pom::load_dir(folder).into_iter().find(|m| {
         m.parts
@@ -1725,15 +1725,15 @@ async fn manifest_for(state: &GatewayState, path: &Path) -> Option<crate::pom::P
 /// This only knocks on the door: the peer stores the offer and its owner
 /// decides. We never write to another machine's disk uninvited.
 ///
-/// **Bater na porta não pode custar o preço de ler o arquivo.** Este caminho já
-/// calculou o MD5 da fatia antes de postar a oferta, e como o digest é uma
-/// leitura do arquivo inteiro, o sino do outro lado só acendia quando ela
-/// terminava: medidos 3 min 23 s para uma fatia de 4,2 GB no cartão SD
-/// (~20 MB/s). O cache por (caminho, mtime, tamanho) mascarava o atraso no
-/// segundo envio do mesmo arquivo, e era daí que vinha o "às vezes" do relato.
-/// O número nem era usado: quem confere o download é o receptor, com o MD5 que
-/// ele pede em `/api/transfer/manifest` depois de aceitar. Aqui basta o
-/// `stat` — tamanho e nome, que é o que a notificação mostra.
+/// **Knocking on the door cannot cost the price of reading the file.** This path used to
+/// compute the slice's MD5 before posting the offer, and since the digest is
+/// a read of the whole file, the bell on the other side only lit up when it
+/// finished: 3 min 23 s measured for a 4.2 GB slice on the SD card
+/// (~20 MB/s). The cache by (path, mtime, size) masked the delay on the
+/// second send of the same file, and that is where the "sometimes" in the report came from.
+/// The number was not even used: whoever checks the download is the receiver, with the MD5
+/// it asks for at `/api/transfer/manifest` after accepting. Here the
+/// `stat` is enough - size and name, which is what the notification shows.
 async fn send_to_peer(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1775,11 +1775,11 @@ async fn send_to_peer(
         )
             .into_response();
     };
-    // O endereço que já respondeu a este nó vem primeiro (`gateway_bases`), e
-    // é dele que sai o endereço de volta da oferta (`from_gateway`, via
-    // `local_ip_for`). O primeiro anunciado pode ser um IPv6 inalcançável: a
-    // oferta morria nele e o endereço de volta apontava para a interface
-    // errada.
+    // The address that already answered this node comes first (`gateway_bases`), and
+    // it is what the offer's return address comes from (`from_gateway`, via
+    // `local_ip_for`). The first announced may be an unreachable IPv6: the
+    // offer died there and the return address pointed to the wrong
+    // interface.
     let Some(peer_base) = state.gateway_base(peer) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -1788,26 +1788,26 @@ async fn send_to_peer(
             .into_response();
     };
 
-    // O nome vem do pedido: o `main` passou a deixar quem envia nomeá-lo.
+    // The name comes from the request: `main` now lets the sender name it.
     let name = req.filename.trim().to_string();
 
-    // O manifesto vai junto com a oferta. É ele que diz ao outro lado de que
-    // modelo esta parte é e que camadas ela traz - sem isso o arquivo chega
-    // com nome de hash e sem dono, e o catálogo de lá o mostra como um modelo
-    // inteiro qualquer. Quem identifica a parte é o **caminho** do arquivo que
-    // está sendo mandado, não o nome que o pedido escolheu para ele.
+    // The manifest goes along with the offer. It is what tells the other side which
+    // model this part is from and which layers it carries - without it the file arrives
+    // with a hash name and no owner, and the catalog there shows it as just any whole
+    // model. What identifies the part is the **path** of the file
+    // being sent, not the name the request chose for it.
     let pom = manifest_for(&state, &path).await;
     let sha = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
 
-    // **Uma parte não sai daqui sem o `.pom` dela.** Um arquivo chamado
-    // `<sha256>.gguf` é, por construção, parte de um fatiamento; se o manifesto
-    // que o descreve não está ao lado dele, esta máquina tem um órfão em disco
-    // e mandá-lo adiante só espalharia o problema. Recusar aqui diz onde
-    // consertar; mandar mesmo assim entrega ao vizinho um arquivo que ele não
-    // vai saber nomear.
+    // **A part does not leave here without its `.pom`.** A file called
+    // `<sha256>.gguf` is, by construction, part of a slicing; if the manifest
+    // that describes it is not next to it, this machine has an orphan on disk
+    // and sending it on would only spread the problem. Refusing here says where
+    // to fix it; sending anyway delivers to the neighbor a file it
+    // will not know how to name.
     if pom.is_none() && crate::pom::is_sha256_hex(sha) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1821,8 +1821,8 @@ async fn send_to_peer(
             .into_response();
     }
 
-    // A faixa de camadas saía daqui lida do nome do arquivo. Agora sai do
-    // manifesto, que é quem sabe; sem manifesto, não se inventa.
+    // The layer range used to be read here from the file name. Now it comes from the
+    // manifest, which is what knows; with no manifest, nothing is invented.
     let slice = pom.as_ref().and_then(|m| slice_label(m, sha));
     let shard: Option<(u32, u32)> = slice.as_ref().map(|f| (f.start_layer, f.end_layer));
 
@@ -1840,10 +1840,10 @@ async fn send_to_peer(
         .await
         .insert(grant.clone(), path.clone());
 
-    // Guardado antes de a oferta sair: o veredito pode voltar antes de esta
-    // função retornar, e sem o registro o remetente receberia um "aceitei" sem
-    // saber de qual arquivo. O nome do destino vem da tabela local de peers,
-    // que é quem sabe traduzir `node_id` em nome de máquina.
+    // Stored before the offer goes out: the verdict may come back before this
+    // function returns, and without the record the sender would receive an "accepted" without
+    // knowing which file. The destination's name comes from the local peer table,
+    // which is what knows how to translate `node_id` into a machine name.
     state.transfers.offered.write().await.insert(
         grant.clone(),
         OfferedFile {
@@ -1866,11 +1866,11 @@ async fn send_to_peer(
         // A pinned address beats one read off the routing table: with privacy
         // extensions the outbound source is a temporary IPv6 that rotates, and a
         // multi-gigabyte download outlives it.
-        // O ESQUEMA em vigor, nunca "http" fixo. Com o cluster em TLS, quem
-        // aceitava discava http e o gateway respondia 403 em texto puro
-        // ("este cluster exige TLS entre nós; refaça a chamada em https"); o
-        // `.json()` do outro lado caía nessa frase e o operador via
-        // "manifesto inválido: error decoding response body" (18/08).
+        // The SCHEME in force, never a fixed "http". With the cluster on TLS, whoever
+        // accepted dialed http and the gateway answered 403 in plain text
+        // ("this cluster requires TLS between nodes; redo the call over https"); the
+        // `.json()` on the other side choked on that phrase and the operator saw
+        // "invalid manifest: error decoding response body" (18/08).
         "from_gateway": crate::peer_client::peer_base_url(
             &state
                 .network
@@ -1883,16 +1883,16 @@ async fn send_to_peer(
         "remote_path": path.to_string_lossy(),
         "name": name,
         "size_bytes": size,
-        // Sempre vazio. Viaja só porque um peer de versão anterior exige o
-        // campo — ver `TransferOffer::md5`.
+        // Always empty. It travels only because a peer of a previous version requires the
+        // field - see `TransferOffer::md5`.
         "md5": "",
         "pom": pom,
         "start_layer": shard.map(|(a, _)| a),
         "end_layer": shard.map(|(_, b)| b),
     });
 
-    // Todos os endereços do peer, o que respondeu primeiro, e o túnel por
-    // último - a oferta é uma chamada de controle pequena.
+    // All of the peer's addresses, the one that answered first, and the tunnel
+    // last - the offer is a small control call.
     match state
         .control_post_json(peer, "/api/transfer/offer", &body, Duration::from_secs(30))
         .await
@@ -1973,35 +1973,35 @@ pub(crate) fn local_ip_towards(dest: std::net::IpAddr) -> String {
 
 // ── The download itself ──────────────────────────────────────────────────────
 
-/// Prazo do manifesto.
+/// Manifest deadline.
 ///
-/// O manifesto é onde o MD5 do arquivo é finalmente calculado, e um digest é
-/// uma leitura do arquivo inteiro: no cartão SD do captain, 4,2 GB levam
-/// 3 min 23 s. Os 120 s de antes só passavam porque o remetente já tinha
-/// hasheado ao oferecer — o que era exatamente o defeito. Com o hash de volta
-/// para onde ele é preciso, o prazo tem que caber num volume lento; ele corre
-/// em segundo plano, então esperar aqui não prende ninguém.
+/// The manifest is where the file's MD5 is finally computed, and a digest is
+/// a read of the whole file: on the captain's SD card, 4.2 GB takes
+/// 3 min 23 s. The earlier 120 s only passed because the sender had already
+/// hashed when offering - which was exactly the defect. With the hash back
+/// where it is needed, the deadline has to fit a slow volume; it runs
+/// in the background, so waiting here holds nobody up.
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// Registra a transferência e faz o resto — manifesto, espaço em disco e
-/// download — em segundo plano.
+/// Registers the transfer and does the rest - manifest, disk space and
+/// download - in the background.
 ///
-/// Consultar o outro lado **não** acontece antes de devolver: o manifesto pode
-/// levar minutos (ver [`MANIFEST_TIMEOUT`]), e aceitar uma oferta é um clique,
-/// não uma espera. O que o operador ganha em troca é o job já na lista de
-/// transferências, dizendo em que etapa está; um erro de manifesto vira job
-/// `failed` com o motivo, no mesmo lugar onde ele já procuraria.
-/// `peer_id` é o node_id de quem serve os bytes: é o que fixa o certificado do
-/// outro lado quando o cluster está em TLS. Vem da oferta (`from_node_id`) ou
-/// do `PeerInfo` que o operador escolheu.
-/// O esquema que **esta** máquina vai discar, seja qual for o que a oferta traz.
+/// Querying the other side does **not** happen before returning: the manifest may
+/// take minutes (see [`MANIFEST_TIMEOUT`]), and accepting an offer is a click,
+/// not a wait. What the operator gains in return is the job already in the list of
+/// transfers, saying which stage it is at; a manifest error becomes a `failed`
+/// job with the reason, in the same place where they would already look.
+/// `peer_id` is the node_id of whoever serves the bytes: it is what pins the certificate of
+/// the other side when the cluster is on TLS. It comes from the offer (`from_node_id`) or
+/// from the `PeerInfo` the operator chose.
+/// The scheme that **this** machine will dial, whatever the offer carries.
 ///
-/// A oferta é escrita pelo remetente, e um nó de versão anterior grava `http://`
-/// fixo. Confiar nisso com o cluster em TLS rende 403 em texto puro
-/// ("este cluster exige TLS entre nós"), que o `.json()` transforma em
-/// "manifesto inválido: error decoding response body" - uma mensagem que não
-/// aponta para lugar nenhum. A política local é a que vale para discar, então é
-/// ela que decide.
+/// The offer is written by the sender, and a node of a previous version writes a fixed
+/// `http://`. Trusting that with the cluster on TLS yields a plain-text 403
+/// ("this cluster requires TLS between nodes"), which `.json()` turns into
+/// "invalid manifest: error decoding response body" - a message that points
+/// nowhere. The local policy is the one that counts for dialing, so it is
+/// what decides.
 fn normalize_scheme(url: &str) -> String {
     let scheme = crate::peer_client::peer_scheme();
     match url.split_once("://") {
@@ -2010,13 +2010,13 @@ fn normalize_scheme(url: &str) -> String {
     }
 }
 
-/// O que se está buscando e onde ele vai parar.
+/// What is being fetched and where it will end up.
 ///
-/// Duas formas: um arquivo avulso, localizado por caminho ou concessão e
-/// largado em `recebidos/`; ou uma **parte**, localizada pelo hash e gravada
-/// direto na pasta do modelo com o hash por nome. A segunda dispensa a
-/// quarentena: o nome só é dado depois da conferência, então um arquivo com
-/// nome de parte é, por construção, uma parte conferida.
+/// Two forms: a standalone file, located by path or grant and
+/// dropped in `recebidos/`; or a **part**, located by hash and written
+/// straight into the model folder with the hash as its name. The second skips
+/// quarantine: the name is only given after the check, so a file with
+/// a part name is, by construction, a checked part.
 enum OfferTarget {
     Standalone {
         remote_path: String,
@@ -2025,14 +2025,14 @@ enum OfferTarget {
     },
     Part {
         sha256: String,
-        /// A pasta, quando quem pediu já tinha o manifesto em mãos (é o caso de
-        /// uma oferta, que traz o `.pom` junto).
+        /// The folder, when whoever asked already had the manifest in hand (the case of
+        /// an offer, which brings the `.pom` along).
         ///
-        /// `None` quando só se sabe o hash: aí a pasta sai do manifesto que o
-        /// download busca na origem, porque o nome dela carrega o id da rodada
-        /// e sem o manifesto não há id.
+        /// `None` when only the hash is known: then the folder comes from the manifest that the
+        /// download fetches at the origin, because its name carries the round id
+        /// and without the manifest there is no id.
         model_dir: Option<PathBuf>,
-        /// Nome do modelo para a mensagem, quando não há manifesto.
+        /// Model name for the message, when there is no manifest.
         model_hint: String,
     },
 }
@@ -2044,14 +2044,14 @@ async fn spawn_download(
     target: OfferTarget,
     from_host: String,
 ) -> Result<String, String> {
-    // A oferta traz o esquema que o REMETENTE gravou; quem disca é esta
-    // máquina, então a política local é a que vale. Ver `normalize_scheme`.
+    // The offer carries the scheme the SENDER wrote; the one dialing is this
+    // machine, so the local policy is the one that counts. See `normalize_scheme`.
     let base_url = normalize_scheme(&base_url);
     let key = state.auth.read().await.connection_key.clone();
 
-    // O id nasce aqui e viaja no pedido: o outro lado registra o mesmo id, e é
-    // isso que faz "cancelar" valer para a transferência inteira, dos dois
-    // lados, em vez de só para a metade local.
+    // The id is born here and travels in the request: the other side registers the same id, and
+    // that is what makes "cancel" apply to the whole transfer, on both
+    // sides, instead of just the local half.
     let job_id = uuid::Uuid::new_v4().simple().to_string();
 
     // A grant, when we have one, is the only locator the serving side needs —
@@ -2083,20 +2083,20 @@ async fn spawn_download(
             model_dir,
             model_hint,
         } => {
-            // **O manifesto é obrigatório.** A pasta de uma parte leva o id da
-            // rodada, e o id vem do `.pom`; sem ele não há onde a parte caiba.
+            // **The manifest is mandatory.** A part's folder carries the round
+            // id, and the id comes from the `.pom`; without it there is nowhere for the part to fit.
             //
-            // Antes daqui havia um plano B - largar a parte em `recebidos/` -
-            // e ele estava errado: uma parte solta, sem nada que diga de que
-            // modelo é nem que camadas traz, é um arquivo que ninguém sabe
-            // usar e que a tela mostra como se fosse um modelo inteiro. É
-            // melhor a transferência falhar dizendo o que faltou do que
-            // terminar bem e deixar lixo com cara de fatia.
+            // Before here there was a plan B - dropping the part in `recebidos/` -
+            // and it was wrong: a loose part, with nothing saying which
+            // model it is from or which layers it carries, is a file nobody knows how to
+            // use and which the screen shows as if it were a whole model. It is
+            // better for the transfer to fail saying what was missing than to
+            // finish well and leave junk that looks like a slice.
             //
-            // Quem chegou por oferta já traz o manifesto; quem puxa por hash
-            // pede à origem aqui, antes de qualquer byte de peso - um `.pom`
-            // são alguns kB, e descobrir agora custa muito menos que descobrir
-            // depois de mover gigabytes.
+            // Whoever arrived by offer already brings the manifest; whoever pulls by hash
+            // asks the origin here, before any weight byte - a `.pom`
+            // is a few kB, and finding out now costs far less than finding out
+            // after moving gigabytes.
             let folder = match model_dir {
                 Some(p) => p.clone(),
                 None => {
@@ -2119,9 +2119,9 @@ async fn spawn_download(
                             &sha256[..12]
                         ));
                     }
-                    // Gravar o manifesto é parte da transferência, não um
-                    // extra. O merge preserva partes que já existiam neste
-                    // peer e adiciona apenas o conhecimento remoto que falta.
+                    // Writing the manifest is part of the transfer, not an
+                    // extra. The merge preserves parts that already existed on this
+                    // peer and adds only the remote knowledge that is missing.
                     let p = crate::pom::merge_manifest(&state.shard_dir().await, &m)
                         .map(|(path, _)| path)
                         .map_err(|e| {
@@ -2141,33 +2141,33 @@ async fn spawn_download(
             )
         }
     };
-    // O nome vem do outro lado e vira arquivo aqui: a checagem tem que
-    // acontecer com ele em mãos. Ficava no topo da função, quando `name` era
-    // parâmetro; agora ele é calculado acima, conforme o alvo. Uma parte se
-    // chama `<sha256>.gguf`, que passa pela mesma régua de qualquer outro nome.
+    // The name comes from the other side and becomes a file here: the check has to
+    // happen with it in hand. It used to be at the top of the function, when `name` was a
+    // parameter; now it is computed above, according to the target. A part is
+    // called `<sha256>.gguf`, which passes the same ruler as any other name.
     valid_transfer_filename(&name)?;
 
-    // Opcionais de propósito: um peer que ainda não tenha esta versão ignora os
-    // dois e a transferência funciona como antes, só sem visão do lado que envia.
+    // Optional on purpose: a peer that does not have this version yet ignores the
+    // two and the transfer works as before, just without visibility on the sending side.
     locator.push(("job", job_id.clone()));
     locator.push(("peer", state.network.node_id.clone()));
 
-    // O diretório é a única coisa que precisa dar certo já: sem ele não há
-    // transferência nenhuma para pôr na lista.
+    // The directory is the only thing that has to succeed right now: without it there is no
+    // transfer at all to put in the list.
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
-    // **O `.pom` já está no lugar, e é dele que sai o nome da tela.** Quem
-    // chegou por oferta trouxe o manifesto junto e ele acabou de ser mesclado
-    // na pasta; quem puxa por hash pediu o dele à origem logo acima - nos dois
-    // casos antes de qualquer byte de peso. Ler daqui é o que troca o
-    // `<sha256>.gguf` da notificação por "qwen3:8b · L0-15".
+    // **The `.pom` is already in place, and it is where the screen's name comes from.** Whoever
+    // arrived by offer brought the manifest along and it was just merged
+    // into the folder; whoever pulls by hash asked the origin for theirs just above - in both
+    // cases before any weight byte. Reading from here is what swaps the
+    // notification's `<sha256>.gguf` for "qwen3:8b · L0-15".
     let destination = dir.join(&name);
     let slice = slice_label_for_path(&destination);
 
-    // `bytes_total` 0 até o manifesto responder — a barra fica indeterminada, o
-    // que é a verdade: ainda não se sabe o tamanho.
+    // `bytes_total` 0 until the manifest answers - the bar stays indeterminate, which
+    // is the truth: the size is not known yet.
     state
         .transfers
         .start_job(
@@ -2228,9 +2228,9 @@ async fn spawn_download(
             warn!("transfer of {name} failed: {e}");
             // A partial file must never look like a usable slice.
             let _ = tokio::fs::remove_file(&part).await;
-            // `finish` respeita o estado terminal que já estiver lá: `cancel`
-            // rotulou este job com quem pediu, e sobrescrever trocaria uma
-            // decisão de alguém por um "falhou" anônimo.
+            // `finish` respects the terminal state that is already there: `cancel`
+            // labeled this job with who asked, and overwriting would swap someone's
+            // decision for an anonymous "failed".
             task_state
                 .transfers
                 .finish(&job_id, TRANSFER_FAILED, e)
@@ -2241,7 +2241,7 @@ async fn spawn_download(
     Ok(job_id)
 }
 
-/// Pede ao outro lado o manifesto do fatiamento a que uma parte pertence.
+/// Asks the other side for the manifest of the slicing a part belongs to.
 async fn fetch_pom(
     state: &GatewayState,
     peer_id: &str,
@@ -2418,7 +2418,7 @@ async fn download_over_tunnel(
     Ok(done)
 }
 
-/// Etapa corrente de um job, para a tela ter o que dizer enquanto se espera.
+/// Current stage of a job, so the screen has something to say while waiting.
 async fn set_detail(state: &GatewayState, job_id: &str, detail: &str) {
     let mut jobs = state.transfers.jobs.write().await;
     if let Some(j) = jobs.get_mut(job_id) {
@@ -2426,7 +2426,7 @@ async fn set_detail(state: &GatewayState, job_id: &str, detail: &str) {
     }
 }
 
-/// Tamanho e digest do arquivo do outro lado — o que decide se vale começar.
+/// Size and digest of the file on the other side - what decides whether it is worth starting.
 async fn fetch_manifest(
     state: &GatewayState,
     peer_id: &str,
@@ -2467,12 +2467,12 @@ async fn fetch_manifest(
         Err(e) => return Err(format!("could not reach {from_host}: {e}")),
     };
 
-    // Conferir o status ANTES de tentar ler JSON. Um erro do gateway costuma
-    // vir em texto puro - o 403 da catraca de TLS é literalmente a frase "este
-    // cluster exige TLS entre nós; refaça a chamada em https" -, e o `.json()`
-    // em cima dele produzia "manifesto inválido: error decoding response body",
-    // que não aponta para lugar nenhum. A explicação do outro lado é a melhor
-    // que existe: repetir ela.
+    // Check the status BEFORE trying to read JSON. A gateway error usually
+    // comes as plain text - the TLS gate's 403 is literally the phrase "this
+    // cluster requires TLS between nodes; redo the call over https" -, and `.json()`
+    // on top of it produced "invalid manifest: error decoding response body",
+    // which points nowhere. The explanation from the other side is the best
+    // there is: repeat it.
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -2519,9 +2519,9 @@ async fn run_download(
     dest: &Path,
     total: u64,
     expected_md5: &str,
-    // `expected_sha256`, quando presente, é o que manda: o receptor confere o
-    // hash que **pediu**, e não um digest que o remetente declarou. É a
-    // diferença entre "o outro lado disse que está certo" e "eu conferi".
+    // `expected_sha256`, when present, is what rules: the receiver checks the
+    // hash it **asked for**, not a digest the sender declared. It is the
+    // difference between "the other side said it is right" and "I checked".
     expected_sha256: Option<&str>,
 ) -> Result<(), String> {
     use futures::StreamExt;
@@ -2564,7 +2564,7 @@ async fn run_download(
     };
     if let Some(resp) = &direct {
         if !resp.status().is_success() {
-            // Junto com o status vai a frase do outro lado: ver a nota gêmea em
+            // Along with the status goes the phrase from the other side: see the twin note in
             // `fetch_manifest`.
             let status = resp.status();
             let body = direct.expect("checked above").text().await.unwrap_or_default();
@@ -2603,8 +2603,8 @@ async fn run_download(
     while let Some(chunk) = stream.next().await {
         if state.transfers.is_cancelled(job_id).await {
             drop(file);
-            // Cancelar é desistir: o parcial sai do disco. Guardá-lo ocuparia
-            // gigabytes que a tela não mostra.
+            // Cancelling is giving up: the partial leaves the disk. Keeping it would take up
+            // gigabytes the screen does not show.
             let _ = tokio::fs::remove_file(part).await;
             return Err("cancelled".to_string());
         }
@@ -2663,9 +2663,9 @@ async fn finish_download(
             .map_err(|e| e.to_string())?
             .0;
         if got != expected {
-            // Não é "falhou o download": é conteúdo que não é o que foi
-            // pedido. O arquivo parcial some no tratamento de erro de
-            // `spawn_download`, e nada com este nome chega ao disco bom.
+            // It is not "the download failed": it is content that is not what was
+            // asked for. The partial file goes away in `spawn_download`'s error handling,
+            // and nothing with this name reaches the disk as good.
             return Err(format!(
                 "sha256 does not match (requested {}, got {})",
                 &expected[..12],
@@ -2698,10 +2698,10 @@ async fn finish_download(
         }
     }
 
-    // No Windows o rename não substitui: se o destino existe, ele falha com
-    // "acesso negado" em vez de trocar o arquivo. Chegar aqui com o destino
-    // ocupado significa que o arquivo foi rebaixado enquanto este download
-    // corria, e o que acabou de passar pelo MD5 é o bom.
+    // On Windows rename does not replace: if the destination exists, it fails with
+    // "access denied" instead of swapping the file. Getting here with the destination
+    // occupied means the file was demoted while this download
+    // was running, and what just passed the MD5 is the good one.
     #[cfg(windows)]
     if dest.exists() {
         let _ = tokio::fs::remove_file(dest).await;
@@ -2737,10 +2737,10 @@ async fn finish_download(
 mod tests {
     use super::*;
 
-    /// O aceite automático escreve gigabytes no disco de quem recebe sem
-    /// perguntar. Ele só liga quando alguém escreveu um valor de verdade na
-    /// variável desta máquina - variável ausente, vazia ou desligada continuam
-    /// exigindo o clique, que é o padrão em produção.
+    /// Automatic acceptance writes gigabytes to the receiver's disk without
+    /// asking. It only turns on when someone wrote a real value in this
+    /// machine's variable - an absent, empty or disabled variable still
+    /// requires the click, which is the production default.
     #[test]
     fn auto_accept_stays_shut_unless_explicitly_opened() {
         assert!(
@@ -2758,9 +2758,9 @@ mod tests {
         assert!(auto_accept_set(Some(" 1 ")));
     }
 
-    /// O remetente precisa aparecer na própria lista, com direção e o mesmo id
-    /// que o receptor cunhou - é o id compartilhado que torna o cancelamento
-    /// simétrico possível.
+    /// The sender needs to appear in its own list, with direction and the same id
+    /// the receiver minted - it is the shared id that makes symmetric
+    /// cancellation possible.
     #[tokio::test]
     async fn a_served_download_registers_a_sending_job() {
         let transfers = TransferState::default();
@@ -2789,16 +2789,16 @@ mod tests {
         assert_eq!(job.state, TRANSFER_RUNNING);
         assert_eq!(job.path, "/models/fatia_0_15.gguf");
         assert!(job.finished_at.is_none(), "not finished yet");
-        // E a tela tem o que mostrar além do nome do arquivo.
+        // And the screen has something to show beyond the file name.
         assert_eq!(job.model_label.as_deref(), Some("qwen3:8b"));
         assert_eq!((job.start_layer, job.end_layer), (Some(0), Some(15)));
     }
 
-    /// O descritor de uma parte sai do `.pom`, e só de lá.
+    /// A part's descriptor comes from the `.pom`, and only from there.
     ///
-    /// O nome do arquivo é o sha256 e não afirma nada sobre camada nenhuma;
-    /// deduzir a faixa dele foi um defeito real. Um hash que o manifesto não
-    /// descreve não ganha rótulo inventado.
+    /// The file name is the sha256 and claims nothing about any layer;
+    /// deducing the range from it was a real defect. A hash the manifest does not
+    /// describe does not get an invented label.
     #[test]
     fn a_slice_describes_itself_through_its_manifest() {
         use crate::pom::{PomKind, PomManifest, PomModel, PomPart};
@@ -2836,12 +2836,12 @@ mod tests {
         );
     }
 
-    /// Um job que terminou carrega **quando** terminou.
+    /// A job that finished carries **when** it finished.
     ///
-    /// É o que deixa o sino mostrar o desfecho: sem a marca ele só sabe listar
-    /// o que está em andamento, e "concluída"/"recusada" sumia da tela no
-    /// instante em que acontecia - o operador reencontrava o resultado só na
-    /// tela de Transferências, que foi exatamente o relato.
+    /// It is what lets the bell show the outcome: without the mark it only knows how to list
+    /// what is in progress, and "completed"/"refused" vanished from the screen the
+    /// instant it happened - the operator only found the result again on the
+    /// Transfers screen, which is exactly what was reported.
     #[tokio::test]
     async fn a_finished_job_records_when_it_finished() {
         let transfers = TransferState::default();
@@ -2871,10 +2871,10 @@ mod tests {
         );
     }
 
-    /// Estado terminal não é reescrito por outro.
+    /// A terminal state is not rewritten by another.
     ///
-    /// "Cancelado por ksia" foi decisão de alguém; o loop que percebe o stream
-    /// morto depois não pode trocar isso por um "falhou" anônimo.
+    /// "Cancelled by ksia" was someone's decision; the loop that later notices the dead
+    /// stream cannot swap that for an anonymous "failed".
     #[tokio::test]
     async fn a_finished_job_is_never_relabelled() {
         let transfers = TransferState::default();
@@ -2909,8 +2909,8 @@ mod tests {
         assert_eq!(job.finished_at, when, "and the time is that of the cancellation");
     }
 
-    /// Cancelar é idempotente e não depende de o job existir: o aviso do outro
-    /// lado pode chegar antes de a transferência ter sido registrada aqui.
+    /// Cancelling is idempotent and does not depend on the job existing: the notice from the other
+    /// side may arrive before the transfer has been registered here.
     #[tokio::test]
     async fn cancelling_marks_the_job_and_holds_for_a_job_not_yet_known() {
         let transfers = TransferState::default();
@@ -2935,18 +2935,18 @@ mod tests {
             assert!(job.detail.contains("macbook"), "detail: {}", job.detail);
         }
 
-        // Duas vezes é igual a uma.
+        // Twice is the same as once.
         transfers.cancel("job-1", "macbook").await;
         assert!(transfers.is_cancelled("job-1").await);
 
-        // Um id que ainda não chegou aqui fica marcado assim mesmo, para o loop
-        // que começar depois já nascer cancelado.
+        // An id that has not arrived here yet is marked anyway, so that the loop
+        // that starts later is born already cancelled.
         transfers.cancel("job-desconhecido", "ksia").await;
         assert!(transfers.is_cancelled("job-desconhecido").await);
     }
 
-    /// A regra é conjunção: assinatura no cabeçalho E nome de GGUF (extensão
-    /// `.gguf`, ou nenhuma).
+    /// The rule is a conjunction: signature in the header AND a GGUF name (extension
+    /// `.gguf`, or none).
     #[test]
     fn only_real_gguf_files_pass_the_gate() {
         let dir = std::env::temp_dir().join(format!("pom-gguf-{}", std::process::id()));
@@ -2956,12 +2956,12 @@ mod tests {
         std::fs::write(&ok, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&ok).is_ok());
 
-        // Blob do Ollama não é uma transferência permitida.
+        // An Ollama blob is not an allowed transfer.
         let blob = dir.join("sha256-abc123");
         std::fs::write(&blob, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&blob).is_err());
 
-        // Sem extensão, como o Hugging Face publica: a assinatura decide.
+        // No extension, as Hugging Face publishes: the signature decides.
         let bare = dir.join("MTP");
         std::fs::write(&bare, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&bare).is_ok());
@@ -2969,22 +2969,22 @@ mod tests {
         std::fs::write(&bare_fake, b"NOTG____").unwrap();
         assert!(ensure_gguf(&bare_fake).is_err());
 
-        // O nome mente sobre o conteúdo.
+        // The name lies about the content.
         let fake = dir.join("mentira.gguf");
         std::fs::write(&fake, b"NOTG____").unwrap();
         assert!(ensure_gguf(&fake).is_err());
 
-        // Conteúdo certo, extensão errada: ainda é não.
+        // Right content, wrong extension: still a no.
         let wrong_ext = dir.join("modelo.txt");
         std::fs::write(&wrong_ext, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&wrong_ext).is_err());
 
-        // Maiúsculas não importam.
+        // Uppercase does not matter.
         let upper = dir.join("FATIA.GGUF");
         std::fs::write(&upper, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&upper).is_ok());
 
-        // Menor que a própria assinatura.
+        // Smaller than the signature itself.
         let tiny = dir.join("curto.gguf");
         std::fs::write(&tiny, b"GG").unwrap();
         assert!(ensure_gguf(&tiny).is_err());
@@ -2994,7 +2994,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// O que o operador escolhe na própria tela ainda precisa ser um GGUF.
+    /// What the operator chooses on their own screen still has to be a GGUF.
     #[test]
     fn the_operator_cannot_send_a_non_gguf() {
         let dir = std::env::temp_dir().join(format!("pom-xfer-nogguf-{}", std::process::id()));
@@ -3065,21 +3065,21 @@ mod tests {
     }
 }
 
-/// Quanto tempo a oferta leva para sair desta máquina.
+/// How long the offer takes to leave this machine.
 ///
-/// O defeito que estes testes guardam: a oferta era postada **depois** do MD5
-/// do arquivo inteiro, então o sino do outro lado só acendia quando a leitura
-/// terminava. Medido no cartão SD do captain, `md5` de uma fatia de 4,2 GB
-/// custa 3 min 23 s (~20 MB/s) - exatamente o "às vezes 1 ou 2 minutos" do
-/// relato, com o cache de digest por (caminho, mtime, tamanho) mascarando o
-/// atraso no segundo envio do mesmo arquivo.
+/// The defect these tests guard: the offer was posted **after** the MD5 of the
+/// whole file, so the bell on the other side only lit up when the read
+/// finished. Measured on the captain's SD card, `md5` of a 4.2 GB slice
+/// costs 3 min 23 s (~20 MB/s) - exactly the "sometimes 1 or 2 minutes" of the
+/// report, with the digest cache by (path, mtime, size) masking the
+/// delay on the second send of the same file.
 #[cfg(test)]
 mod offer_latency_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Um GGUF de verdade, grande o bastante para que lê-lo inteiro apareça no
-    /// relógio se alguém voltar a ler.
+    /// A real GGUF, large enough that reading it whole shows up on the
+    /// clock if someone goes back to reading it.
     fn write_gguf(path: &Path, mib: usize) {
         let mut body = Vec::with_capacity(mib * 1024 * 1024);
         body.extend_from_slice(GGUF_MAGIC);
@@ -3087,8 +3087,8 @@ mod offer_latency_tests {
         std::fs::write(path, body).unwrap();
     }
 
-    /// O peer que recebe a oferta, reduzido ao que importa: ele anota o corpo
-    /// que chegou e responde. É um servidor HTTP de verdade, na loopback.
+    /// The peer that receives the offer, reduced to what matters: it notes the body
+    /// that arrived and answers. It is a real HTTP server, on loopback.
     async fn fake_peer() -> (u16, Arc<RwLock<Vec<serde_json::Value>>>) {
         let seen: Arc<RwLock<Vec<serde_json::Value>>> = Arc::new(RwLock::new(Vec::new()));
         let captured = seen.clone();
@@ -3110,8 +3110,8 @@ mod offer_latency_tests {
         (port, seen)
     }
 
-    /// Um nó remetente completo, com um peer já na tabela apontando para
-    /// `peer_port`. Nada de UDP sai daqui: a tabela é semeada à mão.
+    /// A complete sender node, with a peer already in the table pointing to
+    /// `peer_port`. No UDP leaves here: the table is seeded by hand.
     async fn sender_state(peer_port: u16) -> GatewayState {
         crate::gateway::testkit::state_with(
             "eu",
@@ -3182,14 +3182,14 @@ mod offer_latency_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A oferta é um convite, não a transferência: ela só precisa dizer o que é
-    /// o arquivo e onde buscá-lo. O MD5 quem confere é o receptor, depois de
-    /// Quem disca decide o esquema, não a oferta.
+    /// The offer is an invitation, not the transfer: it only needs to say what
+    /// the file is and where to fetch it. The MD5 is checked by the receiver, after
+    /// Whoever dials decides the scheme, not the offer.
     ///
-    /// A oferta é escrita pelo remetente e um nó de versão anterior grava
-    /// `http://` fixo. Com o cluster em TLS isso rendia 403 em texto puro, e o
-    /// `.json()` em cima dessa frase virava "manifesto inválido: error decoding
-    /// response body" - erro que não aponta para nada (18/08).
+    /// The offer is written by the sender and a node of a previous version writes a fixed
+    /// `http://`. With the cluster on TLS this yielded a plain-text 403, and
+    /// `.json()` on top of that phrase became "invalid manifest: error decoding
+    /// response body" - an error that points to nothing (18/08).
     #[test]
     fn the_dialled_scheme_comes_from_local_policy_not_from_the_offer() {
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
@@ -3217,17 +3217,17 @@ mod offer_latency_tests {
         crate::peer_client::set_tls_enabled(false);
     }
 
-    /// aceitar, com o número que ele mesmo pede em `/api/transfer/manifest` -
-    /// hashear aqui era trabalho que ninguém consumia e que segurava o sino do
-    /// outro lado pelo tempo de ler o arquivo inteiro.
+    /// accepting, with the number it asks for itself at `/api/transfer/manifest` -
+    /// hashing here was work nobody consumed and that held back the bell on the
+    /// other side for the time it took to read the whole file.
     #[tokio::test]
     async fn an_offer_leaves_without_reading_the_whole_file() {
-        // Serializa com os testes que mexem na política de TLS, e fixa "em
-        // claro": este teste disca um peer falso em HTTP puro. Sem isto, um
-        // teste paralelo que liga a política fazia o cliente tentar TLS contra
-        // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
-        // erro e a asserção estourava em `offers[0]` com a lista vazia - a
-        // intermitência que perseguiu a suíte o dia 18/08 inteiro.
+        // Serializes with the tests that touch the TLS policy, and pins "in the
+        // clear": this test dials a fake peer over plain HTTP. Without this, a
+        // parallel test that turns the policy on made the client try TLS against
+        // the fake server, the offer was not delivered, the `let _ =` swallowed the
+        // error and the assertion blew up on `offers[0]` with the list empty - the
+        // intermittency that chased the suite the whole of 18/08.
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         crate::peer_client::set_tls_enabled(false);
 
@@ -3258,23 +3258,23 @@ mod offer_latency_tests {
         let offer = &offers[0];
         assert_eq!(offer["name"], "fatia_0_15.gguf");
         assert_eq!(offer["size_bytes"], 24 * 1024 * 1024);
-        // A faixa vinha do nome do arquivo. Não vem mais: `fatia_0_15.gguf`
-        // deixou de ser uma afirmação sobre camada nenhuma, e adivinhar a
-        // partir dele era justamente o defeito que o `.pom` fecha.
+        // The range used to come from the file name. It no longer does: `fatia_0_15.gguf`
+        // stopped being a claim about any layer, and guessing from
+        // it was precisely the defect the `.pom` closes.
         assert!(offer["start_layer"].is_null());
         assert!(offer["end_layer"].is_null());
 
-        // A prova de que nada foi lido: o cache de digest desta máquina segue
-        // vazio. Ele é populado por `file_digest` e por mais nada, então uma
-        // entrada aqui significa que alguém leu o arquivo inteiro antes de
-        // bater na porta do vizinho.
+        // The proof that nothing was read: this machine's digest cache is still
+        // empty. It is populated by `file_digest` and nothing else, so an
+        // entry here means someone read the whole file before
+        // knocking on the neighbor's door.
         assert!(
             state.transfers.digests.read().await.is_empty(),
             "the offer cannot hash the file: that is what made the bell on the other side slow"
         );
 
-        // Cinturão e suspensórios: com o hash fora do caminho, o convite sai em
-        // milissegundos mesmo aqui, onde o arquivo é pequeno.
+        // Belt and suspenders: with the hash out of the way, the invitation goes out in
+        // milliseconds even here, where the file is small.
         assert!(
             elapsed < Duration::from_secs(2),
             "offer took {elapsed:?}; it cannot depend on the file size"
@@ -3283,16 +3283,16 @@ mod offer_latency_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// O tamanho anunciado tem que ser o real: ele é o que o outro lado mostra
-    /// na notificação antes de decidir aceitar gigabytes.
+    /// The announced size has to be the real one: it is what the other side shows
+    /// in the notification before deciding to accept gigabytes.
     #[tokio::test]
     async fn the_offer_carries_the_real_size_without_a_digest() {
-        // Serializa com os testes que mexem na política de TLS, e fixa "em
-        // claro": este teste disca um peer falso em HTTP puro. Sem isto, um
-        // teste paralelo que liga a política fazia o cliente tentar TLS contra
-        // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
-        // erro e a asserção estourava em `offers[0]` com a lista vazia - a
-        // intermitência que perseguiu a suíte o dia 18/08 inteiro.
+        // Serializes with the tests that touch the TLS policy, and pins "in the
+        // clear": this test dials a fake peer over plain HTTP. Without this, a
+        // parallel test that turns the policy on made the client try TLS against
+        // the fake server, the offer was not delivered, the `let _ =` swallowed the
+        // error and the assertion blew up on `offers[0]` with the list empty - the
+        // intermittency that chased the suite the whole of 18/08.
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         crate::peer_client::set_tls_enabled(false);
 
@@ -3317,24 +3317,24 @@ mod offer_latency_tests {
 
         let offers = seen.read().await;
         assert_eq!(offers[0]["size_bytes"], 3 * 1024 * 1024);
-        // Compatibilidade: um peer antigo exige o campo, então ele continua
-        // viajando - vazio, que é como se diz "ainda não sei".
+        // Compatibility: an old peer requires the field, so it keeps
+        // traveling - empty, which is how one says "I don't know yet".
         assert_eq!(offers[0]["md5"], "");
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Aceitar não pode ficar preso ao outro lado. O manifesto é onde o MD5
-    /// finalmente é calculado, e num volume lento isso são minutos: se o clique
-    /// esperasse por ele, o operador teria trocado uma espera por outra.
+    /// Accepting cannot be stuck waiting on the other side. The manifest is where the MD5
+    /// is finally computed, and on a slow volume that is minutes: if the click
+    /// waited for it, the operator would have swapped one wait for another.
     #[tokio::test]
     async fn accepting_returns_before_the_other_side_answers() {
-        // Serializa com os testes que mexem na política de TLS, e fixa "em
-        // claro": este teste disca um peer falso em HTTP puro. Sem isto, um
-        // teste paralelo que liga a política fazia o cliente tentar TLS contra
-        // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
-        // erro e a asserção estourava em `offers[0]` com a lista vazia - a
-        // intermitência que perseguiu a suíte o dia 18/08 inteiro.
+        // Serializes with the tests that touch the TLS policy, and pins "in the
+        // clear": this test dials a fake peer over plain HTTP. Without this, a
+        // parallel test that turns the policy on made the client try TLS against
+        // the fake server, the offer was not delivered, the `let _ =` swallowed the
+        // error and the assertion blew up on `offers[0]` with the list empty - the
+        // intermittency that chased the suite the whole of 18/08.
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         crate::peer_client::set_tls_enabled(false);
 
@@ -3346,7 +3346,7 @@ mod offer_latency_tests {
                 let hits = hits.clone();
                 async move {
                     hits.fetch_add(1, Ordering::SeqCst);
-                    // O outro lado está lendo um arquivo de gigabytes.
+                    // The other side is reading a file of gigabytes.
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     Json(json!({ "size_bytes": 1, "md5": "x" }))
                 }
@@ -3383,8 +3383,8 @@ mod offer_latency_tests {
             started.elapsed()
         );
 
-        // E o trabalho existe de verdade: o job está na lista, com o outro lado
-        // já sendo consultado em segundo plano.
+        // And the work really exists: the job is in the list, with the other side
+        // already being queried in the background.
         let jobs = state.transfers.jobs.read().await;
         assert!(jobs.contains_key(&job_id), "the job must show up on the screen");
         drop(jobs);
@@ -3436,17 +3436,17 @@ mod ipv6_tests {
     }
 }
 
-/// A busca de partes por conteúdo: um nó pede um **hash**, não um caminho.
+/// Fetching parts by content: a node asks for a **hash**, not a path.
 ///
-/// É o que fecha o modelo torrent do lado da rede. Quem pede não sabe (nem
-/// precisa saber) onde o outro lado guardou o arquivo, e o que chega ou tem o
-/// hash pedido ou não entra no disco com nome de parte.
+/// It is what closes the torrent model on the network side. Whoever asks does not know (nor
+/// need to know) where the other side stored the file, and what arrives either has the
+/// requested hash or does not enter the disk with a part name.
 #[cfg(test)]
 mod part_fetch_tests {
     use super::*;
     use crate::pom;
 
-    /// Um nó de verdade servindo o roteador de transferências numa porta.
+    /// A real node serving the transfer router on a port.
     async fn serving_node(shard_dir: &Path) -> (GatewayState, u16) {
         let state = crate::gateway::testkit::state_with("servidor", vec![]).await;
         state.auth.write().await.shard_dir = Some(shard_dir.to_string_lossy().into());
@@ -3460,13 +3460,13 @@ mod part_fetch_tests {
         (state, port)
     }
 
-    /// **Uma parte não viaja sem o `.pom` dela.**
+    /// **A part does not travel without its `.pom`.**
     ///
-    /// Aqui a origem tem os bytes mas não tem o manifesto que os descreve. O
-    /// pedido é recusado na hora, antes de mover coisa alguma: uma parte solta
-    /// no destino é um arquivo que ninguém sabe de que modelo é nem que camadas
-    /// traz, e a tela o mostraria como um modelo inteiro. Falhar dizendo o que
-    /// falta é melhor que terminar bem e deixar lixo com cara de fatia.
+    /// Here the origin has the bytes but not the manifest that describes them. The
+    /// request is refused at once, before moving anything: a loose part
+    /// at the destination is a file nobody knows which model it is from or which layers it
+    /// carries, and the screen would show it as a whole model. Failing and saying what is
+    /// missing is better than finishing well and leaving junk that looks like a slice.
     #[tokio::test]
     async fn a_part_without_its_manifest_is_refused() {
         let root =
@@ -3474,7 +3474,7 @@ mod part_fetch_tests {
         let server_disk = root.join("servidor");
         let client_disk = root.join("cliente");
 
-        // Os bytes existem na origem, o manifesto não.
+        // The bytes exist at the origin, the manifest does not.
         let content = crate::splitter::test_gguf_bytes(8);
         let (sha, _) = {
             let tmp = root.join("tmp.gguf");
@@ -3512,15 +3512,15 @@ mod part_fetch_tests {
             "without a manifest, the pull is refused"
         );
 
-        // E nada foi escrito: nem pasta de rodada inventada, nem quarentena.
+        // And nothing was written: no invented round folder, no quarantine.
         assert!(!client_disk.join("recebidos").exists());
         assert!(!client_disk.join("qwen3-8b").exists());
 
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Oferecer uma parte órfã também é recusado, e do lado de quem manda: a
-    /// máquina que tem o arquivo sem o `.pom` é a que precisa consertar.
+    /// Offering an orphan part is also refused, and on the sender's side: the
+    /// machine that has the file without the `.pom` is the one that needs to fix it.
     #[tokio::test]
     async fn offering_an_orphan_part_is_refused_at_the_source() {
         let root = std::env::temp_dir().join(format!("pom-orf-{}", uuid::Uuid::new_v4().simple()));
@@ -3544,8 +3544,8 @@ mod part_fetch_tests {
         let resp = send_to_peer(
             ConnectionAuth,
             State(state),
-            // O `main` passou a aceitar só o nome, resolvido contra o
-            // catálogo desta máquina - caminho não vem mais do navegador.
+            // `main` now accepts only the name, resolved against this machine's
+            // catalog - the path no longer comes from the browser.
             Json(SendRequest {
                 to_node_id: "outro".into(),
                 filename: path.file_name().unwrap().to_string_lossy().into_owned(),
@@ -3557,7 +3557,7 @@ mod part_fetch_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Pedir um hash que ninguém tem é recusado na hora, sem deixar arquivo.
+    /// Asking for a hash nobody has is refused at once, leaving no file.
     #[tokio::test]
     async fn a_part_nobody_has_fails_without_leaving_a_file() {
         let root =
@@ -3595,9 +3595,9 @@ mod part_fetch_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A regra vale nos dois sentidos: aceitar uma oferta de fatia sem `.pom`
-    /// também é recusado, mesmo que o outro lado insista em mandá-la (um peer
-    /// de versão anterior, por exemplo).
+    /// The rule holds in both directions: accepting an offer of a slice without a `.pom`
+    /// is also refused, even if the other side insists on sending it (a peer
+    /// of a previous version, for example).
     #[tokio::test]
     async fn accepting_an_offer_of_a_part_without_a_manifest_is_refused() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -3613,7 +3613,7 @@ mod part_fetch_tests {
             name: format!("{sha}.gguf"),
             size_bytes: 4096,
             md5: String::new(),
-            // O que falta.
+            // What is missing.
             pom: None,
             start_layer: None,
             end_layer: None,
@@ -3628,8 +3628,8 @@ mod part_fetch_tests {
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-        // Um arquivo que **não** é parte continua passando: a exigência é sobre
-        // fatia, não sobre tudo que chega.
+        // A file that is **not** a part still passes: the requirement is about
+        // slices, not about everything that arrives.
         let whole = TransferOffer {
             id: "of-2".into(),
             from_node_id: "outro".into(),
@@ -3647,7 +3647,7 @@ mod part_fetch_tests {
         assert!(offer_target(&state, &whole).await.is_ok());
     }
 
-    /// Um `sha` da rede não pode virar caminho: `find_part` só aceita hash.
+    /// A `sha` from the network cannot become a path: `find_part` only accepts a hash.
     #[test]
     fn a_sha_from_the_wire_cannot_escape_the_shard_dir() {
         let dir = std::env::temp_dir();
@@ -3657,14 +3657,14 @@ mod part_fetch_tests {
     }
 }
 
-/// A fatia não viaja sozinha: o manifesto vai junto, e ela cai na pasta do
-/// modelo — não solta na raiz, parecendo um modelo inteiro.
+/// The slice does not travel alone: the manifest goes along, and it lands in the model
+/// folder - not loose at the root, looking like a whole model.
 #[cfg(test)]
 mod pom_travels_tests {
     use super::*;
     use crate::pom::{self, PomKind, PomManifest, PomModel, PomPart};
 
-    /// Um nó com uma parte e o manifesto dela em disco, servindo o roteador.
+    /// A node with a part and its manifest on disk, serving the router.
     async fn node_with_part(root: &Path) -> (GatewayState, u16, PomManifest, String) {
         let folder = pom::scratch_dir(root);
         std::fs::create_dir_all(&folder).unwrap();
@@ -3709,10 +3709,10 @@ mod pom_travels_tests {
         (state, port, m, sha)
     }
 
-    /// Puxar por hash tem que trazer o `.pom` junto e gravar tudo na pasta do
-    /// modelo. Era isto que faltava: a fatia chegava sozinha, na raiz da pasta
-    /// de fatias, e o catálogo do destino a exibia como um modelo inteiro de
-    /// nome ilegível.
+    /// Pulling by hash has to bring the `.pom` along and write everything in the model
+    /// folder. This is what was missing: the slice arrived alone, at the root of the slice
+    /// folder, and the destination's catalog showed it as a whole model with an
+    /// illegible name.
     #[tokio::test]
     async fn pulling_a_part_brings_its_manifest_along() {
         let root = std::env::temp_dir().join(format!("pom-tr-{}", uuid::Uuid::new_v4().simple()));
@@ -3755,11 +3755,11 @@ mod pom_travels_tests {
         }
 
         assert!(destination.is_file(), "the part lands in the model folder");
-        // E **nada** na raiz da pasta de fatias, que era onde ela ia parar.
+        // And **nothing** at the root of the slice folder, which is where it used to end up.
         assert!(!dest_disk.join("recebidos").exists());
         assert!(!dest_disk.join(format!("{sha}.gguf")).exists());
 
-        // O manifesto chegou junto, e é ele que dá nome à fatia no catálogo.
+        // The manifest arrived along, and it is what gives the slice its name in the catalog.
         let manifestos = pom::load_dir(&folder);
         assert_eq!(manifestos.len(), 1, "the `.pom` came with the part");
         assert_eq!(manifestos[0].pom_id, manifesto.pom_id);
@@ -3776,21 +3776,21 @@ mod pom_travels_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Por que `recebidos/` ainda existe.
+    /// Why `recebidos/` still exists.
     ///
-    /// Nem todo arquivo que chega é **parte** de um fatiamento: mandar um
-    /// modelo inteiro de uma máquina para outra é um caminho legítimo da tela
-    /// "Enviar um arquivo", e um GGUF inteiro não pertence a `.pom` nenhum. Ele
-    /// não tem hash que o nomeie nem pasta de modelo onde morar, então cai em
-    /// `recebidos/` - e o catálogo o mostra pelo nome dele, como modelo
-    /// inteiro. O defeito antigo era a **fatia** cair aqui; a fatia agora vai
-    /// para a pasta do modelo (ver `pulling_a_part_brings_its_manifest_along`).
+    /// Not every file that arrives is a **part** of a slicing: sending a whole
+    /// model from one machine to another is a legitimate path of the "Send a file"
+    /// screen, and a whole GGUF belongs to no `.pom`. It has
+    /// no hash to name it nor a model folder to live in, so it lands in
+    /// `recebidos/` - and the catalog shows it by its name, as a whole
+    /// model. The old defect was the **slice** landing here; the slice now goes
+    /// to the model folder (see `pulling_a_part_brings_its_manifest_along`).
     #[tokio::test]
     async fn a_whole_model_has_no_manifest_and_lands_in_recebidos() {
         let root = std::env::temp_dir().join(format!("pom-av-{}", uuid::Uuid::new_v4().simple()));
         let received = root.join("recebidos");
         std::fs::create_dir_all(&received).unwrap();
-        // Um modelo inteiro que chegou por este caminho.
+        // A whole model that arrived by this path.
         std::fs::write(
             received.join("qwen3.5-9b.gguf"),
             crate::splitter::test_gguf_bytes(8),
@@ -3808,8 +3808,8 @@ mod pom_travels_tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Quem oferece manda o manifesto na própria oferta, para o outro lado
-    /// saber o que está aceitando antes de baixar nada.
+    /// Whoever offers sends the manifest in the offer itself, so the other side
+    /// knows what it is accepting before downloading anything.
     #[tokio::test]
     async fn an_offer_carries_the_manifest() {
         let root = std::env::temp_dir().join(format!("pom-of-{}", uuid::Uuid::new_v4().simple()));
@@ -3824,7 +3824,7 @@ mod pom_travels_tests {
             .expect("the manifest of the part is next to it");
         assert_eq!(found.pom_id, manifesto.pom_id);
 
-        // Um arquivo que não é parte de manifesto nenhum vai sozinho.
+        // A file that is part of no manifest goes alone.
         let loose = root.join("solto.gguf");
         std::fs::write(&loose, crate::splitter::test_gguf_bytes(4)).unwrap();
         assert!(manifest_for(&state, &loose).await.is_none());
@@ -3921,24 +3921,24 @@ mod pom_travels_tests {
     }
 }
 
-/// **O veredito volta para quem ofereceu, e o envio sabe quando termina.**
+/// **The verdict goes back to whoever offered, and the send knows when it ends.**
 ///
-/// Duas metades do mesmo silêncio relatado em campo. Quem mandava uma fatia
-/// não recebia aviso nenhum: nem que o outro lado aceitou, nem que recusou, e
-/// o job de envio ficava `running` para sempre porque nada o fechava quando o
-/// corpo acabava de sair. Na prática o sino da máquina que enviou mostrava uma
-/// transferência eterna a 0 B, e a recusa não produzia sinal algum.
+/// Two halves of the same silence reported in the field. Whoever sent a slice
+/// got no notice at all: neither that the other side accepted, nor that it refused, and
+/// the send job stayed `running` forever because nothing closed it when the
+/// body finished going out. In practice the bell of the machine that sent showed an
+/// eternal transfer at 0 B, and the refusal produced no signal at all.
 #[cfg(test)]
 mod verdict_tests {
     use super::*;
     use crate::pom::{self, PomKind, PomManifest, PomModel, PomPart};
 
-    /// Um nó servindo o roteador de transferências numa porta efêmera.
+    /// A node serving the transfer router on an ephemeral port.
     ///
-    /// `gateway_port` é ajustado para a porta real: é ele que entra no
-    /// `from_gateway` da oferta, e é por esse endereço que o veredito volta.
-    /// Com o 8080 do testkit os dois lados discariam uma porta onde não há
-    /// ninguém.
+    /// `gateway_port` is adjusted to the real port: it is what goes into the
+    /// offer's `from_gateway`, and it is by that address that the verdict comes back.
+    /// With the testkit's 8080 both sides would dial a port where there is
+    /// nobody.
     async fn serving_node(state: GatewayState, listener: tokio::net::TcpListener) -> GatewayState {
         let app = routes().with_state(state.clone());
         tokio::spawn(async move {
@@ -3947,7 +3947,7 @@ mod verdict_tests {
         state
     }
 
-    /// Um nó com uma parte em disco, servindo o roteador de transferências.
+    /// A node with a part on disk, serving the transfer router.
     async fn node_with_part(node_id: &str, root: &Path) -> (GatewayState, u16, PomManifest, String) {
         let folder = pom::scratch_dir(root);
         std::fs::create_dir_all(&folder).unwrap();
@@ -3989,7 +3989,7 @@ mod verdict_tests {
         (state, port, m, sha)
     }
 
-    /// O outro lado: um nó vazio que já conhece `peer`, servindo o roteador.
+    /// The other side: an empty node that already knows `peer`, serving the router.
     async fn empty_node(
         node_id: &str,
         root: &Path,
@@ -4003,7 +4003,7 @@ mod verdict_tests {
         (serving_node(state, listener).await, port)
     }
 
-    /// Espera o job chegar a um estado terminal, ou desiste.
+    /// Waits for the job to reach a terminal state, or gives up.
     async fn until_done(state: &GatewayState, job_id: &str) -> TransferJob {
         for _ in 0..200 {
             if let Some(j) = state.transfers.jobs.read().await.get(job_id) {
@@ -4016,8 +4016,8 @@ mod verdict_tests {
         panic!("job {job_id} never finished");
     }
 
-    /// Aceitar avisa quem ofereceu, e o envio fecha sozinho quando o último
-    /// byte sai.
+    /// Accepting notifies whoever offered, and the send closes by itself when the last
+    /// byte goes out.
     #[tokio::test]
     async fn accepting_tells_the_sender_and_the_send_completes() {
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
@@ -4029,15 +4029,15 @@ mod verdict_tests {
         let disk_b = root.join("ksia");
         let (atena, port_a, _m, sha) = node_with_part("atena", &disk_a).await;
 
-        // O receptor precisa alcançar o remetente pelo roteador de verdade: é
-        // por ele que o veredito volta.
+        // The receiver needs to reach the sender through the real router: it is
+        // by it that the verdict comes back.
         let (ksia, port_b) = empty_node(
             "ksia",
             &disk_b,
             crate::gateway::testkit::peer("atena", "atena", port_a),
         )
         .await;
-        // E o remetente precisa conhecer o destino, para nomeá-lo na tela.
+        // And the sender needs to know the destination, to name it on the screen.
         atena.network.peers.write().await.insert(
             "ksia".into(),
             crate::gateway::testkit::peer("ksia", "ksia", port_b),
@@ -4054,7 +4054,7 @@ mod verdict_tests {
         .await;
         assert_eq!(resp.status(), StatusCode::OK, "the offer must go out");
 
-        // O remetente guardou a oferta para saber nomear o veredito.
+        // The sender kept the offer to know how to name the verdict.
         assert_eq!(atena.transfers.offered.read().await.len(), 1);
 
         let offer_id = {
@@ -4066,8 +4066,8 @@ mod verdict_tests {
         let resp = accept_offer(ConnectionAuth, State(ksia.clone()), AxumPath(offer_id)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // O download termina, e o **envio** também: era este segundo fecho que
-        // não existia, e por isso o sino de quem mandou nunca esvaziava.
+        // The download finishes, and the **send** too: it was this second close that
+        // did not exist, and that is why the bell of whoever sent never emptied.
         let received = {
             let id = ksia
                 .transfers
@@ -4102,12 +4102,12 @@ mod verdict_tests {
             "and the final number is the whole file, not the last 500 ms report"
         );
 
-        // Respondida, a oferta sai do registro do remetente.
+        // Once answered, the offer leaves the sender's registry.
         assert!(atena.transfers.offered.read().await.is_empty());
 
-        // **E os dois lados sabem dizer o que era, sem falar em hash.** O nome
-        // do arquivo é o sha256; quem diz de que modelo é e que camadas traz é
-        // o `.pom`, e ele viaja com a oferta e é gravado antes do primeiro byte.
+        // **And both sides can say what it was, without talking about a hash.** The file
+        // name is the sha256; what says which model it is from and which layers it carries is
+        // the `.pom`, and it travels with the offer and is written before the first byte.
         for (who, job) in [("recebido", &received), ("enviado", &sent)] {
             assert_eq!(
                 job.model_label.as_deref(),
@@ -4119,15 +4119,15 @@ mod verdict_tests {
                 (Some(0), Some(7)),
                 "{who}: and the layer range"
             );
-            // O hash continua disponível, como identificação secundária: é ele
-            // que nomeia o arquivo em disco.
+            // The hash is still available, as secondary identification: it is what
+            // names the file on disk.
             assert_eq!(job.name, format!("{sha}.gguf"), "{who}");
         }
 
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Recusar também avisa - e era o caso que não produzia sinal nenhum.
+    /// Refusing also notifies - and it was the case that produced no signal at all.
     #[tokio::test]
     async fn rejecting_tells_the_sender_who_refused() {
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
@@ -4139,8 +4139,8 @@ mod verdict_tests {
         let disk_b = root.join("ksia");
         let (atena, port_a, _m, sha) = node_with_part("atena", &disk_a).await;
 
-        // O receptor precisa alcançar o remetente pelo roteador de verdade: é
-        // por ele que o veredito volta.
+        // The receiver needs to reach the sender through the real router: it is
+        // by it that the verdict comes back.
         let (ksia, port_b) = empty_node(
             "ksia",
             &disk_b,
@@ -4166,8 +4166,8 @@ mod verdict_tests {
         let resp = reject_offer(ConnectionAuth, State(ksia.clone()), AxumPath(offer_id)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // O remetente fica sabendo. Antes disto a recusa era um silêncio: nem
-        // job, nem linha de log, nem nada na tela de quem tinha oferecido.
+        // The sender gets to know. Before this the refusal was silence: no
+        // job, no log line, nothing on the screen of whoever had offered.
         let mut refusal = None;
         for _ in 0..200 {
             let jobs = atena.transfers.jobs.read().await;
@@ -4190,15 +4190,15 @@ mod verdict_tests {
             refusal.detail
         );
         assert!(refusal.finished_at.is_some());
-        // O aviso de recusa também fala em modelo, não em hash.
+        // The refusal notice also talks about the model, not the hash.
         assert_eq!(refusal.model_label.as_deref(), Some("qwen3:8b"));
         assert_eq!((refusal.start_layer, refusal.end_layer), (Some(0), Some(7)));
 
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Um veredito sobre uma concessão que esta máquina não ofereceu não
-    /// descreve nada que ela possa mostrar.
+    /// A verdict about a grant that this machine did not offer does not
+    /// describe anything it can show.
     #[tokio::test]
     async fn an_answer_for_an_unknown_grant_is_refused() {
         let state = crate::gateway::testkit::state_with("atena", vec![]).await;
@@ -4220,7 +4220,7 @@ mod verdict_tests {
         assert!(state.transfers.jobs.read().await.is_empty());
     }
 
-    /// E um veredito que não vem de quem recebeu a oferta é outra conversa.
+    /// And a verdict that does not come from whoever received the offer is another conversation.
     #[tokio::test]
     async fn an_answer_from_the_wrong_node_is_refused() {
         let state = crate::gateway::testkit::state_with("atena", vec![]).await;

@@ -77,12 +77,12 @@ function localizedText(texts: Record<string, string> | undefined, locale: string
   return texts[locale] ?? texts[locale.split("-")[0]] ?? texts.en ?? Object.values(texts)[0] ?? null;
 }
 
-/** `v1.2.0` e `1.2.0` são a mesma versão para decidir entre instalar e atualizar. */
+/** `v1.2.0` and `1.2.0` are the same version when deciding between install and update. */
 function sameVersion(tag: string, version: string | null | undefined): boolean {
   return Boolean(version) && tag.replace(/^v/i, "") === version!.replace(/^v/i, "");
 }
 
-/** Releases que este nó consegue instalar, da mais nova para a mais antiga. */
+/** Releases this node can install, from newest to oldest. */
 export function compatibleReleases(repository: GithubRepository): GithubRepositoryRelease[] {
   return repository.releases
     .filter((release) => release.available_for_node)
@@ -408,8 +408,8 @@ function PluginCard({
       ? stateTone(status.state)
       : "neutral";
   const installedAt = formatDateTime(status?.installed_at, locale);
-  // A validade da licença, não o `lease_expires_at` técnico que o heartbeat
-  // empurra a cada poucos dias.
+  // The validity of the license, not the technical `lease_expires_at` that the
+  // heartbeat pushes every few days.
   const licenseExpiresAt = formatDateTime(
     licenseStatus?.license_expires_at ?? status?.license_expires_at,
     locale,
@@ -446,7 +446,7 @@ function PluginCard({
     : null;
   const preferenceSchema = status?.preferences_schema ?? null;
 
-  // GitHub: só releases instaláveis neste nó; a mais nova vem marcada.
+  // GitHub: only releases installable on this node; the newest comes marked.
   const releases = repository ? compatibleReleases(repository) : [];
   const [selectedRelease, setSelectedRelease] = useState<string>(releases[0]?.release_id ?? "");
   const releaseKey = releases.map((item) => item.release_id).join(",");
@@ -972,8 +972,8 @@ export function Plugins() {
       await api.post(`/api/ui/plugins/${encodeURIComponent(code)}/preferences`, { preferences });
       setPreferencesCode(null);
     } catch (error) {
-      // A mensagem do nó diz o que recusou (diretório inexistente, chave
-      // desconhecida...); o texto genérico sozinho não deixava corrigir nada.
+      // The node's message says what it refused (nonexistent directory, unknown
+      // key...); the generic text alone did not let anything be fixed.
       setPreferencesError(error instanceof Error ? error.message : "");
     } finally {
       await refreshPluginData();
@@ -1004,10 +1004,10 @@ export function Plugins() {
         || status.development_install !== true);
     return !licensed || status?.state === "expired" || status?.state === "revoked";
   });
-  // Um card por `plugin_code`: catálogo comercial, repositório GitHub e estado
-  // local ativo se somam no mesmo card quando falam do mesmo plugin. A página
-  // vem do license-server; o que só existe neste nó (repositório cadastrado ou
-  // plugin ativo fora da loja) entra na primeira página, filtrado pela busca.
+  // One card per `plugin_code`: commercial catalog, GitHub repository and active
+  // local state add up in the same card when they are about the same plugin. The
+  // page comes from the license-server; what only exists on this node (registered
+  // repository or active plugin outside the store) goes on the first page, filtered by the search.
   const pageEntries = storePage.data?.plugins ?? [];
   const catalogCodes = new Set([...publicEntries, ...pageEntries].map((entry) => entry.code));
   const needle = query.toLowerCase();

@@ -1,7 +1,7 @@
 /**
- * Esta máquina isolada da rede: identidade, portas, autoridade efetiva e o
- * endereço anunciado aos peers. Separado de `NetworkSettings.tsx`, que mostra
- * o retrato geral da rede.
+ * This machine in isolation from the network: identity, ports, effective
+ * authority and the address announced to the peers. Separate from
+ * `NetworkSettings.tsx`, which shows the overall picture of the network.
  */
 import { LogIn, LogOut, Radio, Save } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -120,11 +120,11 @@ export function MyMachine() {
               <KeyValue label={t("network.profile")}>
                 {t(`profile.${node.data.profile}`)}
               </KeyValue>
-              {/* O antigo "Papel" (principal/nó) saiu do `/api/ui/node` com o
-                  modelo de confiança e deixava a célula em branco. O que existe
-                  hoje é a autoridade efetiva, e ela responde à mesma pergunta:
-                  esta máquina manda em quê. `profile: admin` sem concessão
-                  aparece como sem autoridade, que é o que ele é. */}
+              {/* The old "Role" (principal/node) left `/api/ui/node` with the
+                  trust model and left the cell blank. What exists today
+                  is the effective authority, and it answers the same question:
+                  what this machine is in charge of. `profile: admin` without a grant
+                  shows as having no authority, which is what it is. */}
               <KeyValue label={t("network.authority")}>
                 {node.data.authority_level
                   ? t(`network.authority.${node.data.authority_level}`)

@@ -48,10 +48,10 @@ export function ReleaseSlice({
   startLayer,
   endLayer,
   /**
-   * Só o botão, para a barra de ferramentas do card de máquina. A nota que a
-   * versão larga mostra ao lado dele já é dita, e melhor, pela confirmação -
-   * repeti-la numa barra de cinco botões era linha gasta com o que ninguém lê
-   * antes de clicar.
+   * Only the button, for the machine card's toolbar. The note that the
+   * wide version shows beside it is already said, and better, by the confirmation -
+   * repeating it on a five-button bar was a line wasted on what nobody reads
+   * before clicking.
    */
   compact = false,
 }: {

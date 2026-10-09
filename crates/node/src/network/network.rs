@@ -1268,6 +1268,11 @@ pub struct Network {
     /// a falso ao parar; o gateway exige a cap de todos os hops antes de
     /// orquestrar um snapshot de implantação.
     slot_persist_ready: Arc<AtomicBool>,
+    /// The plugin whose inference service serves this node's model, when it
+    /// is not POM's own engine. While set, the announce carries
+    /// `engine/plugin-v1:<code>` instead of the hidden-state capabilities, so
+    /// no gateway plans this peer as a pipeline hop. See `plugin_engine`.
+    external_engine: std::sync::RwLock<Option<String>>,
     /// Se este nó fala TLS com os peers, na forma que o anúncio lê.
     ///
     /// A fonte de verdade é `Config.tls_required`; isto é a cópia que o gossip
@@ -1722,6 +1727,7 @@ impl Network {
             relay_gate: Arc::new(RelayGate::new(false, true, true)),
             hole_punched_links: std::sync::Mutex::new(std::collections::HashSet::new()),
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
+            external_engine: std::sync::RwLock::new(None),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
             quic_probe: std::sync::RwLock::new(None),
@@ -2256,7 +2262,11 @@ impl Network {
             // `CAP_LIBP2P_TUNNEL`). The last one only goes out once the swarm
             // has actually come up (`libp2p_tunnel_ready`) — claiming it any
             // earlier would send peers to dial a PeerId that can't answer.
-            inference_frame_capabilities: {
+            inference_frame_capabilities: if let Some(caps) = self.plugin_engine_capabilities() {
+                // A plugin engine serves the whole model: it takes prompts,
+                // not hidden states.
+                caps
+            } else {
                 let mut caps = vec![
                     crate::pipeline::CAP_FRAME_BATCH.into(),
                     crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
@@ -2389,6 +2399,34 @@ impl Network {
 
     pub fn set_slot_persist_ready(&self, ready: bool) {
         self.slot_persist_ready.store(ready, Ordering::Relaxed);
+    }
+
+    /// See `external_engine`.
+    pub fn set_external_engine(&self, plugin_code: Option<String>) {
+        *self
+            .external_engine
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = plugin_code;
+    }
+
+    pub fn external_engine(&self) -> Option<String> {
+        self.external_engine
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// The inference capabilities while a plugin engine serves this node's
+    /// model, `None` otherwise. Every builder of this node's capabilities -
+    /// the announce, the gateway's own peer entry and `/api/ui/node` - goes
+    /// through it, so no view of this node offers hidden-state hops then.
+    pub fn plugin_engine_capabilities(&self) -> Option<Vec<String>> {
+        let code = self.external_engine()?;
+        let mut caps = vec![crate::plugin_engine::capability(&code)];
+        if self.libp2p_tunnel_ready() {
+            caps.push("transport/libp2p-tunnel-v1".into());
+        }
+        Some(caps)
     }
 
     /// Muda a geração dona da capacidade e a retira enquanto o novo runtime

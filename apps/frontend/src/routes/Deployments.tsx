@@ -19,14 +19,15 @@
  * de faixa continua sendo assunto da tela de implantar, que é onde há o que
  * planejar e o que copiar.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Layers, RefreshCw, Star, Terminal, X } from "lucide-react";
 import {
   activateDeployment,
   redeployDeployment,
   type DeploymentRow,
 } from "../lib/api";
-import { useDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
+import { engineOfParams, inferenceServiceCatalog } from "../lib/inferenceServices";
 import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
 import { DeploymentInspector } from "../components/DeploymentInspector";
@@ -92,6 +93,7 @@ function RedeployPanel({
   const invalidate = useInvalidate();
   const { data: jobsData } = useJobs();
   const [params, setParams] = useState<RuntimeParams>(() => ({ ...editing.seed }));
+  const engine = engineOfParams(params.inference_service, useEngineCatalog());
   const [perNode, setPerNode] = useState<
     Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>
   >(() =>
@@ -166,49 +168,53 @@ function RedeployPanel({
         showInferenceMode
         pomDesenv={pomDesenv}
         showHiddenStateDtype={params.hidden_state_dtype != null}
+        inferenceService={engine ?? undefined}
       />
 
-      <div className="space-y-1.5 border-t border-line px-2 py-2">
-        <p className="text-[0.65rem] font-semibold text-fg">{t("deployments.perMachine")}</p>
-        {row.deployment.nodes.map((n) => (
-          <div key={n.node_id} className="grid grid-cols-[minmax(0,1fr)_4.5rem_auto] items-center gap-2 text-[0.65rem]">
-            <div className="min-w-0">
-              <p className="truncate text-fg">{n.hostname || n.node_id.slice(0, 12)}</p>
-              <p className="text-faint">{t("deployments.layers")} {layerRange(n.start_layer, n.end_layer)}</p>
-            </div>
-            <Input
-              type="number"
-              min={0}
-              compact
-              disabled={busy}
-              aria-label={`${t("deploy.knob.n_gpu_layers")} ${n.hostname}`}
-              title={t("deploy.knob.n_gpu_layers")}
-              value={String(perNode[n.node_id]?.n_gpu_layers ?? "")}
-              onChange={(e) =>
-                setPerNode((s) => ({
-                  ...s,
-                  [n.node_id]: { ...s[n.node_id], n_gpu_layers: Number(e.target.value) },
-                }))
-              }
-            />
-            <label className="flex items-center gap-1 text-muted" title={t("deploy.offloadKqv")}>
-              <input
-                type="checkbox"
-                aria-label={`${t("deploy.offloadKqv")} ${n.hostname}`}
-                checked={perNode[n.node_id]?.offload_kqv ?? true}
+      {/* GPU layers and the KV offload are llama.cpp's; a plugin's engine places its model itself. */}
+      {!engine && (
+        <div className="space-y-1.5 border-t border-line px-2 py-2">
+          <p className="text-[0.65rem] font-semibold text-fg">{t("deployments.perMachine")}</p>
+          {row.deployment.nodes.map((n) => (
+            <div key={n.node_id} className="grid grid-cols-[minmax(0,1fr)_4.5rem_auto] items-center gap-2 text-[0.65rem]">
+              <div className="min-w-0">
+                <p className="truncate text-fg">{n.hostname || n.node_id.slice(0, 12)}</p>
+                <p className="text-faint">{t("deployments.layers")} {layerRange(n.start_layer, n.end_layer)}</p>
+              </div>
+              <Input
+                type="number"
+                min={0}
+                compact
                 disabled={busy}
+                aria-label={`${t("deploy.knob.n_gpu_layers")} ${n.hostname}`}
+                title={t("deploy.knob.n_gpu_layers")}
+                value={String(perNode[n.node_id]?.n_gpu_layers ?? "")}
                 onChange={(e) =>
                   setPerNode((s) => ({
                     ...s,
-                    [n.node_id]: { ...s[n.node_id], offload_kqv: e.target.checked },
+                    [n.node_id]: { ...s[n.node_id], n_gpu_layers: Number(e.target.value) },
                   }))
                 }
               />
-              KQV
-            </label>
-          </div>
-        ))}
-      </div>
+              <label className="flex items-center gap-1 text-muted" title={t("deploy.offloadKqv")}>
+                <input
+                  type="checkbox"
+                  aria-label={`${t("deploy.offloadKqv")} ${n.hostname}`}
+                  checked={perNode[n.node_id]?.offload_kqv ?? true}
+                  disabled={busy}
+                  onChange={(e) =>
+                    setPerNode((s) => ({
+                      ...s,
+                      [n.node_id]: { ...s[n.node_id], offload_kqv: e.target.checked },
+                    }))
+                  }
+                />
+                KQV
+              </label>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="sticky bottom-0 flex justify-end gap-2 border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
         <Button variant="ghost" size="sm" onClick={onClose}>{t("common.cancel")}</Button>
@@ -220,8 +226,21 @@ function RedeployPanel({
   );
 }
 
-/** Um resumo curto dos parâmetros que quase sempre mudam entre versões. */
-function versionSummary(p: RuntimeParams): string {
+/** The inference services the cluster announces, to name a deployment's
+ *  plugin engine (Strata, ...) and show its settings; see `engineOfParams`. */
+function useEngineCatalog() {
+  const cluster = useCluster();
+  return useMemo(() => inferenceServiceCatalog(cluster.data?.peers), [cluster.data]);
+}
+
+/** Um resumo curto dos parâmetros que quase sempre mudam entre versões. Com o
+ *  motor de um plugin, os números do llama.cpp não se aplicam: o resumo diz o
+ *  motor, o contexto, as sessões e as configurações dele. */
+function versionSummary(p: RuntimeParams, engineName?: string): string {
+  if (p.inference_service) {
+    const settings = Object.entries(p.engine_settings ?? {}).map(([key, value]) => `${key}=${String(value)}`);
+    return [engineName ?? p.inference_service, `ctx ${p.n_ctx}`, `sess ${p.max_sessions}`, ...settings].join(" · ");
+  }
   const bits = [
     `ctx ${p.n_ctx}`,
     `leg ${p.max_new_tokens}`,
@@ -243,6 +262,7 @@ function VersionList({
 }) {
   const { locale, t } = useI18n();
   const toast = useToast();
+  const catalog = useEngineCatalog();
   const invalidate = useInvalidate();
   const [busy, setBusy] = useState<number | null>(null);
   const d = row.deployment;
@@ -297,7 +317,9 @@ function VersionList({
                     {dateTimeLabel(v.created_at, locale)}
                   </time>
                 </span>
-                <span className="text-xs text-faint">{versionSummary(v.params)}</span>
+                <span className="text-xs text-faint">
+                  {versionSummary(v.params, engineOfParams(v.params.inference_service, catalog)?.name)}
+                </span>
               </button>
               <Button
                 variant="ghost"
@@ -332,6 +354,9 @@ function Row({
   const [expanded, setExpanded] = useState(false);
   const d = row.deployment;
   const versionCount = d.versions?.length ?? 1;
+  const catalog = useEngineCatalog();
+  const activeParams = d.versions?.find((v) => v.version === d.active_version)?.params ?? d.nodes[0]?.config;
+  const engine = engineOfParams(activeParams?.inference_service, catalog);
 
   async function activate() {
     try {
@@ -373,7 +398,10 @@ function Row({
         </td>
         <td className="px-5 py-3">{d.model.label}</td>
         <td className="px-5 py-3">
-          <Badge tone={KIND_TONE[d.kind]}>{t("deployments.kind." + d.kind)}</Badge>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge tone={KIND_TONE[d.kind]}>{t("deployments.kind." + d.kind)}</Badge>
+            {engine && <Badge tone="sky">{engine.name}</Badge>}
+          </div>
         </td>
         <td className="whitespace-nowrap px-5 py-3 text-muted">
           {t("deployments.nodeCount", { count: d.nodes.length })}
@@ -464,6 +492,8 @@ export function Deployments() {
    * cada refresh da lista.
    */
   const [inspected, setInspected] = useState<Inspected | null>(null);
+  const engineCatalog = useEngineCatalog();
+  const inspectedEngine = engineOfParams(inspected?.version.params.inference_service, engineCatalog);
   // O lado direito mostra uma coisa de cada vez: a versão lida ou a reimplantação.
   const [editing, setEditing] = useState<Editing | null>(null);
   const inspect = (next: Inspected | null) => {
@@ -590,6 +620,7 @@ export function Deployments() {
               showInferenceMode
               pomDesenv={pomDesenv}
               showHiddenStateDtype={inspected.version.params.hidden_state_dtype != null}
+              inferenceService={inspectedEngine ?? undefined}
             />
             <div className="sticky bottom-0 flex justify-end border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
               <Button

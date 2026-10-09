@@ -799,6 +799,15 @@ impl PomDb {
         self.save_setting("lobby_requests", &requests.to_vec())
     }
 
+    /// Trust documents of the networks the operator imported on this machine.
+    pub fn custom_networks(&self) -> Result<Vec<String>> {
+        self.read_setting("custom_networks")
+    }
+
+    pub fn save_custom_networks(&self, documents: &[String]) -> Result<()> {
+        self.save_setting("custom_networks", &documents.to_vec())
+    }
+
     /// A JSON list kept in `local_settings`; missing or unreadable is empty.
     fn read_setting<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Vec<T>> {
         self.with_read("ler configuração local", |connection| {

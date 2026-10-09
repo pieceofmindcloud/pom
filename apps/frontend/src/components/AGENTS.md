@@ -60,6 +60,9 @@ Per-file list:
   repeating the bar's markup six times; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
   screen nobody asked to change is its own risk.
+  `Tabs` is the one tab row (POM-JEV's folder tabs, theme tokens `--tab-*` in
+  `index.css`, classes `pom-tab*`); every `role="tablist"` in the panel uses it
+  (`fill` spreads the tabs over the row), and plugins get it as `ui.Tabs`.
 - `AlertTooltip` (ui.tsx) - `compact` deixa o ícone do tamanho do `[i]`, sem
   moldura, para caber na coluna de ícones do `DeploymentInspector`; `Meter` e
   `KeyValue` ganharam `compact` pelo mesmo motivo no card de máquina. É o aviso
@@ -200,8 +203,19 @@ Per-file list:
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
+- `FirstRunWizard.tsx` - The wizard of a machine's first run, rendered by
+  `App.tsx` in place of the whole shell while the current guide step is one
+  of `WIZARD_STEPS` (`useFirstRunWizard`, `admin` profile only): one screen
+  with the machine name (pre-filled with the hostname) and the network name
+  (with the warning that it is advertised if the network goes public), and a
+  last screen that hands over to the hints. Each name field has its own
+  "Random" button (`lib/randomName.ts`). The names screen saves each name
+  through the route its settings screen uses, then reports the one `names`
+  step; "Back" is local. It reuses the
+  `.pom-login*` / `.pom-setup*` shell. Tests in `FirstRunWizard.test.tsx`.
 - `FirstRunGuide.tsx` - The hints of a machine's first run, mounted once in
-  the shell (`App.tsx`, `admin` profile only). Shows one balloon for the
+  the shell (`App.tsx`, `admin` profile only), for the steps after the
+  wizard. Shows one balloon for the
   current step of `lib/guide.ts`: beside the menu entry that leads to the
   step (`[data-guide-nav="<path>"]`, else `[data-guide-section="<labelKey>"]`,
   both set by `Sidebar.tsx`), or under a control on the step's own screen
@@ -480,6 +494,9 @@ Per-file list:
   button switches at once, and the bell does not list it. A declined request
   shows how many minutes are left before asking again (`retryWaitMinutes`
   over `retry_at`), and the request form comes back when the wait is over.
+  When the network answers `messages_closed` (its Chat is off) the
+  conversation column is not rendered: the window is only the hardware card
+  and the request panel (`lobby-request`).
   Test: `LobbyChat.test.tsx`.
 - `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
   OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens
@@ -640,6 +657,11 @@ Key logic carriers:
 - `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
   (Shards) or in a window (Models) and saved on the principal through
   `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
+- `EngineSettings.tsx` - draws the settings an inference service's engine
+  publishes (`PluginService.settings`) in the interface's language: one row
+  per setting, an empty field or "Engine default" keeps the engine's default,
+  and the values go to `RuntimeParams.engine_settings`. Mounted by
+  `DeploymentInspector` when a plugin's inference service is chosen.
 - `DeploymentInspector.tsx` - o inspetor de propriedades de uma implantação, e
   **um só** para os dois ecrãs: a tela de implantar o usa editável, o Histórico
   o usa com `readOnly` para mostrar com que parâmetros uma versão subiu. Em

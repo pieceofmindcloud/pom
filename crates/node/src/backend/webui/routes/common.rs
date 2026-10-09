@@ -29,6 +29,20 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_services::plugin_peer_call),
         )
         .route(
+            "/api/internal/plugins/:code/engine/generate",
+            post(crate::plugin_engine::engine_generate_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/link/:deploy",
+            get(crate::plugin_stage_link::link_secret_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/link/:deploy/:conn",
+            post(crate::plugin_stage_link::link_frame_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::plugin_stage_link::MAX_FRAME),
+            ),
+        )
+        .route(
             "/api/ui/pom-update/status",
             get(crate::pom_core_update::pom_update_status),
         )
@@ -65,6 +79,12 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route(
             "/api/ui/network-chat/lobby",
             get(lobby_fetch).post(lobby_post),
+        )
+        .route("/api/ui/networks/pinned", get(pinned_networks))
+        .route("/api/ui/networks/custom", post(import_custom_network))
+        .route(
+            "/api/ui/networks/custom/:fingerprint",
+            delete(remove_custom_network),
         )
         .route("/api/ui/network-chat/lobby/info", get(lobby_info))
         .route("/api/ui/network-chat/lobby/latency", get(lobby_latency))

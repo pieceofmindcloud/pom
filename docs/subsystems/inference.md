@@ -2436,6 +2436,98 @@ without a valid pipeline does **not** fall to the local Ollama nor to a peer's -
 the request fails. (Old documentation described a three-level fallback; that
 was an earlier state of the code, corrected on 2026-08-15.)
 
+## 7.1 Plugin inference services
+
+A deployment may name a plugin's inference service instead of POM's own
+engine (`RuntimeParams::inference_service`, for example `"strata"`). That is
+an explicit, separate deployment class, never a fallback: the plan for such a
+model is one step on one machine - or, for a service that publishes `stages`,
+one step per layer slice (see "Split across machines" below) - and the gateway
+runs it through that plugin or fails.
+`crates/node/src/inference/plugin_engine.rs` holds the three pieces.
+
+- **Target node.** The runtime supervisor calls `plugin_engine::run` instead
+  of `infer_server::run`. It binds the inference port first, asks the plugin
+  to load the model through the local plugin host (`engine.load` with
+  `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv` and the NVIDIA
+  GPU indices of the machine), reads `engine.status` every 2 s and answers
+  `/health` with the fields the llama.cpp server publishes: `model_loaded`
+  only once the plugin is `ready`, the layer range, `n_ctx_per_session` (the
+  whole window: the engine gives it to every request) and
+  `capabilities: ["engine/plugin-v1:<code>"]`. The health watcher, the slice
+  journal, the restart budget, idle unloading and `/v1/models` therefore work
+  unchanged. When the generation ends (undeploy, redeploy, stop) it calls
+  `engine.unload`; an `error` state, or `idle` after the engine had served,
+  ends the generation with the plugin's reason and the supervisor restarts it
+  within its budget. While a plugin engine serves, the node announces
+  `engine/plugin-v1:<code>` (and the libp2p tunnel capability) instead of the
+  frame, relay and speculation capabilities, so no gateway can plan it as a
+  hidden-state hop. `Network::plugin_engine_capabilities` is that rule, and
+  every builder of the node's capabilities uses it: the announce, the
+  gateway's own peer entry and `/api/ui/node`.
+- **Gateway.** After planning, `generate_stream_inner` checks
+  `plugin_of_plan`: a plan whose steps all announce the same
+  `engine/plugin-v1:<code>` and run whole slices in layer order is run by
+  `plugin_engine::generate` on its last step (the machine with the head). It
+  sends the prompt the protocol adapter
+  already rendered, with the same `chat_template` and thinking flags a
+  llama.cpp head receives, plus the client's `max_tokens`, stop sequences and
+  numeric sampling fields (`temperature`, `top_p`, `top_k`, `min_p`,
+  `presence_penalty`, `frequency_penalty`). The generation route answers one
+  JSON object per line - `{"t"}` text, `{"p"}` prompt progress, `{"done"}`
+  with finish, prompt, completion and cached tokens, the engine's llama.cpp-style
+  `timings` (with the MTP drafts, `draft_n` and `draft_n_accepted`) and the
+  `stop_sequence` that ended it, or `{"error"}` - and the text becomes
+  `GenEvent::Token`; reasoning comes back inside `<think>` tags and tool calls
+  in the model's own template form, as a llama.cpp pipeline returns them, so
+  the gateway's tool-call parser reads them. The summary is the one a
+  pipeline leaves: `source` is `pipeline:<chain>` and its `RequestTrace`
+  (`plugin_engine::engine_trace`) has a hop per stage, each executed by the
+  `plugin` engine on path `plugin/<code>`, with the request's prompt call and
+  decode rounds (generated tokens less the accepted drafts), the MTP draft
+  counts, and the engine's prompt and decode times on the last stage. The
+  engine reports the request as a whole, so the earlier stages carry no time
+  of their own. The request audit, the statistics and the process log the
+  admins receive are the same whatever the engine. The target node logs every change of the
+  engine's state, and the plugin's own output reaches the node's log through
+  the plugin host's stderr. Images and typed
+  decisions (`/v1/systemone` labels) are refused for this class; the retain
+  boundary of retrieval is only a cache hint and is ignored.
+- **Between nodes.** When the gateway is another machine it posts to
+  `POST /api/internal/plugins/:code/engine/generate` on the target (signed
+  control envelope, live peer, body up to 32 MiB). The target checks that its
+  runtime serves that inference service, takes the plugin's loopback
+  generation server from `engine.upstream` (`{status, port, token}`) and
+  streams the answer back unchanged. The plugin's server never listens beyond
+  loopback.
+
+**Split across machines.** A service that publishes `stages: true` also runs
+POM layer slices, one per machine (`crates/node/src/inference/plugin_stage_link.rs`).
+Every machine of such a deployment runs `plugin_engine::run` on its slice; the
+engines exchange their own hidden states, never POM's hop protocol of section
+2, and the node only carries them:
+
+- A later stage's runtime (`prepare`) waits for the live peer of the same
+  `deploy_id` whose slice ends at `start_layer - 1` and serves the same
+  plugin, asks it for the stage's link secret
+  (`GET /api/internal/plugins/:code/engine/link/:deploy`) and opens a relay on
+  loopback. Its `engine.load` gets `link: {token, prev_port}`; the first
+  stage's gets `link: {}` and its plugin makes the secret, which
+  `engine.link` (`{status, port?, token?}`) returns to the local node only.
+- The relay reads the engine's frames (a little-endian `u32` length, then the
+  bytes, both ways) and posts each one, signed and along the measured route,
+  to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn` on the
+  earlier machine (up to 64 MiB a frame); the answer's body is the answer
+  frame, and a wait while the earlier stage loads is retried. That route keeps
+  one loopback connection per `conn` to the port of `engine.link` and passes
+  the frames through; an empty body closes `conn`.
+- Both routes take only a signed call from the live peer that serves the next
+  slice of the same deployment. The node reads nothing of a frame but its
+  length, and no engine listens beyond loopback.
+
+Only the last stage takes requests: the earlier one answers `engine.upstream`
+with an error.
+
 ## 8. direct_lab.rs - the "law"
 
 `direct_lab.rs` (cfg(test)) keeps the whole fix, measured: **the cost per token

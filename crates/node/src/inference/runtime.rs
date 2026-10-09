@@ -180,6 +180,13 @@ pub struct NodeConfig {
     /// the concrete path from this value and the loaded GGUF metadata.
     #[serde(default)]
     pub inference_mode: crate::webui::InferenceMode,
+    /// The plugin whose inference service runs this whole model instead of
+    /// llama.cpp (`RuntimeParams::inference_service`); `None` is llama.cpp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_service: Option<String>,
+    /// That engine's settings (`RuntimeParams::engine_settings`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub engine_settings: std::collections::BTreeMap<String, serde_json::Value>,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -383,6 +390,8 @@ impl NodeConfig {
             primary: false,
             tp: None,
             inference_mode: p.inference_mode,
+            inference_service: p.inference_service.clone(),
+            engine_settings: p.engine_settings.clone(),
             inference_port: 0,
             single_peer: false,
             no_embeddings: p.no_embeddings,
@@ -1167,6 +1176,7 @@ impl NodeRuntime {
         self.net.set_idle(false);
         self.net.set_batching_ready(false);
         self.net.set_slot_persist_ready(false);
+        self.net.set_external_engine(None);
         self.net.set_runtime_generation(generation);
 
         // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
@@ -1299,6 +1309,7 @@ impl NodeRuntime {
         self.status_changed.notify_waiters();
         self.request_activity.mark_now();
         self.net.set_idle(waking);
+        self.net.set_external_engine(cfg.inference_service.clone());
         // A configuração nova só vira capacidade efetiva depois que o
         // `/health` do processo novo responder `model_loaded`.
         self.net.set_runtime_generation(generation);
@@ -1608,7 +1619,18 @@ impl NodeRuntime {
                     }
                 }
 
-                let result = crate::infer_server::run(
+                let result = if cfg.inference_service.is_some() {
+                    crate::plugin_engine::run(
+                        cfg.clone(),
+                        gen_rx.clone(),
+                        generation,
+                        tls.clone(),
+                        quic.clone(),
+                        quic_port,
+                    )
+                    .await
+                } else {
+                    crate::infer_server::run(
                     cfg.clone(),
                     gen_rx.clone(),
                     generation,
@@ -1624,7 +1646,8 @@ impl NodeRuntime {
                     load_node_id.clone(),
                     request_activity.clone(),
                 )
-                .await;
+                .await
+                };
                 if *gen_rx.borrow() != generation {
                     return;
                 }
@@ -2301,6 +2324,8 @@ mod tests {
             peer_index: 0,
             primary: true,
             inference_mode: Default::default(),
+            inference_service: None,
+            engine_settings: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,

@@ -57,6 +57,9 @@ pub enum ExecutionEngine {
     LlamaCpp,
     #[serde(rename = "moe")]
     Moe,
+    /// A plugin's inference service ran the phase (`plugin_engine`).
+    #[serde(rename = "plugin")]
+    Plugin,
     #[serde(rename = "unknown")]
     #[default]
     Unknown,
@@ -67,6 +70,7 @@ impl ExecutionEngine {
         match self {
             Self::LlamaCpp => "llama.cpp",
             Self::Moe => "moe",
+            Self::Plugin => "plugin",
             Self::Unknown => "unknown",
         }
     }
@@ -75,6 +79,7 @@ impl ExecutionEngine {
         match value {
             "llama.cpp" | "moe/llama.cpp-delegated" => Self::LlamaCpp,
             "moe" => Self::Moe,
+            "plugin" => Self::Plugin,
             _ => Self::Unknown,
         }
     }

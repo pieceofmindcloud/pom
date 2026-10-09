@@ -8,10 +8,8 @@ cluster state in the browser. All copy goes through the i18n provider
 strings through `localizeServerText` (`../i18n/locales.ts`), which the backend
 writes as translation keys.
 
-`NetworkSettings.tsx` and `MyMachine.tsx` report their step of the first run
-guide after a successful save (`useGuideActions().complete`), and they and
-`PublicNetworks.tsx` carry the `data-guide` attribute the balloon points at
-(`components/FirstRunGuide.tsx`). So do `RemoteModels.tsx` (search field,
+`PublicNetworks.tsx` carries the `data-guide` attribute the first run guide's
+balloon points at (`components/FirstRunGuide.tsx`). So do `RemoteModels.tsx` (search field,
 result rows by `data-guide-repo`), `DeployModel.tsx` ("Whole model", the peer
 strip, the Deploy button while enabled) and `Chat.tsx` (the message field);
 those three steps report nothing, the guide watches for their outcome.
@@ -87,15 +85,24 @@ Per-file list:
   Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
   confirmation as Forget network in `NetworkSettings.tsx`); the principal
   (`authority_level === "primary"` from `useNode`) gets no action there.
+  Pinned rows come from `GET /api/ui/networks/pinned` and stay on top,
+  outside the filters and the sort: this machine's network (`kind` "own",
+  whatever its visibility, the directory's copy dropped) and the networks
+  imported here ("custom", amber band and badge). "Add network" reads a JSON
+  file and posts its text to `/api/ui/networks/custom`; a custom row has a
+  remove button behind a confirmation (`api.del`). Every row has an export
+  button (`exportTrustDocument`) that downloads `trust_document` as
+  `<name>-trust.json`. A node that does not serve the pinned route just shows
+  the directory.
   The screen is titled "Networks". For a network this node is not in, the one
   action opens the lobby window (`LobbyChat`), where admission is requested;
-  without `lobby_chat` the button is disabled ("No lobby"). The old path that
+  every listed network has a lobby. The old path that
   left the network and opened the wizard is gone.
   A network advertising an empty `accepted_enrollments` can still be talked to
   but offers no admission request; the list (or "Any role" when the record has
   none) is shown in the details modal and travels to the wizard in the
-  `sessionStorage` handoff. A network with `lobby_chat` also gets "Chat", which
-  opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`. A
+  `sessionStorage` handoff. That window is `../components/LobbyChat` against
+  `/api/ui/network-chat/lobby`. A
   network with `public_stats` that this node is not in gets its nodes, VRAM and
   models columns from `usePublicStats` (`../lib/publicStats`); latency stays
   unavailable for it.
@@ -111,8 +118,16 @@ Per-file list:
   atualiza a descoberta pública. The editable block includes "Accepting new
   members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
   `lib/types.ts`); unchecking all of them advertises the network as closed.
-  "Lobby chat" (`lobby_chat`) lets machines that are not members talk to the
-  network; the checkbox is disabled unless the network is public. The leave
+  There is no lobby option: the lobby follows discovery. "Who can join"
+  (`access_policy`) and "Accepting new members" are shown only with discovery
+  on or hidden, and the published stats only on a public network; with
+  discovery off they are not rendered at all. The location editor and the
+  geographic label are rendered only on a public network, the only kind the
+  directory places on a map. "Who can join" offers "Approved
+  by an admin", "Anyone without approval" (`auto_approve`, with a warning
+  block under it, `auto-approve-warning`) and "This machine only". Discovery offers
+  "Hidden" (`private`) again: no relay lists the network, and another machine
+  reaches it by importing its trust document on the Networks screen. The leave
   action ("Return to my own network", `POST /api/ui/network/leave`) is not
   drawn on the machine's own network (`NodeInfo.own_network` with no
   `standby_network`): that network is inherent to the machine. An admin also
@@ -476,6 +491,15 @@ Per-file list:
   models hide it. A MoE Tensor Parallelism plan keeps the selector visible but
   is blocked with the backend's explicit unsupported reason, so the UI cannot
   imply that the request will use another engine silently.
+- `DeployModel.tsx` - "Inference service": when a machine publishes a plugin
+  service of kind `inference` (`lib/inferenceServices.ts`), a select next to
+  the mode bar offers it beside llama.cpp. Choosing it fixes the whole-model
+  mode, lists only the whole models of the architectures the service declares,
+  keeps only the machines running it in the peer strip, sends
+  `params.inference_service` with the plan and the deploy, and reduces the
+  Globais inspector to the settings the engine reads
+  (`DeploymentInspector.inferenceService`). Deploy memory is keyed per
+  service. Test: `DeployModel.service.test.tsx`.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,

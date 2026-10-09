@@ -73,7 +73,12 @@ impl Default for NetworkVisibility {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkAccessPolicy {
+    /// An admin decides each admission request.
     Authorized,
+    /// The principal approves every admission request on arrival, for a role
+    /// the network accepts. A blocked or recently rejected machine is still
+    /// refused.
+    AutoApprove,
     AnyoneWithAnchor,
     LocalOnly,
 }
@@ -176,12 +181,6 @@ pub struct NetworkSettings {
     /// Which enrollment roles the network advertises as open right now.
     #[serde(default)]
     pub accepted_enrollments: AcceptedEnrollments,
-    /// Opens the `lobby` room of the network Chat to machines that are not
-    /// members, so an admin can talk to a candidate before admitting it
-    /// (`network/network_lobby.rs`). Only takes effect on a public network
-    /// with the network Chat on.
-    #[serde(default)]
-    pub lobby_chat: bool,
     /// Publishes the served models, the node count and the total VRAM to
     /// machines that are not members, answered live by the principal
     /// (`network_lobby::PublicStats`). Only takes effect on a public network.
@@ -371,15 +370,18 @@ pub struct Config {
     /// `tls_policy`.
     #[serde(default)]
     pub tls_required: bool,
-    #[serde(default)]
+    /// HTTP/3 over QUIC for inference hops, decided by the principal. On
+    /// unless the config says otherwise.
+    #[serde(default = "default_true")]
     pub quic_enabled: bool,
     /// Coleta de logs de processo para o nó principal. A decisão é do
     /// principal e os demais nós só adotam a resposta autenticada da catraca.
     #[serde(default)]
     pub cluster_logs_enabled: bool,
-    /// Canal global de conversa, decidido pelo principal e confirmado pelos
-    /// demais nós via leitura autenticada.
-    #[serde(default)]
+    /// The network Chat, decided by the principal and confirmed by the other
+    /// nodes through an authenticated read. On unless the config says
+    /// otherwise.
+    #[serde(default = "default_true")]
     pub network_chat_enabled: bool,
     /// Nível mínimo capturado no histórico de logs do cluster. O filtro é
     /// local à captura e não altera o nível do console ou de outros sinks.

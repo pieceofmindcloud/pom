@@ -284,7 +284,24 @@ local-only notice. Routes:
   section "Local rebuild in development".
 - `/documentacao` -> Documentation (full screen; see its own section below)
 - `/redes-publicas` -> PublicNetworks, a full-bleed catalog of public networks
-  discovered through the pkarr layer. The table groups by country/city and sorts
+  discovered through the pkarr layer. Two kinds of rows stay at the top
+  whatever the filters and the order (`GET /api/ui/networks/pinned`): the
+  network this machine is in, tagged "Your network", shown even when it is
+  not public; then the private networks added on this machine, tagged
+  "Private - added here" with an amber band. "Add network" in the header
+  imports one from a JSON file holding its trust document
+  (`POST /api/ui/networks/custom`), and an added row can be removed from the
+  list. Every row has an export button that saves its trust document as
+  `<name>-trust.json`, the file another machine imports. An added network is
+  joined like a public one, through its lobby; its admin only needs discovery
+  on "Hidden", since the lobby follows discovery. The network Chat is not
+  needed to ask for admission; without it the lobby window shows no
+  conversation, only the hardware card and the request panel. In Network
+  settings, "Who can join" and "Accepting new members" appear only with
+  discovery on or hidden; "Who can join" has "Anyone without approval"
+  (`auto_approve`), which admits every request on arrival and shows a
+  warning when selected. The location (city, pin, geographic label) is
+  shown only on a public network. The table groups by country/city and sorts
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust
@@ -294,9 +311,11 @@ local-only notice. Routes:
   is empty shows a disabled "Closed" button; with a partial list Join stays
   enabled and the join dialog disables the roles that are not
   accepted. The principal edits the list in Network settings ("Accepting new
-  members"). A network with `lobby_chat` gets a "Chat" button that opens
-  `components/LobbyChat.tsx`: a conversation with that network's lobby through
-  this node, with the hardware card the network will see. The same component
+  members"). Every listed network gets a button that opens
+  `components/LobbyChat.tsx`: that network's lobby through this node, with
+  the hardware card the network will see and the admission request. The
+  conversation is shown only when that network has its Chat on; otherwise the
+  window is just the card and the request. The same component
   is used by the deprecated setup wizard, whose join step lists the federated directory
   (`PublicDirectoryPanel`), so a machine that has joined nothing can ask first;
   the list comes from the installation's relays and from the relay key or
@@ -360,8 +379,10 @@ the normal `NAV` projection.
 
 ### First access wizard
 
-**The wizard is deprecated and unreachable.** A node without a network
-creates a local one and opens the panel, and that is the only way to start.
+**This wizard is deprecated and unreachable.** It is not the first run wizard
+("First run wizard and guide" below), which runs on a configured node. A node
+without a network creates a local one and serves the interface, and that is
+the only way to start.
 `App.tsx` neither imports nor routes `routes/Setup.tsx` or
 `routes/SetupWizard.tsx`, the shell probe has no "setup" answer, and the node
 never starts the `/api/setup/*` router (`http-api.md`, "Setup routes are not
@@ -1539,35 +1560,61 @@ is also available to a node profile without administrative authority and does
 not depend on a loaded model or a Ready state: the handler stops the runtime,
 clears the deployment journal and unannounces the machine before answering.
 
-## First run guide
+## First run wizard and guide
 
-A machine that starts with no configuration creates its local network and
-opens the panel with nothing explained, so the interface walks its operator
-through the first things to do, one hint at a time
-(`components/FirstRunGuide.tsx`):
+A machine that starts with no configuration creates its local network, and
+its operator is walked through the first things to do: a wizard on a screen
+of its own, then hints on the panel. Both are one list of steps kept by the
+node (`GUIDE_STEPS` in `webui/guide.rs`), and only the `admin` profile sees
+them.
 
-1. **Name the network** - Network information, the "Public name" field. Done
-   when the network details are saved.
-2. **Name the machine** - My machine, the "Machine name" field. Done when the
-   name is saved.
-3. **Download a small model** - Find HF models. The guide fills the search
+### The wizard
+
+`components/FirstRunWizard.tsx` replaces the whole shell, past the access
+gate, while the current step is one of its two (`useFirstRunWizard` in
+`App.tsx`). It asks nothing about the kind of network: the network is the
+machine's own, and joining another one comes later, from the Networks screen.
+
+1. **Names** (`names`) - two fields on one screen. The machine name is
+   pre-filled with the name the machine goes by (the system hostname until
+   it is given one) and saved with `POST /api/ui/network/node-name`. The
+   network name is pre-filled with the name the network was created with,
+   under a warning that it is advertised to everyone if the network is made
+   public, and saved with `POST /api/ui/network/settings`, the rest of the
+   settings untouched. The step is reported only after both saves.
+2. **Follow the instructions** (`bootstrap`) - no field: it says that hints on
+   the screen point at what to do next, and its button opens the panel.
+
+Each name field has its own "Random" button that fills in a random name of two
+words and a number (`lib/randomName.ts`). Neither name may be empty, a
+failed save keeps the operator on the screen with the error, and "Back" only
+changes the screen shown. A reload resumes at the first step not done. The
+wizard draws on the `.pom-login*` / `.pom-setup*` shell of the access gate,
+with the language switch in the corner.
+
+### The hints
+
+After the wizard the panel opens and the interface points at the next things
+to do, one hint at a time (`components/FirstRunGuide.tsx`):
+
+1. **Download a small model** - Find HF models. The guide fills the search
    with `Qwen/Qwen2.5-0.5B-Instruct-GGUF` (`GUIDE_MODEL_REPO` in
    `lib/guide.ts`) once, on arrival, and the balloon follows the clicks: the
    result row, a file in the details window (Q4_K_M when listed), then the
    confirmation. While the download runs the balloon moves to the corner and
    says to wait. Done when a download of that repository finishes or the
    local catalog holds a file of that model.
-4. **Deploy the model** - Deploy to network: "Whole model", then this machine
+2. **Deploy the model** - Deploy to network: "Whole model", then this machine
    in the peer strip, then the Deploy button once it is enabled (and a "loading"
    text while the job runs). Done when the
    cluster reports an active model.
-5. **Send a first prompt** - Chat, the message field. Done when an answer
+3. **Send a first prompt** - Chat, the message field. Done when an answer
    finishes streaming.
-6. **Join another network** - the Networks screen, pointing at the first Join
+4. **Join another network** - the Networks screen, pointing at the first Join
    button. Joining ends the guide; so does "Finish", because staying on the
    machine's own network is a valid choice.
 
-Steps 3 to 5 have no save to report them, so the guide watches the node for
+The first three have no save to report them, so the guide watches the node for
 their outcome while each is the current step (`DownloadWatcher`,
 `DeployWatcher`, `ChatWatcher`). A machine that already has the model, a
 deployment or an answer passes the step at once. The download needs the
@@ -1593,18 +1640,17 @@ the startup that created the configuration from nothing sets it; a machine
 that left a network and got a fresh local one is not new, and
 `Config::prepare_for_setup` (joining or leaving a network) drops it. When the
 last step is done or the operator hides the guide the field is removed and
-the guide never comes back. The screens report a step through
-`useGuideActions().complete(...)` after their own save succeeded (`lib/guide.ts`,
-`GET|POST /api/ui/guide`). Only the `admin` profile sees it.
+the guide never comes back, and neither does the wizard. A step is reported
+through `useGuideActions().complete(...)` (`lib/guide.ts`,
+`GET|POST /api/ui/guide`).
 
 ## A machine has a single name
 
 `node_name` in `pom.json` is how the operator names the machine, and it is the
 name the node announces to peers (`Network::hostname()`). The operator sets it
 on the My machine screen ("Machine name", `POST /api/ui/network/node-name`),
-with no restart: the next announce carries it. That screen is the only place
-left to do it, because a network created at first run never shows the setup
-wizard. Without a `node_name` the machine goes by the system hostname. Every
+with no restart: the next announce carries it. The first run wizard asks for
+it through the same route. Without a `node_name` the machine goes by the system hostname. Every
 screen reads that
 name; the "Send to..." selector of `/fatias` used to read `sysmon`, the
 operating system's raw hostname, and was the only place in the app that called

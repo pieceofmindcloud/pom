@@ -77,6 +77,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the slot, not in the POM.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
+- `inferenceServices.ts` - `inferenceServicesOf` groups the `inference` services that plugins publish in `node.plugin_services` (Strata, for example) by plugin code, with the GGUF architectures the engine runs, the settings it publishes and the machines that can take a model; `serviceRunsModel` is the architecture filter the Deploy screen applies to whole models.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state
   labels, incluindo o estado `idle` distinto de `serving` e `noAir`.
@@ -621,6 +622,13 @@ would go.
   `complete` after its own save succeeded. Both are no-ops once the guide
   ended and never throw, so they cannot disturb the save that triggered them.
   `GUIDE_MODEL_REPO` is the model the guide has a new machine download.
+  `WIZARD_STEPS` and `isWizardStep` name the steps taken by the first run
+  wizard (`components/FirstRunWizard.tsx`) instead of a hint.
+
+### randomName.ts
+- `randomSlug()` - a random name of two words and a two digit number
+  (`quiet-harbor-42`), offered by the first run wizard for the machine and
+  the network.
 
 ### chatScroll.ts
 - `isNearBottom(metrics, threshold = 32)` - decides whether streaming keeps the chat pinned to the bottom.

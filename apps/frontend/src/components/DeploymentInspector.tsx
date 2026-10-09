@@ -35,6 +35,7 @@
  * ícones serrilhada. Antes do nome ela é uma coluna reta, do topo ao pé do
  * inspetor. É a mesma razão de o controle ter largura fixa à direita.
  */
+import { EngineSettingsFields } from "./EngineSettings";
 import { useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
@@ -49,7 +50,7 @@ import {
   seedText,
   withLlamaCppName,
 } from "../lib/llamaCppNames";
-import type { MtpPlacement, SidecarOption, SidecarSlot } from "../lib/types";
+import type { EngineSetting, MtpPlacement, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -349,7 +350,7 @@ const MTP_PLACEMENT_LABELS: Record<MtpPlacement, string> = {
   ram: "deploy.mtpPlacementRam",
 };
 
-function ReadValue({ children }: { children: ReactNode }) {
+export function ReadValue({ children }: { children: ReactNode }) {
   return (
     <span className="truncate text-right font-mono text-[0.65rem] text-fg">{children}</span>
   );
@@ -374,6 +375,7 @@ export function DeploymentInspector({
   /** A precisão do estado oculto só existe quando o pipeline cruza máquinas. */
   showHiddenStateDtype = false,
   pomDesenv = false,
+  inferenceService,
 }: {
   value: RuntimeParams;
   onChange?: (next: RuntimeParams) => void;
@@ -387,6 +389,10 @@ export function DeploymentInspector({
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
   pomDesenv?: boolean;
+  /** A plugin's inference service runs the whole model (Strata): only the
+   *  settings that engine reads are shown - the context, the concurrent
+   *  requests and idle unloading. The llama.cpp knobs do not reach it. */
+  inferenceService?: { name: string; settings?: EngineSetting[] };
 }) {
   const { t } = useI18n();
   /*
@@ -528,6 +534,35 @@ export function DeploymentInspector({
   const speculationAlert = chosenCapability?.state === "unknown"
     ? `${t("inspector.capabilityUnknown")} ${chosenCapability.reason}`
     : chosenCapability?.warning || undefined;
+
+  if (inferenceService) {
+    return (
+      <Section title={t("inspector.sectionInferenceService", { name: inferenceService.name })} tone="iris">
+        <p className="px-0.5 pb-1 text-[0.6rem] leading-relaxed text-muted">
+          {t("inspector.inferenceServiceNote", { name: inferenceService.name })}
+        </p>
+        {numeric("n_ctx")}
+        {numeric("max_sessions")}
+        {toggle({
+          key: "unload_if_idle",
+          label: t("deploy.unloadIfIdle"),
+          alwaysVisible: true,
+          checked: value.unload_if_idle ?? false,
+          onToggle: (next) => set({ unload_if_idle: next }),
+          tip: t("deploy.unloadIfIdleHint"),
+        })}
+        {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
+        {(inferenceService.settings?.length ?? 0) > 0 && (
+          <EngineSettingsFields
+            settings={inferenceService.settings ?? []}
+            values={value.engine_settings}
+            onChange={(next) => set({ engine_settings: next })}
+            readOnly={readOnly}
+          />
+        )}
+      </Section>
+    );
+  }
 
   return (
     <>

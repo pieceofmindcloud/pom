@@ -194,7 +194,11 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         p2p_port: state.network.bind_addr.port(),
         addr_candidates: state.network.self_addr_candidates(),
         libp2p_peer_id: state.network.libp2p_peer_id.clone(),
-        inference_frame_capabilities: {
+        inference_frame_capabilities: if let Some(caps) =
+            state.network.plugin_engine_capabilities()
+        {
+            caps
+        } else {
             let mut capabilities = vec![
                 crate::pipeline::CAP_FRAME_BATCH.to_string(),
                 crate::pipeline::CAP_FRAME_DTYPE_F8.to_string(),
@@ -2771,7 +2775,8 @@ pub(super) async fn network_chat_snapshot(
         "notices": state.network_chat.notice_snapshot(),
         "dropped": state.network_chat.dropped(),
         "room": room,
-        "lobbyEnabled": state.network_chat.lobby_enabled().await,
+        // The lobby room is read through the network Chat.
+        "lobbyEnabled": state.network_chat.enabled() && state.network_chat.lobby_enabled().await,
         // Candidates talking in the lobby, with the hardware they declared.
         "lobbyGuests": state
             .network_chat

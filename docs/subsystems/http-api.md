@@ -65,10 +65,12 @@ last):
   view includes `accepted_enrollments`, the list of enrollment roles (`node`,
   `infer`) the network advertises as open; an empty list means it is not
   accepting new members. It is edited by the principal through `POST
-  /api/ui/network/settings` and is advisory - no route enforces it. `lobby_chat`
-  is `true` while the network answers lobby chat from non-members (the
-  `network.lobby_chat` switch and the network Chat are both on), and
-  `public_stats` says it publishes models, node count and VRAM.
+  /api/ui/network/settings` and is advisory - no route enforces it. Every
+  listed network answers its lobby to non-members (the network Chat only adds
+  the conversation, and a lobby answer says `messages_closed: true` without
+  it). `access_policy` is `authorized`, `auto_approve` (admission requests are
+  approved on arrival) or `local_only`; `public_stats` says the network
+  publishes models, node count and VRAM.
 - **Lobby, candidate side** (`webui/lobby.rs`): `GET
   /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`
   (`{key, message_id, text}`) make this node talk to **another** network's
@@ -94,6 +96,20 @@ last):
   networks it hears through gossip even when its own network is not public.
   On every node that route also merges what its relays answer to `Directory`,
   which is the only source for a node with discovery off.
+- **Pinned networks**: `GET /api/ui/networks/pinned` (every profile, behind
+  the operator session) answers `{own, custom}`: the network this node is in
+  whatever its visibility, and the networks imported on this machine. Each
+  entry is `{network, visibility}`, `network` in the shape of
+  `/api/public/networks` with `discovered_via: "custom"` for an imported one.
+  `POST /api/ui/networks/custom` takes `{trust_document}` (the JSON text of a
+  trust document), validates its signatures and stores it in `pom.db`; a
+  refusal carries `reason`: `invalid_document` (400), `own_network` or
+  `too_many` (409, at most 64). Importing a known network again replaces its
+  copy. `DELETE /api/ui/networks/custom/:fingerprint` forgets one (404 when
+  unknown). Importing joins nothing and never touches the trust root:
+  admission is still asked through the lobby. An imported entry only knows
+  what the document signs (name at creation, organization, access policy,
+  relay keys), and is assumed to have its lobby open.
 - **Published stats of another network**: `GET
   /api/ui/network-chat/lobby/info?key=pk:...` asks that network's principal for `{models, node_count,
   vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with
@@ -669,6 +685,17 @@ confirms the model is loaded; during a restart, the previous announcement is
 withdrawn. An idle peer chosen by the plan is woken by `reload_model` before
 generation and the request waits for its `/health`; the planned idle peers are
 woken in parallel, with a 15-minute ceiling for the barrier.
+A model served by a plugin's inference service (`inference.md`, section 7.1)
+runs through `POST /api/internal/plugins/:code/engine/generate` on the machine
+that serves it: a signed call from a live peer, whose NDJSON answer streams
+back from the plugin's loopback generation server. When the model is split
+across machines on such a service, the machine of a later slice reaches the
+earlier one through `GET /api/internal/plugins/:code/engine/link/:deploy`
+(the stage's link secret) and
+`POST /api/internal/plugins/:code/engine/link/:deploy/:conn` (one frame of the
+engines' stage link, up to 64 MiB, the answer frame as the body; an empty body
+closes the connection). Both take only a signed call from the live peer that
+serves the next slice of that deployment.
 `POST /api/internal/reload_model` answers at once with `state: "loading"` or
 `"ready"` (503 with `error` when the load cannot happen) and the gateway
 repeats it until every peer is ready. A live peer on an
@@ -916,8 +943,9 @@ stays in the trace), `chat/history` (authenticated GET/POST/DELETE for the
 durable conversation history), `dev/update` + `dev/restart`,
 `guide` (the first run guide, open to every profile: GET answers `{active,
 steps, done}`; POST takes `{done: "<step>"}` for a step done or skipped, or
-`{dismiss: true}`, and answers the new state. The steps are `network_name`,
-`machine_name`, `download_model`, `deploy_model`, `chat` and `join`; the progress is `first_run_guide` in `pom.json`,
+`{dismiss: true}`, and answers the new state. The steps are `names`
+and `bootstrap` (the first run wizard), then `download_model`,
+`deploy_model`, `chat` and `join` (the hints); the progress is `first_run_guide` in `pom.json`,
 removed when the last step is done or the guide is dismissed, after which
 both calls answer `active: false`. An unknown step is 400),
 `network/advertise-addr`, `network/node-name` (POST `{node_name}`, at most 64
@@ -975,7 +1003,9 @@ node) and use `ConnectionAuth`:
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds the local plugin without requiring an existing
   activation. These two routes stay AdminOnly. The server validates the paths,
-  only uses fixed Cargo commands and does not return the build's stdout/stderr.
+  only uses fixed Cargo commands plus the rebuild steps the plugin's manifest
+  declares (`development.rebuild`, scripts inside the source; see
+  `plugins-ui.md`) and does not return the build's stdout/stderr.
   A development-only install has no licensed features; rebuilding an existing
   licensed or GitHub install preserves that install's entitlement and never
   activates a license.

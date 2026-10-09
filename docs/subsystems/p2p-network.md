@@ -1276,7 +1276,8 @@ operator can flip it as often as they want.
 
 ### 5.1 Optional QUIC for inference
 
-`Config.quic_enabled` is a network-wide preference, off by default and only
+`Config.quic_enabled` is a network-wide preference, on by default (a new
+network starts with it, and a config without the field reads as on) and only
 editable by the principal at `POST /api/ui/network/quic`. The announcement
 carries `quic` only as a trigger: the peer confirms the value at
 `GET /api/cluster/quic`, authenticated by the `connection_key`, exactly like
@@ -1408,7 +1409,9 @@ strips the secret and carries `relayed: true`; a node that is not the principal
 does not accept that frame as an origin. A file stays within the protocol's
 frame limit and is not stored outside each node's local database.
 
-`network_chat_enabled` in the `Announce` is a trigger, never a value. The
+`network_chat_enabled` is on by default, like `quic_enabled`: a new network
+starts with its Chat, and the principal can turn it off. In the `Announce` it
+is a trigger, never a value. The
 `POST /api/ui/network/chat` switch writes the authoritative configuration on the
 real principal, whose `pubkey` comes from `AdminTrust`, and updates
 the announced atomic copy. When the UI is on a secondary admin, the same route
@@ -1443,13 +1446,27 @@ version policy).
 
 ### 6.1 Lobby: talking to a network before joining it
 
-A public network can open the `lobby` room of its Chat to machines that are
-**not** members, so an admin can talk to a candidate before admitting it. The
-code is `network/network_lobby.rs`; the switch is `network.lobby_chat`, off by
-default, and it only takes effect on a public network with the network Chat on
-(`NetworkChat::lobby_enabled`). The public directory record and
-`PublicNetworkView` carry `lobby_chat` so the directory only offers the chat
-where it will be answered.
+A network answers machines that are **not** members in its lobby, which is
+where they ask to be admitted and where an admin can talk to a candidate
+first. The code is `network/network_lobby.rs`. There is no switch: the lobby
+is the only way into a network, so it exists whenever discovery is on
+(`public` or `private`, never `local`; `NetworkChat::lobby_enabled`). It does
+not depend on the network Chat. With the Chat off the lobby still answers and
+takes admission requests; only the conversation is closed: a post is refused
+with `lobby_messages_closed`, no presence is relayed to members, and the
+answers to `Post`, `Fetch` and `Admission` carry `messages_closed: true`, on
+which the candidate's window shows no conversation at all.
+
+Who decides a request is `network.access_policy`. Under `authorized` an admin
+approves it from the bell. Under `auto_approve` the principal approves it on
+arrival (`NetworkChat::auto_approves`, applied in the lobby handler of
+`discovery.rs`): the role still has to be one of `accepted_enrollments`, a
+blocked machine is still refused, and a machine an admin rejected still waits
+out its retry time. The candidate then collects the grant like any approved
+one. A
+`private` network is listed by no relay: a candidate reaches its lobby by the
+principal's key, taken from the trust document its admin exported and the
+candidate imported on the Networks screen (`webui/networks.rs`).
 
 A candidate has no API key, no announce and no admission, so the star's
 credential does not apply. Its own request/response protocol is
@@ -1689,7 +1706,7 @@ an entry only when its trust document matches its fingerprint and
 `cluster_id`, and derives the publisher key from that document
 (`gateway::validated_listed_network`). A relay can omit a network; it cannot
 forge one or point it at another key. The descriptive fields (name, city,
-`lobby_chat`, `public_stats`) are as the answering node reports them.
+`public_stats`) are as the answering node reports them.
 
 Which relays a fresh installation asks: `DEFAULT_DIRECTORY_RELAYS`
 (`network_lobby.rs`, one relay key today), the `POM_DIRECTORY_RELAYS` environment

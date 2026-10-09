@@ -1,8 +1,10 @@
 import {
+  Activity,
   Blocks,
   BookOpen,
   Boxes,
   ChartNoAxesColumn,
+  Cpu,
   FolderTree,
   Gauge,
   Globe2,
@@ -163,6 +165,8 @@ const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   "folder-tree": FolderTree,
   send: Send,
   "messages-square": MessagesSquare,
+  cpu: Cpu,
+  activity: Activity,
 };
 
 function pluginIcon(name?: string | null): LucideIcon {

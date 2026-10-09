@@ -73,7 +73,7 @@ vi.mock("../lib/queries", () => ({
       rag_collections: ragScenario.collections,
     },
   }),
-  useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
+  useServableModels: () => ({ data: [{ id: "qwen", context_length: 4, max_tokens: 3 }] }),
   useInferenceHeads: () => headQuery,
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: () => [],
@@ -234,6 +234,14 @@ describe("Chat", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
 
     await waitFor(() => expect(streamScenario.lastBody?.inference_head).toBe("salem"));
+  });
+
+  it("pede a capacidade de saída do modelo, não o tamanho de uma perna da implantação", async () => {
+    mountChat();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    // /v1/models diz 3; o max_new_tokens da implantação (64) é só a perna.
+    await waitFor(() => expect(streamScenario.lastBody?.max_tokens).toBe(3));
   });
 
   it("envia o toggle Think por inferência e mantém a escolha na conversa", async () => {

@@ -174,10 +174,6 @@ pub(crate) struct PublicNetworkView {
     /// accepting new members and the directory disables its join button.
     #[serde(default)]
     pub accepted_enrollments: crate::config::AcceptedEnrollments,
-    /// The network answers lobby chat from non-members right now (the
-    /// operator's switch and the network Chat are both on).
-    #[serde(default)]
-    pub lobby_chat: bool,
     /// The network publishes models, node count and VRAM to non-members,
     /// asked live from its principal.
     #[serde(default)]
@@ -247,7 +243,6 @@ fn directory_network_from_view(
         geo_label: view.geo_label.clone(),
         access_policy: view.access_policy,
         accepted_enrollments: view.accepted_enrollments.clone(),
-        lobby_chat: view.lobby_chat,
         public_stats: view.public_stats,
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
@@ -280,7 +275,6 @@ fn view_from_directory_record(
         geo_label: network.geo_label,
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments,
-        lobby_chat: network.lobby_chat,
         public_stats: network.public_stats,
         location: network.location,
         discovered_via: "directory".to_string(),
@@ -670,11 +664,19 @@ pub(super) async fn accept_public_directory_record(
 }
 
 async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView> {
-    let (visibility, configured_network) = {
-        let config = state.auth.read().await;
-        (config.network.visibility, config.network.clone())
-    };
-    if visibility != crate::config::NetworkVisibility::Public || !state.admin_trust.is_anchored() {
+    let visibility = state.auth.read().await.network.visibility;
+    if visibility != crate::config::NetworkVisibility::Public {
+        return None;
+    }
+    local_network_view(state).await
+}
+
+/// The network this node is in, whatever its visibility, in the shape the
+/// listings use. Only the operator's own screen may show it: what goes out to
+/// other machines is [`local_public_network`].
+pub(crate) async fn local_network_view(state: &GatewayState) -> Option<PublicNetworkView> {
+    let configured_network = state.auth.read().await.network.clone();
+    if !state.admin_trust.is_anchored() {
         return None;
     }
     let network = state
@@ -709,7 +711,6 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
-        lobby_chat: network.lobby_chat && state.network_chat.enabled(),
         public_stats: network.public_stats,
         // Already reduced to the precision the admin chose; `accuracy_m` is
         // what tells a viewer the point is approximate.
@@ -776,7 +777,7 @@ fn listed_publishers() -> &'static std::sync::Mutex<std::collections::HashMap<St
 /// locate route answers for every row of the screen. A node on its own local
 /// network hears no announce: its list comes from the relays and is stored
 /// nowhere else.
-pub(super) fn remember_listed_publishers(networks: &[PublicNetworkView]) {
+pub(crate) fn remember_listed_publishers(networks: &[PublicNetworkView]) {
     let now = Instant::now();
     let mut listed = listed_publishers().lock().expect("listed publishers lock");
     listed.retain(|_, seen| now.duration_since(*seen) < LISTED_PUBLISHER_TTL);

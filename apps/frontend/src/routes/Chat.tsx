@@ -973,7 +973,11 @@ function ChatScreen() {
       history,
       replyId: reply.id,
       model,
-      maxTokens: node.data?.config?.max_new_tokens,
+      // The answer's whole budget is the model's output capacity (`/v1/models`);
+      // the deployment's `max_new_tokens` is only the size of one backend leg,
+      // and as the total it cut a reasoning model off before it answered.
+      maxTokens:
+        models.data?.find((entry) => entry.id === model)?.max_tokens ?? node.data?.config?.max_new_tokens,
       inferenceHead: selectedInferenceHead ?? undefined,
       thinkingEnabled,
       ragEnabled: ragAvailable ? ragEnabled : undefined,

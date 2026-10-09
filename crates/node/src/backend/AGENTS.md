@@ -1160,8 +1160,9 @@ faz o download autenticado do blob persistido.
   `pk:` key and `relay_hints` for the no-secret join flow - never an address.
   The view also carries `accepted_enrollments` (roles open to new members;
   empty = closed), which the directory screen uses to disable joining. It is
-  advisory: no route refuses a join because of it. `lobby_chat` says the
-  network answers lobby chat from non-members right now.
+  advisory: no route refuses a join because of it. Every listed network
+  answers its lobby to non-members (admission requests; the conversation
+  also needs the network Chat on).
   `webui/lobby.rs` is the candidate's side of the lobby over HTTP
   (`/api/ui/network-chat/lobby` behind the operator session, `/api/setup/lobby`
   on the setup router) and `setup_public_networks`, the directory-only listing
@@ -1214,11 +1215,22 @@ faz o download autenticado do blob persistido.
   inference ports, the admin surface's node-to-node path and `/handshake` in
   `session.rs` - accepts the key being replaced while its grace lasts, and
   every sender goes through `internal_node_token`.
+  `webui/networks.rs` is the operator's own list on the Networks screen
+  (`/api/ui/networks/*`): `pinned_networks` answers this node's network
+  whatever its visibility (`gateway::local_network_view`; what other
+  machines get is still `local_public_network`, public only) and the imported
+  ones, `import_document` validates a trust document with
+  `admin_trust::parse_transported` and keeps it in `PomDb::custom_networks`,
+  and `network_from_trust_document` is all an imported entry knows. It joins
+  nothing. The lobby answers on a hidden network too
+  (`NetworkChat::lobby_enabled`), which is what makes an imported network
+  joinable.
   `webui/guide.rs` keeps the first run guide's progress
   (`Config::first_run_guide`) behind `GET|POST /api/ui/guide`:
   `advance_guide` marks a step done, ends the guide with the last one or on
-  dismissal, and refuses an unknown step. Where the hints point is the
-  interface's business (`docs/subsystems/web-ui.md`, "First run guide").
+  dismissal, and refuses an unknown step. The first two steps (`names`, `bootstrap`) are the
+  first run wizard and the rest are hints; what each shows is the
+  interface's business (`docs/subsystems/web-ui.md`, "First run wizard and guide").
   `webui/setup.rs::bootstrap_local_network` is what a node without a network
   runs at startup (`main.rs`); there is no other way to start. A trust root
   found without its configuration is moved to `setup-backups/<date>/`

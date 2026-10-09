@@ -524,6 +524,9 @@ deploy.include,Include {range},Incluir {range}
 deploy.included,Included,Entra
 deploy.incomplete,The selected shards do not cover the full model,As fatias escolhidas não cobrem o modelo inteiro
 deploy.incompleteDetail,"It can start this way, but the planner rejects a pipeline with a gap. The network does not serve until coverage is complete.","Dá para subir assim, mas o planejador recusa pipeline com buraco. A rede não atende até a cobertura fechar."
+deploy.inferenceService,Inference service,Serviço de inferência
+deploy.inferenceServiceHint,"Who runs the model: llama.cpp (the POM pipeline) or the engine of a plugin. With a plugin's engine, only the models of the architectures it runs are offered.","Quem roda o modelo: o llama.cpp (a pipeline do POM) ou o motor de um plugin. Com o motor de um plugin, só aparecem os modelos das arquiteturas que ele roda."
+deploy.inferenceServiceLlama,llama.cpp,llama.cpp
 deploy.inferred,(inferred),(deduzidas)
 deploy.inferredDetail,The total was inferred from shard coverage: {count} layers.,O total foi deduzido da cobertura das fatias: {count} camadas.
 deploy.inferredTitle,Shards do not state the model size,As fatias não dizem de que tamanho é o modelo
@@ -946,6 +949,22 @@ firstRun.stepInvite,Invite,Convite
 firstRun.stepJoin,Join,Entrar
 firstRun.stepNetwork,Network,Rede
 firstRun.stepStart,Start,Início
+firstWizard.continue,Continue,Continuar
+firstWizard.failed,Could not save: {error},Não foi possível salvar: {error}
+firstWizard.guideDetail,"This machine now runs a network of its own. Next, hints on the screen point at what to click, one at a time: download a small model, deploy it and send a first message. Follow the instructions on screen.","Esta máquina agora tem uma rede própria. A seguir, dicas na tela apontam onde clicar, uma de cada vez: baixar um modelo pequeno, implantá-lo e enviar uma primeira mensagem. Siga as instruções na tela."
+firstWizard.guideTitle,Follow the instructions on screen,Siga as instruções na tela
+firstWizard.machineDetail,How other machines see this one.,Como as outras máquinas veem esta.
+firstWizard.machineLabel,Machine name,Nome da máquina
+firstWizard.namesDetail,Every machine starts with a network of its own. Name both; you can change them later.,Toda máquina começa com uma rede própria. Dê um nome às duas; você pode mudar depois.
+firstWizard.namesTitle,Name this machine and its network,Dê um nome a esta máquina e à rede dela
+firstWizard.networkDetail,The network this machine has just created.,A rede que esta máquina acabou de criar.
+firstWizard.networkLabel,Network name,Nome da rede
+firstWizard.networkWarning,"If you decide to make this network public, this name is advertised to everyone.","Se você decidir tornar esta rede pública, este nome será anunciado a todos."
+firstWizard.random,Random,Aleatório
+firstWizard.randomTitle,Generate a random name,Gerar um nome aleatório
+firstWizard.start,Start,Começar
+firstWizard.stepGuide,Hints,Dicas
+firstWizard.stepNames,Names,Nomes
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil
@@ -971,12 +990,6 @@ guide.hide,Hide these hints,Ocultar estas dicas
 guide.joinGo,Open Networks to see the networks you can join.,Abra Redes para ver as redes em que você pode entrar.
 guide.joinHere,"Pick a network and ask to join it; its administrator approves the request. Staying on your own network is fine too.","Escolha uma rede e peça para entrar; o administrador dela aprova o pedido. Ficar só na sua rede também serve."
 guide.joinTitle,Join another network,Entre em outra rede
-guide.machineGo,"Open Network, then My machine.","Abra Rede e depois Minha máquina."
-guide.machineHere,Type how other machines should see this one and save.,Digite como as outras máquinas devem ver esta e salve.
-guide.machineTitle,Name this machine,Dê um nome a esta máquina
-guide.networkGo,"Open Network, then Network information.","Abra Rede e depois Informações da rede."
-guide.networkHere,"Your network was created with this machine's name. Give it a name of its own and save.","Sua rede foi criada com o nome desta máquina. Dê a ela um nome próprio e salve."
-guide.networkTitle,Name your network,Dê um nome à sua rede
 guide.progress,Step {current} of {total},Passo {current} de {total}
 guide.skip,Skip this step,Pular este passo
 huggingFace.clear,Remove saved token,Remover token salvo
@@ -1004,11 +1017,15 @@ inspector.capabilityUnknown,Capability not confirmed. Turning it on is at the op
 inspector.engine.auto,Automatic,Automático
 inspector.engine.dense,llama.cpp,llama.cpp
 inspector.engine.moe,MoE,MoE
+inspector.engineDefault,Engine default,Padrão do motor
+inspector.engineOff,Off,Desligado
+inspector.engineOn,On,Ligado
 inspector.fitMemory,Fit to memory,Ajustar à memória
 inspector.guideBack,Back to the guide,Voltar ao guia
 inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}
 inspector.inferenceMode,Inference engine,Motor de inferência
 inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
+inspector.inferenceServiceNote,"{name} runs the whole model on the chosen machine, on all of its NVIDIA cards. The context and the concurrent requests are passed to it; the llama.cpp settings do not apply.","O {name} roda o modelo inteiro na máquina escolhida, em todas as placas NVIDIA dela. O contexto e as requisições simultâneas são repassados a ele; as configurações do llama.cpp não se aplicam."
 inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
 inspector.knob.dry_base,DRY base,DRY: base
 inspector.knob.dry_multiplier,DRY multiplier,DRY: multiplicador
@@ -1042,6 +1059,7 @@ inspector.noThinking,Disable thinking,Desativar thinking
 inspector.readOnly,Read only,Somente leitura
 inspector.sectionBeta,Beta,Beta
 inspector.sectionDefaults,Default settings,Configurações padrões
+inspector.sectionInferenceService,{name} settings,Configurações do {name}
 inspector.sectionPom,POM settings,Configurações POM
 inspector.sectionPomDev,POM settings (DEV),Configurações POM (DESENV)
 jobs.emptyDetail,"Slicing and model-assignment jobs appear here while running, and for ten minutes after they finish.",Fatiamentos e atribuições de modelo aparecem aqui enquanto rodam e por dez minutos depois de terminarem.
@@ -1139,6 +1157,7 @@ lobby.admissionStanding,This machine was already admitted to this network as {ro
 lobby.candidate,candidate,candidato
 lobby.candidates,{count} in the lobby,{count} no lobby
 lobby.cardNote,This card goes with every message so the network can judge whether your machine fits.,Este cartão acompanha cada mensagem para a rede avaliar se a sua máquina serve.
+lobby.cardNoteRequest,This card goes with your request so the network can judge whether your machine fits.,Este cartão acompanha o seu pedido para a rede avaliar se a sua máquina serve.
 lobby.connecting,Reaching the network...,Conectando à rede...
 lobby.connection,Connection,Conexão
 lobby.connectionDirect,direct connection,conexão direta
@@ -1150,7 +1169,7 @@ lobby.detail,You are talking to this network before joining it. Its members read
 lobby.empty,No messages yet. Introduce yourself to the network.,Nenhuma mensagem ainda. Apresente-se à rede.
 lobby.emptyMember,Machines that have not joined yet write here before asking to be admitted.,Máquinas que ainda não entraram escrevem aqui antes de pedir admissão.
 lobby.errorBlocked,This network blocked this machine.,Esta rede bloqueou esta máquina.
-lobby.errorDisabled,This network is not accepting lobby chat right now.,Esta rede não está aceitando conversa no lobby no momento.
+lobby.errorDisabled,This network cannot be reached for admission right now.,Esta rede não pode ser alcançada para admissão no momento.
 lobby.errorFull,The lobby is full. Try again later.,O lobby está cheio. Tente novamente mais tarde.
 lobby.errorMember,This machine is already a member of this network. Use the network chat.,Esta máquina já é membro desta rede. Use o chat da rede.
 lobby.errorRate,Too many messages. Wait a moment and try again.,Mensagens demais. Aguarde um instante e tente de novo.
@@ -1165,6 +1184,7 @@ lobby.joinNow,Join now,Entrar agora
 lobby.joinTitle,Join {name}?,Entrar em {name}?
 lobby.latency,{value} ms,{value} ms
 lobby.member,member,membro
+lobby.messagesClosed,This network has its lobby conversation off. You can still ask to join it.,Esta rede está com a conversa do lobby desligada. Você ainda pode pedir para entrar.
 lobby.noCandidates,Nobody is in the lobby right now.,Ninguém está no lobby agora.
 lobby.noGpu,No GPU reported,Nenhuma GPU informada
 lobby.placeholder,Write to the lobby of this network…,Escreva para o lobby desta rede…
@@ -1295,9 +1315,11 @@ nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
 network.acceptedEnrollments,Accepting new members,Aceitando novos membros
-network.acceptedEnrollmentsHint,"Advertised in the public directory. With none selected the network shows as closed and nobody can start joining it from there. Current members are not affected.","Anunciado no diretório público. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue iniciar a entrada por lá. Os membros atuais não são afetados."
+network.acceptedEnrollmentsHint,"The roles a machine may ask to join with. With none selected the network shows as closed and nobody can ask to join it. Current members are not affected.","Os papéis com que uma máquina pode pedir para entrar. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue pedir para entrar. Os membros atuais não são afetados."
 network.accessAnyoneWithAnchor,Anyone with the trust root (legacy),Qualquer pessoa com a raiz de confiança (legado)
 network.accessAuthorized,Approved by an admin,Aprovados por um administrador
+network.accessAutoApprove,Anyone without approval,Qualquer um sem aprovação
+network.accessAutoApproveWarning,"Every machine that asks to join is admitted at once, with no admin looking at it, and receives the connection key of this network. Anyone who finds the network, or holds its trust document, can become a member, use its models and see its nodes. Blocked machines are still refused. Use this only on a network you are ready to open to strangers.","Toda máquina que pedir para entrar é admitida na hora, sem um administrador olhar, e recebe a chave de conexão desta rede. Qualquer um que encontre a rede, ou tenha o documento de confiança, pode virar membro, usar os modelos e ver os nós. Máquinas bloqueadas continuam recusadas. Use isto só numa rede que você está pronto para abrir a desconhecidos."
 network.accessLocalOnly,This machine only,Apenas esta máquina
 network.accessPolicy,Who can join,Quem pode entrar
 network.addrEffective,Currently advertising,Anunciando agora
@@ -1406,11 +1428,6 @@ network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
-network.lobbyChat,Lobby chat,Chat de lobby
-network.lobbyChatEnable,Accept messages from machines that are not members,Aceitar mensagens de máquinas que não são membros
-network.lobbyChatHint,Lets a machine that has not joined talk to this network before being admitted. Members see its messages and declared hardware in the Lobby room of the network chat. Needs a public network with the network chat on.,Permite que uma máquina que ainda não entrou converse com esta rede antes de ser admitida. Os membros veem as mensagens e o hardware declarado na sala Lobby do chat da rede. Exige rede pública com o chat da rede ligado.
-network.lobbyChatOff,Closed,Fechado
-network.lobbyChatOn,Open,Aberto
 network.location,Location,Localização
 network.locationCoordinates,"{latitude}, {longitude}","{latitude}, {longitude}"
 network.logsDisable,Turn logs off,Desligar logs
@@ -1481,7 +1498,7 @@ network.publicNameRequired,Required for a public network,Obrigatório para uma r
 network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
 network.publicStats,Published stats,Dados publicados
 network.publicStatsEnable,"Publish served models, node count and total VRAM","Publicar modelos servidos, número de nós e VRAM total"
-network.publicStatsHint,"Shown in the public directory to machines that have not joined. They are asked live from this node, so they are only available while it is online. Needs a public network.","Aparecem no diretório público para máquinas que ainda não entraram. São consultados ao vivo neste nó, então só ficam disponíveis enquanto ele está online. Exige rede pública."
+network.publicStatsHint,"Shown in the public directory to machines that have not joined. They are asked live from this node, so they are only available while it is online.","Aparecem no diretório público para máquinas que ainda não entraram. São consultados ao vivo neste nó, então só ficam disponíveis enquanto ele está online."
 network.publicStatsOff,Not published,Não publicados
 network.publicStatsOn,Published,Publicados
 network.quicDisable,Turn QUIC off,Desligar QUIC
@@ -1591,7 +1608,7 @@ network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
 network.visibility,Discovery,Descoberta
 network.visibilityLocal,Off - this machine only,Desligada - só esta máquina
-network.visibilityPrivate,Hidden - announced but not listed (nobody can find it),Oculta - anunciada mas não listada (ninguém a encontra)
+network.visibilityPrivate,Hidden - not listed; joined by importing its trust document,Oculta - não listada; entra-se importando o documento de confiança
 network.visibilityPublic,On - other machines can find it and ask to join,Ligada - outras máquinas a encontram e pedem para entrar
 networkChat.attach,Attach a file,Anexar arquivo
 networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
@@ -1917,6 +1934,8 @@ profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
 publicNetworks.action,Action,Ação
+publicNetworks.add,Add network,Adicionar rede
+publicNetworks.addDetail,"Add a private network from its trust document, a JSON file its administrator exports.","Adicione uma rede privada a partir do documento de confiança, um arquivo JSON que o administrador dela exporta."
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.browserLocationDenied,The browser did not share its location.,O navegador não compartilhou a localização.
@@ -1939,14 +1958,20 @@ publicNetworks.distanceFromNetwork,Distances are measured from your network's lo
 publicNetworks.distanceFromNone,"To see distances, set your network's location or use the browser's.","Para ver distâncias, defina a localização da sua rede ou use a do navegador."
 publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
 publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
+publicNetworks.exportTrust,Export the trust document of {name},Exportar o documento de confiança de {name}
+publicNetworks.exportTrustDetail,Export the trust document so another machine can add this network,Exportar o documento de confiança para que outra máquina adicione esta rede
 publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
+publicNetworks.importDone,Network added,Rede adicionada
+publicNetworks.importFailed,Could not add the network,Não foi possível adicionar a rede
 publicNetworks.join,Talk and ask to join,Conversar e pedir para entrar
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
 publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
 publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
+publicNetworks.kindCustom,Private · added here,Privada · adicionada aqui
+publicNetworks.kindOwn,Your network,Sua rede
 publicNetworks.latency,Average latency,Latência média
 publicNetworks.latencyChecking,measuring...,medindo...
 publicNetworks.latencyFailed,no answer,sem resposta
@@ -1956,8 +1981,6 @@ publicNetworks.locationNote,"Each network's city and country come from the coord
 publicNetworks.measureLatency,Measure latency,Medir latência
 publicNetworks.models,Served models,Modelos servidos
 publicNetworks.name,Public name,Nome público
-publicNetworks.noLobby,No lobby,Sem lobby
-publicNetworks.noLobbyDetail,"This network has not opened its lobby, so it cannot be asked for admission from here.","Esta rede não abriu o lobby, então não é possível pedir admissão por aqui."
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
 publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
 publicNetworks.nodes,Nodes,Nós
@@ -1973,12 +1996,17 @@ publicNetworks.reachUnknown,Could not check,Não foi possível verificar
 publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
 publicNetworks.relayHints,Dedicated relays,Relés dedicados
+publicNetworks.remove,Remove from the list,Remover da lista
+publicNetworks.removeDescription,"{name} leaves this machine's list. Nothing changes on that network, and its trust document can be imported again.","{name} sai da lista desta máquina. Nada muda naquela rede, e o documento de confiança pode ser importado de novo."
+publicNetworks.removeFailed,Could not remove the network,Não foi possível remover a rede
+publicNetworks.removeNamed,Remove {name} from the list,Remover {name} da lista
+publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede da lista?
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
 publicNetworks.sort,Sort by,Ordenar por
 publicNetworks.sortDistance,Closest first,Mais próximas primeiro
 publicNetworks.sortLatency,Lowest latency first,Menor latência primeiro
 publicNetworks.sortName,Name,Nome
-publicNetworks.subtitle,Networks you can talk to and ask to join. The list comes from the relays this node knows.,Redes com as quais você pode conversar e pedir para entrar. A lista vem dos relés que este nó conhece.
+publicNetworks.subtitle,"Networks you can talk to and ask to join. Public ones come from the relays this node knows; a private one is added from its trust document.","Redes com as quais você pode conversar e pedir para entrar. As públicas vêm dos relés que este nó conhece; uma privada é adicionada pelo documento de confiança."
 publicNetworks.title,Networks,Redes
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida

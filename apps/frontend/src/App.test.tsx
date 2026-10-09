@@ -47,6 +47,10 @@ vi.mock("./lib/queries", () => ({
 vi.mock("./components/Notifications", () => ({ Notifications: () => null }));
 vi.mock("./components/Sidebar", () => ({ Sidebar: () => <aside data-testid="admin-sidebar" /> }));
 vi.mock("./components/FirstRunGuide", () => ({ FirstRunGuide: () => null }));
+vi.mock("./components/FirstRunWizard", () => ({
+  FirstRunWizard: () => null,
+  useFirstRunWizard: () => ({ loading: false, step: null }),
+}));
 vi.mock("./components/Topbar", () => ({ Topbar: () => <header data-testid="admin-topbar" /> }));
 vi.mock("./components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,

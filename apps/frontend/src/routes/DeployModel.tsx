@@ -62,6 +62,7 @@ import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspe
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
+import { inferenceServicesOf, serviceRunsModel } from "../lib/inferenceServices";
 import {
   Badge,
   Button,
@@ -69,6 +70,7 @@ import {
   Input,
   Select,
   Skeleton,
+  Tabs,
 } from "../components/ui";
 import type {
   DeployKind,
@@ -353,10 +355,11 @@ export function DeployModel() {
     setCacheTypesLoaded(true);
   }, [cacheTypes.data, cacheTypesLoaded]);
   /** Every slicing round anyone in the cluster holds, named once. */
-  const groups = useMemo(() => {
+  const allGroups = useMemo(() => {
     const seen = new Map<string, {
       key: string;
       label: string;
+      architecture: string | null;
       pomId: string;
       mmprojPath: string | null;
       mmprojCandidates: string[];
@@ -374,6 +377,7 @@ export function DeployModel() {
             existing.mmprojCandidates.push(set.mmproj_path);
           }
           if (!existing.mmprojReason && set.mmproj_reason) existing.mmprojReason = set.mmproj_reason;
+          existing.architecture ??= set.shards.find((shard) => shard.architecture)?.architecture ?? null;
         } else {
           const mmprojCandidates = [...(set.mmproj_candidates ?? [])];
           if (set.mmproj_path && !mmprojCandidates.includes(set.mmproj_path)) {
@@ -382,6 +386,7 @@ export function DeployModel() {
           seen.set(set.group, {
             key: set.group,
             label: set.model_label || set.group,
+            architecture: set.shards.find((shard) => shard.architecture)?.architecture ?? null,
             pomId: set.pom_id ?? "",
             mmprojPath: set.mmproj_path ?? null,
             mmprojCandidates,
@@ -396,12 +401,32 @@ export function DeployModel() {
   /** Only disambiguate repeated model labels in the picker. */
   const duplicateGroupLabels = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const item of groups) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+    for (const item of allGroups) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
     return counts;
-  }, [groups]);
+  }, [allGroups]);
 
-  /** Every un-sliced model anyone in the cluster holds, named once. */
-  const wholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
+  /** Whole-model inference services plugins offer (Strata, ...). */
+  const inferenceServices = useMemo(
+    () => inferenceServicesOf(liveCluster.data?.peers),
+    [liveCluster.data],
+  );
+  /** `""` is POM's own engine (llama.cpp); otherwise the plugin code of the
+   *  inference service that runs the whole model. */
+  const [serviceCode, setServiceCode] = useState("");
+  const service = inferenceServices.find((entry) => entry.code === serviceCode) ?? null;
+  /** Every un-sliced model anyone in the cluster holds, named once - with an
+   *  inference service, only the models its engine runs. */
+  const allWholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
+  const wholes = useMemo(
+    () => (service ? allWholes.filter((entry) => serviceRunsModel(service, entry.architecture)) : allWholes),
+    [allWholes, service],
+  );
+  /** The slicing rounds on offer - with an inference service, only those of
+   *  the architectures its engine runs. */
+  const groups = useMemo(
+    () => (service ? allGroups.filter((entry) => serviceRunsModel(service, entry.architecture)) : allGroups),
+    [allGroups, service],
+  );
   const tensorGroups = useMemo(
     () => tensorParallelModelsOf(cluster.data?.peers),
     [cluster.data],
@@ -413,8 +438,9 @@ export function DeployModel() {
    * screen that looks like a broken deploy page rather than an unanswered
    * question. The operator's own choice always wins once made.
    */
-  const kind: DeployKind =
-    pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
+  const kind: DeployKind = service
+    ? service.stages && pickedKind === "shards" ? "shards" : "whole"
+    : pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
   const isWhole = kind === "whole";
   const isTp = kind === "tensor_parallel";
   const tpGroup = useMemo(
@@ -474,7 +500,7 @@ export function DeployModel() {
    * other's machines would open the screen on a plan nobody chose.
    */
   const memoryKey = isWhole
-    ? `whole:${chosen}`
+    ? `whole:${service ? `${service.code}:` : ""}${chosen}`
     : isTp
       ? `tensor:${chosen}:${tpGroup?.tp_size ?? tp.worker_node_ids.length + 1}`
       : chosen;
@@ -513,6 +539,7 @@ export function DeployModel() {
       // The plan answers where the projector and the MTP draft come from, so a
       // new choice (or vision turned on) asks again.
       JSON.stringify([useVision, visionPick, mtpPick]),
+      serviceCode,
     ],
     queryFn: () =>
       api.post<DeployPlan>("/api/ui/deploy/plan", {
@@ -528,6 +555,7 @@ export function DeployModel() {
         ...(merge != null && !isWhole ? { merge } : {}),
         vision: useVision,
         ...sidecarChoices(),
+        ...(service ? { params: { inference_service: service.code } } : {}),
       }),
     enabled: chosen.length > 0,
     staleTime: 10_000,
@@ -855,6 +883,9 @@ export function DeployModel() {
     if (!pomDesenv && pickedKind === "tensor_parallel") setPickedKind(null);
   }, [pomDesenv, pickedKind]);
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
+  /** What a deploy sends: the settings, with the inference service chosen
+   *  above (never one remembered from another deploy). */
+  const sentParams: RuntimeParams = { ...eff, inference_service: service?.code ?? null };
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
   /**
@@ -1008,7 +1039,7 @@ export function DeployModel() {
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...(selection ? { selection: rows } : {}),
-        ...(params ? { params: eff } : {}),
+        ...(params || service ? { params: sentParams } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         vision: useVision,
@@ -1026,7 +1057,7 @@ export function DeployModel() {
       // including the parts the operator left on the node's suggestion.
       rememberDeploy(memoryKey, {
         selection: rows,
-        params: eff,
+        params: sentParams,
         merge: effMerge,
         deployment_name: deploymentName || chosen,
         strategy,
@@ -1138,7 +1169,9 @@ export function DeployModel() {
     !p?.blocked &&
     inferenceModeSupported &&
     rows.length > 0;
-  const bottomMachines = liveMachines.filter((machine) => !mapNodeIds.has(machine.node_id));
+  const bottomMachines = liveMachines.filter(
+    (machine) => !mapNodeIds.has(machine.node_id) && (!service || service.nodeIds.includes(machine.node_id)),
+  );
   /** Máquinas cuja projeção estoura a VRAM (rósea) ou que só cabem porque o
    *  "Ajustar à memória" apararia o pedido (amber) - as duas pedem um aviso
    *  antes de implantar. */
@@ -1230,7 +1263,8 @@ export function DeployModel() {
                   aria-checked={kind === value}
                   data-guide={value === "whole" && kind !== "whole" ? "deploy-whole" : undefined}
                   onClick={() => selectKind(value)}
-                  className={`rounded-md px-3 py-1.5 text-[0.72rem] font-medium transition-colors ${
+                  disabled={service != null && value !== "whole" && !(service.stages && value === "shards")}
+                  className={`rounded-md px-3 py-1.5 text-[0.72rem] font-medium transition-colors disabled:opacity-40 ${
                     kind === value ? "bg-iris text-white" : "text-muted hover:text-fg"
                   }`}
                 >
@@ -1239,6 +1273,33 @@ export function DeployModel() {
               ))}
             </div>
             <div className="flex min-w-[15rem] flex-1 gap-2">
+              {inferenceServices.length > 0 && (
+                <Select
+                  aria-label={t("deploy.inferenceService")}
+                  title={t("deploy.inferenceServiceHint")}
+                  name="inference_service"
+                  value={serviceCode}
+                  onChange={(event) => {
+                    const next = inferenceServices.find((entry) => entry.code === event.target.value);
+                    // A service that runs slices keeps the slices on screen; any other one runs a whole model.
+                    const whole = next != null && !(next.stages && kind === "shards");
+                    if (next != null && !whole) setPickedKind("shards");
+                    setServiceCode(event.target.value);
+                    setWholeName("");
+                    setGroup("");
+                    setSelection(whole ? [] : null);
+                    setSettled(whole ? [] : null);
+                    setPreferredNodeIds([]);
+                    setJobId(null);
+                  }}
+                  className="h-9 !w-[7.5rem] shrink-0 text-[0.78rem]"
+                >
+                  <option value="">{t("deploy.inferenceServiceLlama")}</option>
+                  {inferenceServices.map((entry) => (
+                    <option key={entry.code} value={entry.code}>{entry.name}</option>
+                  ))}
+                </Select>
+              )}
               <Select
                 aria-label="Modelo técnico"
                 name="model"
@@ -1392,32 +1453,27 @@ export function DeployModel() {
 
           {inspectorOpen ? <>
             <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45">
-            <div role="tablist" aria-label="Propriedades da implantação" className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur-sm">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={inspectorTab === "global"}
-                onClick={() => setInspectorTab("global")}
-                className={`flex-1 border-b-2 px-2 py-2 text-[0.65rem] font-semibold ${inspectorTab === "global" ? "border-iris text-iris" : "border-transparent text-muted hover:text-fg"}`}
-              >
-                Globais
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={inspectorTab === "machine"}
-                disabled={!inspectedNodeId}
-                onClick={() => setInspectorTab("machine")}
-                className={`flex-1 border-b-2 px-2 py-2 text-[0.65rem] font-semibold ${inspectorTab === "machine" ? "border-aqua text-aqua" : "border-transparent text-muted hover:text-fg"} disabled:cursor-not-allowed disabled:opacity-40`}
-              >
-                Máquina: {liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}
-              </button>
-            </div>
+            <Tabs
+              fill
+              label="Propriedades da implantação"
+              className="sticky top-0 z-10"
+              value={inspectorTab}
+              onChange={setInspectorTab}
+              items={[
+                { value: "global", label: "Globais" },
+                {
+                  value: "machine",
+                  label: `Máquina: ${liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}`,
+                  disabled: !inspectedNodeId,
+                },
+              ]}
+            />
 
             {inspectorTab === "global" ? <>
             <DeploymentInspector
               value={eff}
               onChange={setParams}
+              inferenceService={service ? { name: service.name, settings: service.settings } : undefined}
               capabilities={p?.capabilities}
               cacheTypes={{
                 k: cacheTypeK,

@@ -522,6 +522,65 @@ export function Badge({
   );
 }
 
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+
+export type TabItem<T extends string> = {
+  value: T;
+  label: ReactNode;
+  icon?: ReactNode;
+  /** After the label, e.g. a count. */
+  badge?: ReactNode;
+  disabled?: boolean;
+};
+
+/**
+ * A row of tabs drawn as folder tabs over the content below (the POM-JEV look,
+ * `--tab-*` in the theme): the chosen tab joins the surface under it, marked by
+ * a teal line on top. `fill` spreads the tabs over the whole row.
+ */
+export function Tabs<T extends string>({
+  items,
+  value,
+  onChange,
+  label,
+  fill = false,
+  className,
+}: {
+  items: TabItem<T>[];
+  value: T;
+  onChange: (value: T) => void;
+  label?: string;
+  fill?: boolean;
+  className?: string;
+}) {
+  return (
+    <div role="tablist" aria-label={label} className={clsx("pom-tabs", fill && "pom-tabs-fill", className)}>
+      {items.map((item) => {
+        const on = item.value === value;
+        return (
+          <button
+            key={item.value}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            disabled={item.disabled}
+            onClick={() => onChange(item.value)}
+            className={clsx("pom-tab", on && "pom-tab-on")}
+          >
+            {item.icon && (
+              <span className="pom-tab-icon" aria-hidden="true">
+                {item.icon}
+              </span>
+            )}
+            {item.label}
+            {item.badge}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function Dot({ tone = "neutral", pulse = false }: { tone?: Tone; pulse?: boolean }) {
   const color: Record<Tone, string> = {
     neutral: "bg-faint",

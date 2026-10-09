@@ -10,7 +10,6 @@ import { Button, Field, Footnote, Input, KeyValue, Mono, PageHeader, Panel, Pane
 import { api } from "../lib/api";
 import { useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import { useGuideActions } from "../lib/guide";
 import type { NodeInfo } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -18,7 +17,6 @@ export function MyMachine() {
   const { t } = useI18n();
   const node = useNode();
   const toast = useToast();
-  const guide = useGuideActions();
   const invalidate = useInvalidate();
 
   const [busy, setBusy] = useState(false);
@@ -77,7 +75,6 @@ export function MyMachine() {
       );
       setNodeName(saved.node_name ?? "");
       toast.success(t("myMachine.nameSaved"), t("myMachine.nameSavedDetail"));
-      void guide.complete("machine_name");
       invalidate();
     } catch (e) {
       toast.fromError(t("myMachine.nameSaveFailed"), e);
@@ -159,7 +156,6 @@ export function MyMachine() {
             <Field label={t("myMachine.nameLabel")} hint={t("myMachine.nameHint")}>
               <Input
                 data-testid="node-name"
-                data-guide="machine-name"
                 value={nodeName}
                 maxLength={64}
                 placeholder={node.data?.node_name ? "" : node.data?.hostname ?? ""}

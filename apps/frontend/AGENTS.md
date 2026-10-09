@@ -54,7 +54,10 @@ remain local until the deploy preflight.
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.
 
-  The first access wizard is deprecated and unreachable: `routes/Setup.tsx`,
+  A machine on its first run gets the first run wizard
+  (`components/FirstRunWizard.tsx`) in place of the shell, past the gate:
+  machine name, network name, then the hints. The older first access wizard
+  is a different thing, deprecated and unreachable: `routes/Setup.tsx`,
   `routes/SetupWizard.tsx` and `components/setup-wizard/*` are kept in the
   source but `App.tsx` neither imports nor routes them (see
   `docs/subsystems/web-ui.md`, "First access wizard"). On a new node the

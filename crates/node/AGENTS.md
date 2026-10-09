@@ -441,8 +441,10 @@ validates the optional `host.services` answer of every running plugin into
 machine) and serves `POST /api/internal/plugins/:code/peer/:op`, which forwards
 a signed call from a live peer to the plugin's `peer.<op>` operation together
 with the caller (`node_id`, `head`). A call without the signed envelope is
-refused. See `docs/subsystems/plugins-ui.md`, "Services a plugin offers to the
-cluster".
+refused. A service of kind `inference` may also list the GGUF
+`architectures` its engine runs. See `docs/subsystems/plugins-ui.md`, "Services
+a plugin offers to the cluster", and `src/inference/plugin_engine.rs` for how
+an inference service replaces llama.cpp on a deployment.
 
 `src/rag.rs` is transparent retrieval for `/v1/chat/completions`: it finds
 the ready `rag` service of the network (15 s cache, peers asked behind the

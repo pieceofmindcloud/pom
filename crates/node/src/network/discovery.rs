@@ -2077,7 +2077,10 @@ async fn answer_lobby_request(
         Ok(seen) => seen,
         Err(error) => return LobbyResponse::rejected(error),
     };
-    if seen == GuestSeen::Announce {
+    // The conversation runs on the network Chat; without it the lobby only
+    // takes admission requests.
+    let messages_closed = !chat.enabled();
+    if seen == GuestSeen::Announce && !messages_closed {
         let presence = network_chat::ChatAction::LobbyPresence {
             message_id: uuid::Uuid::new_v4().simple().to_string(),
             room_id: LOBBY_ROOM.to_string(),
@@ -2092,8 +2095,12 @@ async fn answer_lobby_request(
         if !chat.accepts_role(*role).await {
             return LobbyResponse::rejected("role_not_accepted");
         }
-        if let Err(error) = chat.request_admission(&node_id, card.clone(), *role) {
-            return LobbyResponse::rejected(error);
+        match chat.request_admission(&node_id, card.clone(), *role) {
+            Ok(crate::network_lobby::AdmissionStatus::Pending) if chat.auto_approves().await => {
+                chat.decide_admission(&node_id, Some(crate::network_lobby::AdmissionStatus::Approved));
+            }
+            Ok(_) => {}
+            Err(error) => return LobbyResponse::rejected(error),
         }
     }
     let admission = lobby_admission_view(network, chat, &node_id).await;
@@ -2101,6 +2108,9 @@ async fn answer_lobby_request(
         message_id, text, ..
     } = request
     {
+        if messages_closed {
+            return LobbyResponse::rejected("lobby_messages_closed");
+        }
         let text = text.trim().to_string();
         if text.is_empty() || text.len() > LobbyLimits::TEXT_BYTES {
             return LobbyResponse::rejected("text_invalid");
@@ -2164,6 +2174,7 @@ async fn answer_lobby_request(
         node_id,
         messages,
         admission,
+        messages_closed,
         ..LobbyResponse::default()
     }
 }

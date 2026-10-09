@@ -163,6 +163,10 @@ mod plugins;
 mod pom;
 #[path = "pom_core_update.rs"]
 mod pom_core_update;
+#[path = "inference/plugin_engine.rs"]
+mod plugin_engine;
+#[path = "inference/plugin_stage_link.rs"]
+mod plugin_stage_link;
 #[path = "inference/prefill/mod.rs"]
 mod prefill;
 #[path = "inference/prefix_cache.rs"]
@@ -980,9 +984,11 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     setup_pending: true,
     local_auto_discovery: false,
     tls_required: false,
-    quic_enabled: false,
+    // On from the start: a new network uses QUIC between its nodes and has
+    // its Chat, and the principal can turn either off in the preferences.
+    quic_enabled: true,
     cluster_logs_enabled: false,
-    network_chat_enabled: false,
+    network_chat_enabled: true,
     cluster_logs_min_level: Default::default(),
     // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
     // depois que a `pom.json` existir.
@@ -1570,6 +1576,7 @@ fn merged_bootstrap_nodes(from_config: &[String], cli: &str) -> Vec<String> {
 
 /// Tarefas de fundo que acompanham todo gateway.
 fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
+    crate::plugin_stage_link::install(gw_state.clone());
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::plugins::spawn_host_context(gw_state.clone());
@@ -1619,6 +1626,7 @@ async fn start_node(
         Err(error) => warn!("não foi possível revogar chaves internas substituídas: {error:#}"),
     }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
+    plugin_engine::install(plugins.clone());
 
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,

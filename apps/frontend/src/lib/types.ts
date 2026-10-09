@@ -87,7 +87,7 @@ export interface SystemLoad {
 export type ServerState = "disabled" | "starting" | "ready" | "idle" | "failed" | "thermal";
 
 /** Motor que o backend afirma ter executado, sem inferência da interface. */
-export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
+export type ExecutionEngine = "llama.cpp" | "moe" | "plugin" | "unknown";
 
 export interface RuntimeStatus {
   state: ServerState;
@@ -308,7 +308,7 @@ export interface DevelopmentPluginRebuildResult {
 
 export interface DevelopmentPluginError {
   code: string;
-  stage?: "inspect" | "metadata" | "compile" | "install";
+  stage?: "inspect" | "metadata" | "prepare" | "compile" | "install";
   exit_code?: number | null;
 }
 
@@ -432,7 +432,7 @@ export interface NodeInfo {
 }
 
 export type NetworkVisibility = "local" | "private" | "public";
-export type NetworkAccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
+export type NetworkAccessPolicy = "authorized" | "auto_approve" | "anyone_with_anchor" | "local_only";
 
 /** A role a new machine can enroll with; `admin` is never an enrollment. */
 export type EnrollmentRole = "node" | "infer";
@@ -464,7 +464,6 @@ export interface NetworkSettings {
   /** Roles the network advertises as open to new members; empty means closed. */
   accepted_enrollments: EnrollmentRole[];
   /** Opens the lobby room of the network Chat to machines that are not members. */
-  lobby_chat: boolean;
   /** Publishes served models, node count and total VRAM to non-members. */
   public_stats: boolean;
   location: NetworkLocation | null;
@@ -590,6 +589,8 @@ export interface LobbyExchange {
   node_id: string;
   card: LobbyCard;
   messages: LobbyMessage[];
+  /** The network takes admission requests but has its conversation off. */
+  messages_closed?: boolean;
   /** This machine's admission request on that network, when it made one. */
   admission?: {
     key: string;
@@ -738,7 +739,28 @@ export interface PluginService {
   status: "ready" | "starting" | "installing" | "waiting" | "error";
   version?: string;
   detail?: string;
+  /** Kind `inference`: the GGUF architectures its engine runs. */
+  architectures?: string[];
+  /** Kind `inference`: the settings its engine takes, drawn by the deploy inspector. */
+  settings?: EngineSetting[];
+  /** Kind `inference`: its engine also runs layer slices, one stage per machine. */
+  stages?: boolean;
 }
+
+/** One setting an inference service's engine publishes (`host.services`). */
+export interface EngineSetting {
+  key: string;
+  type: "number" | "integer" | "boolean" | "enum" | "list";
+  /** Per language; `en` is always present. */
+  label: Record<string, string>;
+  description?: Record<string, string>;
+  min?: number;
+  max?: number;
+  options?: string[];
+}
+
+/** Values by setting key; an absent key keeps the engine's default. */
+export type EngineSettingValues = Record<string, number | boolean | string | string[]>;
 
 /** O diretório de snapshots de KV de uma máquina, medido pelo próprio nó. */
 export interface KvCacheDisk {
@@ -1990,6 +2012,11 @@ export type MtpPlacement = "auto" | "vram" | "ram";
 export interface RuntimeParams {
   /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
   inference_mode: InferenceMode;
+  /** The plugin whose inference service runs the whole model instead of
+   *  llama.cpp (`"strata"`); absent is POM's own engine. */
+  inference_service?: string | null;
+  /** That engine's settings, by the keys it publishes; absent = its defaults. */
+  engine_settings?: EngineSettingValues;
   /** Formato negociado para o estado oculto entre peers; ausente em config antiga = f16. */
   hidden_state_dtype?: WireDtype;
   n_gpu_layers: number;

@@ -7,7 +7,6 @@
  * rest", and the rounding to whole layers is shown rather than hidden — the
  * asked-for size, the layer range it became and the real size, side by side.
  */
-import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { Cpu, Layers, Play, Plus, Scissors, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -26,6 +25,7 @@ import {
   ScrollX,
   Select,
   Skeleton,
+  Tabs,
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
@@ -381,42 +381,16 @@ export function SliceModels() {
                   `DeploymentInspector`).
                 */}
                 {pomDesenv && (
-                  <div
-                    role="tablist"
-                    aria-label={t("slice.modeGroupAria")}
-                    className="flex items-center gap-1 rounded-lg border border-line bg-raised p-1"
-                  >
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={!tensorMode}
-                      onClick={() => setMode("pipeline")}
-                      className={clsx(
-                        "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
-                        !tensorMode
-                          ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25"
-                          : "text-muted hover:text-fg",
-                      )}
-                    >
-                      <Layers className="h-3.5 w-3.5" />
-                      {t("slice.modePipeline")}
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={tensorMode}
-                      onClick={() => setMode("tensor_parallel")}
-                      className={clsx(
-                        "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
-                        tensorMode
-                          ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25"
-                          : "text-muted hover:text-fg",
-                      )}
-                    >
-                      <Cpu className="h-3.5 w-3.5" />
-                      {t("slice.modeTensorShort")}
-                    </button>
-                  </div>
+                  <Tabs
+                    fill
+                    label={t("slice.modeGroupAria")}
+                    value={tensorMode ? "tensor_parallel" : "pipeline"}
+                    onChange={setMode}
+                    items={[
+                      { value: "pipeline", label: t("slice.modePipeline"), icon: <Layers /> },
+                      { value: "tensor_parallel", label: t("slice.modeTensorShort"), icon: <Cpu /> },
+                    ]}
+                  />
                 )}
                 {tensorMode && (
                   <p className="flex items-start gap-2 text-[0.75rem] leading-relaxed text-muted">

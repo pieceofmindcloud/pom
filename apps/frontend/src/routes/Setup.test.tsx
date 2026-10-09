@@ -187,9 +187,9 @@ describe("PublicDirectoryPanel", () => {
     city: "Curitiba",
   };
 
-  it("lists the directory in the wizard, with chat only where a lobby is open", async () => {
+  it("lists the directory in the wizard, with chat on every network", async () => {
     const get = vi.spyOn(api, "get").mockResolvedValue([
-      { ...listed, lobby_chat: true },
+      { ...listed },
       { ...listed, cluster_id: "lisboa", name: "Rede Lisboa", fingerprint: "fp2", accepted_enrollments: [] },
     ] as never);
     const onUse = vi.fn();
@@ -205,7 +205,7 @@ describe("PublicDirectoryPanel", () => {
 
     const closed = screen.getByRole("button", { name: "publicNetworks.closed" }) as HTMLButtonElement;
     expect(closed.disabled).toBe(true);
-    expect(screen.getAllByRole("button", { name: /publicNetworks.chat/ }).length).toBe(1);
+    expect(screen.getAllByRole("button", { name: /publicNetworks.chat/ }).length).toBe(2);
 
     // The address of a node to ask is typed here, and Enter asks again.
     const address = screen.getByPlaceholderText("pk:... / http://host:8080");

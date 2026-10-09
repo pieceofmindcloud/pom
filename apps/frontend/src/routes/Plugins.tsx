@@ -2,7 +2,7 @@ import { AlertTriangle, BookOpen, ChevronLeft, ChevronRight, Download, ExternalL
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Tone } from "../components/ui";
-import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Select, Skeleton } from "../components/ui";
+import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Select, Skeleton, Tabs } from "../components/ui";
 import { Confirm, Modal } from "../components/Confirm";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { ApiError, api } from "../lib/api";
@@ -1102,22 +1102,15 @@ export function Plugins() {
       <FullBleedHeader
         title={t("plugins.title")}
         subtitle={t("plugins.subtitle")}
-        actions={(
-          <div role="tablist" aria-label={t("plugins.tabsLabel")} className="inline-flex rounded-lg border border-line bg-raised/40 p-1">
-            {(["catalog", "develop"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                role="tab"
-                aria-selected={tab === value}
-                onClick={() => setTab(value)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris ${tab === value ? "bg-surface text-fg shadow-sm" : "text-muted hover:text-fg"}`}
-              >
-                {value === "catalog" ? t("plugins.tabCatalog") : t("plugins.tabDevelop")}
-              </button>
-            ))}
-          </div>
-        )}
+      />
+      <Tabs
+        label={t("plugins.tabsLabel")}
+        value={tab}
+        onChange={setTab}
+        items={[
+          { value: "catalog", label: t("plugins.tabCatalog") },
+          { value: "develop", label: t("plugins.tabDevelop") },
+        ]}
       />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">

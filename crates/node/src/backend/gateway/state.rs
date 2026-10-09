@@ -654,6 +654,32 @@ impl GatewayState {
         .await
     }
 
+    /// [`Self::control_post_json_routed`] with a body of raw bytes (a frame of
+    /// a plugin engine's stage link, `plugin_stage_link`).
+    pub(crate) async fn control_post_bytes_routed(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        body: Vec<u8>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        use crate::route_plan::{book, Plane, RouteKind};
+        let bases = match book().active(&peer.node_id, Plane::Gateway) {
+            Some(route) if route.kind == RouteKind::Tunnel => Vec::new(),
+            Some(route) => vec![route.base_url.trim_end_matches('/').to_string()],
+            None => self.gateway_bases(peer).into_iter().take(1).collect(),
+        };
+        self.control_call_over(
+            peer,
+            &bases,
+            reqwest::Method::POST,
+            path,
+            Some(body),
+            timeout,
+        )
+        .await
+    }
+
     /// `control_get` só pelo túnel, para quem já tentou os endereços do peer
     /// com critério próprio (ver `send_to_gateway_over`).
     pub(crate) async fn control_get_via_tunnel(
@@ -1433,7 +1459,11 @@ impl GatewayState {
                 // Keep in sync with network.rs's `self_announce` and
                 // infer_server.rs's health/announce builder, and with the
                 // capability constants in routing/pipeline.rs.
-                inference_frame_capabilities: {
+                inference_frame_capabilities: if let Some(caps) =
+                    self.network.plugin_engine_capabilities()
+                {
+                    caps
+                } else {
                     let mut caps = vec![
                         crate::pipeline::CAP_FRAME_BATCH.into(),
                         crate::pipeline::CAP_FRAME_DTYPE_F8.into(),

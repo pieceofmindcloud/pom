@@ -2072,6 +2072,8 @@ mod budget_tests {
             peer_index: 0,
             primary: true,
             inference_mode: Default::default(),
+            inference_service: None,
+            engine_settings: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx,
@@ -2966,7 +2968,6 @@ mod replicated_admin_logs_tests {
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
-            lobby_chat: true,
             public_stats: false,
             location: None,
             discovered_via: "pkarr".into(),
@@ -2982,7 +2983,6 @@ mod replicated_admin_logs_tests {
             super::validated_listed_network(view(fingerprint.clone(), "pk:someone-else")).unwrap();
         assert_eq!(accepted.publisher_key, expected_key);
         assert_eq!(accepted.discovered_via, "node");
-        assert!(accepted.lobby_chat);
 
         assert!(super::validated_listed_network(view("not-the-fingerprint".into(), "")).is_none());
         // A relay keeps a publication only from the network's own principal.
@@ -3022,7 +3022,6 @@ mod replicated_admin_logs_tests {
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
-            lobby_chat: false,
             public_stats: false,
             location: None,
             relay_hints: Vec::new(),
@@ -3365,6 +3364,8 @@ pub(crate) mod testkit {
             peer_index: 0,
             primary: true,
             inference_mode: Default::default(),
+            inference_service: None,
+            engine_settings: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 0,
             n_ctx: 8192,

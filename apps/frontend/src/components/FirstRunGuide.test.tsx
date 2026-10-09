@@ -11,7 +11,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FirstRunGuide } from "./FirstRunGuide";
 import { LocaleProvider } from "../i18n/provider";
 
-const STEPS = ["network_name", "machine_name", "download_model", "deploy_model", "chat", "join"];
+const WIZARD = ["names", "bootstrap"];
+const STEPS = [...WIZARD, "download_model", "deploy_model", "chat", "join"];
 
 function serve(done: string[], active = true, models: Array<{ name: string; path: string }> = []) {
   const state = { active, steps: STEPS, done: [...done] };
@@ -57,22 +58,30 @@ afterEach(() => {
 });
 
 describe("FirstRunGuide", () => {
+  it("stays out of the way while the wizard asks the names", async () => {
+    const fetchMock = serve([]);
+    mount("/");
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByTestId("first-run-guide")).toBeNull();
+  });
+
   it("sends the operator to the screen, then to the field on it", async () => {
-    serve([]);
+    serve(WIZARD);
     const first = mount("/");
     const hint = await screen.findByTestId("first-run-guide");
-    expect(hint.getAttribute("data-guide-step")).toBe("network_name");
-    expect(hint.textContent).toContain("Step 1 of 6");
-    expect(hint.textContent).toContain("Open Network, then Network information.");
+    expect(hint.getAttribute("data-guide-step")).toBe("download_model");
+    expect(hint.textContent).toContain("Step 1 of 4");
+    expect(hint.textContent).toContain("Find HF models");
     first.unmount();
 
-    mount("/config/rede");
+    mount("/modelos/remotos");
     const there = await screen.findByTestId("first-run-guide");
-    expect(there.textContent).toContain("Give it a name of its own and save.");
+    expect(there.textContent).toContain("Search for Qwen/Qwen2.5-0.5B-Instruct-GGUF");
   });
 
   it("moves to the next step when one is skipped and ends after the last", async () => {
-    const fetchMock = serve(["network_name", "machine_name", "download_model", "deploy_model"]);
+    const fetchMock = serve([...WIZARD, "download_model", "deploy_model"]);
     mount("/");
     const hint = await screen.findByTestId("first-run-guide");
     expect(hint.getAttribute("data-guide-step")).toBe("chat");
@@ -97,7 +106,7 @@ describe("FirstRunGuide", () => {
   });
 
   it("ends the download step by itself once the model is on disk", async () => {
-    const fetchMock = serve(["network_name", "machine_name"], true, [
+    const fetchMock = serve(WIZARD, true, [
       { name: "qwen2.5-0.5b-instruct-q4_k_m", path: "/models/qwen2.5-0.5b-instruct-q4_k_m.gguf" },
     ]);
     mount("/");
@@ -109,7 +118,7 @@ describe("FirstRunGuide", () => {
   });
 
   it("follows a step that takes several clicks", async () => {
-    const fetchMock = serve(["network_name", "machine_name"]);
+    const fetchMock = serve(WIZARD);
     const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
       left: 10, top: 10, right: 110, bottom: 40, width: 100, height: 30, x: 10, y: 10, toJSON: () => ({}),
     });
@@ -135,13 +144,13 @@ describe("FirstRunGuide", () => {
   });
 
   it("shows nothing on a machine whose guide ended, and hides for good when asked", async () => {
-    serve([], false);
+    serve(WIZARD, false);
     const ended = mount("/");
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
     expect(screen.queryByTestId("first-run-guide")).toBeNull();
     ended.unmount();
 
-    const fetchMock = serve([]);
+    const fetchMock = serve(WIZARD);
     mount("/");
     await screen.findByTestId("first-run-guide");
     act(() => {

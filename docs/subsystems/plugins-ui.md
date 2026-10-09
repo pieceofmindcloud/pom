@@ -143,8 +143,12 @@ compatibly. Version 2 added `context()` (current language and theme), `events`,
 Version 3 added `TelemetryLine` (the basic one-line telemetry) and the
 `chat.telemetry` slot; the detailed telemetry view left the POM, so
 `ExecutionTelemetry` is kept only for bundles built against version 2 and now
-renders that basic line. The plugin's CSS uses the same color tokens (CSS
-variables) as POM.
+renders that basic line. Version 4 added `plugin(code).rpc`. Version 5 added
+`ui.Tabs`, the panel's tab row: folder tabs over the content below, the chosen
+one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
+(`--tab-bar`, `--tab-ink`, `--tab-ink-on`, `--tab-line`, `--tab-card`,
+`--tab-accent`, `--tab-icon`, full colours in both themes). The plugin's CSS
+uses the same color tokens (CSS variables) as POM.
 
 ## Plugin RPC
 
@@ -252,6 +256,31 @@ so read-only source binds are supported; the installed artifact must canonicaliz
 inside that build directory. There is no shell command and no build argument
 taken from the request.
 
+A plugin whose build needs more than `cargo` (a UI bundle, a runtime archive)
+declares it in its manifest, and the rebuild runs those steps after
+`cargo metadata` and before `cargo build`:
+
+```json
+"development": {
+  "rebuild": [
+    { "run": ["scripts/dev-ui.sh"] },
+    { "run": ["scripts/dev-runtime.sh", "--quick"], "os": ["linux", "macos"] }
+  ]
+}
+```
+
+`run` is a script inside the source (relative, no `..`, at most 8 steps of 16
+plain-string arguments) and its arguments; `os` (`linux`, `macos`, `windows`)
+limits a step to those systems. A `.sh` script runs through `bash`, anything
+else as a program, in the source directory, with no input and 20 minutes at
+most. The source mount is read-only, so the steps write to
+`POM_PLUGIN_OUT_DIR` (`<build directory>/pom-prepare`); they also get
+`POM_PLUGIN_PLATFORM` (`linux-x86_64`, `macos-aarch64`, ...) and
+`POM_PLUGIN_SOURCE_DIR`, and `cargo build` gets the same three variables, so
+the plugin's `build.rs` embeds what the steps produced. Their output goes to
+`pom-prepare/rebuild.log`, never to the response; a failed step stops the
+rebuild with stage `prepare` and its exit code.
+
 The local build can install a plugin even when it has never been installed or activated. It writes a separate development-install record, starts only that plugin's isolated host, and grants no licensed features or license state. If a licensed or GitHub installation already exists, the local artifact replaces its running binary without changing that entitlement. The operation never activates or renews a license, calls GitHub or the license server, changes the release selection or restarts the POM process. The response exposes success or the step/exit code, never the compiler's stderr. The GitHub release install flow stays independent and unchanged.
 
 ## Node context (`host.configure`)
@@ -296,7 +325,8 @@ reachable without the node knowing any plugin.
 ```
 
 `id` and `kind` are lowercase slugs, `name` and the optional `version` and
-`detail` are short single-line texts, and `status` is one of `ready`,
+`detail` are short single-line texts, `architectures` is an optional list of
+GGUF architecture slugs (up to 16, meaningful for kind `inference`), and `status` is one of `ready`,
 `starting`, `installing`, `waiting` or `error`. The node drops an entry that
 does not follow the contract (at most 8 per plugin), asks the plugins at most
 every 5 s and publishes the result in `plugin_services` of `GET /api/ui/node`.
@@ -324,6 +354,31 @@ its port and API key only when `caller.head` is true. The body is capped at
 
 `GET /api/internal/plugins/services` (signed or key-authenticated peer call)
 returns the same service list, so a peer can find which machine serves what.
+
+**Inference services.** A service of kind `inference` runs whole models in
+place of llama.cpp and lists the GGUF `architectures` its engine runs. It may
+also publish `settings`, the engine settings a deployment can set: up to 32
+entries of `{key, type, label, description?, min?, max?, options?}`, where
+`key` is lowercase words with dots or underscores, `type` is `number`,
+`integer`, `boolean`, `enum` (with `options`) or `list`, and `label` and
+`description` are texts per language with `en` required. The node checks only
+that shape; the deploy inspector draws them, an empty field keeps the
+engine's default, and the values travel in `RuntimeParams.engine_settings` to
+`engine.load` (`params.settings`), where the plugin validates them. A service
+that also runs POM layer slices, one stage per machine, publishes
+`stages: true`. Such a
+plugin implements four operations the node calls through its own local host,
+never from another machine or a browser: `engine.load` (`params`:
+`model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
+`settings`, and for a slice `link`),
+`engine.unload`, `engine.status` (`state` among `idle`, `installing`,
+`preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
+`busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback
+server whose `POST /pom/generate` takes the rendered prompt and streams NDJSON),
+plus `engine.link` (`{status, port?, token?}`) for a service with `stages`: the
+loopback port of an earlier stage's link and its secret.
+The deployment and generation contract is in `inference.md`, section 7.1, and
+`deployment.md`, section 1.6.
 
 ## Transparent retrieval (RAG)
 

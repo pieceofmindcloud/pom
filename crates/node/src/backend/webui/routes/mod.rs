@@ -284,6 +284,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
+    // The operator's own list of networks: this one and the imported ones.
+    RouteRule {
+        prefix: "/api/ui/networks",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
     // The first run guide belongs to whoever sits at this machine.
     RouteRule {
         prefix: "/api/ui/guide",

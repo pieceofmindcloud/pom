@@ -80,8 +80,17 @@ describe("LobbyChat", () => {
   it("says why when the network refuses", async () => {
     mocks.get.mockResolvedValue({ ...exchange, accepted: false, error: "lobby_disabled", messages: [] });
     mount();
-    expect(await screen.findByText("Esta rede não está aceitando conversa no lobby no momento.")).toBeTruthy();
+    expect(await screen.findByText("Esta rede não pode ser alcançada para admissão no momento.")).toBeTruthy();
     expect((screen.getByLabelText("Escreva para o lobby desta rede…") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("shows only the request side when the network has its conversation off", async () => {
+    mocks.get.mockResolvedValue({ ...exchange, messages: [], messages_closed: true });
+    mount();
+    expect(await screen.findByTestId("lobby-admission")).toBeTruthy();
+    expect(screen.getByTestId("lobby-request")).toBeTruthy();
+    expect(screen.queryByTestId("lobby-messages")).toBeNull();
+    expect(screen.queryByLabelText("Escreva para o lobby desta rede…")).toBeNull();
   });
 
   it("offers to switch at once to a network that already admitted this machine", async () => {

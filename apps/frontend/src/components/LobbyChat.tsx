@@ -24,6 +24,7 @@ export type LobbyEndpoint = "/api/ui/network-chat/lobby" | "/api/setup/lobby";
 /** The refusal codes of the principal that deserve their own sentence. */
 const ERROR_KEYS: Record<string, string> = {
   lobby_disabled: "lobby.errorDisabled",
+  lobby_messages_closed: "lobby.messagesClosed",
   node_blocked: "lobby.errorBlocked",
   already_member: "lobby.errorMember",
   rate_limited: "lobby.errorRate",
@@ -96,6 +97,9 @@ export function LobbyChat({ network, endpoint, onClose }: {
   }, [adopt, auth, endpoint, key]);
 
   const messages = exchange?.messages ?? [];
+  // The network Chat is off there: the window is only the request side, with
+  // no conversation to show.
+  const closed = exchange?.messages_closed === true;
   const latest = messages[messages.length - 1]?.message_id;
   useEffect(() => {
     const element = messagesRef.current;
@@ -158,9 +162,9 @@ export function LobbyChat({ network, endpoint, onClose }: {
 
   if (!network) return null;
   return (
-    <Modal open size="lg" title={t("lobby.title", { name: network.name })} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
-      <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]">
-        <div className="flex min-w-0 flex-col">
+    <Modal open size={closed ? "md" : "lg"} title={t("lobby.title", { name: network.name })} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
+      <div className={closed ? "min-w-0" : "grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]"}>
+        {!closed && <div className="flex min-w-0 flex-col">
           <p className="mb-3 text-xs leading-relaxed text-muted">{t("lobby.detail")}</p>
           <div
             ref={messagesRef}
@@ -198,11 +202,12 @@ export function LobbyChat({ network, endpoint, onClose }: {
               <Send className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-        <div className="min-w-0">
+        </div>}
+        <div className="min-w-0" data-testid="lobby-request">
           <p className="eyebrow mb-2">{t("lobby.yourCard")}</p>
           {exchange ? <LobbyHardwareCard nodeId={exchange.node_id} card={exchange.card} self /> : <p className="text-xs text-faint">{t("lobby.connecting")}</p>}
-          <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t("lobby.cardNote")}</p>
+          <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t(closed ? "lobby.cardNoteRequest" : "lobby.cardNote")}</p>
+          {closed && failure && <p role="alert" className="mt-2 text-xs text-amber">{t(failure)}</p>}
           {canAsk && exchange && (
             <div className="mt-4 border-t border-line pt-3" data-testid="lobby-admission">
               <p className="eyebrow mb-2">{t("lobby.admission")}</p>

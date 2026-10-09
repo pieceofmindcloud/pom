@@ -340,6 +340,22 @@ describe("Dashboard", () => {
     expect(screen.getByText(/d-curren/)).toBeTruthy();
   });
 
+  it("mostra nas propriedades a seção do motor do plugin quando a versão roda nele", async () => {
+    const strata = deploymentRow("d-strata", { isDefault: true, activeVersion: 1 });
+    Object.assign(strata.deployment.versions[0].params, { inference_service: "strata" });
+
+    mount(
+      fakeCluster([fakeSlicePeer("a", 0, 31)], "qwen35"),
+      "admin",
+      undefined,
+      undefined,
+      { node_id: "a", deployments: [strata] },
+    );
+
+    // Sem o serviço anunciado no cluster, o motor aparece pelo código do plugin.
+    expect(await screen.findByText("Configurações do strata")).toBeTruthy();
+  });
+
   it.each(["node", "infer"] as const)(
     "mostra a fatia local e não transforma a cobertura do cluster em alarme no perfil %s",
     async (profile) => {

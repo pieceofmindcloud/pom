@@ -96,6 +96,14 @@ pub(super) async fn deploy_endpoint(
         }
     }
 
+    if plan.blocked.is_none() {
+        if let Some(service) = params.inference_service.as_deref() {
+            let targets: Vec<String> = plan.steps.iter().map(|step| step.target_node_id.clone()).collect();
+            plan.blocked =
+                crate::plugin_engine::deploy_block(&state, service, req.kind == DeployKind::Whole, &targets)
+                    .await;
+        }
+    }
     if let Some(reason) = plan.blocked {
         return (
             axum::http::StatusCode::BAD_REQUEST,

@@ -1712,7 +1712,7 @@ mod tests {
     /// Agora a capacidade anunciada pelo peer recusa antes de qualquer peso ser
     /// tocado, e o nó continua de pé.
     #[tokio::test]
-    async fn gateway_sem_modelo_local_recusa_prompt_acima_da_capacidade_do_peer() {
+    async fn a_gateway_without_a_local_model_refuses_a_prompt_above_the_peer_capacity() {
         let mut peer = testkit::peer("peer-gpu", "ksia", 39_991);
         peer.model = "ornith".into();
         peer.inference_port = Some(39_992);
@@ -2251,7 +2251,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_de_dois_hops_desliga_mtp_sincrono_por_ciclo() {
+    fn a_two_hop_remote_stream_turns_off_synchronous_mtp_per_cycle() {
         let mut multi = plan(
             "remote-head",
             [
@@ -2290,7 +2290,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_fatiado_pede_mtp_quando_o_plano_suporta() {
+    fn a_sliced_remote_stream_asks_for_mtp_when_the_plan_supports_it() {
         let sliced = remote_stream_speculation(
             &multi_plan_with_mtp(),
             true,
@@ -2334,7 +2334,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn remote_stream_de_um_hop_preserva_mtp_do_modelo_inteiro() {
+    fn a_one_hop_remote_stream_preserves_the_whole_model_mtp() {
         let single = plan("remote-head", mtp_capabilities());
         let speculate = remote_stream_speculation(
             &single,
@@ -2350,14 +2350,14 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn gateway_sem_runtime_local_usa_capacidade_mtp_remota() {
+    fn a_gateway_without_a_local_runtime_uses_the_remote_mtp_capability() {
         assert!(mtp_enabled_for_plan(None, true));
         assert!(!mtp_enabled_for_plan(None, false));
         assert!(!mtp_enabled_for_plan(Some(false), true));
     }
 
     #[test]
-    fn stream_de_dois_hops_nao_desliga_mtp_apos_o_token_de_aquecimento() {
+    fn a_two_hop_stream_does_not_turn_off_mtp_after_the_warmup_token() {
         let step = crate::prefill::SpeculativeStep {
             accepted: vec![(4, "A".into())],
             done: false,
@@ -2375,14 +2375,14 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_nao_pede_rollback_extra_por_lote() {
+    fn a_remote_stream_asks_for_no_extra_rollback_per_batch() {
         assert!(!gateway_rollback_needed(true, 1, 4));
         assert!(gateway_rollback_needed(false, 1, 4));
         assert!(!gateway_rollback_needed(true, 4, 4));
     }
 
     #[test]
-    fn peer_sem_capacidade_mtp_fatiado_degrada_com_razao() {
+    fn a_peer_without_sliced_mtp_capability_degrades_with_a_reason() {
         let mut multi = plan(
             "remote-head",
             vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
@@ -2499,10 +2499,10 @@ mod peer_visibility_tests {
         stalled.inference_port = Some(stalled_port);
 
         let health = super::AdmissionHealth::default();
-        let clientes = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let reachable = ready_for_pipeline(
-            &clientes,
+            &clients,
             &health,
             &state.network,
             vec![healthy.clone(), stalled.clone()],
@@ -2515,22 +2515,22 @@ mod peer_visibility_tests {
 
         // A defesa tem que continuar de pé na requisição seguinte: o peer que
         // reprovou fica fora, agora sem custar sequer a sonda.
-        let inicio = std::time::Instant::now();
+        let start = std::time::Instant::now();
         let reachable = ready_for_pipeline(
-            &clientes,
+            &clients,
             &health,
             &state.network,
             vec![healthy, stalled],
             Duration::from_millis(25),
         )
         .await;
-        let em_quarentena = inicio.elapsed();
+        let in_quarantine = start.elapsed();
 
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
         assert!(
-            em_quarentena < Duration::from_millis(25),
-            "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
+            in_quarantine < Duration::from_millis(25),
+            "peer em quarentena voltou a ser sondado: {in_quarantine:?}"
         );
     }
 
@@ -2667,7 +2667,7 @@ mod replicated_admin_logs_tests {
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn secondary_lista_replicas_locais_sem_principal() {
+    async fn secondary_lists_local_replicas_without_the_principal() {
         let state = testkit::secondary_admin_state("secondary").await;
         assert!(state.network.peers.read().await.is_empty());
 
@@ -3460,8 +3460,8 @@ pub(crate) mod testkit {
         // primeira tentativa em vez de esperar o timeout de um IP de LAN.
         net.set_advertise_addr(Some("127.0.0.1:42777"));
         {
-            let antigos = state.network.peers.read().await.clone();
-            *net.peers.write().await = antigos;
+            let old_ones = state.network.peers.read().await.clone();
+            *net.peers.write().await = old_ones;
         }
         state.network = Arc::new(net);
         state

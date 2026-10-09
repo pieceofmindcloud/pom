@@ -114,7 +114,7 @@ mod tests {
     /// antigo repassava só --gateway-port, então um nó com --advertise-addr
     /// voltava sem ele e os peers passavam a guardar um endereço temporário.
     #[test]
-    fn argv_lembrado_volta_igual_sem_o_programa() {
+    fn the_remembered_argv_comes_back_the_same_without_the_program() {
         remember_argv(vec![
             "./target/release/pom".into(),
             "--gateway-port".into(),
@@ -137,7 +137,7 @@ mod tests {
     /// Um nó subido sem argumento nenhum volta sem argumento nenhum - e a
     /// lista vazia não pode virar um argumento vazio na linha de comando.
     #[test]
-    fn argv_so_com_o_programa_nao_gera_argumento() {
+    fn an_argv_with_only_the_program_yields_no_argument() {
         assert!(argv_rest(vec!["./target/release/pom".to_string()]).is_empty());
         assert_eq!(
             argv_rest(vec!["pom".into(), "--no-discovery".into()]),

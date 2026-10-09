@@ -7,7 +7,7 @@ import { LocaleProvider } from "../i18n/provider";
 const { post, jobsState, nodeState } = vi.hoisted(() => ({
   post: vi.fn(),
   jobsState: { value: { jobs: [] as unknown[] } },
-  nodeState: { value: { pom_desenv: true } as { pom_desenv: boolean } | undefined },
+  nodeState: { value: { pom_dev_mode: true } as { pom_dev_mode: boolean } | undefined },
 }));
 
 vi.mock("../lib/api", () => ({
@@ -104,7 +104,7 @@ import { SliceModels } from "./SliceModels";
 describe("SliceModels", () => {
   beforeEach(() => {
     post.mockReset();
-    nodeState.value = { pom_desenv: true };
+    nodeState.value = { pom_dev_mode: true };
     jobsState.value = {
       jobs: [
         {
@@ -164,7 +164,7 @@ describe("SliceModels", () => {
   it("shows the final shard as fixed remainder without a size input", async () => {
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -235,7 +235,7 @@ describe("SliceModels", () => {
 
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -254,7 +254,7 @@ describe("SliceModels", () => {
   it("shows the active slicing progress on the model slicing screen", async () => {
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -294,7 +294,7 @@ describe("SliceModels", () => {
 
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -330,7 +330,7 @@ describe("SliceModels", () => {
     cleanup();
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -381,7 +381,7 @@ describe("SliceModels", () => {
 
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -411,7 +411,7 @@ describe("SliceModels", () => {
 
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -451,7 +451,7 @@ describe("SliceModels", () => {
 
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -479,12 +479,12 @@ describe("SliceModels", () => {
     expect(await screen.findByText("1of2")).toBeTruthy();
   });
 
-  it("hides Tensor Parallelism entirely when POM_DESENV is off", async () => {
-    nodeState.value = { pom_desenv: false };
+  it("hides Tensor Parallelism entirely when POM_DEV_MODE is off", async () => {
+    nodeState.value = { pom_dev_mode: false };
 
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -513,7 +513,7 @@ describe("SliceModels", () => {
 
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -529,7 +529,7 @@ describe("SliceModels", () => {
   it("shows the summed size and every physical part of a multipart model", async () => {
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -551,7 +551,7 @@ describe("SliceModels", () => {
   it("blocks an incomplete multipart source with its concrete reason", async () => {
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">

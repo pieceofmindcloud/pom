@@ -42,7 +42,7 @@ function NodeChip() {
           else on the page says which one it is looking at. */}
       {n.network_name && (
         <Link
-          to="/config/rede"
+          to="/config/network"
           data-testid="topbar-network"
           title={t("topbar.network", { name: n.network_name })}
           aria-label={t("topbar.network", { name: n.network_name })}

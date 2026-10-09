@@ -710,7 +710,7 @@ mod tests {
     /// libera a administração da rede olhando só se o socket é loopback, e
     /// tudo que sai do túnel chega ao gateway por `127.0.0.1`.
     #[test]
-    fn o_tunel_nao_carrega_rota_administrativa() {
+    fn the_tunnel_does_not_carry_an_administrative_route() {
         assert!(!gateway_path_is_allowed("/api/ui/trust/anchor"));
         assert!(!gateway_path_is_allowed("/api/ui/network/trust-anchor"));
         assert!(!gateway_path_is_allowed("/admin/config"));
@@ -755,7 +755,7 @@ mod tests {
     /// O plano de controle da implantação passa, e só porque o pedido chega
     /// marcado como remoto (ver `serve::request_origin`).
     #[test]
-    fn o_tunel_carrega_o_plano_de_controle_da_implantacao() {
+    fn the_tunnel_carries_the_deployment_control_plane() {
         assert!(gateway_path_is_allowed("/api/ui/node"));
         assert!(gateway_path_is_allowed("/api/ui/apply"));
         assert!(gateway_path_is_allowed("/api/ui/deployments?local=true"));
@@ -765,7 +765,7 @@ mod tests {
     /// the principal through the relay must register the Chat key. The other
     /// internal routes stay out.
     #[test]
-    fn o_tunel_carrega_a_sincronizacao_com_o_principal() {
+    fn the_tunnel_carries_the_sync_with_the_principal() {
         for path in [
             "/api/internal/api-keys/upsert",
             "/api/internal/api-keys/revoke",
@@ -786,7 +786,7 @@ mod tests {
     /// A marca é um segredo do processo: constante enquanto ele vive e nunca
     /// um valor que um par do outro lado adivinharia.
     #[test]
-    fn a_marca_do_tunel_e_um_segredo_estavel() {
+    fn the_tunnel_mark_is_a_stable_secret() {
         assert_eq!(tunnel_mark(), tunnel_mark());
         assert_eq!(tunnel_mark().len(), 64);
         assert!(is_tunnel_mark(tunnel_mark().as_bytes()));
@@ -797,7 +797,7 @@ mod tests {
     /// As rotas de que a admissão e as catracas de política dependem. Sem
     /// `/handshake` aqui, um par atrás de NAT nunca entra na tabela `peers`.
     #[test]
-    fn o_tunel_carrega_o_plano_de_controle() {
+    fn the_tunnel_carries_the_control_plane() {
         for path in [
             "/handshake",
             "/health",
@@ -816,7 +816,7 @@ mod tests {
     /// Comparação exata, não prefixo: um sufixo não pode pendurar outra rota
     /// numa permitida, e query string não pode servir de escape.
     #[test]
-    fn a_comparacao_da_lista_e_exata() {
+    fn the_list_comparison_is_exact() {
         assert!(!gateway_path_is_allowed(
             "/handshake/../api/ui/trust/anchor"
         ));

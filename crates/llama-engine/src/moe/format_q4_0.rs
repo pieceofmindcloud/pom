@@ -1437,7 +1437,7 @@ pub mod tests {
     }
 
     #[test]
-    fn parser_aceita_array_gguf_maior_que_limite_arbitrario() {
+    fn parser_accepts_a_gguf_array_larger_than_an_arbitrary_limit() {
         let count = 100_001u64;
         let mut raw = Vec::new();
         raw.extend_from_slice(&0x4655_4747u32.to_le_bytes());
@@ -1459,21 +1459,21 @@ pub mod tests {
     }
 
     #[test]
-    fn dtype_desconhecido_informa_id_e_nome() {
+    fn an_unknown_dtype_reports_id_and_name() {
         let error = Q4LoadError::UnsupportedTensorType(999).to_string();
         assert!(error.contains("999"));
         assert!(error.contains("desconhecido"));
     }
 
     #[test]
-    fn dtype_ativo_sem_decoder_informa_id_e_nome() {
+    fn an_active_dtype_without_a_decoder_reports_id_and_name() {
         let error = Q4LoadError::UnsupportedTensorType(9).to_string();
         assert!(error.contains("9"));
         assert!(error.contains("Q8_1"));
     }
 
     #[test]
-    fn detecta_q4_k_e_q6_k_como_formatos_de_expert_suportaveis() {
+    fn detects_q4_k_and_q6_k_as_supportable_expert_formats() {
         for dtype in [12u32, 14u32] {
             let path = std::env::temp_dir().join(format!(
                 "pom-ftk-detect-k-{dtype}-{}.gguf",
@@ -1489,7 +1489,7 @@ pub mod tests {
     }
 
     #[test]
-    fn q4_0_executa_gate_up_silu_e_down() {
+    fn q4_0_runs_gate_up_silu_and_down() {
         let hidden = 32;
         let intermediate = 32;
         let gate_up = packed_rows(2 * intermediate, hidden, 9);
@@ -1504,7 +1504,7 @@ pub mod tests {
     }
 
     #[test]
-    fn payload_rejeita_geometria_que_nao_fecha_bloco() {
+    fn payload_rejects_a_geometry_that_does_not_close_a_block() {
         assert!(matches!(
             Q4_0Expert::packed_bytes(31, 32),
             Err(Q4Error::Geometry(_))
@@ -1512,7 +1512,7 @@ pub mod tests {
     }
 
     #[test]
-    fn executor_reutiliza_o_expert_admitido_no_segundo_forward() {
+    fn executor_reuses_the_admitted_expert_on_the_second_forward() {
         let hidden = 32;
         let intermediate = 32;
         let probe = FixedProbe::new(100_000);
@@ -1549,7 +1549,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_mmap_carrega_apenas_o_expert_solicitado() {
+    fn mmap_source_loads_only_the_requested_expert() {
         let path = std::env::temp_dir().join(format!(
             "pom-ftk-q4-source-{}-{}.gguf",
             std::process::id(),
@@ -1577,7 +1577,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_mmap_aceita_gate_e_up_em_tensores_separados() {
+    fn mmap_source_accepts_gate_and_up_in_separate_tensors() {
         let path = std::env::temp_dir().join(format!(
             "pom-ftk-q4-split-source-{}-{}.gguf",
             std::process::id(),

@@ -23,7 +23,7 @@ kept and missing remote parts are added. This applies to both `parts` and
 **The `.pom` is mandatory for a part, in both directions.** The sender refuses
 to offer a slice without a manifest (`send_to_peer`), the server refuses to
 deliver it (`servable_path`), and the receiver refuses to accept it
-(`alvo_da_oferta`, `spawn_download`). There is no alternative path: an orphan
+(`offer_target`, `spawn_download`). There is no alternative path: an orphan
 slice is a file nobody knows how to name, and the hash of the original model -
 which decides the folder it lives in - only exists in the manifest.
 
@@ -205,9 +205,9 @@ nothing (08/18).
 
 Two defenses, because both are needed:
 
-- the sender builds the URL with `peer_client::peer_base_url(.., tls_ativo())`,
+- the sender builds the URL with `peer_client::peer_base_url(.., tls_enabled())`,
   not a literal;
-- the acceptor passes the URL through `normaliza_esquema`, which enforces the
+- the acceptor passes the URL through `normalize_scheme`, which enforces the
   **local policy** - an older node still offers `http://`, and the download
   works anyway.
 

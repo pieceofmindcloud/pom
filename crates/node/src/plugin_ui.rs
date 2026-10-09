@@ -840,9 +840,9 @@ mod tests {
         let value: Value = serde_json::from_str(r#"{
           "schema":"pom-plugin-ui/v1","plugin_code":"logs",
           "menu":[{"id":"request-logs","label":{"en":"Request logs","pt-BR":"Logs de Requisições"},"icon":"list-tree","to":"/logs","group":"logs","profiles":["admin"]},
-                  {"id":"statistics","label":{"en":"Statistics","pt-BR":"Estatísticas"},"icon":"chart-no-axes-column","to":"/estatisticas","profiles":["admin"]}],
+                  {"id":"statistics","label":{"en":"Statistics","pt-BR":"Estatísticas"},"icon":"chart-no-axes-column","to":"/statistics","profiles":["admin"]}],
           "routes":[{"path":"/logs","screen":"logs","profiles":["admin"],"full_bleed":true},
-                    {"path":"/estatisticas","screen":"stats","profiles":["admin"],"full_bleed":true}],
+                    {"path":"/statistics","screen":"stats","profiles":["admin"],"full_bleed":true}],
           "screens":{"logs":{"module":"ui/screens.js","export":"logs","styles":["ui/plugin.css"]},
                      "stats":{"module":"ui/screens.js","export":"stats","styles":["ui/plugin.css"]}},
           "i18n":{"en":"i18n/en.json","pt-BR":"i18n/pt-BR.json"},

@@ -17,7 +17,7 @@ function mount(props: Parameters<typeof GpuTemperature>[0]) {
 describe("GpuTemperature", () => {
   afterEach(cleanup);
 
-  it("não renderiza nada quando a máquina não tem GPU", () => {
+  it("renders nothing when the machine has no GPU", () => {
     const { container } = mount({
       gpuKind: "none",
       temperature: null,
@@ -27,7 +27,7 @@ describe("GpuTemperature", () => {
     expect(container.innerHTML).toBe("");
   });
 
-  it("mostra uma única indicação quando o sensor da GPU não responde", () => {
+  it("shows a single indication when the GPU sensor does not answer", () => {
     mount({
       gpuKind: "nvidia",
       temperature: null,

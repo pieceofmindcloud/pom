@@ -1407,7 +1407,7 @@ mod tests {
     }
 
     #[test]
-    fn nivel_minimo_dos_logs_tem_default_info_e_sobrevive_ao_json() {
+    fn the_minimum_log_level_defaults_to_info_and_survives_json() {
         let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
         assert_eq!(
             defaulted.cluster_logs_min_level,
@@ -1430,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn descoberta_local_fica_desligada_por_padrao() {
+    fn local_discovery_is_off_by_default() {
         let config: Config = serde_json::from_str(r#"{"profile":"admin"}"#).unwrap();
         assert!(!config.local_auto_discovery);
     }
@@ -1721,21 +1721,21 @@ mod tests {
     #[test]
     fn an_explicit_empty_list_is_not_the_default_list() {
         let cfg: Config = serde_json::from_str(
-            r#"{"profile":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
+            r#"{"profile":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/shards"}"#,
         )
         .unwrap();
         assert!(!cfg.model_dirs_are_default());
         assert!(cfg.model_dir_paths().is_empty());
         assert_eq!(
             cfg.shard_dir_path(),
-            PathBuf::from("/Volumes/sdcard/fatias")
+            PathBuf::from("/Volumes/sdcard/shards")
         );
     }
 
     /// `pom.json` gravado antes do TLS não pode deixar de parsear - e o padrão
     /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
     #[test]
-    fn config_antiga_parseia_sem_tls_required() {
+    fn an_old_config_parses_without_tls_required() {
         let cfg: Config =
             serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
@@ -1749,13 +1749,13 @@ mod tests {
     }
 
     #[test]
-    fn tls_required_sobrevive_ao_roundtrip() {
+    fn tls_required_survives_the_roundtrip() {
         let cfg: Config =
             serde_json::from_str(r#"{"profile":"admin","tls_required":true}"#).unwrap();
         assert!(cfg.tls_required);
-        let texto = serde_json::to_string(&cfg).unwrap();
-        let volta: Config = serde_json::from_str(&texto).unwrap();
-        assert!(volta.tls_required);
+        let text = serde_json::to_string(&cfg).unwrap();
+        let restored: Config = serde_json::from_str(&text).unwrap();
+        assert!(restored.tls_required);
     }
 
     #[test]
@@ -1926,7 +1926,7 @@ mod tests {
     }
 
     #[test]
-    fn sair_da_rede_preserva_preferencias_locais_e_limpa_credenciais() {
+    fn leaving_the_network_preserves_local_preferences_and_clears_credentials() {
         let mut cfg: Config = serde_json::from_value(serde_json::json!({
             "profile": "admin",
             "connection_key": "segredo-da-rede",
@@ -1979,7 +1979,7 @@ mod tests {
     }
 
     #[test]
-    fn rotulo_geo_separa_pais_cidade_e_identidade_do_no() {
+    fn the_geo_label_separates_country_city_and_node_identity() {
         assert_eq!(
             geo_network_label("BR", "Curitiba", "abc123"),
             "com.br.curitiba.abc123"

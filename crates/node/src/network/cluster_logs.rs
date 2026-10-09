@@ -701,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn fila_limitada_descarta_sem_bloquear_e_conta_perdas() {
+    fn a_bounded_queue_drops_without_blocking_and_counts_losses() {
         let (queue, mut receiver) = LogQueue::with_capacity(1);
 
         assert!(queue.try_push(entry("primeira")));
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn emissao_de_tracing_cheia_descarta_e_conta_sem_espera() {
+    fn a_full_tracing_emission_drops_and_counts_without_waiting() {
         use tracing_subscriber::prelude::*;
 
         let (capture, mut receiver) = LogCapture::new(1);
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn captura_descarta_debug_por_padrao_sem_filtrar_o_subscriber() {
+    fn capture_drops_debug_by_default_without_filtering_the_subscriber() {
         use std::sync::atomic::AtomicUsize;
         use tracing_subscriber::layer::Context;
         use tracing_subscriber::prelude::*;
@@ -767,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn captura_aceita_debug_quando_o_limiar_e_configurado() {
+    fn capture_accepts_debug_when_the_threshold_is_configured() {
         use tracing_subscriber::prelude::*;
 
         let (capture, mut receiver) = LogCapture::new(8);
@@ -785,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn microbenchmark_de_enfileiramento_e_lote_por_linha() {
+    fn microbenchmark_of_enqueue_and_batch_per_line() {
         const ITERATIONS: usize = 50_000;
         let template = entry("benchmark");
         let (queue, mut receiver) = LogQueue::with_capacity(ITERATIONS);
@@ -826,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn lote_preserva_a_ordem_de_chegada_e_o_deploy_id() {
+    fn a_batch_preserves_the_arrival_order_and_the_deploy_id() {
         let first = entry("chegou primeiro");
         let second = entry("chegou depois");
         let batch = LogBatch {
@@ -840,7 +840,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn um_admin_entrega_os_lotes_aceitos_ao_plugin_na_ordem() {
+    async fn an_admin_delivers_the_accepted_batches_to_the_plugin_in_order() {
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver);
         service.set_admin_receiver(true);
@@ -860,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn as_mensagens_do_proprio_caminho_de_logs_nao_sao_capturadas() {
+    fn messages_from_the_logs_path_itself_are_not_captured() {
         use tracing_subscriber::prelude::*;
 
         let (capture, mut receiver) = LogCapture::new(8);
@@ -876,7 +876,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quem_nao_e_admin_recusa_e_conta_o_lote() {
+    async fn a_non_admin_refuses_and_counts_the_batch() {
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver);
         assert!(!service.try_ingest_remote(LogBatch {
@@ -888,14 +888,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sem_o_plugin_a_leitura_responde_que_nao_ha_coleta() {
+    async fn without_the_plugin_reading_answers_that_there_is_no_collection() {
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver);
         assert!(service.list(None, None).await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn lote_local_e_enviado_a_todos_os_admins_conhecidos() {
+    async fn a_local_batch_is_sent_to_all_known_admins() {
         let network = crate::network::Network::testkit(
             "worker".into(),
             "pk".into(),

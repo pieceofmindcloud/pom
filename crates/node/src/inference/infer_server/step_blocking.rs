@@ -185,8 +185,8 @@ pub(crate) fn step_blocking(
             .as_ref()
             .filter(|s| s.source == DraftSource::Mtp)
             .map(|s| s.k);
-        let pode_rascunhar = should_draft(speculate.clone(), s.engine.mtp_ready());
-        let batch: Vec<i32> = if let Some(spec) = speculate.filter(|_| pode_rascunhar) {
+        let can_draft = should_draft(speculate.clone(), s.engine.mtp_ready());
+        let batch: Vec<i32> = if let Some(spec) = speculate.filter(|_| can_draft) {
             let draft: Vec<i32> = if let Some(premade) = spec.draft {
                 premade
             } else {
@@ -744,7 +744,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn telemetria_mtp_separa_propostas_aceites_e_rejeitadas() {
+    fn mtp_telemetry_separates_accepted_and_rejected_proposals() {
         let mut timings = NodeTimings::default();
 
         record_mtp_verification(&mut timings, true, 7, 5);
@@ -755,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_mtp_nao_conta_verificacao_que_nao_e_mtp() {
+    fn mtp_telemetry_does_not_count_a_verification_that_is_not_mtp() {
         let mut timings = NodeTimings::default();
 
         record_mtp_verification(&mut timings, false, 7, 5);

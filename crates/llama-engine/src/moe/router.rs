@@ -250,14 +250,14 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     #[test]
-    fn top_k_e_deterministico_em_empate() {
+    fn top_k_is_deterministic_on_a_tie() {
         let route = select_top_k(&[2.0, 2.0, 1.0], 2).unwrap();
         assert_eq!(route.ids, vec![0, 1]);
         assert!((route.weights.iter().sum::<f32>() - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn dispatch_soma_os_experts_com_peso_normalizado() {
+    fn dispatch_sums_the_experts_with_normalized_weights() {
         let output = dispatch_top_k(&[0.0, 2.0, 3.0], 2, |expert| {
             Ok::<_, ()>(vec![expert as f32, 1.0])
         })
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_recusa_larguras_diferentes() {
+    fn dispatch_refuses_different_widths() {
         let result = dispatch_top_k(&[1.0, 2.0], 2, |expert| {
             Ok::<_, ()>(if expert == 0 {
                 vec![1.0]
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn router_recusa_logit_nao_finito() {
+    fn router_refuses_a_non_finite_logit() {
         assert!(matches!(
             select_top_k(&[f32::NAN, 1.0], 1),
             Err(RouteError::NonFiniteLogit { expert: 0 })
@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_route_preserva_ids_e_pesos_resolvidos() {
+    fn dispatch_route_preserves_the_resolved_ids_and_weights() {
         let output = dispatch_route(&[2, 0], &[0.25, 0.75], |expert| {
             Ok::<_, ()>(vec![expert as f32, 1.0])
         })
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_route_parallel_executa_experts_concorrentes_e_preserva_ordem() {
+    fn dispatch_route_parallel_runs_concurrent_experts_and_preserves_order() {
         let barrier = Arc::new(Barrier::new(2));
         let output = dispatch_route_parallel(&[2, 0], &[0.25, 0.75], {
             let barrier = Arc::clone(&barrier);

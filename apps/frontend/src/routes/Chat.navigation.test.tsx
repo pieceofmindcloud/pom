@@ -153,8 +153,8 @@ afterEach(() => {
   chatScenario.capabilities = null;
 });
 
-describe("navegação depois do chat", () => {
-  it("troca de tela ao clicar no menu depois de uma resposta", async () => {
+describe("navigation after the chat", () => {
+  it("switches screen when the menu is clicked after a response", async () => {
     mount();
 
     const composer = await screen.findByRole("textbox");
@@ -176,7 +176,7 @@ describe("navegação depois do chat", () => {
     expect(loop.tripped).toBe(false);
   });
 
-  it("não duplica o histórico quando o infer já o tem no menu principal", async () => {
+  it("does not duplicate the history when infer already has it in the main menu", async () => {
     mount("infer");
 
     await screen.findByPlaceholderText("Escreva para a rede…");
@@ -185,7 +185,7 @@ describe("navegação depois do chat", () => {
     expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
   });
 
-  it("mostra o alvo de largada, identifica o formato e remove o anexo sem apagar o rascunho", async () => {
+  it("shows the drop target, identifies the format and removes the attachment without erasing the draft", async () => {
     mount();
 
     const composer = await screen.findByRole("textbox");
@@ -215,7 +215,7 @@ describe("navegação depois do chat", () => {
     expect((composer as HTMLTextAreaElement).value).toBe("texto antes do anexo");
   });
 
-  it("aceita uma largada de qualquer tipo de ficheiro", async () => {
+  it("accepts a drop of any file type", async () => {
     mount();
 
     const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
@@ -229,7 +229,7 @@ describe("navegação depois do chat", () => {
   });
 
   it.each(["admin", "node", "infer"] as const)(
-    "recusa imagem largada quando o modelo não tem visão no perfil %s",
+    "refuses a dropped image when the model has no vision in the %s profile",
     async (profile) => {
       mount(profile);
 
@@ -244,7 +244,7 @@ describe("navegação depois do chat", () => {
   );
 
   it.each(["node", "infer"] as const)(
-    "libera anexo de imagem no perfil %s quando a rede agregada confirma visão e cobertura",
+    "allows an image attachment in the %s profile when the aggregated network confirms vision and coverage",
     async (profile) => {
       chatScenario.cluster = {
         active_model: "qwen",
@@ -270,7 +270,7 @@ describe("navegação depois do chat", () => {
     },
   );
 
-  it("mostra indisponível quando a leitura agregada é recusada, sem inventar cobertura vazia",
+  it("shows unavailable when the aggregated reading is refused, without inventing empty coverage",
     async () => {
       chatScenario.cluster = {
         active_model: "qwen",

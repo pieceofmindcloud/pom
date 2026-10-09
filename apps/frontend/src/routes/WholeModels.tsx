@@ -111,7 +111,7 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
       <td className="whitespace-nowrap px-5 py-3.5">
         <div className="flex shrink-0 items-center gap-2">
           <Link
-            to={`/modelos/fatiar?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
+            to={`/models/slice?path=${encodeURIComponent(model.path)}&name=${encodeURIComponent(model.name)}`}
           >
             <Button size="sm" icon={<Scissors className="h-3.5 w-3.5" />}>
               {t("models.slice")}
@@ -119,7 +119,7 @@ export function ModelRow({ model }: { model: DiscoveredModel }) {
           </Link>
           {/\.gguf$/i.test(model.path) && (
             <Link
-              to={`/transferencias/enviar?filename=${encodeURIComponent(model.path.split(/[\\/]/).pop() ?? "")}`}
+              to={`/transfers/send?filename=${encodeURIComponent(model.path.split(/[\\/]/).pop() ?? "")}`}
             >
               <Button
                 size="sm"
@@ -220,7 +220,7 @@ export function WholeModels() {
             icon={<FolderSearch className="h-5 w-5" />}
             title={t("models.emptyTitle")}
             action={
-              <Link to="/config/pastas">
+              <Link to="/config/folders">
                 <Button variant="primary">{t("models.chooseFolders")}</Button>
               </Link>
             }

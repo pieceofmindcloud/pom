@@ -386,7 +386,7 @@ pub(super) async fn run(
     // `New` monta a v1; `ReuseVersion` anexa (ou reativa) uma versão sob o
     // `deploy_id` que já existe, para reimplantar a mesma forma não cunhar um id
     // novo a cada vez.
-    let registro = match record_plan {
+    let record = match record_plan {
         RecordPlan::New { .. } => build_record(
             deploy_id,
             &plan,
@@ -397,11 +397,11 @@ pub(super) async fn run(
             &identity,
             &state.network.node_id,
         ),
-        RecordPlan::ReuseVersion(mut existente) => {
-            existente.ensure_versions();
+        RecordPlan::ReuseVersion(mut existing) => {
+            existing.ensure_versions();
             let nodes = build_version_nodes(&plan, &targets, &machines, &params);
-            existente.upsert_version(params.clone(), nodes, state.network.node_id.as_str());
-            *existente
+            existing.upsert_version(params.clone(), nodes, state.network.node_id.as_str());
+            *existing
         }
     };
 
@@ -431,7 +431,7 @@ pub(super) async fn run(
     // Só depois do launch dar certo: um registro de implantação que não subiu
     // seria uma implantação fantasma na listagem, e a tela de desimplantar
     // ofereceria algo que não está no ar.
-    publish_record(&state, &registro).await;
+    publish_record(&state, &record).await;
     Ok(())
 }
 
@@ -450,7 +450,7 @@ pub(super) fn build_version_nodes(
     machines: &[Machine],
     params: &RuntimeParams,
 ) -> Vec<crate::deployment::DeploymentNode> {
-    let total_alvos = targets.len() as u32;
+    let total_targets = targets.len() as u32;
     targets
         .iter()
         .enumerate()
@@ -464,7 +464,7 @@ pub(super) fn build_version_nodes(
             start_layer: t.start_layer,
             end_layer: t.end_layer,
             peer_index: t.peer_index.unwrap_or(i as u32),
-            peer_count: t.peer_count.unwrap_or(total_alvos),
+            peer_count: t.peer_count.unwrap_or(total_targets),
             primary: plan
                 .steps
                 .iter()
@@ -534,11 +534,11 @@ pub(super) fn build_record(
 /// implantação junto, e um nó que reinicia lê no disco de que implantação ele
 /// fazia parte. Uma cópia que não chega não derruba a implantação - ela já está
 /// no ar; o que se perde é aquele nó saber se explicar depois de um reinício.
-pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deployment::Deployment) {
-    if let Err(e) = state.database.save_deployment(registro) {
+pub(super) async fn publish_record(state: &GatewayState, record: &crate::deployment::Deployment) {
+    if let Err(e) = state.database.save_deployment(record) {
         warn!(
             "não deu para anotar a implantação {}: {e:#}",
-            registro.deploy_id
+            record.deploy_id
         );
     }
 
@@ -549,10 +549,10 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
     // só aceita a cópia se já conhecia o deployment, então fan-out não cria
     // registros em máquinas que nunca participaram.
     for peer in peers.iter().filter(|peer| peer.node_id != self_id) {
-        let envio = state
-            .control_post_json(peer, "/api/ui/deployments", registro, PEER_TIMEOUT)
+        let send_result = state
+            .control_post_json(peer, "/api/ui/deployments", record, PEER_TIMEOUT)
             .await;
-        if let Err(e) = envio {
+        if let Err(e) = send_result {
             warn!(
                 "{} não aceitou o registro da implantação: {e:#}",
                 peer.node_id
@@ -574,12 +574,12 @@ pub(super) async fn find_record(
     let local = state.database.deployment(deploy_id).ok().flatten();
 
     let self_id = state.network.node_id.clone();
-    let buscas = state.all_peers().await.into_iter().filter_map(|peer| {
+    let searches = state.all_peers().await.into_iter().filter_map(|peer| {
         if peer.node_id == self_id {
             return None;
         }
         let peer_state = state.clone();
-        let alvo = deploy_id.to_string();
+        let target = deploy_id.to_string();
         Some(async move {
             let body: serde_json::Value = peer_state
                 .control_get(&peer, "/api/ui/deployments?local=true", PEER_TIMEOUT)
@@ -588,11 +588,11 @@ pub(super) async fn find_record(
                 .json()
                 .await
                 .ok()?;
-            let registros: Vec<crate::deployment::Deployment> =
+            let records: Vec<crate::deployment::Deployment> =
                 serde_json::from_value(body.get("deployments")?.clone()).ok()?;
-            registros
+            records
                 .into_iter()
-                .find(|d| d.deploy_id == alvo)
+                .find(|d| d.deploy_id == target)
                 .map(|mut d| {
                     d.ensure_versions();
                     d
@@ -600,11 +600,11 @@ pub(super) async fn find_record(
         })
     });
 
-    let remotas = futures::future::join_all(buscas)
+    let remote = futures::future::join_all(searches)
         .await
         .into_iter()
         .flatten();
-    newest_deployment(local.into_iter().chain(remotas))
+    newest_deployment(local.into_iter().chain(remote))
 }
 
 /// Torna esta a implantação que atende quem pede só o nome do modelo.
@@ -620,17 +620,17 @@ pub(super) async fn activate_deployment(
     if !crate::deployment::is_deploy_id(&id) {
         return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
     }
-    let Some(mut registro) = find_record(&state, &id).await else {
+    let Some(mut record) = find_record(&state, &id).await else {
         return bad(json!({ "error": format!("implantação {id} desconhecida") }));
     };
 
-    registro.activated_at = chrono::Utc::now().to_rfc3339();
-    publish_record(&state, &registro).await;
+    record.activated_at = chrono::Utc::now().to_rfc3339();
+    publish_record(&state, &record).await;
 
     Json(json!({
         "activated": true,
-        "deploy_id": registro.deploy_id,
-        "model": registro.model.label,
+        "deploy_id": record.deploy_id,
+        "model": record.model.label,
     }))
     .into_response()
 }
@@ -665,28 +665,28 @@ impl RedeployRequest {
     /// registro para refleti-la e devolve os parâmetros base de cada máquina.
     pub(super) fn resolve(
         &self,
-        registro: &mut crate::deployment::Deployment,
-        autor: &str,
+        record: &mut crate::deployment::Deployment,
+        author: &str,
     ) -> Result<RuntimeParams, String> {
-        registro.ensure_versions();
+        record.ensure_versions();
         if let Some(v) = self.version {
-            registro.set_active_version(v).map_err(|e| e.to_string())?;
-            let active_version = registro.active_version;
+            record.set_active_version(v).map_err(|e| e.to_string())?;
+            let active_version = record.active_version;
             let (params, nodes) = {
-                let version = registro
+                let version = record
                     .versions
                     .iter_mut()
                     .find(|ver| ver.version == active_version)
                     .expect("set_active_version garantiu a versão ativa");
                 (version.params.clone(), version.nodes.clone())
             };
-            registro.nodes = nodes;
+            record.nodes = nodes;
             return Ok(params);
         }
         let Some(params) = self.params.clone() else {
             return Err("informe `version` ou `params`".to_string());
         };
-        let mut nodes = registro.nodes.clone();
+        let mut nodes = record.nodes.clone();
         for n in &mut nodes {
             let mut cfg = params.clone();
             if let Some(adj) = self.per_node.get(&n.node_id) {
@@ -699,7 +699,7 @@ impl RedeployRequest {
             }
             n.config = cfg;
         }
-        registro.upsert_version(params.clone(), nodes, autor);
+        record.upsert_version(params.clone(), nodes, author);
         Ok(params)
     }
 }
@@ -736,35 +736,35 @@ pub(super) async fn redeploy_endpoint(
     if !crate::deployment::is_deploy_id(&id) {
         return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
     }
-    let Some(mut registro) = find_record(&state, &id).await else {
+    let Some(mut record) = find_record(&state, &id).await else {
         return bad(json!({ "error": format!("implantação {id} desconhecida") }));
     };
-    registro.ensure_versions();
+    record.ensure_versions();
     if req.version.is_none() && req.params.is_none() {
         return bad(json!({ "error": "informe `version` ou `params`" }));
     }
     if let Some(v) = req.version {
-        if !registro.versions.iter().any(|ver| ver.version == v) {
-            let disponiveis: Vec<u32> = registro.versions.iter().map(|ver| ver.version).collect();
+        if !record.versions.iter().any(|ver| ver.version == v) {
+            let available: Vec<u32> = record.versions.iter().map(|ver| ver.version).collect();
             return bad(json!({
-                "error": format!("versão {v} não existe (há {disponiveis:?})")
+                "error": format!("versão {v} não existe (há {available:?})")
             }));
         }
     }
     info!(
         "redeploy pedido para {} ({}), {} nó(s), versão={:?}",
         id,
-        registro.model.label,
-        registro.nodes.len(),
+        record.model.label,
+        record.nodes.len(),
         req.version
     );
 
     let job_id = uuid::Uuid::new_v4().to_string();
-    let titulo = format!(
+    let title = format!(
         "Reconfigurar {} em {} {}",
-        registro.model.label,
-        registro.nodes.len(),
-        if registro.nodes.len() == 1 {
+        record.model.label,
+        record.nodes.len(),
+        if record.nodes.len() == 1 {
             "nó"
         } else {
             "nós"
@@ -772,7 +772,7 @@ pub(super) async fn redeploy_endpoint(
     );
     jobs().write().await.insert(
         job_id.clone(),
-        new_job(&job_id, "redeploy", titulo, "recarregando"),
+        new_job(&job_id, "redeploy", title, "recarregando"),
     );
     state.plugins.publish_event(
         "deployment.started",
@@ -780,24 +780,24 @@ pub(super) async fn redeploy_endpoint(
             "kind": "redeploy",
             "deploy_id": id,
             "job_id": job_id,
-            "model": registro.model.label,
-            "nodes": registro.nodes.len(),
+            "model": record.model.label,
+            "nodes": record.nodes.len(),
             "version": req.version,
         }),
     );
 
     let id_job = job_id.clone();
     tokio::spawn(async move {
-        match run_redeploy(state, registro, req, &id_job).await {
-            Ok(falhas) if falhas == 0 => {
+        match run_redeploy(state, record, req, &id_job).await {
+            Ok(failures) if failures == 0 => {
                 set_job(&id_job, "done", "pronto", "as máquinas recarregaram").await
             }
-            Ok(falhas) => {
+            Ok(failures) => {
                 set_job(
                     &id_job,
                     "failed",
                     "parcial",
-                    &format!("{falhas} máquina(s) não recarregaram"),
+                    &format!("{failures} máquina(s) não recarregaram"),
                 )
                 .await
             }
@@ -813,27 +813,27 @@ pub(super) async fn redeploy_endpoint(
 
 pub(super) async fn run_redeploy(
     state: GatewayState,
-    mut registro: crate::deployment::Deployment,
+    mut record: crate::deployment::Deployment,
     req: RedeployRequest,
     job_id: &str,
 ) -> Result<usize, String> {
     let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
     let peers = state.all_peers().await;
-    let total = registro.nodes.len().max(1);
+    let total = record.nodes.len().max(1);
 
     info!(
         "redeploy {} ({}): {} nó(s), kind={:?}",
-        registro.deploy_id,
-        registro.model.label,
-        registro.nodes.len(),
-        registro.kind
+        record.deploy_id,
+        record.model.label,
+        record.nodes.len(),
+        record.kind
     );
 
-    // Escolhe/cria a versão pedida e muta `registro` para refleti-la. `base` é
+    // Escolhe/cria a versão pedida e muta `record` para refleti-la. `base` é
     // o `RuntimeParams` do deployment inteiro dessa versão; os ajustes por
     // máquina de `req.per_node` entram por cima na hora do reconfigure.
-    let base = req.resolve(&mut registro, &self_id)?;
+    let base = req.resolve(&mut record, &self_id)?;
 
     // Re-deploy does not build a new plan, but changing the wire precision is
     // still a cluster-wide protocol change. Probe every participant before
@@ -842,7 +842,7 @@ pub(super) async fn run_redeploy(
     validate_redeploy_wire_dtype(
         &state,
         &peers,
-        &registro.nodes,
+        &record.nodes,
         &self_id,
         base.hidden_state_dtype,
     )
@@ -851,8 +851,8 @@ pub(super) async fn run_redeploy(
     // Tensor parallelism: a coletiva não sobrevive a um unload e o registro
     // não guarda o `TpLaunch` inteiro, só o `tp_rank` de cada nó. Mantém o
     // caminho antigo (reconfigure no lugar), que exige o rank já servindo.
-    if registro.kind == crate::deployment::DeploymentKind::TensorParallel {
-        return run_redeploy_in_place(&state, &peers, &mut registro, &req, &self_id, &key, job_id)
+    if record.kind == crate::deployment::DeploymentKind::TensorParallel {
+        return run_redeploy_in_place(&state, &peers, &mut record, &req, &self_id, &key, job_id)
             .await;
     }
 
@@ -861,14 +861,14 @@ pub(super) async fn run_redeploy(
     // O registro tem faixa, posição e `part_sha256`, mas não o caminho do
     // arquivo nem o nome operacional da implantação. Esses vêm do `NodeConfig`
     // vivo, lido agora, enquanto ainda dá.
-    let mut identidade: HashMap<String, NodeIdentitySnapshot> = HashMap::new();
-    for no in &registro.nodes {
+    let mut identity: HashMap<String, NodeIdentitySnapshot> = HashMap::new();
+    for no in &record.nodes {
         let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) else {
             continue;
         };
         if let Ok(snapshot) = peer_node_snapshot(&state, peer).await {
             let config = snapshot.get("config");
-            identidade.insert(
+            identity.insert(
                 no.node_id.clone(),
                 NodeIdentitySnapshot {
                     model_path: config
@@ -910,29 +910,29 @@ pub(super) async fn run_redeploy(
     }
 
     // ── 2. Descarrega toda máquina que anuncia este deploy_id ────────────────
-    let alvo = UndeployTarget::Deployment {
-        deploy_id: registro.deploy_id.clone(),
-        label: registro.model.label.clone(),
+    let target = UndeployTarget::Deployment {
+        deploy_id: record.deploy_id.clone(),
+        label: record.model.label.clone(),
     };
-    let servindo: Vec<PeerInfo> = peers
+    let serving: Vec<PeerInfo> = peers
         .iter()
-        .filter(|p| p.total_layers > 0 && alvo.matches(p))
+        .filter(|p| p.total_layers > 0 && target.matches(p))
         .cloned()
         .collect();
-    if servindo.is_empty() {
+    if serving.is_empty() {
         info!(
             "redeploy {}: nada servindo, indo direto para a subida",
-            registro.deploy_id
+            record.deploy_id
         );
     } else {
         set_job(
             job_id,
             "running",
             "descarregando",
-            &format!("{} máquina(s)", servindo.len()),
+            &format!("{} máquina(s)", serving.len()),
         )
         .await;
-        let unloads = futures::future::join_all(servindo.iter().map(|peer| {
+        let unloads = futures::future::join_all(serving.iter().map(|peer| {
             let state = state.clone();
             let key = key.clone();
             let self_id = self_id.clone();
@@ -944,8 +944,8 @@ pub(super) async fn run_redeploy(
             }
         }))
         .await;
-        for (host, resultado) in unloads {
-            match resultado {
+        for (host, result) in unloads {
+            match result {
                 Ok(()) => info!("redeploy: {host} descarregada"),
                 Err(e) => warn!("redeploy: {host} não descarregou: {e}"),
             }
@@ -957,9 +957,9 @@ pub(super) async fn run_redeploy(
     // Sequencial de propósito: recarregar o modelo é o pico de memória do nó,
     // e mandar o cluster inteiro fazer isso junto é o caminho mais curto para
     // várias quedas por falta de VRAM ao mesmo tempo.
-    let mut resultados: Vec<RedeployOutcome> = Vec::new();
-    let mut aceitos: HashMap<String, RuntimeParams> = HashMap::new();
-    for (i, no) in registro.nodes.iter().enumerate() {
+    let mut results: Vec<RedeployOutcome> = Vec::new();
+    let mut accepted: HashMap<String, RuntimeParams> = HashMap::new();
+    for (i, no) in record.nodes.iter().enumerate() {
         set_job(
             job_id,
             "running",
@@ -974,16 +974,16 @@ pub(super) async fn run_redeploy(
         // uma reimplantação de versão devolve a cada máquina exatamente o que
         // ela rodava. `req.per_node` re-aplica por cima o que a tela mexeu.
         let mut params = no.config.clone();
-        if let Some(ajuste) = req.per_node.get(&no.node_id) {
-            if let Some(g) = ajuste.n_gpu_layers {
+        if let Some(adjustment) = req.per_node.get(&no.node_id) {
+            if let Some(g) = adjustment.n_gpu_layers {
                 params.n_gpu_layers = g;
             }
-            if let Some(k) = ajuste.offload_kqv {
+            if let Some(k) = adjustment.offload_kqv {
                 params.offload_kqv = k;
             }
         }
 
-        let snap = identidade.get(&no.node_id);
+        let snap = identity.get(&no.node_id);
         let slice = ReconfigureSlice {
             model_path: snap
                 .and_then(|s| s.model_path.clone())
@@ -993,15 +993,15 @@ pub(super) async fn run_redeploy(
             part_sha256: no.part_sha256.clone(),
             model_label: snap
                 .and_then(|s| s.model_label.clone())
-                .unwrap_or_else(|| registro.model.label.clone()),
+                .unwrap_or_else(|| record.model.label.clone()),
             deployment_name: snap
                 .map(|s| s.deployment_name.clone())
                 .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| registro.model.label.clone()),
-            deploy_id: registro.deploy_id.clone(),
+                .unwrap_or_else(|| record.model.label.clone()),
+            deploy_id: record.deploy_id.clone(),
             start_layer: no.start_layer,
             end_layer: no.end_layer,
-            total_layers: registro.model.total_layers,
+            total_layers: record.model.total_layers,
             peer_count: no.peer_count,
             peer_index: no.peer_index,
             primary: no.primary,
@@ -1013,8 +1013,8 @@ pub(super) async fn run_redeploy(
         match relaunch_one(&state, &peers, no, &self_id, &key, &params, slice).await {
             None => {
                 info!("redeploy: {} subiu", no.hostname);
-                aceitos.insert(no.node_id.clone(), params);
-                resultados.push(RedeployOutcome {
+                accepted.insert(no.node_id.clone(), params);
+                results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
                     hostname: no.hostname.clone(),
                     reconfigured: true,
@@ -1023,7 +1023,7 @@ pub(super) async fn run_redeploy(
             }
             Some(e) => {
                 warn!("redeploy: {} não subiu: {e}", no.hostname);
-                resultados.push(RedeployOutcome {
+                results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
                     hostname: no.hostname.clone(),
                     reconfigured: false,
@@ -1033,7 +1033,7 @@ pub(super) async fn run_redeploy(
         }
     }
 
-    finish_redeploy(&state, &mut registro, aceitos, resultados, job_id).await
+    finish_redeploy(&state, &mut record, accepted, results, job_id).await
 }
 
 /// A fotografia do que um nó estava rodando, tirada antes do unload.
@@ -1053,30 +1053,30 @@ pub(super) struct NodeIdentitySnapshot {
 /// Grava os parâmetros aceitos no registro, publica e monta o resultado do job.
 pub(super) async fn finish_redeploy(
     state: &GatewayState,
-    registro: &mut crate::deployment::Deployment,
-    mut aceitos: HashMap<String, RuntimeParams>,
-    resultados: Vec<RedeployOutcome>,
+    record: &mut crate::deployment::Deployment,
+    mut accepted: HashMap<String, RuntimeParams>,
+    results: Vec<RedeployOutcome>,
     job_id: &str,
 ) -> Result<usize, String> {
     // Só o que a máquina de fato aceitou entra no registro. Uma que recusou
     // continua descrita com a configuração antiga - o registro tem que dizer o
     // que **é**, não o que se pediu.
-    for no in registro.nodes.iter_mut() {
-        if let Some(p) = aceitos.remove(&no.node_id) {
+    for no in record.nodes.iter_mut() {
+        if let Some(p) = accepted.remove(&no.node_id) {
             no.config = p;
         }
     }
     // O que cada máquina de fato aceitou entra também no snapshot da versão
     // ativa, para o histórico não divergir da lista que o runtime lê.
-    registro.commit_active_nodes();
-    publish_record(state, registro).await;
+    record.commit_active_nodes();
+    publish_record(state, record).await;
 
-    let falhas = resultados.iter().filter(|r| !r.reconfigured).count();
+    let failures = results.iter().filter(|r| !r.reconfigured).count();
     set_job_progress(job_id, 100.0).await;
     {
         let mut map = jobs().write().await;
         if let Some(j) = map.get_mut(job_id) {
-            j.outputs = resultados
+            j.outputs = results
                 .iter()
                 .map(|r| match &r.error {
                     Some(e) => format!("{}: {e}", r.hostname),
@@ -1085,7 +1085,7 @@ pub(super) async fn finish_redeploy(
                 .collect();
         }
     }
-    Ok(falhas)
+    Ok(failures)
 }
 
 /// Sobe **uma** máquina para a faixa que ela já tem, com os parâmetros novos,
@@ -1109,17 +1109,17 @@ pub(super) async fn relaunch_one(
         let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) else {
             return Some("peer não encontrado".to_string());
         };
-        let corpo = json!({ "params": params, "slice": slice });
+        let body = json!({ "params": params, "slice": slice });
         // Recarregar pesos é minutos, não segundos.
         match state
-            .control_post_json(peer, "/api/ui/reconfigure", &corpo, REDEPLOY_READY_TIMEOUT)
+            .control_post_json(peer, "/api/ui/reconfigure", &body, REDEPLOY_READY_TIMEOUT)
             .await
         {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
                 let status = r.status();
-                let detalhe = r.text().await.unwrap_or_default();
-                return Some(format!("a máquina recusou: HTTP {status} {detalhe}"));
+                let detail = r.text().await.unwrap_or_default();
+                return Some(format!("a máquina recusou: HTTP {status} {detail}"));
             }
             Err(e) => return Some(format!("máquina inacessível: {e}")),
         }
@@ -1141,17 +1141,17 @@ pub(super) async fn relaunch_one(
 pub(super) async fn run_redeploy_in_place(
     state: &GatewayState,
     peers: &[PeerInfo],
-    registro: &mut crate::deployment::Deployment,
+    record: &mut crate::deployment::Deployment,
     req: &RedeployRequest,
     self_id: &str,
     key: &str,
     job_id: &str,
 ) -> Result<usize, String> {
-    let total = registro.nodes.len().max(1);
-    let mut resultados: Vec<RedeployOutcome> = Vec::new();
-    let mut aceitos: HashMap<String, RuntimeParams> = HashMap::new();
+    let total = record.nodes.len().max(1);
+    let mut results: Vec<RedeployOutcome> = Vec::new();
+    let mut accepted: HashMap<String, RuntimeParams> = HashMap::new();
 
-    for (i, no) in registro.nodes.iter().enumerate() {
+    for (i, no) in record.nodes.iter().enumerate() {
         set_job(
             job_id,
             "running",
@@ -1163,11 +1163,11 @@ pub(super) async fn run_redeploy_in_place(
 
         // Ver `run_redeploy`: `no.config` é a configuração efetiva da versão.
         let mut params = no.config.clone();
-        if let Some(ajuste) = req.per_node.get(&no.node_id) {
-            if let Some(g) = ajuste.n_gpu_layers {
+        if let Some(adjustment) = req.per_node.get(&no.node_id) {
+            if let Some(g) = adjustment.n_gpu_layers {
                 params.n_gpu_layers = g;
             }
-            if let Some(k) = ajuste.offload_kqv {
+            if let Some(k) = adjustment.offload_kqv {
                 params.offload_kqv = k;
             }
         }
@@ -1175,8 +1175,8 @@ pub(super) async fn run_redeploy_in_place(
         match reconfigure_one(state, peers, &no.node_id, self_id, key, &params).await {
             None => {
                 info!("redeploy (tp): {} recarregada", no.hostname);
-                aceitos.insert(no.node_id.clone(), params);
-                resultados.push(RedeployOutcome {
+                accepted.insert(no.node_id.clone(), params);
+                results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
                     hostname: no.hostname.clone(),
                     reconfigured: true,
@@ -1185,7 +1185,7 @@ pub(super) async fn run_redeploy_in_place(
             }
             Some(e) => {
                 warn!("redeploy (tp): {} não recarregou: {e}", no.hostname);
-                resultados.push(RedeployOutcome {
+                results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
                     hostname: no.hostname.clone(),
                     reconfigured: false,
@@ -1195,7 +1195,7 @@ pub(super) async fn run_redeploy_in_place(
         }
     }
 
-    finish_redeploy(state, registro, aceitos, resultados, job_id).await
+    finish_redeploy(state, record, accepted, results, job_id).await
 }
 
 pub(super) async fn validate_redeploy_wire_dtype(
@@ -1282,11 +1282,11 @@ pub(super) async fn reconfigure_one(
     _key: &str,
     params: &RuntimeParams,
 ) -> Option<String> {
-    let corpo = json!({ "params": params });
+    let body = json!({ "params": params });
 
     if node_id == self_id {
-        let resposta = crate::webui::reconfigure_local(state.clone(), params.clone(), None).await;
-        return resposta.err();
+        let response = crate::webui::reconfigure_local(state.clone(), params.clone(), None).await;
+        return response.err();
     }
 
     let peer = peers.iter().find(|p| p.node_id == node_id)?;
@@ -1297,7 +1297,7 @@ pub(super) async fn reconfigure_one(
         .control_post_json(
             peer,
             "/api/ui/reconfigure",
-            &corpo,
+            &body,
             Duration::from_secs(1800),
         )
         .await
@@ -1305,8 +1305,8 @@ pub(super) async fn reconfigure_one(
         Ok(r) if r.status().is_success() => None,
         Ok(r) => {
             let status = r.status();
-            let detalhe = r.text().await.unwrap_or_default();
-            Some(format!("a máquina recusou: HTTP {status} {detalhe}"))
+            let detail = r.text().await.unwrap_or_default();
+            Some(format!("a máquina recusou: HTTP {status} {detail}"))
         }
         Err(e) => Some(format!("máquina inacessível: {e}")),
     }

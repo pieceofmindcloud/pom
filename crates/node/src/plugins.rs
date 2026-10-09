@@ -4012,7 +4012,7 @@ pub(crate) async fn list_development_plugin_sources(
     _auth: crate::auth::ConnectionAuth,
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
 ) -> axum::response::Response {
-    if !crate::pom_desenv_enabled() {
+    if !crate::pom_dev_mode_enabled() {
         return (
             axum::http::StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "code": "development_disabled" })),
@@ -4027,7 +4027,7 @@ pub(crate) async fn rebuild_install_development_plugin(
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
     axum::extract::Path(repository): axum::extract::Path<String>,
 ) -> axum::response::Response {
-    if !crate::pom_desenv_enabled() {
+    if !crate::pom_dev_mode_enabled() {
         return (
             axum::http::StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "code": "development_disabled" })),

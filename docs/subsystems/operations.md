@@ -113,7 +113,7 @@ planner did not close the `0..total_layers` coverage.
 ## Route battery and output shape
 
 To separate the effect of output shape from the effect of network origin, run
-`POM_BENCH_API_KEY=sk-... ./scripts/bench-rotas.sh <label>`. The variable is
+`POM_BENCH_API_KEY=sk-... ./scripts/bench-routes.sh <label>`. The variable is
 required, used only as the inference header and never appears in the CSV or
 the summary. The script runs one warm-up call per origin, then three
 repetitions of each combination of the four origins defined in the script
@@ -348,7 +348,7 @@ scripts/bench-llamacpp.sh <reports-dir>/<date>-<model>.config.json \
 ```
 
 The result is a CSV with one line per warm-up, measurement or error, plus a
-`summary.md` with the medians of the five `bench-rotas.sh` prompts. The
+`summary.md` with the medians of the five `bench-routes.sh` prompts. The
 `generation_tok_s` field comes from `timings.predicted_per_second`;
 `prefill_ms` and `prefill_tok_s` come from `timings.prompt_ms` and
 `timings.prompt_per_second`; `ttft_ms` is the observed time to the first SSE

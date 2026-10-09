@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bench-rotas.sh - bateria reproduzivel para separar forma da saida, origem de
+# bench-routes.sh - bateria reproduzivel para separar forma da saida, origem de
 # rede e custo do no na geracao distribuida do POM.
 #
 # O que mede:
@@ -8,9 +8,9 @@
 #   de aquecimento descartada e, por padrao, 3 repeticoes medidas.
 #
 # Uso:
-#   ./scripts/bench-rotas.sh ipv4-42777
-#   ./scripts/bench-rotas.sh ipv6-42777 --origens mac-ksia,ksia-local
-#   ./scripts/bench-rotas.sh passagem-1 --repeticoes 5 --csv /tmp/p1.csv
+#   ./scripts/bench-routes.sh ipv4-42777
+#   ./scripts/bench-routes.sh ipv6-42777 --origins mac-ksia,ksia-local
+#   ./scripts/bench-routes.sh passagem-1 --repetitions 5 --csv /tmp/p1.csv
 #
 # A saida principal e um CSV estavel, uma linha por aquecimento, pedido medido
 # ou falha. O resumo de medianas por celula e impresso no fim. As colunas
@@ -35,7 +35,7 @@
 # salem-ksia usa SSH como SALEM_SSH_USER (padrao ubuntu) em
 # SALEM_SSH_HOST (padrao 100.85.81.27), autenticando com SALEM_PASS. Informe
 # a senha no ambiente ao rodar, por exemplo:
-#   SALEM_PASS='sua-senha' ./scripts/bench-rotas.sh passagem-1
+#   SALEM_PASS='sua-senha' ./scripts/bench-routes.sh passagem-1
 # A senha nunca fica neste arquivo. SALEM_KSIA_URL pode sobrescrever o alvo
 # visto de dentro da salem; por padrao e http://ksia:8080. KSIA_URL pode
 # sobrescrever o alvo usado pelo Mac; por padrao e http://ksia:8080.
@@ -80,9 +80,9 @@ usage() {
     cat <<'USAGE'
 
 Opcoes:
-  --origens LISTA       Subconjunto separado por virgulas.
-  --repeticoes N        Repeticoes medidas por celula (padrao: 3).
-  --csv CAMINHO         Arquivo de saida (padrao: bench-rotas-LABEL-UTC.csv).
+  --origins LISTA       Subconjunto separado por virgulas.
+  --repetitions N        Repeticoes medidas por celula (padrao: 3).
+  --csv CAMINHO         Arquivo de saida (padrao: bench-routes-LABEL-UTC.csv).
   -h, --help            Mostra esta ajuda.
 
 Variaveis obrigatorias: POM_BENCH_API_KEY (API key de inferencia do POM).
@@ -114,7 +114,7 @@ parse_origins() {
     local origin
     local IFS=','
     read -r -a SELECTED_ORIGINS <<< "$raw"
-    [[ ${#SELECTED_ORIGINS[@]} -gt 0 ]] || die '--origens nao pode ser vazio'
+    [[ ${#SELECTED_ORIGINS[@]} -gt 0 ]] || die '--origins nao pode ser vazio'
     for origin in "${SELECTED_ORIGINS[@]}"; do
         contains "$origin" "${ORIGINS[@]}" || die "origem desconhecida: $origin"
     done
@@ -132,21 +132,21 @@ parse_args() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --origens)
-                [[ $# -ge 2 ]] || die '--origens exige uma lista'
+            --origins)
+                [[ $# -ge 2 ]] || die '--origins exige uma lista'
                 parse_origins "$2"
                 shift 2
                 ;;
-            --origens=*)
+            --origins=*)
                 parse_origins "${1#*=}"
                 shift
                 ;;
-            --repeticoes)
-                [[ $# -ge 2 ]] || die '--repeticoes exige um numero'
+            --repetitions)
+                [[ $# -ge 2 ]] || die '--repetitions exige um numero'
                 REPETITIONS="$2"
                 shift 2
                 ;;
-            --repeticoes=*)
+            --repetitions=*)
                 REPETITIONS="${1#*=}"
                 shift
                 ;;
@@ -169,7 +169,7 @@ parse_args() {
         esac
     done
 
-    [[ "$REPETITIONS" =~ ^[1-9][0-9]*$ ]] || die '--repeticoes deve ser um inteiro positivo'
+    [[ "$REPETITIONS" =~ ^[1-9][0-9]*$ ]] || die '--repetitions deve ser um inteiro positivo'
     if [[ ${#SELECTED_ORIGINS[@]} -eq 0 ]]; then
         SELECTED_ORIGINS=("${ORIGINS[@]}")
     fi
@@ -184,14 +184,14 @@ build_long_context() {
 }
 
 LONG_REPETITIVE_CONTEXT="$(build_long_context R)"
-LONG_VARIADO_CONTEXT="$(build_long_context V)"
+LONG_VARIED_CONTEXT="$(build_long_context V)"
 
 PROMPT_SHORT_REPETITIVE='Escreva exatamente 30 vezes a palavra POM, separadas por um unico espaco, em uma unica linha. Nao escreva preambulo, numeracao, pontuacao, explicacao ou quebra de linha.'
-PROMPT_SHORT_VARIADO='Explique em ate 120 palavras por que a separacao entre prefill e decode ajuda a medir inferencia distribuida. Escreva prosa natural, variada e informativa, sem listas e sem repetir frases.'
+PROMPT_SHORT_VARIED='Explique em ate 120 palavras por que a separacao entre prefill e decode ajuda a medir inferencia distribuida. Escreva prosa natural, variada e informativa, sem listas e sem repetir frases.'
 PROMPT_LONG_REPETITIVE="$LONG_REPETITIVE_CONTEXT
 
 Agora escreva exatamente 30 vezes a palavra POM, separadas por um unico espaco, em uma unica linha. Nao escreva preambulo, numeracao, pontuacao, explicacao ou quebra de linha. O contexto acima e apenas enchimento deterministico."
-PROMPT_LONG_VARIADO="$LONG_VARIADO_CONTEXT
+PROMPT_LONG_VARIED="$LONG_VARIED_CONTEXT
 
 Agora explique em ate 120 palavras por que a separacao entre prefill e decode ajuda a medir inferencia distribuida. Escreva prosa natural, variada e informativa, sem listas e sem repetir frases. O contexto acima e apenas enchimento deterministico."
 
@@ -206,9 +206,9 @@ random_prefill_prompt() {
 get_prompt() {
     case "$1" in
         p-curto-repetitivo) printf '%s' "$PROMPT_SHORT_REPETITIVE" ;;
-        p-curto-variado) printf '%s' "$PROMPT_SHORT_VARIADO" ;;
+        p-curto-variado) printf '%s' "$PROMPT_SHORT_VARIED" ;;
         p-longo-repetitivo) printf '%s' "$PROMPT_LONG_REPETITIVE" ;;
-        p-longo-variado) printf '%s' "$PROMPT_LONG_VARIADO" ;;
+        p-longo-variado) printf '%s' "$PROMPT_LONG_VARIED" ;;
         p-prefill-aleatorio) random_prefill_prompt ;;
         *) return 1 ;;
     esac
@@ -488,7 +488,7 @@ write_summary_tsv() {
          | map(select(length > 0) | split("\t")
              | {
                  origin: .[0], prompt: .[1], phase: .[2], status: .[3],
-                 fichas: .[4], generation: .[5], mtp_acceptance: .[6], ttft: .[7],
+                 tokens: .[4], generation: .[5], mtp_acceptance: .[6], ttft: .[7],
                  node_p50: .[8], total: .[9]
                })) as $rows
         | ($rows
@@ -499,7 +499,7 @@ write_summary_tsv() {
            | [
                $group[0].origin,
                $group[0].prompt,
-               ($group | map(.fichas | select(length > 0) | tonumber) | median),
+               ($group | map(.tokens | select(length > 0) | tonumber) | median),
                ($group | map(.generation | select(length > 0) | tonumber) | median),
                ($group | map(.mtp_acceptance | select(length > 0) | tonumber) | median),
                ($group | map(.ttft | select(length > 0) | tonumber) | median),
@@ -517,7 +517,7 @@ print_summary() {
     local row
     local summary_origin
     local summary_prompt
-    local fichas
+    local tokens
     local generation_rate
     local mtp_acceptance_rate
     local ttft
@@ -535,9 +535,9 @@ print_summary() {
             row="$(awk -F '\t' -v wanted_origin="$origin" -v wanted_prompt="$prompt_id" \
                         '$1 == wanted_origin && $2 == wanted_prompt { print; exit }' "$summary_tsv")"
             if [[ -n "$row" ]]; then
-                IFS=$'\t' read -r summary_origin summary_prompt fichas generation_rate mtp_acceptance_rate ttft node_p50 total <<< "$row"
+                IFS=$'\t' read -r summary_origin summary_prompt tokens generation_rate mtp_acceptance_rate ttft node_p50 total <<< "$row"
                 printf '%-14s %-23s %14s %16s %18s %10s %14s %10s\n' \
-                            "$summary_origin" "$summary_prompt" "$fichas" "$generation_rate" \
+                            "$summary_origin" "$summary_prompt" "$tokens" "$generation_rate" \
                             "$mtp_acceptance_rate" "$ttft" "$node_p50" "$total"
             else
                 printf '%-14s %-23s %14s %16s %18s %10s %14s %10s\n' \
@@ -608,11 +608,11 @@ main() {
         require_command base64
    fi
 
-    TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bench-rotas.XXXXXX")"
+    TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bench-routes.XXXXXX")"
     trap 'rm -rf "$TMP_DIR"' EXIT
 
     if [[ -z "$CSV_PATH" ]]; then
-        CSV_PATH="bench-rotas-$LABEL-$(date -u +%Y%m%dT%H%M%SZ).csv"
+        CSV_PATH="bench-routes-$LABEL-$(date -u +%Y%m%dT%H%M%SZ).csv"
     fi
     printf '%s\n' "$CSV_HEADER" > "$CSV_PATH" || die "nao foi possivel criar CSV: $CSV_PATH"
     CSV_COLUMN_COUNT="$(awk -F, '{ print NF }' <<< "$CSV_HEADER")"

@@ -3,12 +3,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="$ROOT_DIR/scripts/bench-rotas.sh"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bench-rotas-test.XXXXXX")"
+SCRIPT="$ROOT_DIR/scripts/bench-routes.sh"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bench-routes-test.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 if [[ ! -x "$SCRIPT" ]]; then
-    echo "bench-rotas.sh não existe ou não é executável" >&2
+    echo "bench-routes.sh não existe ou não é executável" >&2
     exit 1
 fi
 
@@ -57,7 +57,7 @@ FAKE_RESPONSE='{"response":"ok","source":"pipeline:test","tokens_generated":5,"t
 
 CSV_ONE="$TMP_DIR/one.csv"
 PATH="$FAKE_BIN:$PATH" POM_FAKE_RESPONSE="$FAKE_RESPONSE" POM_BENCH_API_KEY='sk-test-bench' \
-    "$SCRIPT" test-one --origens mac-local --repeticoes 1 --csv "$CSV_ONE" \
+    "$SCRIPT" test-one --origins mac-local --repetitions 1 --csv "$CSV_ONE" \
     > "$TMP_DIR/one.summary"
 
 [[ "$(wc -l < "$CSV_ONE" | tr -d ' ')" == 7 ]]
@@ -78,7 +78,7 @@ grep -Fq 'p-prefill-aleatorio' "$CSV_ONE"
 CSV_TWO="$TMP_DIR/two.csv"
 PATH="$FAKE_BIN:$PATH" POM_FAKE_RESPONSE="$FAKE_RESPONSE" POM_BENCH_API_KEY='sk-test-bench' \
     POM_FAKE_FAIL_KSIA=1 "$SCRIPT" test-two \
-    --origens mac-local,mac-ksia --repeticoes 1 --csv "$CSV_TWO" \
+    --origins mac-local,mac-ksia --repetitions 1 --csv "$CSV_TWO" \
     > "$TMP_DIR/two.summary"
 
 grep -Fq 'mac-ksia' "$CSV_TWO"
@@ -106,4 +106,4 @@ assert prefill["max_tokens"] == "8"
 assert prefill["trace_mtp_acceptance_rate"] == "0.8"
 PY
 
-echo "bench-rotas.sh: testes de contrato passaram"
+echo "bench-routes.sh: testes de contrato passaram"

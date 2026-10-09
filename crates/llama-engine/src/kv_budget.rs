@@ -79,7 +79,7 @@ mod tests {
     use crate::KvCacheType;
 
     #[test]
-    fn calcula_kv_com_tipos_assimetricos_e_sessoes() {
+    fn computes_kv_with_asymmetric_types_and_sessions() {
         let geometry = KvLayerGeometry {
             kv_heads: 8,
             key_head_dim: 64,
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_dimensao_que_nao_fecha_bloco_quantizado() {
+    fn refuses_a_dimension_that_does_not_close_a_quantized_block() {
         let geometry = KvLayerGeometry {
             kv_heads: 1,
             key_head_dim: 33,
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_overflow_em_vez_de_enrolar_o_planejamento() {
+    fn refuses_overflow_instead_of_wrapping_the_planning() {
         let geometry = KvLayerGeometry {
             kv_heads: 8,
             key_head_dim: 128,
@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_zero_sessoes_em_vez_de_inventar_uma_sessao() {
+    fn refuses_zero_sessions_instead_of_inventing_one() {
         let geometry = KvLayerGeometry {
             kv_heads: 8,
             key_head_dim: 128,

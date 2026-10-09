@@ -4,7 +4,7 @@
  * (`scripts/build-docs.mjs` gera `src/docs/` no build, os guias vivem em
  * `src/guides/`), então o que se testa aqui é o contrato entre a tela e esse
  * conjunto - duas abas para dois públicos, a árvore que navega o repositório,
- * a busca, e o endereço (`?tab=`, `?guia=`, `?doc=`).
+ * a busca, e o endereço (`?tab=`, `?guide=`, `?doc=`).
  *
  * O jsdom não calcula layout; os testes que valem a pena aqui são de
  * comportamento, não de posição. As afirmações sobre a rolagem são estruturais
@@ -43,7 +43,7 @@ const documentedPlugin: ActivePluginUi = {
   },
 };
 
-function renderDoc(initialEntry = "/documentacao") {
+function renderDoc(initialEntry = "/documentation") {
   return render(
     <MemoryRouter
       initialEntries={[initialEntry]}
@@ -70,7 +70,7 @@ describe("Documentation", () => {
   afterEach(() => vi.restoreAllMocks());
   afterEach(() => setPluginUi([]));
 
-  it("abre nos guias, não no markdown de agente", () => {
+  it("opens on the guides, not on the agent markdown", () => {
     renderDoc();
     // O primeiro guia é o "o que é esta plataforma"; o markdown da raiz não
     // pode ser a primeira coisa que um humano vê.
@@ -78,7 +78,7 @@ describe("Documentation", () => {
     expect(screen.queryByRole("heading", { name: "AGENTS.md - raiz" })).toBeNull();
   });
 
-  it("um guia leva o leitor à referência pelo link de aprofundamento", () => {
+  it("a guide takes the reader to the reference through the deep-dive link", () => {
     renderDoc();
     fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
     // O leitor imprime o assunto no próprio cabeçalho e o markdown entra sem o
@@ -90,7 +90,7 @@ describe("Documentation", () => {
     );
   });
 
-  it("a lista de arquivos não mostra nome de arquivo nem AGENTS.md", () => {
+  it("the file list shows neither a file name nor AGENTS.md", () => {
     renderDoc();
     openReference();
     // "backend/" e não "AGENTS.md - crates/node/src/backend/"; "P2P network
@@ -101,15 +101,15 @@ describe("Documentation", () => {
     expect(screen.queryByRole("button", { name: /\.md$/ })).toBeNull();
   });
 
-  it("o cabeçalho da seção abre a visão geral daquela pasta", () => {
+  it("the section header opens the overview of that folder", () => {
     renderDoc();
     openReference();
     fireEvent.click(screen.getByRole("button", { name: "docs/" }));
     expect(screen.getByRole("heading", { name: "docs/", level: 2 })).toBeTruthy();
   });
 
-  it("uma seção pode ser recolhida mesmo segurando o documento aberto", async () => {
-    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
+  it("a section can be collapsed even while holding the open document", async () => {
+    renderDoc("/documentation?tab=reference&doc=docs/subsystems/inference.md");
     const collapse = screen.getByRole("button", { name: "Collapse Subsystem docs" });
     expect(screen.getByRole("button", { name: "Open Inference path" })).toBeTruthy();
 
@@ -125,7 +125,7 @@ describe("Documentation", () => {
     expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
   });
 
-  it("a lista de navegação rola sozinha, e não a página", () => {
+  it("the navigation list scrolls on its own, not the page", () => {
     const { container } = renderDoc();
     openReference();
     // A regressão foi estrutural: sem `min-h-0` o filho flex cresce com o
@@ -136,16 +136,16 @@ describe("Documentation", () => {
     expect(scrollers[0].className).toContain("min-h-0");
   });
 
-  it("?doc= e ?guia= são endereços", () => {
-    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
+  it("?doc= and ?guide= are addresses", () => {
+    renderDoc("/documentation?tab=reference&doc=docs/subsystems/inference.md");
     expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
     cleanup();
 
-    renderDoc("/documentacao?tab=guias&guia=operar");
+    renderDoc("/documentation?tab=guides&guide=operating");
     expect(screen.getByRole("heading", { name: "Operate and diagnose", level: 2 })).toBeTruthy();
   });
 
-  it("a busca filtra por rótulo e corpo; limpar volta à árvore", () => {
+  it("the search filters by label and body; clearing returns to the tree", () => {
     renderDoc();
     openReference();
     const search = screen.getByLabelText("Search documentation");
@@ -159,7 +159,7 @@ describe("Documentation", () => {
     expect(screen.getByRole("button", { name: "Project root" })).toBeTruthy();
   });
 
-  it("uma busca sem resultado avisa em vez de quebrar", () => {
+  it("a search without results warns instead of breaking", () => {
     renderDoc();
     openReference();
     fireEvent.change(screen.getByLabelText("Search documentation"), {
@@ -168,7 +168,7 @@ describe("Documentation", () => {
     expect(screen.getByText("No documentation matches")).toBeTruthy();
   });
 
-  it("exibe guias de um plugin instalado e carrega o Markdown sob demanda", async () => {
+  it("displays the guides of an installed plugin and loads the Markdown on demand", async () => {
     setPluginUi([documentedPlugin]);
     vi.spyOn(api, "getText").mockResolvedValue("# Plugin guide\n\nPlugin content");
     renderDoc();
@@ -185,15 +185,15 @@ describe("Documentation", () => {
     );
   });
 
-  describe("navegação mobile", () => {
-    it("começa na barra em tela inteira, sem o leitor nem o botão Voltar", () => {
+  describe("mobile navigation", () => {
+    it("starts on the full-screen bar, without the reader or the Back button", () => {
       const { container } = renderDoc();
       expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
       expect(container.querySelector("nav")?.className).not.toContain("hidden");
       expect(screen.getByTestId("docs-reader").className).toContain("hidden");
     });
 
-    it("selecionar um item abre o leitor em tela cheia com Voltar no topo", () => {
+    it("selecting an item opens the reader full screen with Back at the top", () => {
       const { container } = renderDoc();
       fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
 
@@ -203,7 +203,7 @@ describe("Documentation", () => {
       expect(screen.getByTestId("docs-reader").className).not.toContain("hidden");
     });
 
-    it("Voltar fecha o leitor sem perder a seleção", () => {
+    it("Back closes the reader without losing the selection", () => {
       const { container } = renderDoc();
       fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
       fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -215,8 +215,8 @@ describe("Documentation", () => {
       expect(screen.getByRole("heading", { name: "P2P network and discovery", level: 2 })).toBeTruthy();
     });
 
-    it("um deep link já chega como seleção, abrindo direto no leitor", () => {
-      renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
+    it("a deep link already arrives as a selection, opening straight in the reader", () => {
+      renderDoc("/documentation?tab=reference&doc=docs/subsystems/inference.md");
       expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
       expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
     });

@@ -115,7 +115,7 @@ interface RegisteredPlugin {
 const PLUGIN_CODE_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
 const ALL_PROFILES: readonly Profile[] = ["admin", "node", "infer"];
 /** Rotas nativas do POM que um manifesto pode fornecer como substituição. */
-const POM_PLUGIN_EXTENSION_ROUTES = new Set(["/logs", "/estatisticas"]);
+const POM_PLUGIN_EXTENSION_ROUTES = new Set(["/logs", "/statistics"]);
 
 let registry: RegisteredPlugin[] = [];
 let snapshot: ActivePluginUi[] = [];

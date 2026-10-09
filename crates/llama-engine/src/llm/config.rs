@@ -647,7 +647,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn sem_outros_processos_reserva_o_padrao_pequeno() {
+    fn without_other_processes_reserves_the_small_default() {
         assert_eq!(
             fit_memory_margin_bytes(memory(16 * 1024, 16 * 1024), 256),
             256 * MIB
@@ -655,7 +655,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn processos_existentes_nao_sao_descontados_duas_vezes() {
+    fn existing_processes_are_not_discounted_twice() {
         assert_eq!(
             fit_memory_margin_bytes(memory(16 * 1024, 4 * 1024), 256),
             256 * MIB
@@ -663,7 +663,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn memoria_livre_menor_que_o_pedido_reduz_a_reserva() {
+    fn free_memory_below_the_request_shrinks_the_reserve() {
         assert_eq!(
             fit_memory_margin_bytes(memory(16 * 1024, 64), 256),
             64 * MIB
@@ -671,12 +671,12 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn memoria_insuficiente_ate_para_o_minimo_nao_faz_underflow() {
+    fn memory_too_small_even_for_the_minimum_does_not_underflow() {
         assert_eq!(fit_memory_margin_bytes(memory(16 * 1024, 2), 256), 0);
     }
 
     #[test]
-    fn margens_sao_calculadas_independentemente_para_cada_dispositivo() {
+    fn margins_are_computed_independently_for_each_device() {
         let margins = fit_memory_margins(
             &[
                 memory(16 * 1024, 16 * 1024),
@@ -691,7 +691,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn snapshot_do_fit_preserva_memoria_e_orcamento_por_dispositivo() {
+    fn fit_snapshot_preserves_memory_and_budget_per_device() {
         let memories = vec![memory(16 * 1024, 15 * 1024), memory(24 * 1024, 20 * 1024)];
         let margins = fit_memory_margins(&memories, memories.len(), 256);
 
@@ -713,14 +713,14 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn fit_usa_a_contagem_dos_dispositivos_elegiveis_e_nao_o_limite_generico() {
+    fn fit_uses_the_eligible_device_count_and_not_the_generic_limit() {
         assert_eq!(fit_device_count(2, 0, 16), 2);
         assert_eq!(fit_device_count(0, 2, 16), 2);
         assert_eq!(fit_device_count(0, 0, 16), 1);
     }
 
     #[test]
-    fn arquivo_sem_nextn_nao_pede_carga_nem_contexto_mtp() {
+    fn a_file_without_nextn_asks_for_no_mtp_load_or_context() {
         assert_eq!(
             mtp_mode_for_nextn_availability(MtpFitMode::Vram, false),
             MtpFitMode::Disabled
@@ -736,7 +736,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn arquitetura_com_nextn_sem_grafo_desliga_o_fit_mtp_com_motivo() {
+    fn an_architecture_with_nextn_and_no_graph_turns_off_the_mtp_fit_with_a_reason() {
         let (mode, reason) = mtp_fit_mode_for_model(MtpFitMode::Vram, true, Some("graniteswitch"));
 
         assert_eq!(mode, MtpFitMode::Disabled);
@@ -747,7 +747,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn arquitetura_com_grafo_mtp_mantem_a_tentativa_em_vram() {
+    fn an_architecture_with_an_mtp_graph_keeps_the_vram_attempt() {
         assert_eq!(
             mtp_fit_mode_for_model(MtpFitMode::Vram, true, Some("qwen35moe")),
             (MtpFitMode::Vram, None)
@@ -945,7 +945,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn pedido_mtp_reserva_o_custo_do_segundo_contexto_em_cada_dispositivo() {
+    fn an_mtp_request_reserves_the_second_context_cost_on_each_device() {
         let margins = vec![256 * MIB, 256 * MIB];
         let mtp_cost = vec![727 * MIB, 311 * MIB];
 
@@ -956,7 +956,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn mtp_apertado_nao_pode_reduzir_camadas_principais() {
+    fn a_tight_mtp_cannot_reduce_the_main_layers() {
         // Reproduz a inversão de 27fda8b: o fit principal cabe inteiro, mas
         // o fit conjunto só cabe se remover camadas. Nesse caso o MTP cede.
         assert_eq!(
@@ -966,7 +966,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn mtp_em_vram_so_e_aceito_quando_o_fit_conjunto_tambem_cabe() {
+    fn mtp_in_vram_is_only_accepted_when_the_joint_fit_also_fits() {
         assert_eq!(
             choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(-1), false),
             MtpFitMode::Vram
@@ -978,7 +978,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn principal_reduzido_nao_da_direito_ao_mtp_na_vram() {
+    fn a_reduced_main_model_does_not_entitle_mtp_to_vram() {
         assert_eq!(
             choose_mtp_fit_mode(MtpFitMode::Vram, 50, Some(-1), false),
             MtpFitMode::Ram
@@ -1009,7 +1009,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn mtp_desligado_mantem_a_distribuicao_do_fit_principal() {
+    fn mtp_off_keeps_the_main_fit_distribution() {
         assert_eq!(
             choose_mtp_fit_mode(MtpFitMode::Disabled, 50, Some(50), false),
             MtpFitMode::Disabled
@@ -1017,7 +1017,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn mtp_desmarcado_nao_reserva_orcamento() {
+    fn unchecked_mtp_reserves_no_budget() {
         let margins = vec![256 * MIB, 256 * MIB];
         let mtp_cost = vec![727 * MIB, 311 * MIB];
 
@@ -1028,7 +1028,7 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn mtp_desmarcado_nao_ativa_o_preflight_da_arquitetura() {
+    fn unchecked_mtp_does_not_trigger_the_architecture_preflight() {
         assert_eq!(
             mtp_fit_mode_for_model(MtpFitMode::Disabled, true, Some("graniteswitch")),
             (MtpFitMode::Disabled, None)
@@ -1130,7 +1130,7 @@ mod fit_memory_margin_tests {
     /// nunca soube que `EngineConfig.mtp_draft_path` existe, mesmo esse campo
     /// já tendo sido introduzido para exatamente este caso.
     #[test]
-    fn fit_plan_reconhece_um_rascunho_mtp_externo_quando_o_alvo_nao_embute_nextn() {
+    fn fit_plan_recognizes_an_external_mtp_draft_when_the_target_embeds_no_nextn() {
         let dir = std::env::temp_dir().join(format!(
             "pom-fit-plan-external-draft-{}",
             uuid::Uuid::new_v4().simple()
@@ -1176,7 +1176,7 @@ mod fit_memory_margin_tests {
     /// Sem `nextn` embutido e sem rascunho configurado, o comportamento
     /// permanece exatamente o de antes: MTP indisponível.
     #[test]
-    fn fit_plan_continua_indisponivel_sem_nextn_e_sem_rascunho() {
+    fn fit_plan_stays_unavailable_without_nextn_and_without_a_draft() {
         let dir = std::env::temp_dir().join(format!(
             "pom-fit-plan-no-draft-{}",
             uuid::Uuid::new_v4().simple()

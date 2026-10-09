@@ -26,13 +26,13 @@ export interface SliceNamed {
  * final. Um modelo inteiro não tem faixa e continua se chamando pelo nome.
  */
 export function transferTitle(item: SliceNamed): string {
-  const faixa =
+  const range =
     item.start_layer != null && item.end_layer != null
       ? layerRange(item.start_layer, item.end_layer)
       : null;
-  if (item.model_label && faixa) return `${item.model_label} · ${faixa}`;
+  if (item.model_label && range) return `${item.model_label} · ${range}`;
   if (item.model_label) return item.model_label;
-  if (faixa) return `${faixa} · ${item.name}`;
+  if (range) return `${range} · ${item.name}`;
   return item.name;
 }
 

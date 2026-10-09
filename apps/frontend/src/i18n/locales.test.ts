@@ -27,8 +27,8 @@ describe("resolveLocale", () => {
  * inglês no meio, sem erro nenhum no console. Este teste é o único lugar que
  * repara nisso.
  */
-describe("cobertura das traduções", () => {
-  it("define exatamente as mesmas chaves nos dois idiomas", () => {
+describe("translation coverage", () => {
+  it("defines exactly the same keys in both languages", () => {
     const [first, ...rest] = SUPPORTED_LOCALES;
     const reference = new Set(messageKeys(first));
     for (const locale of rest) {
@@ -73,22 +73,22 @@ describe("formatMessage", () => {
  * era o que acontecia com o desfecho de uma transferência.
  */
 describe("localizeServerText", () => {
-  it("traduz o motivo mantendo o nome da máquina", () => {
+  it("translates the reason keeping the machine name", () => {
     expect(localizeServerText("en", "recusado por ksia")).toBe("refused by ksia");
     expect(localizeServerText("en", "cancelado por atena")).toBe("cancelled by atena");
   });
 
-  it("em pt-BR o texto do nó passa intacto", () => {
+  it("in pt-BR the node text passes through untouched", () => {
     expect(localizeServerText("pt-BR", "recusado por ksia")).toBe("recusado por ksia");
   });
 
-  it("traduz a etapa que o nó reporta enquanto pede o digest", () => {
+  it("translates the step the node reports while asking for the digest", () => {
     expect(localizeServerText("en", "conferindo o arquivo na origem")).toBe(
       "checking the file at the source",
     );
   });
 
-  it("traduz as recusas de autoridade da implantação", () => {
+  it("translates the deployment authority refusals", () => {
     expect(localizeServerText(
       "en",
       "somente o administrador pode adicionar uma máquina à implantação",

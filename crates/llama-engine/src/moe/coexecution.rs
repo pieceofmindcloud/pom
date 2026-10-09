@@ -333,7 +333,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     #[test]
-    fn cpu_e_gpu_comecam_juntos() {
+    fn cpu_and_gpu_start_together() {
         let barrier = Arc::new(Barrier::new(2));
         let cpu_barrier = Arc::clone(&barrier);
         let gpu_barrier = Arc::clone(&barrier);
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn coexecucao_usa_banda_medida_para_dividir_misses() {
+    fn coexecution_uses_the_measured_band_to_split_misses() {
         let profile = crate::moe::bandwidth::BandwidthProfile {
             cpu_overlap_bytes_per_sec: 3.0,
             transfer_overlap_bytes_per_sec: 1.0,
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn coexecucao_preserva_erro_da_lane_gpu() {
+    fn coexecution_preserves_the_gpu_lane_error() {
         let profile = crate::moe::bandwidth::BandwidthProfile {
             cpu_overlap_bytes_per_sec: 1.0,
             transfer_overlap_bytes_per_sec: 1.0,
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_duplo_recusa_reserva_sem_orcamento() {
+    fn double_buffer_refuses_a_reserve_without_a_budget() {
         assert!(matches!(
             DoubleBuffer::<u8>::with_budget(9, 17),
             Err(BufferError::InsufficientBudget {
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn divide_experts_unicos_preserva_hits_na_gpu() {
+    fn splitting_unique_experts_preserves_hits_on_the_gpu() {
         let profile = crate::moe::bandwidth::BandwidthProfile {
             cpu_overlap_bytes_per_sec: 1.0,
             transfer_overlap_bytes_per_sec: 1.0,
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn combina_saidas_das_lanes_por_token() {
+    fn combines_lane_outputs_per_token() {
         let cpu = [1.0, 2.0, 3.0, 4.0];
         let gpu = [10.0, 20.0, 30.0, 40.0];
         assert_eq!(
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn combina_saidas_recusa_largura_diferente() {
+    fn combining_outputs_refuses_a_different_width() {
         assert!(matches!(
             combine_lane_outputs(&[1.0], &[2.0, 3.0], 1, 1),
             Err(LaneOutputError::Shape { .. })

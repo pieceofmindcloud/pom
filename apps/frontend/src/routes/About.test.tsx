@@ -64,7 +64,7 @@ afterEach(() => {
 });
 
 describe("About", () => {
-  it("mostra a licença AGPL, aviso LGPD e links dos projetos", () => {
+  it("shows the AGPL license, the LGPD notice and the project links", () => {
     mount();
 
     expect(screen.getByRole("heading", { name: "Sobre" })).toBeTruthy();
@@ -88,7 +88,7 @@ describe("About", () => {
     );
   });
 
-  it("filtra a lista por nome sem esconder o aviso de licença do POM", () => {
+  it("filters the list by name without hiding the POM license notice", () => {
     mount();
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Buscar dependências" }), {
@@ -100,7 +100,7 @@ describe("About", () => {
     expect(screen.getByText("Aviso de privacidade e segurança (LGPD)")).toBeTruthy();
   });
 
-  it("permite verificar atualizações do pom sob demanda, separado dos plugins", async () => {
+  it("allows checking for pom updates on demand, separate from the plugins", async () => {
     mocks.enterpriseStatus.data = { ...inactiveEnterpriseStatus(), active: true, state: "active" };
     mocks.post.mockResolvedValue({ core_update: null });
     mount();
@@ -112,7 +112,7 @@ describe("About", () => {
     expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("/api/ui/plugins"));
   });
 
-  it("mostra e aplica a atualização do pom nesta própria tela, sem redirecionar", async () => {
+  it("shows and applies the pom update on this very screen, without redirecting", async () => {
     mocks.enterpriseStatus.data = { ...inactiveEnterpriseStatus(), active: true, state: "active" };
     mocks.pomUpdate.data = {
       core_update: { release_id: "pom_core-0.2.0-linux-x86_64", version: "0.2.0", changelog: null },

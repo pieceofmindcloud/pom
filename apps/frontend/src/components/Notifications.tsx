@@ -371,7 +371,7 @@ export function Notifications() {
                           variant="ghost"
                           onClick={() => {
                             setOpen(false);
-                            navigate("/config/preferencias");
+                            navigate("/config/preferences");
                           }}
                         >
                           {t("firstRun.defaultPasswordChange")}
@@ -666,7 +666,7 @@ export function Notifications() {
             <button
               onClick={() => {
                 setOpen(false);
-                navigate(authorityOffers.length > 0 ? "/config/administracao" : "/transferencias");
+                navigate(authorityOffers.length > 0 ? "/config/administration" : "/transfers");
               }}
               className="w-full border-t border-line px-4 py-2.5 text-center text-[0.8rem] text-muted transition-colors hover:bg-line/40 hover:text-fg"
             >

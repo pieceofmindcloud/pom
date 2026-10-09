@@ -232,11 +232,11 @@ pub(crate) async fn reconfigure_local(
         }
         // Sem identidade: só troca os parâmetros do que já está carregado.
         None => {
-            let Some(atual) = state.runtime.config().await else {
+            let Some(current) = state.runtime.config().await else {
                 warn!("reconfigure recusado: este nó não está servindo nada");
                 return Err("este nó não está servindo nada para reconfigurar".into());
             };
-            atual.with_params(&params)
+            current.with_params(&params)
         }
     };
 

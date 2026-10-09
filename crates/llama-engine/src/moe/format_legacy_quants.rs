@@ -945,7 +945,7 @@ pub mod tests {
     }
 
     #[test]
-    fn legacy_q4_1_q5_0_q5_1_q8_0_decodifica_vetor_conhecido() {
+    fn legacy_q4_1_q5_0_q5_1_q8_0_decode_a_known_vector() {
         let expected = [
             (LegacyQuantFormat::Q4_1, 1.0f32),
             (LegacyQuantFormat::Q5_0, -8.0),
@@ -959,7 +959,7 @@ pub mod tests {
     }
 
     #[test]
-    fn legacy_source_e_executor_cobrem_fused_e_split() {
+    fn legacy_source_and_executor_cover_fused_and_split() {
         for format in [
             LegacyQuantFormat::Q4_1,
             LegacyQuantFormat::Q5_0,

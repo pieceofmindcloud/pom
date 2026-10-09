@@ -119,7 +119,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn o_popover_tem_medida_de_telemovel() {
+    fn the_popover_is_phone_sized() {
         // Retrato, e na largura de um iPhone padrão: é o que "tamanho de
         // smartphone" quer dizer, e a largura em que o chat foi conferido.
         let (width, height) = POPOVER_SIZE;
@@ -132,13 +132,13 @@ mod tests {
     }
 
     #[test]
-    fn o_endereco_usa_a_porta_escolhida_pelo_rust() {
+    fn the_address_uses_the_port_chosen_by_rust() {
         assert_eq!(chat_url(9123), "http://127.0.0.1:9123/admin-ui/chat");
         assert_eq!(chat_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
     }
 
     #[test]
-    fn a_arte_do_item_de_barra_esta_versionada_nas_tres_resolucoes() {
+    fn the_status_bar_item_art_is_versioned_in_the_three_resolutions() {
         // O caminho sai do manifesto, e não de `project_root()`: durante os
         // testes o cwd é o do crate, não a raiz do repositório.
         //

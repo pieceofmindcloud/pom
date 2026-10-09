@@ -500,7 +500,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usa_o_checkout_vendorizado_por_padrao() {
+    fn uses_the_vendored_checkout_by_default() {
         let workspace_root = Path::new(r"D:\a\rdma-p2p\rdma-p2p");
 
         assert_eq!(
@@ -513,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn respeita_llama_source_explicito() {
+    fn respects_an_explicit_llama_source() {
         let workspace_root = Path::new(r"D:\a\rdma-p2p\rdma-p2p");
         let override_source = Path::new(r"E:\forks\llama.cpp");
 
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn usa_a_fonte_preparada_pela_dependencia() {
+    fn uses_the_source_prepared_by_the_dependency() {
         let workspace_root = Path::new(r"D:\a\rdma-p2p\rdma-p2p");
         let prepared_source = Path::new(r"D:\a\rdma-p2p\rdma-p2p\vendor\llama-cpp-sys-2\llama.cpp");
         let source_override = Path::new(r"E:\forks\llama.cpp");
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn llama_cpp_ausente_falha_de_forma_ruidosa() {
+    fn missing_llama_cpp_fails_loudly() {
         let error = ensure_llama_cpp_root(Path::new("/caminho/que/nao/existe/llama.cpp"))
             .expect_err("um fork ausente não pode gerar uma lista vazia");
 
@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn extrai_nomes_oficiais_pelo_dispatch_e_pela_tabela() {
+    fn extracts_official_names_from_the_dispatch_and_the_table() {
         let names =
             extract_mtp_architectures(&fixture_sources(), fixture_dispatch(), fixture_names())
                 .expect("fontes MTP válidas devem ser extraídas");
@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn mencao_em_comentario_nao_conta_como_verificacao() {
+    fn a_mention_in_a_comment_does_not_count_as_a_check() {
         let mut sources = fixture_sources();
         sources.push((
             PathBuf::from("comentario.cpp"),
@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn verificacao_fora_de_build_arch_graph_falha() {
+    fn a_check_outside_build_arch_graph_fails() {
         let mut sources = fixture_sources();
         sources.push((
             PathBuf::from("fora-do-grafo.cpp"),
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_duplicado_falha_de_forma_ruidosa() {
+    fn a_duplicate_dispatch_fails_loudly() {
         let error = parse_model_dispatch(
             "case LLM_ARCH_QWEN35: return new llama_model_qwen35(params);\n\
              case LLM_ARCH_QWEN35MOE: return new llama_model_qwen35(params);",
@@ -701,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn extracao_vazia_falha_de_forma_ruidosa() {
+    fn an_empty_extraction_fails_loudly() {
         let error =
             extract_mtp_architectures(&[], "", "").expect_err("lista vazia não pode ser aceita");
 
@@ -709,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn extracao_visivelmente_pequena_falha_de_forma_ruidosa() {
+    fn a_visibly_small_extraction_fails_loudly() {
         let error = validate_mtp_architectures(&[
             "qwen3next".to_string(),
             "qwen35".to_string(),

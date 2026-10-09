@@ -386,7 +386,7 @@ export function ModelNetworkCanvas({
    * de camadas, réplicas empilhadas. Recalculado quando a topologia muda, não a
    * cada poll - senão os cards andariam sozinhos enquanto o operador olha.
    */
-  const arranjo = useMemo(
+  const arrangement = useMemo(
     () => autoLayout(
       ranges.map((range) => ({ id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer })),
       (id) => (isCardCompact(cardModes, id) ? COMPACT_CARD_SIZE : CARD_SIZE),
@@ -398,7 +398,7 @@ export function ModelNetworkCanvas({
   // sobra para um nó que o `autoLayout` não conheça, o que não deveria
   // acontecer - mas sumir da tela seria pior que aparecer no lugar errado.
   const positionOf = (range: GraphRange, index: number) =>
-    positions[keyFor(range)] ?? arranjo[keyFor(range)] ?? fallbackPosition(index);
+    positions[keyFor(range)] ?? arrangement[keyFor(range)] ?? fallbackPosition(index);
   const updatePosition = (id: string, next: CanvasPosition) => setPositions((current) => {
     const updated = { ...current, [id]: next };
     writePositions(layoutKey, updated);
@@ -426,20 +426,20 @@ export function ModelNetworkCanvas({
    *
    * Quem foi movido à mão fica onde está: aquilo é uma decisão, e o botão que
    * apagasse decisões seria o botão que ninguém aperta. O arranjo automático
-   * entra para todo o resto. Para descartar as decisões existe `redefinir`.
+   * entra para todo o resto. Para descartar as decisões existe `reset`.
    */
-  const organizar = () => {
+  const organize = () => {
     // Só o que foi arrastado é gravado: o resto segue o arranjo vivo, que
     // se recompõe quando um card é minimizado ou expandido.
     setPositions((current) => {
-      const arrastados = Object.fromEntries(Object.entries(current).filter(([id]) => id in arranjo || id === GATEWAY_LAYOUT_ID));
-      writePositions(layoutKey, arrastados);
-      return arrastados;
+      const dragged = Object.fromEntries(Object.entries(current).filter(([id]) => id in arrangement || id === GATEWAY_LAYOUT_ID));
+      writePositions(layoutKey, dragged);
+      return dragged;
     });
     setZoom(1);
   };
 
-  const redefinir = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
+  const reset = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
   const fit = () => setZoom(1);
 
   /*
@@ -498,8 +498,8 @@ export function ModelNetworkCanvas({
       <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.fit")} onClick={fit}>Fit</Button>
-      <Button size="sm" aria-label={t("canvas.autoLayout")} title={t("canvas.autoLayout")} onClick={organizar}><LayoutGrid className="h-4 w-4" /></Button>
-      <Button size="sm" aria-label={t("canvas.resetLayout")} title={t("canvas.resetLayout")} onClick={redefinir}><RotateCcw className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.autoLayout")} title={t("canvas.autoLayout")} onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.resetLayout")} title={t("canvas.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
     </div>
     {onToggleProperties && <div className="absolute right-4 top-3 z-20">
       <Button

@@ -357,7 +357,7 @@ mod tests {
 
     /// Uma cadeia assinada como a que o operador copia do admin, com a
     /// impressão digital que ele leva consigo.
-    fn cadeia_do_admin() -> (String, String) {
+    fn admin_chain() -> (String, String) {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
             "ksia",
@@ -378,7 +378,7 @@ mod tests {
         )
     }
 
-    async fn por_ancorar(node_id: &str) -> GatewayState {
+    async fn to_anchor(node_id: &str) -> GatewayState {
         let mut state = state_with(node_id, vec![]).await;
         state.admin_trust = Arc::new(crate::admin_trust::AdminTrust::empty());
         state
@@ -472,7 +472,7 @@ mod tests {
         assert_eq!(state.admin_trust.document().setup, Some(setup));
     }
 
-    fn instalar(peer: &str, document: &str, fingerprint: &str) -> HttpRequest<Body> {
+    fn install(peer: &str, document: &str, fingerprint: &str) -> HttpRequest<Body> {
         let mut request = HttpRequest::post("/api/ui/network/trust-anchor")
             .header("authorization", "Bearer chave")
             .header("content-type", "application/json")
@@ -495,17 +495,17 @@ mod tests {
     /// requisitante traz a senha humana correta - e a instalação continua
     /// recusada. Usar a exposição configurada como trava seria um buraco.
     #[tokio::test]
-    async fn a_ancora_nao_e_instalada_de_fora_do_loopback() {
-        let state = por_ancorar("salem").await;
+    async fn the_anchor_is_not_installed_from_outside_loopback() {
+        let state = to_anchor("salem").await;
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
             cfg.admin_access_token =
                 Some(crate::auth::hash_admin_password("token-do-operador").unwrap());
         }
-        let (document, fingerprint) = cadeia_do_admin();
+        let (document, fingerprint) = admin_chain();
 
-        let mut request = instalar("192.0.2.7:4321", &document, &fingerprint);
+        let mut request = install("192.0.2.7:4321", &document, &fingerprint);
         request.headers_mut().insert(
             crate::auth::ADMIN_ACCESS_TOKEN_HEADER,
             "token-do-operador".parse().unwrap(),
@@ -523,14 +523,14 @@ mod tests {
     /// Trocar a raiz não é gesto de interface. Um nó já ancorado recusa e diz
     /// que a reancoragem é manual, na máquina.
     #[tokio::test]
-    async fn um_no_ja_ancorado_recusa_a_instalacao() {
+    async fn an_already_anchored_node_refuses_the_installation() {
         // `state_with` já nasce ancorado na própria chave.
         let state = state_with("ksia", vec![]).await;
-        let ancora_original = state.admin_trust.document().anchor;
-        let (document, fingerprint) = cadeia_do_admin();
+        let original_anchor = state.admin_trust.document().anchor;
+        let (document, fingerprint) = admin_chain();
 
         let response = app(state.clone())
-            .oneshot(instalar("127.0.0.1:4321", &document, &fingerprint))
+            .oneshot(install("127.0.0.1:4321", &document, &fingerprint))
             .await
             .unwrap();
 
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(body_of(response).await["reason"], "already_anchored");
         assert_eq!(
             state.admin_trust.document().anchor,
-            ancora_original,
+            original_anchor,
             "a âncora vigente não pode ser substituída pela interface"
         );
     }
@@ -546,14 +546,14 @@ mod tests {
     /// O arquivo não se auto-valida: o que o valida é o valor que o operador
     /// trouxe pelo canal dele. Errar esse valor é recusa.
     #[tokio::test]
-    async fn a_impressao_digital_errada_e_recusada() {
-        let state = por_ancorar("salem").await;
-        let (document, fingerprint) = cadeia_do_admin();
-        let errada = format!("{}0", &fingerprint[1..]);
-        assert_ne!(errada, fingerprint);
+    async fn the_wrong_fingerprint_is_refused() {
+        let state = to_anchor("salem").await;
+        let (document, fingerprint) = admin_chain();
+        let wrong = format!("{}0", &fingerprint[1..]);
+        assert_ne!(wrong, fingerprint);
 
         let response = app(state.clone())
-            .oneshot(instalar("127.0.0.1:4321", &document, &errada))
+            .oneshot(install("127.0.0.1:4321", &document, &wrong))
             .await
             .unwrap();
 
@@ -568,14 +568,14 @@ mod tests {
     /// O caminho feliz do lado que recebe: colar o arquivo e digitar a
     /// impressão digital certa ancora o nó.
     #[tokio::test]
-    async fn a_impressao_digital_certa_instala_a_ancora() {
-        let state = por_ancorar("salem").await;
-        let (document, fingerprint) = cadeia_do_admin();
+    async fn the_right_fingerprint_installs_the_anchor() {
+        let state = to_anchor("salem").await;
+        let (document, fingerprint) = admin_chain();
 
         // Espaços e caixa são transcrição humana, não outro valor.
-        let digitada = format!("  {}  ", fingerprint.to_uppercase());
+        let typed = format!("  {}  ", fingerprint.to_uppercase());
         let response = app(state.clone())
-            .oneshot(instalar("127.0.0.1:4321", &document, &digitada))
+            .oneshot(install("127.0.0.1:4321", &document, &typed))
             .await
             .unwrap();
 
@@ -593,31 +593,31 @@ mod tests {
     /// fora do escopo `AdminOnly`, senão o operador nunca a alcança - e é
     /// exatamente ali que ele precisa dela.
     #[tokio::test]
-    async fn um_admin_por_ancorar_alcanca_a_tela_da_impressao_digital() {
-        let state = por_ancorar("ksia").await;
+    async fn an_admin_yet_to_be_anchored_reaches_the_fingerprint_screen() {
+        let state = to_anchor("ksia").await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
 
-        let mut recusada = HttpRequest::get("/api/ui/requests")
+        let mut refused = HttpRequest::get("/api/ui/requests")
             .header("authorization", "Bearer chave")
             .body(Body::empty())
             .unwrap();
-        recusada
+        refused
             .extensions_mut()
             .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
         assert_eq!(
-            app(state.clone()).oneshot(recusada).await.unwrap().status(),
+            app(state.clone()).oneshot(refused).await.unwrap().status(),
             StatusCode::FORBIDDEN,
             "sem âncora, o perfil admin não abre a superfície administrativa"
         );
 
-        let mut alcancada = HttpRequest::get("/api/ui/network/trust-anchor")
+        let mut reached = HttpRequest::get("/api/ui/network/trust-anchor")
             .header("authorization", "Bearer chave")
             .body(Body::empty())
             .unwrap();
-        alcancada
+        reached
             .extensions_mut()
             .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
-        let response = app(state).oneshot(alcancada).await.unwrap();
+        let response = app(state).oneshot(reached).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let view = body_of(response).await;
         assert_eq!(view["anchored"], false);
@@ -630,16 +630,16 @@ mod tests {
     /// impressão digital, senão o operador volta ao terminal - que é
     /// exatamente o que esta tarefa existe para evitar.
     #[tokio::test]
-    async fn a_tela_nao_depende_da_chave_de_conexao_do_cluster() {
+    async fn the_screen_does_not_depend_on_the_cluster_connection_key() {
         let state = state_with("ksia", vec![]).await;
 
-        let mut sem_credencial = HttpRequest::get("/api/ui/network/trust-anchor")
+        let mut without_credential = HttpRequest::get("/api/ui/network/trust-anchor")
             .body(Body::empty())
             .unwrap();
-        sem_credencial
+        without_credential
             .extensions_mut()
             .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
-        let response = app(state).oneshot(sem_credencial).await.unwrap();
+        let response = app(state).oneshot(without_credential).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_of(response).await["anchored"], true);
@@ -648,9 +648,9 @@ mod tests {
     /// O lado da ksia: um nó ancorado mostra a impressão digital que o
     /// operador leva consigo, e diz que a raiz é a dele.
     #[tokio::test]
-    async fn um_no_ancorado_mostra_a_impressao_digital_da_ancora() {
+    async fn an_anchored_node_shows_the_anchor_fingerprint() {
         let state = state_with("ksia", vec![]).await;
-        let esperada = crate::admin_trust::anchor_fingerprint(&state.admin_trust.document());
+        let expected = crate::admin_trust::anchor_fingerprint(&state.admin_trust.document());
 
         let mut request = HttpRequest::get("/api/ui/network/trust-anchor")
             .header("authorization", "Bearer chave")
@@ -662,7 +662,7 @@ mod tests {
         let view = body_of(app(state).oneshot(request).await.unwrap()).await;
 
         assert_eq!(view["anchored"], true);
-        assert_eq!(view["fingerprint"], esperada);
+        assert_eq!(view["fingerprint"], expected);
         assert_eq!(view["cluster_id"], "test-cluster");
         assert_eq!(view["is_anchor"], true);
         assert_eq!(view["can_install"], false);

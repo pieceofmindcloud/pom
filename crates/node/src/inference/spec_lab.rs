@@ -81,7 +81,7 @@ struct Hop {
 
 /// Tokens que o motor falso "amostra", em ordem. Termina antes de acabar para
 /// que um teste de `max_tokens` alto ainda feche por EOS.
-const ALFABETO: [&str; 8] = ["A", "B", "C", "D", "E", "F", "G", "H"];
+const ALPHABET: [&str; 8] = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
 fn frame(meta: &Value, tensor: Option<(&[f32], TensorShape)>) -> Response {
     match wire::encode(meta, tensor, WireDtype::F16) {
@@ -204,7 +204,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             // O primeiro token da geração, amostrado pela cauda.
             let i = hop.emitted.fetch_add(1, Ordering::Relaxed) as usize;
             local["token_id"] = json!(i as u32);
-            local["text"] = json!(ALFABETO[i % ALFABETO.len()]);
+            local["text"] = json!(ALPHABET[i % ALPHABET.len()]);
         }
     }
 
@@ -327,7 +327,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
             for _ in 0..n_positions {
                 let i = hop.emitted.fetch_add(1, Ordering::Relaxed) as usize;
                 sampled.push(i as i32);
-                texts.push(ALFABETO[i % ALFABETO.len()].to_string());
+                texts.push(ALPHABET[i % ALPHABET.len()].to_string());
             }
             let keep =
                 (crate::infer_server::longest_match(&sampled, &draft) + 1).min(sampled.len());
@@ -349,7 +349,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
             let i = hop.emitted.fetch_add(1, Ordering::Relaxed) as usize;
             local["done"] = json!(false);
             local["token_id"] = json!(i as u32);
-            local["text"] = json!(ALFABETO[i % ALFABETO.len()]);
+            local["text"] = json!(ALPHABET[i % ALPHABET.len()]);
         }
     } else {
         local["done"] = json!(false);
@@ -439,8 +439,8 @@ async fn spawn_hop(hop: Hop) -> String {
 // ── O cenário, montado no caminho do usuário final ────────────────────────────
 
 /// O que o cliente vê no fim de um `generate_stream_with_stops`.
-struct Visto {
-    texto: String,
+struct Seen {
+    text: String,
     tokens: u32,
     partial: bool,
     timings: Option<crate::gateway::GenerationTimings>,
@@ -451,12 +451,12 @@ struct Visto {
     step_calls: Vec<u64>,
     /// Desses, quantos chegaram pelo caminho da resposta direta.
     direct_steps: Vec<u64>,
-    falhou: Option<String>,
+    failed: Option<String>,
 }
 
 /// Sobe dois hops falsos, um gateway de verdade com a config do captain e roda
 /// uma geração pelo mesmo caminho que `/v1/chat/completions` usa.
-async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
+async fn generate(direct: bool, max_tokens: u32, n_batch: u32) -> Seen {
     // Com `RUST_LOG=info` a bancada imprime as mesmas linhas que o captain leu
     // no servidor — é assim que se confere que ela reproduz o caso dele, e não
     // um primo.
@@ -496,7 +496,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
         crate::pipeline::CAP_RELAY_CHAIN.to_string(),
         crate::pipeline::CAP_SPECULATE_LOOKUP.to_string(),
     ];
-    if direto {
+    if direct {
         caps.push(crate::pipeline::CAP_RELAY_DIRECT.to_string());
     }
 
@@ -504,14 +504,14 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
         .iter()
         .enumerate()
         .map(|(i, url)| {
-            let porta: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
+            let port: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
             let mut p = crate::gateway::testkit::peer(
                 &format!("hop{i}"),
                 &format!("m{i}"),
                 9000 + i as u16,
             );
             p.addr = "127.0.0.1:42777".into();
-            p.inference_port = Some(porta);
+            p.inference_port = Some(port);
             p.model = "lab".into();
             p.start_layer = i as u32;
             p.end_layer = i as u32;
@@ -551,45 +551,45 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
         tx,
     ));
 
-    let mut visto = Visto {
-        texto: String::new(),
+    let mut seen = Seen {
+        text: String::new(),
         tokens: 0,
         partial: false,
         timings: None,
         decode_calls: Vec::new(),
         step_calls: Vec::new(),
         direct_steps: Vec::new(),
-        falhou: None,
+        failed: None,
     };
     while let Some(ev) = rx.recv().await {
         match ev {
-            crate::gateway::GenEvent::Token(t) => visto.texto.push_str(&t),
+            crate::gateway::GenEvent::Token(t) => seen.text.push_str(&t),
             crate::gateway::GenEvent::Done(sum) => {
-                visto.tokens = sum.tokens_generated;
-                visto.partial = sum.partial;
-                visto.timings = Some(sum.timings);
-                visto.decode_calls = sum
+                seen.tokens = sum.tokens_generated;
+                seen.partial = sum.partial;
+                seen.timings = Some(sum.timings);
+                seen.decode_calls = sum
                     .trace
                     .as_ref()
                     .map(|t| t.hops.iter().map(|h| h.decode.calls).collect())
                     .unwrap_or_default();
             }
-            crate::gateway::GenEvent::Failed(e) => visto.falhou = Some(e),
+            crate::gateway::GenEvent::Failed(e) => seen.failed = Some(e),
             crate::gateway::GenEvent::FailedWithTelemetry { error, .. } => {
-                visto.falhou = Some(error)
+                seen.failed = Some(error)
             }
         }
     }
     let _ = bg.await;
-    visto.step_calls = step_calls
+    seen.step_calls = step_calls
         .iter()
         .map(|c| c.load(Ordering::Relaxed))
         .collect();
-    visto.direct_steps = direct_steps
+    seen.direct_steps = direct_steps
         .iter()
         .map(|c| c.load(Ordering::Relaxed))
         .collect();
-    visto
+    seen
 }
 
 // ── A lei ─────────────────────────────────────────────────────────────────────
@@ -604,56 +604,56 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
 /// Quem rascunha continua no anel, que é o único caminho que
 /// `step_speculative` conhece — sem resposta direta negociada.
 #[tokio::test]
-async fn quem_rascunha_no_anel_gera_o_texto_inteiro() {
-    let visto = gerar(false, 5, 512).await;
+async fn the_drafter_on_the_ring_generates_the_whole_text() {
+    let seen = generate(false, 5, 512).await;
 
-    assert_eq!(visto.falhou, None, "a geração não pode falhar");
-    assert_eq!(visto.tokens, 5);
-    assert!(!visto.partial);
-    assert_eq!(visto.texto, "ABCDE");
-    let timings = visto.timings.expect("a resposta deve trazer os tempos");
-    assert_eq!(timings.generation_tokens, visto.tokens);
+    assert_eq!(seen.failed, None, "a geração não pode falhar");
+    assert_eq!(seen.tokens, 5);
+    assert!(!seen.partial);
+    assert_eq!(seen.text, "ABCDE");
+    let timings = seen.timings.expect("a resposta deve trazer os tempos");
+    assert_eq!(timings.generation_tokens, seen.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
     // A sub-millisecond fake prefill is intentionally unmeasurable at the
     // public millisecond resolution; the contract here is that the prompt
     // was processed, not that a rate is fabricated from a zero duration.
     assert!(timings.prefill_tokens > 0);
     assert!(
-        visto.direct_steps.iter().all(|c| *c == 0),
+        seen.direct_steps.iter().all(|c| *c == 0),
         "sem resposta direta negociada, nenhum passo pode sair por ali: {:?}",
-        visto.direct_steps
+        seen.direct_steps
     );
-    assert!(visto.decode_calls.iter().all(|c| *c > 0));
+    assert!(seen.decode_calls.iter().all(|c| *c > 0));
 }
 
 /// E com resposta direta negociada: toda rodada especula, então nenhuma
 /// pode ser desviada — sem isto o teste anterior passaria por acidente.
 #[tokio::test]
-async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
-    let visto = gerar(true, 5, 512).await;
-    assert_eq!(visto.falhou, None);
-    assert_eq!(visto.tokens, 5);
-    assert!(!visto.partial);
-    assert_eq!(visto.texto, "ABCDE");
-    let timings = visto.timings.expect("a resposta deve trazer os tempos");
-    assert_eq!(timings.generation_tokens, visto.tokens);
+async fn the_drafter_with_direct_reply_is_not_diverted_to_it() {
+    let seen = generate(true, 5, 512).await;
+    assert_eq!(seen.failed, None);
+    assert_eq!(seen.tokens, 5);
+    assert!(!seen.partial);
+    assert_eq!(seen.text, "ABCDE");
+    let timings = seen.timings.expect("a resposta deve trazer os tempos");
+    assert_eq!(timings.generation_tokens, seen.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
     // See the no-ring case above: this fake can complete below one millisecond.
     assert!(timings.prefill_tokens > 0);
     assert_eq!(
-        visto.direct_steps[0], 0,
+        seen.direct_steps[0], 0,
         "toda rodada especulou, então nenhuma podia sair pelo caminho direto"
     );
-    assert!(visto.decode_calls.iter().all(|c| *c > 0));
+    assert!(seen.decode_calls.iter().all(|c| *c > 0));
 }
 
 #[tokio::test]
-async fn resposta_de_um_token_mantem_as_taxas_finitas() {
-    let visto = gerar(false, 1, 512).await;
+async fn a_one_token_response_keeps_the_rates_finite() {
+    let seen = generate(false, 1, 512).await;
 
-    assert_eq!(visto.falhou, None);
-    assert_eq!(visto.tokens, 1);
-    let timings = visto.timings.expect("a resposta deve trazer os tempos");
+    assert_eq!(seen.failed, None);
+    assert_eq!(seen.tokens, 1);
+    let timings = seen.timings.expect("a resposta deve trazer os tempos");
     assert_eq!(timings.generation_tokens, 1);
     assert!(timings.total_tokens_per_sec.is_finite());
     assert!(timings.generation_tokens_per_sec.is_none_or(f64::is_finite));
@@ -662,13 +662,13 @@ async fn resposta_de_um_token_mantem_as_taxas_finitas() {
 /// `n_batch=512` limita apenas a largura de uma rodada no motor, não o
 /// orçamento de saída pedido ao gateway.
 #[tokio::test]
-async fn um_orcamento_acima_de_n_batch_nao_e_truncado() {
+async fn a_budget_above_n_batch_is_not_truncated() {
     for n_batch in [512, 8] {
-        let visto = gerar(false, 2048, n_batch).await;
+        let seen = generate(false, 2048, n_batch).await;
 
-        assert_eq!(visto.falhou, None, "a geração não pode falhar");
-        assert_eq!(visto.tokens, 2048, "n_batch={n_batch} não pode ser o teto");
-        assert!(!visto.partial);
-        assert_eq!(visto.step_calls, vec![2047, 2047]);
+        assert_eq!(seen.failed, None, "a geração não pode falhar");
+        assert_eq!(seen.tokens, 2048, "n_batch={n_batch} não pode ser o teto");
+        assert!(!seen.partial);
+        assert_eq!(seen.step_calls, vec![2047, 2047]);
     }
 }

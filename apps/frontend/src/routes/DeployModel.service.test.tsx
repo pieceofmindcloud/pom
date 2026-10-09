@@ -46,7 +46,7 @@ vi.mock("../lib/api", () => ({
       url === "/api/ui/jobs"
         ? Promise.resolve({ jobs: [] })
         : url === "/api/ui/node"
-          ? Promise.resolve({ connection_key: "", pom_desenv: false })
+          ? Promise.resolve({ connection_key: "", pom_dev_mode: false })
           : url === "/api/ui/cache-types"
             ? Promise.resolve({ cache_type_k: "f16", cache_type_v: "f16", choices: ["f16", "q4_0"] })
             : undefined,
@@ -182,7 +182,7 @@ function mount(shardSets: unknown[] = []) {
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchInterval: false } } });
   client.setQueryData(keys.jobs, { jobs: [] });
-  client.setQueryData(keys.node, { connection_key: "", pom_desenv: false });
+  client.setQueryData(keys.node, { connection_key: "", pom_dev_mode: false });
   client.setQueryData(keys.cluster, cluster);
   client.setQueryData(keys.clusterModels, {
     peers: [
@@ -207,14 +207,14 @@ function mount(shardSets: unknown[] = []) {
   );
 }
 
-describe("DeployModel · serviço de inferência de plugin", () => {
+describe("DeployModel · plugin inference service", () => {
   beforeEach(() => {
     post.mockReset();
     localStorage.clear();
     cluster = CLUSTER;
   });
 
-  it("com o motor que roda fatias, oferece só as fatias da arquitetura dele", async () => {
+  it("with the engine that runs slices, offers only the slices of its architecture", async () => {
     cluster = {
       peers: CLUSTER.peers.map((peer) => ({
         ...peer,
@@ -234,7 +234,7 @@ describe("DeployModel · serviço de inferência de plugin", () => {
     expect(screen.getByRole("radio", { name: "Fatias" }).getAttribute("aria-checked")).toBe("true");
   });
 
-  it("sem serviço de inferência de plugin, não há escolha de motor", async () => {
+  it("without a plugin inference service, there is no engine choice", async () => {
     cluster = { peers: [{ node_id: "ksia", node: { plugin_services: [] } }] };
     mount();
     await screen.findByRole("combobox", { name: "Modelo técnico" });
@@ -242,7 +242,7 @@ describe("DeployModel · serviço de inferência de plugin", () => {
   });
   afterEach(cleanup);
 
-  it("oferece só os modelos que o motor roda e manda o serviço no plano e no deploy", async () => {
+  it("offers only the models the engine runs and sends the service in the plan and in the deploy", async () => {
     mount();
     const service = await screen.findByRole("combobox", { name: "Serviço de inferência" });
     fireEvent.change(service, { target: { value: "strata" } });

@@ -1831,7 +1831,7 @@ mod tests {
     }
 
     #[test]
-    fn read_info_preserva_geometria_kv_escalar_e_por_camada() {
+    fn read_info_preserves_scalar_and_per_layer_kv_geometry() {
         let dir = std::env::temp_dir();
         let mut p = dir.clone();
         p.push("pom-kv-geometry.gguf");

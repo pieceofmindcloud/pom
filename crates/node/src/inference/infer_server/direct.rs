@@ -405,7 +405,7 @@ mod speculative_tests {
     }
 
     #[test]
-    fn razoes_da_cauda_separam_nextn_modelo_e_prontidao() {
+    fn tail_reasons_separate_nextn_model_and_readiness() {
         assert_eq!(
             mtp_tail_speculation_reason(false, Some(crate::llm::MTP_NO_NEXTN_REASON)),
             Some(SPECULATION_REASON_TAIL_WITHOUT_NEXTN)

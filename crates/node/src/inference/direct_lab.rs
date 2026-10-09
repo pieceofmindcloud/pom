@@ -900,7 +900,7 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
 /// prefixo. Este cenário exercita a mesma cadeia de produção e faz os hops
 /// falsos recusarem qualquer continuação sem `start_pos`.
 #[tokio::test(flavor = "multi_thread")]
-async fn direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso() {
+async fn direct_prefill_preserves_the_absolute_position_with_and_without_reuse() {
     for reuse_prefix in [false, true] {
         let outcome = run_scenario(2, 1, true, reuse_prefix).await;
         assert_eq!(

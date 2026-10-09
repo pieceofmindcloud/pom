@@ -110,19 +110,19 @@ mod tests {
     }
 
     #[test]
-    fn usa_a_banda_sobreposta_quando_existe() {
+    fn uses_the_overlapping_band_when_there_is_one() {
         assert!((profile().gpu_fraction().unwrap() - 0.25).abs() < 1e-6);
     }
 
     #[test]
-    fn divide_misses_de_forma_deterministica() {
+    fn splits_misses_deterministically() {
         let split = profile().split_misses(&[10, 11, 12, 13]).unwrap();
         assert_eq!(split.gpu, vec![10]);
         assert_eq!(split.cpu, vec![11, 12, 13]);
     }
 
     #[test]
-    fn usa_fallback_de_perfil_antigo() {
+    fn uses_the_old_profile_fallback() {
         let mut old = profile();
         old.cpu_overlap_bytes_per_sec = 0.0;
         old.transfer_overlap_bytes_per_sec = 0.0;
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn perfil_incompleto_nao_escolhe_overlap() {
+    fn an_incomplete_profile_does_not_choose_overlap() {
         let mut incomplete = profile();
         incomplete.cpu_overlap_bytes_per_sec = 0.0;
         incomplete.transfer_overlap_bytes_per_sec = 0.0;

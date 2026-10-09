@@ -212,7 +212,7 @@ profile policy remains the effective authorization boundary.
   `plugin_github_repositories`; installations use
   `plugin_public_install:<code>` without a lease or grant. Typed preferences
   stay local at `/api/ui/plugins/:code/preferences`; these routes do not
-  activate a license. With `POM_DESENV=1`, `GET
+  activate a license. With `POM_DEV_MODE=1`, `GET
   /api/ui/plugins/dev-sources` lists mounted sources and
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds a local plugin without prior activation. Both routes
@@ -276,8 +276,8 @@ profile policy remains the effective authorization boundary.
   em vez de zero. A validade do RTT é de cinco minutos; valores vencidos
   aparecem como diagnóstico, mas não entram na seleção da geração.
   `NodeInfo` carries the same thermal policy used by the runtime. It also
-  carries `pom_desenv`, which is true only for the exact startup environment
-  value `POM_DESENV=1`; this flag controls only local UI visibility, so every
+  carries `pom_dev_mode`, which is true only for the exact startup environment
+  value `POM_DEV_MODE=1`; this flag controls only local UI visibility, so every
   deploy boundary preserves development-only runtime fields received in the
   request. A missing inference mode uses `dense` (`llama.cpp`) by default.
   `slice/plan` and `slice` accept the
@@ -965,7 +965,7 @@ faz o download autenticado do blob persistido.
   here - they belong to the deprecated wizard's router in `main.rs`
   (`start_setup_mode`), which nothing starts any more.
   Os testes que chamam `apply_cluster_policy` também seguram
-  `peer_client::POLITICA_GLOBAL`, porque o esquema TLS global é compartilhado
+  `peer_client::GLOBAL_POLICY`, porque o esquema TLS global é compartilhado
   por toda a suíte.
 - `deploy/` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
   qual inventário o `survey` lê: `shard_sets`, ou os modelos inteiros via
@@ -1010,7 +1010,7 @@ faz o download autenticado do blob persistido.
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
   `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy
-  independentemente de `POM_DESENV`; `effective_params_for_kind` só aplica a
+  independentemente de `POM_DEV_MODE`; `effective_params_for_kind` só aplica a
   regra estrutural de desligar `fit_memory` no Tensor Parallelism. O modo
   ausente é `dense` (`llama.cpp`); `auto` só entra quando foi pedido
   explicitamente.

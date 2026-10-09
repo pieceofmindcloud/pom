@@ -904,7 +904,7 @@ pub mod tests {
     }
 
     #[test]
-    fn plain_dispatch_recusa_dtype_quantizado_com_nome() {
+    fn plain_dispatch_refuses_a_quantized_dtype_by_name() {
         let error = PlainFormat::from_dtype(3).unwrap_err();
         assert!(error.to_string().contains("3 (Q4_1)"));
     }

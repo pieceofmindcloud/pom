@@ -1877,7 +1877,7 @@ mod tests {
     }
 
     #[test]
-    fn bloco_rota_top_k_e_reutiliza_cache_global() {
+    fn block_routes_top_k_and_reuses_the_global_cache() {
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("pom-ftk-q4-block-{}.gguf", std::process::id()));
         let (hidden, intermediate) = write_q4_source(&path);

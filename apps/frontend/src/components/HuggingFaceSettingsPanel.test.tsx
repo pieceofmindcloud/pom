@@ -41,7 +41,7 @@ function mount() {
 }
 
 describe("HuggingFaceSettingsPanel", () => {
-  it("mostra apenas a máscara, aceita um novo token e nunca pré-carrega o segredo", async () => {
+  it("shows only the mask, accepts a new token and never preloads the secret", async () => {
     saveHuggingFaceToken.mockResolvedValue({
       configured: true,
       masked: "••••••••cret",

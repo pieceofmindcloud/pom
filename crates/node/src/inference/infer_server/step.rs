@@ -169,7 +169,7 @@ pub(crate) async fn handle_step(
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
-            Err(motivo) => return err400(motivo),
+            Err(reason) => return err400(reason),
         }
     };
     // Neither of `step_blocking`'s replies echoes `session_id` back — a
@@ -1166,7 +1166,7 @@ mod remote_stream_tests {
     use super::*;
 
     #[tokio::test]
-    async fn emissor_para_quando_a_entrega_termina_antes_do_produtor() {
+    async fn the_emitter_stops_when_delivery_ends_before_the_producer() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         use std::time::Duration;
@@ -1199,7 +1199,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn espera_do_stream_separa_producao_de_fila_com_instantes_conhecidos() {
+    fn stream_wait_separates_production_from_queue_with_known_instants() {
         let origin = Instant::now();
         let wait_started = origin + std::time::Duration::from_millis(100);
         let ready_at = origin + std::time::Duration::from_millis(176);
@@ -1243,7 +1243,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_preserva_conteudo_ordem_e_tempos() {
+    fn a_remote_batch_preserves_content_order_and_times() {
         let (batch, error, terminal) =
             remote_stream_batch(&[token(4, "A", false), token(9, "ção", true)]);
 
@@ -1263,7 +1263,7 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn lote_remoto_preserva_session_id_do_canal_de_retorno() {
+    async fn a_remote_batch_preserves_the_return_channel_session_id() {
         let (items_tx, items_rx) = mpsc::channel(1);
         items_tx
             .send(token(7, "token", true))
@@ -1283,7 +1283,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_preserva_tempos_dos_hops_downstream() {
+    fn a_remote_batch_preserves_the_downstream_hop_times() {
         let mut first = token_state(4, "A", false, false, false, None);
         if let RemoteStreamItem::Token(token) = &mut first {
             token.hop_timings = Some(json!([
@@ -1311,7 +1311,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_soma_contadores_mtp_de_rodadas_agrupadas() {
+    fn a_remote_batch_sums_the_mtp_counters_of_grouped_rounds() {
         let timings = |proposed, accepted, rejected| {
             json!({
                 "mtp_draft_tokens_proposed": proposed,
@@ -1352,7 +1352,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn lote_remoto_transporta_o_rascunho_no_mesmo_callback() {
+    fn a_remote_batch_carries_the_draft_in_the_same_callback() {
         let item = RemoteStreamItem::Token(RemoteStreamToken {
             token_id: 4,
             token_index: 4,
@@ -1389,7 +1389,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn rascunho_remoto_e_instalado_sem_criar_rodada_extra() {
+    fn a_remote_draft_is_installed_without_an_extra_round() {
         let mut step_meta = json!({
             "token_id": 4,
             "speculate": {"k": 4, "m": 0, "source": "mtp"}
@@ -1413,7 +1413,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn rascunho_remoto_desativado_remove_o_estado_com_razao() {
+    fn a_disabled_remote_draft_removes_the_state_with_a_reason() {
         let mut step_meta = json!({
             "speculate": {"k": 4, "m": 0, "source": "mtp", "draft": [5, 6]}
         });
@@ -1436,7 +1436,7 @@ mod remote_stream_tests {
     }
 
     #[test]
-    fn erro_depois_de_tokens_mantem_o_prefixo_e_e_terminal() {
+    fn an_error_after_tokens_keeps_the_prefix_and_is_terminal() {
         let (batch, error, terminal) = remote_stream_batch(&[
             token(4, "prefixo", false),
             RemoteStreamItem::Error("falha no peer seguinte".into()),
@@ -1449,7 +1449,7 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn oito_tokens_e_rascunho_cruzam_em_um_unico_callback() {
+    async fn eight_tokens_and_a_draft_cross_in_a_single_callback() {
         let (items_tx, items_rx) = mpsc::channel(16);
         items_tx
             .send(token_state(0, "t0", false, false, true, Some(vec![8, 9])))
@@ -1499,7 +1499,7 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn emitter_nao_conta_fila_anterior_ao_inicio_da_janela() {
+    async fn the_emitter_does_not_count_queue_time_before_the_window_start() {
         use std::time::{Duration, Instant};
 
         let (items_tx, items_rx) = mpsc::channel(1);
@@ -1535,7 +1535,7 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn falha_de_entrega_do_stream_chega_em_lote_de_erro() {
+    async fn a_stream_delivery_failure_arrives_as_an_error_batch() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::{Duration, Instant};
 

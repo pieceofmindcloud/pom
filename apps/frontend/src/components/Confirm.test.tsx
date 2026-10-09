@@ -20,7 +20,7 @@ import { Confirm, Modal } from "./Confirm";
 describe("Confirm", () => {
   afterEach(cleanup);
 
-  it("desenha a janela no body, não dentro do ancestral com backdrop-blur", () => {
+  it("draws the window in the body, not inside the ancestor with backdrop-blur", () => {
     render(
       <div className="backdrop-blur-md">
         <Confirm
@@ -40,7 +40,7 @@ describe("Confirm", () => {
     expect(dialog.closest(".backdrop-blur-md")).toBeNull();
   });
 
-  it("não desenha nada enquanto está fechada", () => {
+  it("draws nothing while it is closed", () => {
     render(
       <Confirm
         open={false}
@@ -60,28 +60,28 @@ describe("Confirm", () => {
    * `document`, sem a pilha um Esc só fecharia as duas, e quem desistiu da
    * confirmação perderia também a tela que estava lendo.
    */
-  it("o Esc fecha só a janela de cima", () => {
-    const fecharDeBaixo = vi.fn();
-    const fecharDeCima = vi.fn();
-    function Tela() {
-      const [confirmando, setConfirmando] = useState(false);
+  it("Esc closes only the top window", () => {
+    const closeFromBelow = vi.fn();
+    const closeFromAbove = vi.fn();
+    function Screen() {
+      const [confirming, setConfirming] = useState(false);
       return (
         <>
           <Modal
             open
             title="Detalhes de ksia"
-            onClose={fecharDeBaixo}
-            footer={<button onClick={() => setConfirmando(true)}>Sair da rede</button>}
+            onClose={closeFromBelow}
+            footer={<button onClick={() => setConfirming(true)}>Sair da rede</button>}
           >
             card
           </Modal>
-          <Modal open={confirmando} title="Tirar ksia da rede?" onClose={fecharDeCima} footer={null}>
+          <Modal open={confirming} title="Tirar ksia da rede?" onClose={closeFromAbove} footer={null}>
             conteúdo
           </Modal>
         </>
       );
     }
-    render(<Tela />);
+    render(<Screen />);
     act(() => {
       fireEvent.click(screen.getByText("Sair da rede"));
     });
@@ -89,7 +89,7 @@ describe("Confirm", () => {
     act(() => {
       fireEvent.keyDown(document, { key: "Escape" });
     });
-    expect(fecharDeCima).toHaveBeenCalledTimes(1);
-    expect(fecharDeBaixo).not.toHaveBeenCalled();
+    expect(closeFromAbove).toHaveBeenCalledTimes(1);
+    expect(closeFromBelow).not.toHaveBeenCalled();
   });
 });

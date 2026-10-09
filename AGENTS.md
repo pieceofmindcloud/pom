@@ -93,7 +93,7 @@ cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 A imagem Docker também compila `pom-plugin-host` e o coloca ao lado de `pom`;
 o entrypoint mantém o caminho explícito e o nó inicia um host isolado quando um
 plugin é instalado. O Compose local usa `dev-runtime`, monta as fontes
-allowlisted em `/opt/pom/dev-plugins` e habilita `POM_DESENV=1` para o rebuild
+allowlisted em `/opt/pom/dev-plugins` e habilita `POM_DEV_MODE=1` para o rebuild
 local; o Cargo grava em `.pom-dev-plugin-builds/` na raiz do projeto POM,
 fora das fontes que podem ser montadas somente para leitura. O perfil de
 plugins do cluster usa o mesmo target e mantém o cache do Cargo em
@@ -224,7 +224,7 @@ quebra o produto inteiro.
   retornado pelo servidor de licenças ou restaurado do estado local, sem
   catálogo estático no binário nem estado compartilhado entre plugins.
   Qualquer perfil (`admin`, `node`, `infer`) ativa e instala plugins no próprio
-  nó, inclusive o rebuild de desenvolvimento (que exige `POM_DESENV`). Cada plugin só pode ser carregado por
+  nó, inclusive o rebuild de desenvolvimento (que exige `POM_DEV_MODE`). Cada plugin só pode ser carregado por
   `pom-plugin-host` através da ABI C e do IPC versionados em
   `crates/enterprise-protocol` - o host já suporta várias instâncias
   concorrentes, uma por plugin ativo. As telas de Logs de Requisições e
@@ -233,7 +233,7 @@ quebra o produto inteiro.
   do binário `pom` em si NÃO é um plugin e vive à parte, em
   `crates/node/src/pom_core_update.rs` - vai virar GitHub Releases público sem
   licença (outra tarefa); até lá, ela empresta o lease do plugin `enterprise`,
-  mas seu código e sua tela (`/config/sobre`) nunca se misturam com os da tela
+  mas seu código e sua tela (`/config/about`) nunca se misturam com os da tela
   de Plugins (`/plugins`). →
   `docs/subsystems/enterprise-licensing.md`
 - **Política de primeira versão.** O produto ainda não foi lançado. Portanto,

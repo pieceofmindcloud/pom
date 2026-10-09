@@ -297,10 +297,10 @@ mod tests {
         };
 
         let primary = req(Some(ident(0, "primary")));
-        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 runtime também fatia");
-        assert_eq!(escolhido.rank, 0);
+        let chosen = tp_shard_to_extract(&primary).expect("o rank 0 runtime também fatia");
+        assert_eq!(chosen.rank, 0);
         assert_eq!(
-            (escolhido.rank, escolhido.size),
+            (chosen.rank, chosen.size),
             (0, 2),
             "o shard que faltava no disco"
         );
@@ -325,9 +325,9 @@ mod tests {
     /// salto vai" so se responde com shell na maquina.
     #[test]
     fn the_cluster_view_carries_the_chosen_route() {
-        let tabela = crate::route::RouteTable::new();
-        let vista = route_view_for("n1", &tabela);
-        assert!(vista.is_none(), "peer nao medido nao inventa rota");
+        let table = crate::route::RouteTable::new();
+        let view = route_view_for("n1", &table);
+        assert!(view.is_none(), "peer nao medido nao inventa rota");
     }
 
     /// Offload e cache KV sao as duas coisas que uma maquina pode discordar do
@@ -370,9 +370,9 @@ mod tests {
 
         // Sem sobreposicao, o numero do cluster vale — e sobrepor um nao mexe
         // no outro.
-        let herdado = params_for(&base, &target(None, None));
-        assert_eq!(herdado.n_gpu_layers, 99);
-        assert!(herdado.offload_kqv);
+        let inherited = params_for(&base, &target(None, None));
+        assert_eq!(inherited.n_gpu_layers, 99);
+        assert!(inherited.offload_kqv);
         assert!(params_for(&base, &target(Some(0), None)).offload_kqv);
         assert_eq!(
             params_for(&base, &target(None, Some(false))).n_gpu_layers,
@@ -1052,14 +1052,14 @@ mod tests {
             let out_path = std::path::Path::new(&out);
             // O nome é o conteúdo: quem junta não escolhe como chamar o
             // resultado, o hash é que o nomeia.
-            let nome = out_path.file_stem().unwrap().to_string_lossy().into_owned();
+            let name = out_path.file_stem().unwrap().to_string_lossy().into_owned();
             assert!(
-                crate::pom::is_sha256_hex(&nome),
-                "o modelo junto sai endereçado por conteúdo, não por convenção de nome: {nome}"
+                crate::pom::is_sha256_hex(&name),
+                "o modelo junto sai endereçado por conteúdo, não por convenção de nome: {name}"
             );
             assert_eq!(
                 crate::pom::hash_file(out_path).unwrap().0,
-                nome,
+                name,
                 "e o hash do arquivo tem que ser o nome dele"
             );
             let layout = crate::gguf::read_layout(out_path).unwrap();

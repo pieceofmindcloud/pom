@@ -122,7 +122,7 @@ fn sibling_urls(
                 crate::peer_client::peer_base_url(
                     &crate::network::ip_host(addr),
                     port,
-                    crate::peer_client::tls_ativo(),
+                    crate::peer_client::tls_enabled(),
                 ),
             ))
         })
@@ -178,8 +178,8 @@ struct UpdateRequest {
 ///
 /// Função pura para ficar testável sem subir rede: sem `node_id`, ou com o
 /// `node_id` deste próprio nó, executa aqui; qualquer outro id repassa.
-fn deve_repassar(node_id_pedido: Option<&str>, meu_node_id: &str) -> bool {
-    matches!(node_id_pedido, Some(id) if id != meu_node_id)
+fn should_forward(requested_node_id: Option<&str>, my_node_id: &str) -> bool {
+    matches!(requested_node_id, Some(id) if id != my_node_id)
 }
 
 async fn update_endpoint(
@@ -187,7 +187,7 @@ async fn update_endpoint(
     State(state): State<GatewayState>,
     body: Option<Json<UpdateRequest>>,
 ) -> Response {
-    let node_id_pedido = body.and_then(|Json(b)| b.node_id);
+    let requested_node_id = body.and_then(|Json(b)| b.node_id);
 
     // O portão protege a máquina que vai rodar o build, e repassar não roda
     // nada aqui. Checá-lo antes da decisão de repasse impedia o painel de um nó
@@ -195,38 +195,38 @@ async fn update_endpoint(
     // botão a partir do `dev_update` **do alvo**, então o botão aparecia e este
     // nó respondia 403. Quem repassa não precisa da permissão; quem executa,
     // sim, e é o destino que a verifica.
-    if let Some(alvo) = node_id_pedido.filter(|id| deve_repassar(Some(id), &state.network.node_id))
+    if let Some(target) = requested_node_id.filter(|id| should_forward(Some(id), &state.network.node_id))
     {
         let peers = state.network.alive_peers().await;
         let Some(base) = peers
             .iter()
-            .find(|p| p.node_id == alvo)
+            .find(|p| p.node_id == target)
             .and_then(|p| p.gateway_url())
         else {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({
                     "error": format!(
-                        "peer {alvo} não está anunciando gateway ou não é mais visto na rede"
+                        "peer {target} não está anunciando gateway ou não é mais visto na rede"
                     )
                 })),
             )
                 .into_response();
         };
         let url = format!("{base}/api/ui/dev/update");
-        let cliente = match state.peer_http.for_peer(&alvo) {
+        let client = match state.peer_http.for_peer(&target) {
             Ok(c) => c,
             Err(e) => {
                 return (
                     StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("sem cliente para o peer {alvo}: {e}") })),
+                    Json(json!({ "error": format!("sem cliente para o peer {target}: {e}") })),
                 )
                     .into_response()
             }
         };
         let request = match state
             .authorize_control_request(
-                cliente.post(&url).timeout(crate::webui::PEER_TIMEOUT),
+                client.post(&url).timeout(crate::webui::PEER_TIMEOUT),
                 "POST",
                 "/api/ui/dev/update",
                 &[],
@@ -245,15 +245,15 @@ async fn update_endpoint(
         return match request.send().await {
             Ok(resp) => {
                 let status = resp.status();
-                let corpo = resp.text().await.unwrap_or_else(|e| {
-                    format!("{{\"error\":\"resposta do peer {alvo} sem corpo legível: {e}\"}}")
+                let peer_body = resp.text().await.unwrap_or_else(|e| {
+                    format!("{{\"error\":\"resposta do peer {target} sem corpo legível: {e}\"}}")
                 });
-                (status, corpo).into_response()
+                (status, peer_body).into_response()
             }
             Err(e) => (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({
-                    "error": format!("não deu para repassar a atualização para {alvo}: {e}")
+                    "error": format!("não deu para repassar a atualização para {target}: {e}")
                 })),
             )
                 .into_response(),
@@ -296,7 +296,7 @@ async fn update_endpoint(
             Ok(s) => s,
             Err(e) => return fail(&job_id, e).await,
         };
-        if let Some(msg) = preflight(&branch, &status).mensagem() {
+        if let Some(msg) = preflight(&branch, &status).message() {
             return fail(&job_id, msg).await;
         }
 
@@ -354,23 +354,23 @@ async fn update_endpoint(
                 )
             })
             .collect();
-        let alvos = sibling_urls(&me, &tuples, same_machine);
+        let targets = sibling_urls(&me, &tuples, same_machine);
 
         // Máquina de outra pessoa: um irmão que não responde não pode
         // desaparecer em silêncio, ou o operador fica com um nó rodando
         // binário velho e nenhuma pista. Mas nenhum irmão respondendo não
         // impede este nó de reiniciar — cada máquina se anota por conta
         // própria.
-        let mut reiniciados = 0usize;
-        let mut falharam: Vec<String> = Vec::new();
-        for (node_id, url) in &alvos {
-            let Ok(cliente) = state.peer_http.for_peer(node_id) else {
-                falharam.push(url.clone());
+        let mut restarted = 0usize;
+        let mut failed: Vec<String> = Vec::new();
+        for (node_id, url) in &targets {
+            let Ok(client) = state.peer_http.for_peer(node_id) else {
+                failed.push(url.clone());
                 continue;
             };
             let Ok(request) = state
                 .authorize_control_request(
-                    cliente
+                    client
                         .post(format!("{url}/api/ui/dev/restart"))
                         .timeout(std::time::Duration::from_secs(10)),
                     "POST",
@@ -379,31 +379,31 @@ async fn update_endpoint(
                 )
                 .await
             else {
-                falharam.push(url.clone());
+                failed.push(url.clone());
                 continue;
             };
             match request.send().await {
-                Ok(resp) if resp.status().is_success() => reiniciados += 1,
+                Ok(resp) if resp.status().is_success() => restarted += 1,
                 Ok(resp) => {
                     tracing::warn!("irmão {url} recusou o reinício: {}", resp.status());
-                    falharam.push(url.clone());
+                    failed.push(url.clone());
                 }
                 Err(e) => {
                     tracing::warn!("não deu para reiniciar o irmão {url}: {e}");
-                    falharam.push(url.clone());
+                    failed.push(url.clone());
                 }
             }
         }
 
-        let irmaos_msg = if alvos.is_empty() {
+        let siblings_msg = if targets.is_empty() {
             String::new()
-        } else if falharam.is_empty() {
-            format!(" {reiniciados} irmão(s) desta máquina também reiniciaram.")
+        } else if failed.is_empty() {
+            format!(" {restarted} irmão(s) desta máquina também reiniciaram.")
         } else {
             format!(
-                " {reiniciados} irmão(s) desta máquina reiniciaram, {} falharam: {}.",
-                falharam.len(),
-                falharam.join(", ")
+                " {restarted} irmão(s) desta máquina reiniciaram, {} falharam: {}.",
+                failed.len(),
+                failed.join(", ")
             )
         };
 
@@ -413,7 +413,7 @@ async fn update_endpoint(
                 j.state = "done";
                 j.step = "pronto".into();
                 j.message =
-                    format!("código atualizado; esta máquina está reiniciando.{irmaos_msg}");
+                    format!("código atualizado; esta máquina está reiniciando.{siblings_msg}");
                 j.finished_at = Some(chrono::Utc::now().to_rfc3339());
             }
         }
@@ -465,9 +465,9 @@ async fn restart_endpoint(
 #[derive(Debug, PartialEq)]
 pub enum Preflight {
     Ok,
-    BranchErrado(String),
-    DesatachadoOuSemBranch,
-    ArvoreSuja(Vec<String>),
+    WrongBranch(String),
+    DetachedOrNoBranch,
+    DirtyTree(Vec<String>),
 }
 
 /// Decide a partir da saída de `git rev-parse --abbrev-ref HEAD` e de
@@ -475,40 +475,40 @@ pub enum Preflight {
 pub fn preflight(branch: &str, status_porcelain: &str) -> Preflight {
     let branch = branch.trim();
     if branch.is_empty() || branch == "HEAD" {
-        return Preflight::DesatachadoOuSemBranch;
+        return Preflight::DetachedOrNoBranch;
     }
     if branch != "main" {
-        return Preflight::BranchErrado(branch.to_string());
+        return Preflight::WrongBranch(branch.to_string());
     }
 
     // `??` é arquivo não rastreado: o pull não o toca.
-    let sujos: Vec<String> = status_porcelain
+    let dirty: Vec<String> = status_porcelain
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with("??"))
         .filter_map(|l| l.get(3..).map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
         .collect();
-    if !sujos.is_empty() {
-        return Preflight::ArvoreSuja(sujos);
+    if !dirty.is_empty() {
+        return Preflight::DirtyTree(dirty);
     }
     Preflight::Ok
 }
 
 impl Preflight {
     /// A mensagem que vai para a tela, ou `None` quando dá para seguir.
-    pub fn mensagem(&self) -> Option<String> {
+    pub fn message(&self) -> Option<String> {
         match self {
             Preflight::Ok => None,
-            Preflight::DesatachadoOuSemBranch => Some(
+            Preflight::DetachedOrNoBranch => Some(
                 "o repositório desta máquina não está num branch (HEAD destacado). \
                  A atualização só roda no main."
                     .into(),
             ),
-            Preflight::BranchErrado(b) => Some(format!(
+            Preflight::WrongBranch(b) => Some(format!(
                 "o repositório desta máquina está no branch '{b}', não no main. \
                  Alguém pode estar trabalhando aqui — a atualização não troca de branch."
             )),
-            Preflight::ArvoreSuja(files) => Some(format!(
+            Preflight::DirtyTree(files) => Some(format!(
                 "há alterações não commitadas nesta máquina: {}. \
                  A atualização não descarta trabalho, então ela para aqui.",
                 files.join(", ")
@@ -525,7 +525,7 @@ mod tests {
     /// que a própria interface reescreve. Só "1" liga: um "true" ou "yes" que
     /// alguém escreveu achando que ligava não deve abrir execução remota.
     #[test]
-    fn so_o_valor_1_liga_o_portao() {
+    fn only_the_value_1_opens_the_gate() {
         assert!(enabled_from(Some("1")));
         assert!(!enabled_from(Some("0")));
         assert!(!enabled_from(Some("true")));
@@ -536,7 +536,7 @@ mod tests {
     /// Com o portão fechado a rota não existe para efeitos práticos: responde
     /// 403 sem tocar em nada.
     #[test]
-    fn portao_fechado_recusa_com_403() {
+    fn a_closed_gate_refuses_with_403() {
         // Num ambiente de teste a variável não está ligada, então há recusa.
         let r = gate_rejection().expect("sem a variável, tem que recusar");
         assert_eq!(r.0, axum::http::StatusCode::FORBIDDEN);
@@ -551,22 +551,22 @@ mod tests {
     /// vez de arrumar a casa alheia. Um `git pull --ff-only origin main` num
     /// branch de trabalho o avançaria para o main em silêncio.
     #[test]
-    fn recusa_branch_diferente_de_main() {
+    fn refuses_a_branch_other_than_main() {
         let p = preflight("fm/minha-feature", "");
-        assert!(matches!(p, Preflight::BranchErrado(ref b) if b == "fm/minha-feature"));
-        assert!(p.mensagem().unwrap().contains("fm/minha-feature"));
+        assert!(matches!(p, Preflight::WrongBranch(ref b) if b == "fm/minha-feature"));
+        assert!(p.message().unwrap().contains("fm/minha-feature"));
     }
 
     #[test]
-    fn recusa_head_destacado() {
+    fn refuses_a_detached_head() {
         // `git rev-parse --abbrev-ref HEAD` devolve literalmente "HEAD".
         assert!(matches!(
             preflight("HEAD", ""),
-            Preflight::DesatachadoOuSemBranch
+            Preflight::DetachedOrNoBranch
         ));
         assert!(matches!(
             preflight("", ""),
-            Preflight::DesatachadoOuSemBranch
+            Preflight::DetachedOrNoBranch
         ));
     }
 
@@ -574,36 +574,36 @@ mod tests {
     /// Um build de árvore suja não corresponde a commit nenhum, e o carimbo
     /// build_commit viraria mentira.
     #[test]
-    fn recusa_arvore_suja_nomeando_os_arquivos() {
+    fn refuses_a_dirty_tree_naming_the_files() {
         let status = " M src/llm.rs\n M src/webui.rs\n";
         let p = preflight("main", status);
         match &p {
-            Preflight::ArvoreSuja(files) => {
+            Preflight::DirtyTree(files) => {
                 assert_eq!(
                     files,
                     &vec!["src/llm.rs".to_string(), "src/webui.rs".to_string()]
                 );
             }
-            outro => panic!("esperava árvore suja, veio {outro:?}"),
+            other => panic!("esperava árvore suja, veio {other:?}"),
         }
-        assert!(p.mensagem().unwrap().contains("src/llm.rs"));
+        assert!(p.message().unwrap().contains("src/llm.rs"));
     }
 
     /// Arquivo não rastreado não conta: o pull não o toca, e se colidir com um
     /// arquivo do remoto o próprio git aborta sem sobrescrever.
     #[test]
-    fn arquivo_nao_rastreado_nao_impede() {
+    fn an_untracked_file_does_not_block() {
         assert!(matches!(
             preflight("main", "?? gateway.rs\n"),
             Preflight::Ok
         ));
-        assert!(preflight("main", "").mensagem().is_none());
+        assert!(preflight("main", "").message().is_none());
     }
 
     /// O comando de build precisa carregar as features da máquina. Sem isto a
     /// ksia perderia CUDA no primeiro clique — o mesmo engano já cometido à mão.
     #[test]
-    fn o_build_leva_as_features_da_maquina() {
+    fn the_build_carries_the_machine_features() {
         assert_eq!(build_args(None), vec!["build", "--release"]);
         assert_eq!(build_args(Some("")), vec!["build", "--release"]);
         assert_eq!(
@@ -619,14 +619,14 @@ mod tests {
     /// Sem `node_id`, com o `node_id` deste nó, e com o de outro peer: as três
     /// respostas que decidem entre executar aqui e repassar.
     #[test]
-    fn deve_repassar_so_com_node_id_de_outro_peer() {
-        assert!(!deve_repassar(None, "meu-id"), "sem node_id, executa aqui");
+    fn should_forward_only_with_another_peer_node_id() {
+        assert!(!should_forward(None, "meu-id"), "sem node_id, executa aqui");
         assert!(
-            !deve_repassar(Some("meu-id"), "meu-id"),
+            !should_forward(Some("meu-id"), "meu-id"),
             "node_id igual ao meu, executa aqui"
         );
         assert!(
-            deve_repassar(Some("outro-id"), "meu-id"),
+            should_forward(Some("outro-id"), "meu-id"),
             "node_id de outro peer, repassa"
         );
     }
@@ -634,8 +634,8 @@ mod tests {
     /// Os irmãos são os peers da mesma máquina, e este nó não está na lista de
     /// peers — ele reinicia por último, por conta própria.
     #[test]
-    fn irmaos_sao_os_peers_do_mesmo_hostname() {
-        let alvos = sibling_urls(
+    fn siblings_are_the_peers_with_the_same_hostname() {
+        let targets = sibling_urls(
             "ksia",
             &[
                 ("ksia", "[2804:d55::1]:42777", Some(8090), "id-a"),
@@ -646,7 +646,7 @@ mod tests {
             |_| true,
         );
         assert_eq!(
-            alvos,
+            targets,
             vec![
                 ("id-a".to_string(), "http://[2804:d55::1]:8090".to_string()),
                 ("id-b".to_string(), "http://[2804:d55::1]:8094".to_string()),
@@ -659,8 +659,8 @@ mod tests {
     /// máquina. `same_host` é quem decide isso de verdade; aqui simulamos a
     /// recusa para um dos dois endereços.
     #[test]
-    fn mesmo_hostname_em_maquina_diferente_nao_entra() {
-        let alvos = sibling_urls(
+    fn the_same_hostname_on_a_different_machine_is_left_out() {
+        let targets = sibling_urls(
             "ksia",
             &[
                 ("ksia", "[2804:d55::1]:42777", Some(8090), "id-a"),
@@ -669,7 +669,7 @@ mod tests {
             |addr| addr.starts_with("[2804:d55::1]"),
         );
         assert_eq!(
-            alvos,
+            targets,
             vec![("id-a".to_string(), "http://[2804:d55::1]:8090".to_string())],
             "a VM em 203.0.113.9 tem o mesmo hostname mas não é esta máquina"
         );
@@ -681,8 +681,8 @@ mod tests {
     /// job ser marcado como `done`. Por isso o descarte é explícito e não
     /// depende de `same_host` aprovar ou não.
     #[test]
-    fn endereco_0_0_0_0_nao_entra() {
-        let alvos = sibling_urls(
+    fn address_0_0_0_0_is_left_out() {
+        let targets = sibling_urls(
             "ksia",
             &[
                 ("ksia", "0.0.0.0:42777", Some(8090), "id-a"),
@@ -691,8 +691,8 @@ mod tests {
             |_| true,
         );
         assert!(
-            alvos.is_empty(),
-            "sentinela não reescrito não pode virar alvo: {alvos:?}"
+            targets.is_empty(),
+            "sentinela não reescrito não pode virar alvo: {targets:?}"
         );
     }
 }

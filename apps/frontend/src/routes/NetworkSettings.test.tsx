@@ -108,30 +108,30 @@ function mount(props: Parameters<typeof TlsPanel>[0]) {
 describe("TlsPanel", () => {
   afterEach(cleanup);
 
-  it("no principal, o interruptor é usável e propaga a virada", () => {
+  it("on the principal, the switch is usable and propagates the flip", () => {
     const onToggle = vi.fn();
     mount({ tlsRequired: false, authority: true, onToggle });
-    const botao = screen.getByRole("switch");
-    expect((botao as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(botao);
+    const button = screen.getByRole("switch");
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(button);
     expect(onToggle).toHaveBeenCalledWith(true);
   });
 
-  it("ligado, o principal pode desligar - a virada vale nos dois sentidos", () => {
+  it("when on, the principal can turn it off - the flip works both ways", () => {
     const onToggle = vi.fn();
     mount({ tlsRequired: true, authority: true, onToggle });
     fireEvent.click(screen.getByRole("switch"));
     expect(onToggle).toHaveBeenCalledWith(false);
   });
 
-  it("fora do principal, mostra o estado mas não deixa mexer, e diz quem decide", () => {
+  it("outside the principal, shows the state but does not allow changes, and says who decides", () => {
     mount({ tlsRequired: true, authority: false });
     expect((screen.getByRole("switch") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("cifrado")).toBeTruthy();
     expect(screen.getByText(/só o nó principal decide/i)).toBeTruthy();
   });
 
-  it("desligado, o estado é dito com todas as letras", () => {
+  it("when off, the state is spelled out", () => {
     mount({ tlsRequired: false, authority: false });
     expect(screen.getByText("em texto claro")).toBeTruthy();
   });
@@ -140,7 +140,7 @@ describe("TlsPanel", () => {
 describe("NetworkSettings", () => {
   afterEach(cleanup);
 
-  it("não mostra as preferências que agora vivem na tela Preferências", () => {
+  it("does not show the preferences that now live on the Preferences screen", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <NetworkSettings />
@@ -152,7 +152,7 @@ describe("NetworkSettings", () => {
     expect(screen.queryByText("Criptografia entre nós")).toBeNull();
   });
 
-  it("mantém a rede acessível ao infer, sem listar peers, e envia um pedido", async () => {
+  it("keeps the network accessible to infer, without listing peers, and sends a request", async () => {
     queryMocks.node.data.profile = "infer";
     queryMocks.nodes.data = [{
       node_id: "outro",
@@ -181,7 +181,7 @@ describe("NetworkSettings", () => {
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/request-node");
   });
 
-  it("mostra as informações da rede para um infer sem oferecer edição", () => {
+  it("shows the network information to an infer without offering editing", () => {
     queryMocks.node.data.profile = "infer";
     queryMocks.node.data.authority_level = null;
     queryMocks.networkInfo.data.network.description = "# Uma descrição formatada";
@@ -203,7 +203,7 @@ describe("NetworkSettings", () => {
     expect(screen.queryByRole("button", { name: "Salvar detalhes da rede" })).toBeNull();
   });
 
-  it("oferece edição Markdown ampla com preview para descrição, regras e canais", () => {
+  it("offers wide Markdown editing with preview for description, rules and channels", () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -227,7 +227,7 @@ describe("NetworkSettings", () => {
     expect(screen.getByTestId("markdown-preview-channels").querySelector("a")?.textContent).toBe("Discord");
   });
 
-  it("oferece edição ao administrador e mantém o compartilhamento na raiz de confiança", async () => {
+  it("offers editing to the administrator and keeps sharing in the trust root", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -322,7 +322,7 @@ describe("NetworkSettings", () => {
     queryMocks.node.data = before;
   });
 
-  it("separa esquecer a configuração local (continua aqui) de sair do cluster (agora em Minha Máquina)", async () => {
+  it("separates forgetting the local configuration (stays here) from leaving the cluster (now in My Machine)", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -335,21 +335,21 @@ describe("NetworkSettings", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Sair da rede" })).toBeNull();
-    const esquecer = screen.getByRole("button", { name: "Voltar para a minha rede" });
-    fireEvent.click(esquecer);
+    const forget = screen.getByRole("button", { name: "Voltar para a minha rede" });
+    fireEvent.click(forget);
 
     const dialog = screen.getByRole("dialog", { name: "Sair desta rede?" });
     expect(dialog.textContent).toMatch(/volta para a rede própria.*nova chave de conexão.*novo pedido de admissão/i);
     expect(vi.mocked(api.post)).not.toHaveBeenCalled();
 
-    const confirma = screen.getAllByRole("button", { name: "Voltar para a minha rede" });
-    fireEvent.click(confirma[confirma.length - 1]);
+    const confirm = screen.getAllByRole("button", { name: "Voltar para a minha rede" });
+    fireEvent.click(confirm[confirm.length - 1]);
 
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/leave"));
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/leave");
   });
 
-  it("mostra o estado do firewall no Windows e oferece retry", async () => {
+  it("shows the firewall state on Windows and offers retry", async () => {
     queryMocks.firewall.data = {
       supported: true,
       p2p_port: 42777,
@@ -382,7 +382,7 @@ describe("NetworkSettings", () => {
 describe("NetworkParticipants", () => {
   afterEach(cleanup);
 
-  it("mostra a rota em uso e se ela é direta ou pelo relé, não o endereço anunciado", () => {
+  it("shows the route in use and whether it is direct or relayed, not the announced address", () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     const base = { role: "node", is_self: false, connected: true, blocked: false, verified: true };

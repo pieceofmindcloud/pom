@@ -501,7 +501,7 @@ export function DeployNetworkCanvas({
       <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
         <div className="flex items-center gap-2 px-2">
           <span className="eyebrow">Mapa da implantação</span>
-          <span className="font-mono text-[10px] text-muted">{machines.length} nós · {plan.total_layers ?? "-"} camadas</span>
+          <span className="font-mono text-[10px] text-muted">{machines.length} nós · {plan.total_layers ?? "-"} layers</span>
         </div>
         <span className="h-5 w-px bg-line" />
         <Button size="sm" aria-label="Diminuir zoom" title="Diminuir zoom" onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))}><Minus className="h-4 w-4" /></Button>

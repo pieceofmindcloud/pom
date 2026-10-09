@@ -1112,7 +1112,7 @@ address selection and gets the same fix.
 
 Framing one crossing (encoding + decoding one `[1, 5120]` f16 item) cost
 21.97 µs in release; today it costs 20.94 µs - **-4.7%**
-(`custo_do_enquadramento_por_travessia`, same machine, 2,000 rounds). What
+(`framing_cost_per_traversal`, same machine, 2,000 rounds). What
 changed:
 
 - `encode_batch_items` writes the tensor **once**, straight into the buffer that
@@ -1428,7 +1428,7 @@ operator raises `max_sessions`, which multiplies the KV reservation (see
 
 Benches:
 `prefix_cache::tests::a_small_concurrent_request_does_not_take_over_a_hot_sessions_identity`,
-`scheduler::tests::prefill_novo_espera_em_vez_de_despejar_a_sessao_retida`.
+`scheduler::tests::a_new_prefill_waits_instead_of_evicting_the_retained_session`.
 
 Conclusion: losing the session is possible and, in part, intentional in the
 current lifecycle. The `prefix peer eligibility`, `prefix peer retention` and
@@ -2141,7 +2141,7 @@ sample), `accept_count` and `batch_width`.
   and also reads `speculation_active` and `speculation_disabled_reason` from the
   new callbacks. Their absence keeps compatibility with old peers.
 - **Once speculation is refused, the gateway stops insisting** for the rest of
-  the request (`especulando` - "speculating" -, in
+  the request (`speculating`, in
   `generate_stream_with_stops`): it switches to calling `prefill::step`, which
   already uses the direct reply (N+1 crossings). It is not just saving the
   `speculate` field - insisting traps the chain in the bubbled ring (2N
@@ -2889,8 +2889,8 @@ stream.
   `origin/feat/implantar3` had 1022 green, eight red and took 609.55 s. After
   that fix, the same measurement took 27.72 s, with 1049 green and five red.
   `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`,
-  `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso` and
-  `link_lab::canal_indisponivel_degrada_para_o_caminho_por_requisicao` turned
+  `direct_lab::direct_prefill_preserves_the_absolute_position_with_and_without_reuse` and
+  `link_lab::an_unavailable_channel_degrades_to_the_per_request_path` turned
   green. In both `direct_lab` tests, the cause was the route memory of
   `84e7141`: the candidate list stayed empty and delivery was never tried. The
   delivery count now separates results from transport receipts, and late
@@ -2903,7 +2903,7 @@ stream.
   expectations and stay noted without a drive-by fix.
 - The count above repeats the review's measurement with
   `--skip prefix_reuse_lab`. The tests
-  `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` and
+  `spec_lab::a_budget_above_n_batch_is_not_truncated` and
   `prefix_reuse_lab::unknown_session_recovery_is_bounded` now isolate,
   respectively, the generation budget and the cold attempt limit; the
   total of frames stays determined by the prefill window.

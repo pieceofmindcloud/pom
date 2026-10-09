@@ -90,13 +90,13 @@ pub enum PlainAction {
 
 /// Rotas que só existem entre peers, e que por isso nunca são redirecionadas.
 pub fn plain_action(path: &str) -> PlainAction {
-    const SO_DE_PEER: [&str; 4] = [
+    const PEER_ONLY: [&str; 4] = [
         "/api/transfer/",
         "/v1/relay-result",
         "/v1/prefill",
         "/v1/step",
     ];
-    if SO_DE_PEER.iter().any(|p| path.starts_with(p)) {
+    if PEER_ONLY.iter().any(|p| path.starts_with(p)) {
         PlainAction::Refuse
     } else {
         PlainAction::Redirect
@@ -146,7 +146,7 @@ impl TlsServer {
     }
 
     /// A mesma configuração, para uma porta que só peers usam.
-    pub fn so_de_peers(&self) -> Self {
+    pub fn peers_only(&self) -> Self {
         Self {
             plain: PlainPolicy::Refuse,
             ..self.clone()
@@ -170,33 +170,33 @@ impl TlsServer {
 /// hostname. Loopback entra porque abrir o painel na própria máquina é o caso
 /// mais comum de todos.
 pub fn browser_sans(pinned: Option<&str>) -> Vec<String> {
-    let mut nomes: Vec<String> = vec!["127.0.0.1".into(), "::1".into()];
+    let mut names: Vec<String> = vec!["127.0.0.1".into(), "::1".into()];
     if let Some(p) = pinned {
-        nomes.push(
+        names.push(
             crate::network::ip_host(p)
                 .trim_matches(['[', ']'])
                 .to_string(),
         );
     }
     for addr in crate::addrs::filter_candidates(crate::addrs::local_addrs(), None) {
-        nomes.push(
+        names.push(
             crate::network::ip_host(&addr)
                 .trim_matches(['[', ']'])
                 .to_string(),
         );
     }
     if let Ok(h) = hostname_local() {
-        nomes.push(h);
+        names.push(h);
     }
-    nomes.retain(|n| !n.is_empty());
-    nomes.sort();
-    nomes.dedup();
-    nomes
+    names.retain(|n| !n.is_empty());
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn hostname_local() -> Result<String> {
-    let saida = std::process::Command::new("hostname").output()?;
-    Ok(String::from_utf8_lossy(&saida.stdout).trim().to_string())
+    let output = std::process::Command::new("hostname").output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// `0x16` é `ContentType::Handshake` do TLS; nenhum método HTTP começa assim.
@@ -304,13 +304,13 @@ pub async fn serve_with_quic(
     let mut conns = tokio::task::JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
 
-    let motivo = loop {
+    let reason = loop {
         let (stream, peer) = tokio::select! {
             _ = &mut shutdown => break "desligamento pedido",
             // Conexões já encerradas saem do conjunto aqui; sem isto o
             // `JoinSet` cresceria por toda a vida do servidor.
             Some(_) = conns.join_next(), if !conns.is_empty() => continue,
-            aceita = listener.accept() => match aceita {
+            accepted = listener.accept() => match accepted {
                 Ok(v) => v,
                 Err(e) => {
                     warn!("accept falhou: {e}");
@@ -337,9 +337,9 @@ pub async fn serve_with_quic(
     // Prazo para quem está no meio de uma resposta; depois dele, aborta. Quem
     // está parada em keep-alive não termina sozinha nunca, e é justamente ela
     // que segurava a memória.
-    debug!("{motivo}: drenando {} conexões", conns.len());
-    let drenagem = async { while conns.join_next().await.is_some() {} };
-    if tokio::time::timeout(DRAIN_DEADLINE, drenagem)
+    debug!("{reason}: drenando {} conexões", conns.len());
+    let drain = async { while conns.join_next().await.is_some() {} };
+    if tokio::time::timeout(DRAIN_DEADLINE, drain)
         .await
         .is_err()
     {
@@ -384,8 +384,8 @@ async fn handle_conn(
         .unwrap_or(false);
 
     if !is_tls && !plain_allowed(peer, strict) {
-        let politica = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
-        if politica == PlainPolicy::Refuse {
+        let policy = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
+        if policy == PlainPolicy::Refuse {
             warn!("recusada conexão em texto claro de {peer}: o cluster está em TLS");
             return Ok(());
         }
@@ -393,7 +393,7 @@ async fn handle_conn(
         // manda o navegador refazer em https. Ver `plain_action` para o que
         // continua sendo recusado.
         debug!("redirecionando para https a conexão em claro de {peer}");
-        let svc = hyper::service::service_fn(redirecionar_para_https);
+        let svc = hyper::service::service_fn(redirect_to_https);
         return Builder::new(TokioExecutor::new())
             .serve_connection(TokioIo::new(stream), svc)
             .await
@@ -413,11 +413,11 @@ async fn handle_conn(
 
     match (is_tls, acceptor) {
         (true, Some(acceptor)) => {
-            let comecou = Instant::now();
+            let started = Instant::now();
             let tls_stream = acceptor.accept(stream).await?;
             if let Some(t) = &tls {
                 t.last_handshake_ms
-                    .store(comecou.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
             }
             Builder::new(TokioExecutor::new())
                 .serve_connection_with_upgrades(TokioIo::new(tls_stream), svc)
@@ -447,8 +447,8 @@ async fn handle_conn(
 /// partir do socket daria o IP, e trocaria o nome dele por um endereço que pode
 /// nem estar no certificado.
 pub fn plain_reply(host: &str, path_and_query: &str) -> (u16, Option<String>) {
-    let caminho = path_and_query.split('?').next().unwrap_or("/");
-    if plain_action(caminho) == PlainAction::Refuse {
+    let path = path_and_query.split('?').next().unwrap_or("/");
+    if plain_action(path) == PlainAction::Refuse {
         return (403, None);
     }
     if host.is_empty() {
@@ -460,7 +460,7 @@ pub fn plain_reply(host: &str, path_and_query: &str) -> (u16, Option<String>) {
 }
 
 /// Resposta para quem falou em claro numa porta que exige TLS.
-async fn redirecionar_para_https(
+async fn redirect_to_https(
     req: hyper::Request<hyper::body::Incoming>,
 ) -> std::result::Result<hyper::Response<String>, std::convert::Infallible> {
     let host = req
@@ -469,27 +469,27 @@ async fn redirecionar_para_https(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let alvo = req
+    let target = req
         .uri()
         .path_and_query()
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
-    let (status, location) = plain_reply(&host, &alvo);
-    let mut resposta = hyper::Response::builder().status(status);
+    let (status, location) = plain_reply(&host, &target);
+    let mut response = hyper::Response::builder().status(status);
     if let Some(l) = &location {
-        resposta = resposta.header(hyper::header::LOCATION, l);
+        response = response.header(hyper::header::LOCATION, l);
     }
-    let corpo = if location.is_some() {
+    let body = if location.is_some() {
         String::new()
     } else {
         "este cluster exige TLS entre nós; refaça a chamada em https\n".to_string()
     };
-    Ok(resposta.body(corpo).expect("resposta é construível"))
+    Ok(response.body(body).expect("resposta é construível"))
 }
 
 #[cfg(test)]
-mod integracao {
+mod integration {
     use super::*;
     use crate::identity::Identity;
     use axum::{
@@ -501,7 +501,7 @@ mod integracao {
     };
     use std::time::Duration;
 
-    async fn subir(id: &Identity, strict: bool) -> std::net::SocketAddr {
+    async fn start_server(id: &Identity, strict: bool) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = Router::new().route("/health", get(|| async { "ok" }));
@@ -512,7 +512,7 @@ mod integracao {
         addr
     }
 
-    fn clientes() -> crate::peer_client::PeerClients {
+    fn clients() -> crate::peer_client::PeerClients {
         let c = crate::peer_client::PeerClients::new(Duration::from_secs(5));
         c.set_tls(true);
         c
@@ -521,10 +521,10 @@ mod integracao {
     /// O caminho feliz inteiro: certificado derivado da identidade, cliente que
     /// fixa o node_id, handshake, resposta.
     #[tokio::test]
-    async fn cliente_pinado_fala_com_o_servidor() {
+    async fn a_pinned_client_talks_to_the_server() {
         let id = Identity::generate();
-        let addr = subir(&id, false).await;
-        let http = clientes().for_peer(&id.node_id.0).unwrap();
+        let addr = start_server(&id, false).await;
+        let http = clients().for_peer(&id.node_id.0).unwrap();
         let r = http
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
@@ -537,7 +537,7 @@ mod integracao {
     /// HTTP puro. O endpoint recebe sua própria configuração TLS 1.3 e não
     /// pode depender do `TlsServer` nem de `tls_required`.
     #[tokio::test]
-    async fn quic_sobe_sem_configuracao_tls_tcp() {
+    async fn quic_starts_without_a_tcp_tls_configuration() {
         let identity = Identity::generate();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -590,7 +590,7 @@ mod integracao {
     /// requisição QUIC pendurada em cada um não pode transformar o shutdown da
     /// geração anterior em uma espera sem fim.
     #[tokio::test]
-    async fn dois_peers_ociosos_podem_encerrar_quic_concorrente() {
+    async fn two_idle_peers_can_close_quic_concurrently() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::sync::Notify;
 
@@ -723,7 +723,7 @@ mod integracao {
     /// escalonada pela primeira vez. O sinal precisa sobreviver a essa
     /// corrida em cada peer, ou o supervisor fica esperando para sempre.
     #[tokio::test(flavor = "current_thread")]
-    async fn dois_peers_nao_perdem_sinal_de_shutdown_quic_antes_do_primeiro_poll() {
+    async fn two_peers_do_not_lose_the_quic_shutdown_signal_before_the_first_poll() {
         async fn peer_parts(
             identity: Identity,
         ) -> (tokio::net::TcpListener, QuicServerConfig, u16) {
@@ -780,11 +780,11 @@ mod integracao {
     /// não completa o handshake, mesmo o certificado sendo válido como
     /// auto assinado.
     #[tokio::test]
-    async fn cliente_que_espera_outro_no_e_recusado() {
-        let servidor = Identity::generate();
-        let outro = Identity::generate();
-        let addr = subir(&servidor, false).await;
-        let http = clientes().for_peer(&outro.node_id.0).unwrap();
+    async fn a_client_expecting_another_node_is_refused() {
+        let server = Identity::generate();
+        let other = Identity::generate();
+        let addr = start_server(&server, false).await;
+        let http = clients().for_peer(&other.node_id.0).unwrap();
         let r = http
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
@@ -795,9 +795,9 @@ mod integracao {
     /// A virada não é simultânea: o mesmo servidor atende texto claro enquanto
     /// peers ainda não souberam da política nova.
     #[tokio::test]
-    async fn o_mesmo_servidor_atende_texto_claro() {
+    async fn the_same_server_serves_plain_text() {
         let id = Identity::generate();
-        let addr = subir(&id, false).await;
+        let addr = start_server(&id, false).await;
         let r = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{}/health", addr.port()))
             .send()
@@ -810,9 +810,9 @@ mod integracao {
     /// descuido: `infer_tunnel::serve_loopback`, a sonda do `runtime` e o
     /// `testkit` batem em 127.0.0.1 sem par de chaves.
     #[tokio::test]
-    async fn no_modo_estrito_o_loopback_ainda_fala_claro() {
+    async fn in_strict_mode_loopback_still_speaks_plain() {
         let id = Identity::generate();
-        let addr = subir(&id, true).await;
+        let addr = start_server(&id, true).await;
         let r = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{}/health", addr.port()))
             .send()
@@ -830,17 +830,17 @@ mod integracao {
     /// cliente que **não** oferece o ALPN `pom/1` recebe o certificado ECDSA,
     /// que ele sabe verificar.
     #[tokio::test]
-    async fn um_navegador_consegue_abrir_a_interface_por_tls() {
+    async fn a_browser_can_open_the_interface_over_tls() {
         let id = Identity::generate();
-        let addr = subir(&id, true).await;
+        let addr = start_server(&id, true).await;
 
         // Como um navegador: sem `pom/1`, e sem confiar em CA nenhuma (é auto
         // assinado; o navegador de verdade mostra o aviso e o operador segue).
-        let navegador = reqwest::Client::builder()
+        let browser = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap();
-        let r = navegador
+        let r = browser
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
             .await
@@ -850,10 +850,10 @@ mod integracao {
 
     /// E o peer continua recebendo o certificado do pinning na mesma porta.
     #[tokio::test]
-    async fn na_mesma_porta_o_peer_recebe_o_certificado_do_pinning() {
+    async fn on_the_same_port_the_peer_gets_the_pinning_certificate() {
         let id = Identity::generate();
-        let addr = subir(&id, true).await;
-        let http = clientes().for_peer(&id.node_id.0).unwrap();
+        let addr = start_server(&id, true).await;
+        let http = clients().for_peer(&id.node_id.0).unwrap();
         let r = http
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
@@ -864,10 +864,10 @@ mod integracao {
 
     /// E TLS continua funcionando no modo estrito, que é o ponto dele.
     #[tokio::test]
-    async fn no_modo_estrito_o_tls_continua_passando() {
+    async fn in_strict_mode_tls_still_goes_through() {
         let id = Identity::generate();
-        let addr = subir(&id, true).await;
-        let http = clientes().for_peer(&id.node_id.0).unwrap();
+        let addr = start_server(&id, true).await;
+        let http = clients().for_peer(&id.node_id.0).unwrap();
         let r = http
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
@@ -927,7 +927,7 @@ mod tests {
     /// letra ASCII maiúscula (`G`, `P`, `O`...), então um byte só separa as
     /// duas falas sem ambiguidade.
     #[test]
-    fn primeiro_byte_separa_tls_de_http() {
+    fn the_first_byte_separates_tls_from_http() {
         assert!(wants_tls(0x16));
         assert!(!wants_tls(b'G')); // GET
         assert!(!wants_tls(b'P')); // POST
@@ -939,20 +939,20 @@ mod tests {
     /// chaves a apresentar. Tráfego que não sai da máquina não tem o que
     /// proteger.
     #[test]
-    fn loopback_fala_claro_mesmo_no_modo_estrito() {
+    fn loopback_speaks_plain_even_in_strict_mode() {
         let local: SocketAddr = "127.0.0.1:5050".parse().unwrap();
         let local6: SocketAddr = "[::1]:5050".parse().unwrap();
-        let mapeado: SocketAddr = "[::ffff:127.0.0.1]:5050".parse().unwrap();
+        let mapped: SocketAddr = "[::ffff:127.0.0.1]:5050".parse().unwrap();
         assert!(plain_allowed(local, true));
         assert!(plain_allowed(local6, true));
         // O socket dual-stack entrega IPv4 como `::ffff:a.b.c.d`, então sem
         // desmapear o loopback local seria recusado pelo próprio nó.
-        assert!(plain_allowed(mapeado, true));
+        assert!(plain_allowed(mapped, true));
     }
 
     /// A UI e as rotas de gente são redirecionadas; as de peer, não.
     #[test]
-    fn so_rota_de_peer_deixa_de_ser_redirecionada() {
+    fn only_a_peer_route_stops_being_redirected() {
         assert_eq!(plain_action("/"), PlainAction::Redirect);
         assert_eq!(plain_action("/assets/app.js"), PlainAction::Redirect);
         assert_eq!(plain_action("/api/ui/node"), PlainAction::Redirect);
@@ -969,12 +969,12 @@ mod tests {
     /// O painel é redirecionado preservando caminho e query - um 301 que joga
     /// o operador na raiz perde o link que ele abriu.
     #[test]
-    fn o_redirecionamento_preserva_o_caminho_e_a_query() {
+    fn the_redirect_preserves_the_path_and_the_query() {
         assert_eq!(
-            plain_reply("ksia:8080", "/config/rede?aba=tls"),
+            plain_reply("ksia:8080", "/config/network?tab=tls"),
             (
                 301,
-                Some("https://ksia:8080/config/rede?aba=tls".to_string())
+                Some("https://ksia:8080/config/network?tab=tls".to_string())
             )
         );
         // A porta vai junto porque é a mesma: o servidor atende as duas falas.
@@ -985,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn rota_de_peer_recebe_403_em_vez_de_redirecionamento() {
+    fn a_peer_route_gets_403_instead_of_a_redirect() {
         assert_eq!(
             plain_reply("ksia:8080", "/api/transfer/download?path=x"),
             (403, None)
@@ -996,16 +996,16 @@ mod tests {
     /// Sem `Host` não há para onde mandar, e um `Location` quebrado faria o
     /// cliente falhar longe daqui, com um erro que não aponta para cá.
     #[test]
-    fn sem_host_nao_se_inventa_destino() {
+    fn without_a_host_no_destination_is_invented() {
         assert_eq!(plain_reply("", "/"), (403, None));
     }
 
     /// De fora, o modo estrito recusa texto claro - é o que faz a flag valer.
     #[test]
-    fn remoto_em_claro_e_recusado_no_modo_estrito() {
-        let remoto: SocketAddr = "192.168.100.138:5050".parse().unwrap();
-        assert!(!plain_allowed(remoto, true));
-        assert!(plain_allowed(remoto, false));
+    fn a_plain_remote_is_refused_in_strict_mode() {
+        let remote: SocketAddr = "192.168.100.138:5050".parse().unwrap();
+        assert!(!plain_allowed(remote, true));
+        assert!(plain_allowed(remote, false));
     }
 
     /// O bug do `undeploy`: uma conexão em keep-alive parada segurava a task
@@ -1014,38 +1014,38 @@ mod tests {
     /// e o próximo modelo não cabia. O `serve` tem de encerrar mesmo com uma
     /// conexão dessas aberta, e é o que este teste prende.
     #[tokio::test]
-    async fn conexao_parada_nao_segura_o_desligamento() {
+    async fn a_stalled_connection_does_not_hold_the_shutdown() {
         use tokio::io::AsyncWriteExt;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let (parar, desligar) = tokio::sync::oneshot::channel::<()>();
+        let (stop, shutdown) = tokio::sync::oneshot::channel::<()>();
 
         let app = Router::new().route("/health", axum::routing::get(|| async { "ok" }));
-        let servidor = tokio::spawn(async move {
+        let server = tokio::spawn(async move {
             serve_with_shutdown(listener, app, None, async {
-                let _ = desligar.await;
+                let _ = shutdown.await;
             })
             .await
         });
 
         // Uma requisição de verdade, para a conexão existir do lado do
         // servidor, e depois nada: é o keep-alive parado do pool do gateway.
-        let mut cliente = TcpStream::connect(addr).await.unwrap();
-        cliente
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
             .write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
             .await
             .unwrap();
-        let mut resposta = [0u8; 12];
-        tokio::io::AsyncReadExt::read(&mut cliente, &mut resposta)
+        let mut response = [0u8; 12];
+        tokio::io::AsyncReadExt::read(&mut client, &mut response)
             .await
             .unwrap();
 
-        let _ = parar.send(());
+        let _ = stop.send(());
         // Com folga sobre o `DRAIN_DEADLINE`, e muito abaixo do "para sempre"
         // que era o comportamento antigo.
-        let saida = tokio::time::timeout(DRAIN_DEADLINE * 3, servidor).await;
-        assert!(saida.is_ok(), "o serve não encerrou com uma conexão parada");
-        assert!(saida.unwrap().unwrap().is_ok());
+        let output = tokio::time::timeout(DRAIN_DEADLINE * 3, server).await;
+        assert!(output.is_ok(), "o serve não encerrou com uma conexão parada");
+        assert!(output.unwrap().unwrap().is_ok());
     }
 }

@@ -508,9 +508,9 @@ pub async fn plan_pipeline_with_rtt_from_head(
     rtts: &HashMap<String, f64>,
     preferred_head: Option<&str>,
 ) -> Option<PipelinePlan> {
-    let servindo = model_pipeline_candidates(peers, model_name, deploy_id);
+    let serving = model_pipeline_candidates(peers, model_name, deploy_id);
 
-    if servindo.is_empty() {
+    if serving.is_empty() {
         debug!(
             "Pipeline plan failed: No alive peers for model '{}'{} with inference_port",
             model_name,
@@ -531,7 +531,7 @@ pub async fn plan_pipeline_with_rtt_from_head(
     // duas máquinas do cluster têm que chegar à mesma implantação. A ordem por
     // id é o critério estável até o registro dizer qual é a ativa
     // (`deployment::active`).
-    let candidates = servindo;
+    let candidates = serving;
 
     let mut steps: Vec<PipelineStep> = Vec::new();
     let mut pos: u32 = 0; // next layer we need covered
@@ -666,37 +666,37 @@ pub(crate) fn plan_from_steps(steps: Vec<PipelineStep>) -> PipelinePlan {
 /// requisicao para um `192.168.x.y` de outro site. Palpite nao passa na frente
 /// de fato conhecido; a medicao e que promove um candidato melhor, depois.
 ///
-/// `fixadas` e a memoria da sessao: uma vez escolhido, o endereco daquele no
+/// `pinned` e a memoria da sessao: uma vez escolhido, o endereco daquele no
 /// nao muda ate a sessao acabar.
 pub fn resolve_step_url(
     step: &PipelineStep,
-    tabela: &crate::route::RouteTable,
-    fixadas: &mut std::collections::HashMap<String, String>,
+    table: &crate::route::RouteTable,
+    pinned: &mut std::collections::HashMap<String, String>,
 ) -> String {
-    if let Some(ja) = fixadas.get(&step.node_id) {
-        return ja.clone();
+    if let Some(already) = pinned.get(&step.node_id) {
+        return already.clone();
     }
-    let escolhido = tabela
+    let chosen = table
         .resolve(&step.node_id)
         .filter(|url| {
             step.inference_candidates.iter().any(|c| c == url)
-                && !tabela.is_failed(&step.node_id, url)
+                && !table.is_failed(&step.node_id, url)
         })
         .unwrap_or_else(|| {
             if !step.inference_url.is_empty()
-                && !tabela.is_failed(&step.node_id, &step.inference_url)
+                && !table.is_failed(&step.node_id, &step.inference_url)
             {
                 step.inference_url.clone()
             } else {
                 step.inference_candidates
                     .iter()
-                    .find(|candidate| !tabela.is_failed(&step.node_id, candidate))
+                    .find(|candidate| !table.is_failed(&step.node_id, candidate))
                     .cloned()
                     .unwrap_or_default()
             }
         });
-    fixadas.insert(step.node_id.clone(), escolhido.clone());
-    escolhido
+    pinned.insert(step.node_id.clone(), chosen.clone());
+    chosen
 }
 
 #[cfg(test)]
@@ -760,7 +760,7 @@ mod ipv6_tests {
     /// cadeia é o primary do grupo, mesmo cobrindo a mesma faixa.
     #[tokio::test]
     async fn a_tp_worker_is_not_a_pipeline_hop() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let worker = peer_tp("192.168.1.10:42777", 0, 31, "worker", 1);
         let mut primary = peer_tp("192.168.1.11:42777", 0, 31, "primary", 0);
         primary.node_id = "primary".into();
@@ -799,45 +799,45 @@ mod ipv6_tests {
             p.node_id = id.to_string();
             p.deploy_id = dep.to_string();
         }
-        let todos = vec![a1, a2, b1, b2];
+        let all = vec![a1, a2, b1, b2];
         let tracker = LoadTracker::new();
 
         // Pedindo uma implantação, só as máquinas dela entram.
-        let plano = plan_pipeline(&todos, "qwen35", Some("d-aaaaaaaa"), 32, &tracker)
+        let plan = plan_pipeline(&all, "qwen35", Some("d-aaaaaaaa"), 32, &tracker)
             .await
             .expect("a implantação A cobre o modelo inteiro");
-        assert_eq!(plano.steps.len(), 2);
+        assert_eq!(plan.steps.len(), 2);
         assert!(
-            plano
+            plan
                 .steps
                 .iter()
                 .all(|s| s.inference_url.contains("10.0.0.1")
                     || s.inference_url.contains("10.0.0.2")),
             "nenhum hop pode vir da implantação B: {:?}",
-            plano
+            plan
                 .steps
                 .iter()
                 .map(|s| &s.inference_url)
                 .collect::<Vec<_>>()
         );
 
-        let plano_b = plan_pipeline(&todos, "qwen35", Some("d-bbbbbbbb"), 32, &tracker)
+        let plan_b = plan_pipeline(&all, "qwen35", Some("d-bbbbbbbb"), 32, &tracker)
             .await
             .unwrap();
-        assert!(plano_b
+        assert!(plan_b
             .steps
             .iter()
             .all(|s| s.inference_url.contains("10.0.0.3") || s.inference_url.contains("10.0.0.4")));
 
         // Sem escolher, ainda assim não se misturam: escolhe-se uma, inteira.
-        let qualquer = plan_pipeline(&todos, "qwen35", None, 32, &tracker)
+        let any = plan_pipeline(&all, "qwen35", None, 32, &tracker)
             .await
             .unwrap();
-        let ids: std::collections::BTreeSet<&str> = qualquer
+        let ids: std::collections::BTreeSet<&str> = any
             .steps
             .iter()
             .map(|s| {
-                todos
+                all
                     .iter()
                     .find(|p| p.node_id == s.node_id)
                     .map(|p| p.deploy_id.as_str())
@@ -867,28 +867,28 @@ mod ipv6_tests {
             p.node_id = id.to_string();
             p.model = model.to_string();
         }
-        let todos = vec![a1, a2, b1];
+        let all = vec![a1, a2, b1];
         let tracker = LoadTracker::new();
 
-        let plano_a = plan_pipeline(&todos, "modelo-a", None, 32, &tracker)
+        let plan_a = plan_pipeline(&all, "modelo-a", None, 32, &tracker)
             .await
             .expect("modelo-a cobre 0..31 em dois hops");
-        assert_eq!(plano_a.steps.len(), 2);
-        assert!(plano_a
+        assert_eq!(plan_a.steps.len(), 2);
+        assert!(plan_a
             .steps
             .iter()
             .all(|s| s.node_id == "a1" || s.node_id == "a2"));
 
-        let plano_b = plan_pipeline(&todos, "modelo-b", None, 32, &tracker)
+        let plan_b = plan_pipeline(&all, "modelo-b", None, 32, &tracker)
             .await
             .expect("modelo-b cobre 0..31 num hop só");
-        assert_eq!(plano_b.steps.len(), 1);
-        assert_eq!(plano_b.steps[0].node_id, "b1");
+        assert_eq!(plan_b.steps.len(), 1);
+        assert_eq!(plan_b.steps[0].node_id, "b1");
 
-        let candidatos_a = model_pipeline_candidates(&todos, "modelo-a", None);
-        assert!(candidatos_a.iter().all(|p| p.model == "modelo-a"));
-        let candidatos_b = model_pipeline_candidates(&todos, "modelo-b", None);
-        assert!(candidatos_b.iter().all(|p| p.model == "modelo-b"));
+        let candidates_a = model_pipeline_candidates(&all, "modelo-a", None);
+        assert!(candidates_a.iter().all(|p| p.model == "modelo-a"));
+        let candidates_b = model_pipeline_candidates(&all, "modelo-b", None);
+        assert!(candidates_b.iter().all(|p| p.model == "modelo-b"));
     }
 
     /// Um id que ninguém serve não pode cair de volta no rótulo e devolver a
@@ -898,9 +898,9 @@ mod ipv6_tests {
     async fn an_unknown_deployment_id_serves_nobody() {
         let mut p1 = peer("10.0.0.1:42777", 0, 31);
         p1.deploy_id = "d-aaaaaaaa".into();
-        let plano =
+        let plan =
             plan_pipeline(&[p1], "qwen35", Some("d-cccccccc"), 32, &LoadTracker::new()).await;
-        assert!(plano.is_none());
+        assert!(plan.is_none());
     }
 
     /// Cluster em atualização: um peer já anuncia implantação, o outro ainda
@@ -908,14 +908,14 @@ mod ipv6_tests {
     /// de um nó por vez abriria um buraco de camadas.
     #[tokio::test]
     async fn a_peer_without_a_deployment_still_serves_its_label() {
-        let mut novo = peer("10.0.0.1:42777", 0, 15);
-        novo.deploy_id = "d-aaaaaaaa".into();
-        let antigo = peer("10.0.0.2:42777", 16, 31); // deploy_id vazio
+        let mut new = peer("10.0.0.1:42777", 0, 15);
+        new.deploy_id = "d-aaaaaaaa".into();
+        let old = peer("10.0.0.2:42777", 16, 31); // deploy_id vazio
 
-        let plano = plan_pipeline(&[novo, antigo], "qwen35", None, 32, &LoadTracker::new())
+        let plan = plan_pipeline(&[new, old], "qwen35", None, 32, &LoadTracker::new())
             .await
             .expect("os dois juntos cobrem o modelo");
-        assert_eq!(plano.steps.len(), 2);
+        assert_eq!(plan.steps.len(), 2);
     }
 
     #[tokio::test]
@@ -1140,11 +1140,11 @@ mod ipv6_tests {
         assert!(!affinity.matches_plan(&changed));
     }
 
-    fn step_com(candidatos: Vec<&str>, url: &str) -> PipelineStep {
+    fn step_with(candidates: Vec<&str>, url: &str) -> PipelineStep {
         PipelineStep {
             node_id: "n1".into(),
             inference_url: url.into(),
-            inference_candidates: candidatos.into_iter().map(String::from).collect(),
+            inference_candidates: candidates.into_iter().map(String::from).collect(),
             quic_addr_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 9,
@@ -1161,11 +1161,11 @@ mod ipv6_tests {
     /// partir ao meio.
     #[test]
     fn a_step_without_candidates_falls_back_to_the_resolved_url() {
-        let tabela = crate::route::RouteTable::new();
-        let mut fixadas = std::collections::HashMap::new();
-        let step = step_com(vec![], "http://192.168.1.9:8181");
+        let table = crate::route::RouteTable::new();
+        let mut pinned = std::collections::HashMap::new();
+        let step = step_with(vec![], "http://192.168.1.9:8181");
         assert_eq!(
-            resolve_step_url(&step, &tabela, &mut fixadas),
+            resolve_step_url(&step, &table, &mut pinned),
             "http://192.168.1.9:8181",
         );
     }
@@ -1174,12 +1174,12 @@ mod ipv6_tests {
     /// sessao, e trocar de endereco na metade e pior que a rota lenta.
     #[test]
     fn the_route_is_pinned_for_the_whole_session() {
-        let tabela = crate::route::RouteTable::new();
-        let mut fixadas = std::collections::HashMap::new();
-        fixadas.insert("n1".to_string(), "http://escolhido:8181".to_string());
-        let step = step_com(vec!["http://outro:8181"], "http://legado:8181");
+        let table = crate::route::RouteTable::new();
+        let mut pinned = std::collections::HashMap::new();
+        pinned.insert("n1".to_string(), "http://escolhido:8181".to_string());
+        let step = step_with(vec!["http://outro:8181"], "http://legado:8181");
         assert_eq!(
-            resolve_step_url(&step, &tabela, &mut fixadas),
+            resolve_step_url(&step, &table, &mut pinned),
             "http://escolhido:8181",
         );
     }
@@ -1198,14 +1198,14 @@ mod ipv6_tests {
     /// temos antes da primeira sonda.
     #[test]
     fn without_a_measurement_the_observed_address_wins_over_an_announced_one() {
-        let tabela = crate::route::RouteTable::new();
-        let mut fixadas = std::collections::HashMap::new();
-        let step = step_com(
+        let table = crate::route::RouteTable::new();
+        let mut pinned = std::collections::HashMap::new();
+        let step = step_with(
             vec!["http://192.168.0.37:8181", "http://[2804:f30::1]:8181"],
             "http://[2804:f30::1]:8181",
         );
         assert_eq!(
-            resolve_step_url(&step, &tabela, &mut fixadas),
+            resolve_step_url(&step, &table, &mut pinned),
             "http://[2804:f30::1]:8181",
         );
     }
@@ -1213,32 +1213,32 @@ mod ipv6_tests {
     /// Medido vence: e o ponto da fase de rota dinamica.
     #[test]
     fn a_measured_route_beats_the_observed_address() {
-        let tabela = crate::route::RouteTable::new();
-        tabela.remember_for_test("n1", "http://rapido:8181", 3.0);
-        let mut fixadas = std::collections::HashMap::new();
-        let step = step_com(
+        let table = crate::route::RouteTable::new();
+        table.remember_for_test("n1", "http://rapido:8181", 3.0);
+        let mut pinned = std::collections::HashMap::new();
+        let step = step_with(
             vec!["http://rapido:8181", "http://lento:8181"],
             "http://lento:8181",
         );
         assert_eq!(
-            resolve_step_url(&step, &tabela, &mut fixadas),
+            resolve_step_url(&step, &table, &mut pinned),
             "http://rapido:8181"
         );
     }
 
     #[test]
     fn a_failed_route_is_not_selected_again_when_another_address_exists() {
-        let tabela = crate::route::RouteTable::new();
-        tabela.remember_for_test("n1", "http://blackhole:8181", 1.0);
-        tabela.mark_failure("n1", "http://blackhole:8181");
-        let mut fixadas = std::collections::HashMap::new();
-        let step = step_com(
+        let table = crate::route::RouteTable::new();
+        table.remember_for_test("n1", "http://blackhole:8181", 1.0);
+        table.mark_failure("n1", "http://blackhole:8181");
+        let mut pinned = std::collections::HashMap::new();
+        let step = step_with(
             vec!["http://blackhole:8181", "http://healthy:8181"],
             "http://blackhole:8181",
         );
 
         assert_eq!(
-            resolve_step_url(&step, &tabela, &mut fixadas),
+            resolve_step_url(&step, &table, &mut pinned),
             "http://healthy:8181",
             "uma falha real deve tirar o endereço da sessão seguinte"
         );
@@ -1271,32 +1271,32 @@ mod ipv6_tests {
     /// precisam saber decodificar um lote, porque o rascunho viaja para a cabeça.
     #[test]
     fn mtp_needs_the_tail_to_have_nextn_and_everyone_to_batch() {
-        let com_mtp = &[
+        let with_mtp = &[
             CAP_SPECULATE_LOOKUP,
             CAP_SPECULATE_MTP,
             CAP_SPECULATE_MTP_SLICED,
         ][..];
-        let so_lote = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP_SLICED][..];
-        let antigo = &[CAP_SPECULATE_LOOKUP][..];
+        let batch_only = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP_SLICED][..];
+        let old = &[CAP_SPECULATE_LOOKUP][..];
 
         assert!(
-            plan_of(vec![step(com_mtp)]).supports_mtp(),
+            plan_of(vec![step(with_mtp)]).supports_mtp(),
             "uma máquina só"
         );
         assert!(
-            plan_of(vec![step(so_lote), step(com_mtp)]).supports_mtp(),
+            plan_of(vec![step(batch_only), step(with_mtp)]).supports_mtp(),
             "a cauda tem o bloco — é ela quem rascunha, o gateway leva o rascunho à cabeça"
         );
         assert!(
-            !plan_of(vec![step(com_mtp), step(so_lote)]).supports_mtp(),
+            !plan_of(vec![step(with_mtp), step(batch_only)]).supports_mtp(),
             "a cauda sem o bloco não pode rascunhar"
         );
         assert!(
-            !plan_of(vec![step(com_mtp), step(&[])]).supports_mtp(),
+            !plan_of(vec![step(with_mtp), step(&[])]).supports_mtp(),
             "um hop que não decodifica lote quebra a rodada inteira"
         );
         assert!(
-            !plan_of(vec![step(so_lote), step(antigo)]).supports_mtp(),
+            !plan_of(vec![step(batch_only), step(old)]).supports_mtp(),
             "um peer velho no anel não entende o speculate novo — a cap nova é exigida em todos"
         );
         assert!(!plan_of(vec![]).supports_mtp());
@@ -1363,10 +1363,10 @@ mod ipv6_tests {
     #[tokio::test]
     async fn an_ipv6_peer_becomes_a_valid_step_url() {
         // O esquema da URL sai de um estado global do processo
-        // (`peer_client::tls_ativo`), e os testes rodam em paralelo. Sem esta
+        // (`peer_client::tls_enabled`), e os testes rodam em paralelo. Sem esta
         // trava, um teste que liga a política do cluster faz este aqui ver
         // `https://` onde espera `http://`.
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let peers = vec![peer(
             "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777",
             0,
@@ -1386,7 +1386,7 @@ mod ipv6_tests {
 
     #[tokio::test]
     async fn an_ipv4_peer_is_unchanged() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let peers = vec![peer("192.168.100.138:42777", 0, 31)];
         let tracker = LoadTracker::new();
         let plan = plan_pipeline(&peers, "qwen35", None, 32, &tracker)

@@ -2568,7 +2568,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warmup_distribui_candidatos_por_todas_as_camadas() {
+    fn warmup_spreads_candidates_across_all_layers() {
         let mut layer = 0;
         let mut expert = 0;
         let positions = (0..6)
@@ -2581,13 +2581,13 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_recusa_relatorio_sem_compute_medido() {
+    fn cuda_executor_refuses_a_report_without_measured_compute() {
         let error = require_cuda_compute_bytes(None).unwrap_err();
         assert!(error.to_string().contains("compute buffer CUDA medido"));
     }
 
     #[test]
-    fn diagnostico_nao_finito_distingue_primeiro_indice_e_contagem() {
+    fn non_finite_diagnostic_distinguishes_first_index_and_count() {
         let summary = nonfinite_summary(&[1.0, f32::NAN, 2.0, f32::INFINITY]).unwrap();
         assert_eq!(summary.0, 1);
         assert_eq!(summary.1, 2);
@@ -2596,7 +2596,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostico_da_entrada_da_camada_registra_nan_e_faixa_finita() {
+    fn layer_input_diagnostic_records_nan_and_the_finite_range() {
         let summary = summarize_layer_input(&[2.0, f32::NAN, -3.5, f32::INFINITY]);
 
         assert_eq!(summary.elements, 4);
@@ -2607,7 +2607,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostico_de_entrada_exige_porta_explicita() {
+    fn input_diagnostic_requires_an_explicit_gate() {
         assert!(!moe_layer_input_diagnostic_enabled(None));
         assert!(!moe_layer_input_diagnostic_enabled(Some("0")));
         assert!(!moe_layer_input_diagnostic_enabled(Some("false")));
@@ -2617,7 +2617,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_cpu_finito_substitui_saida_cuda_nao_finita() {
+    fn a_finite_cpu_replay_replaces_a_non_finite_cuda_output() {
         let output = vec![1.0, 2.0];
 
         assert_eq!(
@@ -2627,7 +2627,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_cpu_nao_finito_mantem_diagnostico_global() {
+    fn a_non_finite_cpu_replay_keeps_the_global_diagnostic() {
         let error = accept_cpu_replay_after_cuda_nonfinite(
             "estágio gate_up",
             vec![f32::NAN, 2.0, f32::INFINITY],
@@ -2642,7 +2642,7 @@ mod tests {
     }
 
     #[test]
-    fn q4_0_com_ponte_cuda_usa_executor_device() {
+    fn q4_0_with_a_cuda_bridge_uses_the_device_executor() {
         assert!(cuda_heterogeneous_dtype_supported(2));
         let plan = make_external_executor_plan(ExpertFormat::Q4_0, vec![2], 4, true, false);
         assert!(plan.enabled());
@@ -2651,7 +2651,7 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_sem_backend_disponivel_fica_recusado_com_motivo() {
+    fn nvfp4_without_an_available_backend_is_refused_with_a_reason() {
         let plan = make_external_executor_plan(ExpertFormat::Nvfp4, vec![39], 2, false, false);
         assert!(!plan.enabled());
         assert_eq!(plan.layers, vec![0, 0]);
@@ -2667,7 +2667,7 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_heterogeneos_sem_ponte_cuda_usam_cpu_reference() {
+    fn heterogeneous_dtypes_without_a_cuda_bridge_use_the_cpu_reference() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
             vec![12, 23, 34],
@@ -2681,7 +2681,7 @@ mod tests {
     }
 
     #[test]
-    fn dtype_heterogeneo_sem_decoder_externo_e_recusado_antes_da_carga() {
+    fn a_heterogeneous_dtype_without_an_external_decoder_is_refused_before_loading() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
             vec![18, 39, 40],
@@ -2698,7 +2698,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_dtypes_heterogeneos_tem_ponte_cuda() {
+    fn deepseek_heterogeneous_dtypes_have_a_cuda_bridge() {
         let plan =
             make_external_executor_plan(ExpertFormat::Heterogeneous, vec![18, 39], 14, true, false);
         assert!(plan.enabled());
@@ -2707,7 +2707,7 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_k_heterogeneos_com_ponte_externalizam_todas_as_camadas() {
+    fn heterogeneous_k_dtypes_with_a_bridge_externalize_all_layers() {
         let plan =
             make_external_executor_plan(ExpertFormat::Heterogeneous, vec![12, 14], 3, true, false);
         assert!(plan.enabled());
@@ -2716,7 +2716,7 @@ mod tests {
     }
 
     #[test]
-    fn q2k_q3k_e_q5k_entram_na_ponte_cuda_heterogenea() {
+    fn q2k_q3k_and_q5k_enter_the_heterogeneous_cuda_bridge() {
         assert!(KQuantFormat::Q2K.cuda_supported());
         assert!(KQuantFormat::Q3K.cuda_supported());
         assert!(KQuantFormat::Q5K.cuda_supported());
@@ -2751,7 +2751,7 @@ mod tests {
     /// Q5_K por papel, e um único dtype sem ponte derrubava a rota inteira para
     /// o `CPUReference`. Confere o dtype concreto, nunca o nome do ficheiro.
     #[test]
-    fn q4_0_misturado_com_q5k_permanece_na_ponte_cuda() {
+    fn q4_0_mixed_with_q5k_stays_on_the_cuda_bridge() {
         assert!(cuda_heterogeneous_dtype_supported(2));
         assert!(cuda_heterogeneous_dtype_supported(13));
         let plan =
@@ -2763,7 +2763,7 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_heterogeneos_com_iq_sem_ponte_usam_cpu_reference() {
+    fn heterogeneous_dtypes_with_iq_and_no_bridge_use_the_cpu_reference() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
             vec![16, 21, 23],
@@ -2777,7 +2777,7 @@ mod tests {
     }
 
     #[test]
-    fn dtype_com_ponte_device_externaliza_todas_as_camadas_do_plano() {
+    fn a_dtype_with_a_device_bridge_externalizes_all_layers_of_the_plan() {
         let plan = make_external_executor_plan(ExpertFormat::Q4K, vec![12], 3, true, false);
         assert!(plan.enabled());
         assert_eq!(plan.layers, vec![1, 1, 1]);
@@ -2785,7 +2785,7 @@ mod tests {
     }
 
     #[test]
-    fn escalares_com_ponte_device_externalizam_todas_as_camadas() {
+    fn scalars_with_a_device_bridge_externalize_all_layers() {
         for (format, dtype) in [
             (ExpertFormat::F32, 0),
             (ExpertFormat::F16, 1),
@@ -2799,7 +2799,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_mantem_forma_do_batch_de_hidden_states() {
+    fn runtime_keeps_the_hidden_states_batch_shape() {
         let path =
             std::env::temp_dir().join(format!("pom-ftk-moe-runtime-{}.gguf", std::process::id()));
         let (hidden, _) = write_q4_source(&path);
@@ -2821,7 +2821,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carrega_e_executa_k_quants() {
+    fn runtime_loads_and_runs_k_quants() {
         for format in [
             KQuantFormat::Q2K,
             KQuantFormat::Q3K,
@@ -2847,7 +2847,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carrega_e_executa_iq_quants() {
+    fn runtime_loads_and_runs_iq_quants() {
         for format in [
             IqQuantFormat::Iq2XXS,
             IqQuantFormat::Iq2XS,
@@ -2875,7 +2875,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carrega_e_executa_f32_f16_e_bf16() {
+    fn runtime_loads_and_runs_f32_f16_and_bf16() {
         for format in [PlainFormat::F32, PlainFormat::F16, PlainFormat::Bf16] {
             let path = std::env::temp_dir().join(format!(
                 "pom-ftk-plain-runtime-{}-{}.gguf",
@@ -2892,7 +2892,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carrega_e_executa_q4_1_q5_0_q5_1_e_q8_0() {
+    fn runtime_loads_and_runs_q4_1_q5_0_q5_1_and_q8_0() {
         for format in [
             LegacyQuantFormat::Q4_1,
             LegacyQuantFormat::Q5_0,
@@ -2914,7 +2914,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carrega_e_executa_mxfp4_tq1_tq2_q1_e_q2() {
+    fn runtime_loads_and_runs_mxfp4_tq1_tq2_q1_and_q2() {
         for format in [
             LowBitFormat::Mxfp4,
             LowBitFormat::Tq1_0,

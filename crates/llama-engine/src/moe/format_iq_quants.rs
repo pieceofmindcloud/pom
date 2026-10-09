@@ -1090,7 +1090,7 @@ pub mod tests {
     use super::*;
 
     #[test]
-    fn cada_iq_priorizado_tem_bloco_e_dequantizacao_determinados() {
+    fn each_prioritized_iq_has_a_defined_block_and_dequantization() {
         for (format, bytes) in [
             (IqQuantFormat::Iq2XXS, 66usize),
             (IqQuantFormat::Iq2XS, 74usize),
@@ -1118,7 +1118,7 @@ pub mod tests {
     }
 
     #[test]
-    fn formatos_iq_rejeitam_payload_truncado() {
+    fn iq_formats_reject_a_truncated_payload() {
         for format in [
             IqQuantFormat::Iq2XXS,
             IqQuantFormat::Iq2XS,
@@ -1135,14 +1135,14 @@ pub mod tests {
     }
 
     #[test]
-    fn dtype_iq_fora_da_fase_recusa_com_id_e_nome() {
+    fn an_iq_dtype_outside_the_phase_refuses_with_id_and_name() {
         let error = IqQuantFormat::from_dtype(24).unwrap_err().to_string();
         assert!(error.contains("24"));
         assert!(error.contains("I8"));
     }
 
     #[test]
-    fn source_carrega_iq3_s_iq2_s_e_iq4_xs_fundidos_e_separados() {
+    fn source_loads_fused_and_split_iq3_s_iq2_s_and_iq4_xs() {
         for format in [
             IqQuantFormat::Iq2XXS,
             IqQuantFormat::Iq2XS,

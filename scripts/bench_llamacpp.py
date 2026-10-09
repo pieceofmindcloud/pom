@@ -42,7 +42,7 @@ PROMPT_IDS = (
     "p-prefill-aleatorio",
 )
 # Estes IDs e textos espelham intencionalmente a copia fixa em
-# ~/scripts/bench-rotas.sh usada pelo pom-bench. Se a bateria mudar, atualize
+# ~/scripts/bench-routes.sh usada pelo pom-bench. Se a bateria mudar, atualize
 # os dois lados no mesmo trabalho e registre a nova referencia no relatorio.
 HEATING_PROMPT = (
     "Aquecimento da medicao. Responda brevemente com uma frase curta sobre o POM."
@@ -52,7 +52,7 @@ SHORT_REPETITIVE = (
     "em uma unica linha. Nao escreva preambulo, numeracao, pontuacao, "
     "explicacao ou quebra de linha."
 )
-SHORT_VARIADO = (
+SHORT_VARIED = (
     "Explique em ate 120 palavras por que a separacao entre prefill e decode "
     "ajuda a medir inferencia distribuida. Escreva prosa natural, variada e "
     "informativa, sem listas e sem repetir frases."
@@ -559,7 +559,7 @@ def build_prompts(prefill_words: int) -> dict[str, str]:
     varied = _build_long_context("V")
     return {
         "p-curto-repetitivo": SHORT_REPETITIVE,
-        "p-curto-variado": SHORT_VARIADO,
+        "p-curto-variado": SHORT_VARIED,
         "p-longo-repetitivo": (
             repetitive
             + "\nAgora escreva exatamente 30 vezes a palavra POM, separadas por um unico "
@@ -1106,7 +1106,7 @@ def _write_metadata(path: Path, metadata: dict[str, Any]) -> None:
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     env = os.environ
     parser = argparse.ArgumentParser(
-        description="Sobe llama-server do fork POM na ksia e mede a bateria bench-rotas."
+        description="Sobe llama-server do fork POM na ksia e mede a bateria bench-routes."
     )
     parser.add_argument("config_json", help="snapshot *.config.json produzido pelo pom-bench")
     parser.add_argument("--model", help="label do modelo a selecionar")
@@ -1148,7 +1148,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--summary")
     parser.add_argument("--metadata")
     parser.add_argument("--report", help="relatorio markdown da corrida")
-    parser.add_argument("--repeticoes", type=int, default=3)
+    parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--max-tokens", type=int, default=200)
     parser.add_argument(
         "--prefill-words",
@@ -1269,7 +1269,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.port < 1 or args.port > 65535:
         print("erro: --port fora do intervalo 1..65535", file=sys.stderr)
         return 2
-    if args.repeticoes <= 0 or args.max_tokens <= 0 or args.prefill_words <= 0 or args.prefill_max_tokens <= 0:
+    if args.repetitions <= 0 or args.max_tokens <= 0 or args.prefill_words <= 0 or args.prefill_max_tokens <= 0:
         print("erro: repeticoes e limites de tokens/palavras devem ser positivos", file=sys.stderr)
         return 2
     if args.min_free_mb <= 0 or args.build_jobs <= 0:
@@ -1289,7 +1289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "status": "starting",
         "config_snapshot": str(snapshot_path),
         "deployment": plan,
-        "repetitions": args.repeticoes,
+        "repetitions": args.repetitions,
         "max_tokens": args.max_tokens,
         "prefill_words": args.prefill_words,
         "prefill_max_tokens": args.prefill_max_tokens,
@@ -1362,7 +1362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError(f"warmup falhou: {warmup.get('error')}")
 
         for prompt_id in PROMPT_IDS:
-            for repetition in range(1, args.repeticoes + 1):
+            for repetition in range(1, args.repetitions + 1):
                 prompt = (
                     _random_prefill_prompt(args.prefill_words)
                     if prompt_id == "p-prefill-aleatorio"
@@ -1383,7 +1383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"aviso: {prompt_id} repeticao {repetition} falhou: {result.get('error')}",
                         file=sys.stderr,
                     )
-        incomplete = incomplete_prompts(rows, args.repeticoes)
+        incomplete = incomplete_prompts(rows, args.repetitions)
         measured_prompt_ids = {
             str(row.get("prompt_id"))
             for row in rows

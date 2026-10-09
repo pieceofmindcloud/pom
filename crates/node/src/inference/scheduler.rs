@@ -242,7 +242,7 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn replicas_da_mesma_fatia_nao_compartilham_capacidade_da_fila() {
+    fn replicas_of_the_same_slice_do_not_share_queue_capacity() {
         let mut a = SchedulerQueue::new(SchedulerConfig::test(1, 1));
         let mut b = SchedulerQueue::new(SchedulerConfig::test(1, 1));
         a.try_push(QueueItem::test("sess-a", WorkClass::DecodeTokens, 1))
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn um_microbatch_nao_duplica_a_mesma_sessao() {
+    fn a_microbatch_does_not_duplicate_the_same_session() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(8, 4));
         q.try_push(QueueItem::test("sess-a", WorkClass::DecodeTokens, 1))
             .unwrap();
@@ -310,7 +310,7 @@ mod tests {
     /// do agente retida, o pedido pequeno não é admitido - fica na fila com a
     /// espera medida, em vez de entrar despejando o prefixo de 62 mil tokens.
     #[test]
-    fn prefill_novo_espera_em_vez_de_despejar_a_sessao_retida() {
+    fn a_new_prefill_waits_instead_of_evicting_the_retained_session() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(4, 1));
         q.try_push(QueueItem::test("title", WorkClass::PrefillTokens, 35))
             .unwrap();
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn prefill_de_pipeline_nao_entra_na_carencia_de_pedido_avulso() {
+    fn a_pipeline_prefill_is_exempt_from_the_standalone_request_grace_period() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(4, 1));
         q.try_push(QueueItem::pipeline_test(
             "pipeline",
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn fila_cheia_recusa_antes_de_alocar_trabalho() {
+    fn a_full_queue_refuses_before_allocating_work() {
         let mut q = SchedulerQueue::new(SchedulerConfig::test(1, 1));
         q.try_push(QueueItem::test("sess-a", WorkClass::PrefillTokens, 1))
             .unwrap();
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn limites_do_scheduler_sao_clampados_ao_contexto_do_no() {
+    fn scheduler_limits_are_clamped_to_the_node_context() {
         let config = SchedulerConfig::from_values(true, 0, 4, 99, 4096, 2, 512);
         assert_eq!(config.max_queue_requests, 1);
         assert_eq!(config.batch_window, std::time::Duration::from_millis(4));

@@ -140,7 +140,7 @@ describe("DeployNetworkCanvas", () => {
     localStorage.clear();
   });
 
-  it("desenha os hops para frente e o retorno do último peer para o gateway", async () => {
+  it("draws the forward hops and the return from the last peer to the gateway", async () => {
     const steps = [
       step(0, 3, "a", 1),
       step(4, 7, "a", 2),
@@ -165,7 +165,7 @@ describe("DeployNetworkCanvas", () => {
     view.unmount();
   });
 
-  it("não liga estágios através de uma faixa sem máquina", async () => {
+  it("does not connect stages across a range with no machine", async () => {
     const steps = [
       step(0, 3, "a", 1),
       step(4, 7, "", 2),
@@ -189,7 +189,7 @@ describe("DeployNetworkCanvas", () => {
     view.unmount();
   });
 
-  it("diz quando a carga da máquina não foi observada em vez de mostrar zero", () => {
+  it("says when the machine load was not observed instead of showing zero", () => {
     const current = plan([step(0, 3, "a", 1)], []);
     current.machines = current.machines.map((item) => item.node_id === "a" ? { ...item, load: null } : item);
 
@@ -201,7 +201,7 @@ describe("DeployNetworkCanvas", () => {
     view.unmount();
   });
 
-  it("ancora a curva no lado correto quando o receptor está à esquerda", () => {
+  it("anchors the curve on the correct side when the receiver is on the left", () => {
     const from: CanvasPosition = { left: 600, top: 100 };
     const to: CanvasPosition = { left: 100, top: 100 };
     const geometry = routeGeometry(from, to);
@@ -213,7 +213,7 @@ describe("DeployNetworkCanvas", () => {
     expect(geometry.c2x).toBeGreaterThan(geometry.x2);
   });
 
-  it("mostra o custo total medido no gateway virtual", () => {
+  it("shows the total cost measured at the virtual gateway", () => {
     const steps = [
       step(0, 3, "a", 1),
       step(4, 7, "b", 2),

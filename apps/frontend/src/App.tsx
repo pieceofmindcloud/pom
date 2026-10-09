@@ -271,7 +271,7 @@ export default function App() {
   /*
    * Telas fornecidas por plugins (`lib/pluginUi.ts`) usam o namespace do
    * próprio `plugin_code` dentro do basename `/admin-ui`. Um manifesto pode
-   * reivindicar `/logs` ou `/estatisticas` para substituir o fallback nativo
+   * reivindicar `/logs` ou `/statistics` para substituir o fallback nativo
    * correspondente quando não houver outro plugin com a mesma reivindicação.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
@@ -285,21 +285,21 @@ export default function App() {
   const isFullBleed =
     allowed &&
     (isDashboard ||
-      location.pathname === "/documentacao" ||
-      location.pathname === "/implantar" ||
-      location.pathname === "/implantacoes" ||
+      location.pathname === "/documentation" ||
+      location.pathname === "/deploy" ||
+      location.pathname === "/deployments" ||
       pluginRoute?.route.full_bleed === true ||
-      location.pathname === "/implantacoes/logs" ||
-      location.pathname === "/redes-publicas" ||
+      location.pathname === "/deployments/logs" ||
+      location.pathname === "/public-networks" ||
       location.pathname === "/network-chat" ||
       location.pathname === "/config/keys/api" ||
-      location.pathname === "/modelos" ||
-      location.pathname === "/modelos/remotos" ||
-      location.pathname === "/modelos/fatiar" ||
+      location.pathname === "/models" ||
+      location.pathname === "/models/remote" ||
+      location.pathname === "/models/slice" ||
       location.pathname === "/plugins" ||
-      location.pathname === "/fatias" ||
-      location.pathname === "/transferencias" ||
-      location.pathname === "/transferencias/enviar");
+      location.pathname === "/shards" ||
+      location.pathname === "/transfers" ||
+      location.pathname === "/transfers/send");
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
   // A machine on its first run names itself and its network before the panel
@@ -407,10 +407,10 @@ export default function App() {
                       <Forbidden />
                     </Page>
                   </div>
-                ) : location.pathname === "/logs/estatisticas" ? (
+                ) : location.pathname === "/logs/statistics" ? (
                   // Alias antigo, preservado fora do `<Routes>` porque o
                   // destino também é uma rota de plugin ou a vitrine Enterprise.
-                  <Navigate to="/estatisticas" replace />
+                  <Navigate to="/statistics" replace />
                 ) : pluginRoute ? (
                   <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
                     <PluginScreen
@@ -427,34 +427,34 @@ export default function App() {
                     <AnimatePresence mode="wait">
                       <Routes location={location} key={location.pathname}>
                         <Route path="/" element={<Page><Dashboard /></Page>} />
-                        <Route path="/redes-publicas" element={<Page><PublicNetworks /></Page>} />
+                        <Route path="/public-networks" element={<Page><PublicNetworks /></Page>} />
                         <Route path="/network-chat" element={<Page><NetworkChat /></Page>} />
-                        <Route path="/modelos" element={<Page><WholeModels /></Page>} />
-                        <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
-                        <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
-                        <Route path="/fatias" element={<Page><Shards /></Page>} />
-                        <Route path="/implantar" element={<Page><DeployModel /></Page>} />
-                        <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
-                        <Route path="/implantacoes/logs" element={<Page><DeploymentLogs /></Page>} />
+                        <Route path="/models" element={<Page><WholeModels /></Page>} />
+                        <Route path="/models/remote" element={<Page><RemoteModels /></Page>} />
+                        <Route path="/models/slice" element={<Page><SliceModels /></Page>} />
+                        <Route path="/shards" element={<Page><Shards /></Page>} />
+                        <Route path="/deploy" element={<Page><DeployModel /></Page>} />
+                        <Route path="/deployments" element={<Page><Deployments /></Page>} />
+                        <Route path="/deployments/logs" element={<Page><DeploymentLogs /></Page>} />
                         {/* Keep the former deploy URL working for old bookmarks. */}
-                        <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
-                        <Route path="/transferencias" element={<Page><Transfers /></Page>} />
-                        <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
+                        <Route path="/shards/deploy" element={<Navigate to="/deploy" replace />} />
+                        <Route path="/transfers" element={<Page><Transfers /></Page>} />
+                        <Route path="/transfers/send" element={<Page><SendFile /></Page>} />
                         <Route path="/plugins" element={<Page><Plugins /></Page>} />
-                        <Route path="/documentacao" element={<Page><Documentation /></Page>} />
-                        <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
-                        <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />
-                        <Route path="/config/minha-maquina" element={<Page><MyMachine /></Page>} />
-                        <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
-                        <Route path="/config/compartilhamento" element={<Page><NetworkSharing /></Page>} />
-                        <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
-                        <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
-                        <Route path="/config/preferencias/admin" element={<Page><Preferences administrative /></Page>} />
-                        <Route path="/config/sobre" element={<Page><About /></Page>} />
+                        <Route path="/documentation" element={<Page><Documentation /></Page>} />
+                        <Route path="/config/network" element={<Page><NetworkSettings /></Page>} />
+                        <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
+                        <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
+                        <Route path="/config/administration" element={<Page><AdminAuthority /></Page>} />
+                        <Route path="/config/sharing" element={<Page><NetworkSharing /></Page>} />
+                        <Route path="/config/trust" element={<Page><TrustAnchor /></Page>} />
+                        <Route path="/config/preferences" element={<Page><Preferences /></Page>} />
+                        <Route path="/config/preferences/admin" element={<Page><Preferences administrative /></Page>} />
+                        <Route path="/config/about" element={<Page><About /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
-                        <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
-                        <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
-                        <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
+                        <Route path="/config/keys/connection" element={<Page><ConnectionKeys /></Page>} />
+                        <Route path="/config/folders" element={<Page><ModelPaths /></Page>} />
+                        <Route path="/config/storage" element={<Page><ModelPaths /></Page>} />
                         <Route path="*" element={<Page><NotFound /></Page>} />
                       </Routes>
                     </AnimatePresence>

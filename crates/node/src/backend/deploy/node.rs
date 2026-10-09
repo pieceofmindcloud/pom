@@ -441,15 +441,15 @@ pub(super) async fn add_node_endpoint(
         (!deployment_id.is_empty()).then_some(deployment_id.as_str()),
     )
     .await;
-    let outras: Vec<(u32, u32)> = live
+    let others: Vec<(u32, u32)> = live
         .iter()
         .filter(|(id, _, _)| id != &req.target_node_id)
         .map(|(_, i, f)| (*i, *f))
         .collect();
-    let sobrepostas = overlapping_layers(&outras, (req.start_layer, req.end_layer));
+    let overlapping = overlapping_layers(&others, (req.start_layer, req.end_layer));
 
-    let candidatos = candidates(&machines);
-    let Some(total_layers) = model_size(&candidatos).value() else {
+    let candidates = candidates(&machines);
+    let Some(total_layers) = model_size(&candidates).value() else {
         return bad(json!({
             "error": format!("as fatias de {} nao dizem o total de camadas", req.group)
         }));
@@ -596,7 +596,7 @@ pub(super) async fn add_node_endpoint(
 
     Json(json!({
         "applied": true,
-        "overlapping_layers": sobrepostas,
+        "overlapping_layers": overlapping,
         "peer_index": peer_index,
         "peer_count": peer_count,
         "deploy_id": (!deployment_id.is_empty()).then_some(deployment_id),
@@ -623,20 +623,20 @@ pub(super) async fn remove_node_endpoint(
         .as_ref()
         .map(|deployment| deployment.deploy_id.as_str())
         .or_else(|| (!req.deploy_id.is_empty()).then_some(req.deploy_id.as_str()));
-    let vivas = live_ranges(&state, &req.group, deployment_id).await;
-    let Some((_, inicio, fim)) = vivas
+    let live = live_ranges(&state, &req.group, deployment_id).await;
+    let Some((_, start, end)) = live
         .iter()
         .find(|(id, _, _)| id == &req.target_node_id)
         .cloned()
     else {
         return bad(json!({ "error": "essa maquina nao esta servindo este modelo" }));
     };
-    let restantes: Vec<(u32, u32)> = vivas
+    let remaining: Vec<(u32, u32)> = live
         .iter()
         .filter(|(id, _, _)| id != &req.target_node_id)
         .map(|(_, i, f)| (*i, *f))
         .collect();
-    let descobertas = uncovered_after_removal(&restantes, (inicio, fim));
+    let discovered = uncovered_after_removal(&remaining, (start, end));
 
     // Quem libera a memoria e o dono dela, como no botao "Liberar fatia": este
     // no so encaminha o pedido.
@@ -680,15 +680,15 @@ pub(super) async fn remove_node_endpoint(
             publish_record(&state, &record).await;
             (Some(record.deploy_id), Some(version), serving)
         } else {
-            (None, None, !vivas.is_empty())
+            (None, None, !live.is_empty())
         }
     } else {
-        (None, None, !vivas.is_empty())
+        (None, None, !live.is_empty())
     };
 
     Json(json!({
         "removed": true,
-        "uncovered_layers": descobertas,
+        "uncovered_layers": discovered,
         "deploy_id": deploy_id,
         "version": version,
         "serving": serving,
@@ -768,7 +768,7 @@ pub(super) async fn undeploy_endpoint(
     }
 
     let peers = state.all_peers().await;
-    let alvo = match resolve_target(&req.deploy_id, &req.group, &peers) {
+    let target = match resolve_target(&req.deploy_id, &req.group, &peers) {
         Ok(a) => a,
         Err(e) => return bad(json!({ "error": e })),
     };
@@ -777,18 +777,18 @@ pub(super) async fn undeploy_endpoint(
     // no meio tempo não pode virar uma linha de falha inventada.
     let serving: Vec<PeerInfo> = peers
         .into_iter()
-        .filter(|p| p.total_layers > 0 && alvo.matches(p))
+        .filter(|p| p.total_layers > 0 && target.matches(p))
         .collect();
     if serving.is_empty() {
         return bad(json!({
-            "error": format!("nenhuma máquina está servindo {}", alvo.describe())
+            "error": format!("nenhuma máquina está servindo {}", target.describe())
         }));
     }
 
-    let group = alvo.label();
+    let group = target.label();
     info!(
         "desimplantando {} de {} máquina(s)",
-        alvo.describe(),
+        target.describe(),
         serving.len()
     );
 
@@ -832,7 +832,7 @@ pub(super) async fn undeploy_endpoint(
     // apagar o arquivo; os outros participantes apagam o seu ao serem
     // descarregados, e um que não respondeu guarda o dele - que é o certo, já
     // que ele ainda está no ar.
-    if let UndeployTarget::Deployment { deploy_id, .. } = &alvo {
+    if let UndeployTarget::Deployment { deploy_id, .. } = &target {
         if let Err(e) = state.database.remove_deployment(deploy_id) {
             warn!("não deu para esquecer a implantação {deploy_id}: {e:#}");
         }
@@ -840,7 +840,7 @@ pub(super) async fn undeploy_endpoint(
 
     Json(json!({
         "group": group,
-        "deploy_id": match &alvo {
+        "deploy_id": match &target {
             UndeployTarget::Deployment { deploy_id, .. } => Some(deploy_id.clone()),
             UndeployTarget::Label(_) => None,
         },

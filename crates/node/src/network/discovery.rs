@@ -2257,7 +2257,7 @@ mod tests {
     /// para se oferecer, e ele não cabe na convenção `host:port`. Tem de
     /// atravessar `tunnel_peer_multiaddrs` intacto.
     #[test]
-    fn um_endereco_de_circuito_anunciado_e_discavel() {
+    fn an_announced_circuit_address_is_dialable() {
         let peer: PeerId = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
             .parse()
             .expect("peer id");
@@ -2275,24 +2275,24 @@ mod tests {
     /// O `/p2p/<destino>` já vem no endereço que o próprio swarm publicou.
     /// Acrescentar de novo produzia um multiaddress que ninguém disca.
     #[test]
-    fn o_sufixo_p2p_nao_e_duplicado() {
+    fn the_p2p_suffix_is_not_duplicated() {
         let peer: PeerId = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
             .parse()
             .expect("peer id");
-        let completo = format!("/ip4/203.0.113.7/udp/52777/quic-v1/p2p/{peer}");
+        let complete = format!("/ip4/203.0.113.7/udp/52777/quic-v1/p2p/{peer}");
 
-        let addrs = tunnel_peer_multiaddrs(peer, &[completo.clone()]);
+        let addrs = tunnel_peer_multiaddrs(peer, &[complete.clone()]);
 
         assert_eq!(
             addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-            vec![completo]
+            vec![complete]
         );
     }
 
     /// Um peer em binário anterior não publica `libp2p_addrs`; a derivação
     /// legada por `UDP+10000` continua sendo o caminho dele.
     #[test]
-    fn o_host_port_legado_continua_derivando() {
+    fn the_legacy_host_port_keeps_deriving() {
         let peer: PeerId = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
             .parse()
             .expect("peer id");

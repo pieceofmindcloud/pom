@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 /// 0,8 e 1,2 ms; a absoluta sozinha ignoraria uma piora proporcionalmente
 /// enorme num enlace ja lento. Os 25% saem da medicao de 2026-08-13 entre
 /// MacBook e ksia (9,6 contra 7,2 ms de p50), que precisa NAO trocar.
-const MARGEM_RELATIVA: f64 = 0.25;
-const MARGEM_ABSOLUTA_MS: f64 = 2.0;
+const RELATIVE_MARGIN: f64 = 0.25;
+const ABSOLUTE_MARGIN_MS: f64 = 2.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Measurement {
@@ -33,41 +33,41 @@ pub struct RouteChoice {
 ///
 /// Devolve `None` quando nenhum candidato respondeu - o chamador trata isso
 /// como peer inalcancavel, nao como "use o primeiro da lista".
-pub fn choose_route(medidas: &[Measurement], atual: Option<&str>) -> Option<RouteChoice> {
-    let mut vivos: Vec<(&str, f64)> = medidas
+pub fn choose_route(measurements: &[Measurement], current: Option<&str>) -> Option<RouteChoice> {
+    let mut alive: Vec<(&str, f64)> = measurements
         .iter()
         .filter_map(|m| m.rtt_ms.map(|rtt| (m.addr.as_str(), rtt)))
         .collect();
-    if vivos.is_empty() {
+    if alive.is_empty() {
         return None;
     }
     // Ordem estavel antes de comparar: sem isto, dois candidatos empatados
     // saem em ordem de iteracao e dois nos podem escolher caminhos diferentes.
-    vivos.sort_by(|a, b| {
+    alive.sort_by(|a, b| {
         a.1.partial_cmp(&b.1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.cmp(b.0))
     });
-    let (melhor_addr, melhor_rtt) = vivos[0];
+    let (best_addr, best_rtt) = alive[0];
 
     // A rota atual so e mantida se ainda responde.
-    if let Some(atual_addr) = atual {
-        if let Some(&(_, atual_rtt)) = vivos.iter().find(|(a, _)| *a == atual_addr) {
-            let ganho_relativo = (atual_rtt - melhor_rtt) / atual_rtt;
-            let ganho_absoluto = atual_rtt - melhor_rtt;
-            let vale_trocar =
-                ganho_relativo >= MARGEM_RELATIVA && ganho_absoluto >= MARGEM_ABSOLUTA_MS;
-            if !vale_trocar {
+    if let Some(current_addr) = current {
+        if let Some(&(_, current_rtt)) = alive.iter().find(|(a, _)| *a == current_addr) {
+            let relative_gain = (current_rtt - best_rtt) / current_rtt;
+            let absolute_gain = current_rtt - best_rtt;
+            let worth_switching =
+                relative_gain >= RELATIVE_MARGIN && absolute_gain >= ABSOLUTE_MARGIN_MS;
+            if !worth_switching {
                 return Some(RouteChoice {
-                    addr: atual_addr.to_string(),
-                    rtt_ms: atual_rtt,
+                    addr: current_addr.to_string(),
+                    rtt_ms: current_rtt,
                 });
             }
         }
     }
     Some(RouteChoice {
-        addr: melhor_addr.to_string(),
-        rtt_ms: melhor_rtt,
+        addr: best_addr.to_string(),
+        rtt_ms: best_rtt,
     })
 }
 
@@ -76,17 +76,17 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 /// De quanto em quanto tempo os candidatos sao remedidos.
-pub const INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
+pub const MEASURE_INTERVAL: Duration = Duration::from_secs(300);
 /// Uma sonda que passa disso conta como falha.
 #[cfg(not(test))]
-const TIMEOUT_SONDA: Duration = Duration::from_secs(3);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[cfg(test)]
-const TIMEOUT_SONDA: Duration = Duration::from_millis(50);
+const PROBE_TIMEOUT: Duration = Duration::from_millis(50);
 
-struct Entrada {
-    escolha: RouteChoice,
-    medido_em: Instant,
+struct Entry {
+    choice: RouteChoice,
+    measured_at: Instant,
 }
 
 /// Falha de transporte recente. A entrada permanece até uma nova sonda bem
@@ -101,7 +101,7 @@ const FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 /// `PeerList` ja esta no limite da MTU.
 #[derive(Default)]
 pub struct RouteTable {
-    por_no: RwLock<HashMap<String, Entrada>>,
+    by_node: RwLock<HashMap<String, Entry>>,
     /// Memória de falha por `(node_id, URL)`.
     ///
     /// A chave é a URL inteira, então a porta de inferência e a porta do
@@ -111,10 +111,10 @@ pub struct RouteTable {
     /// sofria: sem memória, um endereço morto é rediscado em toda leitura.
     /// Uma segunda tabela seria um mecanismo paralelo com a mesma decisão
     /// para tomar em dois lugares.
-    falhas: RwLock<HashMap<(String, String), Instant>>,
+    failures: RwLock<HashMap<(String, String), Instant>>,
     /// Último endereço HTTP que respondeu de verdade, por peer: é o que a tela
     /// de participantes mostra como rota direta em uso (ver `last_success`).
-    sucessos: RwLock<HashMap<String, (String, Instant)>>,
+    successes: RwLock<HashMap<String, (String, Instant)>>,
 }
 
 impl RouteTable {
@@ -124,21 +124,21 @@ impl RouteTable {
 
     /// Endereco escolhido para este peer, se ja medido e ainda valido.
     pub fn resolve(&self, node_id: &str) -> Option<String> {
-        self.por_no
+        self.by_node
             .read()
             .ok()?
             .get(node_id)
-            .filter(|entry| entry.medido_em.elapsed() < INTERVALO_MEDICAO)
-            .map(|e| e.escolha.addr.clone())
+            .filter(|entry| entry.measured_at.elapsed() < MEASURE_INTERVAL)
+            .map(|e| e.choice.addr.clone())
     }
 
     /// Rota e latencia de cada peer, para a interface mostrar.
     pub fn snapshot(&self) -> Vec<(String, RouteChoice)> {
-        self.por_no
+        self.by_node
             .read()
             .map(|t| {
                 t.iter()
-                    .map(|(k, v)| (k.clone(), v.escolha.clone()))
+                    .map(|(k, v)| (k.clone(), v.choice.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -149,35 +149,35 @@ impl RouteTable {
     /// Chamado quando uma requisicao real falhou naquele endereco: esperar 5
     /// minutos significaria falhar tudo que chegasse nesse meio tempo.
     pub fn mark_failure(&self, node_id: &str, addr: &str) {
-        if let Ok(mut t) = self.por_no.write() {
+        if let Ok(mut t) = self.by_node.write() {
             if t.get(node_id)
-                .map(|e| e.escolha.addr == addr)
+                .map(|e| e.choice.addr == addr)
                 .unwrap_or(false)
             {
                 t.remove(node_id);
             }
         }
-        if let Ok(mut falhas) = self.falhas.write() {
-            falhas.insert((node_id.to_string(), addr.to_string()), Instant::now());
+        if let Ok(mut failures) = self.failures.write() {
+            failures.insert((node_id.to_string(), addr.to_string()), Instant::now());
         }
-        if let Ok(mut sucessos) = self.sucessos.write() {
-            if sucessos.get(node_id).is_some_and(|(ok, _)| ok == addr) {
-                sucessos.remove(node_id);
+        if let Ok(mut successes) = self.successes.write() {
+            if successes.get(node_id).is_some_and(|(ok, _)| ok == addr) {
+                successes.remove(node_id);
             }
         }
     }
 
     /// Informa se uma requisição real já falhou recentemente neste endereço.
     pub fn is_failed(&self, node_id: &str, addr: &str) -> bool {
-        let Ok(mut falhas) = self.falhas.write() else {
+        let Ok(mut failures) = self.failures.write() else {
             return false;
         };
-        let chave = (node_id.to_string(), addr.to_string());
-        let Some(falhou_em) = falhas.get(&chave).copied() else {
+        let key = (node_id.to_string(), addr.to_string());
+        let Some(failed_at) = failures.get(&key).copied() else {
             return false;
         };
-        if falhou_em.elapsed() >= FAILURE_COOLDOWN {
-            falhas.remove(&chave);
+        if failed_at.elapsed() >= FAILURE_COOLDOWN {
+            failures.remove(&key);
             false
         } else {
             true
@@ -199,7 +199,7 @@ impl RouteTable {
     /// evento que mata o endereço antigo - era também o evento que apagava a
     /// prova de que ele morreu. O cluster voltava a discar o cadáver.
     pub fn invalidate(&self, node_id: &str) {
-        if let Ok(mut t) = self.por_no.write() {
+        if let Ok(mut t) = self.by_node.write() {
             t.remove(node_id);
         }
     }
@@ -207,11 +207,11 @@ impl RouteTable {
     /// Esquece tudo que se sabe deste peer. Só para quando o peer some.
     pub fn forget(&self, node_id: &str) {
         self.invalidate(node_id);
-        if let Ok(mut falhas) = self.falhas.write() {
-            falhas.retain(|(id, _), _| id != node_id);
+        if let Ok(mut failures) = self.failures.write() {
+            failures.retain(|(id, _), _| id != node_id);
         }
-        if let Ok(mut sucessos) = self.sucessos.write() {
-            sucessos.remove(node_id);
+        if let Ok(mut successes) = self.successes.write() {
+            successes.remove(node_id);
         }
     }
 
@@ -220,11 +220,11 @@ impl RouteTable {
     /// É o contrário de `mark_failure`, e o que permite um endereço voltar ao
     /// uso antes do fim do `FAILURE_COOLDOWN` quando ele volta a atender.
     pub fn mark_success(&self, node_id: &str, addr: &str) {
-        if let Ok(mut falhas) = self.falhas.write() {
-            falhas.remove(&(node_id.to_string(), addr.to_string()));
+        if let Ok(mut failures) = self.failures.write() {
+            failures.remove(&(node_id.to_string(), addr.to_string()));
         }
-        if let Ok(mut sucessos) = self.sucessos.write() {
-            sucessos.insert(node_id.to_string(), (addr.to_string(), Instant::now()));
+        if let Ok(mut successes) = self.successes.write() {
+            successes.insert(node_id.to_string(), (addr.to_string(), Instant::now()));
         }
     }
 
@@ -233,7 +233,7 @@ impl RouteTable {
     /// observado, não o que o peer anuncia: um IPv6 anunciado que ninguém
     /// alcança nunca aparece aqui.
     pub fn last_success(&self, node_id: &str) -> Option<String> {
-        let (addr, when) = self.sucessos.read().ok()?.get(node_id).cloned()?;
+        let (addr, when) = self.successes.read().ok()?.get(node_id).cloned()?;
         (when.elapsed() < FAILURE_COOLDOWN && !self.is_failed(node_id, &addr)).then_some(addr)
     }
 
@@ -244,8 +244,8 @@ impl RouteTable {
     /// insistir em nenhum deles - deve pedir o endereço atual do par (ver
     /// `Network::request_peer_addresses`) e dizer na tela que está
     /// reencontrando o nó.
-    pub fn usable(&self, node_id: &str, candidatos: &[String]) -> Vec<String> {
-        candidatos
+    pub fn usable(&self, node_id: &str, candidates: &[String]) -> Vec<String> {
+        candidates
             .iter()
             .filter(|url| !self.is_failed(node_id, url))
             .cloned()
@@ -259,31 +259,31 @@ impl RouteTable {
     /// o gossip e a redescoberta apagar endereços de transporte que ainda
     /// serviam o prefill.
     pub fn endpoint_is_discredited(&self, node_id: &str, addr: &str) -> bool {
-        let Some(alvo) = host_and_port_of(addr) else {
+        let Some(target) = host_and_port_of(addr) else {
             return false;
         };
-        let Ok(falhas) = self.falhas.read() else {
+        let Ok(failures) = self.failures.read() else {
             return false;
         };
-        falhas.iter().any(|((id, url), falhou_em)| {
+        failures.iter().any(|((id, url), failed_at)| {
             id == node_id
-                && host_and_port_of(url).is_some_and(|endpoint| endpoint == alvo)
-                && falhou_em.elapsed() < FAILURE_COOLDOWN
+                && host_and_port_of(url).is_some_and(|endpoint| endpoint == target)
+                && failed_at.elapsed() < FAILURE_COOLDOWN
         })
     }
 
     /// Grava uma escolha direto, sem sondar. Só para teste.
     #[cfg(test)]
     pub fn remember_for_test(&self, node_id: &str, addr: &str, rtt_ms: f64) {
-        if let Ok(mut t) = self.por_no.write() {
+        if let Ok(mut t) = self.by_node.write() {
             t.insert(
                 node_id.to_string(),
-                Entrada {
-                    escolha: RouteChoice {
+                Entry {
+                    choice: RouteChoice {
                         addr: addr.to_string(),
                         rtt_ms,
                     },
-                    medido_em: Instant::now(),
+                    measured_at: Instant::now(),
                 },
             );
         }
@@ -298,15 +298,15 @@ impl RouteTable {
         rtt_ms: f64,
         age: Duration,
     ) {
-        if let Ok(mut table) = self.por_no.write() {
+        if let Ok(mut table) = self.by_node.write() {
             table.insert(
                 node_id.to_string(),
-                Entrada {
-                    escolha: RouteChoice {
+                Entry {
+                    choice: RouteChoice {
                         addr: addr.to_string(),
                         rtt_ms,
                     },
-                    medido_em: Instant::now() - age,
+                    measured_at: Instant::now() - age,
                 },
             );
         }
@@ -314,11 +314,11 @@ impl RouteTable {
     }
 
     /// Se ja passou tempo suficiente desde a ultima medicao deste peer.
-    pub fn precisa_medir(&self, node_id: &str) -> bool {
-        self.por_no
+    pub fn needs_measuring(&self, node_id: &str) -> bool {
+        self.by_node
             .read()
             .map(|t| match t.get(node_id) {
-                Some(e) => e.medido_em.elapsed() >= INTERVALO_MEDICAO,
+                Some(e) => e.measured_at.elapsed() >= MEASURE_INTERVAL,
                 None => true,
             })
             .unwrap_or(true)
@@ -336,23 +336,23 @@ impl RouteTable {
     /// usando pinning por `node_id`.
     pub async fn measure_peer(
         &self,
-        clientes: &crate::peer_client::PeerClients,
+        clients: &crate::peer_client::PeerClients,
         node_id: &str,
-        candidatos: &[String],
+        candidates: &[String],
     ) {
-        let Ok(http) = clientes.probe() else {
+        let Ok(http) = clients.probe() else {
             return;
         };
-        let mut medidas = Vec::with_capacity(candidatos.len());
-        for rota in candidatos {
-            let inicio = Instant::now();
-            let resposta =
-                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{rota}/health")).send())
+        let mut measurements = Vec::with_capacity(candidates.len());
+        for route in candidates {
+            let start = Instant::now();
+            let response =
+                tokio::time::timeout(PROBE_TIMEOUT, http.get(format!("{route}/health")).send())
                     .await;
-            let rtt = match resposta {
+            let rtt = match response {
                 Ok(Ok(r)) if r.status().is_success() => {
-                    self.mark_success(node_id, rota);
-                    Some(inicio.elapsed().as_secs_f64() * 1000.0)
+                    self.mark_success(node_id, route);
+                    Some(start.elapsed().as_secs_f64() * 1000.0)
                 }
                 // Uma sonda lenta **não** desacredita o endereço: o timeout
                 // dela é 3 s, muito mais apertado que o de uma requisição
@@ -362,23 +362,23 @@ impl RouteTable {
                 // desenhou, e é assim que ela fica.
                 _ => None,
             };
-            medidas.push(Measurement {
-                addr: rota.clone(),
+            measurements.push(Measurement {
+                addr: route.clone(),
                 rtt_ms: rtt,
             });
         }
-        let atual = self.resolve(node_id);
-        if let Some(escolha) = choose_route(&medidas, atual.as_deref()) {
-            if let Ok(mut t) = self.por_no.write() {
+        let current = self.resolve(node_id);
+        if let Some(choice) = choose_route(&measurements, current.as_deref()) {
+            if let Ok(mut t) = self.by_node.write() {
                 t.insert(
                     node_id.to_string(),
-                    Entrada {
-                        escolha,
-                        medido_em: Instant::now(),
+                    Entry {
+                        choice,
+                        measured_at: Instant::now(),
                     },
                 );
             }
-        } else if let Ok(mut t) = self.por_no.write() {
+        } else if let Ok(mut t) = self.by_node.write() {
             t.remove(node_id);
         }
     }
@@ -391,18 +391,18 @@ impl RouteTable {
     /// mantém as duas cadências independentes.
     pub async fn measure_current_peer(
         &self,
-        clientes: &crate::peer_client::PeerClients,
+        clients: &crate::peer_client::PeerClients,
         node_id: &str,
     ) -> Option<f64> {
-        let rota = self.resolve(node_id)?;
-        let http = clientes.probe().ok()?;
-        let inicio = Instant::now();
-        let resposta =
-            tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{rota}/health")).send()).await;
-        match resposta {
+        let route = self.resolve(node_id)?;
+        let http = clients.probe().ok()?;
+        let start = Instant::now();
+        let response =
+            tokio::time::timeout(PROBE_TIMEOUT, http.get(format!("{route}/health")).send()).await;
+        match response {
             Ok(Ok(response)) if response.status().is_success() => {
-                self.mark_success(node_id, &rota);
-                Some(inicio.elapsed().as_secs_f64() * 1000.0)
+                self.mark_success(node_id, &route);
+                Some(start.elapsed().as_secs_f64() * 1000.0)
             }
             _ => None,
         }
@@ -410,15 +410,15 @@ impl RouteTable {
 }
 
 fn host_and_port_of(addr: &str) -> Option<(&str, u16)> {
-    let sem_esquema = addr.split_once("://").map_or(addr, |(_, resto)| resto);
-    let autoridade = sem_esquema.split('/').next().unwrap_or(sem_esquema);
-    let (host, port) = if autoridade.starts_with('[') {
-        let fim_host = autoridade.find(']')?;
-        let host = &autoridade[1..fim_host];
-        let port = autoridade.get(fim_host + 1..)?.strip_prefix(':')?;
+    let without_scheme = addr.split_once("://").map_or(addr, |(_, rest)| rest);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let (host, port) = if authority.starts_with('[') {
+        let host_end = authority.find(']')?;
+        let host = &authority[1..host_end];
+        let port = authority.get(host_end + 1..)?.strip_prefix(':')?;
         (host, port)
     } else {
-        autoridade.rsplit_once(':')?
+        authority.rsplit_once(':')?
     };
     Some((host, port.parse().ok()?))
 }
@@ -451,7 +451,7 @@ struct RttEntry {
 /// `origem -> destino`; nunca se infere uma aresta pela soma de outras.
 #[derive(Default)]
 pub struct RttTable {
-    por_destino: RwLock<HashMap<String, RttEntry>>,
+    by_destination: RwLock<HashMap<String, RttEntry>>,
 }
 
 impl RttTable {
@@ -468,7 +468,7 @@ impl RttTable {
 
     pub fn snapshot_with_age(&self) -> Vec<RttSnapshot> {
         let mut snapshots = self
-            .por_destino
+            .by_destination
             .read()
             .map(|table| {
                 table
@@ -491,16 +491,16 @@ impl RttTable {
     pub fn fresh_snapshot(&self) -> Vec<RttMeasurement> {
         self.snapshot_with_age()
             .into_iter()
-            .filter(|entry| entry.age < RTT_INTERVALO_MEDICAO)
+            .filter(|entry| entry.age < RTT_MEASURE_INTERVAL)
             .map(|entry| entry.measurement)
             .collect()
     }
 
-    pub fn precisa_medir(&self, node_id: &str) -> bool {
-        self.por_destino
+    pub fn needs_measuring(&self, node_id: &str) -> bool {
+        self.by_destination
             .read()
             .map(|t| match t.get(node_id) {
-                Some(entry) => entry.measured_at.elapsed() >= RTT_INTERVALO_MEDICAO,
+                Some(entry) => entry.measured_at.elapsed() >= RTT_MEASURE_INTERVAL,
                 None => true,
             })
             .unwrap_or(true)
@@ -510,7 +510,7 @@ impl RttTable {
         if !rtt_ms.is_finite() || rtt_ms < 0.0 {
             return;
         }
-        if let Ok(mut t) = self.por_destino.write() {
+        if let Ok(mut t) = self.by_destination.write() {
             t.insert(
                 node_id.to_string(),
                 RttEntry {
@@ -526,7 +526,7 @@ impl RttTable {
     }
 
     pub fn mark_failure(&self, node_id: &str) {
-        if let Ok(mut t) = self.por_destino.write() {
+        if let Ok(mut t) = self.by_destination.write() {
             t.remove(node_id);
         }
     }
@@ -544,7 +544,7 @@ impl RttTable {
         transport: &str,
         age: Duration,
     ) {
-        if let Ok(mut table) = self.por_destino.write() {
+        if let Ok(mut table) = self.by_destination.write() {
             table.insert(
                 node_id.to_string(),
                 RttEntry {
@@ -561,13 +561,13 @@ impl RttTable {
 }
 
 /// A medição direcional é renovada junto com a rota de endereçamento.
-pub const RTT_INTERVALO_MEDICAO: Duration = Duration::from_secs(120);
+pub const RTT_MEASURE_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Prefere o túnel quando ele respondeu, mas permite que um peer que anunciou
 /// a capability e esteja momentaneamente sem o swarm continue mensurável pelo
 /// `/health` direto. Antes, esse fallback só existia para peers que nunca
 /// anunciavam túnel, então a entrada de RTT era apagada a cada renovação.
-pub(crate) fn escolher_rtt(
+pub(crate) fn choose_rtt(
     tunnel_rtt_ms: Option<f64>,
     direct_health_rtt_ms: Option<f64>,
 ) -> Option<(f64, &'static str)> {
@@ -586,14 +586,14 @@ pub mod tests_support {
     use axum::{routing::get, Router};
     use std::time::Duration;
 
-    /// Sobe um `/health` local que responde depois de `atraso_ms`, e devolve a
+    /// Sobe um `/health` local que responde depois de `delay_ms`, e devolve a
     /// URL base. E o mesmo endpoint que a sonda usa em producao.
-    pub async fn health_server(atraso_ms: u64) -> String {
+    pub async fn health_server(delay_ms: u64) -> String {
         let app = Router::new().route(
             "/health",
             get(move || async move {
-                if atraso_ms > 0 {
-                    tokio::time::sleep(Duration::from_millis(atraso_ms)).await;
+                if delay_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 }
                 "ok"
             }),
@@ -623,59 +623,59 @@ mod tests {
     /// do ruido do Wi-Fi. Sem margem, esse par trocaria de rota a cada ciclo.
     #[test]
     fn a_tie_within_the_margin_keeps_the_current_route() {
-        let medidas = vec![m("192.168.100.138:8092", 9.6), m("[2804:d55::1]:8092", 7.2)];
-        let escolha = choose_route(&medidas, Some("192.168.100.138:8092")).unwrap();
+        let measurements = vec![m("192.168.100.138:8092", 9.6), m("[2804:d55::1]:8092", 7.2)];
+        let choice = choose_route(&measurements, Some("192.168.100.138:8092")).unwrap();
         assert_eq!(
-            escolha.addr, "192.168.100.138:8092",
+            choice.addr, "192.168.100.138:8092",
             "7,2 vs 9,6 nao passa dos 25%"
         );
     }
 
     #[test]
     fn a_clear_win_switches_the_route() {
-        let medidas = vec![
+        let measurements = vec![
             m("192.168.100.138:8092", 40.0),
             m("[2804:d55::1]:8092", 7.0),
         ];
-        let escolha = choose_route(&medidas, Some("192.168.100.138:8092")).unwrap();
-        assert_eq!(escolha.addr, "[2804:d55::1]:8092");
+        let choice = choose_route(&measurements, Some("192.168.100.138:8092")).unwrap();
+        assert_eq!(choice.addr, "[2804:d55::1]:8092");
     }
 
     /// Diferenca percentual grande mas absoluta minuscula: 0,8 contra 1,2 ms
     /// passa dos 25% e nao chega aos 2 ms. Trocar aqui e ruido.
     #[test]
     fn a_percentage_win_under_two_milliseconds_does_not_switch() {
-        let medidas = vec![m("a:1", 1.2), m("b:1", 0.8)];
-        let escolha = choose_route(&medidas, Some("a:1")).unwrap();
-        assert_eq!(escolha.addr, "a:1");
+        let measurements = vec![m("a:1", 1.2), m("b:1", 0.8)];
+        let choice = choose_route(&measurements, Some("a:1")).unwrap();
+        assert_eq!(choice.addr, "a:1");
     }
 
     #[test]
     fn without_a_current_route_the_fastest_wins() {
-        let medidas = vec![m("a:1", 9.6), m("b:1", 7.2)];
-        assert_eq!(choose_route(&medidas, None).unwrap().addr, "b:1");
+        let measurements = vec![m("a:1", 9.6), m("b:1", 7.2)];
+        assert_eq!(choose_route(&measurements, None).unwrap().addr, "b:1");
     }
 
     /// Um candidato que nao respondeu nao e escolhivel, mesmo sendo o atual.
     #[test]
     fn an_unreachable_current_route_is_replaced_at_once() {
-        let medidas = vec![
+        let measurements = vec![
             Measurement {
                 addr: "a:1".into(),
                 rtt_ms: None,
             },
             m("b:1", 50.0),
         ];
-        assert_eq!(choose_route(&medidas, Some("a:1")).unwrap().addr, "b:1");
+        assert_eq!(choose_route(&measurements, Some("a:1")).unwrap().addr, "b:1");
     }
 
     #[test]
     fn no_reachable_candidate_yields_none() {
-        let medidas = vec![Measurement {
+        let measurements = vec![Measurement {
             addr: "a:1".into(),
             rtt_ms: None,
         }];
-        assert!(choose_route(&medidas, Some("a:1")).is_none());
+        assert!(choose_route(&measurements, Some("a:1")).is_none());
     }
 
     #[test]
@@ -699,13 +699,13 @@ mod tests {
                 },
             ]
         );
-        assert!(table.precisa_medir("peer-d"));
+        assert!(table.needs_measuring("peer-d"));
     }
 
     #[test]
     fn direct_health_is_a_fallback_when_the_tunnel_measurement_is_unavailable() {
-        assert_eq!(escolher_rtt(None, Some(3.5)), Some((3.5, "direct-health")));
-        assert_eq!(escolher_rtt(Some(1.5), Some(3.5)), Some((1.5, "libp2p")));
+        assert_eq!(choose_rtt(None, Some(3.5)), Some((3.5, "direct-health")));
+        assert_eq!(choose_rtt(Some(1.5), Some(3.5)), Some((1.5, "libp2p")));
     }
 
     #[test]
@@ -716,13 +716,13 @@ mod tests {
             "stale",
             1.0,
             "direct-health",
-            RTT_INTERVALO_MEDICAO + Duration::from_secs(1),
+            RTT_MEASURE_INTERVAL + Duration::from_secs(1),
         );
 
         let with_age = table.snapshot_with_age();
         assert_eq!(with_age.len(), 2);
         assert!(with_age.iter().any(|entry| {
-            entry.measurement.target_node_id == "stale" && entry.age >= RTT_INTERVALO_MEDICAO
+            entry.measurement.target_node_id == "stale" && entry.age >= RTT_MEASURE_INTERVAL
         }));
         assert_eq!(
             table
@@ -739,75 +739,75 @@ mod tests {
     /// divergirem por ordem de HashMap.
     #[test]
     fn an_exact_tie_is_broken_deterministically() {
-        let medidas = vec![m("b:1", 5.0), m("a:1", 5.0)];
-        assert_eq!(choose_route(&medidas, None).unwrap().addr, "a:1");
+        let measurements = vec![m("b:1", 5.0), m("a:1", 5.0)];
+        assert_eq!(choose_route(&measurements, None).unwrap().addr, "a:1");
     }
 
     /// Dois servidores locais com atrasos diferentes: o mais rapido vence, e a
     /// tabela passa a resolver aquele node_id para ele.
     #[tokio::test]
     async fn measuring_two_candidates_picks_the_faster_one() {
-        let rapido = tests_support::health_server(0).await;
-        let lento = tests_support::health_server(80).await;
-        let tabela = RouteTable::new();
+        let fast = tests_support::health_server(0).await;
+        let slow = tests_support::health_server(80).await;
+        let table = RouteTable::new();
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
-        tabela
-            .measure_peer(&http, "n1", &[lento.clone(), rapido.clone()])
+        table
+            .measure_peer(&http, "n1", &[slow.clone(), fast.clone()])
             .await;
-        assert_eq!(tabela.resolve("n1"), Some(rapido));
+        assert_eq!(table.resolve("n1"), Some(fast));
     }
 
     /// Uma falha marcada tira o endereco de uso imediatamente, sem esperar o
     /// ciclo de 5 minutos: a proxima requisicao ja vai por outro caminho.
     #[tokio::test]
     async fn a_failure_drops_the_route_right_away() {
-        let vivo = tests_support::health_server(0).await;
-        let tabela = RouteTable::new();
+        let alive = tests_support::health_server(0).await;
+        let table = RouteTable::new();
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
-        tabela.measure_peer(&http, "n1", &[vivo.clone()]).await;
-        assert_eq!(tabela.resolve("n1"), Some(vivo.clone()));
-        tabela.mark_failure("n1", &vivo);
-        assert_eq!(tabela.resolve("n1"), None);
+        table.measure_peer(&http, "n1", &[alive.clone()]).await;
+        assert_eq!(table.resolve("n1"), Some(alive.clone()));
+        table.mark_failure("n1", &alive);
+        assert_eq!(table.resolve("n1"), None);
     }
 
     #[test]
     fn an_address_update_invalidates_the_stale_route() {
-        let tabela = RouteTable::new();
-        tabela.remember_for_test("n1", "https://172.17.0.1:8092", 1.0);
+        let table = RouteTable::new();
+        table.remember_for_test("n1", "https://172.17.0.1:8092", 1.0);
 
-        tabela.invalidate("n1");
+        table.invalidate("n1");
 
-        assert_eq!(tabela.resolve("n1"), None);
+        assert_eq!(table.resolve("n1"), None);
     }
 
     #[test]
     fn a_stale_route_is_not_used_for_inference_address_selection() {
-        let tabela = RouteTable::new();
-        tabela.remember_for_test_with_age(
+        let table = RouteTable::new();
+        table.remember_for_test_with_age(
             "n1",
             "https://172.17.0.1:8092",
             1.0,
-            INTERVALO_MEDICAO + Duration::from_secs(1),
+            MEASURE_INTERVAL + Duration::from_secs(1),
         );
 
-        assert_eq!(tabela.resolve("n1"), None);
+        assert_eq!(table.resolve("n1"), None);
     }
 
     /// Candidato morto nao e escolhido so por estar na lista.
     #[tokio::test]
     async fn a_dead_candidate_is_never_chosen() {
-        let vivo = tests_support::health_server(0).await;
-        let tabela = RouteTable::new();
+        let alive = tests_support::health_server(0).await;
+        let table = RouteTable::new();
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
         // Porta 1 fechada: a sonda falha rapido em vez de esperar o timeout.
-        tabela
+        table
             .measure_peer(
                 &http,
                 "n1",
-                &["http://127.0.0.1:1".to_string(), vivo.clone()],
+                &["http://127.0.0.1:1".to_string(), alive.clone()],
             )
             .await;
-        assert_eq!(tabela.resolve("n1"), Some(vivo));
+        assert_eq!(table.resolve("n1"), Some(alive));
     }
 
     /// A rota com esquema e o endereço cru com a mesma porta comparam iguais,
@@ -828,35 +828,35 @@ mod tests {
     /// prefill, mesmo quando ambos resolvem para o mesmo host.
     #[test]
     fn a_dead_gateway_does_not_discredit_the_peer_transport_port() {
-        let tabela = RouteTable::new();
-        tabela.mark_failure("n1", "http://[2804:d55::9]:8080");
-        assert!(!tabela.endpoint_is_discredited("n1", "[2804:d55::9]:42777"));
-        assert!(tabela.endpoint_is_discredited("n1", "http://[2804:d55::9]:8080"));
-        assert!(!tabela.endpoint_is_discredited("n1", "[2804:d55::a]:42777"));
-        assert!(!tabela.endpoint_is_discredited("n2", "[2804:d55::9]:42777"));
+        let table = RouteTable::new();
+        table.mark_failure("n1", "http://[2804:d55::9]:8080");
+        assert!(!table.endpoint_is_discredited("n1", "[2804:d55::9]:42777"));
+        assert!(table.endpoint_is_discredited("n1", "http://[2804:d55::9]:8080"));
+        assert!(!table.endpoint_is_discredited("n1", "[2804:d55::a]:42777"));
+        assert!(!table.endpoint_is_discredited("n2", "[2804:d55::9]:42777"));
     }
 
     /// `usable` devolve vazio quando tudo falhou, e isso é informação: o
     /// chamador tem de pedir o endereço atual em vez de escolher um cadáver.
     #[test]
     fn usable_is_empty_when_every_candidate_is_discredited() {
-        let tabela = RouteTable::new();
-        let candidatos = vec![
+        let table = RouteTable::new();
+        let candidates = vec![
             "http://10.0.0.5:8080".to_string(),
             "http://10.0.0.6:8080".to_string(),
         ];
-        assert_eq!(tabela.usable("n1", &candidatos), candidatos);
-        tabela.mark_failure("n1", &candidatos[0]);
+        assert_eq!(table.usable("n1", &candidates), candidates);
+        table.mark_failure("n1", &candidates[0]);
         assert_eq!(
-            tabela.usable("n1", &candidatos),
-            vec![candidatos[1].clone()]
+            table.usable("n1", &candidates),
+            vec![candidates[1].clone()]
         );
-        tabela.mark_failure("n1", &candidatos[1]);
-        assert!(tabela.usable("n1", &candidatos).is_empty());
-        tabela.mark_success("n1", &candidatos[0]);
+        table.mark_failure("n1", &candidates[1]);
+        assert!(table.usable("n1", &candidates).is_empty());
+        table.mark_success("n1", &candidates[0]);
         assert_eq!(
-            tabela.usable("n1", &candidatos),
-            vec![candidatos[0].clone()]
+            table.usable("n1", &candidates),
+            vec![candidates[0].clone()]
         );
     }
 
@@ -874,8 +874,8 @@ mod tests {
 
         let inference = format!("http://{blackhole_addr}");
         let healthy_inference = tests_support::health_server(0).await;
-        let tabela = RouteTable::new();
-        tabela
+        let table = RouteTable::new();
+        table
             .measure_peer(
                 &crate::peer_client::PeerClients::new(Duration::from_secs(10)),
                 "n1",
@@ -884,7 +884,7 @@ mod tests {
             .await;
 
         assert_eq!(
-            tabela.resolve("n1"),
+            table.resolve("n1"),
             Some(healthy_inference),
             "a sonda precisa medir a porta de inferência, não um gateway diferente"
         );
@@ -893,17 +893,17 @@ mod tests {
     #[tokio::test]
     async fn current_route_rtt_is_measured_without_replacing_the_route() {
         let healthy = tests_support::health_server(0).await;
-        let tabela = RouteTable::new();
+        let table = RouteTable::new();
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
-        tabela
+        table
             .measure_peer(&http, "n1", std::slice::from_ref(&healthy))
             .await;
-        let before = tabela.resolve("n1");
+        let before = table.resolve("n1");
 
-        let rtt = tabela.measure_current_peer(&http, "n1").await;
+        let rtt = table.measure_current_peer(&http, "n1").await;
 
         assert!(rtt.is_some());
-        assert_eq!(tabela.resolve("n1"), before);
+        assert_eq!(table.resolve("n1"), before);
     }
 
     /// Um peer nunca medido nao resolve para nada - o chamador cai no
@@ -916,16 +916,16 @@ mod tests {
     /// Recem-medido nao remede: e o que mantem a sonda barata no regime normal.
     #[tokio::test]
     async fn a_freshly_measured_peer_is_not_measured_again() {
-        let vivo = tests_support::health_server(0).await;
-        let tabela = RouteTable::new();
-        assert!(tabela.precisa_medir("n1"), "nunca medido precisa medir");
-        tabela
+        let alive = tests_support::health_server(0).await;
+        let table = RouteTable::new();
+        assert!(table.needs_measuring("n1"), "nunca medido precisa medir");
+        table
             .measure_peer(
                 &crate::peer_client::PeerClients::new(Duration::from_secs(10)),
                 "n1",
-                &[vivo],
+                &[alive],
             )
             .await;
-        assert!(!tabela.precisa_medir("n1"));
+        assert!(!table.needs_measuring("n1"));
     }
 }

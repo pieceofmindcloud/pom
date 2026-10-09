@@ -75,7 +75,7 @@ describe("FirstRunGuide", () => {
     expect(hint.textContent).toContain("Find HF models");
     first.unmount();
 
-    mount("/modelos/remotos");
+    mount("/models/remote");
     const there = await screen.findByTestId("first-run-guide");
     expect(there.textContent).toContain("Search for Qwen/Qwen2.5-0.5B-Instruct-GGUF");
   });
@@ -125,7 +125,7 @@ describe("FirstRunGuide", () => {
     const row = document.createElement("button");
     row.setAttribute("data-guide-repo", "qwen/qwen2.5-0.5b-instruct-gguf");
     document.body.append(row);
-    mount("/modelos/remotos");
+    mount("/models/remote");
     const hint = await screen.findByTestId("first-run-guide");
     expect(hint.getAttribute("data-guide-step")).toBe("download_model");
     await waitFor(() => expect(hint.textContent).toContain("This is the one"));

@@ -10,7 +10,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   Rust/CMake/CUDA, `CCACHE`, o socket dedicado e um `CARGO_TARGET_DIR` comum.
   Sem `sccache` no `PATH`, nao altera o ambiente do build.
   `test-build-env.sh` verifica os dois caminhos e a preservacao de overrides.
-- `bench-rotas.sh` - executa a bateria reproduzivel de medicao da geracao
+- `bench-routes.sh` - executa a bateria reproduzivel de medicao da geracao
   distribuida: quatro origens, cinco prompts, aquecimento por origem, CSV com
   as telemetrias de timings/trace/decode/prefill e tabela de medianas. O CSV
   inclui ao final os contadores
@@ -23,7 +23,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   servido; `POM_BENCH_MODEL` e um override opcional. A origem remota alcançada por SSH
   usa a variável de senha do script em tempo de execucao, nunca uma senha gravada no
   repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
-  `--origens`, `--repeticoes` e `--csv`.
+  `--origins`, `--repetitions` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes) e
   exporta `POM_BUILD_COMMIT` apenas para o runtime. Por padrao resolve a tag da
@@ -197,7 +197,7 @@ runtime é Rust (`crates/node/src/inference/infer_server.rs`,
   builds; `POM_DOCKER_TARGET=runtime` selects the image without a toolchain.
   Each node mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory
   containing sibling plugin repositories) at `/opt/pom/dev-plugins` and sets
-  `POM_DESENV=1`; the API still restricts the repository allowlist. The default
+  `POM_DEV_MODE=1`; the API still restricts the repository allowlist. The default
   setup maps a mixed-GPU topology; the CUDA server is started from the
   `pom-cluster-config` repository. `docker-compose.salem.yml` can also be
   selected directly. Both extend `docker-compose.common.yml`, keeping the same
@@ -242,7 +242,7 @@ servicos: isso mudaria a localizacao da persistencia e exige uma migracao
 separada. `tests/` fica fora do contexto da imagem, mas seus diretorios sao
 montados pelo host em runtime.
 
-## migrar-para-pom.sh
+## migrate-to-pom.sh
 
 Migrates a machine from the project's old name to POM. The binary no longer
 knows the old name - it looks for `pom.json` and `.pom-node.key` (the node's

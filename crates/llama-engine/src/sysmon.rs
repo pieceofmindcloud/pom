@@ -694,9 +694,9 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
     // O nó só reporta as placas que pode usar. Os índices originais são
     // preservados de propósito: é por eles que a `pom.json` e o painel falam de
     // uma placa, e renumerar faria `gpus: [1]` aparecer como `#0`.
-    if let Ok(escolha) = SELECAO.read() {
-        if let Some(permitidas) = escolha.as_ref() {
-            gpus.retain(|g| permitidas.contains(&g.index));
+    if let Ok(choice) = SELECTION.read() {
+        if let Some(allowed) = choice.as_ref() {
+            gpus.retain(|g| allowed.contains(&g.index));
         }
     }
     let nvidia = gpus
@@ -1444,7 +1444,7 @@ mod tests {
     /// conferência os volumes apareceriam 2048 vezes maiores do que são.
     #[cfg(not(windows))]
     #[tokio::test]
-    async fn os_volumes_desta_maquina_batem_com_o_df_do_projeto() {
+    async fn this_machine_volumes_match_the_project_df() {
         let disks = tokio::task::spawn_blocking(sample_all_disks).await.unwrap();
         assert!(
             !disks.is_empty(),
@@ -1459,17 +1459,17 @@ mod tests {
             );
         }
 
-        let raiz = disks
+        let root = disks
             .iter()
             .find(|d| d.mount_point == "/")
             .expect("a raiz deveria estar montada");
-        let referencia = sample_disk_at(Path::new("/"));
-        let diferenca = raiz.total_mb.abs_diff(referencia.total_mb) as f64;
+        let reference = sample_disk_at(Path::new("/"));
+        let difference = root.total_mb.abs_diff(reference.total_mb) as f64;
         assert!(
-            diferenca / (referencia.total_mb.max(1) as f64) < 0.01,
+            difference / (reference.total_mb.max(1) as f64) < 0.01,
             "raiz medida em {} MB pelas duas chamadas, {} MB pela outra",
-            raiz.total_mb,
-            referencia.total_mb
+            root.total_mb,
+            reference.total_mb
         );
     }
 
@@ -1477,7 +1477,7 @@ mod tests {
     /// nenhuma. O que não pode acontecer é responder um número fora de escala.
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn o_acelerador_desta_maquina_reporta_uso_plausivel() {
+    async fn this_machine_accelerator_reports_plausible_usage() {
         let Some(stats) = mac_accelerator_stats().await else {
             return;
         };
@@ -1494,7 +1494,7 @@ mod tests {
     /// compartilhamento.
     #[cfg(windows)]
     #[test]
-    fn caminho_unc_e_reconhecido_como_rede() {
+    fn a_unc_path_is_recognized_as_network() {
         assert!(win::is_network_path(Path::new(
             r"\\servidor\compartilhamento\pom.exe"
         )));
@@ -1502,7 +1502,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn unidade_local_do_sistema_nunca_fica_vazia() {
+    fn the_local_system_drive_is_never_empty() {
         let drive = win::local_system_drive();
         assert!(!drive.as_os_str().is_empty());
     }
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
-    fn backend_inventory_cpu_only_serializa_metadados_sem_string_nula() {
+    fn cpu_only_backend_inventory_serializes_metadata_without_a_null_string() {
         // A enumeração é deliberadamente feita sem inicializar o backend: o
         // sysmon chama esta função depois da inicialização normal, mas o
         // registro de devices já é observável aqui e o teste não deve ligar
@@ -1566,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn inventario_sem_gpu_preserva_lista_vazia() {
+    fn an_inventory_without_gpu_preserves_the_empty_list() {
         assert!(parse_backend_gpu_devices("[]").is_empty());
     }
 }
@@ -1588,15 +1588,15 @@ mod tests {
 ///
 /// `None` = sem restrição, que cobre tanto "a config não pediu nada" quanto
 /// "a config pediu todas" - nos dois casos não há o que filtrar.
-static SELECAO: std::sync::RwLock<Option<Vec<u32>>> = std::sync::RwLock::new(None);
+static SELECTION: std::sync::RwLock<Option<Vec<u32>>> = std::sync::RwLock::new(None);
 
 pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> Vec<String> {
     // Guardado antes de qualquer saída: o que o nó **reporta** tem que ser o que
     // ele pode **usar**. Não é cosmética - `deploy::memory_capacity` soma a VRAM
     // de `system.gpus[]` para decidir quantas camadas cabem, então um nó preso a
     // uma placa que anunciasse as duas receberia trabalho que não cabe nele.
-    if let Ok(mut guarda) = SELECAO.write() {
-        *guarda = selection.map(|s| s.to_vec());
+    if let Ok(mut guard) = SELECTION.write() {
+        *guard = selection.map(|s| s.to_vec());
     }
 
     let Some(selection) = selection else {
@@ -1609,7 +1609,7 @@ pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> V
     let mut cuda = Vec::new();
     let mut vulkan = Vec::new();
     let (mut n_nvidia, mut n_amd) = (0u32, 0u32);
-    let mut escolhidas = Vec::new();
+    let mut chosen = Vec::new();
 
     for gpu in detected {
         let local = match gpu.vendor {
@@ -1630,7 +1630,7 @@ pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> V
         if !selection.contains(&gpu.index) {
             continue;
         }
-        escolhidas.push(format!("{} (#{})", gpu.name, gpu.index));
+        chosen.push(format!("{} (#{})", gpu.name, gpu.index));
         match gpu.vendor {
             GpuVendor::Nvidia => cuda.push(local.to_string()),
             GpuVendor::Amd => vulkan.push(local.to_string()),
@@ -1663,7 +1663,7 @@ pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> V
         }
     }
 
-    escolhidas
+    chosen
 }
 
 /// O ICD do Mesa/RADV, quando existe nesta máquina.
@@ -1675,10 +1675,10 @@ pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> V
 #[cfg(target_os = "linux")]
 fn icd_amd() -> Option<String> {
     let dir = std::fs::read_dir("/usr/share/vulkan/icd.d").ok()?;
-    for entrada in dir.flatten() {
-        let nome = entrada.file_name().to_string_lossy().to_string();
-        if nome.starts_with("radeon_icd") && nome.ends_with(".json") {
-            return Some(entrada.path().to_string_lossy().to_string());
+    for entry in dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("radeon_icd") && name.ends_with(".json") {
+            return Some(entry.path().to_string_lossy().to_string());
         }
     }
     None
@@ -1707,7 +1707,7 @@ mod gpu_selection_tests {
         }
     }
 
-    fn ambas() -> Vec<GpuStat> {
+    fn both() -> Vec<GpuStat> {
         vec![
             gpu(0, GpuVendor::Nvidia),
             gpu(1, GpuVendor::Amd),
@@ -1717,11 +1717,11 @@ mod gpu_selection_tests {
 
     /// Sem escolha na config, nada é restringido - é o padrão pedido: todas.
     #[test]
-    fn ausente_nao_restringe_nada() {
+    fn absent_restricts_nothing() {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CUDA_VISIBLE_DEVICES");
         std::env::remove_var("GGML_VK_VISIBLE_DEVICES");
-        assert!(apply_gpu_selection(None, &ambas()).is_empty());
+        assert!(apply_gpu_selection(None, &both()).is_empty());
         assert!(std::env::var("CUDA_VISIBLE_DEVICES").is_err());
         assert!(std::env::var("GGML_VK_VISIBLE_DEVICES").is_err());
     }
@@ -1729,17 +1729,17 @@ mod gpu_selection_tests {
     /// O ponto todo da tradução: a segunda Radeon é `#2` para o nó e `1` para o
     /// Vulkan. Mandar `2` selecionaria uma placa que não existe naquele backend.
     #[test]
-    fn indice_do_no_vira_indice_do_backend() {
+    fn the_node_index_becomes_the_backend_index() {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        apply_gpu_selection(Some(&[2]), &ambas());
+        apply_gpu_selection(Some(&[2]), &both());
         assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "1");
         assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "");
     }
 
     #[test]
-    fn escolher_a_nvidia_nao_libera_as_radeon() {
+    fn choosing_the_nvidia_does_not_release_the_radeons() {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        apply_gpu_selection(Some(&[0]), &ambas());
+        apply_gpu_selection(Some(&[0]), &both());
         assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "0");
         assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
     }
@@ -1751,42 +1751,42 @@ mod gpu_selection_tests {
     /// nó. Um nó presa à Radeon de 4 GB que anunciasse as duas placas diria ter
     /// 20 GB, e receberia trabalho que não cabe nele.
     #[test]
-    fn o_que_o_no_reporta_e_so_o_que_ele_pode_usar() {
+    fn the_node_reports_only_what_it_may_use() {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        apply_gpu_selection(Some(&[1]), &ambas());
+        apply_gpu_selection(Some(&[1]), &both());
 
-        let mut vistas = ambas();
-        if let Ok(escolha) = SELECAO.read() {
-            if let Some(permitidas) = escolha.as_ref() {
-                vistas.retain(|g| permitidas.contains(&g.index));
+        let mut visible = both();
+        if let Ok(choice) = SELECTION.read() {
+            if let Some(allowed) = choice.as_ref() {
+                visible.retain(|g| allowed.contains(&g.index));
             }
         }
-        assert_eq!(vistas.len(), 1, "so a placa escolhida deve ser reportada");
+        assert_eq!(visible.len(), 1, "so a placa escolhida deve ser reportada");
         // O indice original sobrevive: e por ele que a config e o painel falam
         // desta placa, e renumerar faria `gpus: [1]` aparecer como `#0`.
-        assert_eq!(vistas[0].index, 1);
+        assert_eq!(visible[0].index, 1);
     }
 
     /// Sem restricao nada e filtrado - o padrao continua mostrando tudo.
     #[test]
-    fn sem_restricao_reporta_todas() {
+    fn without_a_restriction_reports_all() {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        apply_gpu_selection(None, &ambas());
-        let vistas = SELECAO.read().unwrap().clone();
-        assert!(vistas.is_none(), "sem escolha nao deve haver filtro");
+        apply_gpu_selection(None, &both());
+        let visible = SELECTION.read().unwrap().clone();
+        assert!(visible.is_none(), "sem escolha nao deve haver filtro");
     }
 
     /// Lista vazia é "só CPU", e não "não configurado".
     #[test]
-    fn lista_vazia_desliga_as_duas_familias() {
+    fn an_empty_list_turns_off_both_families() {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        apply_gpu_selection(Some(&[]), &ambas());
+        apply_gpu_selection(Some(&[]), &both());
         assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "");
         assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
     }
 
     #[test]
-    fn descricao_do_backend_tem_precedencia_sobre_pci_ids() {
+    fn the_backend_description_takes_precedence_over_pci_ids() {
         assert_eq!(
             resolve_gpu_name(
                 Some("AMD Radeon RX 7800 XT (RADV NAVI32)"),
@@ -1798,7 +1798,7 @@ mod gpu_selection_tests {
     }
 
     #[test]
-    fn pci_ids_eh_usado_quando_o_backend_nao_responde() {
+    fn pci_ids_is_used_when_the_backend_does_not_answer() {
         assert_eq!(
             resolve_gpu_name(
                 None,
@@ -1810,7 +1810,7 @@ mod gpu_selection_tests {
     }
 
     #[test]
-    fn fallback_por_identificador_nunca_remove_a_placa() {
+    fn the_identifier_fallback_never_removes_the_card() {
         assert_eq!(
             resolve_gpu_name(None, None, "AMD Radeon (0x747e)".to_string()),
             "AMD Radeon (0x747e)"
@@ -1818,7 +1818,7 @@ mod gpu_selection_tests {
     }
 
     #[test]
-    fn pci_ids_resolve_o_nome_certo_para_cada_placa() {
+    fn pci_ids_resolves_the_right_name_for_each_card() {
         let entries = vec![
             BackendGpu {
                 backend: "Vulkan".to_string(),
@@ -1843,7 +1843,7 @@ mod gpu_selection_tests {
     }
 
     #[test]
-    fn pci_ids_parser_le_nome_do_dispositivo_sem_tabela_do_produto() {
+    fn pci_ids_parser_reads_the_device_name_without_the_product_table() {
         let pci_ids =
             "1002  Advanced Micro Devices, Inc.\n\t747e  Navi 32 [Radeon RX 7700 XT / 7800 XT]\n";
         assert_eq!(
@@ -1853,7 +1853,7 @@ mod gpu_selection_tests {
     }
 
     #[test]
-    fn system_profiler_le_o_nome_da_gpu_e_nao_o_nome_da_cpu() {
+    fn system_profiler_reads_the_gpu_name_and_not_the_cpu_name() {
         assert_eq!(
             system_profiler_gpu_name(
                 "Graphics/Displays:\n\n    Apple M4:\n      Chipset Model: Apple M4\n"
@@ -1866,7 +1866,7 @@ mod gpu_selection_tests {
     /// que a linha é lida da direita. Lida da esquerda, o ponto de montagem
     /// desta linha viraria "0" e o total viraria "auto_home".
     #[test]
-    fn df_le_a_linha_da_direita_para_a_esquerda() {
+    fn df_reads_the_line_from_right_to_left() {
         let disk = parse_df_line("/dev/disk3s1s1  482797652  16686060  17602564  49%  /").unwrap();
         assert_eq!(disk.device, "/dev/disk3s1s1");
         // KiB do `df -k` viram MB aqui: 482797652 KiB = 471480 MB.
@@ -1874,17 +1874,17 @@ mod gpu_selection_tests {
         assert_eq!(disk.free_mb, 17_190);
         assert_eq!(disk.mount_point, "/");
 
-        let com_espaco =
+        let with_space =
             parse_df_line("map auto_home  0  0  0  100%  /System/Volumes/home").unwrap();
-        assert_eq!(com_espaco.device, "map auto_home");
-        assert_eq!(com_espaco.mount_point, "/System/Volumes/home");
+        assert_eq!(with_space.device, "map auto_home");
+        assert_eq!(with_space.mount_point, "/System/Volumes/home");
     }
 
     /// Um `tmpfs` é RAM e um `devfs` não guarda byte: listá-los prometeria
     /// espaço que não existe. A mesma montagem duas vezes também não entra.
     #[test]
-    fn df_lista_so_volumes_de_verdade_e_sem_repetir() {
-        let saida = "Filesystem 1048576-blocks Used Available Capacity Mounted on\n\
+    fn df_lists_only_real_volumes_and_without_repeats() {
+        let output = "Filesystem 1048576-blocks Used Available Capacity Mounted on\n\
              /dev/nvme0n1p2 500000 100000 400000 20% /\n\
              devfs 0 0 0 100% /dev\n\
              tmpfs 16000 0 16000 0% /dev/shm\n\
@@ -1894,7 +1894,7 @@ mod gpu_selection_tests {
              /dev/nvme0n1p1 500000 100000 400000 20% /boot/efi\n\
              /dev/sda1 2000000 1000000 1000000 50% /dados\n\
              /dev/sda1 2000000 1000000 1000000 50% /dados\n";
-        let disks = parse_df_all(saida);
+        let disks = parse_df_all(output);
         assert_eq!(
             disks
                 .iter()
@@ -1906,7 +1906,7 @@ mod gpu_selection_tests {
     }
 
     #[test]
-    fn monta_de_dados_do_macos_continua_visivel() {
+    fn the_macos_data_mount_stays_visible() {
         assert!(is_user_data_mount("/System/Volumes/Data"));
         assert!(is_user_data_mount("/Volumes/External"));
         assert!(!is_user_data_mount("/System/Volumes/iSCPreboot"));
@@ -1917,10 +1917,10 @@ mod gpu_selection_tests {
     /// mão. Campo ausente continua `None`: "0%" e "não perguntei" são
     /// respostas diferentes.
     #[test]
-    fn ioreg_le_uso_e_memoria_do_acelerador() {
-        let saida = "+-o AGXAcceleratorG16_B0  <class AGXAcceleratorG16_B0>\n    {\n\
+    fn ioreg_reads_the_accelerator_usage_and_memory() {
+        let output = "+-o AGXAcceleratorG16_B0  <class AGXAcceleratorG16_B0>\n    {\n\
              \"PerformanceStatistics\" = {\"Alloc system memory\"=1610612736,\"Device Utilization %\"=37,\"In use system memory\"=1073741824}\n    }\n";
-        let stats = parse_ioreg_accelerator(saida);
+        let stats = parse_ioreg_accelerator(output);
         assert_eq!(stats.utilization_pct, Some(37.0));
         assert_eq!(stats.in_use_memory_mb, Some(1024.0));
 
@@ -1933,7 +1933,7 @@ mod gpu_selection_tests {
     /// O `fdinfo` do amdgpu escreve a unidade junto do número. Lê-lo sem a
     /// unidade transformaria 1 MiB em 1 byte.
     #[test]
-    fn fdinfo_do_amdgpu_conta_a_vram_com_a_unidade() {
+    fn amdgpu_fdinfo_counts_the_vram_with_its_unit() {
         let fdinfo = "pos:\t0\nflags:\t02100002\n\
              drm-driver:\tamdgpu\n\
              drm-client-id:\t12\n\
@@ -1945,10 +1945,10 @@ mod gpu_selection_tests {
         );
 
         // `drm-resident-vram` é o nome novo e vence onde os dois existem.
-        let novo = "drm-driver:\tamdgpu\ndrm-client-id:\t7\n\
+        let new = "drm-driver:\tamdgpu\ndrm-client-id:\t7\n\
              drm-resident-vram:\t1 MiB\ndrm-memory-vram:\t9 MiB\n";
         assert_eq!(
-            parse_amdgpu_fdinfo(novo),
+            parse_amdgpu_fdinfo(new),
             Some(("7".to_string(), 1024 * 1024))
         );
 

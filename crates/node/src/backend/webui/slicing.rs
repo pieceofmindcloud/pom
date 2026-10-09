@@ -490,7 +490,7 @@ pub(super) async fn slice_locally(
         );
         let job_id = id.clone();
         let node_id = state.network.node_id.clone();
-        let raiz = shard_dir.clone();
+        let root = shard_dir.clone();
         tokio::spawn(async move {
             let result = async {
                 if let Some(warning) = destination_warning {
@@ -524,7 +524,7 @@ pub(super) async fn slice_locally(
                     let msg = format!(
                         "{} shards TP em {} · pom {}",
                         manifest.tp_parts.len(),
-                        crate::pom::dir_for(&raiz, &manifest).display(),
+                        crate::pom::dir_for(&root, &manifest).display(),
                         crate::pom::short_id(&manifest.pom_id)
                     );
                     set_job(&job_id, "done", "pronto", &msg).await;
@@ -605,7 +605,7 @@ pub(super) async fn slice_locally(
     let job_id = id.clone();
     let label = req.name.clone().unwrap_or_else(|| base_name.clone());
     let node_id = state.network.node_id.clone();
-    let raiz = shard_dir.clone();
+    let root = shard_dir.clone();
     tokio::spawn(async move {
         let result = async {
             if let Some(warning) = destination_warning {
@@ -640,7 +640,7 @@ pub(super) async fn slice_locally(
                     "{} fatia{} em {} · pom {}",
                     m.parts.len(),
                     if m.parts.len() == 1 { "" } else { "s" },
-                    crate::pom::dir_for(&raiz, &m).display(),
+                    crate::pom::dir_for(&root, &m).display(),
                     crate::pom::short_id(&m.pom_id)
                 );
                 set_job(&job_id, "done", "pronto", &msg).await;
@@ -785,7 +785,7 @@ pub(super) async fn run_slice(
     job_id: &str,
 ) -> anyhow::Result<crate::pom::PomManifest> {
     let parts = ranges.len() as u32;
-    let mut pecas: Vec<crate::pom::PomPart> = Vec::new();
+    let mut pieces: Vec<crate::pom::PomPart> = Vec::new();
 
     for (index, (start, end)) in ranges.iter().copied().enumerate() {
         let index = index as u32;
@@ -864,7 +864,7 @@ pub(super) async fn run_slice(
                 "gerada"
             }
         );
-        pecas.push(crate::pom::PomPart {
+        pieces.push(crate::pom::PomPart {
             sha256: outcome.sha256.clone(),
             bytes: outcome.bytes,
             start_layer: start,
@@ -896,7 +896,7 @@ pub(super) async fn run_slice(
         crate::pom::PomKind::Layers,
         node_id,
         source_sha256,
-        pecas,
+        pieces,
     );
     // Cobrir o modelo inteiro é o caso normal, mas fatiar só um pedaço é
     // legítimo (o operador escolhe as faixas). Dizer isso em voz alta evita a
@@ -911,8 +911,8 @@ pub(super) async fn run_slice(
     // A rodada inteira se muda de uma vez para `<modelo>-<hash do modelo>`, e o
     // `.pom` é selado lá por último: um manifesto na pasta é, por construção,
     // um fatiamento inteiro que existe em disco.
-    let destino = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
-    info!("fatiamento guardado em {}", destino.display());
+    let destination = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
+    info!("fatiamento guardado em {}", destination.display());
     invalidate_catalog(state.database.clone()).await;
 
     Ok(manifesto)

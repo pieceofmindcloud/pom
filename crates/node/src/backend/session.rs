@@ -308,7 +308,7 @@ mod tests {
     }
 
     fn make_request(key: &str) -> HandshakeRequest {
-        let (node_id, pubkey) = identidade_de_verdade();
+        let (node_id, pubkey) = real_identity();
         HandshakeRequest {
             node_id,
             pubkey,
@@ -344,12 +344,12 @@ mod tests {
     }
 
     /// Um par (`node_id`, `pubkey`) gerado como um nó real gera o seu.
-    fn identidade_de_verdade() -> (String, String) {
+    fn real_identity() -> (String, String) {
         let id = crate::identity::Identity::generate();
         (id.node_id.0.clone(), id.public_key_hex())
     }
 
-    async fn responder(state: AuthState, req: HandshakeRequest) -> (StatusCode, serde_json::Value) {
+    async fn respond(state: AuthState, req: HandshakeRequest) -> (StatusCode, serde_json::Value) {
         use axum::body::to_bytes;
         let resp = handle_handshake(State(state), Json(req))
             .await
@@ -364,15 +364,15 @@ mod tests {
     /// e `node_id` é o nome do peer no cluster e a chave de `blocked_nodes`.
     /// Agora o `node_id` tem que ser o `SHA256` desta `pubkey`.
     #[tokio::test]
-    async fn a_pubkey_que_nao_deriva_o_node_id_e_recusada() {
+    async fn a_pubkey_that_does_not_derive_the_node_id_is_refused() {
         let state = make_state("secret", vec![]);
-        let (_, pubkey) = identidade_de_verdade();
-        let (outro_id, _) = identidade_de_verdade();
+        let (_, pubkey) = real_identity();
+        let (other_id, _) = real_identity();
 
-        let (status, body) = responder(
+        let (status, body) = respond(
             state,
             HandshakeRequest {
-                node_id: outro_id,
+                node_id: other_id,
                 pubkey,
                 connection_key: "secret".into(),
                 nonce: None,
@@ -386,11 +386,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uma_pubkey_malformada_e_recusada() {
+    async fn a_malformed_pubkey_is_refused() {
         let state = make_state("secret", vec![]);
-        let (node_id, _) = identidade_de_verdade();
+        let (node_id, _) = real_identity();
 
-        let (status, _) = responder(
+        let (status, _) = respond(
             state,
             HandshakeRequest {
                 node_id,
@@ -406,25 +406,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_identidade_coerente_passa() {
+    async fn a_consistent_identity_passes() {
         let state = make_state("secret", vec![]);
         let identity = crate::identity::Identity::generate();
         let challenge = request_for(&identity, "secret");
-        let (challenge_status, challenge_body) = responder(state.clone(), challenge).await;
+        let (challenge_status, challenge_body) = respond(state.clone(), challenge).await;
         assert_eq!(challenge_status, StatusCode::FORBIDDEN);
         assert_eq!(challenge_body["reason"], "challenge_required");
         let nonce = challenge_body["nonce"].as_str().unwrap();
-        let esperado = identity.node_id.0.clone();
+        let expected = identity.node_id.0.clone();
 
-        let (status, body) = responder(state, signed_request(&identity, "secret", nonce)).await;
+        let (status, body) = respond(state, signed_request(&identity, "secret", nonce)).await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["approved"], true);
-        assert_eq!(body["peer_id"], esperado);
+        assert_eq!(body["peer_id"], expected);
     }
 
     #[tokio::test]
-    async fn assinatura_ausente_e_recusada() {
+    async fn a_missing_signature_is_refused() {
         let state = make_state("secret", vec![]);
         let identity = crate::identity::Identity::generate();
         let body = serde_json::json!({
@@ -458,47 +458,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assinatura_ausente_depois_do_nonce_e_recusada() {
+    async fn a_missing_signature_after_the_nonce_is_refused() {
         let state = make_state("secret", vec![]);
         let identity = crate::identity::Identity::generate();
-        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let (_, challenge_body) = respond(state.clone(), request_for(&identity, "secret")).await;
         let nonce = challenge_body["nonce"].as_str().unwrap().to_string();
         let mut req = request_for(&identity, "secret");
         req.nonce = Some(nonce);
 
-        let (status, body) = responder(state, req).await;
+        let (status, body) = respond(state, req).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["reason"], "missing_signature");
     }
 
     #[tokio::test]
-    async fn assinatura_de_outra_chave_e_recusada() {
+    async fn a_signature_from_another_key_is_refused() {
         let state = make_state("secret", vec![]);
         let identity = crate::identity::Identity::generate();
         let other = crate::identity::Identity::generate();
-        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let (_, challenge_body) = respond(state.clone(), request_for(&identity, "secret")).await;
         let nonce = challenge_body["nonce"].as_str().unwrap();
 
         let mut req = signed_request(&other, "secret", nonce);
         req.node_id = identity.node_id.0.clone();
         req.pubkey = identity.public_key_hex();
-        let (status, body) = responder(state, req).await;
+        let (status, body) = respond(state, req).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["reason"], "invalid_signature");
     }
 
     #[tokio::test]
-    async fn nonce_so_pode_ser_usado_uma_vez() {
+    async fn a_nonce_can_only_be_used_once() {
         let state = make_state("secret", vec![]);
         let identity = crate::identity::Identity::generate();
-        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let (_, challenge_body) = respond(state.clone(), request_for(&identity, "secret")).await;
         let nonce = challenge_body["nonce"].as_str().unwrap().to_string();
         let req = signed_request(&identity, "secret", &nonce);
 
-        let (first_status, _) = responder(state.clone(), req.clone()).await;
-        let (second_status, body) = responder(state, req).await;
+        let (first_status, _) = respond(state.clone(), req.clone()).await;
+        let (second_status, body) = respond(state, req).await;
 
         assert_eq!(first_status, StatusCode::OK);
         assert_eq!(second_status, StatusCode::FORBIDDEN);
@@ -506,10 +506,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonce_expirado_e_recusado() {
+    async fn an_expired_nonce_is_refused() {
         let state = make_state("secret", vec![]);
         let identity = crate::identity::Identity::generate();
-        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let (_, challenge_body) = respond(state.clone(), request_for(&identity, "secret")).await;
         let nonce = challenge_body["nonce"].as_str().unwrap().to_string();
         let nonce_bytes: [u8; 32] = hex::decode(&nonce).unwrap().try_into().unwrap();
         challenges()
@@ -519,7 +519,7 @@ mod tests {
             .unwrap()
             .expires_at = Instant::now() - Duration::from_secs(1);
 
-        let (status, body) = responder(state, signed_request(&identity, "secret", &nonce)).await;
+        let (status, body) = respond(state, signed_request(&identity, "secret", &nonce)).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["reason"], "nonce_expired");
@@ -542,9 +542,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chave_vazia_nunca_e_uma_credencial_de_handshake() {
+    async fn an_empty_key_is_never_a_handshake_credential() {
         let state = make_state("", vec![]);
-        let (status, body) = responder(state, make_request("")).await;
+        let (status, body) = respond(state, make_request("")).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["reason"], "invalid_key");

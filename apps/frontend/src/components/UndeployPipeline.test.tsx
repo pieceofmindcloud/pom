@@ -49,7 +49,7 @@ describe("UndeployPipeline", () => {
     vi.restoreAllMocks();
   });
 
-  it("nomeia as máquinas antes de perguntar, e não manda nada sem o clique", async () => {
+  it("names the machines before asking, and sends nothing without the click", async () => {
     const fetchMock = answer({});
     vi.stubGlobal("fetch", fetchMock);
     mount();
@@ -64,7 +64,7 @@ describe("UndeployPipeline", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("relata cada máquina, e a que não confirmou não vira sucesso", async () => {
+  it("reports each machine, and the one that did not confirm does not become a success", async () => {
     const fetchMock = answer({
       group: "qwen35",
       released: 1,
@@ -105,7 +105,7 @@ describe("UndeployPipeline", () => {
     expect(JSON.parse(init.body as string)).toEqual({ group: "qwen35" });
   });
 
-  it("com todas liberadas, o relatório diz isso e não inventa falha", async () => {
+  it("with all released, the report says so and invents no failure", async () => {
     vi.stubGlobal(
       "fetch",
       answer({

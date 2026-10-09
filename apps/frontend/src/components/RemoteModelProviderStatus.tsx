@@ -40,7 +40,7 @@ export function RemoteModelProviderStatus({
           {unauthenticated && (
             <Link
               className="mt-2 inline-flex text-xs font-medium text-iris hover:text-iris/80"
-              to="/config/preferencias#hugging-face"
+              to="/config/preferences#hugging-face"
             >
               {t("remoteModels.configureAuth")}
             </Link>

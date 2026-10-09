@@ -885,14 +885,14 @@ counting the hits on `/api/ui/unload`). The deploy tests live in
   `n_gpu_layers`/`offload_kqv` travel with the slice and do not become
   cluster-wide; `nvidia_memory_comes_from_vram_and_everything_else_from_ram`.
 - **Versions** (`models/deployment.rs`):
-  `ensure_versions_sintetiza_a_v1_de_um_registro_legado`,
-  `upsert_version_reusa_a_versao_de_params_iguais_e_anexa_quando_diferem`,
-  `set_active_version_troca_os_nos_e_recusa_versao_inexistente`,
-  `matching_shape_casa_por_identidade_e_faixas` +
-  `matching_shape_ignora_registro_sem_identidade`,
-  `versoes_sobrevivem_ao_serde`. In `deploy/tests/deployments.rs`:
-  `redeploy_request_resolve_escolhe_ou_cria_versao` and
-  `redeploy_de_versao_inexistente_e_recusado`.
+  `ensure_versions_synthesizes_the_v1_of_a_legacy_record`,
+  `upsert_version_reuses_the_version_with_equal_params_and_appends_when_they_differ`,
+  `set_active_version_swaps_the_nodes_and_refuses_a_missing_version`,
+  `matching_shape_matches_by_identity_and_ranges` +
+  `matching_shape_ignores_a_record_without_identity`,
+  `versions_survive_serde`. In `deploy/tests/deployments.rs`:
+  `redeploy_request_resolve_picks_or_creates_a_version` and
+  `redeploying_a_missing_version_is_refused`.
 
 ## 11. Defects noted
 
@@ -900,9 +900,9 @@ counting the hits on `/api/ui/unload`). The deploy tests live in
   `deploy::whole_route_tests::the_route_plans_a_whole_model_from_the_machines_own_catalog`
   fails in the full parallel run, but passes alone and with
   `--test-threads=1`. The cause is pairing this route with
-  `webui::a_lista_de_maquinas_para_implantar_tambem_e_pinada` or
-  `webui::cluster_models_fala_com_os_peers_pelo_cliente_pinado`: those tests
-  change the global `peer_client::TLS_ATIVO`; the route does not hold
-  `peer_client::POLITICA_GLOBAL`, so it can build `https://` for the fake HTTP
+  `webui::the_machine_list_for_deploying_is_pinned_too` or
+  `webui::cluster_models_talks_to_the_peers_through_the_pinned_client`: those tests
+  change the global `peer_client::TLS_ENABLED`; the route does not hold
+  `peer_client::GLOBAL_POLICY`, so it can build `https://` for the fake HTTP
   server and read the failure as a catalog without the model. The failure also
   happens on base `0adfa5b`, so it is not a regression of the slicer fixes.

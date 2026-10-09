@@ -533,17 +533,17 @@ pub fn self_reply_urls(
     gateway_port: u16,
 ) -> Vec<String> {
     let mut urls: Vec<String> = Vec::new();
-    let fixado = pinned.into_iter().map(|h| (h, true));
-    for (host, fixado_pelo_operador) in fixado.chain(hosts.into_iter().map(|h| (h, false))) {
+    let pinned_hosts = pinned.into_iter().map(|h| (h, true));
+    for (host, pinned_by_operator) in pinned_hosts.chain(hosts.into_iter().map(|h| (h, false))) {
         let host = crate::network::ip_host(&host).to_string();
-        if host.is_empty() || (!fixado_pelo_operador && is_unroutable_host(&host)) {
+        if host.is_empty() || (!pinned_by_operator && is_unroutable_host(&host)) {
             continue;
         }
         // O esquema segue a política do cluster: estas URLs são as que a cauda
         // vai discar de volta, e num cluster em TLS o `/relay/result` deste nó
         // recusa texto claro vindo de fora.
         let url =
-            crate::peer_client::peer_base_url(&host, gateway_port, crate::peer_client::tls_ativo());
+            crate::peer_client::peer_base_url(&host, gateway_port, crate::peer_client::tls_enabled());
         if !urls.contains(&url) {
             urls.push(url);
         }
@@ -820,7 +820,7 @@ impl RemoteStreamDelivery {
     }
 
     pub async fn deliver(&mut self, meta: Value) -> Delivery {
-        let link_transport = if crate::peer_client::tls_ativo() {
+        let link_transport = if crate::peer_client::tls_enabled() {
             "https-link"
         } else {
             "http"
@@ -896,7 +896,7 @@ impl RemoteStreamDelivery {
                     link_meta["ticket"] =
                         self.reply_to.get("ticket").cloned().unwrap_or(Value::Null);
                     link_meta["remote_stream_transport"] =
-                        json!(if crate::peer_client::tls_ativo() {
+                        json!(if crate::peer_client::tls_enabled() {
                             link_transport
                         } else {
                             "http"
@@ -939,7 +939,7 @@ impl RemoteStreamDelivery {
         }
 
         let mut fallback_meta = meta;
-        let fallback_transport = if crate::peer_client::tls_ativo() {
+        let fallback_transport = if crate::peer_client::tls_enabled() {
             "https"
         } else {
             "http"
@@ -1000,7 +1000,7 @@ async fn deliver_meta_at(
     // fixar, e a entrega vai pelo cliente compartilhado. Num cluster estrito
     // ela será recusada do outro lado, que é o resultado correto - o que não
     // pode acontecer é entregar em texto claro fingindo que foi verificado.
-    let cliente = match reply_to.get("node_id").and_then(|v| v.as_str()) {
+    let client = match reply_to.get("node_id").and_then(|v| v.as_str()) {
         Some(id) => match http.for_peer(id) {
             Ok(c) => c,
             Err(e) => {
@@ -1012,7 +1012,7 @@ async fn deliver_meta_at(
     };
     if let Some(node_id) = reply_to.get("node_id").and_then(Value::as_str) {
         if let Some(delivery) =
-            deliver_pinned(http, reply_to, node_id, path, &base_meta, &cliente).await
+            deliver_pinned(http, reply_to, node_id, path, &base_meta, &client).await
         {
             return delivery;
         }
@@ -1108,7 +1108,7 @@ async fn deliver_meta_at(
                 return Delivery::Failed;
             }
         };
-        let request = cliente
+        let request = client
             .post(&target)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(body.clone())
@@ -1165,7 +1165,7 @@ async fn deliver_pinned(
     node_id: &str,
     path: &str,
     base_meta: &Value,
-    cliente: &reqwest::Client,
+    client: &reqwest::Client,
 ) -> Option<Delivery> {
     use crate::route_plan::{book, FailureOutcome, Plane, RouteKind};
 
@@ -1186,7 +1186,7 @@ async fn deliver_pinned(
                 );
                 let body = encode_delivery_body(&attempt_meta).ok()?;
                 let target = format!("{}{path}", route.base_url.trim_end_matches('/'));
-                match cliente
+                match client
                     .post(&target)
                     .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                     .body(body)
@@ -1487,7 +1487,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn ack_410_do_callback_para_o_stream_sem_fallback() {
+    async fn a_410_ack_from_the_callback_stops_the_stream_without_fallback() {
         use axum::{routing::post, Router};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1630,7 +1630,7 @@ mod tests {
     /// a lista de candidatos esvaziada, o `for` não executava, o aviso saía
     /// com o motivo vazio e o gateway esperava o prazo do frame.
     #[tokio::test]
-    async fn um_endereco_em_quarentena_continua_sendo_tentado() {
+    async fn a_quarantined_address_keeps_being_tried() {
         use axum::{body::Bytes, routing::post, Router};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1679,7 +1679,7 @@ mod tests {
     /// rota morreu. O último candidato recebe o teto longo e o sucesso zera
     /// qualquer memória de falhas anterior.
     #[tokio::test]
-    async fn uma_entrega_lenta_mas_viva_nao_e_marcada_morta() {
+    async fn a_slow_but_live_delivery_is_not_marked_dead() {
         use axum::{body::Bytes, routing::post, Router};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1721,7 +1721,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resposta_direta_prefere_quic_no_canal_de_retorno() {
+    async fn direct_reply_prefers_quic_on_the_return_channel() {
         use axum::{body::Bytes, routing::post, Router};
         use tokio::sync::oneshot;
 
@@ -2019,13 +2019,13 @@ mod tests {
     #[test]
     fn a_late_result_is_refused_instead_of_landing_on_another_frame() {
         let inbox = ReplyInbox::new();
-        let atrasado = {
+        let delayed = {
             let ticket = inbox.register();
             ticket.id().to_string()
         };
-        let _seguinte = inbox.register();
+        let _next = inbox.register();
 
-        assert!(!inbox.deliver(&atrasado, json!({"token_id": 1})));
+        assert!(!inbox.deliver(&delayed, json!({"token_id": 1})));
         assert_eq!(inbox.outstanding(), 1, "o ticket seguinte fica intacto");
     }
 
@@ -2091,7 +2091,7 @@ mod tests {
     /// cauda atrás de NAT não tem como devolver o quadro, e o gateway fecha
     /// no prazo sem dizer por quê.
     #[test]
-    fn o_reply_to_carrega_a_identidade_libp2p_do_gateway() {
+    fn the_reply_to_carries_the_gateway_libp2p_identity() {
         let reply = DirectReply::new(
             ReplyInbox::new(),
             vec!["http://192.168.100.210:8080".to_string()],
@@ -2118,7 +2118,7 @@ mod tests {
     /// Gateway em binário anterior não manda os campos, e a entrega tem de
     /// seguir sem eles em vez de quebrar.
     #[tokio::test]
-    async fn sem_identidade_libp2p_a_entrega_pelo_tunel_nao_e_tentada() {
+    async fn without_a_libp2p_identity_the_tunnel_delivery_is_not_attempted() {
         let reply_to = json!({ "ticket": "t1", "urls": [] });
 
         assert!(

@@ -3245,7 +3245,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prazo_do_frame_cresce_com_tokens_imagens_e_hops() {
+    fn the_frame_deadline_grows_with_tokens_images_and_hops() {
         let one = frame_deadline(1, 0, 1);
         assert_eq!(one, FRAME_DEADLINE_BASE + FRAME_DEADLINE_PER_TOKEN);
         assert_eq!(frame_deadline(1, 0, 2), one * 2);
@@ -3258,7 +3258,7 @@ mod tests {
     }
 
     #[test]
-    fn prazo_do_frame_le_o_trabalho_do_proprio_meta() {
+    fn the_frame_deadline_reads_the_work_from_its_own_meta() {
         let decode = json!({"token_id": 7, "next_hops": [{}]});
         assert_eq!(frame_deadline_for(&decode, None), frame_deadline(1, 0, 2));
 
@@ -3307,7 +3307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transporte_le_o_prazo_restante_do_frame_em_curso() {
+    async fn transport_reads_the_remaining_deadline_of_the_frame_in_progress() {
         let deadline = Instant::now() + Duration::from_millis(80);
         let left = with_frame_deadline(deadline, async { frame_time_left() }).await;
         assert!(left <= Duration::from_millis(80) && left > Duration::from_millis(40));
@@ -3739,7 +3739,7 @@ mod tests {
     /// medição - e é por isso que a tela rotula o campo como custo de
     /// estabelecimento de conexão, nunca como custo por token.
     #[test]
-    fn hop_timing_carrega_tls_e_handshake() {
+    fn hop_timing_carries_tls_and_handshake() {
         let e = frame(true, 4).as_hop_timing_entry();
         assert_eq!(e["tls"], true);
         assert_eq!(e["tls_handshake_ms"], 4);
@@ -3753,14 +3753,14 @@ mod tests {
     /// Um salto em claro tem que ser visível como tal: é assim que uma virada
     /// pela metade aparece na tela em vez de passar despercebida.
     #[test]
-    fn salto_em_claro_reporta_tls_falso() {
+    fn a_plain_hop_reports_tls_false() {
         let e = frame(false, 0).as_hop_timing_entry();
         assert_eq!(e["tls"], false);
         assert_eq!(e["tls_handshake_ms"], 0);
     }
 
     #[test]
-    fn hop_timing_expone_transporte_e_medidas_da_travessia() {
+    fn hop_timing_exposes_transport_and_traversal_measurements() {
         let e = SentFrame {
             transport: InferenceTransport::Https,
             transport_fallback: true,
@@ -4468,7 +4468,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uma_sessao_quic_morta_ainda_cai_para_tcp_direto() {
+    async fn a_dead_quic_session_still_falls_back_to_direct_tcp() {
         let identity = crate::identity::Identity::generate();
         let http_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
         let http_port = spawn_fake_inference_server({
@@ -4763,7 +4763,7 @@ mod tests {
     /// dentro dele, e o erro sai tipado como deadline de transporte quando
     /// esse prazo vence.
     #[tokio::test]
-    async fn fallback_http_sem_resposta_respeita_deadline_de_transporte() {
+    async fn an_unanswered_http_fallback_honors_the_transport_deadline() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -5383,7 +5383,7 @@ mod tests {
         let step = step_with("http://192.0.2.1:8181", true, Some(peer_id.to_string()));
 
         let mut issues = Vec::new();
-        let direto = std::time::Instant::now();
+        let direct = std::time::Instant::now();
         let _ = send_frame_or_tunnel(
             &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
             &step,
@@ -5401,7 +5401,7 @@ mod tests {
 
         println!(
             "primeira perna (HTTP direto): {issues:?} em {} s",
-            direto.elapsed().as_secs()
+            direct.elapsed().as_secs()
         );
         assert!(
             issues

@@ -311,9 +311,9 @@ pub fn reduces_in_current_decode() -> u64 {
 fn next_barrier_id() -> Option<String> {
     let mut d = DECODE.lock().ok()?;
     let (id, seq) = d.as_mut()?;
-    let atual = *seq;
+    let current = *seq;
     *seq += 1;
-    Some(format!("{id}#{atual}"))
+    Some(format!("{id}#{current}"))
 }
 
 /// A coletiva está ligada neste processo?
@@ -347,12 +347,12 @@ pub fn reduce_count() -> u64 {
         .unwrap_or(0)
 }
 
-fn note_failure(motivo: String) {
-    tracing::error!("coletiva TP falhou: {motivo}");
+fn note_failure(reason: String) {
+    tracing::error!("coletiva TP falhou: {reason}");
     if let Ok(mut f) = TP_FAILURE.lock() {
         // A primeira falha é a que explica; as seguintes são consequência dela.
         if f.is_none() {
-            *f = Some(motivo);
+            *f = Some(reason);
         }
     }
 }
@@ -409,7 +409,7 @@ pub fn register_tp_reduce_with_urls(
     }
     // Cliente da coletiva: pinado quando o cluster está em TLS, simples quando
     // não está. Falhar aqui é melhor que descobrir no meio do primeiro decode.
-    let client = match (crate::peer_client::tls_ativo(), rank0_node_id.as_deref()) {
+    let client = match (crate::peer_client::tls_enabled(), rank0_node_id.as_deref()) {
         (true, Some(id)) => match crate::tls::client_config(id) {
             Ok(cfg) => reqwest::Client::builder()
                 .use_preconfigured_tls(cfg)
@@ -570,17 +570,17 @@ pub const TP_DECODE_HEADER: &str = "x-pom-tp-decode";
 /// certo. Esperar aqui seria serializar o que precisa ser simultâneo.
 pub fn broadcast_decode(
     members: &[crate::network::TpMember],
-    rota: &str,
+    route: &str,
     decode_id: &str,
     body: Vec<u8>,
 ) {
-    broadcast_to(members, rota, decode_id, body, None)
+    broadcast_to(members, route, decode_id, body, None)
 }
 
-fn broadcast_target(member_url: &str, rota: &str) -> (String, String) {
+fn broadcast_target(member_url: &str, route: &str) -> (String, String) {
     (
         member_url.trim_end_matches('/').to_string(),
-        rota.to_string(),
+        route.to_string(),
     )
 }
 
@@ -592,38 +592,38 @@ fn broadcast_target(member_url: &str, rota: &str) -> (String, String) {
 /// seguinte, longe da causa.
 pub fn broadcast_to(
     members: &[crate::network::TpMember],
-    rota: &str,
+    route: &str,
     decode_id: &str,
     body: Vec<u8>,
     content_type: Option<&'static str>,
 ) {
     let replicas = members.len().saturating_sub(1) as u64;
     record_broadcast_scheduled(replicas, body.len() as u64);
-    for membro in members.iter().skip(1) {
+    for member in members.iter().skip(1) {
         // A base e o path precisam permanecer separados: o túnel usa apenas
         // o path para encaminhar ao loopback do worker. Concatenar a rota e
         // passar `path=""` faz o túnel chegar em `/`, que responde 404.
-        let (url, path) = broadcast_target(&membro.url, rota);
-        let url_candidates = if membro.url_candidates.is_empty() {
+        let (url, path) = broadcast_target(&member.url, route);
+        let url_candidates = if member.url_candidates.is_empty() {
             vec![url.clone()]
         } else {
-            membro.url_candidates.clone()
+            member.url_candidates.clone()
         };
-        let cliente = match peer_client_for(&membro.node_id) {
+        let client = match peer_client_for(&member.node_id) {
             Some(c) => c,
             None => continue,
         };
-        let corpo = body.clone();
+        let body = body.clone();
         let ct = content_type;
         let id = decode_id.to_string();
-        let quem = membro.node_id.clone();
+        let who = member.node_id.clone();
         let auth = tp_state().and_then(|state| state.auth.clone());
-        let peer_id = membro
+        let peer_id = member
             .libp2p_peer_id
             .as_deref()
             .and_then(|id| id.parse().ok());
-        let supports_tunnel = membro.supports_tunnel;
-        let addr_candidates = membro.addr_candidates.clone();
+        let supports_tunnel = member.supports_tunnel;
+        let addr_candidates = member.addr_candidates.clone();
         let tunnel = crate::infer_tunnel::tunnel_sender();
         let auth_state = auth.clone();
         tokio::spawn(async move {
@@ -649,23 +649,23 @@ pub fn broadcast_to(
                 ));
             }
             let result = crate::relay::send_bytes_or_tunnel_with_candidates(
-                &cliente,
+                &client,
                 &url,
                 &url_candidates,
                 &path,
-                corpo,
+                body,
                 headers,
                 &addr_candidates,
                 tunnel,
                 peer_id,
                 supports_tunnel,
-                &quem,
+                &who,
             )
             .await;
             if let Err(e) = result {
                 note_failure(format!(
                     "não deu para pôr o rank {} no decode {id}: {e}",
-                    &quem[..12.min(quem.len())]
+                    &who[..12.min(who.len())]
                 ));
             }
         });
@@ -674,7 +674,7 @@ pub fn broadcast_to(
 
 /// Cliente pinado no membro, ou `None` (com a falha anotada) se não der.
 fn peer_client_for(node_id: &str) -> Option<reqwest::Client> {
-    if !crate::peer_client::tls_ativo() {
+    if !crate::peer_client::tls_enabled() {
         return Some(reqwest::Client::new());
     }
     match crate::tls::client_config(node_id) {
@@ -723,12 +723,12 @@ async fn post_reduce(
     // f32 cru, little-endian. JSON custava ~12 bytes por float de 4: um prefill
     // de 100 tokens dava ~5 MB por reduce e estourava o limite de corpo (413),
     // 64 vezes por decode.
-    let mut corpo = Vec::with_capacity(data.len() * 4);
+    let mut body = Vec::with_capacity(data.len() * 4);
     for v in &data {
-        corpo.extend_from_slice(&v.to_le_bytes());
+        body.extend_from_slice(&v.to_le_bytes());
     }
-    let esperado = data.len();
-    let request_bytes = corpo.len() as u64;
+    let expected = data.len();
+    let request_bytes = body.len() as u64;
     let started = std::time::Instant::now();
 
     let internal_token = match &state.auth {
@@ -765,7 +765,7 @@ async fn post_reduce(
         &state.rank0_url,
         &state.rank0_urls,
         "/v1/tp/reduce",
-        corpo,
+        body,
         headers,
         &state.rank0_addr_candidates,
         tunnel,
@@ -779,7 +779,7 @@ async fn post_reduce(
     .await
     .map_err(|e| e.to_string())?;
     record_reduce(
-        esperado,
+        expected,
         request_bytes,
         response.body.len() as u64,
         started.elapsed(),
@@ -787,11 +787,11 @@ async fn post_reduce(
         response.fallback,
     );
     let bytes = response.body;
-    if bytes.len() != esperado * 4 {
+    if bytes.len() != expected * 4 {
         return Err(format!(
             "soma veio com {} bytes, esperado {}",
             bytes.len(),
-            esperado * 4
+            expected * 4
         ));
     }
     Ok(bytes
@@ -820,8 +820,8 @@ mod tests {
     /// dava erro, só travava.
     #[test]
     fn the_barrier_id_comes_from_the_decode_so_every_rank_agrees() {
-        let _trava = ESTADO_GLOBAL.lock();
-        limpa();
+        let _guard = GLOBAL_STATE.lock();
+        cleanup();
         begin_decode("sessao-x:chunk-0");
         let rank0: Vec<String> = (0..3).map(|_| next_barrier_id().unwrap()).collect();
 
@@ -848,8 +848,8 @@ mod tests {
     /// requisição (18/08).
     #[test]
     fn turning_the_group_off_leaves_no_residue() {
-        let _trava = ESTADO_GLOBAL.lock();
-        limpa();
+        let _guard = GLOBAL_STATE.lock();
+        cleanup();
         register_tp_reduce(
             1,
             2,
@@ -883,8 +883,8 @@ mod tests {
     /// marca, senão o processo carregaria "sou réplica" para sempre.
     #[test]
     fn a_replica_has_no_say_and_the_mark_does_not_leak() {
-        let _trava = ESTADO_GLOBAL.lock();
-        limpa();
+        let _guard = GLOBAL_STATE.lock();
+        cleanup();
         begin_decode("normal");
         assert!(!is_replica(), "rank 0 decide por si");
 
@@ -907,17 +907,17 @@ mod tests {
     /// falsos, e o texto sai plausível e sem sentido.
     #[test]
     fn the_first_failure_wins_and_is_consumed_once() {
-        let _trava = ESTADO_GLOBAL.lock();
-        limpa();
+        let _guard = GLOBAL_STATE.lock();
+        cleanup();
         let _ = take_failure(); // limpa resíduo de outro teste
 
         note_failure("certificado do primary não pinou".into());
         note_failure("erro seguinte, consequência do primeiro".into());
 
-        let motivo = take_failure().expect("a falha tem que sobreviver até o decode");
+        let reason = take_failure().expect("a falha tem que sobreviver até o decode");
         assert!(
-            motivo.contains("certificado"),
-            "a primeira falha é a que explica: {motivo}"
+            reason.contains("certificado"),
+            "a primeira falha é a que explica: {reason}"
         );
         assert!(
             take_failure().is_none(),
@@ -927,8 +927,8 @@ mod tests {
 
     #[test]
     fn telemetry_keeps_collective_counts_and_bytes_separate() {
-        let _trava = ESTADO_GLOBAL.lock().unwrap();
-        limpa();
+        let _guard = GLOBAL_STATE.lock().unwrap();
+        cleanup();
         register_tp_reduce(0, 2, "https://127.0.0.1:9/".into(), None, None, false, None);
         begin_decode("telemetry");
         set_expected_reduces(64);
@@ -967,8 +967,8 @@ mod tests {
 
     #[tokio::test]
     async fn primary_contributes_to_the_local_barrier_without_dialing_itself() {
-        let _trava = ESTADO_GLOBAL.lock().unwrap();
-        limpa();
+        let _guard = GLOBAL_STATE.lock().unwrap();
+        cleanup();
         let barrier = ReduceBarrier::new();
         register_tp_reduce(
             0,
@@ -996,8 +996,8 @@ mod tests {
 
     #[tokio::test]
     async fn callback_can_block_on_tokio_from_a_llama_blocking_thread() {
-        let _trava = ESTADO_GLOBAL.lock().unwrap();
-        limpa();
+        let _guard = GLOBAL_STATE.lock().unwrap();
+        cleanup();
         register_tp_reduce(
             0,
             1,
@@ -1040,10 +1040,10 @@ mod tests {
     /// defeito que perseguiu `transfer::offer_latency_tests` o dia 18/08
     /// inteiro, e que só se explicou depois de horas. Todo teste novo que toque
     /// nesses estáticos toma esta trava.
-    static ESTADO_GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static GLOBAL_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Deixa o processo sem grupo, para um teste não herdar o do anterior.
-    fn limpa() {
+    fn cleanup() {
         unregister_tp_reduce();
     }
 
@@ -1066,7 +1066,7 @@ mod tests {
 
         let url = format!("http://{addr}");
         let partials = vec![vec![1.0f32, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
-        let esperado = vec![9.0f32, 12.0];
+        let expected = vec![9.0f32, 12.0];
 
         let handles: Vec<_> = partials
             .into_iter()
@@ -1091,7 +1091,7 @@ mod tests {
             .collect();
 
         for h in handles {
-            assert_eq!(h.await.unwrap().expect("reduce"), esperado);
+            assert_eq!(h.await.unwrap().expect("reduce"), expected);
         }
     }
 

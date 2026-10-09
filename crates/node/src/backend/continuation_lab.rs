@@ -95,8 +95,8 @@ fn tool_call_script() -> Vec<String> {
         "\n</parameter>\n".to_string(),
         "<parameter=content>\n".to_string(),
     ];
-    for linha in 0..40 {
-        script.push(format!("linha_{linha} = {linha} * 2\n"));
+    for line in 0..40 {
+        script.push(format!("linha_{line} = {line} * 2\n"));
     }
     script.push("\n</parameter>\n".to_string());
     script.push("</function>\n".to_string());
@@ -157,7 +157,7 @@ struct Hop {
     /// O prompt que a cabeça recebeu no quadro de prefill. É por aqui que a
     /// bancada confere que o marcador do orçamento de tarefa chegou mesmo à
     /// geração, e não só ao adaptador.
-    prompt_visto: Arc<std::sync::Mutex<String>>,
+    seen_prompt: Arc<std::sync::Mutex<String>>,
     /// Reutilizado entre tokens para que a reprodução longa meça o gateway,
     /// não a exaustão de sockets causada por criar um cliente por passo.
     peer_http: Arc<crate::peer_client::PeerClients>,
@@ -202,8 +202,8 @@ async fn fake_release() -> impl IntoResponse {
 /// `gateway::rewind_sessions` lê o corpo, não o status: só `rewound: true` com
 /// o `n_past` pedido conta como sessão arrumada para o turno seguinte.
 async fn fake_rewind(body: Bytes) -> impl IntoResponse {
-    let pedido: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
-    let n = pedido.get("n_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let request: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+    let n = request.get("n_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
     Json(json!({"rewound": true, "n_past": n}))
 }
 
@@ -272,7 +272,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let inc = read(&body);
     if hop.is_head {
         if let Some(prompt) = inc.meta["prompt"].as_str() {
-            *hop.prompt_visto.lock().unwrap() = prompt.to_string();
+            *hop.seen_prompt.lock().unwrap() = prompt.to_string();
         }
     }
     let chunk_index = inc.meta["chunk_index"].as_u64().unwrap_or(0) as u32;
@@ -394,19 +394,19 @@ async fn spawn_hop(hop: Hop) -> String {
 
 // ── O nó, com as rotas `/v1` de verdade num socket ────────────────────────────
 
-const API_CHAVE: &str = "api-chave";
+const API_KEY: &str = "api-chave";
 
 struct No {
     base: String,
-    /// O prompt que a cabeça recebeu - ver `Hop::prompt_visto`.
-    prompt_visto: Arc<std::sync::Mutex<String>>,
+    /// O prompt que a cabeça recebeu - ver `Hop::seen_prompt`.
+    seen_prompt: Arc<std::sync::Mutex<String>>,
     /// Vivo enquanto o teste roda; largar isto derruba o nó.
-    _servidor: tokio::task::JoinHandle<()>,
+    _server: tokio::task::JoinHandle<()>,
 }
 
 impl No {
-    fn prompt_da_geracao(&self) -> String {
-        self.prompt_visto.lock().unwrap().clone()
+    fn generation_prompt(&self) -> String {
+        self.seen_prompt.lock().unwrap().clone()
     }
 }
 
@@ -441,7 +441,7 @@ async fn no_with_peer_capacities(
 
     let script = Arc::new(script);
     let emitted = Arc::new(AtomicUsize::new(0));
-    let prompt_visto = Arc::new(std::sync::Mutex::new(String::new()));
+    let seen_prompt = Arc::new(std::sync::Mutex::new(String::new()));
     let peer_http = Arc::new(crate::peer_client::PeerClients::new(
         std::time::Duration::from_secs(600),
     ));
@@ -452,7 +452,7 @@ async fn no_with_peer_capacities(
                 is_head: i == 0,
                 script: script.clone(),
                 emitted: emitted.clone(),
-                prompt_visto: prompt_visto.clone(),
+                seen_prompt: seen_prompt.clone(),
                 peer_http: peer_http.clone(),
             })
             .await,
@@ -466,10 +466,10 @@ async fn no_with_peer_capacities(
         .iter()
         .enumerate()
         .map(|(i, url)| {
-            let porta: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
+            let port: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
             let mut p = testkit::peer(&format!("hop{i}"), &format!("m{i}"), 9000 + i as u16);
             p.addr = "127.0.0.1:42777".into();
-            p.inference_port = Some(porta);
+            p.inference_port = Some(port);
             p.model = "lab".into();
             p.start_layer = i as u32;
             p.end_layer = i as u32;
@@ -493,7 +493,7 @@ async fn no_with_peer_capacities(
     state.runtime.seed_config_for_test(config).await;
     let api_key = crate::config::ApiKey {
         id: "claude-code-contract".into(),
-        key_hash: crate::auth::api_key_hash(API_CHAVE),
+        key_hash: crate::auth::api_key_hash(API_KEY),
         key_hint: String::new(),
         label: "claude-code".into(),
         node_id: "eu".into(),
@@ -510,25 +510,25 @@ async fn no_with_peer_capacities(
         .merge(crate::openai::routes())
         .merge(crate::messages::routes())
         .with_state(state);
-    let servidor = tokio::spawn(async move {
+    let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).tcp_nodelay(true).await;
     });
 
     No {
         base: format!("http://{addr}"),
-        prompt_visto,
-        _servidor: servidor,
+        seen_prompt,
+        _server: server,
     }
 }
 
-fn pedido(max_tokens: u32, stream: bool, com_ferramenta: bool) -> Value {
+fn request(max_tokens: u32, stream: bool, with_tool: bool) -> Value {
     let mut body = json!({
         "model": "lab",
         "max_tokens": max_tokens,
         "stream": stream,
         "messages": [{"role": "user", "content": "escreva o arquivo"}],
     });
-    if com_ferramenta {
+    if with_tool {
         body["tools"] = json!([{
             "type": "function",
             "function": {
@@ -548,7 +548,7 @@ fn pedido(max_tokens: u32, stream: bool, com_ferramenta: bool) -> Value {
 async fn post_json(no: &No, body: Value) -> Value {
     reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .json(&body)
         .send()
         .await
@@ -563,7 +563,7 @@ async fn post_json(no: &No, body: Value) -> Value {
 async fn post_messages(no: &No, body: Value) -> Value {
     reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .json(&body)
         .send()
         .await
@@ -573,45 +573,45 @@ async fn post_messages(no: &No, body: Value) -> Value {
         .expect("corpo JSON")
 }
 
-async fn eventos_messages(no: &No, body: Value) -> Vec<Value> {
-    let resposta = reqwest::Client::new()
+async fn messages_events(no: &No, body: Value) -> Vec<Value> {
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .json(&body)
         .send()
         .await
         .expect("resposta HTTP");
-    assert!(resposta.status().is_success(), "{:?}", resposta.status());
+    assert!(response.status().is_success(), "{:?}", response.status());
 
-    let mut bytes = resposta.bytes_stream();
+    let mut bytes = response.bytes_stream();
     let mut buffer = String::new();
-    let mut eventos = Vec::new();
-    while let Some(pedaco) = bytes.next().await {
-        buffer.push_str(&String::from_utf8_lossy(&pedaco.expect("pedaço SSE")));
-        while let Some(fim) = buffer.find("\n\n") {
-            let evento: String = buffer.drain(..fim + 2).collect();
-            for linha in evento.lines() {
-                let Some(dado) = linha.strip_prefix("data: ") else {
+    let mut events = Vec::new();
+    while let Some(chunk) = bytes.next().await {
+        buffer.push_str(&String::from_utf8_lossy(&chunk.expect("pedaço SSE")));
+        while let Some(end) = buffer.find("\n\n") {
+            let event: String = buffer.drain(..end + 2).collect();
+            for line in event.lines() {
+                let Some(payload) = line.strip_prefix("data: ") else {
                     continue;
                 };
-                if dado != "[DONE]" {
-                    eventos.push(serde_json::from_str(dado).expect("evento JSON"));
+                if payload != "[DONE]" {
+                    events.push(serde_json::from_str(payload).expect("evento JSON"));
                 }
             }
         }
     }
-    eventos
+    events
 }
 
 /// O SSE da rota Anthropic, que tem nomes de evento próprios. Devolve os
 /// `partial_json` de `input_json_delta`, na ordem - é onde os argumentos da
 /// chamada de ferramenta chegam ali.
-async fn fragmentos_messages(no: &No, body: Value) -> Vec<String> {
-    let eventos = eventos_messages(no, body).await;
-    let mut fragmentos = Vec::new();
-    for v in eventos {
+async fn messages_fragments(no: &No, body: Value) -> Vec<String> {
+    let events = messages_events(no, body).await;
+    let mut fragments = Vec::new();
+    for v in events {
         if v["delta"]["type"] == "input_json_delta" {
-            fragmentos.push(
+            fragments.push(
                 v["delta"]["partial_json"]
                     .as_str()
                     .expect("partial_json")
@@ -619,43 +619,43 @@ async fn fragmentos_messages(no: &No, body: Value) -> Vec<String> {
             );
         }
     }
-    fragmentos
+    fragments
 }
 
-/// O pedido Anthropic da bancada, com a ferramenta declarada. `ansioso` liga
+/// O pedido Anthropic da bancada, com a ferramenta declarada. `eager` liga
 /// `eager_input_streaming` nela.
-fn pedido_messages(max_tokens: u32, ansioso: Option<bool>) -> Value {
-    let mut ferramenta = json!({
+fn messages_request(max_tokens: u32, eager: Option<bool>) -> Value {
+    let mut tool = json!({
         "name": "write_file",
         "description": "Escreve um arquivo",
         "input_schema": {"type": "object", "properties": {}},
     });
-    if let Some(v) = ansioso {
-        ferramenta["eager_input_streaming"] = json!(v);
+    if let Some(v) = eager {
+        tool["eager_input_streaming"] = json!(v);
     }
     json!({
         "model": "lab",
         "max_tokens": max_tokens,
         "stream": true,
         "messages": [{"role": "user", "content": "escreva o arquivo"}],
-        "tools": [ferramenta],
+        "tools": [tool],
     })
 }
 
 /// O que um cliente SSE vê: os quadros na ordem em que chegaram, num único
 /// fluxo. Nada aqui reabre conexão - se a costura fechasse o stream, o `while`
 /// abaixo terminaria cedo e os testes veriam menos texto.
-struct Fluxo {
+struct Flow {
     /// Cada `data:` do stream, já desembrulhado, exceto `[DONE]`.
     chunks: Vec<Value>,
     /// Quantos `[DONE]` chegaram.
     done_sentinels: usize,
     /// Em que instante cada quadro chegou, contado do começo do pedido. É o
     /// que separa "chegou em vários pedaços" de "chegou cedo".
-    instantes: Vec<std::time::Duration>,
+    instants: Vec<std::time::Duration>,
 }
 
-impl Fluxo {
+impl Flow {
     /// Todo `finish_reason` não-nulo que atravessou o fluxo. Mais de um quer
     /// dizer que o cliente viu o fim da resposta antes da hora.
     fn finish_reasons(&self) -> Vec<String> {
@@ -666,7 +666,7 @@ impl Fluxo {
             .collect()
     }
 
-    fn texto(&self) -> String {
+    fn text(&self) -> String {
         self.chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
@@ -682,10 +682,10 @@ impl Fluxo {
     }
 
     /// Os fragmentos de argumento, na ordem, com o instante de cada um.
-    fn fragmentos_de_argumento(&self) -> Vec<(std::time::Duration, String)> {
+    fn argument_fragments(&self) -> Vec<(std::time::Duration, String)> {
         self.chunks
             .iter()
-            .zip(&self.instantes)
+            .zip(&self.instants)
             .filter_map(|(c, t)| {
                 c["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
                     .as_str()
@@ -695,7 +695,7 @@ impl Fluxo {
             .collect()
     }
 
-    fn ultimo_com_x_pom(&self) -> &Value {
+    fn last_with_x_pom(&self) -> &Value {
         self.chunks
             .iter()
             .rev()
@@ -704,45 +704,45 @@ impl Fluxo {
     }
 }
 
-async fn post_sse(no: &No, body: Value) -> Fluxo {
-    let resposta = reqwest::Client::new()
+async fn post_sse(no: &No, body: Value) -> Flow {
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .json(&body)
         .send()
         .await
         .expect("resposta HTTP");
-    assert!(resposta.status().is_success(), "{:?}", resposta.status());
+    assert!(response.status().is_success(), "{:?}", response.status());
 
-    let comeco = std::time::Instant::now();
-    let mut bytes = resposta.bytes_stream();
+    let start = std::time::Instant::now();
+    let mut bytes = response.bytes_stream();
     let mut buffer = String::new();
-    let mut fluxo = Fluxo {
+    let mut flow = Flow {
         chunks: Vec::new(),
         done_sentinels: 0,
-        instantes: Vec::new(),
+        instants: Vec::new(),
     };
-    while let Some(pedaco) = bytes.next().await {
-        buffer.push_str(&String::from_utf8_lossy(&pedaco.expect("pedaço SSE")));
-        let agora = comeco.elapsed();
-        while let Some(fim) = buffer.find("\n\n") {
-            let evento: String = buffer.drain(..fim + 2).collect();
-            for linha in evento.lines() {
-                let Some(dado) = linha.strip_prefix("data: ") else {
+    while let Some(chunk) = bytes.next().await {
+        buffer.push_str(&String::from_utf8_lossy(&chunk.expect("pedaço SSE")));
+        let now = start.elapsed();
+        while let Some(end) = buffer.find("\n\n") {
+            let event: String = buffer.drain(..end + 2).collect();
+            for line in event.lines() {
+                let Some(payload) = line.strip_prefix("data: ") else {
                     continue;
                 };
-                if dado == "[DONE]" {
-                    fluxo.done_sentinels += 1;
+                if payload == "[DONE]" {
+                    flow.done_sentinels += 1;
                 } else {
-                    fluxo
+                    flow
                         .chunks
-                        .push(serde_json::from_str(dado).expect("chunk JSON"));
-                    fluxo.instantes.push(agora);
+                        .push(serde_json::from_str(payload).expect("chunk JSON"));
+                    flow.instants.push(now);
                 }
             }
         }
     }
-    fluxo
+    flow
 }
 
 // ── O que a bancada afirma ────────────────────────────────────────────────────
@@ -754,27 +754,27 @@ async fn post_sse(no: &No, body: Value) -> Fluxo {
 #[tokio::test]
 async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
     let script = plain_script();
-    let esperado: String = script.concat();
+    let expected: String = script.concat();
     let no = no(script.clone(), 8).await;
 
-    let corpo = post_json(&no, pedido(100, false, false)).await;
-    let escolha = &corpo["choices"][0];
+    let body = post_json(&no, request(100, false, false)).await;
+    let choice = &body["choices"][0];
 
-    assert_eq!(escolha["finish_reason"], "stop");
-    assert_eq!(escolha["message"]["content"], esperado);
-    assert_eq!(corpo["usage"]["completion_tokens"], script.len() as u64);
+    assert_eq!(choice["finish_reason"], "stop");
+    assert_eq!(choice["message"]["content"], expected);
+    assert_eq!(body["usage"]["completion_tokens"], script.len() as u64);
     // O número da implantação continua o que era: o laço passou por cima dele
     // sem levantá-lo.
-    assert_eq!(corpo["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
-    assert_eq!(corpo["x_pom"]["output_limits"]["leg_max_tokens"], 8);
-    assert_eq!(corpo["x_pom"]["output_limits"]["effective_max_tokens"], 100);
-    assert_eq!(corpo["x_pom"]["output_limits"]["requested_max_tokens"], 100);
+    assert_eq!(body["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
+    assert_eq!(body["x_pom"]["output_limits"]["leg_max_tokens"], 8);
+    assert_eq!(body["x_pom"]["output_limits"]["effective_max_tokens"], 100);
+    assert_eq!(body["x_pom"]["output_limits"]["requested_max_tokens"], 100);
     // E a costura é inspecionável: 51 tokens em pernas de 8.
     assert_eq!(
-        corpo["x_pom"]["continuation_legs"],
+        body["x_pom"]["continuation_legs"],
         script.len().div_ceil(8) as u64
     );
-    assert_eq!(corpo["x_pom"]["partial"], false);
+    assert_eq!(body["x_pom"]["partial"], false);
 }
 
 /// O requisito central: um fluxo só. A costura entre pernas não pode aparecer
@@ -783,20 +783,20 @@ async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
 #[tokio::test]
 async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
     let script = plain_script();
-    let esperado: String = script.concat();
+    let expected: String = script.concat();
     let no = no(script.clone(), 8).await;
 
-    let fluxo = post_sse(&no, pedido(100, true, false)).await;
+    let flow = post_sse(&no, request(100, true, false)).await;
 
     assert_eq!(
-        fluxo.finish_reasons(),
+        flow.finish_reasons(),
         vec!["stop".to_string()],
         "a costura vazou um fim de resposta para o cliente"
     );
-    assert_eq!(fluxo.done_sentinels, 1, "mais de um [DONE] é outro fluxo");
-    assert_eq!(fluxo.texto(), esperado);
+    assert_eq!(flow.done_sentinels, 1, "mais de um [DONE] é outro fluxo");
+    assert_eq!(flow.text(), expected);
     assert_eq!(
-        fluxo.ultimo_com_x_pom()["x_pom"]["continuation_legs"],
+        flow.last_with_x_pom()["x_pom"]["continuation_legs"],
         script.len().div_ceil(8) as u64
     );
 }
@@ -809,27 +809,27 @@ async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
     let script = tool_call_script();
     let no = no(script, 8).await;
 
-    let corpo = post_json(&no, pedido(100, false, true)).await;
-    let escolha = &corpo["choices"][0];
-    assert_eq!(escolha["finish_reason"], "tool_calls");
+    let body = post_json(&no, request(100, false, true)).await;
+    let choice = &body["choices"][0];
+    assert_eq!(choice["finish_reason"], "tool_calls");
 
-    let chamadas = escolha["message"]["tool_calls"]
+    let calls = choice["message"]["tool_calls"]
         .as_array()
         .expect("a resposta traz tool_calls");
-    assert_eq!(chamadas.len(), 1);
-    assert_eq!(chamadas[0]["function"]["name"], "write_file");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["function"]["name"], "write_file");
 
-    let bruto = chamadas[0]["function"]["arguments"]
+    let raw = calls[0]["function"]["arguments"]
         .as_str()
         .expect("arguments é string JSON");
-    let argumentos: Value = serde_json::from_str(bruto).expect("arguments é JSON válido");
-    assert_eq!(argumentos["path"], "/tmp/calc.py");
-    let conteudo = argumentos["content"].as_str().expect("content");
-    assert!(conteudo.starts_with("linha_0 = 0 * 2"), "{conteudo:?}");
+    let arguments: Value = serde_json::from_str(raw).expect("arguments é JSON válido");
+    assert_eq!(arguments["path"], "/tmp/calc.py");
+    let content = arguments["content"].as_str().expect("content");
+    assert!(content.starts_with("linha_0 = 0 * 2"), "{content:?}");
     assert!(
-        conteudo.trim_end().ends_with("linha_39 = 39 * 2"),
+        content.trim_end().ends_with("linha_39 = 39 * 2"),
         "o conteúdo chegou cortado: {:?}",
-        &conteudo[conteudo.len().saturating_sub(60)..]
+        &content[content.len().saturating_sub(60)..]
     );
 }
 
@@ -841,32 +841,32 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
     let script = tool_call_script();
     let no = no(script, 8).await;
 
-    let fluxo = post_sse(&no, pedido(100, true, true)).await;
-    assert_eq!(fluxo.finish_reasons(), vec!["tool_calls".to_string()]);
+    let flow = post_sse(&no, request(100, true, true)).await;
+    assert_eq!(flow.finish_reasons(), vec!["tool_calls".to_string()]);
 
-    let deltas = fluxo.tool_call_deltas();
+    let deltas = flow.tool_call_deltas();
     // A abertura traz o nome, e os argumentos vêm em MUITOS fragmentos.
     assert_eq!(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
     );
-    let fragmentos = fluxo.fragmentos_de_argumento();
+    let fragments = flow.argument_fragments();
     assert!(
-        fragmentos.len() > 5,
+        fragments.len() > 5,
         "os argumentos voltaram represados: {} fragmento(s)",
-        fragmentos.len()
+        fragments.len()
     );
 
     // Concatenar reproduz o argumento inteiro e válido.
-    let inteiro: String = fragmentos.iter().map(|(_, s)| s.as_str()).collect();
-    let argumentos: Value = serde_json::from_str(&inteiro).expect("arguments é JSON válido");
-    assert_eq!(argumentos["path"], "/tmp/calc.py");
-    assert!(argumentos["content"]
+    let whole: String = fragments.iter().map(|(_, s)| s.as_str()).collect();
+    let arguments: Value = serde_json::from_str(&whole).expect("arguments é JSON válido");
+    assert_eq!(arguments["path"], "/tmp/calc.py");
+    assert!(arguments["content"]
         .as_str()
         .unwrap()
         .ends_with("linha_39 = 39 * 2"));
     // Nada do `<tool_call>` sobrou como texto solto.
-    assert!(!fluxo.texto().contains("<tool_call>"), "{}", fluxo.texto());
+    assert!(!flow.text().contains("<tool_call>"), "{}", flow.text());
 }
 
 /// A reprodução grande do caso do captain: com contexto efetivo suficiente,
@@ -876,17 +876,17 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
 async fn a_large_html_tool_call_fits_the_context_capacity() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
-    let corpo = post_json(&no, pedido(50_000, false, true)).await;
-    let escolha = &corpo["choices"][0];
-    assert_eq!(escolha["finish_reason"], "tool_calls");
-    assert_eq!(corpo["x_pom"]["partial"], false);
+    let body = post_json(&no, request(50_000, false, true)).await;
+    let choice = &body["choices"][0];
+    assert_eq!(choice["finish_reason"], "tool_calls");
+    assert_eq!(body["x_pom"]["partial"], false);
 
-    let bruto = escolha["message"]["tool_calls"][0]["function"]["arguments"]
+    let raw = choice["message"]["tool_calls"][0]["function"]["arguments"]
         .as_str()
         .expect("arguments é string JSON");
-    let argumentos: Value = serde_json::from_str(bruto).expect("chamada completa é JSON");
-    assert_eq!(argumentos["path"], "/tmp/index.html");
-    assert!(argumentos["content"]
+    let arguments: Value = serde_json::from_str(raw).expect("chamada completa é JSON");
+    assert_eq!(arguments["path"], "/tmp/index.html");
+    assert!(arguments["content"]
         .as_str()
         .expect("content")
         .contains("data-line=\"846\""));
@@ -899,22 +899,22 @@ async fn a_large_html_tool_call_fits_the_context_capacity() {
 async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
     let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
 
-    let corpo = post_json(&no, pedido(32_000, false, true)).await;
-    let escolha = &corpo["choices"][0];
-    assert_eq!(escolha["finish_reason"], "tool_calls");
+    let body = post_json(&no, request(32_000, false, true)).await;
+    let choice = &body["choices"][0];
+    assert_eq!(choice["finish_reason"], "tool_calls");
     assert!(
-        corpo["usage"]["completion_tokens"]
+        body["usage"]["completion_tokens"]
             .as_u64()
             .expect("completion_tokens")
             < 32_000
     );
-    assert_eq!(corpo["x_pom"]["partial"], false);
+    assert_eq!(body["x_pom"]["partial"], false);
 
-    let bruto = escolha["message"]["tool_calls"][0]["function"]["arguments"]
+    let raw = choice["message"]["tool_calls"][0]["function"]["arguments"]
         .as_str()
         .expect("arguments é string JSON");
-    let argumentos: Value = serde_json::from_str(bruto).expect("chamada completa é JSON");
-    assert!(argumentos["content"]
+    let arguments: Value = serde_json::from_str(raw).expect("chamada completa é JSON");
+    assert!(arguments["content"]
         .as_str()
         .expect("content")
         .contains("data-line=\"846\""));
@@ -926,21 +926,21 @@ async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
 async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
     let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
 
-    let fluxo = post_sse(&no, pedido(32_000, true, true)).await;
+    let flow = post_sse(&no, request(32_000, true, true)).await;
 
-    assert_eq!(fluxo.finish_reasons(), vec!["tool_calls".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
-    let argumentos: String = fluxo
-        .fragmentos_de_argumento()
+    assert_eq!(flow.finish_reasons(), vec!["tool_calls".to_string()]);
+    assert_eq!(flow.done_sentinels, 1);
+    let arguments: String = flow
+        .argument_fragments()
         .iter()
         .map(|(_, fragment)| fragment.as_str())
         .collect();
-    let argumentos: Value = serde_json::from_str(&argumentos).expect("arguments é JSON");
-    assert!(argumentos["content"]
+    let arguments: Value = serde_json::from_str(&arguments).expect("arguments é JSON");
+    assert!(arguments["content"]
         .as_str()
         .expect("content")
         .contains("data-line=\"846\""));
-    assert_eq!(fluxo.ultimo_com_x_pom()["x_pom"]["partial"], false);
+    assert_eq!(flow.last_with_x_pom()["x_pom"]["partial"], false);
 }
 
 /// A mesma reprodução em 8192 tokens não pode ser "resolvida" com folga:
@@ -950,42 +950,42 @@ async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
 async fn a_large_openai_tool_call_at_8192_is_structured_and_terminal() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
-    let corpo = post_json(&no, pedido(8_192, false, true)).await;
-    let escolha = &corpo["choices"][0];
-    assert_eq!(escolha["finish_reason"], "length");
-    assert_eq!(corpo["usage"]["completion_tokens"], 8_192);
-    assert_eq!(corpo["x_pom"]["partial"], true);
-    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
+    let body = post_json(&no, request(8_192, false, true)).await;
+    let choice = &body["choices"][0];
+    assert_eq!(choice["finish_reason"], "length");
+    assert_eq!(body["usage"]["completion_tokens"], 8_192);
+    assert_eq!(body["x_pom"]["partial"], true);
+    assert_eq!(body["x_pom"]["truncated_tool_call"], true);
 
-    let chamada = &escolha["message"]["tool_calls"][0];
-    assert_eq!(chamada["function"]["name"], "write_file");
-    let argumentos = chamada["function"]["arguments"]
+    let call = &choice["message"]["tool_calls"][0];
+    assert_eq!(call["function"]["name"], "write_file");
+    let arguments = call["function"]["arguments"]
         .as_str()
         .expect("arguments é string JSON");
-    assert!(!argumentos.contains("<tool_call>"), "marcação crua vazou");
-    assert!(serde_json::from_str::<Value>(argumentos).is_err());
+    assert!(!arguments.contains("<tool_call>"), "marcação crua vazou");
+    assert!(serde_json::from_str::<Value>(arguments).is_err());
 }
 
 #[tokio::test]
 async fn a_large_openai_tool_call_at_5000_is_structured_and_terminal_non_streaming() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
-    let corpo = post_json(&no, pedido(5_000, false, true)).await;
-    let escolha = &corpo["choices"][0];
-    assert_eq!(escolha["finish_reason"], "length");
-    assert_eq!(corpo["usage"]["completion_tokens"], 5_000);
-    assert_eq!(corpo["x_pom"]["partial"], true);
-    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
-    assert!(!corpo["choices"][0]["message"]["content"]
+    let body = post_json(&no, request(5_000, false, true)).await;
+    let choice = &body["choices"][0];
+    assert_eq!(choice["finish_reason"], "length");
+    assert_eq!(body["usage"]["completion_tokens"], 5_000);
+    assert_eq!(body["x_pom"]["partial"], true);
+    assert_eq!(body["x_pom"]["truncated_tool_call"], true);
+    assert!(!body["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_default()
         .contains("<tool_call>"));
 
-    let argumentos = escolha["message"]["tool_calls"][0]["function"]["arguments"]
+    let arguments = choice["message"]["tool_calls"][0]["function"]["arguments"]
         .as_str()
         .expect("arguments é string JSON");
-    assert!(serde_json::from_str::<Value>(argumentos).is_err());
-    assert!(!argumentos.contains("data-line=\"846\""));
+    assert!(serde_json::from_str::<Value>(arguments).is_err());
+    assert!(!arguments.contains("data-line=\"846\""));
 }
 
 /// A reprodução em streaming do write grande do Pi: quando o teto terminal
@@ -996,20 +996,20 @@ async fn a_large_openai_tool_call_at_5000_is_structured_and_terminal_non_streami
 async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
-    let fluxo = post_sse(&no, pedido(8_192, true, true)).await;
+    let flow = post_sse(&no, request(8_192, true, true)).await;
 
-    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
-    assert!(!fluxo.texto().contains("<tool_call>"), "{}", fluxo.texto());
+    assert_eq!(flow.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(flow.done_sentinels, 1);
+    assert!(!flow.text().contains("<tool_call>"), "{}", flow.text());
 
-    let deltas = fluxo.tool_call_deltas();
+    let deltas = flow.tool_call_deltas();
     assert!(!deltas.is_empty(), "o corte perdeu a chamada estruturada");
     assert_eq!(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
     );
-    let arguments: String = fluxo
-        .fragmentos_de_argumento()
+    let arguments: String = flow
+        .argument_fragments()
         .iter()
         .map(|(_, fragment)| fragment.as_str())
         .collect();
@@ -1017,7 +1017,7 @@ async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
     assert!(serde_json::from_str::<Value>(&arguments).is_err());
     assert!(!arguments.contains("data-line=\"846\""));
 
-    let x_pom = &fluxo.ultimo_com_x_pom()["x_pom"];
+    let x_pom = &flow.last_with_x_pom()["x_pom"];
     assert_eq!(x_pom["truncated_tool_call"], true);
     assert_eq!(x_pom["partial"], true);
 }
@@ -1028,17 +1028,17 @@ async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
 async fn a_large_openai_tool_call_at_5000_has_one_recoverable_terminal_cut() {
     let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
-    let fluxo = post_sse(&no, pedido(5_000, true, true)).await;
+    let flow = post_sse(&no, request(5_000, true, true)).await;
 
-    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
-    assert!(!fluxo.texto().contains("<tool_call>"));
-    assert!(!fluxo.fragmentos_de_argumento().is_empty());
-    assert!(!fluxo
-        .fragmentos_de_argumento()
+    assert_eq!(flow.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(flow.done_sentinels, 1);
+    assert!(!flow.text().contains("<tool_call>"));
+    assert!(!flow.argument_fragments().is_empty());
+    assert!(!flow
+        .argument_fragments()
         .iter()
         .any(|(_, fragment)| fragment.contains("data-line=\"846\"")));
-    assert_eq!(fluxo.ultimo_com_x_pom()["x_pom"]["partial"], true);
+    assert_eq!(flow.last_with_x_pom()["x_pom"]["partial"], true);
 }
 
 /// O adaptador Anthropic expõe a mesma chamada grande como bloco `tool_use`:
@@ -1046,46 +1046,46 @@ async fn a_large_openai_tool_call_at_5000_has_one_recoverable_terminal_cut() {
 /// teto de 8192 cai dentro do parâmetro.
 #[tokio::test]
 async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
-    let ferramenta = json!({
+    let tool = json!({
         "name": "write_file",
         "description": "Escreve um arquivo",
         "input_schema": {"type": "object", "properties": {}},
     });
 
-    let completo = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
-    let corpo = post_messages(
-        &completo,
+    let complete = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
+    let body = post_messages(
+        &complete,
         json!({
             "model": "lab",
             "max_tokens": 50_000,
             "messages": [{"role": "user", "content": "escreva o arquivo"}],
-            "tools": [ferramenta.clone()],
+            "tools": [tool.clone()],
         }),
     )
     .await;
-    assert_eq!(corpo["stop_reason"], "tool_use");
-    assert!(corpo["content"][0]["input"]["content"]
+    assert_eq!(body["stop_reason"], "tool_use");
+    assert!(body["content"][0]["input"]["content"]
         .as_str()
         .expect("content")
         .contains("data-line=\"846\""));
 
-    let cortado = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
-    let corpo = post_messages(
-        &cortado,
+    let truncated = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
+    let body = post_messages(
+        &truncated,
         json!({
             "model": "lab",
             "max_tokens": 8_192,
             "messages": [{"role": "user", "content": "escreva o arquivo"}],
-            "tools": [ferramenta],
+            "tools": [tool],
         }),
     )
     .await;
-    assert_eq!(corpo["stop_reason"], "max_tokens");
-    assert_eq!(corpo["usage"]["output_tokens"], 8_192);
-    assert_eq!(corpo["x_pom"]["partial"], true);
-    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
-    assert_eq!(corpo["content"][0]["type"], "tool_use");
-    let content = corpo["content"][0]["input"]["content"]
+    assert_eq!(body["stop_reason"], "max_tokens");
+    assert_eq!(body["usage"]["output_tokens"], 8_192);
+    assert_eq!(body["x_pom"]["partial"], true);
+    assert_eq!(body["x_pom"]["truncated_tool_call"], true);
+    assert_eq!(body["content"][0]["type"], "tool_use");
+    let content = body["content"][0]["input"]["content"]
         .as_str()
         .expect("content");
     assert!(!content.contains("data-line=\"846\""));
@@ -1098,11 +1098,11 @@ async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
 #[tokio::test]
 async fn pi_5000_limit_is_forwarded_and_large_write_is_structured_when_cut() {
     let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
-    let eventos = eventos_messages(&no, pedido_messages(5_000, Some(false))).await;
+    let events = messages_events(&no, messages_request(5_000, Some(false))).await;
 
-    let delta = eventos
+    let delta = events
         .iter()
-        .find(|evento| evento["type"] == "message_delta")
+        .find(|event| event["type"] == "message_delta")
         .expect("message_delta final");
     assert_eq!(delta["delta"]["stop_reason"], "max_tokens");
     assert_eq!(delta["usage"]["output_tokens"], 5_000);
@@ -1117,24 +1117,24 @@ async fn pi_5000_limit_is_forwarded_and_large_write_is_structured_when_cut() {
     assert_eq!(delta["x_pom"]["partial"], true);
     assert_eq!(delta["x_pom"]["truncated_tool_call"], true);
 
-    let tool_start = eventos
+    let tool_start = events
         .iter()
-        .find(|evento| evento["content_block"]["type"] == "tool_use")
+        .find(|event| event["content_block"]["type"] == "tool_use")
         .expect("content_block_start do tool_use");
     assert_eq!(tool_start["content_block"]["name"], "write_file");
 
-    let argumentos: String = eventos
+    let arguments: String = events
         .iter()
-        .filter(|evento| evento["delta"]["type"] == "input_json_delta")
-        .filter_map(|evento| evento["delta"]["partial_json"].as_str())
+        .filter(|event| event["delta"]["type"] == "input_json_delta")
+        .filter_map(|event| event["delta"]["partial_json"].as_str())
         .collect();
-    assert!(argumentos.starts_with(r#"{"path":"/tmp/index.html","content":"#));
-    assert!(serde_json::from_str::<Value>(&argumentos).is_err());
-    assert!(!argumentos.contains("data-line=\"846\""));
+    assert!(arguments.starts_with(r#"{"path":"/tmp/index.html","content":"#));
+    assert!(serde_json::from_str::<Value>(&arguments).is_err());
+    assert!(!arguments.contains("data-line=\"846\""));
     assert_eq!(
-        eventos
+        events
             .iter()
-            .filter(|evento| evento["type"] == "message_stop")
+            .filter(|event| event["type"] == "message_stop")
             .count(),
         1
     );
@@ -1148,15 +1148,15 @@ async fn pi_5000_limit_is_forwarded_and_large_write_is_structured_when_cut() {
 async fn the_first_argument_fragment_arrives_well_before_the_last() {
     let no = no(tool_call_script(), 8).await;
 
-    let fluxo = post_sse(&no, pedido(100, true, true)).await;
-    let fragmentos = fluxo.fragmentos_de_argumento();
+    let flow = post_sse(&no, request(100, true, true)).await;
+    let fragments = flow.argument_fragments();
 
-    assert!(fragmentos.len() > 5, "{} fragmento(s)", fragmentos.len());
-    let primeiro = fragmentos.first().expect("primeiro").0;
-    let ultimo = fragmentos.last().expect("último").0;
+    assert!(fragments.len() > 5, "{} fragmento(s)", fragments.len());
+    let first = fragments.first().expect("primeiro").0;
+    let last = fragments.last().expect("último").0;
     assert!(
-        primeiro < ultimo,
-        "primeiro e último no mesmo instante ({primeiro:?}) - é o defeito de novo"
+        first < last,
+        "primeiro e último no mesmo instante ({first:?}) - é o defeito de novo"
     );
     // O relógio de parede deste teste inclui escalonamento do processo, filas
     // do kernel e agrupamento de bytes pelo socket. Esses fatores podem fazer
@@ -1164,7 +1164,7 @@ async fn the_first_argument_fragment_arrives_well_before_the_last() {
     // separado. A prova estável de que o streaming não represou a chamada é
     // haver muitos fragmentos e o primeiro ser observado antes do último.
     assert!(
-        primeiro < ultimo,
+        first < last,
         "o primeiro quadro não chegou antes do último"
     );
 }
@@ -1176,14 +1176,14 @@ async fn the_first_argument_fragment_arrives_well_before_the_last() {
 async fn the_client_ceiling_stops_a_runaway_model_and_is_the_only_length() {
     let no = no(runaway_script(), 8).await;
 
-    let corpo = post_json(&no, pedido(37, false, false)).await;
-    let escolha = &corpo["choices"][0];
-    assert_eq!(escolha["finish_reason"], "length");
-    assert_eq!(corpo["usage"]["completion_tokens"], 37);
-    assert_eq!(corpo["x_pom"]["output_limits"]["effective_max_tokens"], 37);
-    assert_eq!(corpo["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
-    assert_eq!(corpo["x_pom"]["finish_reason"], "length");
-    assert_eq!(corpo["x_pom"]["continuation_legs"], 5);
+    let body = post_json(&no, request(37, false, false)).await;
+    let choice = &body["choices"][0];
+    assert_eq!(choice["finish_reason"], "length");
+    assert_eq!(body["usage"]["completion_tokens"], 37);
+    assert_eq!(body["x_pom"]["output_limits"]["effective_max_tokens"], 37);
+    assert_eq!(body["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
+    assert_eq!(body["x_pom"]["finish_reason"], "length");
+    assert_eq!(body["x_pom"]["continuation_legs"], 5);
 }
 
 /// O mesmo estouro em streaming: um `length` só, no fim, e um `[DONE]` só. A
@@ -1192,11 +1192,11 @@ async fn the_client_ceiling_stops_a_runaway_model_and_is_the_only_length() {
 async fn the_client_ceiling_ends_the_stream_exactly_once() {
     let no = no(runaway_script(), 8).await;
 
-    let fluxo = post_sse(&no, pedido(37, true, false)).await;
-    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
-    assert_eq!(fluxo.texto().matches("e ").count(), 37);
-    assert_eq!(fluxo.ultimo_com_x_pom()["x_pom"]["continuation_legs"], 5);
+    let flow = post_sse(&no, request(37, true, false)).await;
+    assert_eq!(flow.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(flow.done_sentinels, 1);
+    assert_eq!(flow.text().matches("e ").count(), 37);
+    assert_eq!(flow.last_with_x_pom()["x_pom"]["continuation_legs"], 5);
 }
 
 /// Quando o pedido cabe numa perna nada muda: uma perna, sem costura, e o
@@ -1205,11 +1205,11 @@ async fn the_client_ceiling_ends_the_stream_exactly_once() {
 async fn a_request_that_fits_one_leg_is_untouched() {
     let no = no(runaway_script(), 8).await;
 
-    let corpo = post_json(&no, pedido(5, false, false)).await;
-    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
-    assert_eq!(corpo["usage"]["completion_tokens"], 5);
-    assert_eq!(corpo["x_pom"]["continuation_legs"], 1);
-    assert_eq!(corpo["x_pom"]["output_limits"]["leg_max_tokens"], 5);
+    let body = post_json(&no, request(5, false, false)).await;
+    assert_eq!(body["choices"][0]["finish_reason"], "length");
+    assert_eq!(body["usage"]["completion_tokens"], 5);
+    assert_eq!(body["x_pom"]["continuation_legs"], 1);
+    assert_eq!(body["x_pom"]["output_limits"]["leg_max_tokens"], 5);
 }
 
 /// `/v1/models` anuncia o teto da requisição, não o de uma perna: anunciar o
@@ -1218,9 +1218,9 @@ async fn a_request_that_fits_one_leg_is_untouched() {
 async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
     let no = no(runaway_script(), 8).await;
 
-    let corpo: Value = reqwest::Client::new()
+    let body: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1228,8 +1228,8 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
         .await
         .expect("corpo JSON");
 
-    let modelo = &corpo["data"][0];
-    assert_eq!(modelo["top_provider"]["max_completion_tokens"], 8_192);
+    let model = &body["data"][0];
+    assert_eq!(model["top_provider"]["max_completion_tokens"], 8_192);
 }
 
 /// Anthropic SDKs can send both authentication headers. A bad Bearer header
@@ -1243,7 +1243,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
     let models = client
         .get(format!("{}/v1/models", no.base))
         .header("authorization", "Bearer invalid-bearer")
-        .header("x-api-key", API_CHAVE)
+        .header("x-api-key", API_KEY)
         .send()
         .await
         .expect("resposta HTTP");
@@ -1252,7 +1252,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
     let messages = client
         .post(format!("{}/v1/messages", no.base))
         .header("authorization", "Bearer invalid-bearer")
-        .header("x-api-key", API_CHAVE)
+        .header("x-api-key", API_KEY)
         .json(&json!({
             "model": "lab",
             "max_tokens": 100,
@@ -1288,7 +1288,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
 
     let bearer = client
         .get(format!("{}/v1/models", no.base))
-        .header("authorization", format!("Bearer {API_CHAVE}"))
+        .header("authorization", format!("Bearer {API_KEY}"))
         .send()
         .await
         .expect("resposta HTTP");
@@ -1296,7 +1296,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
 
     let x_api_key = client
         .get(format!("{}/v1/models", no.base))
-        .header("x-api-key", API_CHAVE)
+        .header("x-api-key", API_KEY)
         .send()
         .await
         .expect("resposta HTTP");
@@ -1309,9 +1309,9 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
 async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
     let no = no_with_context(runaway_script(), 8, 100_000).await;
 
-    let corpo: Value = reqwest::Client::new()
+    let body: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .header("x-api-key", API_CHAVE)
+        .header("x-api-key", API_KEY)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1319,15 +1319,15 @@ async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
         .await
         .expect("corpo JSON");
 
-    assert_eq!(corpo["object"], "list");
-    assert_eq!(corpo["has_more"], false);
-    let modelo = &corpo["data"][0];
-    assert_eq!(modelo["id"], "lab");
-    assert_eq!(modelo["type"], "model");
-    assert_eq!(modelo["max_input_tokens"], 100_000);
-    assert_eq!(modelo["max_tokens"], 100_000);
-    assert_eq!(modelo["context_length"], 100_000);
-    assert_eq!(modelo["top_provider"]["max_completion_tokens"], 100_000);
+    assert_eq!(body["object"], "list");
+    assert_eq!(body["has_more"], false);
+    let model = &body["data"][0];
+    assert_eq!(model["id"], "lab");
+    assert_eq!(model["type"], "model");
+    assert_eq!(model["max_input_tokens"], 100_000);
+    assert_eq!(model["max_tokens"], 100_000);
+    assert_eq!(model["context_length"], 100_000);
+    assert_eq!(model["top_provider"]["max_completion_tokens"], 100_000);
 }
 
 /// A capacidade derivada da rede é a capacidade do pipeline inteiro: um peer
@@ -1354,7 +1354,7 @@ async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
 
     let models: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1367,15 +1367,15 @@ async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
         8_192
     );
 
-    let resposta = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(API_CHAVE)
-        .json(&pedido(32_000, false, false))
+        .bearer_auth(API_KEY)
+        .json(&request(32_000, false, false))
         .send()
         .await
         .expect("resposta HTTP");
-    let status = resposta.status();
-    let body = resposta.text().await.expect("corpo de erro");
+    let status = response.status();
+    let body = response.text().await.expect("corpo de erro");
     assert_eq!(status, reqwest::StatusCode::OK, "{body}");
 }
 
@@ -1403,7 +1403,7 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
 
     let models: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .header("x-api-key", API_CHAVE)
+        .header("x-api-key", API_KEY)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1416,14 +1416,14 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
         100_000
     );
 
-    let resposta = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .header("x-api-key", API_CHAVE)
-        .json(&pedido(32_000, false, false))
+        .header("x-api-key", API_KEY)
+        .json(&request(32_000, false, false))
         .send()
         .await
         .expect("resposta HTTP");
-    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
 /// Reproduz a configuração do captain: `max_new_tokens: 32000` continua sendo
@@ -1435,7 +1435,7 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
 
     let models: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1448,14 +1448,14 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
         100_000
     );
 
-    let resposta = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(API_CHAVE)
-        .json(&pedido(32_000, false, false))
+        .bearer_auth(API_KEY)
+        .json(&request(32_000, false, false))
         .send()
         .await
         .expect("resposta HTTP");
-    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
 /// OpenCode envia o nome novo do limite e pode acrescentar campos opcionais
@@ -1465,9 +1465,9 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
 async fn openai_chat_completions_accepts_max_completion_tokens() {
     let no = no(runaway_script(), 8).await;
 
-    let resposta = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .header("authorization", format!("Bearer {API_CHAVE}"))
+        .header("authorization", format!("Bearer {API_KEY}"))
         .json(&json!({
             "model": "lab",
             "messages": [{"role": "user", "content": [{"type": "text", "text": "oi"}]}],
@@ -1481,20 +1481,20 @@ async fn openai_chat_completions_accepts_max_completion_tokens() {
         .await
         .expect("resposta HTTP");
 
-    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
-    let corpo: Value = resposta.json().await.expect("corpo JSON");
-    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
-    assert_eq!(corpo["usage"]["completion_tokens"], 5);
-    assert_eq!(corpo["x_pom"]["partial"], false);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.expect("corpo JSON");
+    assert_eq!(body["choices"][0]["finish_reason"], "length");
+    assert_eq!(body["usage"]["completion_tokens"], 5);
+    assert_eq!(body["x_pom"]["partial"], false);
 }
 
 #[tokio::test]
 async fn max_completion_tokens_above_the_former_50k_ceiling_is_accepted() {
     let no = no_with_context(plain_script(), 8, 100_000).await;
 
-    let resposta = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .header("x-api-key", API_CHAVE)
+        .header("x-api-key", API_KEY)
         .json(&json!({
             "model": "lab",
             "messages": [{"role": "user", "content": "oi"}],
@@ -1504,7 +1504,7 @@ async fn max_completion_tokens_above_the_former_50k_ceiling_is_accepted() {
         .await
         .expect("resposta HTTP");
 
-    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
 // ── O teto do CLIENTE caindo dentro da chamada ───────────────────────────────
@@ -1515,32 +1515,32 @@ async fn max_completion_tokens_above_the_former_50k_ceiling_is_accepted() {
 /// `<tool_call>`, 7..=46 são as 40 linhas do `content`, 49 fecha
 /// `</tool_call>`. Com 20, a geração chega ao teto logo depois do pedaço 19 -
 /// `linha_12` - dezoito pedaços depois da abertura e vinte e nove antes do
-/// fechamento. `corte_cai_dentro_da_chamada()` prova isso, para ninguém depois
+/// fechamento. `the_cut_lands_inside_the_call()` prova isso, para ninguém depois
 /// achar que o ponto caiu em outro lugar por acidente.
-const TETO_DENTRO_DA_CHAMADA: u32 = 20;
+const CAP_INSIDE_CALL: u32 = 20;
 
 /// Prova aritmética do ponto de corte, independente dos testes de HTTP: com
-/// `TETO_DENTRO_DA_CHAMADA` tokens gerados, a saída bruta abriu a chamada e
+/// `CAP_INSIDE_CALL` tokens gerados, a saída bruta abriu a chamada e
 /// não a fechou.
 #[test]
-fn corte_cai_dentro_da_chamada() {
+fn the_cut_lands_inside_the_call() {
     let script = tool_call_script();
-    let cortado: String = script[..TETO_DENTRO_DA_CHAMADA as usize].concat();
+    let truncated: String = script[..CAP_INSIDE_CALL as usize].concat();
 
     assert!(
-        (TETO_DENTRO_DA_CHAMADA as usize) < script.len(),
+        (CAP_INSIDE_CALL as usize) < script.len(),
         "o teto precisa ser menor que o roteiro, senão não corta nada"
     );
     assert!(
-        cortado.contains("<tool_call>"),
+        truncated.contains("<tool_call>"),
         "o corte caiu antes da abertura"
     );
     assert!(
-        !cortado.contains("</tool_call>"),
+        !truncated.contains("</tool_call>"),
         "o corte caiu depois do fechamento"
     );
     // E cai no miolo do `content`, não numa fronteira de tag.
-    assert!(cortado.ends_with("linha_12 = 12 * 2\n"), "{cortado:?}");
+    assert!(truncated.ends_with("linha_12 = 12 * 2\n"), "{truncated:?}");
 }
 
 /// **O teto do cliente é inviolável, inclusive com uma chamada aberta.**
@@ -1554,13 +1554,13 @@ fn corte_cai_dentro_da_chamada() {
 async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
     let no = no(tool_call_script(), 8).await;
 
-    let corpo = post_json(&no, pedido(TETO_DENTRO_DA_CHAMADA, false, true)).await;
+    let body = post_json(&no, request(CAP_INSIDE_CALL, false, true)).await;
 
     assert_eq!(
-        corpo["usage"]["completion_tokens"], TETO_DENTRO_DA_CHAMADA,
+        body["usage"]["completion_tokens"], CAP_INSIDE_CALL,
         "a geração passou do teto que o cliente pediu"
     );
-    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
+    assert_eq!(body["choices"][0]["finish_reason"], "length");
 }
 
 /// O mesmo em streaming, e com a garantia que só o streaming dá: nem um token
@@ -1569,13 +1569,13 @@ async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
 async fn the_streamed_client_ceiling_is_never_exceeded_with_an_open_tool_call() {
     let no = no(tool_call_script(), 8).await;
 
-    let fluxo = post_sse(&no, pedido(TETO_DENTRO_DA_CHAMADA, true, true)).await;
+    let flow = post_sse(&no, request(CAP_INSIDE_CALL, true, true)).await;
 
-    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
+    assert_eq!(flow.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(flow.done_sentinels, 1);
     assert_eq!(
-        fluxo.ultimo_com_x_pom()["x_pom"]["tokens_generated"],
-        TETO_DENTRO_DA_CHAMADA
+        flow.last_with_x_pom()["x_pom"]["tokens_generated"],
+        CAP_INSIDE_CALL
     );
 }
 
@@ -1593,55 +1593,55 @@ async fn the_streamed_client_ceiling_is_never_exceeded_with_an_open_tool_call() 
 async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
     let no = no(tool_call_script(), 8).await;
 
-    let corpo = post_json(&no, pedido(TETO_DENTRO_DA_CHAMADA, false, true)).await;
-    let escolha = &corpo["choices"][0];
+    let body = post_json(&no, request(CAP_INSIDE_CALL, false, true)).await;
+    let choice = &body["choices"][0];
 
     // Parada terminal, com o motivo correspondente.
-    assert_eq!(escolha["finish_reason"], "length");
+    assert_eq!(choice["finish_reason"], "length");
 
     // A chamada NÃO foi descartada: ela volta estruturada.
-    let chamadas = escolha["message"]["tool_calls"]
+    let calls = choice["message"]["tool_calls"]
         .as_array()
         .expect("a chamada cortada volta estruturada, não descartada");
-    assert_eq!(chamadas.len(), 1);
-    assert_eq!(chamadas[0]["function"]["name"], "write_file");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["function"]["name"], "write_file");
 
     // E os argumentos são a string JSON inacabada - de propósito: um cliente
     // que ignore o `length` e tente parsear falha, em vez de executar meia
     // chamada com o `content` pela metade.
-    let bruto = chamadas[0]["function"]["arguments"]
+    let raw = calls[0]["function"]["arguments"]
         .as_str()
         .expect("arguments é string");
     assert!(
-        serde_json::from_str::<Value>(bruto).is_err(),
-        "argumentos de uma chamada cortada não podem parsear: {bruto:?}"
+        serde_json::from_str::<Value>(raw).is_err(),
+        "argumentos de uma chamada cortada não podem parsear: {raw:?}"
     );
     assert!(
-        bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
-        "{bruto:?}"
+        raw.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
+        "{raw:?}"
     );
     // O último parâmetro entra com a aspa de abertura e **sem** a de
     // fechamento, e nada do que o modelo escreveu é aparado: a quebra de linha
     // final é conteúdo, não sobra.
-    assert!(bruto.ends_with(r"linha_12 = 12 * 2\n"), "{bruto:?}");
+    assert!(raw.ends_with(r"linha_12 = 12 * 2\n"), "{raw:?}");
 
     // E nada de marcação crua no conteúdo - o defeito original.
-    let conteudo = escolha["message"]["content"].as_str().unwrap_or("");
-    assert_eq!(conteudo, "Vou escrever o arquivo.\n");
+    let content = choice["message"]["content"].as_str().unwrap_or("");
+    assert_eq!(content, "Vou escrever o arquivo.\n");
     assert!(
-        !conteudo.contains("<tool_call>")
-            && !conteudo.contains("<function=")
-            && !conteudo.contains("<parameter="),
-        "{conteudo:?}"
+        !content.contains("<tool_call>")
+            && !content.contains("<function=")
+            && !content.contains("<parameter="),
+        "{content:?}"
     );
 
     // `x_pom` honesto: o corte caiu dentro da chamada, e a resposta é parcial.
-    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
-    assert_eq!(corpo["x_pom"]["partial"], true);
-    assert_eq!(corpo["x_pom"]["finish_reason"], "length");
+    assert_eq!(body["x_pom"]["truncated_tool_call"], true);
+    assert_eq!(body["x_pom"]["partial"], true);
+    assert_eq!(body["x_pom"]["finish_reason"], "length");
     assert_eq!(
-        corpo["x_pom"]["output_limits"]["effective_max_tokens"],
-        TETO_DENTRO_DA_CHAMADA
+        body["x_pom"]["output_limits"]["effective_max_tokens"],
+        CAP_INSIDE_CALL
     );
 }
 
@@ -1653,43 +1653,43 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
 async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete() {
     let no = no(tool_call_script(), 8).await;
 
-    let fluxo = post_sse(&no, pedido(TETO_DENTRO_DA_CHAMADA, true, true)).await;
+    let flow = post_sse(&no, request(CAP_INSIDE_CALL, true, true)).await;
 
-    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
+    assert_eq!(flow.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(flow.done_sentinels, 1);
 
-    let deltas = fluxo.tool_call_deltas();
+    let deltas = flow.tool_call_deltas();
     assert_eq!(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
     );
     // Os fragmentos que já tinham sido transmitidos contam: o corte não
     // repete o que o cliente já acumulou. A concatenação é a string inacabada.
-    let bruto: String = fluxo
-        .fragmentos_de_argumento()
+    let raw: String = flow
+        .argument_fragments()
         .iter()
         .map(|(_, s)| s.as_str())
         .collect();
     assert!(
-        serde_json::from_str::<Value>(&bruto).is_err(),
-        "argumentos de uma chamada cortada não podem parsear: {bruto:?}"
+        serde_json::from_str::<Value>(&raw).is_err(),
+        "argumentos de uma chamada cortada não podem parsear: {raw:?}"
     );
     assert!(
-        bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
-        "{bruto:?}"
+        raw.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
+        "{raw:?}"
     );
-    assert!(bruto.ends_with(r"linha_12 = 12 * 2\n"), "{bruto:?}");
+    assert!(raw.ends_with(r"linha_12 = 12 * 2\n"), "{raw:?}");
 
-    let texto = fluxo.texto();
-    assert_eq!(texto, "Vou escrever o arquivo.\n");
+    let text = flow.text();
+    assert_eq!(text, "Vou escrever o arquivo.\n");
     assert!(
-        !texto.contains("<tool_call>")
-            && !texto.contains("<function=")
-            && !texto.contains("<parameter="),
-        "{texto:?}"
+        !text.contains("<tool_call>")
+            && !text.contains("<function=")
+            && !text.contains("<parameter="),
+        "{text:?}"
     );
 
-    let x_pom = &fluxo.ultimo_com_x_pom()["x_pom"];
+    let x_pom = &flow.last_with_x_pom()["x_pom"];
     assert_eq!(x_pom["truncated_tool_call"], true);
     assert_eq!(x_pom["partial"], true);
 }
@@ -1702,11 +1702,11 @@ async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete(
 async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block() {
     let no = no(tool_call_script(), 8).await;
 
-    let corpo = post_messages(
+    let body = post_messages(
         &no,
         json!({
             "model": "lab",
-            "max_tokens": TETO_DENTRO_DA_CHAMADA,
+            "max_tokens": CAP_INSIDE_CALL,
             "messages": [{"role": "user", "content": "escreva o arquivo"}],
             "tools": [{
                 "name": "write_file",
@@ -1717,34 +1717,34 @@ async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block
     )
     .await;
 
-    assert_eq!(corpo["stop_reason"], "max_tokens");
-    let blocos = corpo["content"].as_array().expect("content é lista");
-    let ultimo = blocos.last().expect("pelo menos um bloco");
+    assert_eq!(body["stop_reason"], "max_tokens");
+    let blocks = body["content"].as_array().expect("content é lista");
+    let last = blocks.last().expect("pelo menos um bloco");
     assert_eq!(
-        ultimo["type"], "tool_use",
-        "o último bloco tem de ser a chamada cortada: {blocos:?}"
+        last["type"], "tool_use",
+        "o último bloco tem de ser a chamada cortada: {blocks:?}"
     );
-    assert_eq!(ultimo["name"], "write_file");
+    assert_eq!(last["name"], "write_file");
     // `input` é objeto por contrato, com o que deu para recuperar.
-    assert_eq!(ultimo["input"]["path"], "/tmp/calc.py");
-    assert!(ultimo["input"]["content"]
+    assert_eq!(last["input"]["path"], "/tmp/calc.py");
+    assert!(last["input"]["content"]
         .as_str()
         .expect("content parcial")
         .ends_with("linha_12 = 12 * 2\n"));
 
     // E nada de marcação crua nos blocos de texto.
-    let texto: String = blocos
+    let text: String = blocks
         .iter()
         .filter_map(|b| b["text"].as_str())
         .collect::<Vec<_>>()
         .join("");
     assert!(
-        !texto.contains("<tool_call>") && !texto.contains("<function="),
-        "{texto:?}"
+        !text.contains("<tool_call>") && !text.contains("<function="),
+        "{text:?}"
     );
 
-    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
-    assert_eq!(corpo["x_pom"]["partial"], true);
+    assert_eq!(body["x_pom"]["truncated_tool_call"], true);
+    assert_eq!(body["x_pom"]["partial"], true);
 }
 
 // ── Capacidade derivada do runtime ──────────────────────────────────────────
@@ -1756,30 +1756,30 @@ async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block
 async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
     let no = no_with_context(plain_script(), 8, 100_000).await;
 
-    let resposta = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(API_CHAVE)
-        .json(&pedido(100_000, false, false))
+        .bearer_auth(API_KEY)
+        .json(&request(100_000, false, false))
         .send()
         .await
         .expect("resposta HTTP");
 
-    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
-    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.expect("corpo JSON");
     assert_eq!(
-        corpo["x_pom"]["output_limits"]["requested_max_tokens"],
+        body["x_pom"]["output_limits"]["requested_max_tokens"],
         100_000
     );
     assert_eq!(
-        corpo["x_pom"]["output_limits"]["effective_max_tokens"],
+        body["x_pom"]["output_limits"]["effective_max_tokens"],
         99_992
     );
-    assert_eq!(corpo["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
-    let limites = corpo["x_pom"]["output_limits"]
+    assert_eq!(body["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
+    let limits = body["x_pom"]["output_limits"]
         .as_object()
         .expect("limites de saída");
-    assert_eq!(limites.len(), 5);
-    assert!(limites.contains_key("context_available_tokens"));
+    assert_eq!(limits.len(), 5);
+    assert!(limits.contains_key("context_available_tokens"));
 }
 
 // ── Orçamento de tarefa ──────────────────────────────────────────────────────
@@ -1796,7 +1796,7 @@ async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
 async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
     let no = no(plain_script(), 8).await;
 
-    let corpo = post_messages(
+    let body = post_messages(
         &no,
         json!({
             "model": "lab",
@@ -1807,21 +1807,21 @@ async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
     )
     .await;
 
-    let prompt = no.prompt_da_geracao();
+    let prompt = no.generation_prompt();
     assert!(prompt.contains("<task_budget>"), "{prompt:?}");
     assert!(prompt.contains("remaining_tokens: 64000"), "{prompt:?}");
     assert!(prompt.contains("total_tokens: 64000"), "{prompt:?}");
 
     // Advisory: não corta nada. Quem corta é `max_tokens`, e o roteiro acabou
     // antes dele.
-    assert_eq!(corpo["stop_reason"], "end_turn");
-    assert_eq!(corpo["x_pom"]["task_budget"]["total"], 64_000);
+    assert_eq!(body["stop_reason"], "end_turn");
+    assert_eq!(body["x_pom"]["task_budget"]["total"], 64_000);
     assert_eq!(
-        corpo["x_pom"]["task_budget"]["remaining_at_turn_start"],
+        body["x_pom"]["task_budget"]["remaining_at_turn_start"],
         64_000
     );
     assert_eq!(
-        corpo["x_pom"]["task_budget_spent_this_turn"],
+        body["x_pom"]["task_budget_spent_this_turn"],
         plain_script().len() as u64
     );
 }
@@ -1846,7 +1846,7 @@ async fn a_carried_over_remaining_is_what_the_marker_announces() {
     )
     .await;
 
-    let prompt = no.prompt_da_geracao();
+    let prompt = no.generation_prompt();
     assert!(prompt.contains("remaining_tokens: 42000"), "{prompt:?}");
     assert!(prompt.contains("total_tokens: 128000"), "{prompt:?}");
 }
@@ -1857,7 +1857,7 @@ async fn a_carried_over_remaining_is_what_the_marker_announces() {
 async fn without_a_task_budget_the_generation_is_untouched() {
     let no = no(plain_script(), 8).await;
 
-    let corpo = post_messages(
+    let body = post_messages(
         &no,
         json!({
             "model": "lab",
@@ -1867,13 +1867,13 @@ async fn without_a_task_budget_the_generation_is_untouched() {
     )
     .await;
 
-    let prompt = no.prompt_da_geracao();
+    let prompt = no.generation_prompt();
     assert!(!prompt.contains("task_budget"), "{prompt:?}");
     assert_eq!(prompt, "User: escreva o arquivo");
     assert!(
-        corpo["x_pom"]["task_budget"].is_null(),
+        body["x_pom"]["task_budget"].is_null(),
         "{}",
-        corpo["x_pom"]
+        body["x_pom"]
     );
 }
 
@@ -1883,9 +1883,9 @@ async fn without_a_task_budget_the_generation_is_untouched() {
 async fn a_task_budget_below_the_minimum_is_refused() {
     let no = no(plain_script(), 8).await;
 
-    let resposta = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
-        .bearer_auth(API_CHAVE)
+        .bearer_auth(API_KEY)
         .json(&json!({
             "model": "lab",
             "max_tokens": 100,
@@ -1896,10 +1896,10 @@ async fn a_task_budget_below_the_minimum_is_refused() {
         .await
         .expect("resposta HTTP");
 
-    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
-    let corpo: Value = resposta.json().await.expect("corpo JSON");
-    let mensagem = corpo["error"]["message"].as_str().expect("mensagem");
-    assert!(mensagem.contains("20000"), "{mensagem}");
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = response.json().await.expect("corpo JSON");
+    let message = body["error"]["message"].as_str().expect("mensagem");
+    assert!(message.contains("20000"), "{message}");
 }
 
 /// O orçamento de tarefa **nunca corta**: quem corta é `max_tokens`. Um
@@ -1909,7 +1909,7 @@ async fn a_task_budget_below_the_minimum_is_refused() {
 async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
     let no = no(runaway_script(), 8).await;
 
-    let corpo = post_messages(
+    let body = post_messages(
         &no,
         json!({
             "model": "lab",
@@ -1920,8 +1920,8 @@ async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
     )
     .await;
 
-    assert_eq!(corpo["stop_reason"], "max_tokens");
-    assert_eq!(corpo["usage"]["output_tokens"], 30);
+    assert_eq!(body["stop_reason"], "max_tokens");
+    assert_eq!(body["usage"]["output_tokens"], 30);
 }
 
 // ── `eager_input_streaming`, por ferramenta ─────────────────────────────────
@@ -1932,17 +1932,17 @@ async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
 async fn eager_input_streaming_on_a_tool_streams_the_argument_in_fragments() {
     let no = no(tool_call_script(), 8).await;
 
-    let fragmentos = fragmentos_messages(&no, pedido_messages(100, Some(true))).await;
+    let fragments = messages_fragments(&no, messages_request(100, Some(true))).await;
 
     assert!(
-        fragmentos.len() > 5,
+        fragments.len() > 5,
         "os argumentos voltaram represados: {} fragmento(s)",
-        fragmentos.len()
+        fragments.len()
     );
-    let inteiro: String = fragmentos.concat();
-    let argumentos: Value = serde_json::from_str(&inteiro).expect("a concatenação é JSON válido");
-    assert_eq!(argumentos["path"], "/tmp/calc.py");
-    assert!(argumentos["content"]
+    let whole: String = fragments.concat();
+    let arguments: Value = serde_json::from_str(&whole).expect("a concatenação é JSON válido");
+    assert_eq!(arguments["path"], "/tmp/calc.py");
+    assert!(arguments["content"]
         .as_str()
         .expect("content")
         .ends_with("linha_39 = 39 * 2"));
@@ -1953,20 +1953,20 @@ async fn eager_input_streaming_on_a_tool_streams_the_argument_in_fragments() {
 /// grande sai inteiro, num fragmento só.
 #[tokio::test]
 async fn without_eager_input_streaming_each_parameter_arrives_whole() {
-    for ausente in [None, Some(false)] {
+    for absent in [None, Some(false)] {
         // Um nó por pedido: o motor falso tem um contador de tokens só, e ele
         // não volta ao começo entre requisições.
         let no = no(tool_call_script(), 8).await;
-        let fragmentos = fragmentos_messages(&no, pedido_messages(100, ausente)).await;
-        assert_eq!(fragmentos.len(), 3, "{ausente:?}: {fragmentos:?}");
-        let grande = fragmentos
+        let fragments = messages_fragments(&no, messages_request(100, absent)).await;
+        assert_eq!(fragments.len(), 3, "{absent:?}: {fragments:?}");
+        let large = fragments
             .iter()
             .find(|f| f.contains("linha_39"))
             .expect("o content saiu");
-        assert!(grande.contains("linha_0 = 0 * 2"), "{grande:?}");
+        assert!(large.contains("linha_0 = 0 * 2"), "{large:?}");
 
-        let inteiro: String = fragmentos.concat();
-        let argumentos: Value = serde_json::from_str(&inteiro).expect("JSON válido");
-        assert_eq!(argumentos["path"], "/tmp/calc.py");
+        let whole: String = fragments.concat();
+        let arguments: Value = serde_json::from_str(&whole).expect("JSON válido");
+        assert_eq!(arguments["path"], "/tmp/calc.py");
     }
 }

@@ -16,16 +16,16 @@
 # principal continua web, com acesso rápido pelo item nativo da barra de status.
 set -euo pipefail
 
-raiz="$(cd "$(dirname "$0")/.." && pwd)"
-bin="${1:-$raiz/target/release/pom}"
-destino="${2:-$raiz/dist-release/POM.app}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+bin="${1:-$root/target/release/pom}"
+destination="${2:-$root/dist-release/POM.app}"
 
-nome=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "$raiz/brand.json")
-slug=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["slug"])' "$raiz/brand.json")
-icns="$raiz/$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["app_icons"]["macos"])' "$raiz/brand.json")"
+name=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "$root/brand.json")
+slug=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["slug"])' "$root/brand.json")
+icns="$root/$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["app_icons"]["macos"])' "$root/brand.json")"
 # A arte do item de barra e as traduções da tela nativa moram juntas.
-recursos_macos="$raiz/assets/brand/macos"
-status_icon="$recursos_macos/pom-status-template.png"
+macos_resources="$root/assets/brand/macos"
+status_icon="$macos_resources/pom-status-template.png"
 
 [ -x "$bin" ] || { echo "binário não encontrado: $bin" >&2; exit 1; }
 # O pom só inicia plugins pelo `pom-plugin-host` ao lado do próprio executável
@@ -45,31 +45,31 @@ host="$(dirname "$bin")/pom-plugin-host"
     exit 1
 }
 
-rm -rf "$destino"
-mkdir -p "$destino/Contents/MacOS" "$destino/Contents/Resources"
+rm -rf "$destination"
+mkdir -p "$destination/Contents/MacOS" "$destination/Contents/Resources"
 
-cp "$bin" "$destino/Contents/MacOS/$slug"
-cp "$host" "$destino/Contents/MacOS/pom-plugin-host"
-cp "$icns" "$destino/Contents/Resources/$slug.icns"
+cp "$bin" "$destination/Contents/MacOS/$slug"
+cp "$host" "$destination/Contents/MacOS/pom-plugin-host"
+cp "$icns" "$destination/Contents/Resources/$slug.icns"
 # As três resoluções entram com o nome original: o lado nativo procura as
 # companheiras `@2x` e `@3x` ao lado da arte 1x que o Rust lhe indica.
-cp "$recursos_macos"/pom-status-template*.png "$destino/Contents/Resources/"
-find "$recursos_macos" -mindepth 1 -maxdepth 1 -type d -name '*.lproj' \
-    -exec cp -R {} "$destino/Contents/Resources/" \;
+cp "$macos_resources"/pom-status-template*.png "$destination/Contents/Resources/"
+find "$macos_resources" -mindepth 1 -maxdepth 1 -type d -name '*.lproj' \
+    -exec cp -R {} "$destination/Contents/Resources/" \;
 
-versao=$(grep -m1 '^version' "$raiz/Cargo.toml" | sed 's/[^0-9.]//g')
-versao=${versao:-0.1.0}
+version=$(grep -m1 '^version' "$root/Cargo.toml" | sed 's/[^0-9.]//g')
+version=${version:-0.1.0}
 
-cat > "$destino/Contents/Info.plist" <<PLIST
+cat > "$destination/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>$nome</string>
-    <key>CFBundleDisplayName</key><string>$nome</string>
+    <key>CFBundleName</key><string>$name</string>
+    <key>CFBundleDisplayName</key><string>$name</string>
     <key>CFBundleIdentifier</key><string>app.$slug.node</string>
-    <key>CFBundleVersion</key><string>$versao</string>
-    <key>CFBundleShortVersionString</key><string>$versao</string>
+    <key>CFBundleVersion</key><string>$version</string>
+    <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleExecutable</key><string>$slug</string>
     <key>CFBundleIconFile</key><string>$slug</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -82,7 +82,7 @@ PLIST
 
 # O Finder guarda em cache o ícone por caminho; sem isto um bundle recriado no
 # mesmo lugar continua mostrando o anterior.
-touch "$destino"
+touch "$destination"
 
-echo "✓ $destino"
-echo "  executável: $destino/Contents/MacOS/$slug"
+echo "✓ $destination"
+echo "  executável: $destination/Contents/MacOS/$slug"

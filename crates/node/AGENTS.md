@@ -42,9 +42,9 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   um passo separado.
 - `build_commit()` em `main.rs` é exposto em `/api/ui/node` e usado na checagem
   de atualizações - identifica peer ou executável sem shell local.
-- `main.rs` lê `POM_DESENV` uma vez no startup; somente o valor exato `1` habilita
+- `main.rs` lê `POM_DEV_MODE` uma vez no startup; somente o valor exato `1` habilita
   controles de desenvolvimento e as rotas locais de rebuild de plugins, e
-  `NodeInfo.pom_desenv` publica a decisão para a interface. A flag não altera
+  `NodeInfo.pom_dev_mode` publica a decisão para a interface. A flag não altera
   a política de licença nem os `RuntimeParams` recebidos pela rede; o modo
   ausente usa `dense` (`llama.cpp`) como padrão.
 - O build nativo prepara automaticamente o fork de `llama.cpp` em um worktree
@@ -346,7 +346,7 @@ arguments. Cargo artifacts go to
 so read-only source binds work. The cluster development image exposes Cargo to
 its non-root node user and points `CARGO_HOME` to a writable cache in the
 project data volume.
-AdminOnly routes work only with `POM_DESENV=1`; a build may install a local
+AdminOnly routes work only with `POM_DEV_MODE=1`; a build may install a local
 plugin without a license or prior installation,
 persisting its binary and state in `plugin_dev_install:<code>` without granting
 licensed features. If a licensed or GitHub installation already exists, the

@@ -1311,7 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn session_id_deve_ser_obrigatorio_e_nao_vazio() {
+    fn session_id_must_be_required_and_non_empty() {
         assert_eq!(
             required_session_id(&json!({"session_id": " sessao-1 "})).unwrap(),
             "sessao-1"
@@ -1321,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn resposta_de_item_unico_preserva_identidade_do_batch() {
+    fn a_single_item_response_preserves_the_batch_identity() {
         let request = json!({
             "item_id": "request-item",
             "batch_id": "request-batch",
@@ -1337,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn serializacao_de_timing_preserva_submilissegundos() {
+    fn timing_serialization_preserves_sub_milliseconds() {
         let timings = NodeTimings {
             frame_decode_us: 999,
             backend_call_us: 999,
@@ -1392,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn primeiro_token_produzido_e_marcado_uma_so_vez() {
+    fn the_first_produced_token_is_marked_only_once() {
         let mut timings = NodeTimings::default();
         let started = Instant::now() - std::time::Duration::from_millis(1);
 
@@ -1408,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_mtp_expoe_contadores_de_tokens() {
+    fn mtp_telemetry_exposes_token_counters() {
         let timings = NodeTimings {
             mtp_draft_tokens_proposed: 7,
             mtp_draft_tokens_accepted: 5,
@@ -1424,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_separa_caminho_selecionado_do_executor_real() {
+    fn telemetry_separates_the_selected_path_from_the_real_executor() {
         let mut timings = NodeTimings {
             selected_path: crate::executor::InferencePath::MoeQ4_0,
             ..Default::default()
@@ -1441,7 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_sem_executor_observado_nao_inventa_divergencia() {
+    fn telemetry_without_an_observed_executor_invents_no_divergence() {
         let timings = NodeTimings {
             selected_path: crate::executor::InferencePath::DenseLlamaCpp,
             ..Default::default()
@@ -1455,7 +1455,7 @@ mod tests {
     }
 
     #[test]
-    fn health_moe_expõe_pedido_sem_executor_e_motivo() {
+    fn moe_health_exposes_a_request_without_executor_and_the_reason() {
         let (requested, executor, dtypes, reason) = moe_health_summary(
             crate::executor::InferencePath::MoeQ4_0,
             None,
@@ -1471,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn health_dense_nao_sinaliza_executor_moe() {
+    fn dense_health_does_not_signal_a_moe_executor() {
         let (requested, executor, dtypes, reason) =
             moe_health_summary(crate::executor::InferencePath::DenseLlamaCpp, None, None);
 
@@ -1482,7 +1482,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_detecta_execucao_mista_no_mesmo_hop() {
+    fn telemetry_detects_mixed_execution_in_the_same_hop() {
         let mut timings = NodeTimings {
             selected_path: crate::executor::InferencePath::MoeQ4_0,
             ..Default::default()
@@ -1502,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_expoe_backend_real_dos_experts_apos_forward() {
+    fn telemetry_exposes_the_real_expert_backend_after_the_forward() {
         let mut timings = NodeTimings {
             selected_path: crate::executor::InferencePath::MoeQ4_0,
             ..Default::default()
@@ -1518,7 +1518,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetria_nomeia_dtype_e_motivo_do_executor_cpu() {
+    fn telemetry_names_the_dtype_and_reason_of_the_cpu_executor() {
         let mut timings = NodeTimings {
             selected_path: crate::executor::InferencePath::MoeQ4_0,
             ..Default::default()
@@ -1546,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn modo_explicito_do_deploy_chega_ao_seletor_sem_ser_sobrescrito_pelo_ambiente() {
+    fn the_explicit_deploy_mode_reaches_the_selector_without_being_overridden_by_the_environment() {
         assert_eq!(
             configured_inference_mode(crate::webui::InferenceMode::Dense).unwrap(),
             crate::executor::InferenceMode::Dense
@@ -1558,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn hop_terminal_moe_publica_moe_apos_forward_real() {
+    fn a_terminal_moe_hop_publishes_moe_after_a_real_forward() {
         let mut timings = NodeTimings {
             selected_path: crate::executor::InferencePath::MoeQ4_0,
             ..Default::default()
@@ -1574,7 +1574,7 @@ mod tests {
     }
 
     #[test]
-    fn resposta_terminal_carrega_a_contagem_de_tokens_do_prompt() {
+    fn the_terminal_response_carries_the_prompt_token_count() {
         let value = terminal_prefill_meta(33, 7, 8, false);
 
         assert_eq!(value["n_prompt_tokens"], 33);
@@ -1644,7 +1644,7 @@ mod tests {
     /// nenhum. No Linux passava por acidente (o padrão do sistema já é 0) e no
     /// Windows deixaria o servidor mudo para todo peer IPv4 da LAN.
     #[test]
-    fn listener_em_ipv6_tambem_atende_ipv4() {
+    fn an_ipv6_listener_also_serves_ipv4() {
         let l = match listener_dual_stack(0) {
             Ok(l) => l,
             // Máquina sem IPv6 cai no IPv4 puro, e aí não há o que provar.
@@ -1655,15 +1655,15 @@ mod tests {
             return;
         }
 
-        let aceito = std::thread::spawn(move || l.accept().is_ok());
-        let conectou = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+        let accepted = std::thread::spawn(move || l.accept().is_ok());
+        let connected = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
 
-        assert!(conectou, "um cliente IPv4 não conseguiu conectar em [::]");
-        assert!(aceito.join().unwrap(), "a conexão IPv4 não foi aceita");
+        assert!(connected, "um cliente IPv4 não conseguiu conectar em [::]");
+        assert!(accepted.join().unwrap(), "a conexão IPv4 não foi aceita");
     }
 
     #[test]
-    fn listener_em_ipv6_tambem_atende_ipv6() {
+    fn an_ipv6_listener_also_serves_ipv6() {
         let l = match listener_dual_stack(0) {
             Ok(l) => l,
             Err(_) => return,
@@ -1672,11 +1672,11 @@ mod tests {
             return;
         }
         let port = l.local_addr().unwrap().port();
-        let aceito = std::thread::spawn(move || l.accept().is_ok());
-        let conectou = std::net::TcpStream::connect(("::1", port)).is_ok();
+        let accepted = std::thread::spawn(move || l.accept().is_ok());
+        let connected = std::net::TcpStream::connect(("::1", port)).is_ok();
 
-        assert!(conectou, "um cliente IPv6 não conseguiu conectar em [::]");
-        assert!(aceito.join().unwrap(), "a conexão IPv6 não foi aceita");
+        assert!(connected, "um cliente IPv6 não conseguiu conectar em [::]");
+        assert!(accepted.join().unwrap(), "a conexão IPv6 não foi aceita");
     }
 
     /// O socket tem que pedir `SO_REUSEADDR`, como o `TcpListener::bind` da std
@@ -1692,7 +1692,7 @@ mod tests {
     /// A flag se perdeu quando o socket passou a ser montado a mao com
     /// `socket2` para o dual-stack; um socket cru nao herda o padrao da std.
     #[test]
-    fn o_listener_pede_reuse_address() {
+    fn the_listener_asks_for_reuse_address() {
         let l = match listener_dual_stack(0) {
             Ok(l) => l,
             Err(_) => return,
@@ -1716,12 +1716,12 @@ mod tests {
     /// Aqui isso vira uma garantia estrutural: `serve_port` é o primeiro passo
     /// do `run`, e devolve `Err` sem que nada caro tenha acontecido.
     #[tokio::test]
-    async fn porta_ocupada_falha_de_imediato() {
-        let ocupante = match listener_dual_stack(0) {
+    async fn a_busy_port_fails_immediately() {
+        let occupant = match listener_dual_stack(0) {
             Ok(l) => l,
             Err(_) => return,
         };
-        let port = ocupante.local_addr().unwrap().port();
+        let port = occupant.local_addr().unwrap().port();
 
         // O caminho de um modelo que nao existe: se o `run` carregasse antes de
         // ligar, o erro falaria do arquivo (ou o processo morreria dentro do
@@ -1800,8 +1800,8 @@ mod tests {
         cfg.inference_port = port;
         let (_tx, rx) = tokio::sync::watch::channel(0u64);
 
-        let comecou = std::time::Instant::now();
-        let erro = run(
+        let started = std::time::Instant::now();
+        let error = run(
             cfg,
             rx,
             0,
@@ -1821,13 +1821,13 @@ mod tests {
         .expect_err("porta ocupada devia falhar");
 
         assert!(
-            erro.to_string().to_lowercase().contains("address") || erro.to_string().contains("use"),
-            "o erro tinha que ser o da porta, e foi: {erro}"
+            error.to_string().to_lowercase().contains("address") || error.to_string().contains("use"),
+            "o erro tinha que ser o da porta, e foi: {error}"
         );
         assert!(
-            comecou.elapsed() < std::time::Duration::from_secs(1),
+            started.elapsed() < std::time::Duration::from_secs(1),
             "falhou depois de carregar alguma coisa: levou {:?}",
-            comecou.elapsed()
+            started.elapsed()
         );
     }
 }

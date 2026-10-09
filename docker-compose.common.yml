@@ -28,7 +28,7 @@ x-node: &node
   restart: always
   environment:
     POM_HOME: /data
-    POM_DESENV: 1
+    POM_DEV_MODE: 1
     POM_UI_DIST: /app/apps/frontend/dist
     POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
     POM_BIN: /usr/local/bin/pom

@@ -5,8 +5,8 @@ import { LocaleProvider } from "../i18n/provider";
 import { OpenNativeChatWindowButton } from "./Chat";
 import { QuitNativeAppButton } from "../components/OpenNativeChatWindowButton";
 
-describe("controle de janela maior do chat nativo", () => {
-  it("não aparece no navegador comum sem a ponte WebKit", () => {
+describe("larger window control of the native chat", () => {
+  it("does not appear in a regular browser without the WebKit bridge", () => {
     Object.defineProperty(window, "webkit", {
       configurable: true,
       value: undefined,
@@ -21,7 +21,7 @@ describe("controle de janela maior do chat nativo", () => {
     expect(screen.queryByRole("button", { name: /janela maior/i })).toBeNull();
   });
 
-  it("envia o comando ao handler WebKit quando o app oferece a ponte", () => {
+  it("sends the command to the WebKit handler when the app offers the bridge", () => {
     const postMessage = vi.fn();
     Object.defineProperty(window, "webkit", {
       configurable: true,
@@ -40,7 +40,7 @@ describe("controle de janela maior do chat nativo", () => {
     expect(postMessage).toHaveBeenCalledWith("open");
   });
 
-  it("oferece Sair do POM só dentro do app macOS, e manda o pedido à ponte", () => {
+  it("offers Quit POM only inside the macOS app, and sends the request to the bridge", () => {
     Object.defineProperty(window, "webkit", { configurable: true, value: undefined });
     const { unmount } = render(
       <LocaleProvider initialLocale="pt-BR">

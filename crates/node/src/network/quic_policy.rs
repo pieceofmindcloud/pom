@@ -130,7 +130,7 @@ pub fn spawn_ratchet(
                     }
                 }
                 clients.set_quic(value);
-                crate::peer_client::set_quic_ativo(value);
+                crate::peer_client::set_quic_enabled(value);
                 info!(
                     quic_enabled = value,
                     "política QUIC do cluster adotada do principal"
@@ -147,7 +147,7 @@ mod tests {
     const PRINCIPAL: &str = "aaaa0000";
 
     #[test]
-    fn anuncio_que_concorda_nao_faz_nada() {
+    fn an_agreeing_announce_does_nothing() {
         assert_eq!(
             on_announce(true, true, true, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn anuncio_do_principal_dispara_busca_sem_adotar_gossip() {
+    fn a_principal_announce_triggers_a_fetch_without_adopting_gossip() {
         assert_eq!(
             on_announce(false, true, true, PRINCIPAL),
             PolicyOutcome::Fetch {
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn politica_confirmada_adota_apenas_o_valor_do_principal() {
+    fn a_confirmed_policy_adopts_only_the_principal_value() {
         assert_eq!(adopt_or_keep(false, Ok(true)), PolicyOutcome::Adopt(true));
         assert_eq!(adopt_or_keep(true, Ok(true)), PolicyOutcome::Unchanged);
     }

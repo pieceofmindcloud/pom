@@ -29,38 +29,38 @@ use tracing::debug;
 /// precisam do esquema, e passá-lo por parâmetro em cada um deles espalharia um
 /// argumento por dezenas de assinaturas para carregar um único bit que nunca
 /// difere entre eles. Dois nós no mesmo processo só acontecem em teste.
-static TLS_ATIVO: AtomicBool = AtomicBool::new(false);
-static QUIC_ATIVO: AtomicBool = AtomicBool::new(false);
+static TLS_ENABLED: AtomicBool = AtomicBool::new(false);
+static QUIC_ENABLED: AtomicBool = AtomicBool::new(false);
 
-pub fn tls_ativo() -> bool {
-    TLS_ATIVO.load(Ordering::Relaxed)
+pub fn tls_enabled() -> bool {
+    TLS_ENABLED.load(Ordering::Relaxed)
 }
 
-pub fn set_tls_ativo(on: bool) {
-    TLS_ATIVO.store(on, Ordering::Relaxed);
+pub fn set_tls_enabled(on: bool) {
+    TLS_ENABLED.store(on, Ordering::Relaxed);
 }
 
-pub fn quic_ativo() -> bool {
-    QUIC_ATIVO.load(Ordering::Relaxed)
+pub fn quic_enabled() -> bool {
+    QUIC_ENABLED.load(Ordering::Relaxed)
 }
 
-pub fn set_quic_ativo(on: bool) {
-    QUIC_ATIVO.store(on, Ordering::Relaxed);
+pub fn set_quic_enabled(on: bool) {
+    QUIC_ENABLED.store(on, Ordering::Relaxed);
 }
 
 /// Esquema em vigor para falar com um peer.
 pub fn peer_scheme() -> &'static str {
-    scheme(tls_ativo())
+    scheme(tls_enabled())
 }
 
-/// Trava que serializa os testes que leem ou escrevem `TLS_ATIVO`.
+/// Trava que serializa os testes que leem ou escrevem `TLS_ENABLED`.
 ///
 /// O estado é global ao processo e os testes rodam em paralelo: sem isto, um
 /// teste que liga a política faz outro, que monta URL de peer, ver `https://`
 /// onde esperava `http://`. Já aconteceu. Todo teste que toque no esquema
 /// global pega esta trava primeiro.
 #[cfg(test)]
-pub static POLITICA_GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub static GLOBAL_POLICY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Um peer alcançável pelo swarm, para o plano de controle cair no túnel
 /// quando a discagem HTTP direta não chega.
@@ -546,7 +546,7 @@ impl PeerClients {
     /// evita que um `PeerClients` criado antes da adoção da política continue
     /// escolhendo o túnel enquanto o restante do processo já escolhe QUIC.
     pub fn effective_quic_enabled(&self) -> bool {
-        self.quic_enabled() || quic_ativo()
+        self.quic_enabled() || quic_enabled()
     }
 
     /// Atualiza a preferência sem tocar em clientes TCP já abertos. A política
@@ -616,8 +616,8 @@ impl PeerClients {
     /// Vira a flag e joga fora os clientes: um cliente construído para falar
     /// claro nunca vai falar TLS, e o pool de conexões dele também não serve.
     pub fn set_tls(&self, on: bool) {
-        let antes = self.tls.swap(on, Ordering::Relaxed);
-        if antes != on {
+        let before = self.tls.swap(on, Ordering::Relaxed);
+        if before != on {
             if let Ok(mut m) = self.per_peer.write() {
                 m.clear();
             }
@@ -626,11 +626,11 @@ impl PeerClients {
 
     /// Aplica a política do cluster: este cache **e** o esquema global das URLs.
     ///
-    /// É o caminho da produção, e o único que mexe em `TLS_ATIVO`. `set_tls`
+    /// É o caminho da produção, e o único que mexe em `TLS_ENABLED`. `set_tls`
     /// fica só com o cache, para um teste de unidade não empurrar o esquema
     /// global para dentro dos testes que rodam em paralelo com ele.
     pub fn apply_cluster_policy(&self, on: bool) {
-        set_tls_ativo(on);
+        set_tls_enabled(on);
         self.set_tls(on);
     }
 
@@ -1071,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn sondagem_direta_do_tunel_e_limitada_por_intervalo() {
+    fn direct_probing_of_the_tunnel_is_rate_limited_by_interval() {
         let clients = PeerClients::new(Duration::from_secs(1));
         assert!(clients.claim_direct_reprobe("peer-a"));
         assert!(!clients.claim_direct_reprobe("peer-a"));
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn esquema_da_url_segue_a_flag() {
+    fn the_url_scheme_follows_the_flag() {
         assert_eq!(scheme(true), "https");
         assert_eq!(scheme(false), "http");
     }
@@ -1094,7 +1094,7 @@ mod tests {
     /// ninguém tentava endereço nenhum. Sem tentativa não há erro para
     /// reportar - só o prazo do gateway a vencer.
     #[test]
-    fn candidatos_todos_em_quarentena_ainda_produzem_tentativas() {
+    fn candidates_all_in_quarantine_still_produce_attempts() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://a".to_string(), "http://b".to_string()];
         for url in &candidates {
@@ -1119,7 +1119,7 @@ mod tests {
     /// Quem falhou há mais tempo teve mais tempo para voltar, e por isso é o
     /// primeiro dos degradados.
     #[test]
-    fn entre_degradados_o_mais_antigo_vem_primeiro() {
+    fn among_degraded_ones_the_oldest_comes_first() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://a".to_string(), "http://b".to_string()];
         for _ in 0..ROUTE_FAILURE_STREAK {
@@ -1138,7 +1138,7 @@ mod tests {
     /// A marca é aprendizado, não configuração: liga com uma entrega do
     /// túnel, desliga com um sucesso direto.
     #[test]
-    fn a_preferencia_pelo_tunel_liga_e_desliga() {
+    fn the_tunnel_preference_turns_on_and_off() {
         let c = PeerClients::new(Duration::from_secs(1));
         assert!(!c.prefer_tunnel("peer"));
 
@@ -1152,7 +1152,7 @@ mod tests {
     /// A marca é por peer: um peer atrás de NAT não pode empurrar o vizinho
     /// alcançável para o túnel.
     #[test]
-    fn a_preferencia_pelo_tunel_nao_vaza_entre_peers() {
+    fn the_tunnel_preference_does_not_leak_between_peers() {
         let c = PeerClients::new(Duration::from_secs(1));
         c.remember_tunnel_win("atras-de-nat");
 
@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn uma_falha_isolada_nao_degrada_a_rota() {
+    fn an_isolated_failure_does_not_degrade_the_route() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://lento".to_string(), "http://outro".to_string()];
         c.remember_route_success("reply:peer", "http://lento");
@@ -1195,7 +1195,7 @@ mod tests {
     /// A rota que respondeu vem primeiro, e é isso - não a quarentena - que
     /// impede o caminho quente de voltar a pagar um endereço morto.
     #[test]
-    fn a_rota_que_respondeu_vem_primeiro() {
+    fn the_route_that_answered_comes_first() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://morto".to_string(), "http://vivo".to_string()];
         c.remember_route_failure("reply:peer", "http://morto");
@@ -1208,7 +1208,7 @@ mod tests {
 
     /// Candidato repetido não vira tentativa repetida.
     #[test]
-    fn candidato_repetido_aparece_uma_vez() {
+    fn a_repeated_candidate_appears_once() {
         let c = PeerClients::new(Duration::from_secs(600));
         let candidates = vec!["http://a".to_string(), "http://a".to_string()];
         assert_eq!(
@@ -1227,13 +1227,13 @@ mod tests {
     /// Sem candidato nenhum não há o que ordenar - e o chamador precisa dizer
     /// isso com todas as letras em vez de um motivo vazio.
     #[test]
-    fn sem_candidatos_a_ordem_e_vazia() {
+    fn without_candidates_the_order_is_empty() {
         let c = PeerClients::new(Duration::from_secs(600));
         assert!(c.route_order("reply:peer", &[]).is_empty());
     }
 
     #[test]
-    fn url_de_peer_segue_a_flag_e_colcheta_ipv6() {
+    fn a_peer_url_follows_the_flag_and_brackets_ipv6() {
         assert_eq!(
             peer_base_url("192.168.1.5", 8181, false),
             "http://192.168.1.5:8181"
@@ -1257,7 +1257,7 @@ mod tests {
     /// Sem TLS, todo peer compartilha um cliente só - é o comportamento que
     /// existia antes desta feature, e não custa uma conexão nova por peer.
     #[test]
-    fn sem_tls_ninguem_entra_no_cache() {
+    fn without_tls_nobody_enters_the_cache() {
         let c = PeerClients::new(Duration::from_secs(600));
         assert!(!c.tls_enabled());
         c.for_peer("aaaa").unwrap();
@@ -1269,7 +1269,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cliente_de_peer_marca_controle_e_plain_nao() {
+    async fn a_peer_client_marks_control_and_plain_does_not() {
         async fn capture_headers(client: reqwest::Client) -> String {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1305,11 +1305,11 @@ mod tests {
         }
 
         let c = PeerClients::new(Duration::from_secs(600));
-        let interno = capture_headers(c.for_peer("peer-a").unwrap()).await;
-        assert!(interno.contains("x-pom-internal-node: 1"));
+        let internal = capture_headers(c.for_peer("peer-a").unwrap()).await;
+        assert!(internal.contains("x-pom-internal-node: 1"));
 
-        let externo = capture_headers(c.plain()).await;
-        assert!(!externo.contains("x-pom-internal-node:"));
+        let external = capture_headers(c.plain()).await;
+        assert!(!external.contains("x-pom-internal-node:"));
     }
 
     #[tokio::test]
@@ -1372,7 +1372,7 @@ mod tests {
     /// Com TLS, cada peer precisa do seu, porque o verifier é fixado na
     /// construção do cliente e carrega o node_id esperado.
     #[test]
-    fn com_tls_cada_peer_tem_o_seu_e_e_reaproveitado() {
+    fn with_tls_each_peer_has_its_own_and_it_is_reused() {
         let c = PeerClients::new(Duration::from_secs(600));
         c.set_tls(true);
         let (_, first) = c.for_peer_with_state("aaaa").unwrap();
@@ -1390,7 +1390,7 @@ mod tests {
     /// Virar a flag joga fora os clientes: um cliente construído para falar
     /// claro nunca vai falar TLS, e o pool de conexões dele também não serve.
     #[test]
-    fn virar_a_flag_esvazia_o_cache() {
+    fn flipping_the_flag_empties_the_cache() {
         let c = PeerClients::new(Duration::from_secs(600));
         c.set_tls(true);
         c.for_peer("aaaa").unwrap();

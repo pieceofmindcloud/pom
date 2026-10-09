@@ -49,7 +49,7 @@ describe("LeaveNode", () => {
     vi.restoreAllMocks();
   });
 
-  it("pergunta nomeando a maquina, e nao desliga ninguem antes da resposta", () => {
+  it("asks naming the machine, and turns nobody off before the answer", () => {
     const fetchMock = okFetch();
     mount(false);
 
@@ -59,7 +59,7 @@ describe("LeaveNode", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("no card de um peer, manda o node_id daquela maquina", async () => {
+  it("on a peer card, sends the node_id of that machine", async () => {
     const fetchMock = okFetch();
     mount(false);
 
@@ -72,7 +72,7 @@ describe("LeaveNode", () => {
     expect(JSON.parse(init.body as string)).toEqual({ node_id: "no-b" });
   });
 
-  it("no proprio card, o pedido e local -- sem node_id, sem repasse", async () => {
+  it("on its own card, the request is local -- no node_id, no forwarding", async () => {
     const fetchMock = okFetch();
     mount(true);
 

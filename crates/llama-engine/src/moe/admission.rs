@@ -194,7 +194,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn limita_pelo_baseline_medido_descontando_peso_e_reserva() {
+    fn limits_by_the_measured_baseline_minus_weights_and_reserve() {
         let account = MemoryAccount {
             baseline_free_bytes: 1_000,
             compute_bytes: 0,
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn uma_nova_medicao_reduz_o_limite_sem_expulsar_o_cache_existente() {
+    fn a_new_measurement_lowers_the_limit_without_evicting_the_existing_cache() {
         let account = MemoryAccount {
             baseline_free_bytes: 1_000,
             compute_bytes: 0,
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_aritmetica_sem_orcamento() {
+    fn refuses_arithmetic_without_a_budget() {
         let account = MemoryAccount {
             baseline_free_bytes: 100,
             compute_bytes: 0,
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_overflow_na_soma_do_orcamento() {
+    fn refuses_overflow_in_the_budget_sum() {
         let account = MemoryAccount {
             baseline_free_bytes: u64::MAX,
             compute_bytes: 0,
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn extrai_compute_cuda_do_relatorio_llama_e_ignora_cuda_host() {
+    fn extracts_cuda_compute_from_the_llama_report_and_ignores_cuda_host() {
         let memory = serde_json::json!({
             "buffers": [
                 {"buffer": "CUDA_Host", "device": "CUDA0", "compute": 200},
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn extrai_compute_cuda_separado_por_dispositivo() {
+    fn extracts_cuda_compute_split_per_device() {
         let memory = serde_json::json!({
             "buffers": [
                 {"buffer": "CUDA0", "device": "CUDA0", "compute": 1000},
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn relatorio_sem_compute_cuda_e_recusado() {
+    fn a_report_without_cuda_compute_is_refused() {
         let memory = serde_json::json!({
             "buffers": [
                 {"buffer": "CUDA_Host", "device": "CUDA0", "compute": 200},
@@ -289,14 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn reserva_do_cache_e_derivada_do_compute_medido_com_margem() {
+    fn the_cache_reserve_is_derived_from_the_measured_compute_with_a_margin() {
         assert_eq!(device_cache_reserve_bytes(1_000), Some(250));
         assert_eq!(device_cache_reserve_bytes(1), Some(1));
         assert_eq!(device_cache_reserve_bytes(0), None);
     }
 
     #[test]
-    fn compute_grande_tem_margem_limitada_e_nao_zera_o_cache() {
+    fn a_large_compute_has_a_bounded_margin_and_does_not_zero_the_cache() {
         let gib = 1024 * 1024 * 1024;
         let compute = 8 * gib;
         let baseline = 10 * gib;
@@ -310,12 +310,12 @@ mod tests {
     }
 
     #[test]
-    fn compute_pequeno_conserva_margem_proporcional() {
+    fn a_small_compute_keeps_a_proportional_margin() {
         assert_eq!(device_cache_reserve_bytes(1_000), Some(250));
     }
 
     #[test]
-    fn account_do_cache_de_device_preserva_a_reserva_medida() {
+    fn the_device_cache_account_preserves_the_measured_reserve() {
         let account = MemoryAccount::for_device_cache(10_000, 1_000).unwrap();
 
         assert_eq!(account.reserve_bytes, 250);

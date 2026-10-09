@@ -299,8 +299,8 @@ describe("plugin UI registry", () => {
       manifest: {
         schema: "pom-plugin-ui/v1",
         plugin_code: "logs",
-        menu: [{ id: "stats", label: { en: "Statistics" }, to: "/estatisticas", roles: ["admin"] }],
-        routes: [{ path: "/estatisticas", screen: "stats", profiles: ["admin"] }],
+        menu: [{ id: "stats", label: { en: "Statistics" }, to: "/statistics", roles: ["admin"] }],
+        routes: [{ path: "/statistics", screen: "stats", profiles: ["admin"] }],
         screens: { stats: { module: "stats.js" } },
         assets: ["stats.js"],
       },
@@ -308,12 +308,12 @@ describe("plugin UI registry", () => {
     setPluginUi([plugin, statisticsPlugin]);
     const navigation = navForProfile("admin");
     const logs = navigation.find((section) => section.labelKey === "nav.logs");
-    const statistics = navigation.find((section) => section.to === "/estatisticas");
+    const statistics = navigation.find((section) => section.to === "/statistics");
 
     expect(logs?.children?.map(({ labelKey }) => labelKey)).toContain("plugin:acme:logs");
     expect(logs?.children?.map(({ labelKey }) => labelKey)).not.toContain("nav.requestLogs");
     expect(statistics?.labelKey).toBe("plugin:logs:stats");
-    expect(resolvePluginRoute("/estatisticas")?.code).toBe("logs");
+    expect(resolvePluginRoute("/statistics")?.code).toBe("logs");
   });
 
   it("does not let two plugins claim the same POM extension route", () => {

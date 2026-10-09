@@ -165,8 +165,8 @@
     /// a camada escolhendo um peer por posicao.
     #[test]
     fn overlapping_ranges_are_reported_but_not_refused() {
-        let sobrepostas = super::overlapping_layers(&[(0, 19), (20, 39)], (0, 19));
-        assert_eq!(sobrepostas, (0..=19).collect::<Vec<u32>>());
+        let overlapping = super::overlapping_layers(&[(0, 19), (20, 39)], (0, 19));
+        assert_eq!(overlapping, (0..=19).collect::<Vec<u32>>());
     }
 
     #[test]

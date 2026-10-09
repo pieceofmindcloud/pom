@@ -15,10 +15,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { Input, Select } from "./ui";
 
-describe("variante compacta", () => {
+describe("compact variant", () => {
   afterEach(cleanup);
 
-  it("troca as utilitárias de tamanho do Input em vez de empilhá-las", () => {
+  it("swaps the Input size utilities instead of stacking them", () => {
     render(<Input compact aria-label="campo" className="text-right font-mono" />);
     const cls = screen.getByLabelText("campo").className;
 
@@ -33,14 +33,14 @@ describe("variante compacta", () => {
     expect(cls).toContain("text-right");
   });
 
-  it("mantém o tamanho padrão do Input sem a variante", () => {
+  it("keeps the default Input size without the variant", () => {
     render(<Input aria-label="campo" />);
     const cls = screen.getByLabelText("campo").className;
     expect(cls).toContain("h-9");
     expect(cls).not.toContain("h-6");
   });
 
-  it("troca as utilitárias de tamanho do Select em vez de empilhá-las", () => {
+  it("swaps the Select size utilities instead of stacking them", () => {
     render(<Select compact aria-label="escolha" />);
     const cls = screen.getByLabelText("escolha").className;
     expect(cls).toContain("h-6");

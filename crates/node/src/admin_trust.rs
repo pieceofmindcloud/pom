@@ -2210,25 +2210,25 @@ mod tests {
     /// A conferência que ancora a confiança tolera a transcrição humana -
     /// espaços, dois-pontos, caixa - e nada além disso.
     #[test]
-    fn a_conferencia_manual_normaliza_transcricao_e_nada_mais() {
-        let esperada = fingerprint_of(&principal(1, "root", "peer-root").pubkey);
-        let com_ruido = format!("  {}  ", esperada.to_uppercase());
-        assert!(fingerprint_matches(&com_ruido, &esperada));
+    fn the_manual_check_normalizes_the_transcription_and_nothing_else() {
+        let expected = fingerprint_of(&principal(1, "root", "peer-root").pubkey);
+        let with_noise = format!("  {}  ", expected.to_uppercase());
+        assert!(fingerprint_matches(&with_noise, &expected));
 
-        let separada = esperada
+        let separate = expected
             .as_bytes()
             .chunks(8)
-            .map(|parte| String::from_utf8_lossy(parte).to_string())
+            .map(|part| String::from_utf8_lossy(part).to_string())
             .collect::<Vec<_>>()
             .join(":");
-        assert!(fingerprint_matches(&separada, &esperada));
+        assert!(fingerprint_matches(&separate, &expected));
 
-        assert!(!fingerprint_matches("", &esperada));
-        assert!(!fingerprint_matches("   ", &esperada));
-        assert!(!fingerprint_matches(&esperada[..63], &esperada));
+        assert!(!fingerprint_matches("", &expected));
+        assert!(!fingerprint_matches("   ", &expected));
+        assert!(!fingerprint_matches(&expected[..63], &expected));
         assert!(!fingerprint_matches(
-            &format!("{}0", &esperada[1..]),
-            &esperada
+            &format!("{}0", &expected[1..]),
+            &expected
         ));
     }
 
@@ -2236,18 +2236,18 @@ mod tests {
     /// instala a raiz e a deixa no disco, com a autoridade valendo em memória
     /// sem reinício.
     #[test]
-    fn adotar_com_a_impressao_digital_certa_ancora_o_no() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
+    fn adopting_with_the_right_fingerprint_anchors_the_node() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
         let document = admin.document();
-        let esperada = anchor_fingerprint(&document);
+        let expected = anchor_fingerprint(&document);
 
-        let destino = TempDir::new();
-        let path = destino.path().join("recebido.json");
+        let destination = TempDir::new();
+        let path = destination.path().join("recebido.json");
         let no = AdminTrust::empty_at(Some(path.clone()));
         assert!(!no.is_anchored());
 
-        no.adopt_anchor(document.clone(), &esperada).unwrap();
+        no.adopt_anchor(document.clone(), &expected).unwrap();
 
         assert!(no.is_anchored());
         assert_eq!(no.document().anchor, document.anchor);
@@ -2257,18 +2257,18 @@ mod tests {
     /// A recusa que não depende de HTTP: com a impressão digital errada nada
     /// é escrito, nem em memória nem no disco.
     #[test]
-    fn adotar_com_a_impressao_digital_errada_nao_escreve_nada() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
-        let destino = TempDir::new();
-        let path = destino.path().join("recebido.json");
+    fn adopting_with_the_wrong_fingerprint_writes_nothing() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
+        let destination = TempDir::new();
+        let path = destination.path().join("recebido.json");
         let no = AdminTrust::empty_at(Some(path.clone()));
 
-        let erro = no
+        let error = no
             .adopt_anchor(admin.document(), &"0".repeat(64))
             .unwrap_err();
 
-        assert!(erro.to_string().contains("impressão digital"));
+        assert!(error.to_string().contains("impressão digital"));
         assert!(!no.is_anchored());
         assert!(
             !path.exists(),
@@ -2279,18 +2279,18 @@ mod tests {
     /// Trocar a raiz é reancoragem manual. Nem a cadeia em memória nem um
     /// arquivo já no disco podem ser substituídos por esta porta.
     #[test]
-    fn adotar_sobre_um_no_ja_ancorado_e_recusado() {
+    fn adopting_over_an_already_anchored_node_is_refused() {
         let local = TempDir::new();
         let path = local.path().join("meu.json");
-        let (meu, ..) = boot(&path);
-        let ancora_original = meu.document().anchor;
+        let (mine, ..) = boot(&path);
+        let original_anchor = mine.document().anchor;
 
-        let outro = TempDir::new();
-        let (outro_admin, ..) = {
+        let other = TempDir::new();
+        let (other_admin, ..) = {
             let signing_key = key(3);
             let root = principal(3, "outro", "peer-outro");
             let trust = AdminTrust::bootstrap_primary(
-                &outro.path().join("outro.json"),
+                &other.path().join("outro.json"),
                 "outro-cluster",
                 root.clone(),
                 &signing_key,
@@ -2298,46 +2298,46 @@ mod tests {
             .unwrap();
             (trust, signing_key, root)
         };
-        let document = outro_admin.document();
-        let esperada = anchor_fingerprint(&document);
+        let document = other_admin.document();
+        let expected = anchor_fingerprint(&document);
 
-        let erro = meu.adopt_anchor(document, &esperada).unwrap_err();
-        assert!(erro.to_string().contains("reancoragem manual"));
-        assert_eq!(meu.document().anchor, ancora_original);
+        let error = mine.adopt_anchor(document, &expected).unwrap_err();
+        assert!(error.to_string().contains("reancoragem manual"));
+        assert_eq!(mine.document().anchor, original_anchor);
     }
 
     /// Um arquivo ilegível não é âncora, mas também não é coisa que a
     /// interface apague por cima.
     #[test]
-    fn adotar_por_cima_de_um_arquivo_existente_e_recusado() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
-        let destino = TempDir::new();
-        let path = destino.path().join("corrompido.json");
+    fn adopting_over_an_existing_file_is_refused() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
+        let destination = TempDir::new();
+        let path = destination.path().join("corrompido.json");
         std::fs::write(&path, b"{ nao e json }").unwrap();
 
         let no = AdminTrust::load_or_empty(&path);
         assert!(!no.is_anchored());
 
         let document = admin.document();
-        let esperada = anchor_fingerprint(&document);
-        let erro = no.adopt_anchor(document, &esperada).unwrap_err();
+        let expected = anchor_fingerprint(&document);
+        let error = no.adopt_anchor(document, &expected).unwrap_err();
 
-        assert!(erro.to_string().contains("reancoragem manual"));
+        assert!(error.to_string().contains("reancoragem manual"));
         assert_eq!(std::fs::read(&path).unwrap(), b"{ nao e json }");
     }
 
     /// Uma cadeia adulterada é recusada na leitura, antes de qualquer
     /// conferência de impressão digital.
     #[test]
-    fn uma_cadeia_adulterada_nao_e_lida() {
-        let origem = TempDir::new();
-        let (admin, ..) = boot(&origem.path().join("admin.json"));
+    fn a_tampered_chain_is_not_read() {
+        let source = TempDir::new();
+        let (admin, ..) = boot(&source.path().join("admin.json"));
         let mut document = admin.document();
         document.anchor.cluster_id = "cluster-do-atacante".into();
-        let adulterada = serde_json::to_string(&document).unwrap();
+        let tampered = serde_json::to_string(&document).unwrap();
 
-        assert!(parse_transported(&adulterada).is_err());
+        assert!(parse_transported(&tampered).is_err());
         assert!(parse_transported("nem json e").is_err());
     }
 }

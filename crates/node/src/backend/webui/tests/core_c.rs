@@ -16,14 +16,14 @@ mod dead_address_tests {
     /// lido. Devolve `(porta, contador)`.
     async fn live_node(hostname: &str) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
         let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let contador = hits.clone();
-        let nome = hostname.to_string();
+        let counter = hits.clone();
+        let name = hostname.to_string();
         let app = Router::new().route(
             "/api/ui/node",
             get(move || {
-                let nome = nome.clone();
-                contador.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                async move { Json(json!({ "hostname": nome, "node_id": "outro" })) }
+                let name = name.clone();
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { Json(json!({ "hostname": name, "node_id": "outro" })) }
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -50,7 +50,7 @@ mod dead_address_tests {
         "127.0.0.2"
     }
 
-    fn peer_com_endereco_morto(port: u16) -> PeerInfo {
+    fn peer_with_dead_address(port: u16) -> PeerInfo {
         let mut p = peer("outro", "macbook", port);
         // O que o cluster guardou: o endereço morto na frente, porque é o que
         // o peer anunciou quando ainda era o dele.
@@ -78,17 +78,17 @@ mod dead_address_tests {
     /// registado como tal para não voltar a ser discado.
     #[tokio::test]
     async fn a_dead_announced_address_is_forgotten_and_the_peer_is_read_at_the_new_one() {
-        let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock();
-        crate::peer_client::set_tls_ativo(false);
+        let _scheme_lock = crate::peer_client::GLOBAL_POLICY.lock();
+        crate::peer_client::set_tls_enabled(false);
 
         let (port, hits) = live_node("macbook").await;
-        let p = peer_com_endereco_morto(port);
-        let morto = format!("http://{}:{port}", dead_host());
-        let vivo = format!("http://127.0.0.1:{port}");
+        let p = peer_with_dead_address(port);
+        let dead = format!("http://{}:{port}", dead_host());
+        let alive = format!("http://127.0.0.1:{port}");
         let state = state_with("eu", vec![p]).await;
 
         let body = body_of(cluster(HeaderMap::new(), State(state.clone())).await).await;
-        let outro = body["peers"]
+        let other = body["peers"]
             .as_array()
             .unwrap()
             .iter()
@@ -96,26 +96,26 @@ mod dead_address_tests {
             .expect("o peer tem de aparecer no cluster");
 
         assert_eq!(
-            outro["node"]["hostname"], "macbook",
+            other["node"]["hostname"], "macbook",
             "a leitura tinha de cair no endereço vivo em vez de morrer no primeiro"
         );
         assert!(
-            outro["unreachable"].is_null(),
+            other["unreachable"].is_null(),
             "o aviso permanente do Painel não pode sobreviver a um peer legível: {}",
-            outro["unreachable"]
+            other["unreachable"]
         );
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         let routes = &state.network.routes;
         assert!(
-            routes.is_failed("outro", &morto),
+            routes.is_failed("outro", &dead),
             "o endereço que não respondeu tem de ficar na memória de falha"
         );
         assert!(
-            !routes.is_failed("outro", &vivo),
+            !routes.is_failed("outro", &alive),
             "o endereço que respondeu não pode ficar desacreditado"
         );
-        let candidatos = state
+        let candidates = state
             .all_peers()
             .await
             .into_iter()
@@ -123,8 +123,8 @@ mod dead_address_tests {
             .unwrap()
             .gateway_candidates();
         assert_eq!(
-            routes.usable("outro", &candidatos),
-            vec![vivo],
+            routes.usable("outro", &candidates),
+            vec![alive],
             "a leitura seguinte não pode voltar a pagar o timeout do endereço morto"
         );
     }
@@ -135,13 +135,13 @@ mod dead_address_tests {
     #[tokio::test]
     async fn when_every_address_is_dead_the_node_asks_for_the_current_one() {
         let (port, _) = live_node("macbook").await;
-        let mut p = peer_com_endereco_morto(port);
+        let mut p = peer_with_dead_address(port);
         p.addr_candidates = vec![format!("{}:{port}", dead_host())];
         let state = state_with("eu", vec![p]).await;
 
         // Primeira leitura: descobre que o único endereço não responde.
         let body = body_of(cluster(HeaderMap::new(), State(state.clone())).await).await;
-        let outro = body["peers"]
+        let other = body["peers"]
             .as_array()
             .unwrap()
             .iter()
@@ -149,11 +149,11 @@ mod dead_address_tests {
             .unwrap()
             .clone();
         assert_eq!(
-            outro["rediscovering"], true,
+            other["rediscovering"], true,
             "sem endereço utilizável, o Painel mostra o nó a ser reencontrado"
         );
         assert!(
-            outro["unreachable"].is_null(),
+            other["unreachable"].is_null(),
             "reencontrando não é inalcançável: o utilizador não pode ler um beco sem saída"
         );
         assert!(
@@ -163,12 +163,12 @@ mod dead_address_tests {
 
         // E o cadáver saiu da entrada local, para que o próximo `Announce` do
         // peer a repovoe em vez de somar-se a ele.
-        let guardados = state.network.peers.read().await["outro"]
+        let stored = state.network.peers.read().await["outro"]
             .addr_candidates
             .clone();
         assert!(
-            guardados.is_empty(),
-            "o candidato desacreditado tinha de sair da entrada: {guardados:?}"
+            stored.is_empty(),
+            "o candidato desacreditado tinha de sair da entrada: {stored:?}"
         );
     }
 
@@ -179,11 +179,11 @@ mod dead_address_tests {
     #[tokio::test]
     async fn rediscovering_gives_up_and_says_so_instead_of_promising_forever() {
         let (port, _) = live_node("macbook").await;
-        let mut p = peer_com_endereco_morto(port);
+        let mut p = peer_with_dead_address(port);
         p.addr_candidates = vec![format!("{}:{port}", dead_host())];
         let state = state_with("eu", vec![p]).await;
 
-        let ler = |state: GatewayState| async move {
+        let read_file = |state: GatewayState| async move {
             body_of(cluster(HeaderMap::new(), State(state)).await)
                 .await["peers"]
                 .as_array()
@@ -194,24 +194,24 @@ mod dead_address_tests {
                 .clone()
         };
 
-        assert_eq!(ler(state.clone()).await["rediscovering"], true);
+        assert_eq!(read_file(state.clone()).await["rediscovering"], true);
 
         // Envelhecer a busca para além do prazo, sem esperar em tempo real.
         state
             .network
             .age_rediscovery_for_test("outro", crate::network::REDISCOVERY_GIVE_UP);
 
-        let desistiu = ler(state.clone()).await;
+        let gave_up = read_file(state.clone()).await;
         assert_eq!(
-            desistiu["rediscovering"], false,
+            gave_up["rediscovering"], false,
             "passado o prazo, a tela não pode continuar prometendo que reencontra"
         );
         assert!(
-            desistiu["unreachable"]
+            gave_up["unreachable"]
                 .as_str()
-                .is_some_and(|erro| erro.contains("endereços conhecidos")),
+                .is_some_and(|error| error.contains("endereços conhecidos")),
             "e tem de dizer por quê: {}",
-            desistiu["unreachable"]
+            gave_up["unreachable"]
         );
     }
 
@@ -222,7 +222,7 @@ mod dead_address_tests {
     #[tokio::test]
     async fn an_unreadable_peer_cannot_pass_for_healthy_coverage() {
         let (port, _) = live_node("macbook").await;
-        let mut p = peer_com_endereco_morto(port);
+        let mut p = peer_with_dead_address(port);
         p.addr_candidates = vec![format!("{}:{port}", dead_host())];
         let state = state_with("eu", vec![p]).await;
 
@@ -505,7 +505,7 @@ mod profile_network_tests {
             "stale",
             1.0,
             "libp2p",
-            crate::route::RTT_INTERVALO_MEDICAO + std::time::Duration::from_secs(1),
+            crate::route::RTT_MEASURE_INTERVAL + std::time::Duration::from_secs(1),
         );
 
         let body = body_of(

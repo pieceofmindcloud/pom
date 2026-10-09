@@ -30,7 +30,7 @@
 //!   [`crate::relay::BatchCoordinator`] já usa. É ele quem correlaciona ida e
 //!   volta, e é ele que permite **várias sessões no mesmo canal**: os quadros
 //!   não voltam em ordem, voltam identificados.
-//! * `corpo` é o `frame/v1-batch` inteiro. A rota vai no `kind` do próprio
+//! * `body` é o `frame/v1-batch` inteiro. A rota vai no `kind` do próprio
 //!   quadro, então não há caminho duplicado no envelope.
 //!
 //! ## Degradação
@@ -1141,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn o_leitor_remonta_quadros_partidos_em_qualquer_ponto() {
+    fn the_reader_reassembles_frames_split_at_any_point() {
         let a = encode_envelope(0, "um", b"corpo-um").unwrap();
         let b = encode_envelope(503, "dois", b"corpo-dois").unwrap();
         let mut stream = a.clone();
@@ -1169,7 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn o_leitor_recusa_quadro_acima_do_teto() {
+    fn the_reader_refuses_a_frame_above_the_cap() {
         let mut reader = FrameReader::new();
         reader.push(&(u32::MAX).to_be_bytes());
         assert!(reader.next().is_err());
@@ -1199,7 +1199,7 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// Ecoa o quadro recebido como resposta, respondendo `atraso_ms` depois.
+    /// Ecoa o quadro recebido como resposta, respondendo `delay_ms` depois.
     fn echo_after(
         delay: std::collections::HashMap<String, u64>,
     ) -> impl Fn(String, Bytes) -> axum::response::Response + Clone + Send + Sync + 'static {
@@ -1248,7 +1248,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn muitas_travessias_compartilham_um_canal() {
+    async fn many_traversals_share_one_channel() {
         let url = spawn_link_server(echo_after(Default::default())).await;
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
         for index in 0..8 {
@@ -1268,7 +1268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callback_persistente_aceita_ack_que_nao_e_batch() {
+    async fn a_persistent_callback_accepts_an_ack_that_is_not_a_batch() {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(200)
@@ -1297,7 +1297,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callbacks_persistentes_nao_esperam_ack_de_cada_frame() {
+    async fn persistent_callbacks_do_not_wait_for_an_ack_per_frame() {
         let mut delays = std::collections::HashMap::new();
         for index in 0..8 {
             delays.insert(format!("frame-{index}"), 200u64);
@@ -1330,7 +1330,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callback_assincrono_sinaliza_gateway_desaparecido() {
+    async fn an_async_callback_signals_a_vanished_gateway() {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(410)
@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sessoes_diferentes_nao_se_bloqueiam_no_mesmo_canal() {
+    async fn different_sessions_do_not_block_each_other_on_the_same_channel() {
         let mut delays = std::collections::HashMap::new();
         delays.insert("lenta".to_string(), 300u64);
         let url = spawn_link_server(echo_after(delays)).await;
@@ -1420,7 +1420,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recusa_do_peer_volta_como_recusa_http() {
+    async fn a_peer_refusal_comes_back_as_an_http_refusal() {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(400)
@@ -1444,20 +1444,20 @@ mod tests {
     /// reconferida por quadro recusa - vira recusa **daquele quadro**, e o
     /// canal continua servindo os seguintes.
     #[tokio::test]
-    async fn quadro_recusado_pelo_despachante_nao_derruba_o_canal() {
+    async fn a_frame_refused_by_the_dispatcher_does_not_bring_down_the_channel() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let recusar = Arc::new(AtomicBool::new(true));
-        let servidor = recusar.clone();
+        let refuse = Arc::new(AtomicBool::new(true));
+        let server = refuse.clone();
         let router = Router::new().route(
             LINK_PATH,
             post(move |body: axum::body::Body| {
-                let servidor = servidor.clone();
+                let server = server.clone();
                 async move {
                     serve(body, move |path, bytes| {
-                        let servidor = servidor.clone();
+                        let server = server.clone();
                         async move {
-                            if servidor.swap(false, Ordering::Relaxed) {
+                            if server.swap(false, Ordering::Relaxed) {
                                 return Err(anyhow!("credencial de inferência inválida"));
                             }
                             let header = wire::peek_batch_header(&bytes).unwrap();
@@ -1509,7 +1509,7 @@ mod tests {
         assert_eq!(refusal.status, 400);
         assert!(refusal.body.contains("credencial"));
 
-        let aceito = send_batch(
+        let accepted = send_batch(
             &clients,
             "estrito",
             &url,
@@ -1520,14 +1520,14 @@ mod tests {
         .await
         .expect("o quadro seguinte usa o mesmo canal, que continua vivo");
         assert_eq!(
-            wire::peek_batch_header(&aceito.body).unwrap().batch_id,
+            wire::peek_batch_header(&accepted.body).unwrap().batch_id,
             "aceito"
         );
         assert_eq!(channels_opened("estrito", &url), 1);
     }
 
     #[tokio::test]
-    async fn abertura_de_aresta_morta_nao_bloqueia_outra() {
+    async fn opening_a_dead_edge_does_not_block_another() {
         use tokio::sync::Notify;
 
         let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1597,7 +1597,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn destino_inalcancavel_falha_rapido_e_fica_em_quarentena() {
+    async fn an_unreachable_destination_fails_fast_and_is_quarantined() {
         // Porta fechada: o canal não abre.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1630,7 +1630,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uma_abertura_blackhole_cai_para_a_rota_saudavel_e_nao_se_repete() {
+    async fn a_blackhole_open_falls_to_the_healthy_route_and_is_not_repeated() {
         let blackhole_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let blackhole_hits_task = blackhole_hits.clone();
         let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1677,7 +1677,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_morte_do_canal_nao_deixa_entrega_pendente() {
+    async fn a_dead_channel_leaves_no_pending_delivery() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         // Servidor que aceita o canal e some sem responder.

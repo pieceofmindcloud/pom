@@ -88,7 +88,7 @@ describe("TelemetryLine", () => {
   });
 });
 
-describe("telemetria no chat por perfil", () => {
+describe("chat telemetry per profile", () => {
   const tracedMessage: ChatMessage = {
     id: "assistant-1",
     role: "assistant",
@@ -108,7 +108,7 @@ describe("telemetria no chat por perfil", () => {
     );
   }
 
-  it("não mostra telemetria no chat para infer", () => {
+  it("does not show telemetry in the chat for infer", () => {
     mountBubble("infer", { telemetryPlugin: plugin });
 
     expect(screen.getByText("resposta")).toBeTruthy();
@@ -117,7 +117,7 @@ describe("telemetria no chat por perfil", () => {
     expect(screen.queryByText("telemetria avançada")).toBeNull();
   });
 
-  it.each(["admin", "node"] as const)("mostra a linha básica para o perfil %s sem plugin", (profile) => {
+  it.each(["admin", "node"] as const)("shows the basic line for the %s profile without a plugin", (profile) => {
     mountBubble(profile);
 
     expect(screen.getByTestId("telemetry-line")).toBeTruthy();
@@ -125,7 +125,7 @@ describe("telemetria no chat por perfil", () => {
     expect(screen.queryByText("telemetria avançada")).toBeNull();
   });
 
-  it("monta o slot do plugin no fim da linha com o trace, o ambiente e a ação de perguntar", () => {
+  it("mounts the plugin slot at the end of the line with the trace, the environment and the ask action", () => {
     const onAsk = vi.fn();
     const environment = { snapshotCaptured: true, runtimes: {} };
     mountBubble("admin", { telemetryPlugin: plugin, onAsk, telemetryEnvironment: environment });
@@ -142,13 +142,13 @@ describe("telemetria no chat por perfil", () => {
     expect(props.askDisabled).toBe(false);
   });
 
-  it("não monta o slot enquanto a resposta ainda está chegando", () => {
+  it("does not mount the slot while the response is still arriving", () => {
     mountBubble("admin", { telemetryPlugin: plugin, streaming: true });
 
     expect(screen.queryByText("telemetria avançada")).toBeNull();
   });
 
-  it("renderiza o trace capturado enquanto a mensagem ainda não recebeu o campo trace", () => {
+  it("renders the captured trace while the message has not received the trace field yet", () => {
     mount(
       <ProfileProvider initialProfile="admin">
         <Bubble

@@ -405,7 +405,7 @@ export interface NodeInfo {
   /** Este nó aceita atualizar-se pela interface (POM_DEV_UPDATE=1). */
   dev_update: boolean;
   /** Se os controles POM exclusivos de desenvolvimento estão expostos. */
-  pom_desenv: boolean;
+  pom_dev_mode: boolean;
   /** The name the operator gave this machine; `null` means the system hostname. */
   node_name: string | null;
   /** Endereço fixado pelo operador. `null` quando nada foi fixado. */

@@ -380,13 +380,13 @@ impl InferState {
                 decision = plan_prefix_reuse(&retained, n_past, &tokens);
             }
             if !physical_cells_match || !decision.reused {
-                let comum = retained
+                let common = retained
                     .iter()
                     .zip(&tokens)
                     .take_while(|(old, new)| old == new)
                     .count();
                 debug!(
-                    "prefixo da sessão {}… não serve: comum={comum} lógico={} células={} retidos={} novos={}",
+                    "prefixo da sessão {}… não serve: comum={common} lógico={} células={} retidos={} novos={}",
                     &sid[..8.min(sid.len())],
                     n_past,
                     cells,
@@ -643,8 +643,8 @@ impl InferState {
                 sidecar.format_version
             );
         }
-        let mismatch = |campo: &str, esperado: String, achou: String| {
-            anyhow::anyhow!("snapshot de KV incompatível: {campo} {achou} != {esperado} deste peer")
+        let mismatch = |field: &str, expected: String, found: String| {
+            anyhow::anyhow!("snapshot de KV incompatível: {field} {found} != {expected} deste peer")
         };
         if sidecar.model_label != self.model_label {
             return Err(mismatch(
@@ -1088,7 +1088,7 @@ pub async fn run(
     // para de aceitar e encerra as conexões que restaram, só depois a VRAM é
     // devolvida. Na ordem inversa uma requisição em voo tocaria um contexto já
     // liberado.
-    let resultado =
+    let result =
         crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
             loop {
                 if stop_rx.changed().await.is_err() {
@@ -1139,7 +1139,7 @@ pub async fn run(
     .await?;
     info!("memória do modelo devolvida na porta {port}");
 
-    resultado?;
+    result?;
     batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
@@ -1220,7 +1220,7 @@ pub(crate) async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
 ///
 /// É um `PeerClients` e não um `reqwest::Client` porque o próximo salto é um
 /// peer: com o cluster em TLS ele precisa do certificado daquele node_id
-/// fixado. O esquema global (`peer_client::tls_ativo`) é quem diz se há TLS -
+/// fixado. O esquema global (`peer_client::tls_enabled`) é quem diz se há TLS -
 /// este processo é o mesmo do nó, então a política já está aplicada aqui.
 pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
     static CLIENT: std::sync::OnceLock<crate::peer_client::PeerClients> =
@@ -1230,11 +1230,11 @@ pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
     // A cada uso, não só na criação: o `OnceLock` nasce uma vez e o operador
     // pode virar a flag depois. `set_tls` só faz trabalho quando o valor muda,
     // então isto custa uma leitura atômica no caminho comum.
-    c.set_tls(crate::peer_client::tls_ativo());
+    c.set_tls(crate::peer_client::tls_enabled());
     // O cliente é lazy e vive separado do cliente do gateway. Sincronize a
     // preferência QUIC a cada uso para que uma mudança propagada pela
     // política também alcance os relays e as respostas diretas deste nó.
-    c.set_quic(crate::peer_client::quic_ativo());
+    c.set_quic(crate::peer_client::quic_enabled());
     c
 }
 
@@ -1794,7 +1794,7 @@ pub(crate) async fn handle_tp_reduce(
 pub(super) fn replicate_session_call(
     state: &SharedState,
     headers: &axum::http::HeaderMap,
-    rota: &str,
+    route: &str,
     session_id: &str,
 ) {
     if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
@@ -1810,12 +1810,12 @@ pub(super) fn replicate_session_call(
     let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
         return;
     };
-    let corpo = json!({ "session_id": session_id }).to_string().into_bytes();
+    let body = json!({ "session_id": session_id }).to_string().into_bytes();
     crate::tp::broadcast_to(
         &tp.members,
-        rota,
+        route,
         "session",
-        corpo,
+        body,
         Some("application/json"),
     );
 }
@@ -2146,7 +2146,7 @@ pub(super) fn rollback_session(
 pub(super) fn open_tp_decode(
     state: &SharedState,
     headers: &axum::http::HeaderMap,
-    rota: &str,
+    route: &str,
     body: &Bytes,
 ) {
     if headers.get(BATCH_CHILD_HEADER).is_some() {
@@ -2176,7 +2176,7 @@ pub(super) fn open_tp_decode(
     }
     let id = uuid::Uuid::new_v4().to_string();
     crate::tp::begin_decode(&id);
-    crate::tp::broadcast_decode(&tp.members, rota, &id, body.to_vec());
+    crate::tp::broadcast_decode(&tp.members, route, &id, body.to_vec());
 }
 
 /// A sub-faixa que o remetente mandou executar, conferida contra a fatia que

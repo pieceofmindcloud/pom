@@ -328,7 +328,7 @@ pub struct SliceOutcome {
 /// atômico no mesmo sistema de arquivos. É também o que impede um corte
 /// interrompido de ficar parecendo fatia boa - o defeito que o critério antigo
 /// ("existe e tem mais de 1 KB") não conseguia enxergar.
-async fn write_then_name<F>(output_dir: &Path, corte: F) -> Result<SliceOutcome>
+async fn write_then_name<F>(output_dir: &Path, cut: F) -> Result<SliceOutcome>
 where
     F: FnOnce(PathBuf) -> tokio::task::JoinHandle<Result<crate::splitter::WrittenSlice>>,
 {
@@ -336,31 +336,31 @@ where
         .with_context(|| format!("criar {}", output_dir.display()))?;
 
     let temp = output_dir.join(format!("{}.part", uuid::Uuid::new_v4()));
-    let escrito = corte(temp.clone())
+    let written = cut(temp.clone())
         .await
         .context("spawn_blocking para o fatiador")?
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&temp);
         })?;
 
-    let destino = crate::pom::part_path(output_dir, &escrito.sha256)?;
+    let destination = crate::pom::part_path(output_dir, &written.sha256)?;
     // Já existir é o caso bom: outra rodada produziu bytes idênticos, e o
     // endereço de conteúdo diz que um dos dois arquivos é redundante.
-    if destino.exists() {
+    if destination.exists() {
         let _ = std::fs::remove_file(&temp);
         info!(
             "parte idêntica já em disco, reaproveitando: {}",
-            destino.display()
+            destination.display()
         );
-    } else if let Err(e) = std::fs::rename(&temp, &destino) {
+    } else if let Err(e) = std::fs::rename(&temp, &destination) {
         let _ = std::fs::remove_file(&temp);
-        return Err(e).with_context(|| format!("renomear para {}", destino.display()));
+        return Err(e).with_context(|| format!("renomear para {}", destination.display()));
     }
 
     Ok(SliceOutcome {
-        output_path: destino.to_string_lossy().into_owned(),
-        bytes: escrito.bytes,
-        sha256: escrito.sha256,
+        output_path: destination.to_string_lossy().into_owned(),
+        bytes: written.bytes,
+        sha256: written.sha256,
         reused: false,
     })
 }
@@ -371,15 +371,15 @@ where
 /// nome: é o `.pom` que diz o hash. Em troca some a classe inteira de defeito
 /// em que um arquivo com o nome certo e o conteúdo errado era carregado como se
 /// estivesse bom.
-fn ja_tenho(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
-    let caminho = crate::pom::part_path(output_dir, sha256).ok()?;
-    let meta = std::fs::metadata(&caminho).ok()?;
+fn already_have(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
+    let path = crate::pom::part_path(output_dir, sha256).ok()?;
+    let meta = std::fs::metadata(&path).ok()?;
     if meta.len() <= 1024 {
         return None;
     }
-    info!("parte já existe, reaproveitando: {}", caminho.display());
+    info!("parte já existe, reaproveitando: {}", path.display());
     Some(SliceOutcome {
-        output_path: caminho.to_string_lossy().into_owned(),
+        output_path: path.to_string_lossy().into_owned(),
         bytes: meta.len(),
         sha256: sha256.to_string(),
         reused: true,
@@ -434,8 +434,8 @@ pub async fn extract_shard(
 
     // Reuse an existing slice: these files are gigabytes and rebuilding one is
     // minutes of I/O for an identical result.
-    if let Some(pronta) = expected_sha256.and_then(|sha| ja_tenho(output_dir, sha)) {
-        return Ok(pronta);
+    if let Some(ready) = expected_sha256.and_then(|sha| already_have(output_dir, sha)) {
+        return Ok(ready);
     }
 
     write_then_name(output_dir, move |dst| {
@@ -475,8 +475,8 @@ pub async fn extract_tp_shard(
     tp_rank: u32,
     on_progress: impl Fn(f64) + Send + Sync + 'static,
 ) -> Result<SliceOutcome> {
-    if let Some(pronta) = expected_sha256.and_then(|sha| ja_tenho(output_dir, sha)) {
-        return Ok(pronta);
+    if let Some(ready) = expected_sha256.and_then(|sha| already_have(output_dir, sha)) {
+        return Ok(ready);
     }
 
     let src = std::path::PathBuf::from(source_model);
@@ -956,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn kv_bytes_entram_na_decisao_de_corte_e_nao_so_na_reserva() {
+    fn kv_bytes_enter_the_cut_decision_and_not_only_the_reserve() {
         let l = layout(4, 10.0);
         let info = GgufInfo {
             attention_head_count_kv: Some(vec![8]),
@@ -988,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn kv_sem_metadado_completo_recusa_o_plano() {
+    fn kv_without_complete_metadata_refuses_the_plan() {
         let l = layout(2, 10.0);
         let info = GgufInfo::default();
         let error = plan_split_with_kv(
@@ -1164,9 +1164,9 @@ mod tests {
         // Um "shard" grande que nunca passou pelo fatiador, gravado sob um hash
         // que não é o dele - exatamente o que uma regra antiga deixava para
         // trás.
-        let hash_mentiroso = "b".repeat(64);
-        let velho = crate::pom::part_path(&dir, &hash_mentiroso).unwrap();
-        std::fs::write(&velho, vec![0u8; 4096]).unwrap();
+        let lying_hash = "b".repeat(64);
+        let old = crate::pom::part_path(&dir, &lying_hash).unwrap();
+        std::fs::write(&old, vec![0u8; 4096]).unwrap();
 
         let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, None, 2, 0, |_| {})
             .await
@@ -1176,7 +1176,7 @@ mod tests {
             "sem hash esperado não há reuso: o fatiador corta e o conteúdo se nomeia"
         );
         assert_ne!(
-            outcome.sha256, hash_mentiroso,
+            outcome.sha256, lying_hash,
             "o shard novo não pode herdar o nome do lixo que estava na pasta"
         );
 

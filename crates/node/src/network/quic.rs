@@ -760,7 +760,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[test]
-    fn portas_quic_derivam_do_p2p_port_e_nao_estouram() {
+    fn quic_ports_derive_from_the_p2p_port_and_do_not_overflow() {
         assert_eq!(gateway_quic_port(42777), Some(44777));
         assert_eq!(inference_quic_port(42777), Some(43777));
         // p2p efêmero ou offset que estoura u16 => QUIC desligado, não colisão.
@@ -774,31 +774,31 @@ mod tests {
     /// Nenhuma porta QUIC pode cair sobre a gateway_port/inference_port/p2p_port
     /// de outro nó - era isso que `gateway_port + 1` fazia.
     #[test]
-    fn quatro_nos_colocados_nao_tem_colisao_de_porta() {
-        let mut todas = Vec::new();
+    fn four_colocated_nodes_have_no_port_collision() {
+        let mut all = Vec::new();
         for i in 0..4u16 {
             let p2p = 42777 + i;
             let gateway = 8080 + i;
             let inference = 8180 + i;
-            todas.push(("p2p", p2p));
-            todas.push(("gateway", gateway));
-            todas.push(("inference", inference));
-            todas.push(("gateway_quic", gateway_quic_port(p2p).unwrap()));
-            todas.push(("inference_quic", inference_quic_port(p2p).unwrap()));
+            all.push(("p2p", p2p));
+            all.push(("gateway", gateway));
+            all.push(("inference", inference));
+            all.push(("gateway_quic", gateway_quic_port(p2p).unwrap()));
+            all.push(("inference_quic", inference_quic_port(p2p).unwrap()));
         }
-        for a in 0..todas.len() {
-            for b in (a + 1)..todas.len() {
+        for a in 0..all.len() {
+            for b in (a + 1)..all.len() {
                 assert_ne!(
-                    todas[a].1, todas[b].1,
+                    all[a].1, all[b].1,
                     "colisão de porta entre {} e {} ({})",
-                    todas[a].0, todas[b].0, todas[a].1
+                    all[a].0, all[b].0, all[a].1
                 );
             }
         }
     }
 
     #[test]
-    fn endpoint_quic_deriva_socketaddr_do_anuncio_e_nao_de_url_http() {
+    fn a_quic_endpoint_derives_the_socketaddr_from_the_announce_and_not_from_an_http_url() {
         assert_eq!(
             quic_socket_addr("[2001:db8::42]:42777", 8182).unwrap(),
             "[2001:db8::42]:8182".parse().unwrap()
@@ -815,7 +815,7 @@ mod tests {
     /// `[[::]]:porta`, que o `http::Uri`/`Authority` rejeita como "invalid
     /// authority" - a causa raiz dos 114 fallbacks QUIC->HTTP na telemetria.
     #[test]
-    fn authority_nao_colcheta_host_ipv6_duas_vezes() {
+    fn authority_does_not_bracket_an_ipv6_host_twice() {
         let a = authority("https://[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777").unwrap();
         assert_eq!(a, "[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777");
         a.parse::<http::uri::Authority>()
@@ -837,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn socket_servidor_ipv6_wildcard_aceita_ipv4() {
+    fn an_ipv6_wildcard_server_socket_accepts_ipv4() {
         let socket = bind_quic_socket("[::]:0".parse().unwrap()).unwrap();
         assert!(
             !socket2::SockRef::from(&socket).only_v6().unwrap(),
@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn tentativas_quic_compartilham_orcamento_antes_do_fallback_tcp() {
+    fn quic_attempts_share_a_budget_before_the_tcp_fallback() {
         let mut remaining = QUIC_FALLBACK_BUDGET;
         let mut spent = Duration::ZERO;
         let mut attempts = 0;
@@ -867,7 +867,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cliente_e_servidor_http3_falam_com_o_certificado_do_no() {
+    async fn http3_client_and_server_talk_using_the_node_certificate() {
         let identity = crate::identity::Identity::generate();
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = probe.local_addr().unwrap().port();
@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cliente_reconecta_quic_depois_do_restart_do_peer() {
+    async fn the_client_reconnects_quic_after_the_peer_restart() {
         let identity = crate::identity::Identity::generate();
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = probe.local_addr().unwrap().port();
@@ -983,7 +983,7 @@ mod tests {
     /// produzir headers. A tentativa termina no prazo do frame, com erro
     /// tipado de deadline de transporte, e não há outro timer aninhado nela.
     #[tokio::test]
-    async fn endpoint_quic_alcancavel_sem_resposta_respeita_deadline_de_transporte() {
+    async fn a_reachable_unanswering_quic_endpoint_honors_the_transport_deadline() {
         let identity = crate::identity::Identity::generate();
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = probe.local_addr().unwrap().port();

@@ -11,7 +11,7 @@ qwen4exp.cpp (mtp_only + layer.nextn.* + graph_mtp), esse arquivo falhava
 com "check_tensor_dims: tensor 'output_hc_norm.weight' not found", igual ao
 log da ksia; depois do porte ele carrega e um contexto ctx_type=MTP sobre
 ele reserva o grafo `graph_mtp` normalmente - ver o teste
-`rascunho_qwen4exp_sem_output_hc_anexa` em
+`a_qwen4exp_draft_without_output_hc_attaches` em
 `crates/llama-engine/src/llm/model.rs`.
 
 mode="draft_fixed": igual ao anterior, mas com output_hc_{norm,down,up}
@@ -19,10 +19,10 @@ tambem presentes - variante historica usada para descartar a hipotese de
 que bastava exportar mais tensores (nao bastava: o tronco blk.0..n_layer-1
 tambem precisava do gate mtp_only, ausente antes do porte).
 
-O fixture `qwen4exp-external-draft-sem-output-hc.gguf` neste diretorio e a
+O fixture `qwen4exp-external-draft-without-output-hc.gguf` neste diretorio e a
 saida deste script em mode="draft"; regenere com:
 
-    python3 gerar_gguf_sintetico.py qwen4exp-external-draft-sem-output-hc.gguf draft
+    python3 generate_synthetic_gguf.py qwen4exp-external-draft-without-output-hc.gguf draft
 
 Requer o gguf-py do fork vendorizado no PYTHONPATH e numpy instalado.
 """

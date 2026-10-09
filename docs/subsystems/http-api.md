@@ -998,7 +998,7 @@ node) and use `ConnectionAuth`:
   without uninstalling the already installed plugin;
 - `POST /api/ui/plugins/github-repositories/:id/install` receives
   `{release_id}` to download and install exactly that chosen release.
-- With `POM_DESENV=1`, `GET /api/ui/plugins/dev-sources` only lists known
+- With `POM_DEV_MODE=1`, `GET /api/ui/plugins/dev-sources` only lists known
   repositories and valid mounted sources;
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds the local plugin without requiring an existing
@@ -1055,8 +1055,8 @@ manifest again, downloads the artifact and schedules the swap and the restart.
 The action is never triggered by the daily detection. See
 `enterprise-licensing.md`.
 
-`GET /api/ui/node` includes `pom_desenv`, the decision captured at startup: it
-is only true when `POM_DESENV` is exactly `1`. A missing variable, `0` and any
+`GET /api/ui/node` includes `pom_dev_mode`, the decision captured at startup: it
+is only true when `POM_DEV_MODE` is exactly `1`. A missing variable, `0` and any
 other text leave the flag false. The flag only controls the visibility of the
 controls in the browser: the plan, deploy, apply, reconfigure and redeploy
 handlers keep the fields of the `Configurações POM (DESENV)` ("POM settings

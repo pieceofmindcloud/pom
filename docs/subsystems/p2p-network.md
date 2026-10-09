@@ -1143,7 +1143,7 @@ anything about whom we are talking to. Without pinning the self-signed
 certificate would encrypt without authenticating, and a man in the middle would
 present their own self-signed certificate and be accepted.
 
-The test `fingerprint_do_certificado_e_o_mesmo_de_from_pubkey` ties both
+The test `the_certificate_fingerprint_is_the_same_as_from_pubkey` ties both
 computations together: if they ever diverge, pinning refuses everyone, and the
 test is what warns.
 
@@ -1163,7 +1163,7 @@ the machine has nothing to protect.
 verifier carries which node_id to expect and is fixed at construction. Without
 TLS it goes back to a single one, which is the previous behavior. The URL
 scheme (`http`/`https`) comes from a global process state,
-`peer_client::tls_ativo`, because it is a property of the node and not of the
+`peer_client::tls_enabled`, because it is a property of the node and not of the
 connection.
 
 The peer HTTP clients enable `TCP_NODELAY` on every TCP path, clear, TLS and
@@ -1181,7 +1181,7 @@ policy on, **every** query to a peer failed silently: the deploy screen said
 deploy anything. So the defect does not come back, `GatewayState` **no longer
 has** a shared client without pinning - there is only `peer_http`, and whoever
 talks to a target that is not a peer (loopback, Ollama) asks for
-`peer_http.plain()`, which says what it is doing. `webui::catalogo_sob_tls_tests`
+`peer_http.plain()`, which says what it is doing. `webui::catalog_under_tls_tests`
 pins the two routes the operator uses to deploy.
 
 **What is left out, and why:**

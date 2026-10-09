@@ -2210,14 +2210,14 @@ mod tests {
         drop(db);
 
         let reopened = PomDb::open(&path).expect("reabrir banco");
-        let lido = reopened
+        let loaded = reopened
             .deployment("d-4f2a91c3")
             .expect("ler implantação")
             .expect("implantação existe");
-        assert_eq!(lido, deployment);
-        assert_eq!(lido.versions.len(), 2);
-        assert_eq!(lido.active_version, 2);
-        assert_eq!(lido.versions[1].params.n_ctx, 16_384);
+        assert_eq!(loaded, deployment);
+        assert_eq!(loaded.versions.len(), 2);
+        assert_eq!(loaded.active_version, 2);
+        assert_eq!(loaded.versions[1].params.n_ctx, 16_384);
 
         remove_database(&path);
     }

@@ -19,7 +19,7 @@ pub(crate) struct PrefixDecision {
 
 /// A regra do reuso, sem sessão nem motor por perto.
 ///
-/// `retidos` são exatamente os tokens do prompt do turno anterior que estão no
+/// `retained` são exatamente os tokens do prompt do turno anterior que estão no
 /// KV, e portanto seu tamanho tem que ser `n_past`. O prefixo serve quando
 /// esses tokens ainda abrem o prompt novo e sobra pelo menos um token para
 /// decodificar:
@@ -36,22 +36,22 @@ pub(crate) struct PrefixDecision {
 /// foi editada, trocou de template, mudou a lista de ferramentas), quando não
 /// sobraria token para decodificar, e quando a sessão não tem prompt no KV.
 /// Recusar custa o reuso daquele turno e nunca a requisição.
-pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> PrefixDecision {
-    let comum = retidos
+pub(crate) fn plan_prefix_reuse(retained: &[i32], n_past: u32, new_items: &[i32]) -> PrefixDecision {
+    let common = retained
         .iter()
-        .zip(novos)
+        .zip(new_items)
         .take_while(|(old, new)| old == new)
         .count() as u32;
-    if retidos.len() as u32 != n_past {
+    if retained.len() as u32 != n_past {
         return PrefixDecision {
-            matched_tokens: comum.min(n_past),
+            matched_tokens: common.min(n_past),
             ..PrefixDecision::default()
         };
     }
     // O último token do novo prompt tem de ser decodificado: é dele que saem os
     // logits do primeiro token gerado.
-    let cabe_decodificar = (n_past as usize) < novos.len();
-    if n_past > 0 && comum >= n_past && cabe_decodificar {
+    let can_decode = (n_past as usize) < new_items.len();
+    if n_past > 0 && common >= n_past && can_decode {
         PrefixDecision {
             reused: true,
             cached_tokens: n_past,
@@ -59,7 +59,7 @@ pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> 
         }
     } else {
         PrefixDecision {
-            matched_tokens: comum.min(n_past),
+            matched_tokens: common.min(n_past),
             ..PrefixDecision::default()
         }
     }
@@ -84,16 +84,16 @@ pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> 
 /// aproveita o que está de fato no KV.
 pub(super) fn stable_prefix_len(
     engine: &crate::llm::LlmEngine,
-    texto: &str,
+    text: &str,
     use_tmpl: bool,
     no_think: bool,
     tokens: &[i32],
 ) -> usize {
     // A forma exata do que o turno seguinte acrescenta - ver `render_prompt`.
-    const CONTINUACAO: &str = "\n\nAssistant: x";
-    let sondado = if use_tmpl {
+    const CONTINUATION: &str = "\n\nAssistant: x";
+    let probed_text = if use_tmpl {
         match engine.apply_chat_template(
-            &[("user", &format!("{texto}{CONTINUACAO}"))],
+            &[("user", &format!("{text}{CONTINUATION}"))],
             true,
             no_think,
         ) {
@@ -103,19 +103,19 @@ pub(super) fn stable_prefix_len(
             Err(_) => return 0,
         }
     } else {
-        format!("{texto}{CONTINUACAO}")
+        format!("{text}{CONTINUATION}")
     };
-    let sondados = engine.tokenize(&sondado, !use_tmpl, true);
-    let comum = tokens
+    let probed_tokens = engine.tokenize(&probed_text, !use_tmpl, true);
+    let common = tokens
         .iter()
-        .zip(&sondados)
+        .zip(&probed_tokens)
         .take_while(|(a, b)| a == b)
         .count();
     // Reserve the final prompt token for `gen_seq`. Without this cap, a raw
     // prompt whose continuation tokenizes independently could leave the whole
     // prompt in `prompt_seq`, putting the first generated token back into the
     // retained sequence.
-    retainable_prefix_len(comum, tokens.len())
+    retainable_prefix_len(common, tokens.len())
 }
 
 /// The stable boundary of a typed decision: only the text before `bytes`
@@ -128,27 +128,27 @@ pub(super) fn stable_prefix_len(
 /// keeps the ordinary boundary).
 pub(super) fn bounded_stable_len(
     engine: &crate::llm::LlmEngine,
-    texto: &str,
+    text: &str,
     bytes: usize,
     use_tmpl: bool,
     no_think: bool,
     tokens: &[i32],
 ) -> usize {
-    if bytes == 0 || bytes >= texto.len() || !texto.is_char_boundary(bytes) {
+    if bytes == 0 || bytes >= text.len() || !text.is_char_boundary(bytes) {
         return tokens.len();
     }
-    let cortado = format!("{}\u{7}", &texto[..bytes]);
-    let sondado = if use_tmpl {
-        match engine.apply_chat_template(&[("user", &cortado)], true, no_think) {
+    let truncated = format!("{}\u{7}", &text[..bytes]);
+    let probed_text = if use_tmpl {
+        match engine.apply_chat_template(&[("user", &truncated)], true, no_think) {
             Ok(rendered) => rendered,
             Err(_) => return 0,
         }
     } else {
-        cortado
+        truncated
     };
-    let sondados = engine.tokenize(&sondado, !use_tmpl, true);
-    let comum = common_prefix_len(tokens, &sondados);
-    retainable_prefix_len(comum, tokens.len())
+    let probed_tokens = engine.tokenize(&probed_text, !use_tmpl, true);
+    let common = common_prefix_len(tokens, &probed_tokens);
+    retainable_prefix_len(common, tokens.len())
 }
 
 pub(super) fn common_prefix_len(a: &[i32], b: &[i32]) -> usize {
@@ -314,9 +314,9 @@ mod prefix_rule_tests {
 
     #[test]
     fn a_conversation_that_only_grows_reuses_the_whole_previous_prompt() {
-        let turno1 = vec![10, 11, 12, 13];
-        let turno2 = vec![10, 11, 12, 13, 20, 21];
-        let d = plan_prefix_reuse(&turno1, 4, &turno2);
+        let turn1 = vec![10, 11, 12, 13];
+        let turn2 = vec![10, 11, 12, 13, 20, 21];
+        let d = plan_prefix_reuse(&turn1, 4, &turn2);
         assert!(d.reused);
         assert_eq!(d.cached_tokens, 4);
     }
@@ -367,17 +367,17 @@ mod prefix_rule_tests {
     #[test]
     fn prompt_and_generation_sequences_never_collide() {
         let max_sessions = 4u32;
-        let orcamento = crate::llm::kv_seq_budget(max_sessions);
-        assert_eq!(orcamento, 8);
+        let budget = crate::llm::kv_seq_budget(max_sessions);
+        assert_eq!(budget, 8);
         let prompts: Vec<u32> = (0..max_sessions).collect();
-        let geracoes: Vec<u32> = prompts.iter().map(|s| s + max_sessions).collect();
-        for g in &geracoes {
+        let generations: Vec<u32> = prompts.iter().map(|s| s + max_sessions).collect();
+        for g in &generations {
             assert!(
                 !prompts.contains(g),
                 "sequência {g} servindo aos dois papéis"
             );
             assert!(
-                *g < orcamento,
+                *g < budget,
                 "sequência {g} fora do orçamento do contexto"
             );
         }
@@ -577,15 +577,15 @@ mod retention_accounting_tests {
     /// Monta um caso em que células extras realmente ficaram em `prompt_seq`,
     /// para exercitar a recusa de remoção de sufixo. O caminho normal de prefill
     /// escreve os chunks após a fronteira estável em `gen_seq`.
-    fn sessao_de_fim_de_turno(retidos: &[i32], rabicho: u32) -> Session {
+    fn end_of_turn_session(retained: &[i32], trailing: u32) -> Session {
         let mut s = Session::new(0);
-        let total = retidos.len() as u32 + rabicho;
-        s.prompt_tokens = retidos.to_vec();
+        let total = retained.len() as u32 + trailing;
+        s.prompt_tokens = retained.to_vec();
         s.prompt_tokens
-            .extend(std::iter::repeat_n(999, rabicho as usize));
+            .extend(std::iter::repeat_n(999, trailing as usize));
         s.n_past = total;
         s.prompt_cells = total;
-        s.stable_len = retidos.len() as u32;
+        s.stable_len = retained.len() as u32;
         s
     }
 
@@ -597,18 +597,18 @@ mod retention_accounting_tests {
     /// prefixo fisicamente intacto.
     #[test]
     fn without_trimming_the_stable_boundary_positions_never_match_again() {
-        let mut sessao = sessao_de_fim_de_turno(&[1, 2, 3, 4, 5], 5);
-        let prompt_len = sessao.stable_len; // 5, a fronteira medida no turno.
+        let mut session = end_of_turn_session(&[1, 2, 3, 4, 5], 5);
+        let prompt_len = session.stable_len; // 5, a fronteira medida no turno.
 
-        sessao.apply_retention(prompt_len, false);
+        session.apply_retention(prompt_len, false);
 
-        assert_eq!(sessao.n_past, 5);
+        assert_eq!(session.n_past, 5);
         assert_eq!(
-            sessao.prompt_cells, 10,
+            session.prompt_cells, 10,
             "sem poda, a contagem física fica presa no rabicho"
         );
         assert!(
-            !sessao.positions_match_cells(),
+            !session.positions_match_cells(),
             "o portão de reuso tem que recusar um estado fisicamente inconsistente"
         );
     }
@@ -618,16 +618,16 @@ mod retention_accounting_tests {
     /// portão volta a abrir para o turno seguinte.
     #[test]
     fn trimming_the_stable_boundary_makes_positions_match_again() {
-        let mut sessao = sessao_de_fim_de_turno(&[1, 2, 3, 4, 5], 5);
-        let prompt_len = sessao.stable_len;
+        let mut session = end_of_turn_session(&[1, 2, 3, 4, 5], 5);
+        let prompt_len = session.stable_len;
 
-        sessao.apply_retention(prompt_len, true);
+        session.apply_retention(prompt_len, true);
 
-        assert_eq!(sessao.n_past, 5);
-        assert_eq!(sessao.prompt_cells, 5);
-        assert_eq!(sessao.prompt_tokens, vec![1, 2, 3, 4, 5]);
-        assert!(sessao.positions_match_cells());
-        assert_eq!(sessao.prompt_tokens.len() as u32, sessao.n_past);
+        assert_eq!(session.n_past, 5);
+        assert_eq!(session.prompt_cells, 5);
+        assert_eq!(session.prompt_tokens, vec![1, 2, 3, 4, 5]);
+        assert!(session.positions_match_cells());
+        assert_eq!(session.prompt_tokens.len() as u32, session.n_past);
     }
 
     /// Ponta a ponta, sem motor nenhum: a mesma sequência de eventos do
@@ -646,32 +646,32 @@ mod retention_accounting_tests {
 
         // Sem o conserto (trimmed_to_stable=false), o portão fica fechado
         // para sempre - a regressão relatada.
-        let mut sem_conserto = sessao_de_fim_de_turno(&[10, 11], 3);
-        sem_conserto.apply_retention(prompt_len, false);
-        assert!(!sem_conserto.positions_match_cells());
+        let mut unrepaired = end_of_turn_session(&[10, 11], 3);
+        unrepaired.apply_retention(prompt_len, false);
+        assert!(!unrepaired.positions_match_cells());
 
         // Com o conserto, o portão abre e a regra de produção decide.
-        let mut sessao = sessao_de_fim_de_turno(&[10, 11], 3);
-        sessao.apply_retention(prompt_len, true);
-        assert!(sessao.positions_match_cells());
-        assert_eq!(sessao.prompt_tokens.len() as u32, sessao.n_past);
+        let mut session = end_of_turn_session(&[10, 11], 3);
+        session.apply_retention(prompt_len, true);
+        assert!(session.positions_match_cells());
+        assert_eq!(session.prompt_tokens.len() as u32, session.n_past);
 
         // Turno 2: a conversa cresceu (render_prompt garante que o texto
         // cru do turno 1 é prefixo exato do turno 2 - ver `openai.rs`), então
         // os tokens novos começam com exatamente o que ficou retido.
-        let turno2 = vec![10, 11, 20, 21, 22];
-        let decisao = plan_prefix_reuse(&sessao.prompt_tokens, sessao.n_past, &turno2);
+        let turn2 = vec![10, 11, 20, 21, 22];
+        let decision = plan_prefix_reuse(&session.prompt_tokens, session.n_past, &turn2);
 
         assert!(
-            decisao.reused,
+            decision.reused,
             "o segundo pedido com o mesmo prefixo tem que acertar"
         );
-        assert_eq!(decisao.cached_tokens, 2);
+        assert_eq!(decision.cached_tokens, 2);
         assert!(
-            decisao.matched_tokens > 0,
+            decision.matched_tokens > 0,
             "prefix_match_tokens tem que ser > 0 no segundo pedido, não 0 como no relatório"
         );
-        assert_eq!(decisao.matched_tokens, 2);
+        assert_eq!(decision.matched_tokens, 2);
     }
 }
 
@@ -820,7 +820,7 @@ mod slot_count_tests {
     use super::count_slot_entries;
 
     #[test]
-    fn slot_count_usa_somente_entradas_do_diretorio() {
+    fn slot_count_uses_only_directory_entries() {
         let dir = std::env::temp_dir().join(format!("pom-slot-count-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).expect("diretório temporário");
         std::fs::write(dir.join("quebrado.json"), b"conteudo que nao e json")

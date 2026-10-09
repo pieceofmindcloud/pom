@@ -8,7 +8,7 @@ import { api } from "../lib/api";
 describe("AddNodeDialog", () => {
   afterEach(cleanup);
 
-  it("avisa que a faixa escolhida cria uma rota paralela", () => {
+  it("warns that the chosen range creates a parallel route", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -23,7 +23,7 @@ describe("AddNodeDialog", () => {
     expect(screen.getByText(/rota paralela/i)).toBeTruthy();
   });
 
-  it("nao avisa nada quando a faixa preenche um buraco", () => {
+  it("warns about nothing when the range fills a hole", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -38,7 +38,7 @@ describe("AddNodeDialog", () => {
     expect(screen.queryByText(/rota paralela/i)).toBeNull();
   });
 
-  it("re-semeia a selecao a cada abertura e nao guarda o node_id de uma sessao passada", () => {
+  it("re-seeds the selection on every open and does not keep the node_id of a past session", () => {
     const { rerender } = render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -82,7 +82,7 @@ describe("AddNodeDialog", () => {
     expect(select2.value).toBe("n3");
   });
 
-  it("mantem a maquina escolhida quando o painel repolla o cluster", () => {
+  it("keeps the chosen machine when the panel re-polls the cluster", () => {
     // O painel remonta `peers`/`slices` a cada resposta do cluster: arrays
     // novos, mesmo conteudo. A escolha do operador tem que sobreviver a isso.
     const peers = () => [
@@ -123,7 +123,7 @@ describe("AddNodeDialog", () => {
     expect((screen.getByDisplayValue("20-39") as HTMLSelectElement).value).toBe("20-39");
   });
 
-  it("troca a escolha quando a maquina escolhida sai da rede", () => {
+  it("switches the choice when the chosen machine leaves the network", () => {
     const { rerender } = render(
       <LocaleProvider initialLocale="pt-BR">
         <AddNodeDialog
@@ -159,7 +159,7 @@ describe("AddNodeDialog", () => {
     expect((screen.getByDisplayValue("maq1") as HTMLSelectElement).value).toBe("n1");
   });
 
-  it("reoferece as fatias e o modelo inteiro da maquina escolhida", async () => {
+  it("offers again the slices and the whole model of the chosen machine", async () => {
     const post = vi.spyOn(api, "post").mockImplementation(async (path, body) => {
       if (path === "/api/ui/deploy/node") {
         return { overlapping_layers: [] } as never;
@@ -238,7 +238,7 @@ describe("AddNodeDialog", () => {
     }
   });
 
-  it("não mostra o plano antigo enquanto lê o inventário real do alvo", async () => {
+  it("does not show the old plan while reading the real inventory of the target", async () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({
       options: [],
       cache_types: { cache_type_k: "f16", cache_type_v: "f16", choices: ["f16"] },

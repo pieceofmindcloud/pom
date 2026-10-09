@@ -992,11 +992,11 @@ fn encode_values_into(
     // A conversão passa por um bloco na pilha em vez de crescer o vetor valor
     // a valor: uma chamada de `extend_from_slice` por valor custa mais que a
     // conversão em si, e foi medida em quase o dobro do enquadramento inteiro.
-    const BLOCO: usize = 1024;
+    const BLOCK: usize = 1024;
     match dtype {
         WireDtype::F32 => {
-            let mut staging = [0u8; BLOCO * 4];
-            for block in values.chunks(BLOCO) {
+            let mut staging = [0u8; BLOCK * 4];
+            for block in values.chunks(BLOCK) {
                 for (slot, value) in staging.chunks_exact_mut(4).zip(block) {
                     slot.copy_from_slice(&value.to_le_bytes());
                 }
@@ -1004,8 +1004,8 @@ fn encode_values_into(
             }
         }
         WireDtype::F16 => {
-            let mut staging = [0u8; BLOCO * 2];
-            for block in values.chunks(BLOCO) {
+            let mut staging = [0u8; BLOCK * 2];
+            for block in values.chunks(BLOCK) {
                 let conversion_started = timing.as_ref().map(|_| std::time::Instant::now());
                 for (slot, value) in staging.chunks_exact_mut(2).zip(block) {
                     slot.copy_from_slice(&f32_to_f16_bits(*value).to_le_bytes());
@@ -1019,8 +1019,8 @@ fn encode_values_into(
             }
         }
         WireDtype::F8 => {
-            let mut staging = [0u8; BLOCO];
-            for block in values.chunks(BLOCO) {
+            let mut staging = [0u8; BLOCK];
+            for block in values.chunks(BLOCK) {
                 let conversion_started = timing.as_ref().map(|_| std::time::Instant::now());
                 for (slot, value) in staging.iter_mut().zip(block) {
                     *slot = f32_to_f8_bits(*value)?;
@@ -1277,10 +1277,10 @@ mod tests {
     /// captain); serve para registrar o número no commit e para tornar visível
     /// uma regressão de ordem de grandeza. O teto é folgado de propósito.
     #[test]
-    fn custo_do_enquadramento_por_travessia() {
+    fn framing_cost_per_traversal() {
         use super::*;
         const DIMS: usize = 5120;
-        const RODADAS: usize = 2000;
+        const ROUNDS: usize = 2000;
         let tensor = vec![0.25f32; DIMS];
         let items = [BatchPayloadItem {
             item_id: "item-0".into(),
@@ -1290,22 +1290,22 @@ mod tests {
             dtype: WireDtype::F16,
         }];
 
-        let comecou = std::time::Instant::now();
+        let started = std::time::Instant::now();
         let mut bytes = 0usize;
-        for _ in 0..RODADAS {
+        for _ in 0..ROUNDS {
             let encoded = encode_batch_items("/v1/step", "batch", &items).expect("codifica");
             bytes += encoded.len();
             let decoded = decode_batch_items(&encoded).expect("decodifica");
             assert_eq!(decoded.1.len(), 1);
         }
-        let por_travessia = comecou.elapsed().as_secs_f64() * 1e6 / RODADAS as f64;
+        let by_traversal = started.elapsed().as_secs_f64() * 1e6 / ROUNDS as f64;
         println!(
-            "enquadramento: {por_travessia:.1} us/travessia, {} bytes/quadro",
-            bytes / RODADAS
+            "enquadramento: {by_traversal:.1} us/travessia, {} bytes/quadro",
+            bytes / ROUNDS
         );
         assert!(
-            por_travessia < 2000.0,
-            "enquadramento de uma travessia levou {por_travessia:.1} us - \
+            by_traversal < 2000.0,
+            "enquadramento de uma travessia levou {by_traversal:.1} us - \
              ordem de grandeza acima do esperado"
         );
     }
@@ -1630,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn encoder_com_profile_mantem_bytes_e_tempos_sem_sobreposicao() {
+    fn encoder_with_profile_keeps_bytes_and_non_overlapping_times() {
         let meta = serde_json::json!({"session_id": "profile-session"});
         let values = vec![0.5_f32; 16_384];
         for dtype in [WireDtype::F8, WireDtype::F16] {

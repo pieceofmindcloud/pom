@@ -331,7 +331,7 @@ mod redeploy_preflight_tests {
         let state = state_with("coordinator", vec![serving_peer(port)]).await;
         install_job(&state, "redeploy-down").await;
 
-        let falhas = run_redeploy(
+        let failures = run_redeploy(
             state,
             whole_record(),
             RedeployRequest {
@@ -344,7 +344,7 @@ mod redeploy_preflight_tests {
         .await
         .expect("o redeploy não deve falhar de vez");
 
-        assert_eq!(falhas, 0, "a máquina que não servia deve ser subida, não contada como falha");
+        assert_eq!(failures, 0, "a máquina que não servia deve ser subida, não contada como falha");
         assert!(reconfigured_at.load(Ordering::SeqCst) > 0, "/api/ui/reconfigure deve ser chamado");
         assert!(
             unloaded_at.load(Ordering::SeqCst) < reconfigured_at.load(Ordering::SeqCst),

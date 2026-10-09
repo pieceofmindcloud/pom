@@ -6,15 +6,15 @@ describe("navigation structure", () => {
     const models = NAV.find((section) => section.labelKey === "nav.models");
 
     expect(models?.children?.map((child) => child.to)).toEqual([
-      "/modelos/remotos",
-      "/modelos",
-      "/modelos/fatiar",
-      "/fatias",
+      "/models/remote",
+      "/models",
+      "/models/slice",
+      "/shards",
     ]);
     expect(models?.children?.[0]?.labelKey).toBe("nav.remoteModels");
     expect(NAV.some((section) => section.labelKey === "nav.shardedModels")).toBe(false);
     expect(NAV.flatMap((section) => section.children ?? []).some(
-      (child) => child.to === "/fatias/andamento",
+      (child) => child.to === "/shards/progress",
     )).toBe(false);
   });
 
@@ -23,8 +23,8 @@ describe("navigation structure", () => {
 
     expect(deployments?.to).toBeUndefined();
     expect(deployments?.children?.map((child) => [child.labelKey, child.to])).toEqual([
-      ["nav.deploy", "/implantar"],
-      ["nav.history", "/implantacoes"],
+      ["nav.deploy", "/deploy"],
+      ["nav.history", "/deployments"],
     ]);
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });
@@ -35,7 +35,7 @@ describe("navigation structure", () => {
     expect(logs?.to).toBeUndefined();
     expect(logs?.children?.map((child) => [child.labelKey, child.to])).toEqual([
       ["nav.requestLogs", "/logs"],
-      ["nav.deploymentLogs", "/implantacoes/logs"],
+      ["nav.deploymentLogs", "/deployments/logs"],
     ]);
   });
 
@@ -43,7 +43,7 @@ describe("navigation structure", () => {
     const labels = NAV.map((section) => section.labelKey);
     expect(labels.indexOf("nav.statistics")).toBeGreaterThan(labels.indexOf("nav.logs"));
     expect(NAV.find((section) => section.labelKey === "nav.statistics")).toMatchObject({
-      to: "/estatisticas",
+      to: "/statistics",
     });
   });
 
@@ -52,7 +52,7 @@ describe("navigation structure", () => {
 
     expect(settings?.children?.map((child) => [child.labelKey, child.to])).toContainEqual([
       "nav.preferences",
-      "/config/preferencias",
+      "/config/preferences",
     ]);
   });
 
@@ -61,7 +61,7 @@ describe("navigation structure", () => {
 
     expect(settings?.children?.at(-1)).toMatchObject({
       labelKey: "nav.about",
-      to: "/config/sobre",
+      to: "/config/about",
     });
   });
 
@@ -76,7 +76,7 @@ describe("navigation structure", () => {
     const settings = NAV.find((section) => section.labelKey === "nav.settings");
     const entries = settings?.children?.map((child) => [child.labelKey, child.to]);
     expect(entries).not.toContainEqual(["nav.plugins", "/plugins"]);
-    expect(entries).toContainEqual(["nav.about", "/config/sobre"]);
+    expect(entries).toContainEqual(["nav.about", "/config/about"]);
   });
 
   it("keeps network chat separate and removes wizard and connection keys from the menu", () => {
@@ -87,14 +87,14 @@ describe("navigation structure", () => {
 });
 
 describe("navForProfile", () => {
-  it("mostra ao administrador o menu inteiro", () => {
+  it("shows the administrator the whole menu", () => {
     const labels = navForProfile("admin").map((s) => s.labelKey);
     expect(labels).toEqual(NAV.map((s) => s.labelKey));
     expect(navFooterForProfile("admin")).toEqual([]);
     expect(navFooterForProfile("node")).toEqual([]);
   });
 
-  it("tira do nó implantação, mas preserva as entradas Enterprise para descoberta", () => {
+  it("removes deployment from the node, but preserves the Enterprise entries for discovery", () => {
     const labels = navForProfile("node").map((s) => s.labelKey);
     expect(labels).not.toContain("nav.deploy");
     expect(labels).not.toContain("nav.deployments");
@@ -102,7 +102,7 @@ describe("navForProfile", () => {
     expect(labels).toContain("nav.statistics");
   });
 
-  it("mantém as superfícies Enterprise para admin e node quando a licença está inativa", () => {
+  it("keeps the Enterprise surfaces for admin and node when the license is inactive", () => {
     expect(navForProfile("infer", false).map((s) => s.labelKey)).not.toContain("nav.logs");
     expect(navForProfile("infer", false).map((s) => s.labelKey)).not.toContain("nav.statistics");
     for (const profile of ["admin", "node"] as const) {
@@ -112,11 +112,11 @@ describe("navForProfile", () => {
       expect(labels, profile).toContain("nav.statistics");
       expect(sections.find((s) => s.labelKey === "nav.logs")?.children?.map((child) => child.to), profile)
         .toContain("/logs");
-      expect(sections.find((s) => s.labelKey === "nav.statistics")?.to, profile).toBe("/estatisticas");
+      expect(sections.find((s) => s.labelKey === "nav.statistics")?.to, profile).toBe("/statistics");
     }
   });
 
-  it("preserva no nó tudo que ninguém restringiu", () => {
+  it("preserves on the node everything nobody restricted", () => {
     const sections = navForProfile("node");
     const labels = sections.map((s) => s.labelKey);
     expect(labels).toContain("nav.dashboard");
@@ -125,22 +125,22 @@ describe("navForProfile", () => {
     expect(labels).toContain("nav.settings");
     const models = sections.find((s) => s.labelKey === "nav.models");
     expect(models?.children?.map((c) => c.to)).toEqual([
-      "/modelos/remotos",
-      "/modelos",
-      "/modelos/fatiar",
-      "/fatias",
+      "/models/remote",
+      "/models",
+      "/models/slice",
+      "/shards",
     ]);
   });
 
-  it("mantém Rede e Configurações como menus principais", () => {
+  it("keeps Network and Settings as main menus", () => {
     const settings = navForProfile("node").find((section) => section.labelKey === "nav.settings");
     const network = navForProfile("node").find((section) => section.labelKey === "nav.network");
     expect(network?.children?.map((child) => child.to)).toEqual([
-      "/config/rede",
-      "/config/rede/participantes",
-      "/config/minha-maquina",
-      "/config/administracao",
-      "/config/compartilhamento",
+      "/config/network",
+      "/config/network/participants",
+      "/config/my-machine",
+      "/config/administration",
+      "/config/sharing",
       "/config/keys/api",
     ]);
     expect(network?.children?.map((child) => child.labelKey)).toEqual([
@@ -152,18 +152,18 @@ describe("navForProfile", () => {
       "nav.apiKeys",
     ]);
     expect(settings?.children?.map((child) => child.to)).toEqual([
-      "/config/preferencias",
-      "/config/armazenamento",
-      "/config/preferencias/admin",
-      "/config/sobre",
+      "/config/preferences",
+      "/config/storage",
+      "/config/preferences/admin",
+      "/config/about",
     ]);
 
     const inferSettings = navForProfile("infer");
     expect(inferSettings.some((section) => section.labelKey === "nav.network")).toBe(true);
-    expect(inferSettings.flatMap((section) => section.children ?? []).some((child) => child.to === "/config/rede/participantes")).toBe(false);
+    expect(inferSettings.flatMap((section) => section.children ?? []).some((child) => child.to === "/config/network/participants")).toBe(false);
   });
 
-  it("deixa a rede no menu principal do infer e move docs/config para o rodapé", () => {
+  it("leaves the network in the main menu of infer and moves docs/config to the footer", () => {
     expect(navForProfile("infer").map((section) => section.labelKey)).toEqual([
       "nav.publicNetworks",
       "nav.networkChat",
@@ -171,23 +171,23 @@ describe("navForProfile", () => {
       "nav.network",
     ]);
     expect(navFooterForProfile("infer").map((item) => [item.labelKey, item.to])).toEqual([
-      ["nav.documentation", "/documentacao"],
-      ["nav.settings", "/config/preferencias"],
+      ["nav.documentation", "/documentation"],
+      ["nav.settings", "/config/preferences"],
     ]);
   });
 
-  it("oferece o compartilhamento aos três perfis", () => {
+  it("offers sharing to the three profiles", () => {
     for (const profile of ["admin", "node", "infer"] as const) {
-      const destinos = navForProfile(profile).flatMap((section) => [
+      const destinations = navForProfile(profile).flatMap((section) => [
         section.to,
         ...(section.children ?? []).map((child) => child.to),
       ]);
-      expect(destinos).toContain("/config/compartilhamento");
+      expect(destinations).toContain("/config/sharing");
     }
   });
 
   /** Filtrar não pode reescrever `NAV`: o menu do outro perfil viria podado. */
-  it("não modifica a tabela de origem", () => {
+  it("does not modify the source table", () => {
     const before = JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)));
     navForProfile("node");
     expect(JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)))).toBe(before);

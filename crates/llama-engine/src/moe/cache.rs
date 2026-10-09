@@ -1398,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn stats_expoem_hits_misses_e_residencia_do_cache_global() {
+    fn stats_expose_hits_misses_and_residency_of_the_global_cache() {
         let probe = Arc::new(FixedProbe::new(100));
         let cache = cache_with_baseline(&probe, 100);
         let first = cache.admit(key(1), vec![1, 2, 3]).unwrap();
@@ -1420,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn hit_reutiliza_payload_e_marca_lease_ativo() {
+    fn a_hit_reuses_the_payload_and_marks_the_lease_active() {
         let probe = Arc::new(FixedProbe::new(10));
         let cache = cache(&probe);
         let first = cache.admit(key(1), vec![1, 2, 3]).unwrap();
@@ -1433,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn eviction_e_global_e_preserva_entrada_ativa() {
+    fn eviction_is_global_and_preserves_the_active_entry() {
         let probe = Arc::new(FixedProbe::new(6));
         let cache = cache_with_baseline(&probe, 6);
         let active = cache.admit(key(1), vec![1, 1, 1]).unwrap();
@@ -1449,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn nova_medicao_pode_forcar_eviction_antes_de_alocar() {
+    fn a_new_measurement_may_force_eviction_before_allocating() {
         let probe = Arc::new(FixedProbe::new(10));
         let cache = cache(&probe);
         let first = cache.admit(key(1), vec![1; 6]).unwrap();
@@ -1463,7 +1463,7 @@ mod tests {
     }
 
     #[test]
-    fn sem_entrada_ociosa_a_admissao_nao_expulsa_lease_ativo() {
+    fn with_no_idle_entry_admission_does_not_evict_an_active_lease() {
         let probe = Arc::new(FixedProbe::new(4));
         let cache = cache_with_baseline(&probe, 4);
         let _active = cache.admit(key(1), vec![1; 4]).unwrap();
@@ -1538,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_device_hit_reutiliza_handle_sem_novo_upload() {
+    fn device_cache_hit_reuses_the_handle_without_a_new_upload() {
         let allocator = FakeDeviceAllocator::new(100);
         let cache = device_cache(&allocator, 100);
         let first = cache.admit(key(1), &[1, 2, 3]).unwrap();
@@ -1554,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_device_admite_lote_com_um_snapshot_de_memoria() {
+    fn device_cache_admits_a_batch_with_one_memory_snapshot() {
         let allocator = FakeDeviceAllocator::new(100);
         let cache = device_cache(&allocator, 100);
         let payload_a = [1, 2, 3];
@@ -1572,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_device_publica_capacidade_efetiva_por_shard() {
+    fn device_cache_publishes_the_effective_capacity_per_shard() {
         let allocator0 = FakeDeviceAllocator::new(100);
         let allocator1 = FakeDeviceAllocator::new(80);
         let account = |baseline| MemoryAccount {
@@ -1609,7 +1609,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_device_distribui_experts_e_reutiliza_o_dispositivo_da_entrada() {
+    fn device_cache_spreads_experts_and_reuses_the_entry_device() {
         let allocator0 = FakeDeviceAllocator::new(100);
         let allocator1 = FakeDeviceAllocator::new(100);
         let account = |baseline| MemoryAccount {
@@ -1665,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_device_nao_expulsa_lease_ativo() {
+    fn device_cache_does_not_evict_an_active_lease() {
         let allocator = FakeDeviceAllocator::new(4);
         let cache = device_cache(&allocator, 4);
         let active = cache.admit(key(1), &[1, 1, 1]).unwrap();
@@ -1677,7 +1677,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_device_recusa_payload_que_nao_cabe_no_orcamento_medido() {
+    fn device_cache_refuses_a_payload_that_does_not_fit_the_measured_budget() {
         let allocator = FakeDeviceAllocator::new(2);
         let cache = device_cache(&allocator, 2);
         let error = match cache.admit(key(1), &[1, 2, 3]) {
@@ -1690,7 +1690,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento() {
+    fn device_cache_refuses_an_expert_when_the_measured_workspace_used_up_the_budget() {
         let allocator = FakeDeviceAllocator::new(250);
         let account = MemoryAccount::for_device_cache(250, 1_000).unwrap();
         let cache =
@@ -1710,7 +1710,7 @@ mod tests {
     }
 
     #[test]
-    fn warmup_admite_ate_o_orcamento_e_reporta_limite() {
+    fn warmup_admits_up_to_the_budget_and_reports_the_limit() {
         let allocator = FakeDeviceAllocator::new(5);
         let cache = device_cache(&allocator, 5);
         let candidates = vec![Ok((key(1), vec![1; 3])), Ok((key(2), vec![2; 6]))];
@@ -1729,7 +1729,7 @@ mod tests {
     }
 
     #[test]
-    fn warmup_cancelado_nao_carrega_o_primeiro_payload() {
+    fn a_cancelled_warmup_does_not_load_the_first_payload() {
         let allocator = FakeDeviceAllocator::new(10);
         let cache = device_cache(&allocator, 10);
         let options = DeviceWarmupOptions::new(Duration::from_secs(1));
@@ -1743,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn warmup_cancelado_depois_de_obter_candidato_nao_admite_payload() {
+    fn a_warmup_cancelled_after_getting_a_candidate_admits_no_payload() {
         let allocator = FakeDeviceAllocator::new(10);
         let cache = device_cache(&allocator, 10);
         let options = DeviceWarmupOptions::new(Duration::from_secs(1));
@@ -1768,7 +1768,7 @@ mod tests {
     }
 
     #[test]
-    fn warmup_com_prazo_zero_e_observavel() {
+    fn a_warmup_with_a_zero_deadline_is_observable() {
         let allocator = FakeDeviceAllocator::new(10);
         let cache = device_cache(&allocator, 10);
 
@@ -1783,7 +1783,7 @@ mod tests {
     }
 
     #[test]
-    fn warmup_para_ao_encher_sem_repetir_evictions() {
+    fn warmup_stops_when_full_without_repeating_evictions() {
         let allocator = FakeDeviceAllocator::new(5);
         let cache = device_cache(&allocator, 5);
         let candidates = vec![
@@ -1806,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn orcamento_zero_e_diagnosticado_sem_falar_de_um_expert() {
+    fn a_zero_budget_is_diagnosed_without_mentioning_an_expert() {
         let allocator = FakeDeviceAllocator::new(1);
         let cache = DeviceExpertCache::new(
             MemoryAccount {

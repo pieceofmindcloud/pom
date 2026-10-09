@@ -33,7 +33,7 @@ INFERENCE = {1: 8092}
 INFERENCE_BASE = 8181
 
 
-def porta_inferencia(n: int) -> int:
+def inference_port(n: int) -> int:
     return INFERENCE.get(n, INFERENCE_BASE + n - 1)
 
 
@@ -67,7 +67,7 @@ def _advertise_host_with_node_port(config: dict, advertise_addr: str) -> str:
     return f"{host}:{node_port}"
 
 
-def config_com_advertise_addr(config: dict, advertise_addr: str) -> dict:
+def config_with_advertise_addr(config: dict, advertise_addr: str) -> dict:
     """Atualiza só o endpoint anunciado, preservando o restante da config.
 
     When a full endpoint is supplied, its host is shared but its port is
@@ -78,7 +78,7 @@ def config_com_advertise_addr(config: dict, advertise_addr: str) -> dict:
     return updated
 
 
-def config_do_no(
+def node_config_for(
     base: dict,
     n: int,
     total: int,
@@ -89,7 +89,7 @@ def config_do_no(
     cfg["node_name"] = None if n == 1 else f"ksia-{n}"
     cfg["gateway_port"] = GATEWAY_BASE + n - 1
     cfg["p2p_port"] = P2P_BASE + n - 1
-    cfg["inference_port"] = porta_inferencia(n)
+    cfg["inference_port"] = inference_port(n)
     # So o no 1 escuta na porta de descoberta 42777, entao o broadcast da LAN
     # nao alcanca os outros quatro: sem bootstrap explicito eles ficariam mudos
     # entre si. Todos apontam para o principal, que devolve a lista completa.
@@ -98,14 +98,14 @@ def config_do_no(
     # para os outros quatro so multiplicaria o segredo sem necessidade.
     cfg["api_keys"] = base.get("api_keys", []) if n == 1 else []
     if advertise_addr is not None:
-        cfg = config_com_advertise_addr(cfg, advertise_addr)
+        cfg = config_with_advertise_addr(cfg, advertise_addr)
     return cfg
 
 
 def main() -> int:
-    raiz = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser()
-    p.add_argument("--base", default=str(raiz / "pom.json"))
+    p.add_argument("--base", default=str(root / "pom.json"))
     p.add_argument("--nodes", type=int, default=5)
     p.add_argument("--force", action="store_true",
                    help="sobrescreve configs que ja existem")
@@ -115,37 +115,37 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    caminho_base = Path(args.base)
-    if not caminho_base.is_file():
-        print(f"config de referencia nao encontrada: {caminho_base}", file=sys.stderr)
+    base_path = Path(args.base)
+    if not base_path.is_file():
+        print(f"config de referencia nao encontrada: {base_path}", file=sys.stderr)
         return 1
-    base = json.loads(caminho_base.read_text())
+    base = json.loads(base_path.read_text())
 
     if not base.get("connection_key"):
-        print(f"{caminho_base} nao tem connection_key; sem ela os nos nao se "
+        print(f"{base_path} nao tem connection_key; sem ela os nos nao se "
               f"autenticam entre si", file=sys.stderr)
         return 1
 
     for n in range(1, args.nodes + 1):
-        destino = raiz / "tests" / "fixtures" / f"node-{n}"
-        destino.mkdir(parents=True, exist_ok=True)
-        alvo = destino / "pom.json"
-        if alvo.exists() and not args.force:
+        destination = root / "tests" / "fixtures" / f"node-{n}"
+        destination.mkdir(parents=True, exist_ok=True)
+        target = destination / "pom.json"
+        if target.exists() and not args.force:
             if args.advertise_addr is None:
                 print(f"node-{n}: ja existe, mantido (use --force para sobrescrever)")
                 continue
-            existente = json.loads(alvo.read_text())
-            atualizado = config_com_advertise_addr(existente, args.advertise_addr)
-            if atualizado != existente:
-                alvo.write_text(json.dumps(atualizado, indent=2) + "\n")
+            existing = json.loads(target.read_text())
+            updated = config_with_advertise_addr(existing, args.advertise_addr)
+            if updated != existing:
+                target.write_text(json.dumps(updated, indent=2) + "\n")
                 print(f"node-{n}: advertise_addr atualizado")
             else:
                 print(f"node-{n}: advertise_addr ja estava atualizado")
             continue
-        cfg = config_do_no(base, n, args.nodes, args.advertise_addr)
-        alvo.write_text(json.dumps(cfg, indent=2) + "\n")
-        papel = cfg["role"]
-        print(f"node-{n}: {papel:9} gateway {cfg['gateway_port']} "
+        cfg = node_config_for(base, n, args.nodes, args.advertise_addr)
+        target.write_text(json.dumps(cfg, indent=2) + "\n")
+        role = cfg["role"]
+        print(f"node-{n}: {role:9} gateway {cfg['gateway_port']} "
               f"p2p {cfg['p2p_port']} inferencia {cfg['inference_port']}")
 
     print("\nA chave de identidade (.pom-node.key) de cada no e criada no "

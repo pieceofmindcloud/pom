@@ -216,7 +216,7 @@ export function RemoteModels() {
                 />
                 {providerStatus.data && !providerStatus.data.cli.authenticated && (
                   <Link
-                    to="/config/preferencias#hugging-face"
+                    to="/config/preferences#hugging-face"
                     className="absolute right-2 top-1/2 -translate-y-1/2 truncate text-[0.68rem] font-medium text-amber hover:text-amber/80"
                   >
                     {t("remoteModels.loginRequired")}

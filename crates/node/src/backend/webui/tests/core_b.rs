@@ -13,24 +13,24 @@ mod node_name_tests {
     use crate::gateway::testkit::{body_of, peer, state_named};
 
     #[tokio::test]
-    async fn o_catalogo_local_se_apresenta_pelo_nome_do_no() {
+    async fn the_local_catalog_presents_itself_by_the_node_name() {
         let state = state_named("eu", "atena", vec![]).await;
 
-        let corpo = body_of(models(State(state)).await.into_response()).await;
+        let body = body_of(models(State(state)).await.into_response()).await;
 
         assert_eq!(
-            corpo["hostname"], "atena",
+            body["hostname"], "atena",
             "o catálogo tem que dizer o nome do nó, não o hostname do SO"
         );
     }
 
     #[tokio::test]
-    async fn o_catalogo_do_cluster_tambem() {
+    async fn the_cluster_catalog_too() {
         let state = state_named("eu", "atena", vec![]).await;
 
-        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+        let body = body_of(cluster_models(State(state)).await.into_response()).await;
 
-        let eu = &corpo["peers"][0];
+        let eu = &body["peers"][0];
         assert_eq!(eu["is_self"], true);
         assert_eq!(eu["hostname"], "atena");
     }
@@ -40,23 +40,23 @@ mod node_name_tests {
     /// `hostname`** e a tela caía no `node_id` — um prefixo hexadecimal no
     /// lugar do nome da máquina, que é o rótulo errado do relato.
     #[tokio::test]
-    async fn um_peer_que_nao_respondeu_ainda_tem_nome() {
+    async fn a_peer_that_did_not_answer_still_has_a_name() {
         // A porta do peer falso não tem ninguém ouvindo: a consulta falha.
-        let mut mudo = peer("outro", "ksia", 1);
-        mudo.hostname = "ksia".into();
-        let state = state_named("eu", "atena", vec![mudo]).await;
+        let mut silent = peer("outro", "ksia", 1);
+        silent.hostname = "ksia".into();
+        let state = state_named("eu", "atena", vec![silent]).await;
 
-        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+        let body = body_of(cluster_models(State(state)).await.into_response()).await;
 
-        let outro = corpo["peers"]
+        let other = body["peers"]
             .as_array()
             .unwrap()
             .iter()
             .find(|p| p["node_id"] == "outro")
             .expect("o peer entra na lista mesmo sem responder");
-        assert!(!outro["error"].is_null(), "e a falha continua reportada");
+        assert!(!other["error"].is_null(), "e a falha continua reportada");
         assert_eq!(
-            outro["hostname"], "ksia",
+            other["hostname"], "ksia",
             "sem nome a tela cai no node_id, que é um prefixo hexadecimal"
         );
     }

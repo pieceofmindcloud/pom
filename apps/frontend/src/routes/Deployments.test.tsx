@@ -34,7 +34,7 @@ vi.mock("../lib/api", () => ({
   // reclama de `undefined` e polui a saída do teste.
   api: {
     get: vi.fn(async (url: string) =>
-      url === "/api/ui/node" ? { connection_key: "", pom_desenv: true } : { jobs: [] },
+      url === "/api/ui/node" ? { connection_key: "", pom_dev_mode: true } : { jobs: [] },
     ),
     post: vi.fn(async () => ({})),
     del: vi.fn(async () => ({})),
@@ -149,7 +149,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Deployments", () => {
-  it("mostra as duas implantações do mesmo modelo, com estados distintos", async () => {
+  it("shows the two deployments of the same model, with distinct states", async () => {
     listDeployments.mockResolvedValue({
       node_id: "eu",
       deployments: [
@@ -174,7 +174,7 @@ describe("Deployments", () => {
     expect(screen.getByText("Modelo inteiro")).toBeTruthy();
   });
 
-  it("organiza pela última ativação de versão, não pela criação", async () => {
+  it("organizes by the last version activation, not by creation", async () => {
     listDeployments.mockResolvedValue({
       node_id: "no-a",
       deployments: [
@@ -205,7 +205,7 @@ describe("Deployments", () => {
     expect(screen.getByText("Última ativação")).toBeTruthy();
   });
 
-  it("reimplanta mandando o parâmetro mexido e preservando o resto", async () => {
+  it("redeploys sending the changed parameter and preserving the rest", async () => {
     listDeployments.mockResolvedValue({
       node_id: "eu",
       deployments: [row("d-aaaaaaaa", { serving: true, isDefault: true })],
@@ -221,11 +221,11 @@ describe("Deployments", () => {
     const nCtx = (await screen.findByRole("spinbutton", { name: /contexto|n_ctx/i })) as
       | HTMLInputElement
       | undefined;
-    const campo = nCtx ?? (document.querySelector('input[name="n_ctx"]') as HTMLInputElement);
-    expect(campo.value).toBe("8192");
+    const field = nCtx ?? (document.querySelector('input[name="n_ctx"]') as HTMLInputElement);
+    expect(field.value).toBe("8192");
 
     act(() => {
-      fireEvent.change(campo, { target: { value: "16384" } });
+      fireEvent.change(field, { target: { value: "16384" } });
     });
     click(screen.getByText("Recarregar com estes valores"));
 
@@ -246,7 +246,7 @@ describe("Deployments", () => {
     expect(body.per_node["no-a"]).toBeTruthy();
   });
 
-  it("só oferece tornar padrão para quem ainda não é", async () => {
+  it("only offers make default to whoever is not yet", async () => {
     listDeployments.mockResolvedValue({
       node_id: "eu",
       deployments: [
@@ -263,21 +263,21 @@ describe("Deployments", () => {
     mount();
     await waitFor(() => expect(screen.getByText("d-bbbbbbbb")).toBeTruthy());
 
-    const botoes = screen.getAllByText("Tornar padrão");
-    expect(botoes).toHaveLength(1);
+    const buttons = screen.getAllByText("Tornar padrão");
+    expect(buttons).toHaveLength(1);
 
-    click(botoes[0]);
+    click(buttons[0]);
     await waitFor(() => expect(activateDeployment).toHaveBeenCalledWith("d-bbbbbbbb"));
   });
 
-  it("não oferece ação nenhuma quando não há implantação", async () => {
+  it("offers no action at all when there is no deployment", async () => {
     listDeployments.mockResolvedValue({ node_id: "eu", deployments: [] });
     mount();
     await waitFor(() => expect(screen.getByText("Nada implantado ainda")).toBeTruthy());
     expect(screen.queryByText("Reimplantar com novos parâmetros")).toBeNull();
   });
 
-  it("mostra o motor do plugin e as configurações dele, não os números do llama.cpp", async () => {
+  it("shows the plugin engine and its settings, not the llama.cpp numbers", async () => {
     const strata = row("d-strata01", { serving: true, isDefault: true, kind: "whole" });
     for (const target of [...strata.deployment.versions!.map((v) => v.params), strata.deployment.nodes[0].config]) {
       Object.assign(target, { inference_service: "strata", engine_settings: { "sampling.top_k": 20 } });
@@ -295,7 +295,7 @@ describe("Deployments", () => {
     expect(summary.textContent).not.toContain("batch");
   });
 
-  it("expande uma linha e reimplanta uma versão pelo número", async () => {
+  it("expands a row and redeploys a version by number", async () => {
     listDeployments.mockResolvedValue({
       node_id: "eu",
       deployments: [
@@ -325,16 +325,16 @@ describe("Deployments", () => {
     expect(screen.getByText("v2")).toBeTruthy();
     expect(screen.getByText("Ativa")).toBeTruthy();
 
-    const botoes = screen.getAllByText("Reimplantar esta versão");
+    const buttons = screen.getAllByText("Reimplantar esta versão");
     // v2 primeiro (mais recente); clicar em v1 é o segundo.
-    click(botoes[1]);
+    click(buttons[1]);
 
     await waitFor(() => expect(redeployDeployment).toHaveBeenCalledWith("d-aaaaaaaa", {
       version: 1,
     }));
   });
 
-  it("edita e reimplanta a partir de uma versão, no mesmo inspetor à direita", async () => {
+  it("edits and redeploys from a version, in the same inspector on the right", async () => {
     listDeployments.mockResolvedValue({
       node_id: "eu",
       deployments: [
@@ -373,7 +373,7 @@ describe("Deployments", () => {
    * responde "com que parâmetros esta versão subiu?" sem obrigar a abrir o
    * diálogo de reimplantar, que é um formulário editável e sugere mudança.
    */
-  it("abre as propriedades de uma versão em somente leitura", async () => {
+  it("opens the properties of a version read-only", async () => {
     listDeployments.mockResolvedValue({
       node_id: "eu",
       deployments: [

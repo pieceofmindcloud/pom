@@ -793,7 +793,7 @@ mod moe_route_tests {
     use super::*;
 
     #[test]
-    fn primeira_saida_nao_finita_e_identificada_antes_da_copia() {
+    fn the_first_non_finite_output_is_identified_before_the_copy() {
         assert!(first_non_finite(&[0.0, 1.0, f32::NAN])
             .is_some_and(|(index, value)| index == 2 && value.is_nan()));
         assert!(first_non_finite(&[0.0, f32::INFINITY])
@@ -802,7 +802,7 @@ mod moe_route_tests {
     }
 
     #[test]
-    fn metricas_da_captura_separam_espera_copia_e_pos_processamento() {
+    fn capture_metrics_separate_wait_copy_and_post_processing() {
         let mut slot = CaptureSlot::default();
         slot.ready_wait_us = 1_468_000;
         slot.copy_us = 1_200;
@@ -823,7 +823,7 @@ mod moe_route_tests {
     }
 
     #[test]
-    fn rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major() {
+    fn the_llama_cpp_get_rows_route_already_arrives_in_token_major_order() {
         // `ggml_get_rows` writes the [1, used, tokens] result with slot as
         // the fastest-changing dimension. After the C++ reshape to
         // [used, tokens], the callback therefore receives
@@ -839,7 +839,7 @@ mod moe_route_tests {
     }
 
     #[test]
-    fn indices_de_expert_acima_de_127_preservam_i32() {
+    fn expert_indices_above_127_preserve_i32() {
         let selected_experts = [132, 129, 38, 253];
         let weights = [0.4, 0.3, 0.2, 0.1];
 
@@ -851,7 +851,7 @@ mod moe_route_tests {
     }
 
     #[test]
-    fn rota_nao_finita_identifica_tensor_token_slot_e_expert() {
+    fn a_non_finite_route_identifies_tensor_token_slot_and_expert() {
         let error = normalize_moe_route("qwen35moe", 4, &[13, 27], &[f32::INFINITY, 0.5], 1, 2)
             .unwrap_err()
             .to_string();
@@ -865,7 +865,7 @@ mod moe_route_tests {
     }
 
     #[test]
-    fn diagnostico_da_rota_registra_entrada_bruta_e_layout_de_token_zero() {
+    fn route_diagnostic_records_raw_input_and_token_zero_layout() {
         let selected_experts = [10, 20, 11, 21, 12, 22];
         let weights = [0.1, 0.4, 0.2, 0.5, 0.3, 0.6];
 
@@ -895,14 +895,14 @@ mod moe_route_tests {
     }
 
     #[test]
-    fn diagnostico_captura_primeira_chamada_e_rota_nao_finita_em_qualquer_camada() {
+    fn diagnostic_captures_the_first_call_and_a_non_finite_route_in_any_layer() {
         assert!(route_diagnostic_should_emit(true, false));
         assert!(route_diagnostic_should_emit(false, true));
         assert!(!route_diagnostic_should_emit(false, false));
     }
 
     #[test]
-    fn diagnostico_de_saida_preserva_argumentos_crus_e_motivo_do_retorno() {
+    fn output_diagnostic_preserves_raw_arguments_and_the_return_reason() {
         let diagnostic = build_moe_callback_exit_diagnostic(
             "null_callback_argument",
             0x11usize as *mut c_void,
@@ -951,7 +951,7 @@ mod moe_route_tests {
 
     #[test]
     #[ignore = "prova do callback requer POM_MOE_ROUTE_DIAGNOSTICS=1"]
-    fn callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink() {
+    fn callback_entry_emits_the_default_warn_and_the_moe_target_on_the_same_sink() {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
             .with_env_filter(
@@ -990,7 +990,7 @@ mod moe_route_tests {
 
     #[test]
     #[ignore = "prova do dispatcher global requer POM_MOE_ROUTE_DIAGNOSTICS=1"]
-    fn callback_global_emite_diagnostico_em_thread_externa_e_registra_gate() {
+    fn global_callback_emits_the_diagnostic_on_an_external_thread_and_records_the_gate() {
         std::env::set_var(MOE_ROUTE_DIAGNOSTICS_ENV, "1");
         let bytes = Arc::new(Mutex::new(Vec::new()));
         tracing_subscriber::fmt()
@@ -1183,7 +1183,7 @@ pub(super) fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
         }
     }
     match slot.buf.as_mut() {
-        Some(acumulado) => acumulado.extend_from_slice(&floats),
+        Some(accumulated) => accumulated.extend_from_slice(&floats),
         None => slot.buf = Some(floats),
     }
 }
@@ -1526,9 +1526,9 @@ pub(super) unsafe fn json_from_wrapper(
         warn!("diagnóstico do llama.cpp indisponível (status {status})");
         return None;
     }
-    let texto = CStr::from_ptr(raw).to_string_lossy().into_owned();
+    let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
     sys::llama_rs_string_free(raw);
-    match serde_json::from_str(&texto) {
+    match serde_json::from_str(&text) {
         Ok(v) => Some(v),
         Err(e) => {
             warn!("diagnóstico do llama.cpp veio com JSON inválido: {e}");

@@ -18,18 +18,18 @@ mod delete_tests {
 
         // Um `blobs/` sem `manifests/` ao lado não é o store do Ollama — o
         // LM Studio também tem uma pasta com esse nome, e vazia.
-        let outro = std::env::temp_dir().join(format!("pom-del2-{}", std::process::id()));
-        std::fs::create_dir_all(outro.join("blobs")).unwrap();
-        let solto = outro.join("blobs").join("sha256-xyz");
-        std::fs::write(&solto, b"GGUF").unwrap();
-        assert!(!is_ollama_blob(&solto));
+        let other = std::env::temp_dir().join(format!("pom-del2-{}", std::process::id()));
+        std::fs::create_dir_all(other.join("blobs")).unwrap();
+        let loose = other.join("blobs").join("sha256-xyz");
+        std::fs::write(&loose, b"GGUF").unwrap();
+        assert!(!is_ollama_blob(&loose));
 
-        let fatia = root.join("solto.gguf");
-        std::fs::write(&fatia, b"GGUF").unwrap();
-        assert!(!is_ollama_blob(&fatia));
+        let slice = root.join("solto.gguf");
+        std::fs::write(&slice, b"GGUF").unwrap();
+        assert!(!is_ollama_blob(&slice));
 
         std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&outro).ok();
+        std::fs::remove_dir_all(&other).ok();
     }
 }
 
@@ -176,14 +176,14 @@ mod leave_tests {
 }
 
 #[cfg(test)]
-mod catalogo_sob_tls_tests {
+mod catalog_under_tls_tests {
     use super::*;
     use crate::gateway::testkit::state_with;
     use crate::network::PeerInfo;
 
     /// Porta 1, fechada de proposito: o que se afirma aqui nao e que a chamada
     /// deu certo, e sim **por qual cliente** ela saiu.
-    fn peer_com_gateway(node_id: &str) -> PeerInfo {
+    fn peer_with_gateway(node_id: &str) -> PeerInfo {
         crate::gateway::testkit::peer(node_id, node_id, 1)
     }
 
@@ -197,9 +197,9 @@ mod catalogo_sob_tls_tests {
     /// implantar nada. O cache por peer so ganha entrada quando alguem pediu um
     /// cliente pinado, entao ele e a prova de que o caminho certo foi usado.
     #[tokio::test]
-    async fn cluster_models_fala_com_os_peers_pelo_cliente_pinado() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
-        let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
+    async fn cluster_models_talks_to_the_peers_through_the_pinned_client() {
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
+        let state = state_with("eu", vec![peer_with_gateway("outro")]).await;
         state.peer_http.apply_cluster_policy(true);
         assert!(state.peer_http.cached_peers().is_empty());
 
@@ -216,9 +216,9 @@ mod catalogo_sob_tls_tests {
     /// Mesma prova para o levantamento da tela de implantar (`deploy::survey`),
     /// que e por onde o defeito apareceu para o operador.
     #[tokio::test]
-    async fn a_lista_de_maquinas_para_implantar_tambem_e_pinada() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
-        let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
+    async fn the_machine_list_for_deploying_is_pinned_too() {
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
+        let state = state_with("eu", vec![peer_with_gateway("outro")]).await;
         state.peer_http.apply_cluster_policy(true);
 
         let _ = crate::deploy::survey_for_tests(&state, "qwen35").await;
@@ -246,7 +246,7 @@ mod tls_settings_tests {
     /// Só o principal decide. A checagem é **no servidor**: esconder o botão na
     /// tela é conveniência, não controle.
     #[tokio::test]
-    async fn no_comum_nao_pode_ligar_tls() {
+    async fn a_regular_node_cannot_turn_tls_on() {
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Node;
 
@@ -268,10 +268,10 @@ mod tls_settings_tests {
     /// No principal, virar a flag vale na hora: config gravada, anúncio novo, e
     /// os clientes trocados. Sem reinício, e nos dois sentidos.
     #[tokio::test]
-    async fn principal_liga_e_desliga_sem_reinicio() {
+    async fn the_principal_turns_it_on_and_off_without_a_restart() {
         // Este teste mexe no esquema global das URLs; ver a nota em
-        // `peer_client::POLITICA_GLOBAL`.
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        // `peer_client::GLOBAL_POLICY`.
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
 
@@ -307,7 +307,7 @@ mod tls_settings_tests {
     /// A tela precisa de duas coisas diferentes: se está ligado, e se **este**
     /// nó pode mexer.
     #[tokio::test]
-    async fn node_info_conta_estado_e_autoridade() {
+    async fn node_info_reports_state_and_authority() {
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Node;
         let info = node_info(State(state.clone())).await;
@@ -328,7 +328,7 @@ mod cluster_logs_settings_tests {
     use crate::gateway::testkit::{body_of, state_with};
 
     #[tokio::test]
-    async fn no_comum_nao_pode_ligar_logs() {
+    async fn a_regular_node_cannot_turn_logs_on() {
         let state = state_with("eu", vec![]).await;
 
         let response = save_cluster_logs(
@@ -345,8 +345,8 @@ mod cluster_logs_settings_tests {
     }
 
     #[tokio::test]
-    async fn principal_sem_o_plugin_de_logs_nao_liga_a_coleta_mas_desliga() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+    async fn the_principal_without_the_logs_plugin_cannot_turn_collection_on_but_can_turn_it_off() {
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         state.network.set_cluster_logs_enabled(true);
@@ -383,7 +383,7 @@ mod network_chat_settings_tests {
 
     #[tokio::test]
     async fn principal_toggle_survives_the_next_authenticated_policy_cycle() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
 

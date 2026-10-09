@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn suspende_apenas_quando_uma_temperatura_conhecida_passa_do_limite() {
+    fn suspends_only_when_a_known_temperature_exceeds_the_limit() {
         let now = Instant::now();
         let mut machine = ThermalMachine::new(policy());
 
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn leitura_indisponivel_nunca_e_temperatura_alta() {
+    fn an_unavailable_reading_is_never_a_high_temperature() {
         let now = Instant::now();
         let mut machine = ThermalMachine::new(policy());
 
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn retomada_exige_todas_as_gpus_conhecidas_frias_pelo_cooldown() {
+    fn resume_requires_all_known_gpus_cool_for_the_cooldown() {
         let now = Instant::now();
         let mut machine = ThermalMachine::new(policy());
         assert_eq!(
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn temperatura_acima_do_limite_de_religar_interrompe_o_cooldown() {
+    fn a_temperature_above_the_resume_limit_interrupts_the_cooldown() {
         let now = Instant::now();
         let mut machine = ThermalMachine::new(policy());
         assert_eq!(
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn politica_recusa_limites_que_nao_formam_histerese_valida() {
+    fn the_policy_refuses_limits_that_do_not_form_a_valid_hysteresis() {
         let mut invalid = policy();
         invalid.limit_c = f64::NAN;
         assert!(invalid.validate().is_err());
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn politica_respeita_os_limites_de_integridade_da_rede() {
+    fn the_policy_honors_the_network_integrity_limits() {
         let mut valid = policy();
         valid.limit_c = 70.0;
         valid.cooldown_secs = 60;

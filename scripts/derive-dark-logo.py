@@ -20,13 +20,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-RAIZ = Path(__file__).resolve().parent.parent
-ENTRADA = RAIZ / "assets/brand/pom-logo-light.png"
-SAIDA = RAIZ / "assets/brand/pom-logo-dark.png"
+ROOT = Path(__file__).resolve().parent.parent
+INPUT = ROOT / "assets/brand/pom-logo-light.png"
+OUTPUT = ROOT / "assets/brand/pom-logo-dark.png"
 
 # Retângulo da ilustração no arquivo de origem (680x411). Medido a partir do
 # brilho dourado, que só existe no cérebro.
-ILUSTRACAO = (398, 2, 676, 250)
+ILLUSTRATION = (398, 2, 676, 250)
 
 
 def to_hls(rgb):
@@ -41,36 +41,36 @@ def to_hls(rgb):
 
 
 def from_hls(h, l, s):
-    def canal(n):
+    def channel(n):
         k = (n + h * 12) % 12
         a = s * np.minimum(l, 1 - l)
         return l - a * np.maximum(-1, np.minimum(np.minimum(k - 3, 9 - k), 1))
 
-    return np.stack([canal(0), canal(8), canal(4)], -1)
+    return np.stack([channel(0), channel(8), channel(4)], -1)
 
 
 def main() -> int:
-    if not ENTRADA.exists():
-        print(f"não achei {ENTRADA}", file=sys.stderr)
+    if not INPUT.exists():
+        print(f"não achei {INPUT}", file=sys.stderr)
         return 1
-    src = Image.open(ENTRADA).convert("RGBA")
+    src = Image.open(INPUT).convert("RGBA")
     w, h_img = src.size
     a = np.asarray(src).astype(np.float32) / 255.0
     rgb, alpha = a[..., :3], a[..., 3:4]
 
     h, l, s = to_hls(rgb)
-    claro = from_hls(h, np.clip(1 - l * 0.92, 0, 1), np.clip(s * 1.05, 0, 1))
+    light = from_hls(h, np.clip(1 - l * 0.92, 0, 1), np.clip(s * 1.05, 0, 1))
 
     # Máscara do que fica intacto, com borda suave para não deixar costura.
     m = Image.new("L", (w, h_img), 0)
-    ImageDraw.Draw(m).rounded_rectangle(list(ILUSTRACAO), radius=40, fill=255)
+    ImageDraw.Draw(m).rounded_rectangle(list(ILLUSTRATION), radius=40, fill=255)
     m = m.filter(ImageFilter.GaussianBlur(14))
-    manter = (np.asarray(m).astype(np.float32) / 255.0)[..., None]
+    keep = (np.asarray(m).astype(np.float32) / 255.0)[..., None]
 
-    saida = rgb * manter + claro * (1 - manter)
+    output = rgb * keep + light * (1 - keep)
     Image.fromarray(
-        (np.concatenate([saida, alpha], -1) * 255).astype(np.uint8), "RGBA"
-    ).save(SAIDA)
+        (np.concatenate([output, alpha], -1) * 255).astype(np.uint8), "RGBA"
+    ).save(OUTPUT)
     print(f"✓ {SAIDA.relative_to(RAIZ)}")
     return 0
 

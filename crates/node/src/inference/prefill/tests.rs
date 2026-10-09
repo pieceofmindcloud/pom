@@ -6,7 +6,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trace_calcula_caminho_critico_sem_somar_spans_paralelos() {
+    fn trace_computes_the_critical_path_without_summing_parallel_spans() {
         let spans = vec![
             TraceSpan::for_test("orchestration", "gateway", 0, 10, None),
             TraceSpan::for_test("route", "gateway", 10, 4, None),
@@ -19,7 +19,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_mantem_unknown_separado_e_nunca_fica_negativo() {
+    fn trace_keeps_unknown_separate_and_never_goes_negative() {
         let mut trace = RequestTrace::new("model", &[]);
         trace.set_outside_node_total_ms(20);
         trace.set_accounted_spans(vec![TraceSpan::for_test("dispatch", "gateway", 0, 7, None)]);
@@ -32,7 +32,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_off_nao_emite_spans_nem_atribuicao() {
+    fn trace_off_emits_no_spans_or_attribution() {
         let mut trace = RequestTrace::new("qwen", &[]);
         trace.profile = crate::telemetry::Profile::Off;
         trace.record_span(TraceSpan::for_test("validation", "gateway", 0, 4, None));
@@ -50,7 +50,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_nao_fabrica_outside_node_a_partir_do_e2e() {
+    fn refresh_does_not_fabricate_outside_node_from_the_e2e() {
         let mut trace = RequestTrace::new_with_trace_id(
             "trace",
             "qwen",
@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lote_oportunista_drena_o_que_ja_existe_sem_esperar() {
+    async fn an_opportunistic_batch_drains_what_is_already_there_without_waiting() {
         let (sender, mut receiver) = mpsc::channel(REMOTE_STREAM_BATCH_LIMIT);
         for item in 0..REMOTE_STREAM_BATCH_LIMIT {
             sender.send(item).await.expect("item enfileirado");
@@ -80,14 +80,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lote_oportunista_envia_um_item_quando_nao_ha_outro_pronto() {
+    async fn an_opportunistic_batch_sends_one_item_when_no_other_is_ready() {
         let (_sender, mut receiver) = mpsc::channel::<u32>(REMOTE_STREAM_BATCH_LIMIT);
         let batch = drain_opportunistic_batch(7, &mut receiver);
         assert_eq!(batch, vec![7]);
     }
 
     #[tokio::test]
-    async fn cancelamento_acorda_chamada_em_voo() {
+    async fn cancellation_wakes_an_in_flight_call() {
         let cancellation = Cancellation::new();
         cancellation.cancel();
 
@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn hub_preserva_posicoes_mrope_ao_encaminhar_estado_oculto() {
+    fn hub_preserves_mrope_positions_when_forwarding_the_hidden_state() {
         let positions = json!([[0, 0, 0, 0], [0, 1, 1, 0]]);
         let meta = json!({"mrope_positions": positions.clone()});
         let mut body_meta = json!({"chunk_index": 0});
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_preserva_marcos_locais_do_primeiro_token_do_peer() {
+    fn trace_preserves_the_peer_local_first_token_marks() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         trace.record_hop(
             0,
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_nao_inventa_primeiro_token_em_hop_sem_marca() {
+    fn trace_invents_no_first_token_on_a_hop_without_a_mark() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
 
         trace.record_hop(
@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn profiling_events_nameiam_o_caminho_critico_de_um_token() {
+    fn profiling_events_name_the_critical_path_of_a_token() {
         let spans = ["decode", "transport-round-trip", "sampling", "client-emit"]
             .into_iter()
             .map(|name| TelemetrySpan {
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_agrega_aceitacao_mtp_por_requisicao() {
+    fn trace_aggregates_mtp_acceptance_per_request() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         let node_timings = |proposed, accepted, rejected| {
             json!({
@@ -673,10 +673,10 @@ mod tests {
     /// chamadas: o laço de continuação funde uma perna na outra, e a fusão
     /// carregava `PhaseTrace::calls` mas não o contador solto do resumo.
     #[test]
-    fn trace_deriva_chamadas_de_decode_dos_saltos_depois_da_fusao() {
-        fn perna(chamadas: u32) -> RequestTrace {
+    fn trace_derives_decode_calls_from_the_hops_after_the_merge() {
+        fn leg(calls: u32) -> RequestTrace {
             let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15), ("no2", 16, 31)]);
-            for _ in 0..chamadas {
+            for _ in 0..calls {
                 for hop in 0..2 {
                     trace.record_hop(
                         hop,
@@ -697,8 +697,8 @@ mod tests {
             trace
         }
 
-        let mut trace = perna(40);
-        trace.merge(&perna(24));
+        let mut trace = leg(40);
+        trace.merge(&leg(24));
         trace.set_generated_tokens(119);
 
         // Máximo entre os saltos, não a soma: uma rodada de decode toca os dois
@@ -711,13 +711,13 @@ mod tests {
             "o resumo tem que trazer o rendimento por chamada, não `None`"
         );
 
-        let serializado = serde_json::to_value(&trace).unwrap();
-        assert_eq!(serializado["decode_calls"], 64);
-        assert_eq!(serializado["generated_tokens"], 119);
+        let serialized = serde_json::to_value(&trace).unwrap();
+        assert_eq!(serialized["decode_calls"], 64);
+        assert_eq!(serialized["generated_tokens"], 119);
     }
 
     #[test]
-    fn trace_funde_pernas_mtp_com_taxa_ponderada() {
+    fn trace_merges_mtp_legs_with_a_weighted_rate() {
         let mut first = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         first.record_hop(
             0,
@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn hop_trace_preserva_fracao_dos_tempos_do_no() {
+    fn hop_trace_preserves_the_fraction_of_the_node_times() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
 
         trace.record_hop_from_json(
@@ -852,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn hop_trace_publica_o_motor_real_e_nao_inventa_o_de_peer_antigo() {
+    fn hop_trace_publishes_the_real_engine_and_invents_none_for_an_old_peer() {
         let mut moe = RequestTrace::new("qwen", &[("moe", 0, 15)]);
         moe.record_hop(
             0,
@@ -927,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn hop_trace_propaga_executor_moe_dtype_e_motivo_por_fase() {
+    fn hop_trace_propagates_moe_executor_dtype_and_reason_per_phase() {
         let mut trace = RequestTrace::new("qwen", &[("moe", 0, 39)]);
         trace.record_hop_from_json(
             0,
@@ -959,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn hop_trace_fica_desconhecido_se_as_chamadas_do_mesmo_hop_divergirem() {
+    fn hop_trace_becomes_unknown_if_calls_of_the_same_hop_diverge() {
         let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
         for (path, engine) in [("moe/q4_0", "llama.cpp"), ("moe/q4_0", "moe")] {
             trace.record_hop(
@@ -1556,7 +1556,7 @@ mod tests {
     }
 
     #[test]
-    fn percentil_de_decode_mantem_amostras_com_teto() {
+    fn decode_percentile_keeps_samples_with_a_cap() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         for value in 0..(TELEMETRY_SAMPLE_LIMIT * 4) {
             trace.record_hop(
@@ -1589,63 +1589,63 @@ mod tests {
     // rascunhar responde na segunda, e o gateway matava a geração no primeiro
     // token. A prova ponta a ponta está em `spec_lab.rs`.
 
-    fn trace_vazio() -> RequestTrace {
+    fn empty_trace() -> RequestTrace {
         RequestTrace::new("qwen", &[("no1", 0, 15)])
     }
 
     #[test]
-    fn uma_resposta_de_um_token_e_uma_rodada_de_um_token() {
-        let passo = speculative_step_from_meta(
+    fn a_one_token_response_is_a_one_token_round() {
+        let step = speculative_step_from_meta(
             &json!({"done": false, "token_id": 42, "text": "x"}),
-            trace_vazio(),
+            empty_trace(),
         )
         .expect("a resposta de um token é legítima, não erro");
 
-        assert_eq!(passo.accepted, vec![(42u32, "x".to_string())]);
-        assert_eq!(passo.accept_count, 1);
+        assert_eq!(step.accepted, vec![(42u32, "x".to_string())]);
+        assert_eq!(step.accept_count, 1);
         assert_eq!(
-            passo.batch_width, 1,
+            step.batch_width, 1,
             "sem rascunho nada foi decodificado além do token semeado"
         );
-        assert!(!passo.done);
-        assert!(!passo.speculated, "esta rodada não especulou");
-        assert!(!passo.speculation_active);
+        assert!(!step.done);
+        assert!(!step.speculated, "esta rodada não especulou");
+        assert!(!step.speculation_active);
     }
 
     /// Sem isto a geração ignoraria o EOS e só pararia no teto de tokens.
     #[test]
-    fn o_fim_da_resposta_de_um_token_e_respeitado() {
-        let passo = speculative_step_from_meta(
+    fn the_end_of_a_one_token_response_is_honored() {
+        let step = speculative_step_from_meta(
             &json!({"done": true, "token_id": 7, "text": ""}),
-            trace_vazio(),
+            empty_trace(),
         )
         .expect("legítima");
-        assert!(passo.done);
+        assert!(step.done);
     }
 
     #[test]
-    fn uma_rodada_verificada_continua_sendo_lida_como_especulativa() {
-        let passo = speculative_step_from_meta(
+    fn a_verified_round_is_still_read_as_speculative() {
+        let step = speculative_step_from_meta(
             &json!({
                 "done": false,
                 "accepted": [{"token_id": 1, "text": "a"}, {"token_id": 2, "text": "b"}],
                 "accept_count": 2,
                 "batch_width": 4,
             }),
-            trace_vazio(),
+            empty_trace(),
         )
         .expect("legítima");
 
-        assert_eq!(passo.accepted.len(), 2);
-        assert_eq!(passo.accept_count, 2);
-        assert_eq!(passo.batch_width, 4);
-        assert!(passo.speculated);
-        assert!(passo.speculation_active);
+        assert_eq!(step.accepted.len(), 2);
+        assert_eq!(step.accept_count, 2);
+        assert_eq!(step.batch_width, 4);
+        assert!(step.speculated);
+        assert!(step.speculation_active);
     }
 
     #[test]
-    fn callback_remoto_reporta_estado_da_especulacao_explicitamente() {
-        let passo = speculative_step_from_meta(
+    fn a_remote_callback_reports_the_speculation_state_explicitly() {
+        let step = speculative_step_from_meta(
             &json!({
                 "done": false,
                 "accepted": [{"token_id": 4, "text": "A"}],
@@ -1653,19 +1653,19 @@ mod tests {
                 "speculation_active": true,
                 "next_draft": [5, 6],
             }),
-            trace_vazio(),
+            empty_trace(),
         )
         .expect("callback remoto válido");
 
-        assert!(!passo.speculated);
-        assert!(passo.speculation_active);
-        assert_eq!(passo.next_draft, Some(vec![5, 6]));
-        assert!(passo.speculation_disabled_reason.is_none());
+        assert!(!step.speculated);
+        assert!(step.speculation_active);
+        assert_eq!(step.next_draft, Some(vec![5, 6]));
+        assert!(step.speculation_disabled_reason.is_none());
     }
 
     #[test]
-    fn callback_remoto_reporta_a_razao_de_desativacao() {
-        let passo = speculative_step_from_meta(
+    fn a_remote_callback_reports_the_deactivation_reason() {
+        let step = speculative_step_from_meta(
             &json!({
                 "done": false,
                 "token_id": 4,
@@ -1674,14 +1674,14 @@ mod tests {
                 "speculation_active": false,
                 "speculation_disabled_reason": "model_without_mtp",
             }),
-            trace_vazio(),
+            empty_trace(),
         )
         .expect("callback remoto válido");
 
-        assert!(!passo.speculated);
-        assert!(!passo.speculation_active);
+        assert!(!step.speculated);
+        assert!(!step.speculation_active);
         assert_eq!(
-            passo.speculation_disabled_reason.as_deref(),
+            step.speculation_disabled_reason.as_deref(),
             Some("model_without_mtp")
         );
     }
@@ -1689,8 +1689,8 @@ mod tests {
     /// Uma resposta que não é nem uma coisa nem outra continua sendo erro:
     /// seguir em silêncio com token nenhum seria pior que a falha.
     #[test]
-    fn uma_resposta_sem_token_nenhum_continua_sendo_erro() {
-        assert!(speculative_step_from_meta(&json!({"done": false}), trace_vazio()).is_err());
+    fn a_response_with_no_token_at_all_is_still_an_error() {
+        assert!(speculative_step_from_meta(&json!({"done": false}), empty_trace()).is_err());
     }
 
     #[test]
@@ -1711,7 +1711,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn limite_de_pedacos_em_voo_e_respeitado() {
+    async fn the_in_flight_chunk_limit_is_honored() {
         let window = PrefillOverlapWindow::new(2);
         assert_eq!(PrefillOverlapWindow::new(0).max_inflight_chunks(), 1);
         assert_eq!(PrefillOverlapWindow::new(99).max_inflight_chunks(), 8);
@@ -1734,7 +1734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn orcamento_de_bytes_segura_um_pedaco_novo_ate_o_anterior_soltar() {
+    async fn the_byte_budget_holds_a_new_chunk_until_the_previous_one_releases() {
         let window = PrefillOverlapWindow::new(8);
         let budget = PrefillOverlapWindow::INFLIGHT_BYTE_BUDGET;
 
@@ -1775,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_distingue_prefixo_candidato_de_tokens_realmente_reaproveitados() {
+    fn trace_distinguishes_the_candidate_prefix_from_tokens_actually_reused() {
         let mut trace = RequestTrace::new("qwen", &[("head", 0, 15)]);
         trace.record_prefix_decision(
             &json!({
@@ -1793,7 +1793,7 @@ mod tests {
     }
 
     #[test]
-    fn juntar_telemetria_do_stream_preserva_percentis_de_espera_e_entrega() {
+    fn merging_stream_telemetry_preserves_the_wait_and_delivery_percentiles() {
         let batch = |downstream: u64, delivery: u64| {
             json!({
                 "remote_stream_downstream_wait_ms": downstream,

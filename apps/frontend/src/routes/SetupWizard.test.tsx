@@ -18,8 +18,8 @@ function mount() {
 
 afterEach(() => cleanup());
 
-describe("dados do wizard", () => {
-  it("mantém os mocks separados e com o formato que o backend poderá fornecer", () => {
+describe("wizard data", () => {
+  it("keeps the mocks separate and in the shape the backend will be able to provide", () => {
     expect(MOCK_HARDWARE.gpu.vramGb).toBe(16);
     expect(MOCK_NODES).toHaveLength(2);
     expect(MOCK_MODELS).toHaveLength(3);
@@ -34,7 +34,7 @@ describe("SetupWizard", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 220));
   }
 
-  it("leva o Quick Start até o resumo e permite voltar", async () => {
+  it("takes the Quick Start to the summary and allows going back", async () => {
     mount();
 
     fireEvent.click(screen.getByRole("button", { name: "Começar" }));
@@ -69,7 +69,7 @@ describe("SetupWizard", () => {
     "Contribuir com uma rede",
     "Usar uma rede de IA",
     "Configuração avançada",
-  ])("conclui o caminho %s", async (intentLabel) => {
+  ])("completes the %s path", async (intentLabel) => {
     mount();
     fireEvent.click(screen.getByRole("button", { name: intentLabel }));
     await settle();

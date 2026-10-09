@@ -75,7 +75,7 @@ mod tests {
     const GIB: u64 = 1 << 30;
 
     #[test]
-    fn um_dispositivo_mantem_a_ordem_atual() {
+    fn one_device_keeps_the_current_order() {
         assert_eq!(
             largest_memory_first_order(&[16 * GIB], &[Some(100.0)]),
             None
@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn a_placa_com_mais_memoria_vem_primeiro() {
+    fn the_card_with_more_memory_comes_first() {
         assert_eq!(
             largest_memory_first_order(&[12 * GIB, 16 * GIB], &[]),
             Some(vec![1, 0])
@@ -95,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn a_memoria_decide_mesmo_quando_a_placa_menor_e_a_rapida() {
+    fn memory_decides_even_when_the_smaller_card_is_the_fast_one() {
         // O dispositivo 1 é o rápido, mas o 0 tem mais memória: é ele que o fit
         // deve encher primeiro.
         assert_eq!(
@@ -105,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn placas_do_mesmo_tamanho_sao_desempatadas_pela_velocidade_clara() {
+    fn same_size_cards_are_tie_broken_by_clear_speed() {
         assert_eq!(
             largest_memory_first_order(&[16 * GIB, 16 * GIB], &[Some(100.0), Some(400.0)]),
             Some(vec![1, 0])
@@ -130,12 +130,12 @@ mod tests {
     }
 
     #[test]
-    fn memoria_desconhecida_mantem_a_ordem_atual() {
+    fn unknown_memory_keeps_the_current_order() {
         assert_eq!(largest_memory_first_order(&[0, 16 * GIB], &[]), None);
     }
 
     #[test]
-    fn backends_heterogeneos_nao_recebem_ordem_explicita() {
+    fn heterogeneous_backends_get_no_explicit_order() {
         let backends = [Some("Vulkan"), Some("CUDA")];
         assert_eq!(
             largest_memory_first_order_for_backends(&[12 * GIB, 16 * GIB], &[], &backends),
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_homogeneo_recebe_a_ordem_por_memoria() {
+    fn a_homogeneous_backend_gets_the_order_by_memory() {
         let backends = [Some("CUDA"), Some("CUDA")];
         assert_eq!(
             largest_memory_first_order_for_backends(

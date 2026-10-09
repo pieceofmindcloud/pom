@@ -1530,7 +1530,7 @@ impl NodeRuntime {
         let load_node_id = self.net.node_id.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
-        let tls = self.tls.as_ref().map(|t| t.so_de_peers());
+        let tls = self.tls.as_ref().map(|t| t.peers_only());
         let quic = self.quic.clone();
         let quic_port = self.quic_port;
 
@@ -1555,7 +1555,7 @@ impl NodeRuntime {
                 // pode ter aparecido depois, ou não ter morrido na primeira
                 // investida. Limpar uma vez só fazia as outras nove tentativas
                 // baterem na mesma porta ocupada.
-                let porta_presa = free_port(port).await.err();
+                let held_port = free_port(port).await.err();
                 if restarts > 0 {
                     warn!(
                         "reiniciando servidor de inferência (tentativa {}/{})",
@@ -1589,13 +1589,13 @@ impl NodeRuntime {
                 // TUI seguia anunciando saúde. O estado visível diz o motivo
                 // desde a primeira tentativa (mesmo padrão de
                 // `note_unloadable_slice`).
-                match &porta_presa {
-                    Some(motivo) => {
-                        append_log(port, motivo);
+                match &held_port {
+                    Some(reason) => {
+                        append_log(port, reason);
                         status
                             .set(
                                 ServerState::Failed,
-                                format!("{motivo}; tentativa {}/{MAX_RESTARTS}", restarts + 1),
+                                format!("{reason}; tentativa {}/{MAX_RESTARTS}", restarts + 1),
                                 restarts,
                             )
                             .await;
@@ -1675,9 +1675,9 @@ impl NodeRuntime {
                             // processo principal cair agora, o próximo
                             // arranque verá o mesmo limite e não tentará de
                             // novo até o operador intervir.
-                            let detail = match &porta_presa {
-                                Some(motivo) => {
-                                    format!("desistiu depois de {MAX_RESTARTS} tentativas persistentes: {motivo}")
+                            let detail = match &held_port {
+                                Some(reason) => {
+                                    format!("desistiu depois de {MAX_RESTARTS} tentativas persistentes: {reason}")
                                 }
                                 None => {
                                     format!("encerrou {MAX_RESTARTS}x: {e}; implantação bloqueada")
@@ -1901,23 +1901,23 @@ fn port_is_free(port: u16) -> bool {
 ///   UDP    0.0.0.0:8181     *:*                       5678
 /// ```
 #[cfg_attr(not(windows), allow(dead_code))]
-fn parse_netstat_pids(saida: &str, port: u16) -> Vec<u32> {
+fn parse_netstat_pids(output: &str, port: u16) -> Vec<u32> {
     let mut pids = Vec::new();
-    for linha in saida.lines() {
-        let campos: Vec<&str> = linha.split_whitespace().collect();
-        if campos.len() < 4 {
+    for line in output.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 4 {
             continue;
         }
         // O endereço local é o segundo campo. Comparar a porta como número, e
         // não o sufixo textual, evita casar 18181 com 8181.
-        let local = campos[1];
-        let Some((_, porta)) = local.rsplit_once(':') else {
+        let local = fields[1];
+        let Some((_, port_str)) = local.rsplit_once(':') else {
             continue;
         };
-        if porta.parse::<u16>() != Ok(port) {
+        if port_str.parse::<u16>() != Ok(port) {
             continue;
         }
-        if let Ok(pid) = campos[campos.len() - 1].parse::<u32>() {
+        if let Ok(pid) = fields[fields.len() - 1].parse::<u32>() {
             // PID 0 é o processo ocioso do sistema: não é dono de nada que
             // possamos matar, e mandar um taskkill nele só gera erro.
             if pid != 0 && !pids.contains(&pid) {
@@ -1929,7 +1929,7 @@ fn parse_netstat_pids(saida: &str, port: u16) -> Vec<u32> {
 }
 
 /// Quem está segurando `port`, perguntado do jeito de cada sistema.
-async fn pids_segurando_porta(port: u16) -> Vec<u32> {
+async fn pids_holding_port(port: u16) -> Vec<u32> {
     #[cfg(windows)]
     {
         let out = tokio::process::Command::new("netstat")
@@ -1961,7 +1961,7 @@ async fn pids_segurando_porta(port: u16) -> Vec<u32> {
 }
 
 /// Mata `pid` à força.
-async fn matar_pid(pid: u32) {
+async fn kill_pid(pid: u32) {
     #[cfg(windows)]
     let _ = Command::new("taskkill")
         .args(["/F", "/PID", &pid.to_string()])
@@ -1989,12 +1989,12 @@ async fn free_port(port: u16) -> Result<(), String> {
 
     info!("porta {port} em uso — procurando processo para matar");
 
-    let pids = pids_segurando_porta(port).await;
+    let pids = pids_holding_port(port).await;
     if pids.is_empty() {
-        let motivo =
+        let reason =
             format!("porta {port} ocupada e o processo que a segura não pôde ser identificado");
-        warn!("{motivo}");
-        return Err(motivo);
+        warn!("{reason}");
+        return Err(reason);
     }
 
     for pid in pids {
@@ -2003,7 +2003,7 @@ async fn free_port(port: u16) -> Result<(), String> {
             continue;
         }
         info!("matando processo {pid} que ocupa a porta {port}");
-        matar_pid(pid).await;
+        kill_pid(pid).await;
     }
 
     // Poll for up to 5 seconds until the port is free.
@@ -2014,9 +2014,9 @@ async fn free_port(port: u16) -> Result<(), String> {
             return Ok(());
         }
         if tokio::time::Instant::now() > deadline {
-            let motivo = format!("porta {port} continua ocupada 5s depois de matar o ocupante");
-            warn!("{motivo}");
-            return Err(motivo);
+            let reason = format!("porta {port} continua ocupada 5s depois de matar o ocupante");
+            warn!("{reason}");
+            return Err(reason);
         }
         sleep(Duration::from_millis(200)).await;
     }
@@ -2076,7 +2076,7 @@ mod tests {
     /// primeira tentativa - e o arquivo de log tem que existir, porque o stdout
     /// não guarda o histórico.
     #[tokio::test]
-    async fn a_porta_presa_aparece_no_status_e_no_log() {
+    async fn the_held_port_shows_up_in_the_status_and_in_the_log() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2088,11 +2088,11 @@ mod tests {
         // mata, então a porta segue presa como no defeito real.
         // No curinga dual-stack, que é o que `port_is_free` sonda e o que o
         // servidor de inferência liga.
-        let ocupante = match tokio::net::TcpListener::bind("[::]:0").await {
+        let occupant = match tokio::net::TcpListener::bind("[::]:0").await {
             Ok(l) => l,
             Err(_) => tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap(),
         };
-        let port = ocupante.local_addr().unwrap().port();
+        let port = occupant.local_addr().unwrap().port();
 
         let net = Arc::new(
             Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
@@ -2132,7 +2132,7 @@ mod tests {
         wait_result.unwrap();
 
         let log = log_file_path(port);
-        let conteudo = std::fs::read_to_string(&log).unwrap_or_default();
+        let content = std::fs::read_to_string(&log).unwrap_or_default();
         std::env::remove_var("POM_HOME");
         std::fs::remove_dir_all(&dir).ok();
 
@@ -2153,18 +2153,18 @@ mod tests {
             "o status tem que apontar o arquivo de log"
         );
         assert!(
-            conteudo.contains("supervisor iniciado"),
-            "o arquivo de log tem que existir e ter as linhas do supervisor: {conteudo:?}"
+            content.contains("supervisor iniciado"),
+            "o arquivo de log tem que existir e ter as linhas do supervisor: {content:?}"
         );
     }
 
     #[tokio::test]
     async fn idle_reload_waits_for_previous_supervisor_to_finish() {
-        let terminou = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let terminou_no_supervisor = terminou.clone();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished_in_supervisor = finished.clone();
         let supervisor = tokio::spawn(async move {
             sleep(Duration::from_millis(40)).await;
-            terminou_no_supervisor.store(true, std::sync::atomic::Ordering::Release);
+            finished_in_supervisor.store(true, std::sync::atomic::Ordering::Release);
         });
 
         let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
@@ -2176,13 +2176,13 @@ mod tests {
         wait_result.unwrap();
 
         assert!(
-            terminou.load(std::sync::atomic::Ordering::Acquire),
+            finished.load(std::sync::atomic::Ordering::Acquire),
             "a próxima geração só pode começar depois da limpeza da anterior"
         );
     }
 
     #[tokio::test]
-    async fn supervisor_pendente_tem_limite_e_fica_joinable() {
+    async fn a_pending_supervisor_is_bounded_and_stays_joinable() {
         let supervisor = tokio::spawn(async {
             std::future::pending::<()>().await;
         });
@@ -2207,12 +2207,12 @@ mod tests {
     /// faixa - e o buraco só apareceria na requisição seguinte, como
     /// "Gap at layer N".
     #[test]
-    fn reconfigurar_muda_parametros_e_mais_nada() {
-        let mut antes = cfg();
-        antes.deploy_id = "d-4f2a91c3".into();
-        antes.tp = None;
-        antes.cache_type_k = crate::config::KvCacheType::Q8_0;
-        antes.cache_type_v = crate::config::KvCacheType::Bf16;
+    fn reconfiguring_changes_parameters_and_nothing_else() {
+        let mut before = cfg();
+        before.deploy_id = "d-4f2a91c3".into();
+        before.tp = None;
+        before.cache_type_k = crate::config::KvCacheType::Q8_0;
+        before.cache_type_v = crate::config::KvCacheType::Bf16;
 
         let mut p = crate::webui::RuntimeParams::default();
         p.n_ctx = 100_000;
@@ -2221,30 +2221,30 @@ mod tests {
         p.temperature = 1.25;
         p.max_sessions = 4;
 
-        let depois = antes.with_params(&p);
+        let after = before.with_params(&p);
 
         // O que tinha que mudar, mudou.
-        assert_eq!(depois.n_ctx, 100_000);
-        assert_eq!(depois.max_new_tokens, 32000);
-        assert_eq!(depois.n_gpu_layers, 7);
-        assert_eq!(depois.temperature, 1.25);
-        assert_eq!(depois.max_sessions, 4);
+        assert_eq!(after.n_ctx, 100_000);
+        assert_eq!(after.max_new_tokens, 32000);
+        assert_eq!(after.n_gpu_layers, 7);
+        assert_eq!(after.temperature, 1.25);
+        assert_eq!(after.max_sessions, 4);
 
         // E a identidade da fatia é byte a byte a mesma.
-        assert_eq!(depois.deploy_id, antes.deploy_id);
-        assert_eq!(depois.model_path, antes.model_path);
-        assert_eq!(depois.model_label, antes.model_label);
-        assert_eq!(depois.start_layer, antes.start_layer);
-        assert_eq!(depois.end_layer, antes.end_layer);
-        assert_eq!(depois.total_layers, antes.total_layers);
-        assert_eq!(depois.peer_count, antes.peer_count);
-        assert_eq!(depois.peer_index, antes.peer_index);
-        assert_eq!(depois.primary, antes.primary);
-        assert_eq!(depois.inference_port, antes.inference_port);
-        assert_eq!(depois.single_peer, antes.single_peer);
-        assert_eq!(depois.no_embeddings, antes.no_embeddings);
-        assert_eq!(depois.cache_type_k, antes.cache_type_k);
-        assert_eq!(depois.cache_type_v, antes.cache_type_v);
+        assert_eq!(after.deploy_id, before.deploy_id);
+        assert_eq!(after.model_path, before.model_path);
+        assert_eq!(after.model_label, before.model_label);
+        assert_eq!(after.start_layer, before.start_layer);
+        assert_eq!(after.end_layer, before.end_layer);
+        assert_eq!(after.total_layers, before.total_layers);
+        assert_eq!(after.peer_count, before.peer_count);
+        assert_eq!(after.peer_index, before.peer_index);
+        assert_eq!(after.primary, before.primary);
+        assert_eq!(after.inference_port, before.inference_port);
+        assert_eq!(after.single_peer, before.single_peer);
+        assert_eq!(after.no_embeddings, before.no_embeddings);
+        assert_eq!(after.cache_type_k, before.cache_type_k);
+        assert_eq!(after.cache_type_v, before.cache_type_v);
     }
 
     #[test]
@@ -2266,31 +2266,31 @@ mod tests {
     }
 
     #[test]
-    fn reconfigurar_contexto_reutiliza_pesos_mas_nova_fatia_nao() {
-        let antes = cfg();
+    fn reconfiguring_the_context_reuses_weights_but_a_new_slice_does_not() {
+        let before = cfg();
         let mut params = crate::webui::RuntimeParams::default();
         params.n_ctx = 65536;
         params.max_sessions = 4;
         params.n_batch = 1024;
-        let mut depois = antes.with_params(&params);
-        depois.cache_type_k = crate::config::KvCacheType::Q8_0;
-        depois.cache_type_v = crate::config::KvCacheType::Bf16;
+        let mut after = before.with_params(&params);
+        after.cache_type_k = crate::config::KvCacheType::Q8_0;
+        after.cache_type_v = crate::config::KvCacheType::Bf16;
 
-        assert!(antes.weights_are_compatible(&depois));
+        assert!(before.weights_are_compatible(&after));
 
-        depois.fit_memory_margin_mb += 1;
-        assert!(!antes.weights_are_compatible(&depois));
+        after.fit_memory_margin_mb += 1;
+        assert!(!before.weights_are_compatible(&after));
 
-        depois.start_layer += 1;
-        assert!(!antes.weights_are_compatible(&depois));
+        after.start_layer += 1;
+        assert!(!before.weights_are_compatible(&after));
     }
 
     /// Num grupo de tensor parallelism o `fit` nativo do llama.cpp não serve, e
     /// isso não pode depender de quem preencheu o formulário.
     #[test]
-    fn o_fit_de_memoria_continua_desligado_num_no_de_tp() {
-        let mut antes = cfg();
-        antes.tp = Some(crate::network::TpIdentity {
+    fn the_memory_fit_stays_off_on_a_tp_node() {
+        let mut before = cfg();
+        before.tp = Some(crate::network::TpIdentity {
             role: "worker".into(),
             group_id: "g".into(),
             size: 2,
@@ -2304,7 +2304,7 @@ mod tests {
         p.fit_memory = true;
 
         assert!(
-            !antes.with_params(&p).fit_memory,
+            !before.with_params(&p).fit_memory,
             "o fit nativo não sabe lidar com split-mode tensor"
         );
     }
@@ -2392,7 +2392,7 @@ mod tests {
     /// `/health` de mentira porque não há GGUF que carregue nesta máquina; o
     /// que ele prova é o contrato entre o watch e o disco, não o llama.cpp.
     #[tokio::test]
-    async fn o_health_e_quem_promove_a_anotacao_para_servindo() {
+    async fn health_is_what_promotes_the_annotation_to_serving() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2410,8 +2410,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let cfg_path = dir.join("pom.json");
         std::env::set_var("POM_CONFIG", &cfg_path);
-        let anotacao = crate::lastslice::path();
-        std::fs::remove_file(&anotacao).ok();
+        let annotation = crate::lastslice::path();
+        std::fs::remove_file(&annotation).ok();
 
         let health_polls = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let health_release = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2508,7 +2508,7 @@ mod tests {
     /// fatia nenhuma — e a máquina que acabou de derrubar o processo tentando
     /// carregar é justamente a que precisa ser explicada.
     #[tokio::test]
-    async fn a_fatia_que_nao_carregou_aparece_no_status_com_a_razao() {
+    async fn a_slice_that_did_not_load_shows_up_in_the_status_with_the_reason() {
         let net = Arc::new(
             Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
@@ -2534,7 +2534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parada_manual_cancela_a_retomada_termica_pendente() {
+    async fn a_manual_stop_cancels_the_pending_thermal_resume() {
         let net = Arc::new(
             Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
@@ -2737,8 +2737,8 @@ mod tests {
     /// inocente. O teste roda em qualquer sistema de propósito: o parser é
     /// código comum, só a chamada do processo é que muda por plataforma.
     #[test]
-    fn netstat_da_os_pids_da_porta_pedida() {
-        let saida = "\
+    fn netstat_gives_the_pids_of_the_requested_port() {
+        let output = "\
 Conexoes ativas
 
   Proto  Endereco local         Endereco externo       Estado           PID
@@ -2748,24 +2748,24 @@ Conexoes ativas
   UDP    0.0.0.0:8181          *:*                                     5678
 ";
         // 1234 aparece duas vezes (IPv4 e IPv6) e volta uma vez só.
-        assert_eq!(parse_netstat_pids(saida, 8181), vec![1234, 5678]);
-        assert_eq!(parse_netstat_pids(saida, 52777), vec![9999]);
-        assert!(parse_netstat_pids(saida, 8080).is_empty());
+        assert_eq!(parse_netstat_pids(output, 8181), vec![1234, 5678]);
+        assert_eq!(parse_netstat_pids(output, 52777), vec![9999]);
+        assert!(parse_netstat_pids(output, 8080).is_empty());
     }
 
     /// Comparar a porta como texto casaria 18181 com 8181 e mataria o nó
     /// vizinho da mesma máquina.
     #[test]
-    fn netstat_nao_confunde_porta_com_sufixo() {
-        let saida = "  TCP    0.0.0.0:18181    0.0.0.0:0    LISTENING    4242\n";
-        assert!(parse_netstat_pids(saida, 8181).is_empty());
-        assert_eq!(parse_netstat_pids(saida, 18181), vec![4242]);
+    fn netstat_does_not_mistake_a_suffix_for_the_port() {
+        let output = "  TCP    0.0.0.0:18181    0.0.0.0:0    LISTENING    4242\n";
+        assert!(parse_netstat_pids(output, 8181).is_empty());
+        assert_eq!(parse_netstat_pids(output, 18181), vec![4242]);
     }
 
     /// PID 0 é o processo ocioso do sistema: mandar taskkill nele só gera erro.
     #[test]
-    fn netstat_ignora_pid_zero() {
-        let saida = "  TCP    0.0.0.0:8181    0.0.0.0:0    LISTENING    0\n";
-        assert!(parse_netstat_pids(saida, 8181).is_empty());
+    fn netstat_ignores_pid_zero() {
+        let output = "  TCP    0.0.0.0:8181    0.0.0.0:0    LISTENING    0\n";
+        assert!(parse_netstat_pids(output, 8181).is_empty());
     }
 }

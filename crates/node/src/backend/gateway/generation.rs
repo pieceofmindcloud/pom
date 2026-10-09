@@ -494,7 +494,7 @@ mod generation_pump_tests {
     use super::*;
 
     #[tokio::test]
-    async fn desconexao_do_cliente_cancela_a_geracao_mesmo_sem_evento() {
+    async fn client_disconnect_cancels_the_generation_even_without_an_event() {
         let (client_tx, client_rx) = mpsc::channel(1);
         let (_inner_tx, inner_rx) = mpsc::channel(1);
         let cancellation = crate::prefill::Cancellation::new();
@@ -515,7 +515,7 @@ mod generation_pump_tests {
     }
 
     #[tokio::test]
-    async fn falha_de_prefill_preserva_telemetria_parcial_ate_a_auditoria() {
+    async fn a_prefill_failure_preserves_partial_telemetry_up_to_the_audit() {
         let mut trace = crate::prefill::RequestTrace::from_plan(
             "test-model",
             &crate::pipeline::PipelinePlan {
@@ -936,10 +936,10 @@ pub(super) async fn generate_stream_inner(
     let route_started = Instant::now();
     let route_wall = wall_clock_ms();
     {
-        let mut fixadas = std::collections::HashMap::new();
+        let mut pinned = std::collections::HashMap::new();
         for step in plan.steps.iter_mut() {
             step.inference_url =
-                crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
+                crate::pipeline::resolve_step_url(step, &state.network.routes, &mut pinned);
         }
     }
     record_gateway_span(
@@ -1601,7 +1601,7 @@ pub(super) async fn generate_stream_inner(
             // stream remoto a cabeça o instala dentro do próprio ciclo. Só
             // há MTP fatiado com 2+ hops - com um é o modelo inteiro, que já
             // usa `step_speculative`.
-            let mut especulando = true;
+            let mut speculating = true;
             // Rascunho que a cauda devolveu na rodada anterior, esperando
             // para ser injetado na próxima. `draft_sent` é lido antes do
             // `take`: distingue a rodada 1 (nenhum rascunho viajou ainda, e a
@@ -1613,13 +1613,13 @@ pub(super) async fn generate_stream_inner(
                     return;
                 }
                 let remote_stream_mode = remote_stream.is_some();
-                let draft_sent = especulando
+                let draft_sent = speculating
                     && sliced_mtp
                     && !remote_stream_mode
                     && stored_draft.is_some();
                 let res = if let Some(stream) = remote_stream.as_mut() {
                     stream.next(&cancellation).await
-                } else if especulando {
+                } else if speculating {
                     if sliced_mtp {
                         crate::prefill::step(
                             &plan,
@@ -1677,12 +1677,12 @@ pub(super) async fn generate_stream_inner(
                 let step = match res {
                     Ok(step) => step,
                     Err(e) => {
-                        let rodada = if especulando {
+                        let round = if speculating {
                             "rodada especulativa"
                         } else {
                             "rodada de decodificação"
                         };
-                        warn!("Erro na {rodada} (token {tokens_generated}): {e}");
+                        warn!("Erro na {round} (token {tokens_generated}): {e}");
                         if tokens_generated > 0 {
                             info!("devolvendo {tokens_generated} tokens parciais");
                             let summary = summary_for(
@@ -1700,14 +1700,14 @@ pub(super) async fn generate_stream_inner(
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(format!(
-                                    "Pipeline falhou na {rodada}: {e}"
+                                    "Pipeline falhou na {round}: {e}"
                                 )))
                                 .await;
                         }
                         return;
                     }
                 };
-                if especulando {
+                if speculating {
                     if sliced_mtp {
                         if remote_stream_mode {
                             if !sliced_mtp_round_continues(remote_stream_mode, draft_sent, &step) {
@@ -1726,7 +1726,7 @@ pub(super) async fn generate_stream_inner(
                                     detail,
                                     "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
                                 );
-                                especulando = false;
+                                speculating = false;
                             }
                         } else {
                             // Dois motivos para desistir: um rascunho já
@@ -1748,7 +1748,7 @@ pub(super) async fn generate_stream_inner(
                                     detail,
                                     "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
                                 );
-                                especulando = false;
+                                speculating = false;
                             } else {
                                 stored_draft = step.next_draft;
                             }
@@ -1758,7 +1758,7 @@ pub(super) async fn generate_stream_inner(
                         // ela é de uma versão anterior a este fix, ou se o
                         // rascunho por repetição não achou nada para propor.
                         info!("nenhum hop rascunhou: seguindo sem especulação");
-                        especulando = false;
+                        speculating = false;
                     }
                 }
                 trace.merge(&step.trace);
@@ -1824,7 +1824,7 @@ pub(super) async fn generate_stream_inner(
                     );
                     info!(
                         "✅ Pipeline completo ({}): {} tokens em {:.1}s ({:.1} tok/s)",
-                        if especulando {
+                        if speculating {
                             "especulativo"
                         } else {
                             "sem especulação"
@@ -2281,12 +2281,12 @@ async fn post_session_lifecycle_direct(
         }
     }
 
-    let Ok(cliente) = http.for_peer(&step.node_id) else {
+    let Ok(client) = http.for_peer(&step.node_id) else {
         return Err(last_error.unwrap_or_else(|| "sem cliente para o peer".to_string()));
     };
     for base in http.route_order(&route_key, &candidates) {
         let url = format!("{}{path}", base.trim_end_matches('/'));
-        let request = cliente.post(&url).json(body).timeout(timeout);
+        let request = client.post(&url).json(body).timeout(timeout);
         match http
             .authorize_inference_request_for_session(request, Some(session_id))
             .await

@@ -878,10 +878,10 @@ export function DeployModel() {
   }, [p, tp, tpGroup]);
 
   /** The settings in force: the operator's edit or the plan's received values. */
-  const pomDesenv = node.data?.pom_desenv === true;
+  const pomDevMode = node.data?.pom_dev_mode === true;
   useEffect(() => {
-    if (!pomDesenv && pickedKind === "tensor_parallel") setPickedKind(null);
-  }, [pomDesenv, pickedKind]);
+    if (!pomDevMode && pickedKind === "tensor_parallel") setPickedKind(null);
+  }, [pomDevMode, pickedKind]);
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** What a deploy sends: the settings, with the inference service chosen
    *  above (never one remembered from another deploy). */
@@ -1253,7 +1253,7 @@ export function DeployModel() {
               {([
                 ["shards", "Fatias"],
                 ["whole", "Modelo inteiro"],
-                ...(pomDesenv ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
+                ...(pomDevMode ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
               ] as [DeployKind, string][]).map(([value, label]) => (
                 <button
                   key={value}
@@ -1343,7 +1343,7 @@ export function DeployModel() {
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />
             </div>
-            {pomDesenv && <div className="flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
+            {pomDevMode && <div className="flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
               {(["simple", "complete"] as DeployStrategy[]).map((value) => (
                 <button
                   key={value}
@@ -1365,7 +1365,7 @@ export function DeployModel() {
                 </button>
               ))}
             </div>}
-            {pomDesenv && <Button
+            {pomDevMode && <Button
               variant="outline"
               size="sm"
               type="button"
@@ -1484,7 +1484,7 @@ export function DeployModel() {
               }}
               merge={isWhole ? undefined : { value: effMerge, onChange: setMerge }}
               showInferenceMode={isMoePlan}
-              pomDesenv={pomDesenv}
+              pomDevMode={pomDevMode}
               inferenceModeAlert={
                 inferenceModeSupported
                   ? undefined
@@ -1613,8 +1613,8 @@ export function DeployModel() {
                   </div>
                   <div className="px-2 pb-2">
                   <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5 text-[0.62rem]">
-                    <div><dt className="text-faint">GPU uso / livre</dt><dd className="font-mono text-muted">{machine.gpu_used_pct == null ? "-" : `${machine.gpu_used_pct.toFixed(0)}%`} / {machine.gpu_free_mb > 0 ? megabytes(machine.gpu_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">RAM uso / livre</dt><dd className="font-mono text-muted">{machine.ram_used_pct == null ? "-" : `${machine.ram_used_pct.toFixed(0)}%`} / {machine.ram_free_mb > 0 ? megabytes(machine.ram_free_mb) : "-"}</dd></div>
+                    <div><dt className="text-faint">GPU uso / free</dt><dd className="font-mono text-muted">{machine.gpu_used_pct == null ? "-" : `${machine.gpu_used_pct.toFixed(0)}%`} / {machine.gpu_free_mb > 0 ? megabytes(machine.gpu_free_mb) : "-"}</dd></div>
+                    <div><dt className="text-faint">RAM uso / free</dt><dd className="font-mono text-muted">{machine.ram_used_pct == null ? "-" : `${machine.ram_used_pct.toFixed(0)}%`} / {machine.ram_free_mb > 0 ? megabytes(machine.ram_free_mb) : "-"}</dd></div>
                     <div><dt className="text-faint">Disco livre</dt><dd className="font-mono text-muted">{machine.disk_free_mb > 0 ? megabytes(machine.disk_free_mb) : "-"}</dd></div>
                     <div><dt className="text-faint">RTT local</dt><dd className="font-mono text-muted">{machine.rtt_ms == null ? "-" : `${machine.rtt_ms.toFixed(1)} ms`}</dd></div>
                   </dl>

@@ -9,7 +9,7 @@
 #
 # Rode a partir do diretório do projeto (ou passe o caminho como argumento):
 #
-#     ./scripts/migrar-para-pom.sh [diretorio]
+#     ./scripts/migrate-to-pom.sh [diretorio]
 #
 # O que ele faz, e só isso:
 #   - <dir>/rdma-p2p*.json      -> <dir>/pom*.json
@@ -35,47 +35,47 @@ fi
 dir="${1:-$(pwd)}"
 cd "$dir"
 
-renomeou=0
+renamed=0
 
 mover() {
-    local de="$1" para="$2"
-    [ -e "$de" ] || return 0
-    if [ -e "$para" ]; then
-        echo "  ! $para já existe - deixando $de como está"
+    local from="$1" to="$2"
+    [ -e "$from" ] || return 0
+    if [ -e "$to" ]; then
+        echo "  ! $to já existe - deixando $from como está"
         return 0
     fi
-    mv "$de" "$para"
-    echo "  ✓ $de -> $para"
-    renomeou=$((renomeou + 1))
+    mv "$from" "$to"
+    echo "  ✓ $from -> $to"
+    renamed=$((renamed + 1))
 }
 
 [ "$QUIET" = 1 ] || echo "Migrando $dir para POM"
 
 # Config: o nome exato e as variantes (rdma-p2p-cpu.json e afins).
-for antigo in rdma-p2p*.json; do
-    [ -e "$antigo" ] || continue
-    mover "$antigo" "pom${antigo#rdma-p2p}"
+for old in rdma-p2p*.json; do
+    [ -e "$old" ] || continue
+    mover "$old" "pom${old#rdma-p2p}"
 done
 
 # A anotação da última fatia é derivada do nome da config.
-for antigo in rdma-p2p*.last-slice.json; do
-    [ -e "$antigo" ] || continue
-    mover "$antigo" "pom${antigo#rdma-p2p}"
+for old in rdma-p2p*.last-slice.json; do
+    [ -e "$old" ] || continue
+    mover "$old" "pom${old#rdma-p2p}"
 done
 
 # Chaves de identidade, incluindo as variantes por papel
 # (`.rdma-p2p-node-cpu.key` e afins - o proprio .gitignore do projeto sempre
 # usou o padrao `.rdma-p2p-node*.key`, entao elas existem no campo).
-for antigo in .rdma-p2p-node*.key; do
-    [ -e "$antigo" ] || continue
-    mover "$antigo" ".pom-node${antigo#.rdma-p2p-node}"
+for old in .rdma-p2p-node*.key; do
+    [ -e "$old" ] || continue
+    mover "$old" ".pom-node${old#.rdma-p2p-node}"
 done
 
-if [ "$renomeou" -eq 0 ]; then
+if [ "$renamed" -eq 0 ]; then
     [ "$QUIET" = 1 ] || echo "Nada a migrar aqui."
     [ "$QUIET" = 1 ] && exit 0
 else
-    echo "$renomeou arquivo(s) renomeado(s) em $dir."
+    echo "$renamed arquivo(s) renomeado(s) em $dir."
 fi
 
 [ "$QUIET" = 1 ] && exit 0

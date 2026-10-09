@@ -1171,7 +1171,7 @@ const EAGER_STREAMING_OPENAI: bool = true;
 /// Ela nasce em `ToolCallOpen`, cresce a cada `ToolCallChunk` e morre no
 /// fechamento. Enquanto o nome não sai, nada é transmitido: um índice de
 /// `tool_calls` aberto sem nome não serve para nada ao cliente.
-struct ChamadaEmCurso {
+struct CallInProgress {
     /// O corpo cru visto até agora - é dele que o transcodificador vive.
     body: String,
     streamer: crate::tool_call::CallArgsStreamer,
@@ -1196,39 +1196,39 @@ fn apply_scan_events_openai(
     events: Vec<ScanEvent>,
     tool_call_index: &mut u32,
     saw_tool_call: &mut bool,
-    em_curso: &mut Option<ChamadaEmCurso>,
+    in_progress: &mut Option<CallInProgress>,
     out: &mut Vec<serde_json::Value>,
 ) {
     /// A abertura: índice, id e nome, com os argumentos ainda vazios. Sai uma
     /// vez só por chamada, no primeiro fragmento que houver.
-    fn abrir(
-        nome: &str,
+    fn open_call(
+        name: &str,
         tool_call_index: &mut u32,
-        em_curso: &mut ChamadaEmCurso,
+        in_progress: &mut CallInProgress,
         out: &mut Vec<serde_json::Value>,
     ) -> u32 {
-        if let Some(idx) = em_curso.index {
+        if let Some(idx) = in_progress.index {
             return idx;
         }
         let idx = *tool_call_index;
         *tool_call_index += 1;
-        em_curso.index = Some(idx);
+        in_progress.index = Some(idx);
         out.push(json!({
             "tool_calls": [{
                 "index": idx,
                 "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
                 "type": "function",
-                "function": { "name": nome, "arguments": "" },
+                "function": { "name": name, "arguments": "" },
             }]
         }));
         idx
     }
 
-    fn fragmento(idx: u32, texto: String, out: &mut Vec<serde_json::Value>) {
+    fn emit_fragment(idx: u32, text: String, out: &mut Vec<serde_json::Value>) {
         out.push(json!({
             "tool_calls": [{
                 "index": idx,
-                "function": { "arguments": texto },
+                "function": { "arguments": text },
             }]
         }));
     }
@@ -1238,53 +1238,53 @@ fn apply_scan_events_openai(
             ScanEvent::Text(s) if !s.is_empty() => out.push(json!({ "content": s })),
             ScanEvent::Text(_) => {}
             ScanEvent::ToolCallOpen => {
-                *em_curso = Some(ChamadaEmCurso {
+                *in_progress = Some(CallInProgress {
                     body: String::new(),
                     streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
                     index: None,
                 });
             }
             ScanEvent::ToolCallChunk(fragment) => {
-                let Some(chamada) = em_curso.as_mut() else {
+                let Some(call) = in_progress.as_mut() else {
                     continue;
                 };
-                chamada.body.push_str(&fragment);
-                let corpo = chamada.body.clone();
-                if let Some(delta) = chamada.streamer.advance(&corpo) {
-                    let nome = crate::tool_call::peek_call_name(&corpo).unwrap_or_default();
-                    let idx = abrir(&nome, tool_call_index, chamada, out);
-                    fragmento(idx, delta, out);
+                call.body.push_str(&fragment);
+                let body = call.body.clone();
+                if let Some(delta) = call.streamer.advance(&body) {
+                    let name = crate::tool_call::peek_call_name(&body).unwrap_or_default();
+                    let idx = open_call(&name, tool_call_index, call, out);
+                    emit_fragment(idx, delta, out);
                 }
             }
             ScanEvent::ToolCallClose(Ok((name, arguments))) => {
                 *saw_tool_call = true;
-                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                let mut call = in_progress.take().unwrap_or_else(|| CallInProgress {
                     body: String::new(),
                     streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
                     index: None,
                 });
-                let idx = abrir(&name, tool_call_index, &mut chamada, out);
+                let idx = open_call(&name, tool_call_index, &mut call, out);
                 // Só o que ainda não saiu. Repetir o que o cliente já
                 // acumulou duplicaria os argumentos dele.
-                if let Some(delta) = chamada.streamer.finish_complete(&chamada.body, &arguments) {
-                    fragmento(idx, delta, out);
+                if let Some(delta) = call.streamer.finish_complete(&call.body, &arguments) {
+                    emit_fragment(idx, delta, out);
                 }
             }
             ScanEvent::ToolCallClose(Err(raw)) => {
-                let chamada = em_curso.take();
+                let call = in_progress.take();
                 // Uma chamada que já começou a sair não pode virar texto: o
                 // cliente já tem um `tool_calls[i]` aberto com nome, e não há
                 // como desenviar. Ela fica como está - argumentos que não
                 // parseiam, que é o caso "JSON inválido" que os provedores
                 // documentam e mandam devolver ao modelo.
-                if chamada.is_some_and(|c| c.streamer.emitted_len() > 0) {
+                if call.is_some_and(|c| c.streamer.emitted_len() > 0) {
                     continue;
                 }
                 apply_scan_events_openai(
                     vec![ScanEvent::Text(raw)],
                     tool_call_index,
                     saw_tool_call,
-                    em_curso,
+                    in_progress,
                     out,
                 );
             }
@@ -1294,14 +1294,14 @@ fn apply_scan_events_openai(
             // `saw_tool_call` **não** é marcado: o turno terminou no teto, e o
             // quadro final diz `length`.
             ScanEvent::ToolCallTruncated(partial) => {
-                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                let mut call = in_progress.take().unwrap_or_else(|| CallInProgress {
                     body: String::new(),
                     streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
                     index: None,
                 });
-                let idx = abrir(&partial.name, tool_call_index, &mut chamada, out);
-                if let Some(delta) = chamada.streamer.finish_truncated(&partial.arguments) {
-                    fragmento(idx, delta, out);
+                let idx = open_call(&partial.name, tool_call_index, &mut call, out);
+                if let Some(delta) = call.streamer.finish_truncated(&partial.arguments) {
+                    emit_fragment(idx, delta, out);
                 }
             }
         }
@@ -1346,7 +1346,7 @@ fn sse_stream(
         /// ferramenta. Vai para o `x_pom` do quadro final.
         truncated_tool_call: bool,
         /// A chamada cujos argumentos estão sendo transmitidos agora.
-        em_curso: Option<ChamadaEmCurso>,
+        in_progress: Option<CallInProgress>,
     }
 
     let state = S {
@@ -1363,7 +1363,7 @@ fn sse_stream(
         tool_call_index: 0,
         saw_tool_call: false,
         truncated_tool_call: false,
-        em_curso: None,
+        in_progress: None,
     };
 
     futures::stream::unfold(state, |mut s| async move {
@@ -1414,7 +1414,7 @@ fn sse_stream(
                                     events,
                                     &mut s.tool_call_index,
                                     &mut s.saw_tool_call,
-                                    &mut s.em_curso,
+                                    &mut s.in_progress,
                                     &mut deltas,
                                 );
                                 for delta in deltas {
@@ -1447,7 +1447,7 @@ fn sse_stream(
                                 finish_events,
                                 &mut s.tool_call_index,
                                 &mut s.saw_tool_call,
-                                &mut s.em_curso,
+                                &mut s.in_progress,
                                 &mut deltas,
                             );
                             for delta in deltas {
@@ -2301,22 +2301,22 @@ mod tests {
     /// acrescentar mensagens só acrescenta texto no fim.
     #[test]
     fn every_extra_turn_only_appends_to_the_previous_prompt() {
-        let turno1 = vec![msg("user", "1+1?")];
-        let turno2 = vec![
+        let turn1 = vec![msg("user", "1+1?")];
+        let turn2 = vec![
             msg("user", "1+1?"),
             msg("assistant", "2"),
             msg("user", "e 2+2?"),
         ];
-        let turno3 = {
-            let mut m = turno2.clone();
+        let turn3 = {
+            let mut m = turn2.clone();
             m.push(msg("assistant", "4"));
             m.push(msg("user", "e 3+3?"));
             m
         };
 
-        let p1 = render_prompt(&turno1, &[]);
-        let p2 = render_prompt(&turno2, &[]);
-        let p3 = render_prompt(&turno3, &[]);
+        let p1 = render_prompt(&turn1, &[]);
+        let p2 = render_prompt(&turn2, &[]);
+        let p3 = render_prompt(&turn3, &[]);
 
         assert!(
             p2.starts_with(&p1),
@@ -2324,9 +2324,9 @@ mod tests {
         );
         assert!(p3.starts_with(&p2), "turno 3 não continua o turno 2");
         // E a chave do cache acompanha, que é o que `PrefixCache` consulta.
-        let k1 = conversation_cache_key(&turno1, &[]);
-        let k2 = conversation_cache_key(&turno2, &[]);
-        let k3 = conversation_cache_key(&turno3, &[]);
+        let k1 = conversation_cache_key(&turn1, &[]);
+        let k2 = conversation_cache_key(&turn2, &[]);
+        let k3 = conversation_cache_key(&turn3, &[]);
         assert!(k2.starts_with(&k1));
         assert!(k3.starts_with(&k2));
     }
@@ -2359,16 +2359,16 @@ mod tests {
     #[test]
     fn changing_the_tool_list_breaks_the_cache_key_on_purpose() {
         let messages = vec![msg("user", "oi")];
-        let ferramenta = ToolDef {
+        let tool = ToolDef {
             eager_input_streaming: None,
             name: "buscar".into(),
             description: None,
             input_schema: json!({"type": "object"}),
         };
-        let sem = conversation_cache_key(&messages, &[]);
-        let com = conversation_cache_key(&messages, std::slice::from_ref(&ferramenta));
+        let without_tool = conversation_cache_key(&messages, &[]);
+        let with_tool = conversation_cache_key(&messages, std::slice::from_ref(&tool));
         assert!(
-            !com.starts_with(&sem),
+            !with_tool.starts_with(&without_tool),
             "a chave com ferramenta não pode continuar a sem"
         );
     }

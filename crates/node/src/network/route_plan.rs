@@ -704,8 +704,8 @@ impl EdgeTarget {
         peer.deploy_id.hash(&mut hasher);
         peer.start_layer.hash(&mut hasher);
         peer.end_layer.hash(&mut hasher);
-        crate::peer_client::tls_ativo().hash(&mut hasher);
-        crate::peer_client::quic_ativo().hash(&mut hasher);
+        crate::peer_client::tls_enabled().hash(&mut hasher);
+        crate::peer_client::quic_enabled().hash(&mut hasher);
         Self {
             node_id: peer.node_id.clone(),
             plane,
@@ -971,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn menor_rtt_vence_e_empate_prefere_quic_depois_http() {
+    fn the_lowest_rtt_wins_and_a_tie_prefers_quic_then_http() {
         let ranked = rank(vec![
             route(RouteKind::Tunnel, "", 40),
             route(RouteKind::Http, "http://b", 27),
@@ -1017,7 +1017,7 @@ mod tests {
     /// With a frame in flight, the planner neither probes nor swaps the route;
     /// it only does so again after the last frame's grace period.
     #[test]
-    fn uma_aresta_em_uso_nao_e_remedida_nem_trocada() {
+    fn an_edge_in_use_is_neither_remeasured_nor_swapped() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1065,7 +1065,7 @@ mod tests {
     /// A generation longer than `PLAN_TTL` does not drop to the full ladder
     /// halfway: the expired analysis still holds while the edge is in use.
     #[test]
-    fn a_analise_vencida_vale_enquanto_a_aresta_esta_em_uso() {
+    fn an_expired_analysis_holds_while_the_edge_is_in_use() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1092,7 +1092,7 @@ mod tests {
     /// The frame's own failure still swaps the route on a pinned edge: the pin
     /// only holds the planner back.
     #[test]
-    fn a_falha_do_frame_troca_de_rota_mesmo_fixada() {
+    fn a_frame_failure_switches_route_even_when_pinned() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1162,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn falha_repete_uma_vez_troca_de_rota_e_esgota_pedindo_nova_analise() {
+    fn a_failure_retries_once_switches_route_and_runs_out_asking_for_a_new_analysis() {
         let book = RouteBook::default();
         book.install(
             "peer",
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn analise_so_se_repete_quando_vence_muda_ou_nao_achou_rota() {
+    fn analysis_only_repeats_when_expired_changed_or_no_route_was_found() {
         let book = RouteBook::default();
         assert!(book.claim_measurement("peer", Plane::Gateway, 7));
         // Análise em curso ou recém-vazia não se repete antes de EMPTY_RETRY.
@@ -1232,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn orcamento_de_conexao_segue_o_rtt_medido() {
+    fn the_connection_budget_follows_the_measured_rtt() {
         let book = RouteBook::default();
         let ceiling = Duration::from_millis(300);
         assert_eq!(book.establish_budget("x", ceiling), ESTABLISH_UNMEASURED);
@@ -1263,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn autoridade_quic_vem_do_mesmo_host() {
+    fn the_quic_authority_comes_from_the_same_host() {
         let bases = vec![
             "http://[2804::1]:8181".to_string(),
             "http://100.85.81.27:8181".to_string(),

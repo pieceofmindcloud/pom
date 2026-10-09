@@ -1,6 +1,6 @@
 /**
  * Sales page for the Statistics and Logs plugin (`enterprise`), shown at
- * `/logs` and `/estatisticas` while no active plugin provides those screens.
+ * `/logs` and `/statistics` while no active plugin provides those screens.
  *
  * It follows the pieceofmind.cloud look (dark floating hero, navy -> teal
  * gradient, numbered mono eyebrows, round cards, pill buttons) and reads what

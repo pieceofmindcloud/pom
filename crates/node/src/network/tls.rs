@@ -66,7 +66,7 @@ pub fn node_certificate(id: &Identity) -> Result<NodeCertificate> {
 /// O node_id que um certificado apresenta: SHA256 da pubkey do SPKI.
 ///
 /// Mesma conta de `NodeId::from_pubkey`, sobre os mesmos 32 bytes. O teste
-/// `fingerprint_do_certificado_e_o_mesmo_de_from_pubkey` prende as duas: se um
+/// `the_certificate_fingerprint_is_the_same_as_from_pubkey` prende as duas: se um
 /// dia divergirem, o pinning passa a recusar todo mundo.
 pub fn node_id_of_cert(der: &[u8]) -> Result<String> {
     let (_, parsed) =
@@ -194,12 +194,12 @@ pub const PEER_ALPN: &[u8] = b"pom/1";
 pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 
-    let mut nomes: Vec<String> = vec!["localhost".into()];
-    nomes.extend(sans.iter().cloned());
-    nomes.sort();
-    nomes.dedup();
+    let mut names: Vec<String> = vec!["localhost".into()];
+    names.extend(sans.iter().cloned());
+    names.sort();
+    names.dedup();
 
-    let mut params = CertificateParams::new(nomes)
+    let mut params = CertificateParams::new(names)
         .map_err(|e| anyhow!("parâmetros do certificado de navegador inválidos: {e}"))?;
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, "pom");
@@ -235,9 +235,9 @@ impl NodeCertResolver {
     }
 
     /// A regra, isolada do trait para ter teste sem handshake.
-    pub fn quer_peer<'a>(alpn: Option<impl Iterator<Item = &'a [u8]>>) -> bool {
+    pub fn wants_peer<'a>(alpn: Option<impl Iterator<Item = &'a [u8]>>) -> bool {
         match alpn {
-            Some(mut oferecidos) => oferecidos.any(|p| p == PEER_ALPN),
+            Some(mut offered) => offered.any(|p| p == PEER_ALPN),
             None => false,
         }
     }
@@ -254,7 +254,7 @@ impl rustls::server::ResolvesServerCert for NodeCertResolver {
         &self,
         client_hello: rustls::server::ClientHello<'_>,
     ) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        if Self::quer_peer(client_hello.alpn()) {
+        if Self::wants_peer(client_hello.alpn()) {
             Some(self.peer.clone())
         } else {
             Some(self.browser.clone())
@@ -311,7 +311,7 @@ mod tests {
     /// O certificado tem que carregar a identidade do nó, não uma chave nova:
     /// é isso que faz o pinning valer sem distribuir arquivo nenhum.
     #[test]
-    fn certificado_carrega_o_node_id_da_identidade() {
+    fn the_certificate_carries_the_identity_node_id() {
         let id = Identity::generate();
         let cert = node_certificate(&id).unwrap();
         assert_eq!(node_id_of_cert(cert.cert.as_ref()).unwrap(), id.node_id.0);
@@ -319,7 +319,7 @@ mod tests {
 
     /// Duas identidades diferentes não podem produzir o mesmo fingerprint.
     #[test]
-    fn certificado_de_outra_chave_tem_outro_node_id() {
+    fn a_certificate_from_another_key_has_another_node_id() {
         let a = node_certificate(&Identity::generate()).unwrap();
         let b = node_certificate(&Identity::generate()).unwrap();
         assert_ne!(
@@ -330,7 +330,7 @@ mod tests {
 
     /// O verifier aceita o certificado do nó que ele esperava.
     #[test]
-    fn verifier_aceita_o_node_id_esperado() {
+    fn verifier_accepts_the_expected_node_id() {
         let id = Identity::generate();
         let cert = node_certificate(&id).unwrap();
         let v = PinnedNodeId::new(id.node_id.0.clone());
@@ -341,10 +341,10 @@ mod tests {
     /// próprio auto assinado, que é o único ataque que o pinning existe para
     /// impedir.
     #[test]
-    fn verifier_recusa_certificado_de_outro_no() {
-        let esperado = Identity::generate();
+    fn verifier_refuses_a_certificate_from_another_node() {
+        let expected = Identity::generate();
         let impostor = node_certificate(&Identity::generate()).unwrap();
-        let v = PinnedNodeId::new(esperado.node_id.0.clone());
+        let v = PinnedNodeId::new(expected.node_id.0.clone());
         assert!(v.matches(impostor.cert.as_ref()).is_err());
     }
 
@@ -352,10 +352,10 @@ mod tests {
     /// usa para nomear a máquina. Se um dia divergirem, o pinning passa a
     /// recusar todo mundo, e este teste é o que avisa.
     #[test]
-    fn fingerprint_do_certificado_e_o_mesmo_de_from_pubkey() {
+    fn the_certificate_fingerprint_is_the_same_as_from_pubkey() {
         let id = Identity::generate();
         let cert = node_certificate(&id).unwrap();
-        let esperado = NodeId::from_pubkey(&id.signing_key.verifying_key());
-        assert_eq!(node_id_of_cert(cert.cert.as_ref()).unwrap(), esperado.0);
+        let expected = NodeId::from_pubkey(&id.signing_key.verifying_key());
+        assert_eq!(node_id_of_cert(cert.cert.as_ref()).unwrap(), expected.0);
     }
 }

@@ -2666,7 +2666,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diagnosticos_cuda_do_moe_sao_automaticos() {
+    fn moe_cuda_diagnostics_are_automatic() {
         assert!(cuda_diagnostics_enabled());
     }
     use memmap2::Mmap;
@@ -2675,7 +2675,7 @@ mod tests {
     struct NonCloneState(Arc<AtomicUsize>);
 
     #[test]
-    fn soma_paralela_reutiliza_a_closure_fn_em_todos_os_grupos() {
+    fn parallel_sum_reuses_the_fn_closure_across_all_groups() {
         let calls = Arc::new(AtomicUsize::new(0));
         let state = NonCloneState(Arc::clone(&calls));
         let output = sum_parallel_device_outputs(vec![1u8, 2, 3], 2, move |group| {
@@ -2689,7 +2689,7 @@ mod tests {
     }
 
     #[test]
-    fn soma_de_um_grupo_nao_cria_thread_de_espera() {
+    fn a_single_group_sum_creates_no_waiting_thread() {
         let caller = std::thread::current().id();
         let observed = Arc::new(Mutex::new(None));
         let output = sum_parallel_device_outputs(vec![1u8], 1, {
@@ -2706,7 +2706,7 @@ mod tests {
     }
 
     #[test]
-    fn agrupamento_por_gpu_preserva_offsets_quando_gpu_so_aparece_depois() {
+    fn grouping_by_gpu_preserves_offsets_when_a_gpu_only_shows_up_later() {
         let groups = group_route_indices(
             &[0, 1, 1, 0],
             &[0, 1, 1, 2],
@@ -2722,7 +2722,7 @@ mod tests {
     }
 
     #[test]
-    fn deduplicacao_de_pares_expert_token_preserva_a_ordem_e_o_mapa() {
+    fn deduplicating_expert_token_pairs_preserves_the_order_and_the_map() {
         let expert_a = CudaHeterogeneousExpert {
             down: CudaHeterogeneousTensor {
                 data: 0x1000usize as *const u8,
@@ -2909,7 +2909,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_k_quant_rejeita_lease_menor_que_a_geometria_antes_do_kernel() {
+    fn cuda_k_quant_executor_rejects_a_lease_smaller_than_the_geometry_before_the_kernel() {
         let format = KQuantFormat::Q6K;
         let hidden = 256;
         let intermediate = 256;
@@ -2942,7 +2942,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_q4_0_preserva_o_decoder_cpu_com_geometria_de_32() {
+    fn cuda_q4_0_executor_matches_the_cpu_decoder_with_geometry_32() {
         let hidden = 64;
         let intermediate = 64;
         let hidden_values = (0..hidden)
@@ -3203,7 +3203,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_nvfp4_preserva_o_forward_do_decoder_cpu() {
+    fn cuda_nvfp4_executor_matches_the_cpu_decoder_forward() {
         let hidden = 64;
         let intermediate = 64;
         let payload = payload(hidden, intermediate);
@@ -3224,7 +3224,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_k_quants_preserva_q2k_q3k_q4k_q5k_e_q6k_do_decoder_cpu() {
+    fn cuda_k_quants_executor_matches_cpu_decoder_q2k_q3k_q4k_q5k_and_q6k() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -3271,7 +3271,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_q4k_preserva_lote_de_prefill_do_decoder_cpu() {
+    fn cuda_q4k_executor_matches_the_cpu_decoder_prefill_batch() {
         let format = KQuantFormat::Q4K;
         let hidden = 256;
         let intermediate = 256;
@@ -3361,7 +3361,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_q6_k_gate_up_oito_experts_hidden_2048_e_finito() {
+    fn cuda_q6_k_executor_gate_up_eight_experts_hidden_2048_is_finite() {
         let format = KQuantFormat::Q6K;
         let hidden = 2048;
         let intermediate = 512;
@@ -3415,7 +3415,7 @@ mod tests {
 
     #[test]
     #[ignore = "benchmark explícito do lote CUDA Q4_K e Q6_K"]
-    fn benchmark_cuda_k_quants_lote_prefill() {
+    fn benchmark_cuda_k_quants_prefill_batch() {
         for (label, format) in [("Q4_K", KQuantFormat::Q4K), ("Q6_K", KQuantFormat::Q6K)] {
             let hidden = 2048;
             let intermediate = 512;
@@ -3502,7 +3502,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_k_quants_heterogeneos_preserva_q2k_q3k_q4k_do_decoder_cpu() {
+    fn heterogeneous_cuda_k_quants_executor_matches_cpu_decoder_q2k_q3k_q4k() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -3618,7 +3618,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_plain_preserva_f32_f16_e_bf16_do_decoder_cpu() {
+    fn cuda_plain_executor_matches_cpu_decoder_f32_f16_and_bf16() {
         let hidden = 64;
         let intermediate = 64;
         let hidden_values = (0..hidden)
@@ -3662,7 +3662,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_iq_preserva_iq3xxs_iq3s_iq2s_e_iq4xs_do_decoder_cpu() {
+    fn cuda_iq_executor_matches_cpu_decoder_iq3xxs_iq3s_iq2s_and_iq4xs() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -3714,7 +3714,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostico_cuda_iq_divergencia_por_estagio() {
+    fn cuda_iq_diagnostic_divergence_per_stage() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -3831,7 +3831,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_iq_heterogeneo_preserva_gate_up_down_por_dtype() {
+    fn heterogeneous_cuda_iq_executor_preserves_gate_up_down_per_dtype() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -3936,7 +3936,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_heterogeneo_preserva_iq3xxs_e_mxfp4_do_deepseek() {
+    fn heterogeneous_cuda_executor_preserves_deepseek_iq3xxs_and_mxfp4() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -4035,7 +4035,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_nvfp4_preserva_quantizacao_q8_e_gelu_fp16() {
+    fn cuda_nvfp4_executor_preserves_q8_quantization_and_fp16_gelu() {
         let hidden = 64;
         let intermediate = 64;
         let payload = payload(hidden, intermediate);
@@ -4056,7 +4056,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_nvfp4_batch_preserva_cada_expert() {
+    fn cuda_nvfp4_batch_executor_preserves_each_expert() {
         let hidden = 64;
         let intermediate = 64;
         let first = payload_with_nibble(hidden, intermediate, 0x22);
@@ -4089,7 +4089,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device() {
+    fn cuda_nvfp4_executor_route_batch_aggregates_tokens_on_the_device() {
         let hidden = 64;
         let intermediate = 64;
         let first = payload_with_nibble(hidden, intermediate, 0x22);
@@ -4193,7 +4193,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_nvfp4_rota_de_um_expert_por_token_isola_multitoken() {
+    fn cuda_nvfp4_executor_one_expert_per_token_route_isolates_multitoken() {
         let hidden = 64;
         let intermediate = 64;
         let first = payload_with_nibble(hidden, intermediate, 0x22);
@@ -4256,7 +4256,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_nvfp4_rota_multitoken_sem_chaves_repetidas() {
+    fn cuda_nvfp4_executor_multitoken_route_without_repeated_keys() {
         let hidden = 64;
         let intermediate = 64;
         let first = payload_with_nibble(hidden, intermediate, 0x22);
@@ -4339,7 +4339,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_nvfp4_rota_de_dois_experts_por_token_isola_o_lote() {
+    fn cuda_nvfp4_executor_two_experts_per_token_route_isolates_the_batch() {
         let hidden = 64;
         let intermediate = 64;
         let first = payload_with_nibble(hidden, intermediate, 0x22);
@@ -4398,7 +4398,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a real NVFP4 GGUF and a CUDA device"]
-    fn executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real() {
+    fn cuda_nvfp4_executor_batch_preserves_the_real_gguf_geometry() {
         let path = std::env::var_os("POM_MOE_NUMERIC_MODEL")
             .expect("POM_MOE_NUMERIC_MODEL must name a real MoE GGUF");
         let path = std::path::PathBuf::from(path);
@@ -4454,7 +4454,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostico_cuda_acumula_fases_e_bytes_por_chamada() {
+    fn cuda_diagnostic_accumulates_phases_and_bytes_per_call() {
         let mut total = Nvfp4CudaDiagnostics::default();
         total.add_call(CudaMoeCallTiming {
             expert_calls: 1,
@@ -4510,7 +4510,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostico_cuda_separa_execucao_por_ordinal() {
+    fn cuda_diagnostic_separates_execution_by_ordinal() {
         let mut diagnostics = Nvfp4CudaDiagnostics::default();
         diagnostics.add_device_call(1, 2, 3.0, 4.0);
         diagnostics.add_device_call(0, 1, 5.0, 6.0);
@@ -4538,7 +4538,7 @@ mod tests {
     }
 
     #[test]
-    fn perfil_cuda_persiste_e_recusa_cuda_quando_cpu_medido_e_mais_rapido() {
+    fn cuda_profile_persists_and_refuses_cuda_when_the_measured_cpu_is_faster() {
         let model =
             std::env::temp_dir().join(format!("pom-cuda-profile-{}.gguf", std::process::id()));
         let sidecar = CudaTransferProfile::sidecar_path(&model);
@@ -4555,7 +4555,7 @@ mod tests {
     }
 
     #[test]
-    fn perfil_cuda_persiste_bandas_para_coexecucao() {
+    fn cuda_profile_persists_bands_for_coexecution() {
         let model = std::env::temp_dir().join(format!(
             "pom-cuda-bandwidth-profile-{}.gguf",
             std::process::id()
@@ -4581,7 +4581,7 @@ mod tests {
     }
 
     #[test]
-    fn perfil_cuda_recusa_banda_invalida_e_ausencia_fica_sem_perfil() {
+    fn cuda_profile_refuses_an_invalid_band_and_absence_means_no_profile() {
         let model = std::env::temp_dir().join(format!(
             "pom-cuda-invalid-bandwidth-profile-{}.gguf",
             std::process::id()
@@ -4611,7 +4611,7 @@ mod tests {
     }
 
     #[test]
-    fn kernel_heterogeneo_nao_despacha_vec_dot_por_ponteiro_indireto() {
+    fn heterogeneous_kernel_does_not_dispatch_vec_dot_through_an_indirect_pointer() {
         let source = include_str!("cuda_kernels.cu");
         assert!(
             !source.contains("using HeterogeneousVecDotQ8_1"),
@@ -4625,7 +4625,7 @@ mod tests {
 
     #[test]
     #[ignore = "medição CUDA explícita; execute com POM_MOE_CUDA_PROFILE=1"]
-    fn mede_banda_h2d_d2h_do_lote_nvfp4() {
+    fn measures_the_h2d_d2h_band_of_the_nvfp4_batch() {
         let cases = [
             ("tiny", 64, 64, 2, 2),
             ("gemma4_token", 2_816, 704, 1, 8),
@@ -4708,7 +4708,7 @@ mod tests {
 
     #[test]
     #[ignore = "medição CUDA explícita; execute com POM_MOE_CUDA_PROFILE=1"]
-    fn mede_perfil_de_coexecucao_nvfp4() {
+    fn measures_the_nvfp4_coexecution_profile() {
         let hidden = 2_816;
         let intermediate = 704;
         let active_experts = 8;
@@ -4818,7 +4818,7 @@ mod tests {
 
     #[test]
     #[ignore = "requer uma GPU CUDA para exercitar a ABI do pipeline"]
-    fn pipeline_heterogeneo_residente_expoe_handle_persistente() {
+    fn resident_heterogeneous_pipeline_exposes_a_persistent_handle() {
         let mut handle = std::ptr::null_mut();
         let status =
             unsafe { pom_moe_heterogeneous_route_pipeline_create(0, 256, 256, &mut handle) };

@@ -725,7 +725,7 @@ pub(super) fn seal_single_part(
     tp: Option<crate::pom::PomTp>,
     node_id: &str,
 ) -> anyhow::Result<String> {
-    let parte = crate::pom::PomPart {
+    let part = crate::pom::PomPart {
         sha256: outcome.sha256.clone(),
         bytes: outcome.bytes,
         start_layer: req.start_layer,
@@ -750,14 +750,14 @@ pub(super) fn seal_single_part(
         Vec::new(),
     );
     match kind {
-        crate::pom::PomKind::TensorParallel => manifesto.tp_parts.push(parte),
-        crate::pom::PomKind::Layers => manifesto.parts.push(parte),
+        crate::pom::PomKind::TensorParallel => manifesto.tp_parts.push(part),
+        crate::pom::PomKind::Layers => manifesto.parts.push(part),
         crate::pom::PomKind::Combined => {
             anyhow::bail!("uma parte isolada não pode selar um manifesto combinado")
         }
     }
-    let destino = crate::pom::finalize_run(shard_dir, scratch, &manifesto)?;
-    Ok(crate::pom::part_path(&destino, &outcome.sha256)?
+    let destination = crate::pom::finalize_run(shard_dir, scratch, &manifesto)?;
+    Ok(crate::pom::part_path(&destination, &outcome.sha256)?
         .to_string_lossy()
         .into_owned())
 }
@@ -781,13 +781,13 @@ pub(super) async fn run_apply(
                 .await?;
         // Já tenho esta parte? A busca é por conteúdo, em todas as rodadas -
         // a pasta de destino depende do manifesto, que só existe depois.
-        if let Some(pronta) = req
+        if let Some(ready) = req
             .part_sha256
             .as_deref()
             .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
         {
-            info!("shard de tensor já em disco: {}", pronta.display());
-            pronta.to_string_lossy().into_owned()
+            info!("shard de tensor já em disco: {}", ready.display());
+            ready.to_string_lossy().into_owned()
         } else {
             let scratch = crate::pom::scratch_dir(&shard_dir);
             let progress_job = job_id.to_string();
@@ -803,7 +803,7 @@ pub(super) async fn run_apply(
                 },
             )
             .await?;
-            let caminho = seal_single_part(
+            let path = seal_single_part(
                 &shard_dir,
                 &scratch,
                 &req,
@@ -817,7 +817,7 @@ pub(super) async fn run_apply(
                 &state.network.node_id,
             )?;
             invalidate_catalog(state.database.clone()).await;
-            caminho
+            path
         }
     } else if let Some(parts) = req.merge.clone() {
         let shard_dir = state.shard_dir().await;
@@ -843,13 +843,13 @@ pub(super) async fn run_apply(
         let source_sha256 =
             source_model_sha256_for_job(std::path::Path::new(&req.source_model_path), job_id)
                 .await?;
-        if let Some(pronta) = req
+        if let Some(ready) = req
             .part_sha256
             .as_deref()
             .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
         {
-            info!("fatia já em disco: {}", pronta.display());
-            pronta.to_string_lossy().into_owned()
+            info!("fatia já em disco: {}", ready.display());
+            ready.to_string_lossy().into_owned()
         } else {
             let scratch = crate::pom::scratch_dir(&shard_dir);
             let progress_job = job_id.to_string();
@@ -867,7 +867,7 @@ pub(super) async fn run_apply(
                 },
             )
             .await?;
-            let caminho = seal_single_part(
+            let path = seal_single_part(
                 &shard_dir,
                 &scratch,
                 &req,
@@ -881,10 +881,10 @@ pub(super) async fn run_apply(
 
             info!(
                 "shard pronto: {} ({:.1} GB)",
-                caminho,
+                path,
                 outcome.bytes as f64 / 1_073_741_824.0
             );
-            caminho
+            path
         }
     };
 
@@ -1075,18 +1075,18 @@ pub(super) async fn merge_parts(
     // Reaproveitar a junção exige saber o hash do resultado, e quem manda o
     // pedido sabe: é a mesma parte que o `.pom` lista. A busca é por conteúdo,
     // em todas as rodadas - a pasta depende do manifesto, que só existe depois.
-    if let Some(caminho) = req
+    if let Some(path) = req
         .part_sha256
         .as_deref()
         .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
     {
         info!(
             "modelo junto já existe, reaproveitando: {}",
-            caminho.display()
+            path.display()
         );
-        crate::gguf::read_layout(&caminho)
-            .with_context(|| format!("validar GGUF juntado existente {}", caminho.display()))?;
-        return Ok(caminho.to_string_lossy().into_owned());
+        crate::gguf::read_layout(&path)
+            .with_context(|| format!("validar GGUF juntado existente {}", path.display()))?;
+        return Ok(path.to_string_lossy().into_owned());
     }
     // O nome da pasta vem do manifesto do modelo original associado às partes.
     let out_dir = crate::pom::scratch_dir(&shard_dir);
@@ -1121,17 +1121,17 @@ pub(super) async fn merge_parts(
     let temp = out_dir.join(format!("{}.part", uuid::Uuid::new_v4().simple()));
     let temp_cleanup = temp.clone();
     let progress_job = job_id.to_string();
-    let destino_dir = out_dir.clone();
+    let dest_dir = out_dir.clone();
 
     let (output, bytes) =
         tokio::task::spawn_blocking(move || -> anyhow::Result<(std::path::PathBuf, u64)> {
-            let escrito = crate::splitter::merge(&merge_parts, &temp, move |pct| {
+            let written = crate::splitter::merge(&merge_parts, &temp, move |pct| {
                 let id = progress_job.clone();
                 tokio::spawn(async move { set_job_progress(&id, pct).await });
             })?;
             crate::gguf::read_layout(&temp)
                 .with_context(|| format!("validar GGUF juntado {}", temp.display()))?;
-            let dst = crate::pom::part_path(&destino_dir, &escrito.sha256)?;
+            let dst = crate::pom::part_path(&dest_dir, &written.sha256)?;
             // Um destino já ocupado é outra junção que terminou primeiro. Com
             // endereço de conteúdo os dois arquivos são byte a byte o mesmo,
             // então ficar com o que já está pronto é o certo - e no Windows o
@@ -1139,7 +1139,7 @@ pub(super) async fn merge_parts(
             if dst.exists() {
                 if crate::gguf::read_layout(&dst).is_ok() {
                     let _ = std::fs::remove_file(&temp);
-                    return Ok((dst, escrito.bytes));
+                    return Ok((dst, written.bytes));
                 }
                 info!(
                     "arquivo no endereço de conteúdo não é um GGUF válido, substituindo: {}",
@@ -1150,7 +1150,7 @@ pub(super) async fn merge_parts(
             }
             std::fs::rename(&temp, &dst)
                 .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
-            Ok((dst, escrito.bytes))
+            Ok((dst, written.bytes))
         })
         .await
         .context("spawn_blocking para splitter")?
@@ -1166,7 +1166,7 @@ pub(super) async fn merge_parts(
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string();
-    let parte = crate::pom::PomPart {
+    let part = crate::pom::PomPart {
         sha256: sha.clone(),
         bytes,
         start_layer: start,
@@ -1206,10 +1206,10 @@ pub(super) async fn merge_parts(
         source_sha256,
         Vec::new(),
     );
-    manifesto.parts.push(parte);
-    let destino = crate::pom::locate_source_dir(&shard_dir, &manifesto.pom_id)
+    manifesto.parts.push(part);
+    let destination = crate::pom::locate_source_dir(&shard_dir, &manifesto.pom_id)
         .unwrap_or_else(|| crate::pom::dir_for(&shard_dir, &manifesto));
-    let existing = crate::pom::part_path(&destino, &sha)?;
+    let existing = crate::pom::part_path(&destination, &sha)?;
     if existing.is_file() && crate::gguf::read_layout(&existing).is_err() {
         info!(
             "parte existente no endereço de conteúdo não é um GGUF válido, substituindo: {}",
@@ -1218,8 +1218,8 @@ pub(super) async fn merge_parts(
         std::fs::remove_file(&existing)
             .with_context(|| format!("remover parte inválida {}", existing.display()))?;
     }
-    let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
-    let final_path = crate::pom::part_path(&pasta, &sha)?;
+    let folder = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
+    let final_path = crate::pom::part_path(&folder, &sha)?;
 
     info!(
         "modelo junto pronto: {} ({:.1} GB)",

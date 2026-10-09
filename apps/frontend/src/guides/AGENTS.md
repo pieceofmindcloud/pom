@@ -7,7 +7,7 @@ metade: um conjunto pequeno e ordenado de páginas explicadas, com diagramas,
 para quem abriu o painel e quer entender o que o cluster faz.
 
 A tela `routes/Documentation.tsx` serve as duas na mesma rota, em abas
-(`?tab=guias|referencia`). Guias é a aba padrão - um humano não pode aterrissar
+(`?tab=guides|referencia`). Guias é a aba padrão - um humano não pode aterrissar
 em `AGENTS.md - crates/routing-base/`.
 
 ## Arquivos
@@ -17,13 +17,13 @@ em `AGENTS.md - crates/routing-base/`.
   `lead`, `p`, `h`, `steps`, `cards`, `note`, `warn`, `table`, `code`,
   `diagram`, `stats` (números de destaque), `checklist`, `faq` (perguntas que
   abrem sob demanda, `<details>`) e `deep`. Guias hoje, nesta ordem:
-  `visao-geral`, `primeiros-passos`, `perfis`, `requisicao`,
-  `fatiar-implantar`, `usar-api`, `rede-internet`, `plugins`, `operar`,
-  `acesso`, followed by the deployment inspector's category guides from
-  `deploySettings.ts`. Os `id` são o endereço `?guia=` e não mudam com o idioma.
+  `overview`, `getting-started`, `profiles`, `request`,
+  `slice-and-deploy`, `using-the-api`, `network-and-internet`, `plugins`, `operating`,
+  `access`, followed by the deployment inspector's category guides from
+  `deploySettings.ts`. Os `id` são o endereço `?guide=` e não mudam com o idioma.
 - `deploySettings.ts` - the guides behind the help button of each deployment
-  inspector category: `config-padrao` (Default settings), `config-pom` (POM
-  settings) and `config-beta` (the Beta group: MoE experts in RAM, the GPU
+  inspector category: `default-settings` (Default settings), `pom-settings` (POM
+  settings) and `beta-settings` (the Beta group: MoE experts in RAM, the GPU
   expert cache and the automatic prefill chunk, and how to combine them). Each
   describes every property of its category and how to change it, from the
   field hints and `docs/subsystems/deployment.md`. They open in

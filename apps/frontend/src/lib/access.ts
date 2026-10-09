@@ -25,16 +25,16 @@ import { pluginRouteProfiles } from "./pluginUi";
  * Prefixo de rota -> perfis que entram.
  *
  * A chave casa por prefixo de segmento, então uma futura filha de `/logs`
- * continua protegida, e `/implantar` **não** cobre `/implantarx`.
+ * continua protegida, e `/deploy` **não** cobre `/deployx`.
  */
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
-  "/implantar": ["admin"],
-  "/implantacoes": ["admin"],
-  "/config/administracao": ["admin", "node"],
-  "/config/rede/participantes": ["admin", "node"],
+  "/deploy": ["admin"],
+  "/deployments": ["admin"],
+  "/config/administration": ["admin", "node"],
+  "/config/network/participants": ["admin", "node"],
   // The cluster's connection key is the operator's credential: only the
   // admin sees it.
-  "/config/keys/conexao": ["admin"],
+  "/config/keys/connection": ["admin"],
 };
 
 /**
@@ -43,44 +43,44 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
  * máquina.
  */
 const INFER_ROUTES = [
-  "/redes-publicas",
+  "/public-networks",
   "/chat",
   "/network-chat",
-  "/documentacao",
+  "/documentation",
   "/config/keys/api",
   // Plugins are local to each machine: an inference node browses the
   // catalog and installs plugins on itself, and their menus join the list
   // below its conversations.
   "/plugins",
-  "/config/rede",
-  "/config/minha-maquina",
-  "/config/compartilhamento",
-  "/config/preferencias",
+  "/config/network",
+  "/config/my-machine",
+  "/config/sharing",
+  "/config/preferences",
   // Ancorar a confiança precede a autoridade e não é privilégio de perfil
   // nenhum: um `infer` também recebe a âncora do admin. A trava dessa tela é
   // do servidor (loopback, nó por ancorar, impressão digital conferida).
-  "/config/confianca",
+  "/config/trust",
 ] as const;
 
 const INFER_DENIED_ROUTES = [
-  "/config/rede/participantes",
-  "/config/preferencias/admin",
+  "/config/network/participants",
+  "/config/preferences/admin",
   // Request logs, deployment logs and statistics are the network's
   // operation, not an inference node's: hidden even where a plugin claims
   // the route and before activation.
   "/logs",
-  "/estatisticas",
-  "/implantacoes",
+  "/statistics",
+  "/deployments",
 ] as const;
 
-/** `/implantarx` não está sob `/implantar`. */
+/** `/deployx` não está sob `/deploy`. */
 function isUnder(path: string, prefix: string): boolean {
   const pathname = path.split(/[?#]/, 1)[0];
   return pathname === prefix || pathname.startsWith(prefix + "/");
 }
 
 export function isEnterprisePath(path: string): boolean {
-  return isUnder(path, "/logs") || isUnder(path, "/estatisticas");
+  return isUnder(path, "/logs") || isUnder(path, "/statistics");
 }
 
 /** Os perfis que entram nesta rota, ou `null` quando ela é livre. */

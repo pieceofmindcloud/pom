@@ -1262,7 +1262,7 @@ pub(crate) async fn ready_for_pipeline(
         // Um cliente por peer: a sonda tem que falar a mesma língua que a
         // inferência vai falar com aquele nó, senão ela mede - ou recusa - um
         // caminho que a requisição de verdade não percorre.
-        let cliente = http.for_peer(&peer.node_id);
+        let client = http.for_peer(&peer.node_id);
         // Todos os endereços de inferência, o que já respondeu primeiro. Só o
         // primeiro anunciado - um IPv6 inalcançável, por exemplo - deixava o
         // peer em quarentena e fora do plano ("Gap at layer 0") mesmo
@@ -1278,7 +1278,7 @@ pub(crate) async fn ready_for_pipeline(
             if peer.idle {
                 return Some(peer);
             }
-            let Ok(cliente) = cliente else {
+            let Ok(client) = client else {
                 return None;
             };
             // Quem falhou há pouco não volta a ser sondado a preço inteiro: ele
@@ -1291,11 +1291,11 @@ pub(crate) async fn ready_for_pipeline(
             // IP) cost the whole timeout, and the request paid ~700 ms of
             // `orchestration` before its prefill started.
             let probes = bases.iter().map(|base| {
-                let cliente = &cliente;
+                let client = &client;
                 let peer_id = peer.node_id.as_str();
                 Box::pin(async move {
                     let url = format!("{base}/health");
-                    let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
+                    let Ok(Ok(response)) = tokio::time::timeout(timeout, client.get(url).send()).await
                     else {
                         return Err(());
                     };

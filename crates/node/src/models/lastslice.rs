@@ -93,12 +93,12 @@ pub fn save(cfg: &NodeConfig, state: SliceState) -> Result<()> {
 }
 
 pub(crate) fn save_at(p: &Path, cfg: &NodeConfig, state: SliceState) -> Result<()> {
-    let anot = Annotation {
+    let annotation = Annotation {
         state,
         attempts: (state == SliceState::Pending).then_some(1).unwrap_or(0),
         slice: cfg.clone(),
     };
-    write_annotation(p, &anot)
+    write_annotation(p, &annotation)
 }
 
 fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
@@ -218,15 +218,15 @@ pub fn inspect() -> LastSlice {
 }
 
 fn inspect_at(p: &Path) -> LastSlice {
-    let Some(anot) = read_annotation(p) else {
+    let Some(annotation) = read_annotation(p) else {
         return LastSlice::Nothing;
     };
-    match anot.state {
-        SliceState::Serving => LastSlice::Serving(anot.slice),
-        SliceState::Idle => LastSlice::Idle(anot.slice),
+    match annotation.state {
+        SliceState::Serving => LastSlice::Serving(annotation.slice),
+        SliceState::Idle => LastSlice::Idle(annotation.slice),
         SliceState::Pending => LastSlice::Pending {
-            cfg: anot.slice,
-            attempts: anot.attempts.max(1),
+            cfg: annotation.slice,
+            attempts: annotation.attempts.max(1),
         },
     }
 }
@@ -246,7 +246,7 @@ mod tests {
     /// arquivo de fatia tivesse nome fixo, um sobrescreveria o do outro e a
     /// máquina voltaria com as duas fatias trocadas.
     #[test]
-    fn o_caminho_deriva_da_config_de_cada_no() {
+    fn the_path_derives_from_each_node_config() {
         assert_eq!(
             path_for(std::path::Path::new("/repo/pom.json")),
             std::path::PathBuf::from("/repo/pom.json.last-slice.json")
@@ -264,7 +264,7 @@ mod tests {
     /// A leitura não consome o journal: uma queda entre a leitura e o início
     /// da tentativa precisa continuar contabilizável no arranque seguinte.
     #[test]
-    fn inspect_preserva_o_journal() {
+    fn inspect_preserves_the_journal() {
         let dir = tmp("inspect-preserva");
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Serving).unwrap();
@@ -292,7 +292,7 @@ mod tests {
     /// numa requisicao, minutos depois. Por isso quem anota é o `/health`, e
     /// não um caminho de desligamento gracioso que uma queda dessas pula.
     #[test]
-    fn fatia_vista_servindo_volta_depois_de_uma_queda() {
+    fn a_slice_seen_serving_comes_back_after_a_crash() {
         let dir = tmp("servindo-volta");
         let f = dir.join("cfg.json.last-slice.json");
 
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn fatia_ociosa_volta_anunciada_sem_carregar() {
+    fn an_idle_slice_comes_back_announced_without_loading() {
         let dir = tmp("ociosa-volta");
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Idle).unwrap();
@@ -320,7 +320,7 @@ mod tests {
 
     /// Parar é decisão de quem operou, e o arranque seguinte não a desfaz.
     #[test]
-    fn parar_de_proposito_esquece_a_fatia() {
+    fn stopping_on_purpose_forgets_the_slice() {
         let dir = tmp("parar-esquece");
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Serving).unwrap();
@@ -344,7 +344,7 @@ mod tests {
     /// `MAX_RESTARTS` não segura isso: ele é de memória e morre junto com o
     /// processo.
     #[test]
-    fn fatia_que_nunca_carregou_nao_ressuscita() {
+    fn a_slice_that_never_loaded_is_not_resurrected() {
         let dir = tmp("nunca-carregou");
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Pending).unwrap();
@@ -369,15 +369,15 @@ mod tests {
     /// Um `apply` sobrepõe a anotação de uma fatia anterior que estava
     /// servindo: da nova ainda não se sabe nada, e é ela que o nó serve agora.
     #[test]
-    fn o_apply_de_outra_fatia_derruba_o_servindo_da_anterior() {
+    fn applying_another_slice_drops_the_serving_state_of_the_previous_one() {
         let dir = tmp("apply-sobrepoe");
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Serving).unwrap();
 
-        let mut nova = sample();
-        nova.start_layer = 8;
-        nova.end_layer = 15;
-        save_at(&f, &nova, SliceState::Pending).unwrap();
+        let mut new = sample();
+        new.start_layer = 8;
+        new.end_layer = 15;
+        save_at(&f, &new, SliceState::Pending).unwrap();
 
         match inspect_at(&f) {
             LastSlice::Pending { cfg, attempts } => {
@@ -395,7 +395,7 @@ mod tests {
     /// servindo — então ela conta como servindo, senão o próprio
     /// "Atualizar e reiniciar" perderia a fatia na travessia de versão.
     #[test]
-    fn anotacao_antiga_sem_estado_conta_como_servindo() {
+    fn an_old_annotation_without_state_counts_as_serving() {
         let dir = tmp("formato-antigo");
         let f = dir.join("cfg.json.last-slice.json");
         std::fs::write(&f, serde_json::to_string(&sample()).unwrap()).unwrap();
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn reinicios_de_uma_fatia_pendente_sao_contados_e_bloqueados_no_limite() {
+    fn restarts_of_a_pending_slice_are_counted_and_blocked_at_the_limit() {
         let dir = tmp("tentativas-persistentes");
         let f = dir.join("cfg.json.last-slice.json");
         let cfg = sample();
@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn sucesso_do_health_zera_a_contagem_e_autoriza_nova_retomada() {
+    fn a_health_success_resets_the_count_and_allows_a_new_resume() {
         let dir = tmp("tentativa-sucesso");
         let f = dir.join("cfg.json.last-slice.json");
         let cfg = sample();
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn bloqueio_manual_impede_retomada_ate_nova_implantacao() {
+    fn a_manual_block_prevents_resume_until_a_new_deployment() {
         let dir = tmp("bloqueio-manual");
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Pending).unwrap();
@@ -468,9 +468,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    fn tmp(nome: &str) -> PathBuf {
+    fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "pom-lastslice-{nome}-{}-{:?}",
+            "pom-lastslice-{name}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

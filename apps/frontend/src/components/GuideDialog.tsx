@@ -3,7 +3,7 @@
  *
  * The deployment inspector puts a help button on each category; reading the
  * guide there keeps the operator on the screen being configured. The text is
- * the same `?guia=` page Documentation serves, so it is written once.
+ * the same `?guide=` page Documentation serves, so it is written once.
  *
  * Nothing in the dialog leaves the screen: the operator may be in the middle
  * of a deployment. A reference link at the end of the guide (`deep`) opens

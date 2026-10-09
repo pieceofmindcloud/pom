@@ -1415,13 +1415,13 @@ pub mod tests {
     use super::*;
 
     #[test]
-    fn silu_estavel_trata_infinito_negativo() {
+    fn stable_silu_handles_negative_infinity() {
         assert_eq!(silu(f32::NEG_INFINITY), 0.0);
         assert!(silu(-1_000.0).is_finite());
     }
 
     #[test]
-    fn q4_k_decodifica_escala_minimo_e_nibbles_na_ordem_ggml() {
+    fn q4_k_decodes_scale_minimum_and_nibbles_in_ggml_order() {
         let mut block = vec![0u8; 144];
         block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
         block[2..4].copy_from_slice(&0x3800u16.to_le_bytes());
@@ -1441,7 +1441,7 @@ pub mod tests {
     }
 
     #[test]
-    fn q6_k_decodifica_bits_altos_baixos_e_escalas_por_grupo() {
+    fn q6_k_decodes_high_low_bits_and_per_group_scales() {
         let mut block = vec![0u8; 210];
         block[..128].fill(0x11);
         block[128..192].fill(0xaa);
@@ -1463,7 +1463,7 @@ pub mod tests {
     }
 
     #[test]
-    fn q6_k_decodifica_bloco_ggml_real_com_referencia() {
+    fn q6_k_decodes_a_real_ggml_block_against_the_reference() {
         let mut block = vec![0u8; Q6_K_BLOCK_BYTES];
         block[..128].fill(0x11);
         block[128..192].fill(0xaa);
@@ -1486,7 +1486,7 @@ pub mod tests {
     }
 
     #[test]
-    fn q6_k_gate_up_oito_experts_hidden_2048_e_finito() {
+    fn q6_k_gate_up_eight_experts_hidden_2048_is_finite() {
         let format = KQuantFormat::Q6K;
         let hidden = 2048;
         let intermediate = 256;
@@ -1516,7 +1516,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_q6_k_carrega_oito_experts_hidden_2048_e_executa_saida_finita() {
+    fn q6_k_source_loads_eight_experts_hidden_2048_and_runs_a_finite_output() {
         let path = std::env::temp_dir().join(format!(
             "pom-ftk-k-source-eight-q6-{}.gguf",
             uuid::Uuid::new_v4()
@@ -1556,7 +1556,7 @@ pub mod tests {
     }
 
     #[test]
-    fn k_quants_restantes_decodificam_blocos_completos() {
+    fn remaining_k_quants_decode_complete_blocks() {
         for format in [
             KQuantFormat::Q2K,
             KQuantFormat::Q3K,
@@ -1570,13 +1570,13 @@ pub mod tests {
     }
 
     #[test]
-    fn k_quant_rejeita_linha_truncada() {
+    fn k_quant_rejects_a_truncated_row() {
         let error = dequantize_row(KQuantFormat::Q4K, &[0; 143]).unwrap_err();
         assert!(matches!(error, KQuantError::PayloadLength { .. }));
     }
 
     #[test]
-    fn payload_cuda_k_quant_de_um_expert_rejeita_tamanho_encolhido() {
+    fn cuda_k_quant_payload_of_one_expert_rejects_a_shrunk_size() {
         let format = KQuantFormat::Q6K;
         let hidden = 256;
         let intermediate = 256;
@@ -1591,7 +1591,7 @@ pub mod tests {
     }
 
     #[test]
-    fn payload_cuda_k_quant_de_um_expert_aceita_tamanho_exato() {
+    fn cuda_k_quant_payload_of_one_expert_accepts_the_exact_size() {
         let format = KQuantFormat::Q6K;
         let expected = KQuantExpert::packed_bytes(format, 256, 256).unwrap();
 
@@ -1599,7 +1599,7 @@ pub mod tests {
     }
 
     #[test]
-    fn k_quant_aplica_scale_e_input_scale_no_payload() {
+    fn k_quant_applies_scale_and_input_scale_to_the_payload() {
         let format = KQuantFormat::Q4K;
         let hidden = 256;
         let intermediate = 256;
@@ -1639,7 +1639,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_mmap_carrega_k_quants_por_expert() {
+    fn mmap_source_loads_k_quants_per_expert() {
         for format in [
             KQuantFormat::Q2K,
             KQuantFormat::Q3K,
@@ -1665,7 +1665,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_mmap_carrega_gate_e_up_separados_nos_k_quants() {
+    fn mmap_source_loads_split_gate_and_up_in_k_quants() {
         for format in [
             KQuantFormat::Q2K,
             KQuantFormat::Q3K,
@@ -1691,7 +1691,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_mmap_preserva_hidden_e_intermediate_no_layout_split_ggml() {
+    fn mmap_source_preserves_hidden_and_intermediate_in_the_ggml_split_layout() {
         let path = std::env::temp_dir().join(format!(
             "pom-ftk-k-source-split-rectangular-{}.gguf",
             std::process::id()
@@ -1717,7 +1717,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_mmap_prefere_fundido_quando_o_gguf_tem_as_duas_convencoes() {
+    fn mmap_source_prefers_fused_when_the_gguf_has_both_conventions() {
         let path = std::env::temp_dir().join(format!(
             "pom-ftk-k-source-mixed-{}.gguf",
             std::process::id()
@@ -1739,7 +1739,7 @@ pub mod tests {
     }
 
     #[test]
-    fn source_mmap_carrega_os_sidecars_do_expert_fundido() {
+    fn mmap_source_loads_the_fused_expert_sidecars() {
         let path = std::env::temp_dir().join(format!(
             "pom-ftk-k-source-scales-{}.gguf",
             std::process::id()

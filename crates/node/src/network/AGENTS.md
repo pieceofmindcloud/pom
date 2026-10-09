@@ -195,7 +195,7 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   não produz um `reqwest::Response`.
   `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
-  esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
+  esquema global das URLs (`tls_enabled`/`peer_scheme`) e `peer_base_url`, que é
   quem colcheta IPv6, além da preferência e da quarentena temporária de rotas
   que falharam. `route_order` apenas reordena os candidatos: mesmo quando
   todos estão em quarentena, devolve a lista para que a tentativa real decida.
@@ -551,7 +551,7 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   primeiro e não conta para o teto. `Network` separa esses candidatos em
   públicos e privados: o público atual vem antes do observado por `identify`,
   e o observado continua fallback para NAT. A comparação com o que já entrou
-  é feita sem colchetes dos dois lados - `fixado` vem colchetado de
+  é feita sem colchetes dos dois lados - `pinned` vem colchetado de
   `effective_host` e o local vem cru, e comparar as duas formas duplicava o
   IPv6 no anúncio.
 - `Network::effective_host` (via `choose_effective_host`) - host pelo qual o

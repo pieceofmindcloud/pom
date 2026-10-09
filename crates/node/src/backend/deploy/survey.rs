@@ -258,7 +258,7 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
 /// `/api/ui/node`, which is the only honest source for how much room it has.
 /// Porta de teste para `survey`, que e privado: a suite precisa provar que o
 /// levantamento fala com os peers pelo cliente pinado. Ver
-/// `webui::catalogo_sob_tls_tests`.
+/// `webui::catalog_under_tls_tests`.
 #[cfg(test)]
 pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize {
     survey(state, group, DeployKind::Shards, None, None)

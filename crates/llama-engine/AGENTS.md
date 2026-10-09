@@ -113,7 +113,7 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   devcontainer: não há GPU aqui, então nenhuma das duas falhas de `cudaMalloc`
   pode ser reproduzida diretamente; a camada 2 se apoia no teste unitário já
   existente para o recuo do embutido
-  (`contexto_mtp_para_ram_desliga_o_offload_do_cache` em `mtp.rs`), e a
+  (`mtp_context_to_ram_turns_off_the_cache_offload` em `mtp.rs`), e a
   camada 1 no espelhamento exato de `load_mtp_cpu` (mesmo padrão, já usado
   em produção para o `nextn` embutido).
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em

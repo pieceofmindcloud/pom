@@ -961,9 +961,9 @@ impl PeerInfo {
     /// the only clue. An `Announce` with explicit `addr_candidates` stays the
     /// authority, so a LAN or bridge address the peer itself filtered out is
     /// not reintroduced.
-    pub fn merge_observed(&mut self, observado: &str) {
-        if !self.addr_candidates.iter().any(|c| c == observado) {
-            self.addr_candidates.push(observado.to_string());
+    pub fn merge_observed(&mut self, observed: &str) {
+        if !self.addr_candidates.iter().any(|c| c == observed) {
+            self.addr_candidates.push(observed.to_string());
         }
     }
 
@@ -1031,7 +1031,7 @@ impl PeerInfo {
     /// Cai no `addr` unico quando o peer nao anunciou candidatos, que e o caso
     /// de um no rodando binario anterior.
     pub fn inference_candidates(&self) -> Vec<String> {
-        let Some(porta) = self.inference_port else {
+        let Some(port) = self.inference_port else {
             return Vec::new();
         };
         let base = self
@@ -1048,7 +1048,7 @@ impl PeerInfo {
                 "{}://{}:{}",
                 crate::peer_client::peer_scheme(),
                 ip_host(address),
-                porta
+                port
             );
             if !urls.contains(&url) {
                 urls.push(url);
@@ -1109,7 +1109,7 @@ impl PeerInfo {
     /// Painel, o `deploy` e a transferência sem para onde cair, mesmo com um
     /// endereço vivo já anunciado em `addr_candidates`.
     pub fn gateway_candidates(&self) -> Vec<String> {
-        self.gateway_candidates_with_tls(crate::peer_client::tls_ativo())
+        self.gateway_candidates_with_tls(crate::peer_client::tls_enabled())
     }
 
     /// URLs do gateway usando explicitamente o esquema de um anúncio.
@@ -1118,7 +1118,7 @@ impl PeerInfo {
     /// valor anunciado localmente, então não podem depender da flag global que
     /// ainda está em processo de confirmação.
     pub fn gateway_candidates_with_tls(&self, tls: bool) -> Vec<String> {
-        let Some(porta) = self.gateway_port else {
+        let Some(port) = self.gateway_port else {
             return Vec::new();
         };
         let mut base: Vec<&str> = vec![self.addr.as_str()];
@@ -1128,7 +1128,7 @@ impl PeerInfo {
             if !is_peer_destination(&self.node_id, a) {
                 continue;
             }
-            let url = crate::peer_client::peer_base_url(&ip_host(a), porta, tls);
+            let url = crate::peer_client::peer_base_url(&ip_host(a), port, tls);
             if !urls.contains(&url) {
                 urls.push(url);
             }
@@ -1339,10 +1339,10 @@ pub struct Network {
 struct Rediscovery {
     /// Quando a busca começou. É o que decide até quando a tela pode dizer
     /// "reencontrando" (`REDISCOVERY_GIVE_UP`).
-    desde: Instant,
+    since: Instant,
     /// Quando a última pergunta saiu, para não repetir antes de
     /// `REDISCOVERY_INTERVAL`.
-    ultima_pergunta: Instant,
+    last_question: Instant,
 }
 
 /// Os primeiros 12 bytes de um id, para o log, **sem cortar no meio de um
@@ -1356,11 +1356,11 @@ struct Rediscovery {
 /// de recepção cheia. O id vem da rede: qualquer coisa que o outro lado mande
 /// tem que ser tratada como texto arbitrário, não como um SHA256 de 64 hexas.
 pub(crate) fn short(id: &str) -> &str {
-    let mut fim = id.len().min(12);
-    while fim > 0 && !id.is_char_boundary(fim) {
-        fim -= 1;
+    let mut end = id.len().min(12);
+    while end > 0 && !id.is_char_boundary(end) {
+        end -= 1;
     }
-    &id[..fim]
+    &id[..end]
 }
 
 const PANIC_LOG_INTERVAL: StdDuration = StdDuration::from_secs(10);
@@ -2301,7 +2301,7 @@ impl Network {
             gateway_quic_port: self.gateway_quic_port,
             profile: self.profile(),
             tls: self.tls_enabled(),
-            quic: crate::peer_client::quic_ativo(),
+            quic: crate::peer_client::quic_enabled(),
             hostname: self.hostname(),
             capabilities: assignment
                 .map(|a| {
@@ -2590,7 +2590,7 @@ impl Network {
             .unwrap_or(false);
         if let crate::quic_policy::PolicyOutcome::Fetch { principal } =
             crate::quic_policy::on_announce(
-                crate::peer_client::quic_ativo(),
+                crate::peer_client::quic_enabled(),
                 announced,
                 from_principal,
                 node_id,
@@ -2834,23 +2834,23 @@ impl Network {
             return false;
         }
         {
-            let Ok(mut pedidos) = self.rediscovery.write() else {
+            let Ok(mut requests) = self.rediscovery.write() else {
                 return false;
             };
-            let agora = Instant::now();
-            match pedidos.get_mut(node_id) {
-                Some(busca) => {
-                    if busca.ultima_pergunta.elapsed() < REDISCOVERY_INTERVAL {
+            let now = Instant::now();
+            match requests.get_mut(node_id) {
+                Some(search) => {
+                    if search.last_question.elapsed() < REDISCOVERY_INTERVAL {
                         return false;
                     }
-                    busca.ultima_pergunta = agora;
+                    search.last_question = now;
                 }
                 None => {
-                    pedidos.insert(
+                    requests.insert(
                         node_id.to_string(),
                         Rediscovery {
-                            desde: agora,
-                            ultima_pergunta: agora,
+                            since: now,
+                            last_question: now,
                         },
                     );
                 }
@@ -2873,13 +2873,13 @@ impl Network {
             short(node_id)
         );
 
-        let pergunta = P2PMessage::PeerRequest {
+        let question = P2PMessage::PeerRequest {
             from: self.node_id.clone(),
         };
         for bootstrap in &self.bootstrap_nodes {
-            let _ = self.send_to(&pergunta, bootstrap).await;
+            let _ = self.send_to(&question, bootstrap).await;
         }
-        let vizinhos: Vec<Vec<String>> = {
+        let neighbors: Vec<Vec<String>> = {
             let peers = self.peers.read().await;
             peers
                 .values()
@@ -2888,8 +2888,8 @@ impl Network {
                 .filter(|addresses| !addresses.is_empty())
                 .collect()
         };
-        for addresses in &vizinhos {
-            let _ = self.send_to_candidates(&pergunta, addresses).await;
+        for addresses in &neighbors {
+            let _ = self.send_to_candidates(&question, addresses).await;
         }
         true
     }
@@ -2906,17 +2906,17 @@ impl Network {
         self.rediscovery
             .read()
             .ok()
-            .and_then(|pedidos| pedidos.get(node_id).map(|busca| busca.desde))
-            .is_some_and(|desde| desde.elapsed() < REDISCOVERY_GIVE_UP)
+            .and_then(|requests| requests.get(node_id).map(|search| search.since))
+            .is_some_and(|since| since.elapsed() < REDISCOVERY_GIVE_UP)
     }
 
     /// Envelhece a busca em curso, para um teste alcançar o prazo sem esperar.
     #[cfg(test)]
-    pub fn age_rediscovery_for_test(&self, node_id: &str, quanto: Duration) {
-        if let Ok(mut pedidos) = self.rediscovery.write() {
-            if let Some(busca) = pedidos.get_mut(node_id) {
-                busca.desde -= quanto;
-                busca.ultima_pergunta -= quanto;
+    pub fn age_rediscovery_for_test(&self, node_id: &str, amount: Duration) {
+        if let Ok(mut requests) = self.rediscovery.write() {
+            if let Some(search) = requests.get_mut(node_id) {
+                search.since -= amount;
+                search.last_question -= amount;
             }
         }
     }
@@ -2926,8 +2926,8 @@ impl Network {
     /// Sem isto, uma máquina que se recuperou depois de uma rotação continuaria
     /// a contar o tempo da busca antiga, e a busca seguinte já nasceria velha.
     pub fn note_peer_read(&self, node_id: &str) {
-        if let Ok(mut pedidos) = self.rediscovery.write() {
-            pedidos.remove(node_id);
+        if let Ok(mut requests) = self.rediscovery.write() {
+            requests.remove(node_id);
         }
     }
 
@@ -2973,7 +2973,7 @@ impl Network {
             // Um cache próprio, e não o do gateway: esta task nasce dentro do
             // `Network`, que não conhece o `GatewayState`. O timeout curto é o
             // da sonda, não o de inferência.
-            let clientes = crate::peer_client::PeerClients::new(Duration::from_secs(10));
+            let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
             let mut ticker = interval(Duration::from_secs(30));
             loop {
                 ticker.tick().await;
@@ -2985,25 +2985,25 @@ impl Network {
                 // falham silenciosamente no TLS e o painel fica sem RTT dos
                 // peers remotos. Atualizar só o cliente mantém o esquema das
                 // URLs sob responsabilidade da política global já confirmada.
-                clientes.set_tls(net_routes.tls_enabled());
+                clients.set_tls(net_routes.tls_enabled());
                 for peer in net_routes.alive_peers().await {
-                    let precisa_rota = net_routes.routes.precisa_medir(&peer.node_id);
-                    let precisa_rtt = net_routes.rtts.precisa_medir(&peer.node_id);
-                    if !precisa_rota && !precisa_rtt {
+                    let needs_route = net_routes.routes.needs_measuring(&peer.node_id);
+                    let needs_rtt = net_routes.rtts.needs_measuring(&peer.node_id);
+                    if !needs_route && !needs_rtt {
                         continue;
                     }
 
-                    if precisa_rota {
-                        let candidatos = peer.inference_candidates();
-                        if !candidatos.is_empty() {
+                    if needs_route {
+                        let candidates = peer.inference_candidates();
+                        if !candidates.is_empty() {
                             net_routes
                                 .routes
-                                .measure_peer(&clientes, &peer.node_id, &candidatos)
+                                .measure_peer(&clients, &peer.node_id, &candidates)
                                 .await;
                         }
                     }
 
-                    if precisa_rtt {
+                    if needs_rtt {
                         let peer_id = peer
                             .libp2p_peer_id
                             .as_deref()
@@ -3034,14 +3034,14 @@ impl Network {
                         let direct_health_rtt = if tunnel_rtt.is_none() {
                             net_routes
                                 .routes
-                                .measure_current_peer(&clientes, &peer.node_id)
+                                .measure_current_peer(&clients, &peer.node_id)
                                 .await
                         } else {
                             None
                         };
 
                         if let Some((rtt_ms, transport)) =
-                            crate::route::escolher_rtt(tunnel_rtt, direct_health_rtt)
+                            crate::route::choose_rtt(tunnel_rtt, direct_health_rtt)
                         {
                             net_routes.rtts.remember(&peer.node_id, rtt_ms, transport);
                         } else {
@@ -3434,32 +3434,32 @@ impl Network {
     }
 
     async fn cleanup_dead_peers(&self) {
-        let mortos: Vec<String> = {
+        let dead: Vec<String> = {
             let mut peers = self.peers.write().await;
-            let mortos: Vec<String> = peers
+            let dead: Vec<String> = peers
                 .values()
                 .filter(|p| !p.is_alive())
                 .map(|p| p.node_id.clone())
                 .collect();
             peers.retain(|_, p| p.is_alive());
-            mortos
+            dead
         };
         self.public_discovery
             .write()
             .await
             .retain(|_, peer| peer.is_alive());
-        if mortos.is_empty() {
+        if dead.is_empty() {
             return;
         }
         // O peer saiu: a memória de endereço dele vai junto. Guardá-la faria um
         // nó que volta com o mesmo endereço nascer desacreditado.
-        for node_id in &mortos {
+        for node_id in &dead {
             self.routes.forget(node_id);
-            if let Ok(mut pedidos) = self.rediscovery.write() {
-                pedidos.remove(node_id);
+            if let Ok(mut requests) = self.rediscovery.write() {
+                requests.remove(node_id);
             }
         }
-        info!("🧹 Removed {} timed-out peers", mortos.len());
+        info!("🧹 Removed {} timed-out peers", dead.len());
     }
 
     fn admission_cache_key(&self, peer: &PeerInfo, connection_key: &str) -> String {
@@ -4648,8 +4648,8 @@ mod tests {
     /// inteiro: o endereço de circuito costuma ser o segundo da lista, e
     /// devolver só o primeiro deixava um par atrás de NAT sem destino.
     #[test]
-    fn os_multiaddresses_anunciados_vencem_e_vem_todos() {
-        let mut peer = peer_com_candidatos(vec!["192.168.100.210:42777"]);
+    fn the_announced_multiaddresses_win_and_all_come_through() {
+        let mut peer = peer_with_candidates(vec!["192.168.100.210:42777"]);
         peer.libp2p_addrs = vec![
             "/ip4/203.0.113.7/udp/52777/quic-v1".to_string(),
             "/ip4/198.51.100.4/tcp/4001/p2p/12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK/p2p-circuit".to_string(),
@@ -4659,8 +4659,8 @@ mod tests {
     }
 
     #[test]
-    fn libp2p_dial_uses_addr_canonico_e_ignora_candidatos_legados() {
-        let mut peer = peer_com_candidatos(vec!["192.168.100.210:42777", "172.17.0.1:42777"]);
+    fn libp2p_dial_uses_the_canonical_addr_and_ignores_legacy_candidates() {
+        let mut peer = peer_with_candidates(vec!["192.168.100.210:42777", "172.17.0.1:42777"]);
         peer.addr = "100.122.132.97:42777".into();
 
         assert_eq!(
@@ -4913,14 +4913,14 @@ mod tests {
             .unwrap();
         let assignment = Arc::new(RwLock::new(None));
 
-        let mut old = peer_com_candidatos(vec![]);
+        let mut old = peer_with_candidates(vec![]);
         old.node_id = "peer".into();
         old.end_layer = 15;
         old.total_layers = 44;
         let old_seen = old.last_seen;
         net.insert_peer(old).await;
 
-        let mut refreshed = peer_com_candidatos(vec![]);
+        let mut refreshed = peer_with_candidates(vec![]);
         refreshed.node_id = "peer".into();
         refreshed.end_layer = 28;
         refreshed.total_layers = 44;
@@ -4940,7 +4940,7 @@ mod tests {
         assert_eq!(peer.total_layers, 44);
     }
 
-    fn peer_com_candidatos(candidatos: Vec<&str>) -> PeerInfo {
+    fn peer_with_candidates(candidates: Vec<&str>) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
             tls: false,
@@ -4950,7 +4950,7 @@ mod tests {
             trust_version: None,
             relay: None,
             addr: "192.168.1.9:42777".into(),
-            addr_candidates: candidatos.into_iter().map(String::from).collect(),
+            addr_candidates: candidates.into_iter().map(String::from).collect(),
             model: "qwen35".into(),
             start_layer: 0,
             end_layer: 19,
@@ -4990,24 +4990,24 @@ mod tests {
             .await
             .unwrap();
         let assignment = Arc::new(RwLock::new(None));
-        let morto = "[2804:d55:5579:1000:1c20:e551:6a95:9a0d]:42777";
-        let vivo = "[2804:d55:5579:1000:18cc:e839:7c2:dd6a]:42777";
+        let dead = "[2804:d55:5579:1000:1c20:e551:6a95:9a0d]:42777";
+        let alive = "[2804:d55:5579:1000:18cc:e839:7c2:dd6a]:42777";
 
-        let mut antigo = peer_com_candidatos(vec![morto]);
-        antigo.node_id = "peer".into();
-        antigo.addr = morto.into();
-        let visto_em = antigo.last_seen;
-        net.insert_peer(antigo).await;
+        let mut old = peer_with_candidates(vec![dead]);
+        old.node_id = "peer".into();
+        old.addr = dead.into();
+        let seen_at = old.last_seen;
+        net.insert_peer(old).await;
         // Uma requisicao real ja provou que esse endereco nao atende.
         net.routes.mark_failure(
             "peer",
             "http://[2804:d55:5579:1000:1c20:e551:6a95:9a0d]:8080",
         );
 
-        let mut fresco = peer_com_candidatos(vec![vivo]);
+        let mut fresco = peer_with_candidates(vec![alive]);
         fresco.node_id = "peer".into();
-        fresco.addr = vivo.into();
-        fresco.last_seen = visto_em + chrono::Duration::seconds(1);
+        fresco.addr = alive.into();
+        fresco.last_seen = seen_at + chrono::Duration::seconds(1);
         net.handle_message(
             P2PMessage::PeerList {
                 peers: vec![fresco],
@@ -5017,16 +5017,16 @@ mod tests {
         )
         .await;
 
-        let guardado = net.peers.read().await["peer"].clone();
+        let stored = net.peers.read().await["peer"].clone();
         assert!(
-            !guardado.addr_candidates.iter().any(|c| c == morto),
+            !stored.addr_candidates.iter().any(|c| c == dead),
             "o endereco morto voltou pelo gossip: {:?}",
-            guardado.addr_candidates
+            stored.addr_candidates
         );
         assert!(
-            guardado.addr_candidates.iter().any(|c| c == vivo),
+            stored.addr_candidates.iter().any(|c| c == alive),
             "o endereco atual tem de ficar: {:?}",
-            guardado.addr_candidates
+            stored.addr_candidates
         );
     }
 
@@ -5039,19 +5039,19 @@ mod tests {
             .await
             .unwrap();
         let assignment = Arc::new(RwLock::new(None));
-        let observado = "203.0.113.9:42777";
-        let anunciado = "198.51.100.7:42777";
+        let observed = "203.0.113.9:42777";
+        let announced = "198.51.100.7:42777";
 
-        let mut antigo = peer_com_candidatos(vec![observado]);
-        antigo.node_id = "peer".into();
-        antigo.addr = observado.into();
-        let visto_em = antigo.last_seen;
-        net.insert_peer(antigo).await;
+        let mut old = peer_with_candidates(vec![observed]);
+        old.node_id = "peer".into();
+        old.addr = observed.into();
+        let seen_at = old.last_seen;
+        net.insert_peer(old).await;
 
-        let mut fresco = peer_com_candidatos(vec![anunciado]);
+        let mut fresco = peer_with_candidates(vec![announced]);
         fresco.node_id = "peer".into();
-        fresco.addr = anunciado.into();
-        fresco.last_seen = visto_em + chrono::Duration::seconds(1);
+        fresco.addr = announced.into();
+        fresco.last_seen = seen_at + chrono::Duration::seconds(1);
         net.handle_message(
             P2PMessage::PeerList {
                 peers: vec![fresco],
@@ -5061,8 +5061,8 @@ mod tests {
         )
         .await;
 
-        let guardado = net.peers.read().await["peer"].clone();
-        assert_eq!(guardado.addr_candidates, vec![anunciado]);
+        let stored = net.peers.read().await["peer"].clone();
+        assert_eq!(stored.addr_candidates, vec![announced]);
     }
 
     /// Quando o peer envia candidatos explícitos, a origem efetiva do pacote
@@ -5137,7 +5137,7 @@ mod tests {
     /// tempo; o gateway nunca aprendeu.
     #[test]
     fn the_gateway_has_one_url_per_known_address_with_the_proven_one_first() {
-        let mut peer = peer_com_candidatos(vec![
+        let mut peer = peer_with_candidates(vec![
             "10.0.0.5:42777",
             "[2804:f30::1]:42777",
             "192.168.1.9:42777",
@@ -5164,16 +5164,16 @@ mod tests {
     /// o endereco: o cluster voltava a discar o cadaver na volta seguinte.
     #[test]
     fn an_address_rotation_does_not_erase_the_proof_that_the_old_one_died() {
-        let tabela = crate::route::RouteTable::new();
-        tabela.mark_failure("peer", "http://[2804:d55::9]:8080");
-        tabela.invalidate("peer");
+        let table = crate::route::RouteTable::new();
+        table.mark_failure("peer", "http://[2804:d55::9]:8080");
+        table.invalidate("peer");
         assert!(
-            tabela.is_failed("peer", "http://[2804:d55::9]:8080"),
+            table.is_failed("peer", "http://[2804:d55::9]:8080"),
             "a rotacao nao pode apagar a prova de que o endereco antigo morreu"
         );
-        tabela.forget("peer");
+        table.forget("peer");
         assert!(
-            !tabela.is_failed("peer", "http://[2804:d55::9]:8080"),
+            !table.is_failed("peer", "http://[2804:d55::9]:8080"),
             "quando o peer some de vez, a memoria dele vai junto"
         );
     }
@@ -5184,7 +5184,7 @@ mod tests {
     /// internet, nunca descobrirem que tambem eram vizinhos.
     #[test]
     fn the_observed_address_joins_the_candidate_set() {
-        let mut peer = peer_com_candidatos(vec!["192.168.1.9:42777"]);
+        let mut peer = peer_with_candidates(vec!["192.168.1.9:42777"]);
         peer.merge_observed("[2804:f30::1]:42777");
         assert_eq!(
             peer.addr_candidates,
@@ -5197,7 +5197,7 @@ mod tests {
 
     #[test]
     fn an_already_known_observed_address_is_not_duplicated() {
-        let mut peer = peer_com_candidatos(vec!["192.168.1.9:42777"]);
+        let mut peer = peer_with_candidates(vec!["192.168.1.9:42777"]);
         peer.merge_observed("192.168.1.9:42777");
         assert_eq!(peer.addr_candidates.len(), 1);
     }
@@ -5207,7 +5207,7 @@ mod tests {
     /// versoes misturadas continua funcionando.
     #[test]
     fn a_peer_without_candidates_falls_back_to_its_single_addr() {
-        let peer = peer_com_candidatos(vec![]);
+        let peer = peer_with_candidates(vec![]);
         assert_eq!(
             peer.inference_candidates(),
             vec!["http://192.168.1.9:8181".to_string()]
@@ -5225,7 +5225,7 @@ mod tests {
             "255.255.255.255:42778",
             "[ff02::1]:42778",
         ] {
-            let mut peer = peer_com_candidatos(vec![]);
+            let mut peer = peer_with_candidates(vec![]);
             peer.addr = addr.into();
             assert_eq!(peer.dialable_addr(), None, "{addr} must not be dialed");
             assert!(
@@ -5234,7 +5234,7 @@ mod tests {
             );
         }
 
-        let peer = peer_com_candidatos(vec!["0.0.0.0:42778", "[2804:d55::1]:42778"]);
+        let peer = peer_with_candidates(vec!["0.0.0.0:42778", "[2804:d55::1]:42778"]);
         assert_eq!(peer.dialable_addr(), Some("[2804:d55::1]:42778"));
         assert_eq!(
             peer.inference_candidates(),
@@ -5247,7 +5247,7 @@ mod tests {
 
     #[test]
     fn a_peer_with_only_a_zero_port_is_not_dialable() {
-        let mut peer = peer_com_candidatos(vec![]);
+        let mut peer = peer_with_candidates(vec![]);
         peer.addr = "[2804:d55::1]:0".into();
         assert_eq!(peer.dialable_addr(), None);
 
@@ -5263,7 +5263,7 @@ mod tests {
     /// mesmo com o endereço certo já conhecido.
     #[test]
     fn inference_url_prefers_the_first_candidate_over_the_legacy_addr() {
-        let peer = peer_com_candidatos(vec!["203.0.113.5:42777", "192.168.1.9:42777"]);
+        let peer = peer_with_candidates(vec!["203.0.113.5:42777", "192.168.1.9:42777"]);
         assert_eq!(
             peer.addr, "192.168.1.9:42777",
             "addr fica desatualizado de propósito neste teste"
@@ -5277,7 +5277,7 @@ mod tests {
     /// Cada candidato vira uma URL de inferencia, com o IPv6 entre colchetes.
     #[test]
     fn every_candidate_becomes_an_inference_url() {
-        let peer = peer_com_candidatos(vec!["192.168.1.9:42777", "[2804:f30::1]:42777"]);
+        let peer = peer_with_candidates(vec!["192.168.1.9:42777", "[2804:f30::1]:42777"]);
         assert_eq!(
             peer.inference_candidates(),
             vec![
@@ -5291,11 +5291,11 @@ mod tests {
     /// parsear, o cluster partiria ao meio numa atualizacao parcial.
     #[test]
     fn an_announce_without_candidates_still_parses() {
-        let antigo = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
+        let old = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z"}"#;
         let msg: P2PMessage =
-            serde_json::from_str(antigo).expect("Announce antigo tem que parsear");
+            serde_json::from_str(old).expect("Announce antigo tem que parsear");
         match msg {
             P2PMessage::Announce {
                 addr_candidates, ..
@@ -5309,11 +5309,11 @@ mod tests {
     /// NAT-tunnel work sends `Announce` with no such field at all.
     #[test]
     fn an_announce_without_a_libp2p_peer_id_still_parses() {
-        let antigo = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
+        let old = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z"}"#;
         let msg: P2PMessage =
-            serde_json::from_str(antigo).expect("Announce sem libp2p_peer_id tem que parsear");
+            serde_json::from_str(old).expect("Announce sem libp2p_peer_id tem que parsear");
         match msg {
             P2PMessage::Announce { libp2p_peer_id, .. } => assert_eq!(libp2p_peer_id, None),
             _ => panic!("esperava Announce"),
@@ -5325,11 +5325,11 @@ mod tests {
     /// NAT-tunnel fallback, so a lossy encode/decode would silently break it.
     #[test]
     fn an_announce_with_a_libp2p_peer_id_round_trips() {
-        let com_id = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
+        let with_id = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z",
             "libp2p_peer_id":"12D3KooWAbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh"}"#;
-        let msg: P2PMessage = serde_json::from_str(com_id).expect("Announce tem que parsear");
+        let msg: P2PMessage = serde_json::from_str(with_id).expect("Announce tem que parsear");
         match &msg {
             P2PMessage::Announce { libp2p_peer_id, .. } => assert_eq!(
                 libp2p_peer_id.as_deref(),
@@ -5353,11 +5353,11 @@ mod tests {
     /// backward-compatible default.
     #[test]
     fn a_peer_info_without_a_libp2p_peer_id_still_parses() {
-        let antigo = r#"{"node_id":"n","pubkey":"p","addr":"1.2.3.4:42777","model":"m",
+        let old = r#"{"node_id":"n","pubkey":"p","addr":"1.2.3.4:42777","model":"m",
             "start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "last_seen":"2026-08-13T00:00:00Z"}"#;
         let peer: PeerInfo =
-            serde_json::from_str(antigo).expect("PeerInfo sem libp2p_peer_id tem que parsear");
+            serde_json::from_str(old).expect("PeerInfo sem libp2p_peer_id tem que parsear");
         assert_eq!(peer.libp2p_peer_id, None);
     }
 
@@ -5603,7 +5603,7 @@ mod tests {
     /// tenha respondido na porta de inferência; os que falharam vão para o fim.
     #[tokio::test]
     async fn gateway_bases_put_the_proven_host_first() {
-        let _politica = crate::peer_client::POLITICA_GLOBAL
+        let _policy = crate::peer_client::GLOBAL_POLICY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
@@ -6532,24 +6532,24 @@ mod tests {
     /// Windows o padrão é ligado: sem este socket montado à mão, um nó lá não
     /// veria anúncio nenhum e a descoberta ficaria muda sem dizer por quê.
     #[tokio::test]
-    async fn socket_dual_stack_recebe_de_remetente_ipv4() {
-        let alvo: SocketAddr = "[::]:0".parse().unwrap();
-        let Ok(std_sock) = Network::bind_udp_dual_stack(alvo) else {
+    async fn a_dual_stack_socket_receives_from_an_ipv4_sender() {
+        let target: SocketAddr = "[::]:0".parse().unwrap();
+        let Ok(std_sock) = Network::bind_udp_dual_stack(target) else {
             return; // máquina sem IPv6: o caminho v4 puro cobre esse caso
         };
         let port = std_sock.local_addr().unwrap().port();
         let sock = UdpSocket::from_std(std_sock).unwrap();
 
-        let emissor = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        emissor.send_to(b"oi", ("127.0.0.1", port)).await.unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        sender.send_to(b"oi", ("127.0.0.1", port)).await.unwrap();
 
         let mut buf = [0u8; 8];
-        let recebido =
+        let received =
             tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv_from(&mut buf))
                 .await
                 .expect("nada chegou de um remetente IPv4 no socket [::]")
                 .unwrap();
 
-        assert_eq!(&buf[..recebido.0], b"oi");
+        assert_eq!(&buf[..received.0], b"oi");
     }
 }

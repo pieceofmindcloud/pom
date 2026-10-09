@@ -232,7 +232,7 @@ function Section({
 }: {
   title: string;
   tone: "iris" | "aqua" | "amber";
-  /** The `?guia=` id the help button opens in a dialog. */
+  /** The `?guide=` id the help button opens in a dialog. */
   guide?: string;
   children: ReactNode;
 }) {
@@ -374,7 +374,7 @@ export function DeploymentInspector({
   inferenceModeAlert,
   /** A precisão do estado oculto só existe quando o pipeline cruza máquinas. */
   showHiddenStateDtype = false,
-  pomDesenv = false,
+  pomDevMode = false,
   inferenceService,
 }: {
   value: RuntimeParams;
@@ -388,7 +388,7 @@ export function DeploymentInspector({
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
-  pomDesenv?: boolean;
+  pomDevMode?: boolean;
   /** A plugin's inference service runs the whole model (Strata): only the
    *  settings that engine reads are shown - the context, the concurrent
    *  requests and idle unloading. The llama.cpp knobs do not reach it. */
@@ -861,7 +861,7 @@ export function DeploymentInspector({
         </BetaGroup>
       </Section>
 
-      {pomDesenv && <Section title={t("inspector.sectionPomDev")} tone="amber">
+      {pomDevMode && <Section title={t("inspector.sectionPomDev")} tone="amber">
         {showInferenceMode && (
           <InspectorRow
             label={t("inspector.inferenceMode")}

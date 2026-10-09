@@ -392,13 +392,13 @@ async fn measure(hops: usize, link: bool, tokens: usize) -> Measurement {
 /// documentação; o que o teste guarda é a comparação, que não depende da
 /// máquina.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_ligacao_persistente_custa_menos_bytes_por_ficha() {
+async fn the_persistent_link_costs_fewer_bytes_per_token() {
     for hops in [1usize, 2, 3] {
         let before = measure(hops, false, DECODE_TOKENS).await;
         let after = measure(hops, true, DECODE_TOKENS).await;
-        for (rotulo, m) in [("antes ", &before), ("depois", &after)] {
+        for (label, m) in [("antes ", &before), ("depois", &after)] {
             println!(
-                "hops={hops} {rotulo} transporte={:<10} bytes/ficha(1º hop)={:.1} \
+                "hops={hops} {label} transporte={:<10} bytes/ficha(1º hop)={:.1} \
                  bytes/ficha(cadeia)={:.1} quadro={} estado_oculto={} conexões={} ms/ficha={:.3}",
                 m.transport,
                 m.bytes_per_token_first_hop,
@@ -431,7 +431,7 @@ async fn a_ligacao_persistente_custa_menos_bytes_por_ficha() {
 /// O handoff MTP tem metadados extras, mas continua sendo um frame de
 /// `/v1/step` compatível com o envelope do canal persistente.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn handoff_mtp_usa_a_ligacao_persistente() {
+async fn mtp_handoff_uses_the_persistent_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
     let (url, _counter) = spawn_hop(Hop {
         clients: clients.clone(),
@@ -468,7 +468,7 @@ async fn handoff_mtp_usa_a_ligacao_persistente() {
 /// `BatchCoordinator`. Ele ainda precisa usar a mesma ligação persistente do
 /// decode, ou o primeiro handoff continuaria pagando libp2p por chunk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn handoff_prefill_direto_usa_a_ligacao_persistente() {
+async fn direct_prefill_handoff_uses_the_persistent_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
     let (url, _counter) = spawn_hop(Hop {
         clients: clients.clone(),
@@ -505,7 +505,7 @@ async fn handoff_prefill_direto_usa_a_ligacao_persistente() {
 /// Um hop que anuncia o canal mas não o serve não pode matar a geração: a
 /// travessia degrada para o caminho por requisição e a telemetria diz isso.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn canal_indisponivel_degrada_para_o_caminho_por_requisicao() {
+async fn an_unavailable_channel_degrades_to_the_per_request_path() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -563,7 +563,7 @@ async fn canal_indisponivel_degrada_para_o_caminho_por_requisicao() {
 /// valer também quando a flag `remote_stream` impede a coalescência entre
 /// sessões.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn remote_stream_interno_reutiliza_a_ligacao_persistente() {
+async fn the_internal_remote_stream_reuses_the_persistent_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(30));
     let (url, counters) = spawn_hop(Hop {
         clients: clients.clone(),
@@ -621,7 +621,7 @@ async fn remote_stream_interno_reutiliza_a_ligacao_persistente() {
 /// Duas sessões atravessando a mesma aresta compartilham **uma** ligação, e o
 /// `batch_id` é o que as mantém separadas.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sessoes_concorrentes_compartilham_a_ligacao() {
+async fn concurrent_sessions_share_the_link() {
     let clients = crate::peer_client::PeerClients::new(Duration::from_secs(30));
     let (url, counters) = spawn_hop(Hop {
         clients: clients.clone(),

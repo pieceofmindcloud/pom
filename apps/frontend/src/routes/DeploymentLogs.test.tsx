@@ -83,7 +83,7 @@ describe("DeploymentLogs", () => {
 
   afterEach(cleanup);
 
-  it("mantém a ordem de chegada e exibe o nome do nó", () => {
+  it("keeps the arrival order and displays the node name", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
@@ -101,7 +101,7 @@ describe("DeploymentLogs", () => {
     expect(screen.getByText("3 linhas descartadas antes do envio")).toBeTruthy();
   });
 
-  it("trata a réplica vazia como ausência de dados, não como bloqueio do secundário", () => {
+  it("treats the empty replica as absence of data, not as a block of the secondary", () => {
     queryMocks.logs.data = { entries: [], dropped: 0 };
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -116,7 +116,7 @@ describe("DeploymentLogs", () => {
     expect(screen.queryByText(/nó principal/i)).toBeNull();
   });
 
-  it("sem o plugin de Logs ativo explica onde os logs de processo ficam", () => {
+  it("without the Logs plugin active explains where the process logs live", () => {
     queryMocks.logs.data = { entries: [], dropped: 0 };
     queryMocks.logsPlugin.data.active = false;
     render(
@@ -131,7 +131,7 @@ describe("DeploymentLogs", () => {
     queryMocks.logsPlugin.data.active = true;
   });
 
-  it("segue linhas novas no fim enquanto a rolagem automática está ligada", async () => {
+  it("follows new lines at the end while auto-scroll is on", async () => {
     const { rerender } = render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
@@ -169,7 +169,7 @@ describe("DeploymentLogs", () => {
     }));
   });
 
-  it("para de perseguir o fim quando o leitor sobe e expõe o estado", async () => {
+  it("stops chasing the end when the reader scrolls up and exposes the state", async () => {
     const { rerender } = render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
@@ -208,7 +208,7 @@ describe("DeploymentLogs", () => {
     expect(terminal.scrollTo).not.toHaveBeenCalled();
   });
 
-  it("copia as últimas 500 linhas e confirma a ação", async () => {
+  it("copies the last 500 lines and confirms the action", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -239,7 +239,7 @@ describe("DeploymentLogs", () => {
     expect(screen.getAllByText("Logs copiados").length).toBeGreaterThan(0);
   });
 
-  it("mantém o layout normal fora da área preta do terminal", () => {
+  it("keeps the normal layout outside the black terminal area", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">

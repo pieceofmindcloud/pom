@@ -683,21 +683,21 @@ fn a_machine_without_the_model_is_planned_as_a_copy() {
 #[test]
 fn a_whole_model_refusal_names_the_model_and_not_a_slice() {
     let ms = vec![whole_machine("a", 900_000, true)];
-    let sem_maquina = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "")]));
-    let motivo = sem_maquina.blocked.expect("sem máquina é recusa");
+    let without_machine = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "")]));
+    let reason = without_machine.blocked.expect("sem máquina é recusa");
     assert!(
-        motivo.contains("o modelo qwen3.5-9b") && !motivo.contains("fatia"),
-        "{motivo}"
+        reason.contains("o modelo qwen3.5-9b") && !reason.contains("fatia"),
+        "{reason}"
     );
 
-    let nada = whole("qwen3.5-9b", &ms, Some(&[]));
-    let motivo = nada.blocked.expect("nada escolhido é recusa");
-    assert_eq!(motivo, "nenhum modelo selecionado");
+    let nothing = whole("qwen3.5-9b", &ms, Some(&[]));
+    let reason = nothing.blocked.expect("nada escolhido é recusa");
+    assert_eq!(reason, "nenhum modelo selecionado");
 
-    let ninguem = whole("nao-existe", &[whole_machine("a", 900_000, false)], None);
-    let motivo = ninguem.blocked.expect("ninguém tem o modelo");
-    assert!(motivo.contains("modelo inteiro nao-existe") || motivo.contains("nao-existe"));
-    assert!(!motivo.contains("fatias de"), "{motivo}");
+    let nobody = whole("nao-existe", &[whole_machine("a", 900_000, false)], None);
+    let reason = nobody.blocked.expect("ninguém tem o modelo");
+    assert!(reason.contains("modelo inteiro nao-existe") || reason.contains("nao-existe"));
+    assert!(!reason.contains("fatias de"), "{reason}");
 }
 
 /// O menu de destinos diz "já tem o modelo", não "já tem a fatia".
@@ -708,11 +708,11 @@ fn the_target_menu_speaks_of_a_model() {
         whole_machine("b", 900_000, false),
     ];
     let p = whole("qwen3.5-9b", &ms, None);
-    let opcoes = &p.steps[0].options;
-    let a = opcoes.iter().find(|o| o.node_id == "a").unwrap();
+    let options = &p.steps[0].options;
+    let a = options.iter().find(|o| o.node_id == "a").unwrap();
     assert!(a.has);
     assert_eq!(a.note.as_deref(), Some("já tem o modelo"));
-    let b = opcoes.iter().find(|o| o.node_id == "b").unwrap();
+    let b = options.iter().find(|o| o.node_id == "b").unwrap();
     assert!(!b.has);
     assert!(b.note.as_deref().unwrap().contains("receberia"));
 }
@@ -736,14 +736,14 @@ fn the_suggestion_puts_a_whole_model_on_the_roomiest_machine() {
 /// de `launch` já ter parado a inferência de lá.
 #[test]
 fn a_model_with_no_layer_count_never_becomes_a_candidate() {
-    let sem_camadas = json!({
+    let without_layers = json!({
         "name": "quebrado",
         "path": "/m/quebrado.gguf",
         "size_bytes": 1u64,
         "total_layers": serde_json::Value::Null,
         "shard_range": serde_json::Value::Null,
     });
-    assert!(parse_whole(&sem_camadas, "quebrado").is_none());
+    assert!(parse_whole(&without_layers, "quebrado").is_none());
 
     let zero = json!({
         "name": "quebrado",
@@ -759,14 +759,14 @@ fn a_model_with_no_layer_count_never_becomes_a_candidate() {
 /// listas saem da mesma varredura e `shard_range` é o que as separa.
 #[test]
 fn a_slice_is_never_read_as_a_whole_model() {
-    let fatia = json!({
+    let slice = json!({
         "name": "qwen",
         "path": "/m/qwen_0_15.gguf",
         "size_bytes": 1u64,
         "total_layers": 32,
         "shard_range": [0, 15],
     });
-    assert!(parse_whole(&fatia, "qwen").is_none());
+    assert!(parse_whole(&slice, "qwen").is_none());
 }
 
 /// A segunda metade da implantação: o que a máquina é mandada carregar.
@@ -780,19 +780,19 @@ fn a_slice_is_never_read_as_a_whole_model() {
 fn a_whole_model_is_launched_as_one_plain_target() {
     let ms = vec![whole_machine("a", 900_000, true)];
     let p = whole("qwen3.5-9b", &ms, None);
-    let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[]).expect("um alvo");
+    let targets = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[]).expect("um alvo");
 
-    assert_eq!(alvos.len(), 1);
-    let alvo = &alvos[0];
-    assert_eq!(alvo.node_id, "a");
+    assert_eq!(targets.len(), 1);
+    let target = &targets[0];
+    assert_eq!(target.node_id, "a");
     // O caminho é o da máquina de destino, lido da varredura - nunca um
     // palpite sobre o sistema de arquivos alheio.
-    assert_eq!(alvo.source_model_path, "/a/qwen3.5-9b.gguf");
-    assert_eq!((alvo.start_layer, alvo.end_layer), (0, 31));
-    assert!(alvo.skip_split, "o arquivo já é o modelo todo");
-    assert!(alvo.merge.is_none());
+    assert_eq!(target.source_model_path, "/a/qwen3.5-9b.gguf");
+    assert_eq!((target.start_layer, target.end_layer), (0, 31));
+    assert!(target.skip_split, "o arquivo já é o modelo todo");
+    assert!(target.merge.is_none());
     assert!(
-        alvo.peer_index.is_none() && alvo.peer_count.is_none(),
+        target.peer_index.is_none() && target.peer_count.is_none(),
         "a implantação inteira descreve o pipeline, então a posição sai da lista"
     );
 }
@@ -811,12 +811,12 @@ fn a_tensor_parallel_group_launches_one_target_per_rank() {
         primary_node_id: "a".into(),
         worker_node_ids: vec!["b".into()],
     };
-    let alvos = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp), &[])
+    let targets = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp), &[])
         .expect("dois alvos");
 
-    assert_eq!(alvos.len(), 2);
+    assert_eq!(targets.len(), 2);
 
-    let primary = &alvos[0];
+    let primary = &targets[0];
     assert_eq!(primary.node_id, "a");
     assert_eq!(primary.tp.as_ref().unwrap().role, "primary");
     assert_eq!(primary.tp.as_ref().unwrap().rank, 0);
@@ -827,7 +827,7 @@ fn a_tensor_parallel_group_launches_one_target_per_rank() {
         Some("http://a:8181")
     );
 
-    let worker = &alvos[1];
+    let worker = &targets[1];
     assert_eq!(worker.node_id, "b");
     assert_eq!(worker.tp.as_ref().unwrap().role, "worker");
     assert_eq!(worker.tp.as_ref().unwrap().rank, 1);
@@ -1030,15 +1030,15 @@ fn a_refusal_is_quoted_not_guessed_as_an_old_binary() {
         Some("cabeças não dividem".to_string())
     );
 
-    let recusa =
+    let refusal =
         tp_check_verdict(&json!({ "error": "missing Authorization header" }), "ksia").unwrap();
     assert!(
-        recusa.contains("missing Authorization header"),
-        "a razão do peer tem que aparecer: {recusa}"
+        refusal.contains("missing Authorization header"),
+        "a razão do peer tem que aparecer: {refusal}"
     );
     assert!(
-        !recusa.contains("binário antigo"),
-        "peer que recusou não é peer desatualizado: {recusa}"
+        !refusal.contains("binário antigo"),
+        "peer que recusou não é peer desatualizado: {refusal}"
     );
 
     // Só um corpo que não explica nada continua valendo como binário velho.
@@ -1055,14 +1055,14 @@ async fn the_shardability_check_carries_the_operator_key() {
     use axum::routing::post as axum_post;
     use std::sync::{Arc, Mutex};
 
-    let visto: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let capturado = visto.clone();
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let captured = seen.clone();
     let app = Router::new().route(
         "/api/ui/tp/check",
         axum_post(move |headers: axum::http::HeaderMap| {
-            let capturado = capturado.clone();
+            let captured = captured.clone();
             async move {
-                *capturado.lock().unwrap() = headers
+                *captured.lock().unwrap() = headers
                     .get("authorization")
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string);
@@ -1113,7 +1113,7 @@ async fn the_shardability_check_carries_the_operator_key() {
             end_layer: 31,
             total_layers: Some(32),
             name: "qwen3.5-9b.gguf".into(),
-            path: "/modelos/qwen3.5-9b.gguf".into(),
+            path: "/models/qwen3.5-9b.gguf".into(),
             mmproj_path: None,
             mmproj_candidates: Vec::new(),
             mmproj_reason: None,
@@ -1127,7 +1127,7 @@ async fn the_shardability_check_carries_the_operator_key() {
     };
 
     assert_eq!(tp_shardability_check(&state, &machines, &tp).await, None);
-    let header = visto.lock().unwrap().clone();
+    let header = seen.lock().unwrap().clone();
     assert_eq!(
         header,
         Some("Bearer chave".to_string()),
@@ -1147,8 +1147,8 @@ fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
     a.inference_url = Some("https://a:8181".into());
     let mut b = whole_machine("b", 900_000, true);
     b.inference_url = Some("https://b:8181".into());
-    let mut mudo = whole_machine("c", 900_000, true);
-    mudo.inference_url = None;
+    let mut silent = whole_machine("c", 900_000, true);
+    silent.inference_url = None;
 
     let tp = TpLaunch {
         size: 2,
@@ -1157,20 +1157,20 @@ fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
     };
     // A ordem no cluster não é a ordem dos ranks: o teste embaralha de
     // propósito, porque quem manda é `worker_node_ids`.
-    let membros = tp_members(&tp, &[b, a]).unwrap();
-    assert_eq!(membros.len(), 2);
-    assert_eq!(membros[0].node_id, "a", "rank 0 é o primary");
-    assert_eq!(membros[1].url, "https://b:8181");
+    let members = tp_members(&tp, &[b, a]).unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].node_id, "a", "rank 0 é o primary");
+    assert_eq!(members[1].url, "https://b:8181");
 
-    let com_mudo = TpLaunch {
+    let with_silent = TpLaunch {
         size: 2,
         primary_node_id: "a".into(),
         worker_node_ids: vec!["c".into()],
     };
     let mut a2 = whole_machine("a", 900_000, true);
     a2.inference_url = Some("https://a:8181".into());
-    let erro = tp_members(&com_mudo, &[a2, mudo]).unwrap_err();
-    assert!(erro.contains("URL de inferência"), "{erro}");
+    let error = tp_members(&with_silent, &[a2, silent]).unwrap_err();
+    assert!(error.contains("URL de inferência"), "{error}");
 }
 
 /// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o
@@ -1182,11 +1182,11 @@ fn a_missing_file_after_the_copy_is_an_error_that_names_the_model() {
         whole_machine("nao-tem", 900_000, false),
     ];
     let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
-    let erro = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[])
+    let error = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[])
         .expect_err("o destino não tem o arquivo");
     assert!(
-        erro.contains("nao-tem") && erro.contains("o modelo"),
-        "{erro}"
+        error.contains("nao-tem") && error.contains("o modelo"),
+        "{error}"
     );
 }
 
@@ -1199,19 +1199,19 @@ fn the_slice_path_still_launches_the_way_it_did() {
         m("b", 200_000, &[(16, 31)]),
     ]);
     let p = plan("m", &ms, None);
-    let alvos = launch_targets(&p.steps, &ms, DeployKind::Shards, None, &[]).expect("dois alvos");
-    assert_eq!(alvos.len(), 2);
-    assert_eq!(alvos[0].source_model_path, "/models/m_0_15.gguf");
-    assert_eq!((alvos[0].start_layer, alvos[0].end_layer), (0, 15));
-    assert_eq!((alvos[1].start_layer, alvos[1].end_layer), (16, 31));
-    assert!(alvos.iter().all(|a| a.skip_split && a.merge.is_none()));
+    let targets = launch_targets(&p.steps, &ms, DeployKind::Shards, None, &[]).expect("dois alvos");
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].source_model_path, "/models/m_0_15.gguf");
+    assert_eq!((targets[0].start_layer, targets[0].end_layer), (0, 15));
+    assert_eq!((targets[1].start_layer, targets[1].end_layer), (16, 31));
+    assert!(targets.iter().all(|a| a.skip_split && a.merge.is_none()));
 }
 
 /// O modelo inteiro vira a faixa 0..total-1, que é o que faz todo o resto
 /// do módulo funcionar sem saber que ele é inteiro.
 #[test]
 fn a_whole_model_reads_as_the_range_it_covers() {
-    let inteiro = parse_whole(
+    let whole = parse_whole(
         &json!({
             "name": "qwen3.5-9b",
             "path": "/m/qwen3.5-9b.gguf",
@@ -1222,9 +1222,9 @@ fn a_whole_model_reads_as_the_range_it_covers() {
         "qwen3.5-9b",
     )
     .expect("um GGUF inteiro com 32 camadas");
-    assert_eq!((inteiro.start_layer, inteiro.end_layer), (0, 31));
-    assert_eq!(inteiro.total_layers, Some(32));
-    assert_eq!(inteiro.name, "qwen3.5-9b");
+    assert_eq!((whole.start_layer, whole.end_layer), (0, 31));
+    assert_eq!(whole.total_layers, Some(32));
+    assert_eq!(whole.name, "qwen3.5-9b");
 
     // Outro modelo com outro nome não entra no lugar deste.
     assert!(parse_whole(

@@ -625,22 +625,22 @@ impl LlmEngine {
             } else {
                 None
             };
-        let por_contexto = per_context_config(&plan.config, n);
+        let by_context = per_context_config(&plan.config, n);
         (0..n)
             .map(|_| {
                 let mut engine = if mtp_loaded.is_some() {
                     Self::with_model_and_mtp_offload(
                         loaded.clone(),
-                        &por_contexto,
+                        &by_context,
                         mtp_loaded.clone(),
                         false,
                     )?
                 } else {
-                    Self::with_model(loaded.clone(), &por_contexto)?
+                    Self::with_model(loaded.clone(), &by_context)?
                 };
                 engine.fit_memory_applied = plan.applied;
                 engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
-                engine.effective_n_ubatch = effective_n_ubatch(&por_contexto);
+                engine.effective_n_ubatch = effective_n_ubatch(&by_context);
                 if let Some(reason) = mtp_unavailable_reason.clone() {
                     engine.mtp_unavailable_reason = Some(reason);
                 }
@@ -1652,15 +1652,15 @@ impl LlmEngine {
         }
 
         let mut text = if n > 0 {
-            let escrito = (n as usize).min(out_buf.len());
-            if escrito < n as usize {
+            let written = (n as usize).min(out_buf.len());
+            if written < n as usize {
                 bail!(
                     "llama_chat_apply_template pediu {n} bytes e o buffer tem {}; \
                      renderizar o prompt cortado entregaria a conversa pela metade",
                     out_buf.len()
                 );
             }
-            out_buf.truncate(escrito);
+            out_buf.truncate(written);
             String::from_utf8_lossy(&out_buf).into_owned()
         } else {
             bail!(
@@ -1930,8 +1930,8 @@ impl LlmEngine {
             if reduces != expected {
                 bail!("coletiva TP reduziu {reduces} vezes neste batch, esperado {expected}");
             }
-            if let Some(motivo) = crate::tp_probe::take_failure() {
-                bail!("coletiva de tensor parallelism falhou: {motivo}");
+            if let Some(reason) = crate::tp_probe::take_failure() {
+                bail!("coletiva de tensor parallelism falhou: {reason}");
             }
         }
         let residual = if need_residual {
@@ -1998,7 +1998,7 @@ impl LlmEngine {
             }
         }
 
-        let tp_antes = crate::tp_probe::reduce_count();
+        let tp_before = crate::tp_probe::reduce_count();
         self.begin_moe_callback();
         let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
@@ -2030,10 +2030,10 @@ impl LlmEngine {
         // aviso. Zero reduces continua sendo erro (logo abaixo).
         if crate::tp_probe::is_active() {
             let reduces = crate::tp_probe::reduces_in_current_decode();
-            let esperado = 2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64;
-            if reduces != esperado {
+            let expected = 2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64;
+            if reduces != expected {
                 tracing::warn!(
-                    "coletiva TP reduziu {reduces} vezes neste decode, esperado {esperado} \
+                    "coletiva TP reduziu {reduces} vezes neste decode, esperado {expected} \
                      (2 por camada): parte do grafo está rodando sem redução, e a \
                      resposta sai fluente e sem sentido"
                 );
@@ -2041,7 +2041,7 @@ impl LlmEngine {
                 tracing::debug!("decode fechou com {reduces} reduces (2 por camada)");
             }
         }
-        if crate::tp_probe::is_active() && crate::tp_probe::reduce_count() == tp_antes {
+        if crate::tp_probe::is_active() && crate::tp_probe::reduce_count() == tp_before {
             bail!(
                 "coletiva de tensor parallelism ligada mas nenhum reduce rodou \
                  neste decode: o op do llama.cpp não entrou no grafo"
@@ -2055,8 +2055,8 @@ impl LlmEngine {
         // torna falsa. O rank fica com a própria parcial - metade das cabeças e
         // metade do FFN - e a geração sai plausível e sem sentido, sem nenhum
         // sinal de erro (18/08). Responder errado é pior que não responder.
-        if let Some(motivo) = crate::tp_probe::take_failure() {
-            bail!("coletiva de tensor parallelism falhou: {motivo}");
+        if let Some(reason) = crate::tp_probe::take_failure() {
+            bail!("coletiva de tensor parallelism falhou: {reason}");
         }
 
         // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica -
@@ -2306,8 +2306,8 @@ impl LlmEngine {
         );
         // Ver a nota gêmea em `decode_tokens`: a coletiva falha por callback e
         // só pode virar erro aqui fora.
-        if let Some(motivo) = crate::tp_probe::take_failure() {
-            bail!("coletiva de tensor parallelism falhou: {motivo}");
+        if let Some(reason) = crate::tp_probe::take_failure() {
+            bail!("coletiva de tensor parallelism falhou: {reason}");
         }
 
         // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica,

@@ -67,7 +67,7 @@ normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
 controlada, pois coordena seus ranks e seu túnel de transporte neste diretório.
 O campo `NodeConfig.inference_mode` seleciona `dense/llama.cpp`, `moe/q4_0` ou
 `auto` quando essa escolha foi pedida explicitamente; se o campo não existe, o
-padrão é `dense`. `POM_DESENV` não participa dessa seleção, pois só controla a
+padrão é `dense`. `POM_DEV_MODE` não participa dessa seleção, pois só controla a
 visibilidade dos controles de implantação na UI local.
 
 ## Arquivos
@@ -494,16 +494,16 @@ visibilidade dos controles de implantação na UI local.
   Na carga do primeiro `LoadedModel` do processo, o servidor registra uma vez,
   no target padrão, o valor bruto de `POM_MOE_ROUTE_DIAGNOSTICS` e o booleano
   efetivo do gate, antes de qualquer callback MoE. O teste ignorado
-  `callback_global_emite_diagnostico_em_thread_externa_e_registra_gate` instala
+  `global_callback_emits_the_diagnostic_on_an_external_thread_and_records_the_gate` instala
   o mesmo dispatcher global, cria uma thread fora do Tokio e exige as linhas
   default e `moe.route_diagnostic` no mesmo sink.
-  Os testes `expert_shared_nao_entra_no_inventario_de_rota` e
-  `inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` verificam que somente
+  Os testes `the_shared_expert_stays_out_of_the_route_inventory` e
+  `route_inventory_separates_exps_from_shexp_and_the_sidecars` verificam que somente
   os quatro nomes exps terminados em `.weight` entram na classificação, sem
   contar `shexp` nem sidecars. O teste
-  `sidecars_fundidos_usam_componente_e_fallback_separado_corretos` verifica os
+  `fused_sidecars_use_the_right_component_and_split_fallback` verifica os
   nomes canônicos e a associação componente 0/1 do fundido, além do fallback
-  para gate/up separados. A prova `q6_k_decodifica_bloco_ggml_real_com_referencia`
+  para gate/up separados. A prova `q6_k_decodes_a_real_ggml_block_against_the_reference`
   fixa a convenção `block_q6_K` do GGML (`ql[128]`, `qh[64]`, `scales[16]`,
   `d[2]` no fim do bloco), e as provas de oito experts com hidden 2048 cobrem
   o `gate_up` K-quant e o caminho heterogêneo sem aceitar saída não finita.
@@ -515,7 +515,7 @@ visibilidade dos controles de implantação na UI local.
   paralelo e somam saídas com largura validada.
   A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
   `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
-  `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
+  `cuda_iq_diagnostic_divergence_per_stage`. A implementação da ponte não
   é prova de correção por si só: a prova CUDA no servidor CUDA de teste comparou IQ3_S, IQ2_S
   e IQ4_XS contra o decoder CPU em `gate_up`, ativação e `down`, sem primeira
   divergência. Os três dtypes podem ser publicados pelo dispatch somente após
@@ -562,7 +562,7 @@ visibilidade dos controles de implantação na UI local.
   mesma amostra depois da normalização Rust. Sem a variável, o instrumento fica
   desligado e não altera o caminho de execução. A normalização valida e
   preserva essa ordem; não deve transpor a rota novamente. O teste ignorado
-  `llm::moe_route_tests::callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink`
+  `llm::moe_route_tests::callback_entry_emits_the_default_warn_and_the_moe_target_on_the_same_sink`
   executa o callback real com o mesmo `EnvFilter` do processo e deve ser rodado
   com `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`; a cobertura opt-in está em
   `TODO.md`, item 18.
@@ -601,14 +601,14 @@ visibilidade dos controles de implantação na UI local.
   estatísticas separadas. Depois de qualquer mudança
   CUDA, execute a build com
   `--features vulkan,cuda` no servidor CUDA e repita tanto os testes CUDA diferenciais
-  quanto as provas reais `executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real`
+  quanto as provas reais `cuda_nvfp4_executor_batch_preserves_the_real_gguf_geometry`
   e `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o
   dtype dos experts, seleciona o decoder validado e liga o bloco ao hidden state
   nos caminhos unitário e batch. O teste ignorado
-  `mede_banda_h2d_d2h_do_lote_nvfp4` mede H2D, D2H, kernel e parede externa em
+  `measures_the_h2d_d2h_band_of_the_nvfp4_batch` mede H2D, D2H, kernel e parede externa em
   geometrias pequena e Gemma4 após o aquecimento do cache de device. O perfil
   agora usa dois slots CUDA persistentes, streams separados e buffers host
   pinned para alternar grupos de tokens; `buffer_mask`, `buffer_switches`,
@@ -932,7 +932,7 @@ visibilidade dos controles de implantação na UI local.
   de `overlay_head_authoritative_fields` (agora `pub(crate)`): sem volta, a
   cabeça manda `more_chunks`/`n_prompt_tokens` **adiante** e quem entrega copia
   para o resultado - senão todo prompt de mais de um pedaço trunca no primeiro.
-- `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso` -
+- `direct_lab::direct_prefill_preserves_the_absolute_position_with_and_without_reuse` -
   cenário ponta a ponta com dois chunks, ACK de progresso aninhado e cabeça
   remota; os hops falsos recusam continuação sem posição e conferem os valores
   absolutos tanto numa sessão fria quanto com prefixo reaproveitado.

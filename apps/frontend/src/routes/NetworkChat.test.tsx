@@ -78,7 +78,7 @@ function mount() {
 }
 
 describe("NetworkChat", () => {
-  it("carrega o histórico, participantes e envia texto com a ação identificada", async () => {
+  it("loads the history, participants and sends text with the identified action", async () => {
     mount();
 
     expect(await screen.findByText("Olá da rede")).toBeTruthy();
@@ -101,7 +101,7 @@ describe("NetworkChat", () => {
     });
   });
 
-  it("rola para a última mensagem quando o histórico recebe uma mensagem nova", async () => {
+  it("scrolls to the last message when the history receives a new message", async () => {
     const nextSnapshot = {
       ...enabledSnapshot,
       messages: [
@@ -135,7 +135,7 @@ describe("NetworkChat", () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 900, behavior: "auto" });
   });
 
-  it("envia texto em HTTP sem crypto.randomUUID", async () => {
+  it("sends text over HTTP without crypto.randomUUID", async () => {
     vi.stubGlobal("crypto", {
       getRandomValues: (bytes: Uint8Array) => {
         bytes.fill(0xcd);
@@ -159,7 +159,7 @@ describe("NetworkChat", () => {
     });
   });
 
-  it("fica inerte quando o principal desliga o canal", async () => {
+  it("stays inert when the principal turns the channel off", async () => {
     mocks.get.mockResolvedValue({ ...enabledSnapshot, enabled: false });
     mount();
 
@@ -167,7 +167,7 @@ describe("NetworkChat", () => {
     expect(screen.queryByPlaceholderText("Escreva para a rede…")).toBeNull();
   });
 
-  it("mantém os participantes ocultos no mobile até a pessoa pedir a lista", async () => {
+  it("keeps the participants hidden on mobile until the person asks for the list", async () => {
     mount();
 
     const toggle = await screen.findByRole("button", { name: "Ver online" });

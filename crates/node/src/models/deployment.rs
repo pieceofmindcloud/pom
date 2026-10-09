@@ -59,9 +59,9 @@ pub fn new_deploy_id() -> String {
 /// impede um id vindo da rede de virar `../` ao nomear um arquivo.
 pub fn is_deploy_id(s: &str) -> bool {
     match s.strip_prefix(ID_PREFIX) {
-        Some(resto) => {
-            resto.len() == 8
-                && resto
+        Some(rest) => {
+            rest.len() == 8
+                && rest
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         }
@@ -211,19 +211,19 @@ impl Deployment {
         created_by: impl Into<String>,
         nodes: Vec<DeploymentNode>,
     ) -> Self {
-        let agora = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Utc::now().to_rfc3339();
         let created_by = created_by.into();
         Self {
             deployment_version: DEPLOYMENT_VERSION,
             deploy_id,
             kind,
             model,
-            created_at: agora.clone(),
+            created_at: now.clone(),
             created_by: created_by.clone(),
-            activated_at: agora.clone(),
+            activated_at: now.clone(),
             versions: vec![DeploymentVersion {
                 version: 1,
-                created_at: agora,
+                created_at: now,
                 created_by,
                 params: crate::webui::RuntimeParams::default(),
                 nodes: nodes.clone(),
@@ -257,8 +257,8 @@ impl Deployment {
     /// que o redeploy grava, por nó, a configuração que a máquina de fato
     /// aceitou.
     pub fn commit_active_nodes(&mut self) {
-        let ativa = self.active_version;
-        if let Some(v) = self.versions.iter_mut().find(|v| v.version == ativa) {
+        let active = self.active_version;
+        if let Some(v) = self.versions.iter_mut().find(|v| v.version == active) {
             v.nodes = self.nodes.clone();
         }
     }
@@ -299,8 +299,8 @@ impl Deployment {
     /// `activated_at`. Erro se `v` não existe.
     pub fn set_active_version(&mut self, v: u32) -> Result<()> {
         if !self.versions.iter().any(|ver| ver.version == v) {
-            let disponiveis: Vec<u32> = self.versions.iter().map(|ver| ver.version).collect();
-            bail!("versão {v} não existe (há {disponiveis:?})");
+            let available: Vec<u32> = self.versions.iter().map(|ver| ver.version).collect();
+            bail!("versão {v} não existe (há {available:?})");
         }
         self.active_version = v;
         self.activated_at = chrono::Utc::now().to_rfc3339();
@@ -321,28 +321,28 @@ impl Deployment {
         created_by: impl Into<String>,
     ) -> u32 {
         self.ensure_versions();
-        let agora = chrono::Utc::now().to_rfc3339();
-        let alvo = match self.versions.iter().position(|v| v.params == params) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let target = match self.versions.iter().position(|v| v.params == params) {
             Some(i) => {
                 self.versions[i].nodes = nodes;
                 self.versions[i].version
             }
             None => {
-                let numero = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
+                let number = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
                 self.versions.push(DeploymentVersion {
-                    version: numero,
-                    created_at: agora.clone(),
+                    version: number,
+                    created_at: now.clone(),
                     created_by: created_by.into(),
                     params,
                     nodes,
                 });
-                numero
+                number
             }
         };
-        self.active_version = alvo;
-        self.activated_at = agora;
+        self.active_version = target;
+        self.activated_at = now;
         self.sync_active_nodes();
-        alvo
+        target
     }
 
     /// Anexa uma versão mesmo quando os parâmetros não mudaram.
@@ -358,19 +358,19 @@ impl Deployment {
         created_by: impl Into<String>,
     ) -> u32 {
         self.ensure_versions();
-        let agora = chrono::Utc::now().to_rfc3339();
-        let numero = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
+        let now = chrono::Utc::now().to_rfc3339();
+        let number = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
         self.versions.push(DeploymentVersion {
-            version: numero,
-            created_at: agora.clone(),
+            version: number,
+            created_at: now.clone(),
             created_by: created_by.into(),
             params,
             nodes,
         });
-        self.active_version = numero;
-        self.activated_at = agora;
+        self.active_version = number;
+        self.activated_at = now;
         self.sync_active_nodes();
-        numero
+        number
     }
 
     /// As faixas dos nós cobrem `0..total_layers` sem buraco?
@@ -381,20 +381,20 @@ impl Deployment {
         if self.kind == DeploymentKind::TensorParallel {
             return !self.nodes.is_empty();
         }
-        let mut faixas: Vec<(u32, u32)> = self
+        let mut ranges: Vec<(u32, u32)> = self
             .nodes
             .iter()
             .map(|n| (n.start_layer, n.end_layer))
             .collect();
-        faixas.sort_unstable();
-        let mut proxima = 0u32;
-        for (inicio, fim) in faixas {
-            if inicio > proxima {
+        ranges.sort_unstable();
+        let mut next = 0u32;
+        for (start, end) in ranges {
+            if start > next {
                 return false;
             }
-            proxima = proxima.max(fim.saturating_add(1));
+            next = next.max(end.saturating_add(1));
         }
-        proxima == self.model.total_layers
+        next == self.model.total_layers
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -428,12 +428,12 @@ impl Deployment {
             }
         }
         if !self.versions.is_empty() {
-            let mut vistos = HashSet::new();
+            let mut seen = HashSet::new();
             for v in &self.versions {
                 if v.version == 0 {
                     bail!("versão 0 não é válida");
                 }
-                if !vistos.insert(v.version) {
+                if !seen.insert(v.version) {
                     bail!("versão {} repetida", v.version);
                 }
                 for n in &v.nodes {
@@ -448,11 +448,11 @@ impl Deployment {
                     }
                 }
             }
-            if !vistos.contains(&self.active_version) {
+            if !seen.contains(&self.active_version) {
                 bail!(
                     "active_version {} não está entre as versões {:?}",
                     self.active_version,
-                    vistos
+                    seen
                 );
             }
         }
@@ -474,19 +474,19 @@ pub fn matching_shape<'a>(
     identity: &DeploymentIdentity,
     ranges: &[(String, u32, u32, Option<u32>)],
 ) -> Option<&'a Deployment> {
-    let mut alvo: Vec<(String, u32, u32, Option<u32>)> = ranges.to_vec();
-    alvo.sort();
+    let mut target: Vec<(String, u32, u32, Option<u32>)> = ranges.to_vec();
+    target.sort();
     deployments.iter().find(|d| {
         if d.kind != kind || d.model.identity.as_ref() != Some(identity) {
             return false;
         }
-        let mut seu: Vec<(String, u32, u32, Option<u32>)> = d
+        let mut own: Vec<(String, u32, u32, Option<u32>)> = d
             .nodes
             .iter()
             .map(|n| (n.node_id.clone(), n.start_layer, n.end_layer, n.tp_rank))
             .collect();
-        seu.sort();
-        seu == alvo
+        own.sort();
+        own == target
     })
 }
 
@@ -515,7 +515,7 @@ pub fn active<'a>(deployments: &'a [Deployment], label: &str) -> Option<&'a Depl
 /// não achar o modelo.
 pub fn split_selector(model: &str) -> (&str, Option<&str>) {
     match model.rsplit_once('@') {
-        Some((nome, id)) if is_deploy_id(id) => (nome, Some(id)),
+        Some((name, id)) if is_deploy_id(id) => (name, Some(id)),
         _ => (model, None),
     }
 }
@@ -545,7 +545,7 @@ pub fn save_in(dir: &Path, d: &Deployment) -> Result<PathBuf> {
     d.validate()?;
     std::fs::create_dir_all(dir).with_context(|| format!("criar {}", dir.display()))?;
 
-    let destino = path_in(dir, &d.deploy_id)?;
+    let destination = path_in(dir, &d.deploy_id)?;
     let temp = dir.join(format!(".{}.{}.tmp", d.deploy_id, std::process::id()));
     let json = serde_json::to_vec_pretty(d).context("serializar implantação")?;
     {
@@ -554,11 +554,11 @@ pub fn save_in(dir: &Path, d: &Deployment) -> Result<PathBuf> {
         f.write_all(&json)?;
         f.sync_all()?;
     }
-    if let Err(e) = std::fs::rename(&temp, &destino) {
+    if let Err(e) = std::fs::rename(&temp, &destination) {
         let _ = std::fs::remove_file(&temp);
-        return Err(e).with_context(|| format!("renomear para {}", destino.display()));
+        return Err(e).with_context(|| format!("renomear para {}", destination.display()));
     }
-    Ok(destino)
+    Ok(destination)
 }
 
 #[allow(dead_code)]
@@ -620,15 +620,15 @@ pub fn remove_in(dir: &Path, deploy_id: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn no(id: &str, inicio: u32, fim: u32, indice: u32, total: u32) -> DeploymentNode {
+    fn no(id: &str, start: u32, end: u32, index: u32, total: u32) -> DeploymentNode {
         DeploymentNode {
             node_id: id.into(),
             hostname: id.into(),
-            start_layer: inicio,
-            end_layer: fim,
-            peer_index: indice,
+            start_layer: start,
+            end_layer: end,
+            peer_index: index,
             peer_count: total,
-            primary: indice == 0,
+            primary: index == 0,
             part_sha256: None,
             source_model_path: None,
             tp_rank: None,
@@ -636,12 +636,12 @@ mod tests {
         }
     }
 
-    fn implantacao(id: &str, rotulo: &str, nos: Vec<DeploymentNode>) -> Deployment {
+    fn deployment(id: &str, label: &str, nos: Vec<DeploymentNode>) -> Deployment {
         Deployment::new(
             id.into(),
             DeploymentKind::Shards,
             DeploymentModel {
-                label: rotulo.into(),
+                label: label.into(),
                 total_layers: 32,
                 pom_id: None,
                 identity: None,
@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn um_id_novo_e_valido_e_nao_repete() {
+    fn a_new_id_is_valid_and_does_not_repeat() {
         let a = new_deploy_id();
         let b = new_deploy_id();
         assert!(is_deploy_id(&a), "{a}");
@@ -662,7 +662,7 @@ mod tests {
     /// Um id vindo da rede vira nome de arquivo: se `..` passasse, um peer
     /// escolheria onde gravar no disco de quem recebe.
     #[test]
-    fn id_que_nao_e_id_nao_vira_caminho() {
+    fn an_id_that_is_not_an_id_does_not_become_a_path() {
         assert!(!is_deploy_id("../../etc/passwd"));
         assert!(!is_deploy_id("d-../../x"));
         assert!(!is_deploy_id("d-ABCDEF12"), "hex é minúsculo");
@@ -673,43 +673,43 @@ mod tests {
 
     /// O caso que não existia: **o mesmo modelo**, duas implantações.
     #[test]
-    fn duas_implantacoes_do_mesmo_modelo_convivem() {
-        let uma = implantacao("d-aaaaaaaa", "qwen3:8b", vec![no("n1", 0, 31, 0, 1)]);
-        let mut outra = implantacao(
+    fn two_deployments_of_the_same_model_coexist() {
+        let one = deployment("d-aaaaaaaa", "qwen3:8b", vec![no("n1", 0, 31, 0, 1)]);
+        let mut other = deployment(
             "d-bbbbbbbb",
             "qwen3:8b",
             vec![no("n2", 0, 15, 0, 2), no("n3", 16, 31, 1, 2)],
         );
-        outra.activated_at = "2030-01-01T00:00:00Z".into();
+        other.activated_at = "2030-01-01T00:00:00Z".into();
 
-        let todas = vec![uma, outra];
+        let all = vec![one, other];
         assert_eq!(
-            active(&todas, "qwen3:8b").unwrap().deploy_id,
+            active(&all, "qwen3:8b").unwrap().deploy_id,
             "d-bbbbbbbb",
             "a ativa é a de ativação mais recente"
         );
-        assert!(active(&todas, "nao-existe").is_none());
+        assert!(active(&all, "nao-existe").is_none());
     }
 
     /// Empate tem que ser resolvido igual nas duas máquinas, senão uma manda a
     /// requisição para uma implantação e a outra para a outra.
     #[test]
-    fn empate_de_ativacao_e_resolvido_de_forma_estavel() {
-        let mut a = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
-        let mut b = implantacao("d-bbbbbbbb", "m", vec![no("n2", 0, 31, 0, 1)]);
+    fn an_activation_tie_is_resolved_stably() {
+        let mut a = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        let mut b = deployment("d-bbbbbbbb", "m", vec![no("n2", 0, 31, 0, 1)]);
         a.activated_at = "2026-01-01T00:00:00Z".into();
         b.activated_at = "2026-01-01T00:00:00Z".into();
 
-        let numa_ordem = vec![a.clone(), b.clone()];
-        let na_outra = vec![b, a];
+        let in_one_order = vec![a.clone(), b.clone()];
+        let on_the_other = vec![b, a];
         assert_eq!(
-            active(&numa_ordem, "m").unwrap().deploy_id,
-            active(&na_outra, "m").unwrap().deploy_id
+            active(&in_one_order, "m").unwrap().deploy_id,
+            active(&on_the_other, "m").unwrap().deploy_id
         );
     }
 
     #[test]
-    fn o_seletor_separa_modelo_de_implantacao() {
+    fn the_selector_separates_model_from_deployment() {
         assert_eq!(split_selector("qwen3:8b"), ("qwen3:8b", None));
         assert_eq!(
             split_selector("qwen3:8b@d-4f2a91c3"),
@@ -724,16 +724,16 @@ mod tests {
     }
 
     #[test]
-    fn cobertura_de_camadas() {
-        assert!(implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]).covers_the_model());
-        assert!(implantacao(
+    fn layer_coverage() {
+        assert!(deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]).covers_the_model());
+        assert!(deployment(
             "d-aaaaaaaa",
             "m",
             vec![no("n1", 0, 15, 0, 2), no("n2", 16, 31, 1, 2)]
         )
         .covers_the_model());
         // Buraco em 16-19.
-        assert!(!implantacao(
+        assert!(!deployment(
             "d-aaaaaaaa",
             "m",
             vec![no("n1", 0, 15, 0, 2), no("n2", 20, 31, 1, 2)]
@@ -742,17 +742,17 @@ mod tests {
     }
 
     #[test]
-    fn gravar_reler_e_esquecer() {
+    fn write_reread_and_forget() {
         let tmp =
             std::env::temp_dir().join(format!("pom-deploy-{}", uuid::Uuid::new_v4().simple()));
-        let d = implantacao(
+        let d = deployment(
             "d-4f2a91c3",
             "qwen3:8b",
             vec![no("n1", 0, 15, 0, 2), no("n2", 16, 31, 1, 2)],
         );
 
-        let escrito = save_in(&tmp, &d).unwrap();
-        assert_eq!(load(&escrito).unwrap(), d);
+        let written = save_in(&tmp, &d).unwrap();
+        assert_eq!(load(&written).unwrap(), d);
         assert_eq!(load_dir(&tmp), vec![d.clone()]);
 
         remove_in(&tmp, &d.deploy_id).unwrap();
@@ -764,17 +764,17 @@ mod tests {
     }
 
     #[test]
-    fn registro_sem_no_ou_com_id_torto_e_recusado() {
-        let mut d = implantacao("d-4f2a91c3", "m", vec![no("n1", 0, 31, 0, 1)]);
+    fn a_record_without_a_node_or_with_a_malformed_id_is_refused() {
+        let mut d = deployment("d-4f2a91c3", "m", vec![no("n1", 0, 31, 0, 1)]);
         d.nodes.clear();
         assert!(d.validate().is_err());
 
-        let mut d = implantacao("d-4f2a91c3", "m", vec![no("n1", 0, 31, 0, 1)]);
+        let mut d = deployment("d-4f2a91c3", "m", vec![no("n1", 0, 31, 0, 1)]);
         d.deploy_id = "nao-e-id".into();
         assert!(d.validate().is_err());
     }
 
-    fn params_com_ctx(n_ctx: u32) -> crate::webui::RuntimeParams {
+    fn params_with_ctx(n_ctx: u32) -> crate::webui::RuntimeParams {
         crate::webui::RuntimeParams {
             n_ctx,
             ..Default::default()
@@ -783,8 +783,8 @@ mod tests {
 
     /// Um registro v1 legado chega sem `versions`; a v1 é sintetizada de `nodes`.
     #[test]
-    fn ensure_versions_sintetiza_a_v1_de_um_registro_legado() {
-        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+    fn ensure_versions_synthesizes_the_v1_of_a_legacy_record() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
         d.versions.clear();
         d.active_version = 7; // valor lixo de um registro antigo
 
@@ -800,22 +800,22 @@ mod tests {
     }
 
     #[test]
-    fn upsert_version_reusa_a_versao_de_params_iguais_e_anexa_quando_diferem() {
-        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
-        d.versions[0].params = params_com_ctx(8192);
+    fn upsert_version_reuses_the_version_with_equal_params_and_appends_when_they_differ() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.versions[0].params = params_with_ctx(8192);
         d.sync_active_nodes();
-        let ativado_v1 = d.activated_at.clone();
+        let enabled_v1 = d.activated_at.clone();
 
         // Mesmos params -> mesma versão, sem anexar.
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let v = d.upsert_version(params_com_ctx(8192), d.nodes.clone(), "n1");
+        let v = d.upsert_version(params_with_ctx(8192), d.nodes.clone(), "n1");
         assert_eq!(v, 1);
         assert_eq!(d.versions.len(), 1);
-        assert_ne!(d.activated_at, ativado_v1, "activated_at recarimbado");
+        assert_ne!(d.activated_at, enabled_v1, "activated_at recarimbado");
 
         // Params diferentes -> v2, ativa, nodes sincronizados.
         let nodes_v2 = vec![no("n1", 0, 31, 0, 1)];
-        let v = d.upsert_version(params_com_ctx(16384), nodes_v2.clone(), "n1");
+        let v = d.upsert_version(params_with_ctx(16384), nodes_v2.clone(), "n1");
         assert_eq!(v, 2);
         assert_eq!(d.versions.len(), 2);
         assert_eq!(d.active_version, 2);
@@ -824,8 +824,8 @@ mod tests {
     }
 
     #[test]
-    fn append_version_registra_mudanca_de_topologia_mesmo_com_params_iguais() {
-        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+    fn append_version_records_a_topology_change_even_with_equal_params() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
         let params = d.active().unwrap().params.clone();
         let nodes = vec![no("n1", 0, 31, 0, 1), no("n2", 0, 31, 0, 1)];
 
@@ -840,8 +840,8 @@ mod tests {
     }
 
     #[test]
-    fn deployment_misto_cobre_as_duas_cabecas_e_a_ultima_remocao_eh_valida() {
-        let mut d = implantacao(
+    fn a_mixed_deployment_covers_both_heads_and_the_last_removal_is_valid() {
+        let mut d = deployment(
             "d-aaaaaaaa",
             "m",
             vec![no("fatias", 0, 15, 0, 2), no("cauda", 16, 31, 1, 2)],
@@ -867,8 +867,8 @@ mod tests {
     }
 
     #[test]
-    fn deployment_sem_maquinas_soh_fica_inativo_na_selecao_padrao() {
-        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+    fn a_deployment_without_machines_is_only_inactive_in_the_default_selection() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
         d.append_version(d.active().unwrap().params.clone(), Vec::new(), "operador");
 
         assert!(d.nodes.is_empty());
@@ -877,9 +877,9 @@ mod tests {
     }
 
     #[test]
-    fn set_active_version_troca_os_nos_e_recusa_versao_inexistente() {
-        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
-        d.upsert_version(params_com_ctx(16384), vec![no("n1", 0, 15, 0, 1)], "n1");
+    fn set_active_version_swaps_the_nodes_and_refuses_a_missing_version() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.upsert_version(params_with_ctx(16384), vec![no("n1", 0, 15, 0, 1)], "n1");
         assert_eq!(d.active_version, 2);
 
         d.set_active_version(1).unwrap();
@@ -890,22 +890,22 @@ mod tests {
     }
 
     #[test]
-    fn validate_recusa_versao_repetida_e_active_orfao() {
-        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
-        d.upsert_version(params_com_ctx(16384), d.nodes.clone(), "n1");
+    fn validate_refuses_a_repeated_version_and_an_orphan_active() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.upsert_version(params_with_ctx(16384), d.nodes.clone(), "n1");
 
-        let mut repetida = d.clone();
-        repetida.versions[1].version = 1;
-        assert!(repetida.validate().is_err());
+        let mut repeated = d.clone();
+        repeated.versions[1].version = 1;
+        assert!(repeated.validate().is_err());
 
-        let mut orfao = d.clone();
-        orfao.active_version = 99;
-        assert!(orfao.validate().is_err());
+        let mut orphan = d.clone();
+        orphan.active_version = 99;
+        assert!(orphan.validate().is_err());
     }
 
     #[test]
-    fn matching_shape_casa_por_identidade_e_faixas() {
-        let mut d = implantacao(
+    fn matching_shape_matches_by_identity_and_ranges() {
+        let mut d = deployment(
             "d-aaaaaaaa",
             "m",
             vec![no("n1", 0, 15, 0, 2), no("n2", 16, 31, 1, 2)],
@@ -913,7 +913,7 @@ mod tests {
         d.model.identity = Some(DeploymentIdentity::PomId {
             pom_id: "pom-1".into(),
         });
-        let todas = vec![d];
+        let all = vec![d];
         let id = DeploymentIdentity::PomId {
             pom_id: "pom-1".into(),
         };
@@ -923,43 +923,43 @@ mod tests {
             ("n2".to_string(), 16, 31, None),
             ("n1".to_string(), 0, 15, None),
         ];
-        assert!(matching_shape(&todas, DeploymentKind::Shards, &id, &ranges).is_some());
+        assert!(matching_shape(&all, DeploymentKind::Shards, &id, &ranges).is_some());
 
         // Uma faixa diferente -> não casa.
-        let outras = vec![
+        let others = vec![
             ("n1".to_string(), 0, 19, None),
             ("n2".to_string(), 20, 31, None),
         ];
-        assert!(matching_shape(&todas, DeploymentKind::Shards, &id, &outras).is_none());
+        assert!(matching_shape(&all, DeploymentKind::Shards, &id, &others).is_none());
 
         // Identidade diferente -> não casa.
-        let outra_id = DeploymentIdentity::PomId {
+        let other_id = DeploymentIdentity::PomId {
             pom_id: "pom-2".into(),
         };
-        assert!(matching_shape(&todas, DeploymentKind::Shards, &outra_id, &ranges).is_none());
+        assert!(matching_shape(&all, DeploymentKind::Shards, &other_id, &ranges).is_none());
     }
 
     /// Um registro sem `identity` (rodada anterior à prova) nunca deduplica.
     #[test]
-    fn matching_shape_ignora_registro_sem_identidade() {
-        let d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+    fn matching_shape_ignores_a_record_without_identity() {
+        let d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
         assert!(d.model.identity.is_none());
-        let todas = vec![d];
+        let all = vec![d];
         let id = DeploymentIdentity::PomId {
             pom_id: "pom-1".into(),
         };
         let ranges = vec![("n1".to_string(), 0, 31, None)];
-        assert!(matching_shape(&todas, DeploymentKind::Shards, &id, &ranges).is_none());
+        assert!(matching_shape(&all, DeploymentKind::Shards, &id, &ranges).is_none());
     }
 
     #[test]
-    fn versoes_sobrevivem_ao_serde() {
-        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
-        d.upsert_version(params_com_ctx(16384), d.nodes.clone(), "n1");
+    fn versions_survive_serde() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.upsert_version(params_with_ctx(16384), d.nodes.clone(), "n1");
         let json = serde_json::to_string(&d).unwrap();
-        let lido: Deployment = serde_json::from_str(&json).unwrap();
-        assert_eq!(lido, d);
-        assert_eq!(lido.versions.len(), 2);
-        assert_eq!(lido.active_version, 2);
+        let loaded: Deployment = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, d);
+        assert_eq!(loaded.versions.len(), 2);
+        assert_eq!(loaded.active_version, 2);
     }
 }

@@ -19,7 +19,7 @@ mod tests {
     }
 
     #[test]
-    fn receptor_aceita_hidden_state_com_fluxos_expandidos() {
+    fn receiver_accepts_a_hidden_state_with_expanded_streams() {
         let shape = vec![11, 4096, 4];
         let values_len = 11 * 4096 * 4;
 
@@ -28,7 +28,7 @@ mod tests {
     }
 
     #[test]
-    fn receptor_aceita_hidden_state_sem_fluxos() {
+    fn receiver_accepts_a_hidden_state_without_streams() {
         let shape = vec![3, 8];
 
         validate_hidden_tensor(3 * 8, &shape, 3, 8, 8, 32, "hidden state")
@@ -36,7 +36,7 @@ mod tests {
     }
 
     #[test]
-    fn receptor_mantem_singletons_de_um_modelo_sem_fluxos() {
+    fn receiver_keeps_the_singletons_of_a_model_without_streams() {
         let shape = vec![3, 8, 1];
 
         validate_hidden_tensor(3 * 8, &shape, 3, 8, 8, 32, "hidden state")
@@ -44,7 +44,7 @@ mod tests {
     }
 
     #[test]
-    fn receptor_recusa_largura_de_hidden_state_incompativel_nomeando_shape() {
+    fn receiver_refuses_an_incompatible_hidden_state_width_naming_the_shape() {
         let shape = vec![11, 4096, 3];
 
         let error = validate_hidden_tensor(
@@ -67,7 +67,7 @@ mod tests {
     }
 
     #[test]
-    fn residual_do_emissor_via_wire_e_aceito_pelo_receptor() {
+    fn the_sender_residual_over_the_wire_is_accepted_by_the_receiver() {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn captura_multimodal_acumula_microlotes_pelas_celulas_fisicas() {
+    fn multimodal_capture_accumulates_microbatches_by_physical_cells() {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn model_cache_retem_handle_ate_clear() {
+    fn model_cache_retains_the_handle_until_clear() {
         let cache = ModelCache::new();
         let loaded = Arc::new(LoadedModel {
             model: std::ptr::null_mut(),
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_descarta_alvo_depois_do_recuo_mtp_para_ram() {
+    fn cache_drops_the_target_after_the_mtp_fallback_to_ram() {
         let cache = ModelCache::new();
         let loaded = Arc::new(LoadedModel {
             model: std::ptr::null_mut(),
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_descarta_alvo_sem_mtp_antes_de_uma_nova_tentativa() {
+    fn cache_drops_a_target_without_mtp_before_a_new_attempt() {
         let cache = ModelCache::new();
         let loaded = Arc::new(LoadedModel {
             model: std::ptr::null_mut(),
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn recuo_mtp_seleciona_companheiro_com_nextn_e_nunca_alvo_sem_pesos() {
+    fn mtp_fallback_selects_a_companion_with_nextn_and_never_a_target_without_weights() {
         let target = LoadedModel {
             model: std::ptr::null_mut(),
             vocab: std::ptr::null(),
@@ -1291,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn gemma4_fallback_usa_turnos_e_token_de_thinking_do_modelo() {
+    fn gemma4_fallback_uses_the_model_turns_and_thinking_token() {
         let formatted = render_gemma4_template(
             GEMMA4_TEMPLATE_FIXTURE,
             "<bos>",
@@ -1311,7 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn gemma4_fallback_preserva_o_inicio_de_thinking_quando_habilitado() {
+    fn gemma4_fallback_preserves_the_thinking_start_when_enabled() {
         let formatted = render_gemma4_template(
             GEMMA4_TEMPLATE_FIXTURE,
             "<bos>",
@@ -1356,7 +1356,7 @@ mod utf8_assembler_tests {
     /// `from_utf8_lossy` nascia U+FFFD no meio da palavra - este é o
     /// contrato de regressão: só caractere completo sai, e o rabinho fica.
     #[test]
-    fn assembler_emite_so_caractere_completo_e_guarda_o_rabicho() {
+    fn assembler_emits_only_complete_characters_and_keeps_the_trailing_bytes() {
         let mut asm = Utf8Assembler::new();
         // "ão" = c3 a3, quebrado entre dois tokens depois de "Jo".
         assert_eq!(asm.feed(b"Jo\xc3"), "Jo");
@@ -1369,7 +1369,7 @@ mod utf8_assembler_tests {
     }
 
     #[test]
-    fn assembler_passa_ascii_inteiro_numa_so_chamada() {
+    fn assembler_passes_whole_ascii_in_a_single_call() {
         let mut asm = Utf8Assembler::new();
         assert_eq!(
             asm.feed(b"Ol\xc3\xa1, a\xc3\xa7\xc3\xa3o, cora\xc3\xa7\xc3\xa3o"),
@@ -1381,7 +1381,7 @@ mod utf8_assembler_tests {
     /// hora e o stream continua - mesma semântica do from_utf8_lossy global,
     /// sem esperar bytes que nunca vão completar sequência alguma.
     #[test]
-    fn assembler_repassa_byte_invalido_como_um_fffd_e_segue() {
+    fn assembler_forwards_an_invalid_byte_as_one_fffd_and_goes_on() {
         let mut asm = Utf8Assembler::new();
         assert_eq!(asm.feed(b"a\xffb"), "a\u{fffd}b");
     }
@@ -1389,7 +1389,7 @@ mod utf8_assembler_tests {
     /// Fim do stream com sequência truncada: o flush drena o resto como um
     /// único replacement, e chamar de novo devolve vazio.
     #[test]
-    fn flush_drena_rabicho_truncado_uma_vez() {
+    fn flush_drains_the_truncated_trailing_bytes_once() {
         let mut asm = Utf8Assembler::new();
         assert_eq!(asm.feed(b"ok\xc3"), "ok");
         assert_eq!(asm.flush(), "\u{fffd}");

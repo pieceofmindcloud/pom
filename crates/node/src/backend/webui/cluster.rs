@@ -40,14 +40,14 @@ pub struct RouteView {
 ///
 /// `None` e informacao: significa "ainda nao sei", e a tela diz isso em vez de
 /// mostrar um endereco que ninguem confirmou.
-pub fn route_view_for(node_id: &str, tabela: &crate::route::RouteTable) -> Option<RouteView> {
-    tabela
+pub fn route_view_for(node_id: &str, table: &crate::route::RouteTable) -> Option<RouteView> {
+    table
         .snapshot()
         .into_iter()
         .find(|(id, _)| id == node_id)
-        .map(|(_, escolha)| RouteView {
-            addr: escolha.addr,
-            rtt_ms: escolha.rtt_ms,
+        .map(|(_, choice)| RouteView {
+            addr: choice.addr,
+            rtt_ms: choice.rtt_ms,
         })
 }
 
@@ -157,16 +157,16 @@ pub(super) struct PeerRead {
 /// `REDISCOVERY_GIVE_UP`, a rede já foi perguntada vezes bastantes: voltar a
 /// dizer "reencontrando" seria o mesmo aviso desonesto de antes com outra
 /// palavra, então a tela volta a dizer que não consegue ler o par.
-pub(super) fn sem_endereco_vivo(
+pub(super) fn without_live_address(
     network: &crate::network::Network,
     node_id: &str,
-    conhecidos: usize,
+    known: usize,
 ) -> PeerRead {
     if network.is_rediscovering(node_id) {
         return PeerRead::rediscovering();
     }
     PeerRead::failed(format!(
-        "nenhum dos {conhecidos} endereços conhecidos respondeu, e a rede não devolveu um novo"
+        "nenhum dos {known} endereços conhecidos respondeu, e a rede não devolveu um novo"
     ))
 }
 
@@ -178,9 +178,9 @@ impl PeerRead {
         }
     }
 
-    pub(super) fn failed(erro: String) -> Self {
+    pub(super) fn failed(error: String) -> Self {
         Self {
-            unreachable: Some(erro),
+            unreachable: Some(error),
             ..Self::default()
         }
     }
@@ -338,7 +338,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         .map(|p| {
             let is_self = p.node_id == self_id;
             let node_id = p.node_id.clone();
-            let candidatos = p.gateway_candidates();
+            let candidates = p.gateway_candidates();
             // Cliente pinado no node_id do destino: com o cluster em TLS, o
             // compartilhado não tem como verificar o certificado do peer e toda
             // chamada de controle falharia - foi assim que a tela de implantar
@@ -352,7 +352,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 if is_self {
                     return PeerRead::default();
                 }
-                if candidatos.is_empty() {
+                if candidates.is_empty() {
                     return match read_node_via_tunnel(&state, &peer).await {
                         Some(v) => PeerRead::ok(v),
                         None => PeerRead::default(),
@@ -362,8 +362,8 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                     Ok(c) => c,
                     Err(e) => return PeerRead::failed(format!("sem cliente: {e}")),
                 };
-                let utilizaveis = routes.usable(&node_id, &candidatos);
-                if utilizaveis.is_empty() {
+                let usable = routes.usable(&node_id, &candidates);
+                if usable.is_empty() {
                     // Todo endereço conhecido está desacreditado. Insistir não
                     // ressuscita nenhum deles: o que resolve é a rede voltar a
                     // dizer onde o peer está - ou o túnel, para um peer que
@@ -373,10 +373,10 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                         return PeerRead::ok(v);
                     }
                     network.request_peer_addresses(&node_id).await;
-                    return sem_endereco_vivo(&network, &node_id, candidatos.len());
+                    return without_live_address(&network, &node_id, candidates.len());
                 }
-                let mut ultimo_erro = None;
-                for base in &utilizaveis {
+                let mut last_error = None;
+                for base in &usable {
                     let url = format!("{base}/api/ui/node");
                     let request = match state
                         .control_get_request(http.get(&url), "/api/ui/node")
@@ -384,13 +384,13 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                     {
                         Ok(request) => request,
                         Err(error) => {
-                            ultimo_erro =
+                            last_error =
                                 Some(format!("assinatura de controle indisponível: {error}"));
                             continue;
                         }
                     };
-                    let resposta = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
-                    match resposta {
+                    let response = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
+                    match response {
                         Ok(Ok(r)) if r.status().is_success() => match r.json().await {
                             Ok(v) => {
                                 routes.mark_success(&node_id, base);
@@ -400,18 +400,18 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                             // Resposta inválida não é endereço morto: o peer
                             // atendeu. Desacreditar o endereço aqui esconderia
                             // um defeito de payload atrás de uma busca de rota.
-                            Err(e) => ultimo_erro = Some(format!("resposta inválida: {e}")),
+                            Err(e) => last_error = Some(format!("resposta inválida: {e}")),
                         },
                         // O mesmo vale para um HTTP de erro: quem responde
                         // 401 ou 500 está vivo naquele endereço.
-                        Ok(Ok(r)) => ultimo_erro = Some(format!("HTTP {}", r.status())),
+                        Ok(Ok(r)) => last_error = Some(format!("HTTP {}", r.status())),
                         Ok(Err(e)) => {
                             routes.mark_failure(&node_id, base);
-                            ultimo_erro = Some(format!("{e}"));
+                            last_error = Some(format!("{e}"));
                         }
                         Err(_) => {
                             routes.mark_failure(&node_id, base);
-                            ultimo_erro = Some("timeout".to_string());
+                            last_error = Some("timeout".to_string());
                         }
                     }
                 }
@@ -421,11 +421,11 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 }
                 // Se a última tentativa derrubou o último endereço utilizável,
                 // já se pode pedir o endereço novo nesta mesma passagem.
-                if routes.usable(&node_id, &candidatos).is_empty() {
+                if routes.usable(&node_id, &candidates).is_empty() {
                     network.request_peer_addresses(&node_id).await;
-                    return sem_endereco_vivo(&network, &node_id, candidatos.len());
+                    return without_live_address(&network, &node_id, candidates.len());
                 }
-                PeerRead::failed(ultimo_erro.unwrap_or_else(|| "sem resposta".to_string()))
+                PeerRead::failed(last_error.unwrap_or_else(|| "sem resposta".to_string()))
             }
         })
         .collect();
@@ -433,12 +433,12 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     let fetched = futures::future::join_all(futures).await;
 
     let mut views = Vec::new();
-    for (p, leitura) in peers.iter().zip(fetched) {
+    for (p, reading) in peers.iter().zip(fetched) {
         let PeerRead {
             node,
             unreachable,
             rediscovering,
-        } = leitura;
+        } = reading;
         let is_self = p.node_id == self_id;
         let node = if is_self {
             // Serialise our own view through the same shape as a remote one.

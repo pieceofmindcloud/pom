@@ -126,7 +126,7 @@ pub(crate) fn spawn_ratchet(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
     net.set_tls_probe(tx);
     tokio::spawn(async move {
-        while let Some((principal, anunciado)) = rx.recv().await {
+        while let Some((principal, announced)) = rx.recv().await {
             let Some(peer) = net
                 .alive_peers()
                 .await
@@ -136,13 +136,13 @@ pub(crate) fn spawn_ratchet(
                 continue;
             };
             let candidates =
-                net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(anunciado));
+                net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(announced));
             if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política de TLS não pôde ser confirmada");
                 continue;
             }
 
-            let (local, chave) = {
+            let (local, key) = {
                 let cfg = auth.read().await;
                 (
                     cfg.tls_required,
@@ -152,13 +152,13 @@ pub(crate) fn spawn_ratchet(
             // A sonda precisa falar o esquema que a URL diz, e o cache local
             // ainda está na política antiga. Um cliente próprio evita empurrar
             // a política nova para o cache antes de ela ser confirmada.
-            let sonda = PeerClients::new(std::time::Duration::from_secs(10));
-            sonda.set_tls(anunciado);
-            let buscado = fetch_from_principal_candidates(
-                &sonda,
+            let probe = PeerClients::new(std::time::Duration::from_secs(10));
+            probe.set_tls(announced);
+            let searched = fetch_from_principal_candidates(
+                &probe,
                 &principal,
                 &candidates,
-                &chave,
+                &key,
                 &signing_key,
                 &authority_principal,
                 &trust,
@@ -166,22 +166,22 @@ pub(crate) fn spawn_ratchet(
             )
             .await;
 
-            if let PolicyOutcome::Adopt(valor) = adopt_or_keep(local, buscado) {
+            if let PolicyOutcome::Adopt(value) = adopt_or_keep(local, searched) {
                 {
                     let mut cfg = auth.write().await;
-                    cfg.tls_required = valor;
+                    cfg.tls_required = value;
                     if let Err(e) = cfg.save() {
                         warn!("política de TLS confirmada mas não gravada: {e}");
                     }
                 }
-                clients.apply_cluster_policy(valor);
-                net.set_tls(valor);
+                clients.apply_cluster_policy(value);
+                net.set_tls(value);
                 if let Some(t) = &tls_server {
-                    t.set_strict(valor);
+                    t.set_strict(value);
                 }
                 info!(
                     "política de TLS do cluster adotada do principal: {}",
-                    if valor { "ligada" } else { "desligada" }
+                    if value { "ligada" } else { "desligada" }
                 );
             }
         }
@@ -197,7 +197,7 @@ mod tests {
     /// Anúncio que concorda com o que já sabemos não faz nada. É o caso comum:
     /// um Announce a cada 5 segundos, por peer.
     #[test]
-    fn anuncio_que_concorda_nao_faz_nada() {
+    fn an_agreeing_announce_does_nothing() {
         assert_eq!(
             on_announce(true, true, true, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -211,7 +211,7 @@ mod tests {
     /// Discordar **não** muda nada sozinho: só dispara a busca. O gossip é
     /// gatilho, nunca valor.
     #[test]
-    fn discordancia_do_principal_dispara_busca() {
+    fn a_principal_disagreement_triggers_a_fetch() {
         assert_eq!(
             on_announce(false, true, true, PRINCIPAL),
             PolicyOutcome::Fetch {
@@ -225,7 +225,7 @@ mod tests {
     /// obedecer a ele seria oferecer o rebaixamento que o TLS existe para
     /// impedir.
     #[test]
-    fn anuncio_de_nao_principal_e_ignorado_mesmo_discordando() {
+    fn a_non_principal_announce_is_ignored_even_when_disagreeing() {
         assert_eq!(
             on_announce(true, false, false, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -238,7 +238,7 @@ mod tests {
 
     /// Principal fora do ar não rebaixa ninguém.
     #[test]
-    fn busca_que_falha_preserva_o_valor_local() {
+    fn a_failing_fetch_preserves_the_local_value() {
         assert_eq!(
             adopt_or_keep(true, Err(anyhow::anyhow!("conexão recusada"))),
             PolicyOutcome::Unchanged
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn busca_bem_sucedida_adota_o_valor_do_principal() {
+    fn a_successful_fetch_adopts_the_principal_value() {
         assert_eq!(adopt_or_keep(false, Ok(true)), PolicyOutcome::Adopt(true));
         assert_eq!(adopt_or_keep(true, Ok(false)), PolicyOutcome::Adopt(false));
         assert_eq!(adopt_or_keep(true, Ok(true)), PolicyOutcome::Unchanged);

@@ -21,20 +21,20 @@ fn build_commit_from(runtime: Option<&str>, compiled: &str) -> String {
 }
 
 /// Development-only controls are enabled only by an explicit process setting.
-pub(crate) const POM_DESENV_ENV: &str = "POM_DESENV";
-static POM_DESENV_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+pub(crate) const POM_DEV_MODE_ENV: &str = "POM_DEV_MODE";
+static POM_DEV_MODE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-pub(crate) fn pom_desenv_enabled_from(value: Option<&str>) -> bool {
+pub(crate) fn pom_dev_mode_enabled_from(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
-pub(crate) fn initialize_pom_desenv() -> bool {
-    *POM_DESENV_ENABLED
-        .get_or_init(|| pom_desenv_enabled_from(std::env::var(POM_DESENV_ENV).ok().as_deref()))
+pub(crate) fn initialize_pom_dev_mode() -> bool {
+    *POM_DEV_MODE_ENABLED
+        .get_or_init(|| pom_dev_mode_enabled_from(std::env::var(POM_DEV_MODE_ENV).ok().as_deref()))
 }
 
-pub(crate) fn pom_desenv_enabled() -> bool {
-    initialize_pom_desenv()
+pub(crate) fn pom_dev_mode_enabled() -> bool {
+    initialize_pom_dev_mode()
 }
 
 #[path = "network/addrs.rs"]
@@ -518,8 +518,8 @@ fn main() -> Result<()> {
         .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
         .init();
 
-    let pom_desenv = initialize_pom_desenv();
-    info!("POM_DESENV habilitado: {pom_desenv}");
+    let pom_dev_mode = initialize_pom_dev_mode();
+    info!("POM_DEV_MODE habilitado: {pom_dev_mode}");
 
     // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
     // que o `sysmon` mede e as funções de estado da coletiva TP que o `llm`
@@ -826,10 +826,10 @@ async fn async_main(
                     detected.len()
                 );
             }
-            escolhidas if escolhidas.is_empty() => {
+            chosen if chosen.is_empty() => {
                 info!("GPUs: nenhuma - inferência em CPU (pom.json traz uma lista vazia)");
             }
-            escolhidas => info!("GPUs: {}", escolhidas.join(", ")),
+            chosen => info!("GPUs: {}", chosen.join(", ")),
         }
     }
     let gateway_port = app_config.gateway_port;
@@ -1643,7 +1643,7 @@ async fn start_node(
     let inference_quic_port =
         inference_port.and_then(|_| crate::quic::inference_quic_port(app_config.p2p_port));
     let gateway_quic_port = crate::quic::gateway_quic_port(app_config.p2p_port);
-    peer_client::set_quic_ativo(app_config.quic_enabled);
+    peer_client::set_quic_enabled(app_config.quic_enabled);
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
         config::admin_trust_path(),
@@ -1997,7 +1997,7 @@ mod main_tests {
     use super::*;
 
     #[test]
-    fn o_binario_windows_e_um_app_gui_e_o_shell_tem_tray_webview_e_saida() {
+    fn the_windows_binary_is_a_gui_app_and_the_shell_has_tray_webview_and_exit() {
         let main_source = include_str!("main.rs");
         let shell_source = include_str!("windows_status.rs");
 
@@ -2129,7 +2129,7 @@ mod main_tests {
     }
 
     #[test]
-    fn diagnostico_do_app_gui_tem_arquivo_estavel() {
+    fn the_gui_app_diagnostic_has_a_stable_file() {
         assert_eq!(windows_diagnostic_log_filename(), "pom.log");
     }
 
@@ -2169,8 +2169,8 @@ mod main_tests {
     }
 
     #[test]
-    fn pom_desenv_accepts_only_exact_one() {
-        assert!(pom_desenv_enabled_from(Some("1")));
+    fn pom_dev_mode_accepts_only_exact_one() {
+        assert!(pom_dev_mode_enabled_from(Some("1")));
         for value in [
             None,
             Some(""),
@@ -2179,7 +2179,7 @@ mod main_tests {
             Some("01"),
             Some("1 "),
         ] {
-            assert!(!pom_desenv_enabled_from(value));
+            assert!(!pom_dev_mode_enabled_from(value));
         }
     }
 

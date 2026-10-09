@@ -34,7 +34,7 @@ type HintStepId = Exclude<GuideStepId, WizardStepId>;
 
 const PLAN: Record<HintStepId, StepPlan> = {
   download_model: {
-    path: "/modelos/remotos",
+    path: "/models/remote",
     section: "nav.models",
     targets: [
       { selector: '[data-guide="model-download-confirm"]', hint: "downloadConfirm" },
@@ -45,7 +45,7 @@ const PLAN: Record<HintStepId, StepPlan> = {
     ],
   },
   deploy_model: {
-    path: "/implantar",
+    path: "/deploy",
     section: "nav.deployments",
     targets: [
       { selector: '[data-guide="deploy-running"]', hint: "deployWait" },
@@ -55,7 +55,7 @@ const PLAN: Record<HintStepId, StepPlan> = {
     ],
   },
   chat: { path: "/chat", targets: [{ selector: '[data-guide="chat-input"]' }] },
-  join: { path: "/redes-publicas", targets: [{ selector: '[data-guide="network-join"]' }] },
+  join: { path: "/public-networks", targets: [{ selector: '[data-guide="network-join"]' }] },
 };
 
 /** The message keys of each step: `guide.<name>Title`, `Go` and `Here`. */

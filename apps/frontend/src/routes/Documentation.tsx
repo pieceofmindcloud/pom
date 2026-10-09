@@ -25,7 +25,7 @@
  * navigation column and the reading column scroll independently, so a long
  * document never drags the tree out of reach.
  *
- * Address: `?tab=`, `?guia=` and `?doc=` - every page is a shareable link.
+ * Address: `?tab=`, `?guide=` and `?doc=` - every page is a shareable link.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
@@ -350,14 +350,14 @@ function TabSwitch({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) 
       value={tab}
       onChange={onChange}
       items={[
-        { value: "guias", label: t("docs.tab.guides"), icon: <BookOpen /> },
-        { value: "referencia", label: t("docs.tab.reference"), icon: <Layers /> },
+        { value: "guides", label: t("docs.tab.guides"), icon: <BookOpen /> },
+        { value: "reference", label: t("docs.tab.reference"), icon: <Layers /> },
       ]}
     />
   );
 }
 
-type Tab = "guias" | "referencia";
+type Tab = "guides" | "reference";
 
 export function Documentation() {
   const { t, locale } = useI18n();
@@ -365,12 +365,12 @@ export function Documentation() {
   const [query, setQuery] = useState("");
   const readerRef = useRef<HTMLDivElement>(null);
   // No celular a barra lateral ocupa a tela inteira e o leitor fica escondido
-  // até uma seleção explícita; um deep link (`?doc=`/`?guia=` já na URL ao
+  // até uma seleção explícita; um deep link (`?doc=`/`?guide=` já na URL ao
   // montar) conta como essa seleção e abre direto no conteúdo. `Voltar` no
-  // topo do leitor apenas fecha essa vista - o `?doc=`/`?guia=` continua
+  // topo do leitor apenas fecha essa vista - o `?doc=`/`?guide=` continua
   // valendo, então recarregar a página não perde o lugar.
   const [mobileReaderOpen, setMobileReaderOpen] = useState(
-    () => Boolean(params.get("doc") || params.get("guia")),
+    () => Boolean(params.get("doc") || params.get("guide")),
   );
 
   const entries = manifest.entries;
@@ -380,19 +380,19 @@ export function Documentation() {
   const pluginGuides = pluginDocs.filter((document) => document.kind === "guide");
   const pluginReference = pluginDocs.filter((document) => document.kind === "reference");
 
-  const tab: Tab = params.get("tab") === "referencia" ? "referencia" : "guias";
+  const tab: Tab = params.get("tab") === "reference" ? "reference" : "guides";
   const selectedPluginReference = pluginReference.find((document) => document.key === params.get("doc"));
   const selectedId = byId.has(params.get("doc") ?? "")
     ? (params.get("doc") as string)
     : entries[0]?.id ?? "";
   const selected = selectedId ? byId.get(selectedId) : undefined;
   const selectedContent = selected ? CONTENT[`../docs/${selected.id}`] : undefined;
-  const selectedPluginGuide = pluginGuides.find((document) => document.key === params.get("guia"));
-  const guideId = guides.some((g) => g.id === params.get("guia"))
-    ? (params.get("guia") as string)
+  const selectedPluginGuide = pluginGuides.find((document) => document.key === params.get("guide"));
+  const guideId = guides.some((g) => g.id === params.get("guide"))
+    ? (params.get("guide") as string)
     : guides[0]?.id ?? "";
   const guide = guides.find((g) => g.id === guideId);
-  const activePluginDocument = tab === "guias" ? selectedPluginGuide : selectedPluginReference;
+  const activePluginDocument = tab === "guides" ? selectedPluginGuide : selectedPluginReference;
   const [pluginContent, setPluginContent] = useState<Record<string, string>>({});
   const [pluginContentError, setPluginContentError] = useState<Record<string, boolean>>({});
   const [pluginContentLoading, setPluginContentLoading] = useState<string | null>(null);
@@ -433,7 +433,7 @@ export function Documentation() {
 
   const openDoc = useCallback(
     (id: string) => {
-      setParams({ tab: "referencia", doc: id }, { replace: true });
+      setParams({ tab: "reference", doc: id }, { replace: true });
       setMobileReaderOpen(true);
       toTop();
     },
@@ -442,7 +442,7 @@ export function Documentation() {
 
   const openGuide = useCallback(
     (id: string) => {
-      setParams({ tab: "guias", guia: id }, { replace: true });
+      setParams({ tab: "guides", guide: id }, { replace: true });
       setMobileReaderOpen(true);
       toTop();
     },
@@ -451,7 +451,7 @@ export function Documentation() {
 
   const switchTab = (next: Tab) => {
     if (next === tab) return;
-    setParams(next === "guias" ? { tab: "guias", guia: guideId } : { tab: "referencia", doc: selectedId }, {
+    setParams(next === "guides" ? { tab: "guides", guide: guideId } : { tab: "reference", doc: selectedId }, {
       replace: true,
     });
     toTop();
@@ -520,7 +520,7 @@ export function Documentation() {
           <TabSwitch tab={tab} onChange={switchTab} />
         </div>
 
-        {tab === "referencia" && (
+        {tab === "reference" && (
           <div className="shrink-0 border-b border-line p-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
@@ -552,7 +552,7 @@ export function Documentation() {
           scrollbar.
         */}
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {tab === "guias" ? (
+          {tab === "guides" ? (
             <div className="flex flex-col gap-0.5">
               {guides.map((g) => {
                 const active = g.id === guideId;
@@ -582,13 +582,13 @@ export function Documentation() {
                     {t("docs.pluginGuides")}
                   </p>
                   {pluginGuides.map((document) => {
-                    const active = document.key === params.get("guia");
+                    const active = document.key === params.get("guide");
                     return (
                       <button
                         key={document.key}
                         type="button"
                         onClick={() => {
-                          setParams({ tab: "guias", guia: document.key }, { replace: true });
+                          setParams({ tab: "guides", guide: document.key }, { replace: true });
                           setMobileReaderOpen(true);
                           toTop();
                         }}
@@ -639,13 +639,13 @@ export function Documentation() {
                       type="button"
                       onClick={() => {
                         const parameter: Record<string, string> = document.kind === "guide"
-                          ? { tab: "guias", guia: document.key }
-                          : { tab: "referencia", doc: document.key };
+                          ? { tab: "guides", guide: document.key }
+                          : { tab: "reference", doc: document.key };
                         setParams(parameter, { replace: true });
                         setMobileReaderOpen(true);
                         toTop();
                       }}
-                      aria-pressed={document.key === params.get(document.kind === "guide" ? "guia" : "doc")}
+                      aria-pressed={document.key === params.get(document.kind === "guide" ? "guide" : "doc")}
                       className="flex min-w-0 flex-col items-start rounded-md px-2 py-1.5 text-left text-muted transition-colors hover:bg-line/40 hover:text-fg"
                     >
                       <span className="w-full truncate text-[0.8rem] leading-snug">{document.title}</span>
@@ -669,7 +669,7 @@ export function Documentation() {
                       key={document.key}
                       type="button"
                       onClick={() => {
-                        setParams({ tab: "referencia", doc: document.key }, { replace: true });
+                        setParams({ tab: "reference", doc: document.key }, { replace: true });
                         setMobileReaderOpen(true);
                         toTop();
                       }}
@@ -736,7 +736,7 @@ export function Documentation() {
           </div>
         )}
         <div className="mx-auto w-full max-w-[62rem] px-6 py-7 sm:px-10">
-          {tab === "guias" ? (
+          {tab === "guides" ? (
             selectedPluginGuide ? (
               <PluginDocument
                 document={selectedPluginGuide}

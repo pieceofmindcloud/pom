@@ -9,7 +9,7 @@ import { peerDisplayName, uniquePeerName } from "./peerName";
  * lista via colisão e desempatava com o prefixo do `node_id`.
  */
 describe("peerDisplayName", () => {
-  it("usa o nome que a máquina anuncia", () => {
+  it("uses the name the machine announces", () => {
     expect(peerDisplayName({ node_id: "83bee8670abc2155", hostname: "ksia" })).toBe("ksia");
   });
 
@@ -17,7 +17,7 @@ describe("peerDisplayName", () => {
    * O `node_id` encurtado é o último recurso, não o nome: é um prefixo
    * hexadecimal, e não diz para qual máquina o arquivo vai.
    */
-  it("cai no id curto só quando não há nome nenhum", () => {
+  it("falls back to the short id only when there is no name at all", () => {
     expect(peerDisplayName({ node_id: "83bee8670abc2155" })).toBe("83bee8670abc");
     expect(peerDisplayName({ node_id: "83bee8670abc2155", hostname: null })).toBe("83bee8670abc");
     expect(peerDisplayName({ node_id: "83bee8670abc2155", hostname: "  " })).toBe("83bee8670abc");
@@ -25,7 +25,7 @@ describe("peerDisplayName", () => {
 });
 
 describe("uniquePeerName", () => {
-  it("não polui um nome que já é único", () => {
+  it("does not clutter a name that is already unique", () => {
     const peers = [
       { node_id: "aaaa1111bbbb2222", hostname: "atena" },
       { node_id: "cccc3333dddd4444", hostname: "ksia" },
@@ -39,7 +39,7 @@ describe("uniquePeerName", () => {
    * de dar janela grande sem arriscar a RAM da menor. Aí só o `node_id`
    * distingue um do outro.
    */
-  it("desempata dois nós da mesma máquina pelo id", () => {
+  it("tie-breaks two nodes of the same machine by id", () => {
     const peers = [
       { node_id: "aaaa1111bbbb2222", hostname: "ksia" },
       { node_id: "cccc3333dddd4444", hostname: "ksia" },

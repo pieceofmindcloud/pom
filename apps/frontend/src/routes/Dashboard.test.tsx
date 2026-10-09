@@ -149,7 +149,7 @@ function mount(
 describe("Dashboard", () => {
   afterEach(cleanup);
 
-  it("renderiza uma unica mensagem com a rede vazia na visao estendida", async () => {
+  it("renders a single message with the empty network in the extended view", async () => {
     mount();
 
     await waitFor(() => {
@@ -175,7 +175,7 @@ describe("Dashboard", () => {
     expect(screen.queryByText("A rede esta vazia")).toBeNull();
   });
 
-  it("sem modelo ativo oculta Adicionar e abre Detalhes por padrão", async () => {
+  it("without an active model hides Add and opens Details by default", async () => {
     mount(fakeCluster([], ""));
 
     const details = await screen.findByRole("button", { name: /Detalhes/ });
@@ -186,7 +186,7 @@ describe("Dashboard", () => {
     expect(screen.getAllByText(/Nenhuma m.quina na rede/i).some((el) => el.closest(".hidden") == null)).toBe(true);
   });
 
-  it("mostra no fluxo do Painel o RTT das arestas da implantação", async () => {
+  it("shows the RTT of the deployment edges in the Dashboard flow", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -209,7 +209,7 @@ describe("Dashboard", () => {
     await waitFor(() => expect(screen.getByText("RTT 7.4 ms")).toBeTruthy());
   });
 
-  it("mostra o custo da rota de um modelo inteiro com um unico head", async () => {
+  it("shows the route cost of a whole model with a single head", async () => {
     const cluster = fakeCluster([fakeSlicePeer("head", 0, 31)], "qwen35");
 
     mount(cluster, "admin", undefined, undefined, undefined, [
@@ -233,7 +233,7 @@ describe("Dashboard", () => {
    * fazer - o operador acredita numa pipeline fechada que ninguém consegue
    * consultar.
    */
-  it("não dá cobertura por confirmada quando uma máquina dela não pôde ser lida", async () => {
+  it("does not treat coverage as confirmed when one of its machines could not be read", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       { ...fakeSlicePeer("b", 16, 31), rediscovering: true },
@@ -254,7 +254,7 @@ describe("Dashboard", () => {
     );
   });
 
-  it("esconde adicionar e desimplantar para um nó comum", async () => {
+  it("hides add and undeploy for a regular node", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -274,7 +274,7 @@ describe("Dashboard", () => {
    * liberar fatia, remover do pipeline e tirar da rede. Fora do `admin` resta
    * o Fluxo, e onde há uma vista só não há o que escolher.
    */
-  it("nega os Detalhes ao perfil node e tira o seletor de vista da tela", async () => {
+  it("denies Details to the node profile and removes the view selector from the screen", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -287,7 +287,7 @@ describe("Dashboard", () => {
     expect(screen.queryByRole("button", { name: /Fluxo/ })).toBeNull();
   });
 
-  it("mantém as duas vistas e o seletor para o administrador", async () => {
+  it("keeps both views and the selector for the administrator", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -300,7 +300,7 @@ describe("Dashboard", () => {
     expect(screen.getByRole("button", { name: /Detalhes/ })).toBeTruthy();
   });
 
-  it("mostra adicionar e desimplantar para o administrador", async () => {
+  it("shows add and undeploy for the administrator", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
       fakeSlicePeer("b", 16, 31),
@@ -314,7 +314,7 @@ describe("Dashboard", () => {
     });
   });
 
-  it("usa a implantação padrão para manter as propriedades no mapa", async () => {
+  it("uses the default deployment to keep the properties on the map", async () => {
     const stale = deploymentRow("d-stale", {
       isDefault: false,
       activeVersion: 2,
@@ -340,7 +340,7 @@ describe("Dashboard", () => {
     expect(screen.getByText(/d-curren/)).toBeTruthy();
   });
 
-  it("mostra nas propriedades a seção do motor do plugin quando a versão roda nele", async () => {
+  it("shows the plugin engine section in the properties when the version runs on it", async () => {
     const strata = deploymentRow("d-strata", { isDefault: true, activeVersion: 1 });
     Object.assign(strata.deployment.versions[0].params, { inference_service: "strata" });
 
@@ -357,7 +357,7 @@ describe("Dashboard", () => {
   });
 
   it.each(["node", "infer"] as const)(
-    "mostra a fatia local e não transforma a cobertura do cluster em alarme no perfil %s",
+    "shows the local slice and does not turn the cluster coverage into an alarm in the %s profile",
     async (profile) => {
       const cluster = fakeCluster([
         fakeSlicePeer("self", 4, 11, {
@@ -393,7 +393,7 @@ describe("Dashboard", () => {
     },
   );
 
-  it("diz que os dados locais são desconhecidos quando o perfil não consegue lê-los", async () => {
+  it("says the local data is unknown when the profile cannot read it", async () => {
     const cluster = fakeCluster([
       fakePeer({ node_id: "self", is_self: true, load: null }),
     ], "");

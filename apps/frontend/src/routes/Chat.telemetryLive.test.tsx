@@ -131,8 +131,8 @@ afterEach(() => {
   streamIndex = 0;
 });
 
-describe("telemetria do rodapé atualiza sem F5", () => {
-  it("mostra o RTT de rede assim que a consulta resolve, sem remontar a tela", async () => {
+describe("footer telemetry updates without F5", () => {
+  it("shows the network RTT as soon as the query resolves, without remounting the screen", async () => {
     mountChat();
 
     const composer = await screen.findByRole("textbox");
@@ -160,7 +160,7 @@ describe("telemetria do rodapé atualiza sem F5", () => {
     );
   });
 
-  it("mantém resumo, card e ambiente de cada resposta anterior", async () => {
+  it("keeps the summary, card and environment of each previous response", async () => {
     mountChat();
 
     const composer = await screen.findByRole("textbox");

@@ -44,8 +44,8 @@ export async function deleteModel(
     const warnings = warningsOf(error);
     if (warnings.length === 0) throw error;
 
-    const lista = warnings.map((w) => `• ${w.message}`).join("\n");
-    if (!confirm(formatMessage(getActiveLocale(), "models.deleteWarning") + "\n\n" + lista + "\n\n" + formatMessage(getActiveLocale(), "models.deleteForce"))) {
+    const list = warnings.map((w) => `• ${w.message}`).join("\n");
+    if (!confirm(formatMessage(getActiveLocale(), "models.deleteWarning") + "\n\n" + list + "\n\n" + formatMessage(getActiveLocale(), "models.deleteForce"))) {
       return { status: "cancelled" };
     }
     const r = await api.post<{ freed_bytes: number }>("/api/ui/models/delete", {

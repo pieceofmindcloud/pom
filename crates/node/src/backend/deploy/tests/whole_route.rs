@@ -378,9 +378,9 @@ mod whole_route_tests {
 
         // Sem `kind` nenhum, o mesmo resultado: `shards` é o padrão.
         let port = catalog_machine(catalog()).await;
-        let sem_kind = plan_body(state_seeing_only(port).await, json!({ "group": "qwen" })).await;
-        assert_eq!(sem_kind["kind"], "shards");
-        assert_eq!(sem_kind["available"].as_array().unwrap().len(), 1);
+        let without_kind = plan_body(state_seeing_only(port).await, json!({ "group": "qwen" })).await;
+        assert_eq!(without_kind["kind"], "shards");
+        assert_eq!(without_kind["available"].as_array().unwrap().len(), 1);
     }
 
     /// Um modelo que nenhuma máquina tem é recusa nomeando o modelo, não uma
@@ -388,8 +388,8 @@ mod whole_route_tests {
     #[tokio::test]
     async fn a_model_nobody_has_is_refused_by_name() {
         let body = plan_for("whole", "llama3-70b").await;
-        let motivo = body["blocked"].as_str().expect("recusa");
-        assert!(motivo.contains("llama3-70b"), "{motivo}");
-        assert!(!motivo.contains("fatias de"), "{motivo}");
+        let reason = body["blocked"].as_str().expect("recusa");
+        assert!(reason.contains("llama3-70b"), "{reason}");
+        assert!(!reason.contains("fatias de"), "{reason}");
     }
 }

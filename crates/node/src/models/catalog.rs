@@ -1655,8 +1655,8 @@ fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Sc
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let canonico = f.canonicalize().unwrap_or_else(|_| f.clone());
-        let ctx = index.get(&canonico).or_else(|| index.get(&f));
+        let canonical = f.canonicalize().unwrap_or_else(|_| f.clone());
+        let ctx = index.get(&canonical).or_else(|| index.get(&f));
         if let Some(m) = describe(&f, name, ModelSource::Local, ctx) {
             if !out.iter().any(|e| e.path == m.path) {
                 out.push(m);
@@ -1694,9 +1694,9 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
             return index;
         }
     };
-    for entrada in rd {
-        let entrada = match entrada {
-            Ok(entrada) => entrada,
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
             Err(error) => {
                 debug!(
                     path = %shard_dir.display(),
@@ -1706,29 +1706,29 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
                 continue;
             }
         };
-        let pasta = entrada.path();
-        if !pasta.is_dir() {
+        let folder = entry.path();
+        if !folder.is_dir() {
             continue;
         }
-        for m in crate::pom::load_dir(&pasta) {
-            for (parte, tensor_parallel) in m
+        for m in crate::pom::load_dir(&folder) {
+            for (part, tensor_parallel) in m
                 .parts
                 .iter()
-                .map(|parte| (parte, false))
-                .chain(m.tp_parts.iter().map(|parte| (parte, true)))
+                .map(|part| (part, false))
+                .chain(m.tp_parts.iter().map(|part| (part, true)))
             {
-                let Ok(caminho) = crate::pom::part_path(&pasta, &parte.sha256) else {
+                let Ok(path) = crate::pom::part_path(&folder, &part.sha256) else {
                     continue;
                 };
-                if !caminho.is_file() {
+                if !path.is_file() {
                     continue;
                 }
                 let ctx = PartContext {
                     model_label: m.model.label.clone(),
                     total_layers: m.model.total_layers,
-                    start_layer: parte.start_layer,
-                    end_layer: parte.end_layer,
-                    sha256: parte.sha256.clone(),
+                    start_layer: part.start_layer,
+                    end_layer: part.end_layer,
+                    sha256: part.sha256.clone(),
                     pom_id: m.pom_id.clone(),
                     run_key: format!(
                         "{}-{}",
@@ -1737,11 +1737,11 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
                     ),
                     quant: m.model.quant.clone(),
                     tensor_parallel,
-                    tp_rank: parte.tp.map(|tp| tp.rank),
-                    tp_size: parte.tp.map(|tp| tp.size),
+                    tp_rank: part.tp.map(|tp| tp.rank),
+                    tp_size: part.tp.map(|tp| tp.size),
                 };
-                let chave = caminho.canonicalize().unwrap_or(caminho);
-                index.insert(chave, ctx);
+                let key = path.canonicalize().unwrap_or(path);
+                index.insert(key, ctx);
             }
         }
     }
@@ -3063,32 +3063,32 @@ mod part_naming_tests {
     use crate::pom::{PomKind, PomManifest, PomModel, PomPart};
 
     /// Grava um GGUF de verdade nomeado pelo próprio hash e o manifesto ao lado.
-    fn modelo_fatiado(raiz: &Path) -> (PomManifest, Vec<String>) {
+    fn sliced_model(root: &Path) -> (PomManifest, Vec<String>) {
         // Como a produção faz: corta numa pasta de trabalho e, com o manifesto
         // pronto, muda a rodada para `<modelo>-<id da rodada>`.
-        let pasta = crate::pom::scratch_dir(raiz);
-        std::fs::create_dir_all(&pasta).unwrap();
+        let folder = crate::pom::scratch_dir(root);
+        std::fs::create_dir_all(&folder).unwrap();
 
-        let mut partes = Vec::new();
+        let mut parts = Vec::new();
         let mut hashes = Vec::new();
         // Contagens de camadas diferentes de propósito: `test_gguf_bytes(n)` é
         // determinística, então duas fatias de 16 camadas dariam **o mesmo
         // hash** - e, com o nome sendo o conteúdo, um arquivo só. O que
         // importa aqui é a identidade vir do manifesto, e é ele que declara as
         // faixas.
-        for (inicio, fim, camadas) in [(0u32, 15u32, 16u32), (16, 31, 12)] {
-            let bytes = crate::splitter::test_gguf_bytes(camadas);
-            let tmp = pasta.join(format!("tmp-{inicio}"));
+        for (start, end, layers) in [(0u32, 15u32, 16u32), (16, 31, 12)] {
+            let bytes = crate::splitter::test_gguf_bytes(layers);
+            let tmp = folder.join(format!("tmp-{start}"));
             std::fs::write(&tmp, &bytes).unwrap();
             let (sha, n) = crate::pom::hash_file(&tmp).unwrap();
-            std::fs::rename(&tmp, crate::pom::part_path(&pasta, &sha).unwrap()).unwrap();
-            partes.push(PomPart {
+            std::fs::rename(&tmp, crate::pom::part_path(&folder, &sha).unwrap()).unwrap();
+            parts.push(PomPart {
                 sha256: sha.clone(),
                 bytes: n,
-                start_layer: inicio,
-                end_layer: fim,
-                is_first: inicio == 0,
-                is_last: fim == 31,
+                start_layer: start,
+                end_layer: end,
+                is_first: start == 0,
+                is_last: end == 31,
                 tp: None,
             });
             hashes.push(sha);
@@ -3104,9 +3104,9 @@ mod part_naming_tests {
             PomKind::Layers,
             "no-1",
             "a".repeat(64),
-            partes,
+            parts,
         );
-        crate::pom::finalize_run(raiz, &pasta, &m).unwrap();
+        crate::pom::finalize_run(root, &folder, &m).unwrap();
         (m, hashes)
     }
 
@@ -3114,11 +3114,11 @@ mod part_naming_tests {
     /// modelo inteiro. O nome que o operador lê tem que dizer **qual modelo** e
     /// **quais camadas**; o hash é identificação interna.
     #[test]
-    fn uma_parte_se_chama_pelo_modelo_e_pelas_camadas_nunca_pelo_hash() {
-        let raiz = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
-        let (_m, hashes) = modelo_fatiado(&raiz);
+    fn a_part_is_named_by_the_model_and_the_layers_never_by_the_hash() {
+        let root = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
+        let (_m, hashes) = sliced_model(&root);
 
-        let cat = discover(&[], &raiz);
+        let cat = discover(&[], &root);
         assert_eq!(cat.models.len(), 2, "as duas partes entram no catálogo");
 
         for m in &cat.models {
@@ -3142,12 +3142,12 @@ mod part_naming_tests {
             assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
         }
 
-        let primeira = cat
+        let first = cat
             .models
             .iter()
             .find(|m| m.shard_range == Some((0, 15)))
             .expect("a faixa vem do manifesto");
-        assert!(primeira.name.contains("L0-15"), "{}", primeira.name);
+        assert!(first.name.contains("L0-15"), "{}", first.name);
 
         // E o conjunto se fecha, que é o que a tela de implantar precisa.
         assert_eq!(cat.shard_sets.len(), 1);
@@ -3163,128 +3163,128 @@ mod part_naming_tests {
         assert_eq!(set.model_label, "qwen3:8b");
         assert_eq!(set.pom_id, _m.pom_id);
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// O mesmo arquivo original, fatiado de duas formas, compartilha a pasta e
     /// o manifesto; o catálogo preserva todas as alternativas de `parts`.
     #[test]
-    fn duas_fatiagens_do_mesmo_arquivo_ficam_na_mesma_pasta() {
-        let raiz = std::env::temp_dir().join(format!("pom-col-{}", uuid::Uuid::new_v4().simple()));
+    fn two_slicings_of_the_same_file_land_in_the_same_folder() {
+        let root = std::env::temp_dir().join(format!("pom-col-{}", uuid::Uuid::new_v4().simple()));
 
         // Duas rodadas do mesmo modelo, com cortes diferentes.
-        let uma = fatiar(
-            &raiz,
+        let one = make_slice(
+            &root,
             "qwen3-8b",
             "qwen3:8b",
             32,
             &[(0, 15, 16), (16, 31, 12)],
         );
-        let outra = fatiar(
-            &raiz,
+        let other = make_slice(
+            &root,
             "qwen3-8b",
             "qwen3:8b",
             32,
             &[(0, 19, 20), (20, 31, 9)],
         );
 
-        assert_eq!(uma.pom_id, outra.pom_id, "a fonte é a identidade do modelo");
-        let pasta_uma = crate::pom::dir_for(&raiz, &uma);
-        let pasta_outra = crate::pom::dir_for(&raiz, &outra);
-        assert_eq!(pasta_uma, pasta_outra, "um manifesto único por fonte");
-        assert!(pasta_uma.is_dir());
+        assert_eq!(one.pom_id, other.pom_id, "a fonte é a identidade do modelo");
+        let one_folder = crate::pom::dir_for(&root, &one);
+        let other_folder = crate::pom::dir_for(&root, &other);
+        assert_eq!(one_folder, other_folder, "um manifesto único por fonte");
+        assert!(one_folder.is_dir());
 
         // As quatro partes aparecem no mesmo manifesto, cada uma com sua faixa.
-        let cat = discover(&[], &raiz);
+        let cat = discover(&[], &root);
         assert_eq!(cat.models.len(), 4);
         assert_eq!(cat.shard_sets.len(), 1, "um conjunto por arquivo original");
         assert!(cat.shard_sets[0].complete);
         assert_eq!(cat.shard_sets[0].shards.len(), 4);
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Corta um modelo em faixas e sela a rodada, como a produção faz.
-    fn fatiar(
-        raiz: &Path,
-        nome: &str,
-        rotulo: &str,
+    fn make_slice(
+        root: &Path,
+        name: &str,
+        label: &str,
         total: u32,
-        cortes: &[(u32, u32, u32)],
+        cuts: &[(u32, u32, u32)],
     ) -> crate::pom::PomManifest {
-        let trabalho = crate::pom::scratch_dir(raiz);
-        std::fs::create_dir_all(&trabalho).unwrap();
+        let work = crate::pom::scratch_dir(root);
+        std::fs::create_dir_all(&work).unwrap();
 
-        let mut partes = Vec::new();
-        for (inicio, fim, camadas) in cortes {
-            let bytes = crate::splitter::test_gguf_bytes(*camadas);
-            let tmp = trabalho.join(format!("tmp-{inicio}"));
+        let mut parts = Vec::new();
+        for (start, end, layers) in cuts {
+            let bytes = crate::splitter::test_gguf_bytes(*layers);
+            let tmp = work.join(format!("tmp-{start}"));
             std::fs::write(&tmp, &bytes).unwrap();
             let (sha, n) = crate::pom::hash_file(&tmp).unwrap();
-            std::fs::rename(&tmp, crate::pom::part_path(&trabalho, &sha).unwrap()).unwrap();
-            partes.push(crate::pom::PomPart {
+            std::fs::rename(&tmp, crate::pom::part_path(&work, &sha).unwrap()).unwrap();
+            parts.push(crate::pom::PomPart {
                 sha256: sha,
                 bytes: n,
-                start_layer: *inicio,
-                end_layer: *fim,
-                is_first: *inicio == 0,
-                is_last: *fim + 1 >= total,
+                start_layer: *start,
+                end_layer: *end,
+                is_first: *start == 0,
+                is_last: *end + 1 >= total,
                 tp: None,
             });
         }
 
         let m = crate::pom::PomManifest::new(
             crate::pom::PomModel {
-                name: nome.into(),
-                label: rotulo.into(),
+                name: name.into(),
+                label: label.into(),
                 total_layers: total,
                 quant: None,
             },
             crate::pom::PomKind::Layers,
             "no-1",
             "a".repeat(64),
-            partes,
+            parts,
         );
-        crate::pom::finalize_run(raiz, &trabalho, &m).unwrap();
+        crate::pom::finalize_run(root, &work, &m).unwrap();
         m
     }
 
     /// Sem manifesto o arquivo não é fatia de nada: é um GGUF que alguém
     /// deixou na pasta, e continua aparecendo pelo nome dele.
     #[test]
-    fn um_gguf_solto_na_pasta_de_fatias_nao_vira_parte() {
-        let raiz = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&raiz).unwrap();
+    fn a_loose_gguf_in_the_slices_folder_does_not_become_a_part() {
+        let root = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
-            raiz.join("modelo-inteiro.gguf"),
+            root.join("modelo-inteiro.gguf"),
             crate::splitter::test_gguf_bytes(8),
         )
         .unwrap();
 
-        let cat = discover(&[], &raiz);
+        let cat = discover(&[], &root);
         assert_eq!(cat.models.len(), 1);
         assert_eq!(cat.models[0].name, "modelo-inteiro.gguf");
         assert!(cat.models[0].sha256.is_none());
         assert!(cat.models[0].shard_group.is_none());
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Uma parte listada no manifesto mas ausente do disco não entra no índice:
     /// ele descreve o que existe, não o que deveria existir.
     #[test]
-    fn o_indice_so_conhece_parte_que_esta_em_disco() {
-        let raiz = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
-        let (m, hashes) = modelo_fatiado(&raiz);
+    fn the_index_only_knows_parts_that_are_on_disk() {
+        let root = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
+        let (m, hashes) = sliced_model(&root);
 
-        let pasta = crate::pom::dir_for(&raiz, &m);
-        std::fs::remove_file(crate::pom::part_path(&pasta, &hashes[1]).unwrap()).unwrap();
+        let folder = crate::pom::dir_for(&root, &m);
+        std::fs::remove_file(crate::pom::part_path(&folder, &hashes[1]).unwrap()).unwrap();
 
-        let index = part_index(&raiz);
+        let index = part_index(&root);
         assert_eq!(index.len(), 1);
         assert!(index.values().all(|c| c.sha256 == hashes[0]));
         assert_eq!(m.parts.len(), 2, "o manifesto segue descrevendo as duas");
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

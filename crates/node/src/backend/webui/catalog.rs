@@ -14,7 +14,7 @@ pub struct NodeInfo {
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
     pub dev_update: bool,
     /// Controls whether development-only POM deployment settings are exposed.
-    pub pom_desenv: bool,
+    pub pom_dev_mode: bool,
     pub profile: crate::profile::NodeProfile,
     /// Human-facing network name shown by the leave action in the main menu.
     pub network_name: String,
@@ -181,7 +181,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         hostname: state.network.hostname(),
         build_commit: crate::build_commit(),
         dev_update: crate::devupdate::enabled(),
-        pom_desenv: crate::pom_desenv_enabled(),
+        pom_dev_mode: crate::pom_dev_mode_enabled(),
         profile,
         network_name,
         own_network: state.admin_trust.document().primary.pubkey
@@ -1510,7 +1510,7 @@ pub(super) async fn save_quic(
         }
     }
     state.peer_http.set_quic(req.quic_enabled);
-    crate::peer_client::set_quic_ativo(req.quic_enabled);
+    crate::peer_client::set_quic_enabled(req.quic_enabled);
     info!(
         "QUIC entre peers {} pela interface",
         if req.quic_enabled {
@@ -1902,7 +1902,7 @@ pub(super) async fn inference_heads(
             status: "invalid_model",
             selected_node_id: None,
             selection_policy: "coverage_then_weighted_rtt_load",
-            rtt_valid_for_secs: crate::route::RTT_INTERVALO_MEDICAO.as_secs(),
+            rtt_valid_for_secs: crate::route::RTT_MEASURE_INTERVAL.as_secs(),
             candidates: Vec::new(),
         });
     }
@@ -1913,7 +1913,7 @@ pub(super) async fn inference_heads(
     let rtt_snapshots = state.network.rtts.snapshot_with_age();
     let rtts = rtt_snapshots
         .iter()
-        .filter(|entry| entry.age < crate::route::RTT_INTERVALO_MEDICAO)
+        .filter(|entry| entry.age < crate::route::RTT_MEASURE_INTERVAL)
         .map(|entry| {
             (
                 entry.measurement.target_node_id.clone(),
@@ -1958,7 +1958,7 @@ pub(super) async fn inference_heads(
                 .iter()
                 .find(|entry| entry.measurement.target_node_id == peer.node_id);
             let (rtt_ms, rtt_age_ms, rtt_state) = match rtt {
-                Some(entry) if entry.age < crate::route::RTT_INTERVALO_MEDICAO => (
+                Some(entry) if entry.age < crate::route::RTT_MEASURE_INTERVAL => (
                     Some(entry.measurement.rtt_ms),
                     Some(entry.age.as_millis().try_into().unwrap_or(u64::MAX)),
                     "fresh",
@@ -1999,7 +1999,7 @@ pub(super) async fn inference_heads(
         },
         selected_node_id,
         selection_policy: "coverage_then_weighted_rtt_load",
-        rtt_valid_for_secs: crate::route::RTT_INTERVALO_MEDICAO.as_secs(),
+        rtt_valid_for_secs: crate::route::RTT_MEASURE_INTERVAL.as_secs(),
         candidates,
     })
 }

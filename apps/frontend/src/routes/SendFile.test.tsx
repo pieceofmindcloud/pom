@@ -39,7 +39,7 @@ vi.mock("../lib/queries", () => ({
 
 afterEach(cleanup);
 
-function renderScreen(initialEntry = "/transferencias/enviar") {
+function renderScreen(initialEntry = "/transfers/send") {
   return render(
     <MemoryRouter
       initialEntries={[initialEntry]}
@@ -60,7 +60,7 @@ describe("SendFile", () => {
   });
 
   it("preselects the filename passed in the query string", () => {
-    renderScreen("/transferencias/enviar?filename=qwen.gguf");
+    renderScreen("/transfers/send?filename=qwen.gguf");
     const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
     expect(select.value).toBe("qwen.gguf");
   });

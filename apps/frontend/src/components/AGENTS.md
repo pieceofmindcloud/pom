@@ -77,7 +77,7 @@ Per-file list:
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
 - `EnterpriseFeatureShowcase.tsx` - fallback de propaganda de `/logs` e
-  `/estatisticas` **quando nenhum plugin ativo as fornece** (renderizado fora
+  `/statistics` **quando nenhum plugin ativo as fornece** (renderizado fora
   do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`.
   É a página de venda do plugin Estatísticas e Logs no visual do
   pieceofmind.cloud (estilos `.pom-store*` em `index.css`): nome, descrição,
@@ -138,7 +138,7 @@ Per-file list:
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
   folhas separadas para requisições e implantação; Network Chat é uma entrada
   própria. O submenu não
-  desenha ícone de folha, então `Rocket` na seção e na folha `/implantar` não
+  desenha ícone de folha, então `Rocket` na seção e na folha `/deploy` não
   colidem. A tabela em si é an ordered array of `NavSection`
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and
   `end` (whether the sidebar should match child routes too). The sidebar and the
@@ -157,7 +157,7 @@ Per-file list:
   A seção principal Rede contém Informações, Participantes, Minha Máquina,
   Administradores, Compartilhamento e API Keys. Configurações contém Preferências,
   Armazenamento, Preferências Administrativas e Sobre, sempre nesta ordem; Sobre
-  é a última folha e abre `/config/sobre`. Compartilhamento é a tela única
+  é a última folha e abre `/config/about`. Compartilhamento é a tela única
   que reutiliza `TrustAnchor` para raiz de confiança, esta máquina e chave de
   conexão.
   Um manifesto de plugin pode substituir o Lucide por `icon_image`, um PNG
@@ -268,7 +268,7 @@ Per-file list:
   the principal; refusal states remain explicit. Inference nodes are left out
   of the promotion candidates (the node refuses them as well).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
-  from `NodeInfo.network_name` and linking to `/config/rede`; then hostname,
+  from `NodeInfo.network_name` and linking to `/config/network`; then hostname,
   short_id, peer count, coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
   maior e o sino (`Notifications`). O botão `Este nó` não é renderizado.
   Mobile drawer renders `SidebarContent` inside an animated
@@ -297,7 +297,7 @@ Per-file list:
   notices (`usePluginNotices`) are message-only rows that count as unread
   until the bell opens, then get marked read and can be removed. Node-to-infer changes are amber notices without
   action buttons. Authority offers keep their pending state in the bell and
-  link to `/config/administracao` for the roster.
+  link to `/config/administration` for the roster.
   Lista os **dois sentidos** — ícone de subida para `sending`, de descida para
   `receiving` — e também o **desfecho recente**: concluída, falhada e recusada
   ficam no sino por `RECENTLY_FINISHED_MS`. Antes ela mostrava só o que estava
@@ -585,7 +585,7 @@ Key logic carriers:
   at a 50 ms cadence by `ChatSessionProvider`. Fenced-code detection decides
   inline vs block + copy button.
 - `nav.ts:NAV` (nav.ts:40) — the source of truth for the menu, its order and
-  its routes; the section that is "its own entry" (`/implantar`, deploy) is a
+  its routes; the section that is "its own entry" (`/deploy`, deploy) is a
   deliberate first-class navigation item, not a leaf under the shards section.
 - `networkPeers.pipelinePeers` (networkPeers.ts:13) — execution order: peers
   on the active model sorted by start layer (falls back to all peers);
@@ -649,7 +649,7 @@ Key logic carriers:
   the file, copies it from another machine, or why it cannot. `sidecarOptions`
   builds the options from the cluster catalog with the backend's
   compatibility rule.
-- `GuideDialog.tsx` - a Documentation guide (`?guia=`) opened in a `Modal`
+- `GuideDialog.tsx` - a Documentation guide (`?guide=`) opened in a `Modal`
   (`size="xl"`) next to the fields it explains. Nothing in it navigates away:
   a reference link (`deep`) opens that document inside the dialog (loaded on
   demand from `src/docs/`), with "Back to the guide". `GuideHelpButton` is the
@@ -698,7 +698,7 @@ Key logic carriers:
   render `SidecarPicker` instead, over the network's compatible files. O teste de idle
   fornece `candidates`, `reason` e `onPathChange` do contrato completo. A seção
   `Configurações POM (DESENV)` só é montada quando
-  `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
+  `NodeInfo.pom_dev_mode` vem verdadeiro de `/api/ui/node`; quando a flag está
   desligada, os controles somem, mas os valores recebidos continuam no estado
   e seguem no pedido quando um controle visível é editado. O modo ausente é
   apresentado como `dense` (`llama.cpp`).

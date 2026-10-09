@@ -1469,14 +1469,14 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn ativacoes_estaveis_nao_transformam_limites_em_nan() {
+    fn stable_activations_do_not_turn_limits_into_nan() {
         assert_eq!(silu(f32::NEG_INFINITY), 0.0);
         assert_eq!(gelu(f32::NEG_INFINITY), 0.0);
         assert!(silu(-1_000.0).is_finite());
     }
 
     #[test]
-    fn geometria_cuda_heterogenea_separa_um_expert_do_banco_completo() {
+    fn heterogeneous_cuda_geometry_separates_one_expert_from_the_full_bank() {
         let one_expert = cuda_tensor_expected_bytes(18, 32_768, 256).unwrap();
         let expert_bank = cuda_tensor_bank_expected_bytes(18, 32_768, 256, 8).unwrap();
 
@@ -1484,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn geometria_cuda_heterogenea_cobre_q4_0_q5k_q2k_e_q3k() {
+    fn heterogeneous_cuda_geometry_covers_q4_0_q5k_q2k_and_q3k() {
         assert_eq!(cuda_tensor_row_bytes(2, 2_048), Some(1_152));
         assert_eq!(cuda_tensor_expected_bytes(2, 256, 2_048), Some(294_912));
         assert_eq!(cuda_tensor_row_bytes(13, 2_048), Some(1_408));
@@ -1496,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn q6_k_gate_up_heterogeneo_oito_experts_hidden_2048_e_finito() {
+    fn heterogeneous_q6_k_gate_up_eight_experts_hidden_2048_is_finite() {
         let experts = 8u32;
         let hidden = 2048usize;
         let intermediate = 256usize;
@@ -1736,7 +1736,7 @@ mod tests {
     }
 
     #[test]
-    fn especificacao_de_expert_separa_metadados_do_payload() {
+    fn expert_spec_separates_metadata_from_the_payload() {
         let source = scalar_execution_source();
 
         let specs = source.expert_tensor_specs(0, 0).unwrap();
@@ -1767,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn expert_shared_nao_entra_no_inventario_de_rota() {
+    fn the_shared_expert_stays_out_of_the_route_inventory() {
         assert_eq!(
             role_for_name("blk.1.ffn_gate_exps.weight"),
             Some(TensorRole::Gate)
@@ -1782,7 +1782,7 @@ mod tests {
     }
 
     #[test]
-    fn inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars() {
+    fn route_inventory_separates_exps_from_shexp_and_the_sidecars() {
         let names = [
             "blk.1.ffn_gate_up_exps.weight",
             "blk.1.ffn_gate_exps.weight",
@@ -1828,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn sidecars_fundidos_usam_componente_e_fallback_separado_corretos() {
+    fn fused_sidecars_use_the_right_component_and_split_fallback() {
         let tensors = vec![
             scalar_tensor("blk.0.ffn_gate_up_exps.weight", 0),
             scalar_tensor_with_len("blk.0.ffn_gate_up_exps.scale", 0, 4),
@@ -1916,7 +1916,7 @@ mod tests {
     }
 
     #[test]
-    fn lote_heterogeneo_preserva_a_travessia_por_token() {
+    fn heterogeneous_batch_preserves_the_per_token_traversal() {
         let source = scalar_execution_source();
         let cache = ExpertCache::new(
             MemoryAccount {
@@ -1973,7 +1973,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_heterogenea_explica_a_geometria_incompativel() {
+    fn heterogeneous_metadata_explains_the_incompatible_geometry() {
         let source = scalar_execution_source();
         let error = source
             .validate_metadata(
@@ -1994,13 +1994,13 @@ mod tests {
     }
 
     #[test]
-    fn layout_cuda_heterogeneo_calcula_linhas_mxfp4_para_down() {
+    fn heterogeneous_cuda_layout_computes_mxfp4_rows_for_down() {
         assert_eq!(cuda_tensor_row_bytes(39, 2_048), Some(1_088));
     }
 
     #[test]
     #[ignore = "requer o GGUF real Qwen3.6-35B-A3B-UD-IQ3_S"]
-    fn qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor() {
+    fn real_qwen_ud_iq3_s_inventories_dtypes_per_tensor() {
         let path = std::env::var_os("POM_REAL_MOE_GGUF")
             .expect("POM_REAL_MOE_GGUF deve apontar para o GGUF real");
         let source = HeterogeneousMoeSource::open_infer(path, 256)

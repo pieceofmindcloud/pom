@@ -123,7 +123,7 @@ afterEach(() => {
 });
 
 describe("PublicNetworks", () => {
-  it("filtra redes por país e cidade", async () => {
+  it("filters networks by country and city", async () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <PublicNetworks />
@@ -260,7 +260,7 @@ describe("PublicNetworks", () => {
     expect(container.textContent).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
   });
 
-  it("abre os detalhes completos da rede pública ao clicar na linha", async () => {
+  it("opens the full details of the public network when the row is clicked", async () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <PublicNetworks />

@@ -369,7 +369,7 @@ whoever opened it (Finder opens at `/`), with the screen answering 500.
 before trying the project root; the release script copies `dist` there.
 
 To rename the product again: edit `brand.json`, change the `[[bin]]`, produce
-the new images in `assets/brand/` and run `scripts/migrar-para-pom.sh` (or the
+the new images in `assets/brand/` and run `scripts/migrate-to-pom.sh` (or the
 equivalent) on each machine, because config and keys already written to disk
 still carry the previous name.
 
@@ -595,7 +595,7 @@ loses offload on the first click.
   `pom-docker.sh` also generates a remote Compose with GPU reservations for
   the CUDA server. The services keep the model and state volumes in
   `tests/fixtures/<name>`. Each service sets `POM_HOME=/data`,
-  `POM_UI_DIST=/app/apps/frontend/dist`, `POM_DESENV=1` and the explicit path
+  `POM_UI_DIST=/app/apps/frontend/dist`, `POM_DEV_MODE=1` and the explicit path
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (the UI would not be under
   the mounted data directory). `POM_DEV_PLUGINS_DIR` (default `..`, the
   workspace directory containing the sibling plugin repositories) mounts the
@@ -669,7 +669,7 @@ scripts that remain in `scripts/` are operational tools (for example
 The bring-up procedure is in `operations.md`; the node takes no model or layer
 flags on the command line.
 
-- `scripts/bench-rotas.sh` - generation measurement battery that compares four
+- `scripts/bench-routes.sh` - generation measurement battery that compares four
   origins and five prompts, writes a stable CSV with the counters and the
   per-request MTP acceptance rate at the end of the existing columns and
   prints medians per cell. `POM_BENCH_API_KEY` must hold the active inference
@@ -692,7 +692,7 @@ repository (not even in git history).
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Directory of `pom.db` and its WAL/SHM files. If absent or empty, uses `<project_root>`; the directory is created at startup. |
 | `POM_DEV` | The common Compose sends `1` for development configuration; it is not the flag that enables local rebuilds. |
-| `POM_DESENV` | Only the exact value `1` enables the panel and the AdminOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
+| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the AdminOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
 | `POM_DEV_PLUGINS_DIR` | Host directory with known plugin sources (`..` by default, the workspace containing the sibling plugin repositories), mounted at `/opt/pom/dev-plugins` in the local Compose. |
 | `POM_UI_DIST` | Where `webapp.rs` reads the UI bundle (default `<project_root>/apps/frontend/dist`). The Docker image sets it explicitly. |
 | `POM_MODEL_DIRS` / `POM_SHARD_DIR` | Whole-model folders (several, separated like `PATH`: `:` on Unix, `;` on Windows) and the slice folder. They beat `model_dirs`/`shard_dir` in `pom.json` and are not persisted; empty counts as absent. The Storage screen locks the field set by one of them. |

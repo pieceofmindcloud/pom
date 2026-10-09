@@ -70,7 +70,7 @@ export interface NavFooterItem {
  * to it, then feed it models, move files, read what happened, and configure.
  */
 export const NAV: NavSection[] = [
-  { labelKey: "nav.publicNetworks", icon: Globe2, to: "/redes-publicas" },
+  { labelKey: "nav.publicNetworks", icon: Globe2, to: "/public-networks" },
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["infer"] },
   { labelKey: "nav.networkChat", icon: MessagesSquare, to: "/network-chat" },
@@ -78,28 +78,28 @@ export const NAV: NavSection[] = [
     labelKey: "nav.models",
     icon: Boxes,
     children: [
-      { labelKey: "nav.remoteModels", to: "/modelos/remotos", icon: Search },
-      { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
-      { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
-      { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
+      { labelKey: "nav.remoteModels", to: "/models/remote", icon: Search },
+      { labelKey: "nav.fullModels", to: "/models", icon: Boxes, end: true },
+      { labelKey: "nav.sliceModels", to: "/models/slice", icon: Scissors },
+      { labelKey: "nav.shards", to: "/shards", icon: Layers, end: true },
     ],
   },
   {
     labelKey: "nav.deployments",
     icon: Rocket,
     children: [
-      { labelKey: "nav.deploy", to: "/implantar", icon: Rocket },
+      { labelKey: "nav.deploy", to: "/deploy", icon: Rocket },
       // Separada de "implantar" de proposito: uma cria, a outra mostra e
       // ajusta o que ja existe. Sao dois momentos diferentes do mesmo trabalho.
-      { labelKey: "nav.history", to: "/implantacoes", icon: History },
+      { labelKey: "nav.history", to: "/deployments", icon: History },
     ],
   },
   {
     labelKey: "nav.transfers",
     icon: Send,
     children: [
-      { labelKey: "nav.sendFile", to: "/transferencias/enviar", icon: Upload },
-      { labelKey: "nav.inProgress", to: "/transferencias", icon: Send, end: true },
+      { labelKey: "nav.sendFile", to: "/transfers/send", icon: Upload },
+      { labelKey: "nav.inProgress", to: "/transfers", icon: Send, end: true },
     ],
   },
   {
@@ -107,10 +107,10 @@ export const NAV: NavSection[] = [
     icon: ListTree,
     children: [
       { labelKey: "nav.requestLogs", to: "/logs", icon: ListTree },
-      { labelKey: "nav.deploymentLogs", to: "/implantacoes/logs", icon: Terminal },
+      { labelKey: "nav.deploymentLogs", to: "/deployments/logs", icon: Terminal },
     ],
   },
-  { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/estatisticas" },
+  { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/statistics" },
   // The plugin catalog is a storefront with a place of its own in the menu,
   // not a setting. The menus of the installed plugins are inserted right
   // after it, before Documentation (`withPluginMenus`).
@@ -120,18 +120,18 @@ export const NAV: NavSection[] = [
   {
     labelKey: "nav.documentation",
     icon: BookOpen,
-    to: "/documentacao",
+    to: "/documentation",
     footerProfiles: ["infer"],
   },
   {
     labelKey: "nav.network",
     icon: Network,
     children: [
-      { labelKey: "nav.networkInfo", to: "/config/rede", icon: Network },
-      { labelKey: "nav.networkParticipants", to: "/config/rede/participantes", icon: Network },
-      { labelKey: "nav.myMachine", to: "/config/minha-maquina", icon: Laptop },
-      { labelKey: "nav.administrators", to: "/config/administracao", icon: ShieldCheck },
-      { labelKey: "nav.sharing", to: "/config/compartilhamento", icon: ShieldCheck },
+      { labelKey: "nav.networkInfo", to: "/config/network", icon: Network },
+      { labelKey: "nav.networkParticipants", to: "/config/network/participants", icon: Network },
+      { labelKey: "nav.myMachine", to: "/config/my-machine", icon: Laptop },
+      { labelKey: "nav.administrators", to: "/config/administration", icon: ShieldCheck },
+      { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
     ],
   },
@@ -139,12 +139,12 @@ export const NAV: NavSection[] = [
     labelKey: "nav.settings",
     icon: Settings,
     footerProfiles: ["infer"],
-    footerTo: "/config/preferencias",
+    footerTo: "/config/preferences",
     children: [
-      { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
-      { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
-      { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
-      { labelKey: "nav.about", to: "/config/sobre", icon: Info },
+      { labelKey: "nav.preferences", to: "/config/preferences", icon: SlidersHorizontal },
+      { labelKey: "nav.storage", to: "/config/storage", icon: FolderTree },
+      { labelKey: "nav.administrativePreferences", to: "/config/preferences/admin", icon: SlidersHorizontal },
+      { labelKey: "nav.about", to: "/config/about", icon: Info },
     ],
   },
 ];

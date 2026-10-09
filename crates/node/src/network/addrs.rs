@@ -5,7 +5,7 @@
 //! que roda em qualquer sistema.
 
 /// Teto por familia. Ver o teste `at_most_two_candidates_per_family_survive`.
-const MAX_POR_FAMILIA: usize = 2;
+const MAX_PER_FAMILY: usize = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalAddr {
@@ -41,11 +41,11 @@ fn e_ipv6(ip: &str) -> bool {
     ip.contains(':')
 }
 
-fn sem_colchetes(ip: &str) -> &str {
+fn without_brackets(ip: &str) -> &str {
     ip.trim_start_matches('[').trim_end_matches(']')
 }
 
-fn descartavel(ip: &str) -> bool {
+fn disposable(ip: &str) -> bool {
     ip == "127.0.0.1"
         || ip == "::1"
         || ip.starts_with("fe80:")
@@ -54,7 +54,7 @@ fn descartavel(ip: &str) -> bool {
 }
 
 /// Whether `ip` could never be dialed from outside this machine's own
-/// network — everything `descartavel` already excludes (loopback,
+/// network — everything `disposable` already excludes (loopback,
 /// link-local, the `0.0.0.0` sentinel), plus RFC 1918 (`10/8`, `172.16/12`,
 /// `192.168/16`), RFC 6598 shared address space (`100.64/10`) and IPv6
 /// unique-local (`fc00::/7`).
@@ -74,7 +74,7 @@ fn descartavel(ip: &str) -> bool {
 /// same tailnet, exactly the way a `192.168.` address proves it is on the same
 /// LAN; a peer outside it cannot dial either.
 pub fn is_private_or_local(ip: &str) -> bool {
-    if descartavel(ip) {
+    if disposable(ip) {
         return true;
     }
     if let Ok(v4) = ip.parse::<std::net::Ipv4Addr>() {
@@ -105,42 +105,42 @@ pub fn is_private_or_local(ip: &str) -> bool {
 
 /// Aplica as regras da spec: descarta o que nao serve, prefere o estavel, e
 /// limita quantos candidatos cada familia contribui.
-pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<String> {
-    let mut uteis: Vec<LocalAddr> = brutos
+pub fn filter_candidates(raw: Vec<LocalAddr>, pinned: Option<&str>) -> Vec<String> {
+    let mut useful: Vec<LocalAddr> = raw
         .into_iter()
         .filter(|a| {
-            !a.deprecated && !descartavel(&a.ip) && !is_virtual_interface(a.interface.as_deref())
+            !a.deprecated && !disposable(&a.ip) && !is_virtual_interface(a.interface.as_deref())
         })
         .collect();
     // Estavel antes de temporario, e ordem lexicografica para desempatar: o
     // conjunto anunciado nao pode mudar so porque a enumeracao veio noutra ordem.
-    uteis.sort_by(|a, b| a.temporary.cmp(&b.temporary).then_with(|| a.ip.cmp(&b.ip)));
+    useful.sort_by(|a, b| a.temporary.cmp(&b.temporary).then_with(|| a.ip.cmp(&b.ip)));
 
-    let mut saida: Vec<String> = Vec::new();
-    if let Some(f) = fixado {
+    let mut output: Vec<String> = Vec::new();
+    if let Some(f) = pinned {
         // Nao conta para o teto: e intencao explicita do operador.
-        saida.push(f.to_string());
+        output.push(f.to_string());
     }
     let (mut v4, mut v6) = (0usize, 0usize);
-    for a in uteis {
-        // Comparado sem colchetes dos dois lados: `fixado` vem de
+    for a in useful {
+        // Comparado sem colchetes dos dois lados: `pinned` vem de
         // `effective_host`, que colchetea o IPv6, e `a.ip` e o endereco cru.
         // Comparar as duas formas nunca casava, e o endereco fixado saia
         // duplicado no anuncio - num datagrama cujo orcamento e MTU.
-        if saida
+        if output
             .iter()
-            .any(|s| sem_colchetes(s) == sem_colchetes(&a.ip))
+            .any(|s| without_brackets(s) == without_brackets(&a.ip))
         {
             continue;
         }
-        let conta = if e_ipv6(&a.ip) { &mut v6 } else { &mut v4 };
-        if *conta >= MAX_POR_FAMILIA {
+        let count = if e_ipv6(&a.ip) { &mut v6 } else { &mut v4 };
+        if *count >= MAX_PER_FAMILY {
             continue;
         }
-        *conta += 1;
-        saida.push(a.ip);
+        *count += 1;
+        output.push(a.ip);
     }
-    saida
+    output
 }
 
 /// Escolhe o endereço inicial que o wizard sugere para os peers.
@@ -151,22 +151,22 @@ pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<St
 /// produto: IPv6 global estável, depois qualquer IPv4 utilizável. O operador
 /// continua podendo editar o valor, e o anúncio do nó continua redetectando os
 /// endereços atuais.
-pub fn preferred_advertise_ip(brutos: Vec<LocalAddr>) -> Option<String> {
-    let candidatos = filter_candidates(brutos.clone(), None);
-    let estavel = |ip: &str| {
-        brutos.iter().any(|source| {
+pub fn preferred_advertise_ip(raw: Vec<LocalAddr>) -> Option<String> {
+    let candidates = filter_candidates(raw.clone(), None);
+    let stable = |ip: &str| {
+        raw.iter().any(|source| {
             !source.deprecated
                 && !source.temporary
-                && sem_colchetes(&source.ip) == sem_colchetes(ip)
+                && without_brackets(&source.ip) == without_brackets(ip)
         })
     };
-    candidatos
+    candidates
         .iter()
         .find(|ip| {
             // `filter_candidates` orders stable addresses first but returns
             // strings, so retain the explicit stability check here instead
             // of treating that order as metadata.
-            estavel(ip)
+            stable(ip)
                 && ip
                     .trim_start_matches('[')
                     .trim_end_matches(']')
@@ -175,7 +175,7 @@ pub fn preferred_advertise_ip(brutos: Vec<LocalAddr>) -> Option<String> {
         })
         .cloned()
         .or_else(|| {
-            candidatos
+            candidates
                 .into_iter()
                 .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
         })
@@ -209,8 +209,8 @@ pub fn local_addrs() -> Vec<LocalAddr> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn run(programa: &str, args: &[&str]) -> String {
-    match std::process::Command::new(programa).args(args).output() {
+fn run(program: &str, args: &[&str]) -> String {
+    match std::process::Command::new(program).args(args).output() {
         Ok(o) => String::from_utf8(o.stdout).unwrap_or_default(),
         Err(error) => {
             // Sem o programa, o no nao conhece nenhum endereco proprio e nao
@@ -218,11 +218,11 @@ fn run(programa: &str, args: &[&str]) -> String {
             // guardam a origem privada do pacote e a repassam no `PeerList`
             // a peers remotos, que discam um IP que nao alcancam. Aconteceu na
             // imagem Docker sem `iproute2`. Chamado a cada anuncio: avisa uma vez.
-            static AVISADO: std::sync::atomic::AtomicBool =
+            static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
-            if !AVISADO.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 tracing::warn!(
-                    "nao foi possivel executar `{programa}` para listar as interfaces ({error}); \
+                    "nao foi possivel executar `{program}` para listar as interfaces ({error}); \
                      este no nao anunciara os proprios enderecos"
                 );
             }
@@ -232,20 +232,20 @@ fn run(programa: &str, args: &[&str]) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn parse_ifconfig(saida: &str) -> Vec<LocalAddr> {
+fn parse_ifconfig(output: &str) -> Vec<LocalAddr> {
     let mut out = Vec::new();
     let mut interface = None;
-    for linha in saida.lines() {
-        if !linha.starts_with(char::is_whitespace) {
-            interface = linha.split(':').next().map(str::trim).map(str::to_string);
+    for line in output.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            interface = line.split(':').next().map(str::trim).map(str::to_string);
         }
-        let l = linha.trim();
-        let campos: Vec<&str> = l.split_whitespace().collect();
-        if campos.len() < 2 || (campos[0] != "inet" && campos[0] != "inet6") {
+        let l = line.trim();
+        let fields: Vec<&str> = l.split_whitespace().collect();
+        if fields.len() < 2 || (fields[0] != "inet" && fields[0] != "inet6") {
             continue;
         }
         // "inet6 fe80::1%en0" - o escopo nao faz parte do endereco.
-        let ip = campos[1].split('%').next().unwrap_or(campos[1]).to_string();
+        let ip = fields[1].split('%').next().unwrap_or(fields[1]).to_string();
         out.push(LocalAddr {
             ip,
             interface: interface.clone(),
@@ -257,26 +257,26 @@ fn parse_ifconfig(saida: &str) -> Vec<LocalAddr> {
 }
 
 #[cfg(target_os = "linux")]
-fn parse_ip_addr(saida: &str) -> Vec<LocalAddr> {
+fn parse_ip_addr(output: &str) -> Vec<LocalAddr> {
     let mut out = Vec::new();
-    for linha in saida.lines() {
-        let campos: Vec<&str> = linha.split_whitespace().collect();
-        let Some(pos) = campos.iter().position(|c| *c == "inet" || *c == "inet6") else {
+    for line in output.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let Some(pos) = fields.iter().position(|c| *c == "inet" || *c == "inet6") else {
             continue;
         };
-        let Some(cidr) = campos.get(pos + 1) else {
+        let Some(cidr) = fields.get(pos + 1) else {
             continue;
         };
         let ip = cidr.split('/').next().unwrap_or(cidr).to_string();
-        let interface = campos
+        let interface = fields
             .get(1)
             .and_then(|name| name.split('@').next())
             .map(str::to_string);
         out.push(LocalAddr {
             ip,
             interface,
-            deprecated: linha.contains("deprecated"),
-            temporary: linha.contains("temporary"),
+            deprecated: line.contains("deprecated"),
+            temporary: line.contains("temporary"),
         });
     }
     out
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn deprecated_and_link_local_and_loopback_are_dropped() {
-        let brutos = vec![
+        let raw = vec![
             a("192.168.100.240"),
             LocalAddr {
                 ip: "2804:d55::9a0d".into(),
@@ -318,7 +318,7 @@ mod tests {
             a("127.0.0.1"),
             a("::1"),
         ];
-        assert_eq!(filter_candidates(brutos, None), vec!["192.168.100.240"]);
+        assert_eq!(filter_candidates(raw, None), vec!["192.168.100.240"]);
     }
 
     /// O macOS cria varios IPv6 sozinho - cinco nesta maquina em 2026-08-13.
@@ -326,7 +326,7 @@ mod tests {
     /// nao e estetica: sem ele a descoberta vira fragmentacao.
     #[test]
     fn at_most_two_candidates_per_family_survive() {
-        let brutos = vec![
+        let raw = vec![
             a("192.168.1.1"),
             a("192.168.1.2"),
             a("192.168.1.3"),
@@ -334,24 +334,24 @@ mod tests {
             a("2804:d55::2"),
             a("2804:d55::3"),
         ];
-        let saida = filter_candidates(brutos, None);
-        assert_eq!(saida.iter().filter(|s| s.contains(':')).count(), 2);
-        assert_eq!(saida.iter().filter(|s| !s.contains(':')).count(), 2);
+        let output = filter_candidates(raw, None);
+        assert_eq!(output.iter().filter(|s| s.contains(':')).count(), 2);
+        assert_eq!(output.iter().filter(|s| !s.contains(':')).count(), 2);
     }
 
     /// O endereco fixado pelo operador e intencao explicita: vem primeiro e
     /// nao conta para o teto, senao a filtragem poderia descarta-lo.
     #[test]
     fn a_pinned_address_comes_first_and_is_never_dropped() {
-        let brutos = vec![a("192.168.1.1"), a("192.168.1.2"), a("192.168.1.3")];
-        let saida = filter_candidates(brutos, Some("2804:d55::99"));
-        assert_eq!(saida[0], "2804:d55::99");
-        assert!(saida.contains(&"192.168.1.1".to_string()));
+        let raw = vec![a("192.168.1.1"), a("192.168.1.2"), a("192.168.1.3")];
+        let output = filter_candidates(raw, Some("2804:d55::99"));
+        assert_eq!(output[0], "2804:d55::99");
+        assert!(output.contains(&"192.168.1.1".to_string()));
     }
 
     #[test]
     fn a_secured_address_wins_over_a_temporary_one() {
-        let brutos = vec![
+        let raw = vec![
             LocalAddr {
                 ip: "2804:d55::temp1".into(),
                 interface: None,
@@ -371,12 +371,12 @@ mod tests {
                 temporary: true,
             },
         ];
-        assert_eq!(filter_candidates(brutos, None)[0], "2804:d55::sec");
+        assert_eq!(filter_candidates(raw, None)[0], "2804:d55::sec");
     }
 
     #[test]
     fn preferred_address_chooses_stable_global_ipv6_before_ipv4() {
-        let brutos = vec![
+        let raw = vec![
             LocalAddr {
                 ip: "2804:d55::100".into(),
                 interface: Some("en0".into()),
@@ -397,14 +397,14 @@ mod tests {
             },
         ];
         assert_eq!(
-            preferred_advertise_ip(brutos),
+            preferred_advertise_ip(raw),
             Some("2804:d55::200".to_string())
         );
     }
 
     #[test]
     fn preferred_address_falls_back_to_ipv4_when_ipv6_is_private_or_temporary() {
-        let brutos = vec![
+        let raw = vec![
             LocalAddr {
                 ip: "2804:d55::100".into(),
                 interface: Some("en0".into()),
@@ -425,15 +425,15 @@ mod tests {
             },
         ];
         assert_eq!(
-            preferred_advertise_ip(brutos),
+            preferred_advertise_ip(raw),
             Some("192.168.1.8".to_string())
         );
     }
 
     #[test]
     fn duplicates_are_collapsed() {
-        let brutos = vec![a("192.168.1.1"), a("192.168.1.1")];
-        assert_eq!(filter_candidates(brutos, None).len(), 1);
+        let raw = vec![a("192.168.1.1"), a("192.168.1.1")];
+        assert_eq!(filter_candidates(raw, None).len(), 1);
     }
 
     /// O endereco fixado chega colchetado (vem de `effective_host`) e o local
@@ -441,18 +441,18 @@ mod tests {
     /// mesmo IPv6 duas vezes, num datagrama cujo teto e o MTU.
     #[test]
     fn a_pinned_ipv6_is_not_repeated_by_the_local_enumeration() {
-        let saida = filter_candidates(
+        let output = filter_candidates(
             vec![a("2804:d55::9a0d"), a("192.168.1.1")],
             Some("[2804:d55::9a0d]"),
         );
-        assert_eq!(saida[0], "[2804:d55::9a0d]");
+        assert_eq!(output[0], "[2804:d55::9a0d]");
         assert_eq!(
-            saida
+            output
                 .iter()
                 .filter(|s| s.contains("2804:d55::9a0d"))
                 .count(),
             1,
-            "{saida:?}"
+            "{output:?}"
         );
     }
 
@@ -497,16 +497,16 @@ mod tests {
 
     #[test]
     fn docker_bridge_addresses_are_not_announced_but_lan_addresses_are() {
-        let achados = filter_candidates(
+        let found = filter_candidates(
             vec![on("172.17.0.1", "docker0"), on("192.168.100.138", "eth0")],
             None,
         );
 
-        assert_eq!(achados, vec!["192.168.100.138"]);
+        assert_eq!(found, vec!["192.168.100.138"]);
     }
 
     /// Loopback e link-local sao faixas, nao os dois enderecos que
-    /// `descartavel` cita pelo nome.
+    /// `disposable` cita pelo nome.
     #[test]
     fn the_whole_loopback_and_link_local_ranges_are_local() {
         for ip in [
@@ -535,23 +535,23 @@ mod tests {
     /// nunca pode devolver algo indiscavel a partir deles.
     #[test]
     fn the_real_machine_yields_only_usable_addresses() {
-        let achados = filter_candidates(local_addrs(), None);
+        let found = filter_candidates(local_addrs(), None);
         // Sem esta linha o teste passaria por vacuidade numa maquina onde a
         // enumeracao nao funcionasse, que e justamente o que ele deveria pegar.
         assert!(
-            !achados.is_empty(),
+            !found.is_empty(),
             "a enumeracao nao achou endereco nenhum"
         );
-        assert!(achados.len() <= 4, "teto de 2 por familia: {achados:?}");
-        for ip in achados {
-            assert!(!descartavel(&ip), "{ip} nao deveria ter passado");
+        assert!(found.len() <= 4, "teto de 2 por familia: {found:?}");
+        for ip in found {
+            assert!(!disposable(&ip), "{ip} nao deveria ter passado");
         }
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn docker_bridge_addresses_are_not_announced() {
-        let achados = filter_candidates(
+        let found = filter_candidates(
             parse_ip_addr(
                 r#"2: docker0: <BROADCAST,UP> mtu 1500 state UP
     2: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
@@ -561,7 +561,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(achados, vec!["192.168.100.138"]);
+        assert_eq!(found, vec!["192.168.100.138"]);
     }
 }
 

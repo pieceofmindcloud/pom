@@ -161,14 +161,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   what a node sees, so principal-only controls check `!secondary`.
 - `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
   para a lista de perfis; para `infer`, `/chat`, `/network-chat`,
-  `/documentacao`, `/config/keys/api` e `/config/rede` são visíveis. A lista de
+  `/documentation`, `/config/keys/api` e `/config/network` são visíveis. A lista de
   participantes da rede e as preferências administrativas continuam fechadas
   para infer. No Chat, esse perfil também esconde os resumos e o painel de
   telemetria.
   `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
-  a rota recusa. As superfícies `/logs` e `/estatisticas` são exceções de
+  a rota recusa. As superfícies `/logs` e `/statistics` são exceções de
   descoberta e permanecem abertas no menu para todos os perfis; o entitlement
   é aplicado pelo `App` e pelo backend. Testes em `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
@@ -257,7 +257,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   not depend on the commercial catalog. Each source reports `manifest_path`
   and may return the original UI manifest when its source is `ui/manifest.json`.
   `useDevelopmentPluginSources` queries mounted sources only for the admin
-  profile when `pom_desenv` is enabled. Its DTOs describe local builds and
+  profile when `pom_dev_mode` is enabled. Its DTOs describe local builds and
   installs without compiler output. It can install inactive plugins as
   development builds without a license or licensed features, and does not
   replace the GitHub release selection. `PluginStatus.development_install`
@@ -668,7 +668,7 @@ When updating this file, preserve this bar for all agents and keep entries conci
 - `pluginUi.ts` - tipos do manifesto e o registro validado (`setPluginUi`) que
   menu, guarda de perfil e roteador leem. Normaliza menu e rotas sob
   `/<plugin_code>/...` no mesmo registro, exceto reivindicação única das
-  rotas nativas `/logs` e `/estatisticas`: `resolvePluginRoute`,
+  rotas nativas `/logs` e `/statistics`: `resolvePluginRoute`,
   `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
   `roles` filtra o item e também limita o acesso direto à rota vinculada;
   menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.

@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn anuncio_do_principal_discordante_dispara_busca() {
+    fn a_disagreeing_principal_announce_triggers_a_fetch() {
         assert_eq!(
             on_announce(false, true, true, PRINCIPAL),
             PolicyOutcome::Fetch {
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn anuncio_de_no_comum_nunca_vira_fonte_da_politica() {
+    fn a_regular_node_announce_never_becomes_the_policy_source() {
         assert_eq!(
             on_announce(false, true, false, PRINCIPAL),
             PolicyOutcome::Unchanged
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn falha_na_busca_preserva_o_valor_local() {
+    fn a_failed_fetch_preserves_the_local_value() {
         assert_eq!(
             adopt_or_keep(true, Err(anyhow::anyhow!("principal fora do ar"))),
             PolicyOutcome::Unchanged

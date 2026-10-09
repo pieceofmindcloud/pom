@@ -315,7 +315,7 @@ pub(super) async fn handle_prefill(
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
-            Err(motivo) => return err400(motivo),
+            Err(reason) => return err400(reason),
         }
     };
 
@@ -2137,21 +2137,21 @@ mod multimodal_position_tests {
     /// prompt já inteiramente ingerido.
     #[test]
     fn mrope_media_does_not_compare_logical_position_with_physical_cells() {
-        let celulas_fisicas = 26 + 208 + 10;
-        let posicao_logica = 26 + 25 + 10;
-        assert!(posicao_logica < celulas_fisicas);
+        let physical_cells = 26 + 208 + 10;
+        let logical_position = 26 + 25 + 10;
+        assert!(logical_position < physical_cells);
         assert!(!prefill_has_more_chunks(
             true,
-            celulas_fisicas,
-            posicao_logica,
+            physical_cells,
+            logical_position,
             true
         ));
         // Sem mídia as duas grandezas coincidem, e o corte em pedaços continua
         // a valer: um prompt de texto por ingerir ainda pede outro pedaço.
         assert!(prefill_has_more_chunks(
             true,
-            celulas_fisicas,
-            posicao_logica,
+            physical_cells,
+            logical_position,
             false
         ));
         assert!(!prefill_has_more_chunks(true, 244, 244, false));
@@ -2194,16 +2194,16 @@ mod multimodal_position_tests {
         // Mesmo quando o projector não usa M-RoPE e as duas contagens batem,
         // `prompt_tokens` continua a ser um preenchimento sem os ids reais das
         // células de mídia: reutilizar esse prefixo compararia lixo.
-        let mut sem_mrope = Session::new(0);
-        sem_mrope.n_past = 244;
-        sem_mrope.prompt_cells = 244;
-        sem_mrope.contains_media = true;
-        assert!(!sem_mrope.positions_match_cells());
+        let mut without_mrope = Session::new(0);
+        without_mrope.n_past = 244;
+        without_mrope.prompt_cells = 244;
+        without_mrope.contains_media = true;
+        assert!(!without_mrope.positions_match_cells());
 
-        let mut texto = Session::new(0);
-        texto.n_past = 244;
-        texto.prompt_cells = 244;
-        assert!(texto.positions_match_cells());
+        let mut text = Session::new(0);
+        text.n_past = 244;
+        text.prompt_cells = 244;
+        assert!(text.positions_match_cells());
     }
 
     /// As posições M-RoPE atravessam a wire sem perder a forma de quatro eixos.
@@ -2216,9 +2216,9 @@ mod multimodal_position_tests {
             serde_json::from_value(meta["mrope_positions"].clone()).unwrap();
         assert_eq!(decoded, positions);
 
-        let mut vazio = json!({});
-        apply_mrope_positions(&mut vazio, None);
-        assert!(vazio.get("mrope_positions").is_none());
+        let mut empty = json!({});
+        apply_mrope_positions(&mut empty, None);
+        assert!(empty.get("mrope_positions").is_none());
     }
 }
 

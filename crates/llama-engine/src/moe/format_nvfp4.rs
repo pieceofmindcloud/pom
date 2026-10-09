@@ -1742,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_decodifica_subblocos_ue4m3_e_nibbles_e2m1() {
+    fn nvfp4_decodes_ue4m3_subblocks_and_e2m1_nibbles() {
         let hidden = 64;
         let intermediate = 64;
         let gate_up = packed_rows(2 * intermediate, hidden, 0x22);
@@ -1756,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_segue_convencao_native_do_ggml() {
+    fn nvfp4_follows_the_ggml_native_convention() {
         assert_eq!(fp4_value(0), 0.0);
         assert_eq!(fp4_value(1), 1.0);
         assert_eq!(fp4_value(7), 12.0);
@@ -1765,7 +1765,7 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_reproduz_quantizacao_q8_0_do_ggml() {
+    fn nvfp4_reproduces_the_ggml_q8_0_quantization() {
         let mut input = [0.0_f32; 32];
         input[0] = 1.0;
         input[1] = 0.5;
@@ -1779,14 +1779,14 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_reproduz_geglu_fp16_do_ggml() {
+    fn nvfp4_reproduces_the_ggml_fp16_geglu() {
         assert_eq!(ggml_f32_to_f16_bits(1.0), 0x3c00);
         assert_eq!(ggml_gelu_f16(1.0), 0.84130859375);
         assert_eq!(ggml_geglu_value(1.0, 2.0), 1.6826171875);
     }
 
     #[test]
-    fn nvfp4_rejeita_largura_que_nao_fecha_bloco() {
+    fn nvfp4_rejects_a_width_that_does_not_close_a_block() {
         assert!(matches!(
             Nvfp4Expert::packed_bytes(32, 64),
             Err(Nvfp4Error::Geometry(_))
@@ -1794,13 +1794,13 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_rejeita_payload_truncado_antes_do_forward() {
+    fn nvfp4_rejects_a_truncated_payload_before_the_forward() {
         let result = Nvfp4Expert::from_payload(64, 64, &[0u8; 16]);
         assert!(matches!(result, Err(Nvfp4Error::PayloadLength { .. })));
     }
 
     #[test]
-    fn nvfp4_nao_cai_em_cpu_sem_cuda_sem_pedido_explicito() {
+    fn nvfp4_does_not_fall_to_cpu_without_cuda_unless_explicitly_asked() {
         #[cfg(feature = "cuda")]
         assert_eq!(
             select_backend_kind(true, false).unwrap(),
@@ -1815,7 +1815,7 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_split_usa_a_ordem_de_dimensoes_do_gguf() {
+    fn nvfp4_split_uses_the_gguf_dimension_order() {
         let gate = TensorSpec {
             name: "blk.0.ffn_gate_exps.weight".into(),
             dims: vec![2816, 704, 128],
@@ -1827,7 +1827,7 @@ mod tests {
     }
 
     #[test]
-    fn nvfp4_recusa_sidecar_de_escala_ausente() {
+    fn nvfp4_refuses_a_missing_scale_sidecar() {
         let gate = TensorSpec {
             name: "blk.0.ffn_gate_exps.weight".into(),
             dims: vec![2816, 704, 128],

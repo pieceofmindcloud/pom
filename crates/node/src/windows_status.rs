@@ -233,32 +233,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fechar_a_janela_esconde_na_bandeja() {
+    fn closing_the_window_hides_to_the_tray() {
         assert_eq!(close_action(), WindowAction::HideToTray);
     }
 
     #[test]
-    fn menu_da_bandeja_separa_restaurar_de_sair() {
+    fn the_tray_menu_separates_restore_from_quit() {
         assert_eq!(menu_action(TRAY_SHOW_ID), Some(WindowAction::ShowWindow));
         assert_eq!(menu_action(TRAY_QUIT_ID), Some(WindowAction::Quit));
         assert_eq!(menu_action("unknown"), None);
     }
 
     #[test]
-    fn janela_do_shell_tem_tamanho_de_desktop() {
+    fn the_shell_window_is_desktop_sized() {
         assert!(WINDOW_SIZE.0 > 1000.0);
         assert!(WINDOW_SIZE.1 > 800.0);
     }
 
     #[test]
-    fn supervisor_so_relanca_saida_anormal() {
+    fn the_supervisor_only_relaunches_an_abnormal_exit() {
         assert!(!should_relaunch(Some(0)));
         assert!(should_relaunch(Some(1)));
         assert!(should_relaunch(None));
     }
 
     #[test]
-    fn shell_aguarda_o_sinal_de_gateway_pronto_antes_da_webview() {
+    fn the_shell_waits_for_the_gateway_ready_signal_before_the_webview() {
         let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(0);
         let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(0);
         let (finished_sender, finished_receiver) = std::sync::mpsc::sync_channel(0);

@@ -79,7 +79,7 @@ plugin ativo (`lib/pluginUi.ts`, `components/PluginScreen.tsx`,
 `canAccessRoute`, `navForProfile` e `App` leem esse mesmo registro. O basename
 `/admin-ui` continua no `BrowserRouter`, então uma rota `/example` do plugin
 `base` abre em `/admin-ui/base/example`. Os plugins podem substituir os pontos
-nativos `/logs` e `/estatisticas` ao declarar esses destinos; sem uma declaração
+nativos `/logs` e `/statistics` ao declarar esses destinos; sem uma declaração
 única, o `EnterpriseFeatureShowcase` (`src/components/`) continua como fallback.
 Menus novos entram na raiz, na ordem do manifesto, imediatamente antes de
 Documentação; um item com `children` vira seção expansível com submenus.
@@ -100,7 +100,7 @@ das conversas.
 It never sees request logs, deployment logs or statistics (denied in
 `lib/access.ts` even where a plugin claims the route), and its preferences hide
 the GPU thermal protection and the Hugging Face token. The cluster's connection
-key shows only to `admin` (`/config/keys/conexao` and the Sharing screen). O valor vem
+key shows only to `admin` (`/config/keys/connection` and the Sharing screen). O valor vem
 de `/api/ui/node`, é propriedade persistida do nó e aparece na toolbar. Isso
 não substitui a autorização do backend: o servidor também limita a resposta da
 rede e as promoções.
@@ -125,56 +125,56 @@ desenhado**, porque uma vista só não é uma escolha.
   No celular, a lista de usuários online permanece fechada até `Ver online` ser
   acionado.
 - `/admin-ui/chat` -> Chat compacto para o painel nativo da barra de status do macOS; mantém somente a tela de chat, com layout `h-full min-h-0 overflow-hidden`, e o botão de janela maior só aparece quando o WebKit nativo fornece a ponte `pomOpenWindow`.
-- `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels (busca,
-  detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também
+- `/models` -> WholeModels; `/models/remote` -> RemoteModels (busca,
+  detalhes e downloads persistidos no nó); `/models/slice` -> SliceModels, que também
   mostra os jobs de fatiamento e suas barras de progresso
-- `/fatias` -> Shards; `/fatias/implantar` -> redirects to `/implantar` (kept for old links)
-- `/modelos`, `/modelos/remotos`, `/modelos/fatiar`, `/fatias`,
-  `/transferencias` e `/transferencias/enviar` são full-bleed, no mesmo
-  padrão de `/implantacoes`/`/implantacoes/logs`: cabeçalho fixo
+- `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (kept for old links)
+- `/models`, `/models/remote`, `/models/slice`, `/shards`,
+  `/transfers` e `/transfers/send` são full-bleed, no mesmo
+  padrão de `/deployments`/`/deployments/logs`: cabeçalho fixo
   (`FullBleedHeader`, `components/ui.tsx`) e tabela ou conteúdo rolando por
   dentro. Modelos inteiros e Fatias mostram o nome do arquivo `mmproj`
   quando o modelo/rodada tem visão (`DiscoveredModel.mmproj_path`/
   `ShardSet.mmproj_path`, já vindos do catálogo - a tela só renderiza). Ver
   `src/routes/AGENTS.md`.
-- `/implantar` -> DeployModel (first-level entry for putting models in service,
+- `/deploy` -> DeployModel (first-level entry for putting models in service,
   full-bleed Deploy Studio with central cluster map, property inspector and
   draggable peer strip; whole-model mode accepts exactly one map machine)
-- `/implantacoes` -> Deployments, full-bleed como a de Logs: o mesmo
+- `/deployments` -> Deployments, full-bleed como a de Logs: o mesmo
   `DeploymentInspector` da tela de implantar abre à direita, em somente
   leitura, com os parâmetros da versão escolhida
-- `/implantacoes/logs` -> DeploymentLogs, consola terminal dos logs de processo
+- `/deployments/logs` -> DeploymentLogs, consola terminal dos logs de processo
   do cluster, em ordem de chegada no principal e filtrável por `deploy_id`
 - `/setup` is not a route: the deprecated wizard has no path.
-- `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
+- `/transfers` -> Transfers; `/transfers/send` -> SendFile
 - Rotas de plugin -> `PluginScreen` sob `/<plugin_code>/<rota do manifesto>`,
   fora do `<Routes>` e antes da tabela nativa. O basename transforma, por
   exemplo, `base` + `/plugin-de-base` em `/admin-ui/base/plugin-de-base`.
   A identidade do componente inclui a rota normalizada, então navegar entre
-  duas telas do mesmo plugin remonta a tela correta. `/logs` e `/estatisticas`
+  duas telas do mesmo plugin remonta a tela correta. `/logs` e `/statistics`
   continuam sendo rotas nativas de fallback quando nenhum plugin as reivindica;
-  o alias `/logs/estatisticas` continua redirecionando para `/estatisticas`.
-- `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). No celular a barra lateral ocupa a tela inteira e o leitor some até uma seleção explícita ou um deep link; selecionar abre o leitor com um botão Voltar no topo, que só fecha a vista mobile (a seleção em `?doc=`/`?guia=` continua).
-- `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
-  `/config/rede/participantes`, `/config/administracao` (Administradores),
-  `/config/compartilhamento` (TrustAnchor com máquina, raiz e chave de conexão)
-  e `/config/keys/api`. A rota antiga `/config/confianca` continua como alias
+  o alias `/logs/statistics` continua redirecionando para `/statistics`.
+- `/documentation` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). No celular a barra lateral ocupa a tela inteira e o leitor some até uma seleção explícita ou um deep link; selecionar abre o leitor com um botão Voltar no topo, que só fecha a vista mobile (a seleção em `?doc=`/`?guia=` continua).
+- `/config/network` -> NetworkSettings; a seção principal Rede também reúne
+  `/config/network/participants`, `/config/administration` (Administradores),
+  `/config/sharing` (TrustAnchor com máquina, raiz e chave de conexão)
+  e `/config/keys/api`. A rota antiga `/config/trust` continua como alias
   compatível da tela da raiz de confiança.
 - `/plugins` -> Plugins, lists every plugin in the catalog, active or not, with
   license-key activation that identifies the plugins granted by that key,
   per-plugin version updates and deactivation. With
-  `pom_desenv=true`, on any profile, it also builds and installs plugins directly from mounted
+  `pom_dev_mode=true`, on any profile, it also builds and installs plugins directly from mounted
   sources without requiring an active license; local builds grant no licensed
   features and do not change existing entitlement. Updating the `pom` binary
-  is handled separately in `/config/sobre`. This replaced the former
+  is handled separately in `/config/about`. This replaced the former
   single-product `/enterprise` screen (`Enterprise.tsx`); see
   `src/routes/AGENTS.md` and `crates/node/src/plugins.rs`.
-- `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
-térmica; `/config/armazenamento` -> ModelPaths, que também configura a raiz
+- `/config/preferences` -> Preferences com exposição, Hugging Face e proteção
+térmica; `/config/storage` -> ModelPaths, que também configura a raiz
 persistente compartilhada de projetos e dados dinâmicos dos plugins;
-`/config/preferencias/admin`
+`/config/preferences/admin`
   -> preferências administrativas de TLS, QUIC, logs e chat da rede; e
-  `/config/sobre` -> About, com a licença provisória explícita do POM, o
+  `/config/about` -> About, com a licença provisória explícita do POM, o
   catálogo agrupado por licença das dependências diretas do frontend e do
   Rust, e a ÚNICA verificação/aplicação da atualização do binário `pom`
   (`/api/ui/pom-update/*`) - deliberadamente separada da tela de Plugins, ver

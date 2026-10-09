@@ -675,10 +675,10 @@ mod mtp_draft_tests {
     /// arquivo não carregava - `check_tensor_dims: tensor 'output_hc_norm.weight'
     /// not found`, reproduzindo byte a byte o log da ksia de 2026-09-18
     /// (tarefa sl-mtp-draft-attach, ver `report.md`). Gerado por
-    /// `gerar_gguf_sintetico.py` (mesma pasta).
-    const QWEN4EXP_DRAFT_SEM_OUTPUT_HC: &[u8] = include_bytes!(concat!(
+    /// `generate_synthetic_gguf.py` (mesma pasta).
+    const QWEN4EXP_DRAFT_WITHOUT_OUTPUT_HC: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/mtp/qwen4exp-external-draft-sem-output-hc.gguf"
+        "/tests/fixtures/mtp/qwen4exp-external-draft-without-output-hc.gguf"
     ));
 
     fn draft_cfg(draft_path: &str) -> EngineConfig {
@@ -754,13 +754,13 @@ mod mtp_draft_tests {
     /// arquivo sintético; o modelo real da Unsloth e o deploy na ksia não
     /// podem ser verificados aqui.
     #[test]
-    fn rascunho_qwen4exp_sem_output_hc_anexa() {
+    fn a_qwen4exp_draft_without_output_hc_attaches() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "pom-qwen4exp-draft-sem-output-hc-{}.gguf",
+            "pom-qwen4exp-draft-without-output-hc-{}.gguf",
             uuid::Uuid::new_v4().simple()
         ));
-        std::fs::write(&path, QWEN4EXP_DRAFT_SEM_OUTPUT_HC).unwrap();
+        std::fs::write(&path, QWEN4EXP_DRAFT_WITHOUT_OUTPUT_HC).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
         let cfg = draft_cfg(&path_str);

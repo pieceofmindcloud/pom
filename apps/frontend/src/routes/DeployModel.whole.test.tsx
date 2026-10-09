@@ -29,7 +29,7 @@ vi.mock("../lib/api", () => ({
         : url === "/api/ui/cluster"
           ? Promise.resolve({ peers: [] })
           : url === "/api/ui/node"
-            ? Promise.resolve({ connection_key: "", pom_desenv: true })
+            ? Promise.resolve({ connection_key: "", pom_dev_mode: true })
             : url === "/api/ui/cache-types"
               ? Promise.resolve({
                   cache_type_k: "f16",
@@ -183,7 +183,7 @@ function mount(
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
   client.setQueryData(keys.jobs, { jobs: [] });
-  client.setQueryData(keys.node, { connection_key: "", pom_desenv: true });
+  client.setQueryData(keys.node, { connection_key: "", pom_dev_mode: true });
   client.setQueryData(keys.clusterModels, {
     peers: [
       {
@@ -353,14 +353,14 @@ async function ensureWholeMachine(node = "ksia") {
   );
 }
 
-describe("DeployModel · modelo inteiro", () => {
+describe("DeployModel · whole model", () => {
   beforeEach(() => {
     post.mockReset();
     localStorage.clear();
   });
   afterEach(cleanup);
 
-  it("pergunta ao nó sobre fatias por padrão, e sobre o modelo inteiro quando escolhido", async () => {
+  it("asks the node about slices by default, and about the whole model when chosen", async () => {
     answerPlans();
     mount();
 
@@ -375,7 +375,7 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
-  it("nomeia os campos nativos do studio para acessibilidade e gestores de senha", async () => {
+  it("names the native studio fields for accessibility and password managers", async () => {
     answerPlans();
     mount();
 
@@ -385,7 +385,7 @@ describe("DeployModel · modelo inteiro", () => {
     }
   });
 
-  it("faz uma única consulta ao trocar o modelo", async () => {
+  it("makes a single query when the model changes", async () => {
     post.mockImplementation((url: string, body: { group?: string; kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       const plan = body.kind === "whole" ? wholePlan() : shardPlan();
@@ -433,7 +433,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(planCalls()).toHaveLength(before + 1);
   });
 
-  it("não reconsulta o plano ao ajustar camadas GPU da máquina", async () => {
+  it("does not re-query the plan when adjusting the GPU layers of the machine", async () => {
     answerPlans();
     mount();
     await waitFor(() => expect(planCalls()).toHaveLength(1));
@@ -448,7 +448,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(planCalls()).toHaveLength(before);
   });
 
-  it("mantém o indicador até a consulta do modelo terminar", async () => {
+  it("keeps the indicator until the model query finishes", async () => {
     let resolveWhole: ((plan: DeployPlan) => void) | undefined;
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -470,7 +470,7 @@ describe("DeployModel · modelo inteiro", () => {
     await waitFor(() => expect(screen.queryByText("conferindo com o nó…")).toBeNull());
   });
 
-  it("não mostra a seção de fatos do modelo inteiro no inspetor", async () => {
+  it("does not show the whole model facts section in the inspector", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -490,7 +490,7 @@ describe("DeployModel · modelo inteiro", () => {
    * marcar nem camada reivindicada duas vezes, e mostrar esses controles é
    * inventar uma decisão que não existe.
    */
-  it("não mostra a fita de cobertura nem a coluna de marcar faixa", async () => {
+  it("shows neither the coverage strip nor the range marking column", async () => {
     answerPlans();
     mount();
 
@@ -508,7 +508,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(screen.queryByText(/L0–31/)).toBeNull();
   });
 
-  it("mostra o nome do modelo sem extensão, mantendo o valor técnico no request", async () => {
+  it("shows the model name without extension, keeping the technical value in the request", async () => {
     const technicalName = "Qwen3.8-27B-UD-IQ3_XXS.gguf";
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -525,7 +525,7 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
-  it("preserva hífens e dígitos legítimos no nome exibido", async () => {
+  it("preserves legitimate hyphens and digits in the displayed name", async () => {
     const technicalName = "Qwen3.8-27B-UD-IQ3_XXS-v2-2024.gguf";
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -538,7 +538,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(within(model).getByRole("option", { name: "Qwen3.8-27B-UD-IQ3_XXS-v2-2024" })).toBeTruthy();
   });
 
-  it("oculta o hash da rodada nas opções de fatias", async () => {
+  it("hides the round hash in the slice options", async () => {
     const shardName = "Ornith-1.5-35B-Q4_K_M-42739874";
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -553,7 +553,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(within(model).queryByRole("option", { name: shardName })).toBeNull();
   });
 
-  it("oculta o hash da rodada na opção de Tensor", async () => {
+  it("hides the round hash in the Tensor option", async () => {
     const tensorName = "Ornith-1.5-35B-Q4_K_M-b3bdbf23";
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
@@ -570,7 +570,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(within(model).queryByRole("option", { name: `${tensorName} · TP 2` })).toBeNull();
   });
 
-  it("esvazia o mapa ao trocar de fatias para modelo inteiro", async () => {
+  it("empties the map when switching from slices to whole model", async () => {
     answerPlans();
     mount();
 
@@ -589,7 +589,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(screen.queryByRole("button", { name: /Remover mac da implantação/ })).toBeNull();
   });
 
-  it("mantém a faixa inteira na única máquina do mapa", async () => {
+  it("keeps the whole range on the only machine of the map", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -617,7 +617,7 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
-  it("recusa adicionar uma segunda máquina ao mapa do modelo inteiro", async () => {
+  it("refuses adding a second machine to the whole model map", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -636,7 +636,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(planCalls().some(([, body]) => (body as { selection?: Array<{ target_node_id: string }> }).selection?.some((row) => row.target_node_id === "mac"))).toBe(false);
   });
 
-  it("implanta mandando o mesmo `kind` que planejou", async () => {
+  it("deploys sending the same `kind` it planned", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -653,7 +653,7 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
-  it("mostra a opção de visão somente quando o plano tem mmproj", async () => {
+  it("shows the vision option only when the plan has an mmproj", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(body?.kind === "whole" ? wholePlan("ksia", "/lm/mmproj.gguf") : shardPlan());
@@ -667,7 +667,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(screen.getByText("/lm/mmproj.gguf")).toBeTruthy();
   });
 
-  it("mostra por que a visão não está disponível quando o plano não tem mmproj", async () => {
+  it("shows why vision is not available when the plan has no mmproj", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -685,7 +685,7 @@ describe("DeployModel · modelo inteiro", () => {
    * operador vê um botão cinza e nenhum motivo, que é o defeito que a suíte
    * irmã guarda para o outro caminho.
    */
-  it("mostra a recusa do nó e mantém o botão cinza", async () => {
+  it("shows the node refusal and keeps the button gray", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       if (body?.kind !== "whole") return Promise.resolve(shardPlan());
@@ -705,7 +705,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("não mostra fatos duplicados quando a máquina escolhida precisa de cópia", async () => {
+  it("does not show duplicate facts when the chosen machine needs a copy", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) =>
       Promise.resolve(body?.kind === "whole" ? wholePlan("mac") : shardPlan()),
     );
@@ -723,7 +723,7 @@ describe("DeployModel · modelo inteiro", () => {
    * sobre fatias. Ler a ausência como "fatias" é o que impede a tela de emudecer
    * durante uma atualização em andamento.
    */
-  it("lê um plano sem `kind` como um plano de fatias", async () => {
+  it("reads a plan without `kind` as a slices plan", async () => {
     post.mockImplementation(() => {
       const p = shardPlan();
       delete (p as { kind?: string }).kind;
@@ -738,7 +738,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
   });
 
-  it("permite ligar e desligar o ajuste automático de memória", async () => {
+  it("allows turning the automatic memory fit on and off", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -759,7 +759,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(screen.queryByText("conferindo com o nó…")).toBeNull();
   });
 
-  it("mantém o seletor de motor oculto para um modelo denso", async () => {
+  it("keeps the engine selector hidden for a dense model", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -768,7 +768,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(screen.queryByRole("combobox", { name: "Motor de inferência" })).toBeNull();
   });
 
-  it("mostra e envia a escolha do motor no modelo inteiro", async () => {
+  it("shows and sends the engine choice in the whole model", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(moePlan(body.kind as DeployPlan["kind"]));
@@ -794,7 +794,7 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
-  it("leva a escolha para fatias e mostra a limitação do Tensor Parallelism", async () => {
+  it("carries the choice to slices and shows the Tensor Parallelism limitation", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(moePlan((body.kind ?? "shards") as DeployPlan["kind"]));
@@ -874,7 +874,7 @@ describe("DeployModel · MTP", () => {
     fireEvent.change(select, { target: { value: mode } });
   }
 
-  it("liga o MTP, vê os controles numéricos e os manda na implantação", async () => {
+  it("turns MTP on, sees the numeric controls and sends them in the deployment", async () => {
     mountWhole();
     chooseWhole();
     await ensureWholeMachine();
@@ -927,7 +927,7 @@ describe("DeployModel · MTP", () => {
     });
   });
 
-  it("marcar o MTP preenche 0,75 e permite editar a probabilidade mínima", async () => {
+  it("checking MTP fills in 0.75 and allows editing the minimum probability", async () => {
     mountWhole();
     chooseWhole();
     await ensureWholeMachine();
@@ -975,7 +975,7 @@ describe("DeployModel · MTP", () => {
   /// de existir: sem remontar o formulário, o botão zerava os parâmetros por
   /// baixo e o campo continuava mostrando o número velho — a tela dizendo uma
   /// coisa e o pedido levando outra.
-  it("restaurar o plano do nó também limpa o campo meio digitado", async () => {
+  it("restoring the node plan also clears the half-typed field", async () => {
     post.mockImplementation((url: string) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(wholePlan());
@@ -1018,21 +1018,21 @@ describe("DeployModel · MTP", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
-    const campo = () =>
+    const field = () =>
       document.querySelector('input[name="n_ctx"]') as HTMLInputElement | null;
-    await waitFor(() => expect(campo()).toBeTruthy());
+    await waitFor(() => expect(field()).toBeTruthy());
     // O plano do nó traz 4096 (ver `wholePlan`).
-    await waitFor(() => expect(campo()!.value).toBe("4096"));
+    await waitFor(() => expect(field()!.value).toBe("4096"));
 
-    fireEvent.change(campo()!, { target: { value: "65536" } });
-    await waitFor(() => expect(campo()!.value).toBe("65536"));
+    fireEvent.change(field()!, { target: { value: "65536" } });
+    await waitFor(() => expect(field()!.value).toBe("65536"));
 
     fireEvent.click(screen.getByRole("button", { name: /Voltar ao plano do nó/ }));
 
-    await waitFor(() => expect(campo()!.value).toBe("4096"));
+    await waitFor(() => expect(field()!.value).toBe("4096"));
   });
 
-  it("em modo fatiado o MTP é oferecido na especulação e liga os controles", async () => {
+  it("in sliced mode MTP is offered in speculation and turns on the controls", async () => {
     post.mockImplementation((url: string) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(shardPlan());
@@ -1072,7 +1072,7 @@ describe("DeployModel · MTP", () => {
     });
   });
 
-  it("a especulação segue o plano: MTP no plano vem selecionado, sem ele nasce em Nenhuma", async () => {
+  it("speculation follows the plan: MTP in the plan comes selected, without it it starts as None", async () => {
     mountWhole(true);
     chooseWhole();
     const speculation = (await screen.findByRole("combobox", { name: "Especulação" })) as HTMLSelectElement;
@@ -1088,7 +1088,7 @@ describe("DeployModel · MTP", () => {
     expect(screen.queryByText("Probabilidade mínima do MTP")).toBeNull();
   });
 
-  it("uma especulação de cada vez: escolher o lookup desliga o MTP", async () => {
+  it("one speculation at a time: choosing lookup turns MTP off", async () => {
     mountWhole();
     chooseWhole();
     await ensureWholeMachine();
@@ -1114,14 +1114,14 @@ describe("DeployModel · MTP", () => {
   });
 });
 
-describe("DeployModel · Tensor simples", () => {
+describe("DeployModel · simple Tensor", () => {
   beforeEach(() => {
     post.mockReset();
     localStorage.clear();
   });
   afterEach(cleanup);
 
-  it("monta os ranks apenas com as máquinas que estão no mapa", async () => {
+  it("builds the ranks only with the machines that are on the map", async () => {
     answerPlans();
     mount();
     chooseTensor();
@@ -1149,7 +1149,7 @@ describe("DeployModel · Tensor simples", () => {
     expect([...currentWorkerSelect.querySelectorAll("option")].map((option) => option.textContent)).toEqual(["mac"]);
   });
 
-  it("escolhe o grupo TP fatiado e mostra os ranks, não camadas de pipeline", async () => {
+  it("chooses the sliced TP group and shows the ranks, not pipeline layers", async () => {
     answerPlans();
     mount();
     chooseTensor();
@@ -1161,7 +1161,7 @@ describe("DeployModel · Tensor simples", () => {
     expect(screen.queryByText("Camadas disponíveis neste peer")).toBeNull();
   });
 
-  it("mantém primary e workers restritos aos cards que estão no mapa", async () => {
+  it("keeps primary and workers restricted to the cards that are on the map", async () => {
     answerPlans();
     mount();
     chooseTensor();
@@ -1179,7 +1179,7 @@ describe("DeployModel · Tensor simples", () => {
     });
   });
 
-  it("preserva um worker pré-fatiado sem rank local enquanto o plano responde", async () => {
+  it("preserves a pre-sliced worker without a local rank while the plan answers", async () => {
     answerPlans();
     mount();
     chooseTensor();
@@ -1205,7 +1205,7 @@ describe("DeployModel · Tensor simples", () => {
     releasePlan?.(tensorPlan());
   });
 
-  it("mantém no canvas uma máquina sem GGUF, mas não a oferece como worker no modelo inteiro", async () => {
+  it("keeps on the canvas a machine without a GGUF, but does not offer it as a worker in the whole model", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return body.kind === "tensor_parallel"
@@ -1248,7 +1248,7 @@ describe("DeployModel · Tensor simples", () => {
     expect([...screen.getByRole("listbox", { name: /Workers/ }).options]).toHaveLength(0);
   });
 
-  it("usa nos combos a mesma população de máquinas apresentada pela estratégia completa", async () => {
+  it("uses in the combos the same machine population presented by the complete strategy", async () => {
     answerPlans();
     mount();
     chooseTensor();
@@ -1262,7 +1262,7 @@ describe("DeployModel · Tensor simples", () => {
     });
   });
 
-  it("marca primary no card e mantém a exclusão mútua com workers ao trocar de card", async () => {
+  it("marks primary on the card and keeps the mutual exclusion with workers when switching cards", async () => {
     answerPlans();
     mount();
     chooseTensor();
@@ -1286,7 +1286,7 @@ describe("DeployModel · Tensor simples", () => {
     });
   });
 
-  it("limpa primary e worker ao remover os cards correspondentes do mapa", async () => {
+  it("clears primary and worker when the corresponding cards are removed from the map", async () => {
     answerPlans();
     mount();
     chooseTensor();
@@ -1311,7 +1311,7 @@ describe("DeployModel · Tensor simples", () => {
     expect([...screen.getByRole("listbox", { name: /Workers/ }).options]).toHaveLength(0);
   });
 
-  it("preserva size, primary e a ordem dos workers no plan e no deploy", async () => {
+  it("preserves size, primary and the worker order in the plan and in the deploy", async () => {
     answerPlans();
     mount();
     chooseTensor();

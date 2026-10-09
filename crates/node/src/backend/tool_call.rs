@@ -962,8 +962,8 @@ impl CallArgsStreamer {
     fn take_delta(&mut self, prefix: String) -> Option<String> {
         if !prefix.starts_with(&self.emitted) {
             warn!(
-                emitido = self.emitted.len(),
-                novo = prefix.len(),
+                emitted = self.emitted.len(),
+                new = prefix.len(),
                 "prefixo de argumentos não estende o que já foi transmitido; \
                  fragmento suprimido para não corromper o JSON do cliente"
             );
@@ -1462,7 +1462,7 @@ mod tests {
 
     /// O roteiro do defeito medido no ksia: uma chamada com um argumento
     /// grande, entregue token a token.
-    fn roteiro_chamada_longa() -> Vec<String> {
+    fn long_call_script() -> Vec<String> {
         let mut script = vec![
             "<tool_call>\n".to_string(),
             "<function=write_file>\n".to_string(),
@@ -1481,10 +1481,10 @@ mod tests {
     }
 
     /// Alimenta o roteiro pedaço a pedaço e devolve os fragmentos emitidos.
-    /// `ate` corta a geração no meio, para o caso do teto.
-    fn fragmentos(eager: bool, ate: Option<usize>) -> Vec<String> {
-        let script = roteiro_chamada_longa();
-        let script = &script[..ate.unwrap_or(script.len())];
+    /// `until` corta a geração no meio, para o caso do teto.
+    fn fragments(eager: bool, until: Option<usize>) -> Vec<String> {
+        let script = long_call_script();
+        let script = &script[..until.unwrap_or(script.len())];
         let mut sc = TagScanner::new();
         let mut streamer = CallArgsStreamer::new(eager);
         let mut body = String::new();
@@ -1504,7 +1504,7 @@ mod tests {
                 }
             }
         }
-        match (ate, parsed_final) {
+        match (until, parsed_final) {
             (None, Some(args)) => {
                 if let Some(d) = streamer.finish_complete(&body, &args) {
                     out.push(d);
@@ -1526,7 +1526,7 @@ mod tests {
     /// fim; agora saem em muitos, e o primeiro chega muito antes do último.
     #[test]
     fn a_long_argument_streams_in_many_fragments_instead_of_one_blob() {
-        let frags = fragmentos(true, None);
+        let frags = fragments(true, None);
         assert!(
             frags.len() > 5,
             "os argumentos continuam represados: {} fragmento(s)",
@@ -1539,9 +1539,9 @@ mod tests {
     /// conteúdo do caminho não-streaming.
     #[test]
     fn concatenating_the_fragments_reproduces_the_final_argument_exactly() {
-        let inteiro: String = fragmentos(true, None).concat();
+        let whole: String = fragments(true, None).concat();
         let json: serde_json::Value =
-            serde_json::from_str(&inteiro).expect("a concatenação é JSON válido");
+            serde_json::from_str(&whole).expect("a concatenação é JSON válido");
         assert_eq!(json["path"], "/tmp/calc.py");
         assert!(json["content"]
             .as_str()
@@ -1550,8 +1550,8 @@ mod tests {
 
         // E é o mesmo objeto que o caminho não-streaming produz - só a ordem
         // das chaves difere, porque `serde_json::Map` ordena e o modelo não.
-        let bruto: String = roteiro_chamada_longa().concat();
-        let OutputPart::ToolCall { arguments, .. } = &parse_output(&bruto)[0] else {
+        let raw: String = long_call_script().concat();
+        let OutputPart::ToolCall { arguments, .. } = &parse_output(&raw)[0] else {
             panic!("esperava chamada completa");
         };
         assert_eq!(&json, arguments);
@@ -1563,22 +1563,22 @@ mod tests {
     /// fim.
     #[test]
     fn buffered_mode_emits_nothing_until_each_parameter_closes() {
-        let frags = fragmentos(false, None);
+        let frags = fragments(false, None);
         // Um fragmento por parâmetro que fechou, mais a chave de fechamento.
         assert_eq!(frags.len(), 3, "{frags:?}");
         // O que importa: o parâmetro grande sai INTEIRO num fragmento só - é
         // o comportamento antigo, e é o que o modo ansioso troca por latência.
-        let grande = frags
+        let large = frags
             .iter()
             .find(|f| f.contains("linha_39"))
             .expect("o content saiu");
-        assert!(grande.contains("linha_0 = 0 * 2"), "{grande:?}");
-        let inteiro = frags.concat();
+        assert!(large.contains("linha_0 = 0 * 2"), "{large:?}");
+        let whole = frags.concat();
         assert!(
-            inteiro.starts_with(r#"{"path":"/tmp/calc.py""#),
-            "{inteiro:?}"
+            whole.starts_with(r#"{"path":"/tmp/calc.py""#),
+            "{whole:?}"
         );
-        let json: serde_json::Value = serde_json::from_str(&inteiro).expect("JSON válido");
+        let json: serde_json::Value = serde_json::from_str(&whole).expect("JSON válido");
         assert!(json["content"]
             .as_str()
             .expect("content")
@@ -1591,20 +1591,20 @@ mod tests {
     /// parseia, de propósito.
     #[test]
     fn a_truncated_call_never_repeats_what_was_already_streamed() {
-        let bruto_cortado: String = roteiro_chamada_longa()[..20].concat();
-        let (parts, _) = parse_output_truncated(&bruto_cortado);
-        let OutputPart::ToolCallTruncated(esperado) = &parts[0] else {
+        let raw_cut: String = long_call_script()[..20].concat();
+        let (parts, _) = parse_output_truncated(&raw_cut);
+        let OutputPart::ToolCallTruncated(expected) = &parts[0] else {
             panic!("esperava chamada cortada");
         };
 
-        let inteiro: String = fragmentos(true, Some(20)).concat();
+        let whole: String = fragments(true, Some(20)).concat();
         assert_eq!(
-            inteiro, esperado.arguments,
+            whole, expected.arguments,
             "a concatenação do streaming tem de bater com a da Fase 1"
         );
         assert!(
-            serde_json::from_str::<serde_json::Value>(&inteiro).is_err(),
-            "argumentos de chamada cortada não podem parsear: {inteiro:?}"
+            serde_json::from_str::<serde_json::Value>(&whole).is_err(),
+            "argumentos de chamada cortada não podem parsear: {whole:?}"
         );
     }
 
@@ -1612,9 +1612,9 @@ mod tests {
     /// no limiar nunca é transmitido em fragmentos, então `5` continua número.
     #[test]
     fn a_short_call_keeps_its_argument_types_even_in_eager_mode() {
-        let bruto = "<function=Bash>\n<parameter=command>\nls -la\n</parameter>\n                     <parameter=limit>\n5\n</parameter>\n";
-        let prefixo = streamable_arguments_prefix(bruto, true).expect("transcodifica");
-        assert_eq!(prefixo, r#"{"command":"ls -la","limit":5"#);
+        let raw = "<function=Bash>\n<parameter=command>\nls -la\n</parameter>\n                     <parameter=limit>\n5\n</parameter>\n";
+        let prefix = streamable_arguments_prefix(raw, true).expect("transcodifica");
+        assert_eq!(prefix, r#"{"command":"ls -la","limit":5"#);
     }
 
     /// Um valor grande que já é JSON estruturado fica represado mesmo no modo
@@ -1641,16 +1641,16 @@ mod tests {
     /// esta é a propriedade que o módulo inteiro protege.
     #[test]
     fn the_streamable_prefix_only_ever_grows_byte_by_byte() {
-        let bruto: String = roteiro_chamada_longa().concat();
+        let raw: String = long_call_script().concat();
         for eager in [true, false] {
             let mut sc = TagScanner::new();
             let mut body = String::new();
             let mut anterior = String::new();
-            for byte in bruto.as_bytes().chunks(1) {
-                let Ok(pedaco) = std::str::from_utf8(byte) else {
+            for byte in raw.as_bytes().chunks(1) {
+                let Ok(chunk) = std::str::from_utf8(byte) else {
                     continue;
                 };
-                for ev in sc.feed(pedaco) {
+                for ev in sc.feed(chunk) {
                     if let ScanEvent::ToolCallChunk(f) = ev {
                         body.push_str(&f);
                         if let Some(p) = streamable_arguments_prefix(&body, eager) {

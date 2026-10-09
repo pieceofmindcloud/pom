@@ -179,58 +179,58 @@ export function autoLayout(
   // A coluna é a profundidade no pipeline, não a faixa exata: 16-30 e 16-40
   // começam no mesmo ponto e são caminhos alternativos, então ficam lado a
   // lado. A profundidade é a cadeia mais longa de faixas anteriores.
-  const porInicio = [...nodes].sort(
+  const byStart = [...nodes].sort(
     (a, b) => a.start_layer - b.start_layer || a.end_layer - b.end_layer || a.id.localeCompare(b.id),
   );
-  const profundidade = new Map<string, number>();
-  for (const node of porInicio) {
-    let nivel = 0;
-    for (const anterior of porInicio) {
+  const depth = new Map<string, number>();
+  for (const node of byStart) {
+    let level = 0;
+    for (const anterior of byStart) {
       if (anterior.end_layer < node.start_layer && anterior.end_layer >= anterior.start_layer) {
-        nivel = Math.max(nivel, (profundidade.get(anterior.id) ?? 0) + 1);
+        level = Math.max(level, (depth.get(anterior.id) ?? 0) + 1);
       }
     }
-    profundidade.set(node.id, nivel);
+    depth.set(node.id, level);
   }
-  const colunas = new Map<number, LayoutNode[]>();
-  for (const node of porInicio) {
-    const nivel = profundidade.get(node.id) ?? 0;
-    const atual = colunas.get(nivel);
-    if (atual) atual.push(node);
-    else colunas.set(nivel, [node]);
+  const columns = new Map<number, LayoutNode[]>();
+  for (const node of byStart) {
+    const level = depth.get(node.id) ?? 0;
+    const current = columns.get(level);
+    if (current) current.push(node);
+    else columns.set(level, [node]);
   }
-  const ordenadas = [...colunas.entries()].sort(([a], [b]) => a - b);
+  const sorted = [...columns.entries()].sort(([a], [b]) => a - b);
 
   // Cards minimizados ocupam menos: a coluna tem a largura do seu card mais
   // largo e a pilha soma as alturas reais, então uma rede minimizada cabe
   // inteira numa tela que a rede aberta não cabia. Numa coluna, as réplicas
   // da primeira faixa ficam centradas no eixo - é o caminho que segue reto -
   // e as faixas alternativas descem abaixo dela.
-  const posicoes: Record<string, CanvasPosition> = {};
+  const positions: Record<string, CanvasPosition> = {};
   let left = ORIGIN_X;
-  ordenadas.forEach(([, coluna]) => {
-    const faixas = new Map<string, LayoutNode[]>();
-    for (const node of coluna) {
-      const chave = `${node.start_layer}-${node.end_layer}`;
-      const atual = faixas.get(chave);
-      if (atual) atual.push(node);
-      else faixas.set(chave, [node]);
+  sorted.forEach(([, column]) => {
+    const ranges = new Map<string, LayoutNode[]>();
+    for (const node of column) {
+      const key = `${node.start_layer}-${node.end_layer}`;
+      const current = ranges.get(key);
+      if (current) current.push(node);
+      else ranges.set(key, [node]);
     }
-    const grupos = [...faixas.values()].map((grupo) => [...grupo].sort((a, b) => a.id.localeCompare(b.id)));
-    const tamanhos = coluna.map((node) => sizeOf(node.id));
-    const gap = tamanhos.every((size) => size.height < CARD_HEIGHT) ? GAP_Y / 2 : GAP_Y;
-    const alturaDe = (grupo: LayoutNode[]) =>
-      grupo.reduce((sum, node) => sum + sizeOf(node.id).height, 0) + (grupo.length - 1) * gap;
-    let top = AXIS_Y - alturaDe(grupos[0]) / 2;
-    for (const grupo of grupos) {
-      for (const node of grupo) {
-        posicoes[node.id] = { left, top };
+    const groups = [...ranges.values()].map((group) => [...group].sort((a, b) => a.id.localeCompare(b.id)));
+    const sizes = column.map((node) => sizeOf(node.id));
+    const gap = sizes.every((size) => size.height < CARD_HEIGHT) ? GAP_Y / 2 : GAP_Y;
+    const heightOf = (group: LayoutNode[]) =>
+      group.reduce((sum, node) => sum + sizeOf(node.id).height, 0) + (group.length - 1) * gap;
+    let top = AXIS_Y - heightOf(groups[0]) / 2;
+    for (const group of groups) {
+      for (const node of group) {
+        positions[node.id] = { left, top };
         top += sizeOf(node.id).height + gap;
       }
     }
-    left += Math.max(...tamanhos.map((size) => size.width)) + GAP_X;
+    left += Math.max(...sizes.map((size) => size.width)) + GAP_X;
   });
-  return posicoes;
+  return positions;
 }
 
 /**

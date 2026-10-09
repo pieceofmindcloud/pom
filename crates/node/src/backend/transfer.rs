@@ -300,7 +300,7 @@ pub struct OfferedFile {
     pub path: String,
     pub size_bytes: u64,
     /// Modelo e camadas, para o veredito não voltar falando em hash.
-    pub fatia: Option<SliceLabel>,
+    pub slice: Option<SliceLabel>,
 }
 
 impl TransferState {
@@ -315,7 +315,7 @@ impl TransferState {
         peer_host: &str,
         path: &str,
         bytes_total: u64,
-        fatia: Option<&SliceLabel>,
+        slice: Option<&SliceLabel>,
     ) {
         self.jobs.write().await.insert(
             id.to_string(),
@@ -331,9 +331,9 @@ impl TransferState {
                 bytes_per_sec: 0.0,
                 eta_secs: None,
                 detail: String::new(),
-                model_label: fatia.map(|f| f.model_label.clone()),
-                start_layer: fatia.map(|f| f.start_layer),
-                end_layer: fatia.map(|f| f.end_layer),
+                model_label: slice.map(|f| f.model_label.clone()),
+                start_layer: slice.map(|f| f.start_layer),
+                end_layer: slice.map(|f| f.end_layer),
                 finished_at: None,
             },
         );
@@ -497,27 +497,27 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
     let path = if let Some(id) = q.grant.as_deref() {
         grant_path(state, id).await?
     } else if let Some(sha) = q.sha.as_deref() {
-        let curto = &sha[..12.min(sha.len())];
-        let encontrada = find_part(&state.shard_dir().await, sha)
-            .ok_or_else(|| format!("esta máquina não tem a parte {curto}"))?;
+        let short = &sha[..12.min(sha.len())];
+        let found = find_part(&state.shard_dir().await, sha)
+            .ok_or_else(|| format!("esta máquina não tem a parte {short}"))?;
         // Uma parte só é servível junto com o manifesto que a explica. Servir
         // os bytes e não ter o `.pom` para acompanhar entrega ao vizinho um
         // arquivo que ele não vai saber nomear - e o outro lado recusaria
         // depois de mover gigabytes. A recusa cabe aqui, antes deles.
-        let descrita = encontrada.parent().is_some_and(|pasta| {
-            crate::pom::load_dir(pasta).iter().any(|m| {
+        let described = found.parent().is_some_and(|folder| {
+            crate::pom::load_dir(folder).iter().any(|m| {
                 m.parts
                     .iter()
                     .chain(m.tp_parts.iter())
                     .any(|p| p.sha256 == sha)
             })
         });
-        if !descrita {
+        if !described {
             return Err(format!(
-                "a parte {curto} está aqui mas sem manifesto; uma fatia não é servida sem o `.pom` que a descreve"
+                "a parte {short} está aqui mas sem manifesto; uma fatia não é servida sem o `.pom` que a descreve"
             ));
         }
-        encontrada
+        found
     } else {
         let requested = q
             .path
@@ -580,12 +580,12 @@ pub fn find_part(shard_dir: &Path, sha256: &str) -> Option<PathBuf> {
     if !crate::pom::is_sha256_hex(sha256) {
         return None;
     }
-    for entrada in std::fs::read_dir(shard_dir).ok()?.flatten() {
-        let pasta = entrada.path();
-        if !pasta.is_dir() {
+    for entry in std::fs::read_dir(shard_dir).ok()?.flatten() {
+        let folder = entry.path();
+        if !folder.is_dir() {
             continue;
         }
-        if let Ok(p) = crate::pom::part_path(&pasta, sha256) {
+        if let Ok(p) = crate::pom::part_path(&folder, sha256) {
             if p.is_file() {
                 return Some(p);
             }
@@ -697,15 +697,15 @@ async fn serve_pom(
             .into_response();
     };
     let shard_dir = state.shard_dir().await;
-    let Some(caminho) = find_part(&shard_dir, sha) else {
+    let Some(path) = find_part(&shard_dir, sha) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "esta máquina não tem esta parte" })),
         )
             .into_response();
     };
-    let manifesto = caminho.parent().and_then(|pasta| {
-        crate::pom::load_dir(pasta).into_iter().find(|m| {
+    let manifesto = path.parent().and_then(|folder| {
+        crate::pom::load_dir(folder).into_iter().find(|m| {
             m.parts
                 .iter()
                 .chain(m.tp_parts.iter())
@@ -814,7 +814,7 @@ async fn download(
         let peer_host = peer_label(&state, q.peer.as_deref()).await;
         // O `.pom` está ao lado do arquivo: é dele que sai o "qwen3:8b · L0-15"
         // que a tela mostra no lugar do hash.
-        let fatia = slice_label_for_path(&path);
+        let slice = slice_label_for_path(&path);
         state
             .transfers
             .start_job(
@@ -826,7 +826,7 @@ async fn download(
                 &peer_host,
                 &path.to_string_lossy(),
                 total,
-                fatia.as_ref(),
+                slice.as_ref(),
             )
             .await;
     }
@@ -932,8 +932,8 @@ fn served_stream(
             let chunk = inner.next().await?;
             if let Ok(ref b) = chunk {
                 done += b.len() as u64;
-                let acabou = done >= total;
-                if acabou || last.elapsed() >= Duration::from_millis(500) {
+                let finished = done >= total;
+                if finished || last.elapsed() >= Duration::from_millis(500) {
                     last = Instant::now();
                     state
                         .transfers
@@ -945,7 +945,7 @@ fn served_stream(
                         )
                         .await;
                 }
-                if acabou {
+                if finished {
                     state
                         .transfers
                         .finish(&job_id, TRANSFER_DONE, "enviado por inteiro")
@@ -999,7 +999,7 @@ pub struct OfferRequest {
 /// partes que o índice simplesmente não encontra.
 ///
 /// Sem manifesto, o caminho antigo: um arquivo avulso em `recebidos/`.
-async fn alvo_da_oferta(state: &GatewayState, offer: &TransferOffer) -> Result<Alvo, String> {
+async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<OfferTarget, String> {
     let shard_dir = state.shard_dir().await;
     if let Some(m) = &offer.pom {
         let sha = std::path::Path::new(&offer.name)
@@ -1026,8 +1026,8 @@ async fn alvo_da_oferta(state: &GatewayState, offer: &TransferOffer) -> Result<A
                 // O manifesto recebido é apenas conhecimento remoto. Mescle-o
                 // ao manifesto local para não apagar partes que este peer já
                 // tinha do mesmo modelo original.
-                let pasta = match crate::pom::merge_manifest(&shard_dir, m) {
-                    Ok((pasta, _)) => pasta,
+                let folder = match crate::pom::merge_manifest(&shard_dir, m) {
+                    Ok((folder, _)) => folder,
                     Err(e) => {
                         return Err(format!(
                             "não deu para mesclar o manifesto de {}: {e:#}",
@@ -1038,11 +1038,11 @@ async fn alvo_da_oferta(state: &GatewayState, offer: &TransferOffer) -> Result<A
                 info!(
                     "manifesto de {} guardado; a parte vai para {}",
                     m.model.label,
-                    pasta.display()
+                    folder.display()
                 );
-                return Ok(Alvo::Parte {
+                return Ok(OfferTarget::Part {
                     sha256: sha,
-                    model_dir: Some(pasta),
+                    model_dir: Some(folder),
                     model_hint: m.model.name.clone(),
                 });
             }
@@ -1067,7 +1067,7 @@ async fn alvo_da_oferta(state: &GatewayState, offer: &TransferOffer) -> Result<A
         ));
     }
 
-    Ok(Alvo::Avulso {
+    Ok(OfferTarget::Standalone {
         remote_path: offer.remote_path.clone(),
         grant: offer.grant.clone(),
         name: offer.name.clone(),
@@ -1111,7 +1111,7 @@ async fn receive_offer(
             dev_auto_accept_env(),
             offer.name
         );
-        let alvo = match alvo_da_oferta(&state, &offer).await {
+        let target = match offer_target(&state, &offer).await {
             Ok(a) => a,
             Err(e) => {
                 warn!("aceite automático de {} recusado: {e}", offer.name);
@@ -1123,7 +1123,7 @@ async fn receive_offer(
             state.clone(),
             offer.from_node_id.clone(),
             offer.from_gateway.clone(),
-            alvo,
+            target,
             offer.from_host.clone(),
         )
         .await
@@ -1235,11 +1235,11 @@ async fn receive_answer(
     Json(req): Json<AnswerRequest>,
 ) -> Response {
     // A oferta sai do registro em qualquer veredito: ela foi respondida.
-    let oferta = {
-        let mut registro = state.transfers.offered.write().await;
+    let offer = {
+        let mut record = state.transfers.offered.write().await;
         // Um `grant` que esta máquina não ofereceu não descreve nada que ela
         // possa mostrar. Não é erro do outro lado - pode ser um reinício aqui.
-        let Some(o) = registro.get(&req.grant) else {
+        let Some(o) = record.get(&req.grant) else {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({ "error": "oferta desconhecida" })),
@@ -1257,7 +1257,7 @@ async fn receive_answer(
             )
                 .into_response();
         }
-        registro.remove(&req.grant).expect("acabou de ser lida")
+        record.remove(&req.grant).expect("acabou de ser lida")
     };
 
     if req.accepted {
@@ -1269,17 +1269,17 @@ async fn receive_answer(
         let job_id = req
             .job_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-        info!("👍 {} aceitou {}", oferta.to_host, oferta.name);
+        info!("👍 {} aceitou {}", offer.to_host, offer.name);
         state
             .transfers
             .start_job(
                 &job_id,
-                &oferta.name,
+                &offer.name,
                 TRANSFER_SENDING,
-                &oferta.to_host,
-                &oferta.path,
-                oferta.size_bytes,
-                oferta.fatia.as_ref(),
+                &offer.to_host,
+                &offer.path,
+                offer.size_bytes,
+                offer.slice.as_ref(),
             )
             .await;
         set_detail(&state, &job_id, "aceito; aguardando o início do envio").await;
@@ -1291,31 +1291,31 @@ async fn receive_answer(
     let job_id = req
         .job_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-    info!("👎 {} recusou {}", oferta.to_host, oferta.name);
+    info!("👎 {} recusou {}", offer.to_host, offer.name);
     state
         .transfers
         .start_job(
             &job_id,
-            &oferta.name,
+            &offer.name,
             TRANSFER_SENDING,
-            &oferta.to_host,
-            &oferta.path,
-            oferta.size_bytes,
-            oferta.fatia.as_ref(),
+            &offer.to_host,
+            &offer.path,
+            offer.size_bytes,
+            offer.slice.as_ref(),
         )
         .await;
-    let motivo = match req
+    let reason = match req
         .reason
         .as_deref()
         .map(str::trim)
         .filter(|r| !r.is_empty())
     {
-        Some(r) => format!("recusado por {}: {r}", oferta.to_host),
-        None => format!("recusado por {}", oferta.to_host),
+        Some(r) => format!("recusado por {}: {r}", offer.to_host),
+        None => format!("recusado por {}", offer.to_host),
     };
     state
         .transfers
-        .finish(&job_id, TRANSFER_CANCELLED, motivo)
+        .finish(&job_id, TRANSFER_CANCELLED, reason)
         .await;
     Json(json!({ "noted": true, "job_id": job_id })).into_response()
 }
@@ -1338,10 +1338,10 @@ fn notify_offerer(
     };
     let state = state.clone();
     let from_node_id = offer.from_node_id.clone();
-    let base_url = normaliza_esquema(&offer.from_gateway);
+    let base_url = normalize_scheme(&offer.from_gateway);
     let from_host = offer.from_host.clone();
     tokio::spawn(async move {
-        let cliente = match state.peer_http.for_peer(&from_node_id) {
+        let client = match state.peer_http.for_peer(&from_node_id) {
             Ok(c) => c,
             Err(e) => {
                 warn!("sem cliente para avisar {from_host} do veredito: {e}");
@@ -1356,7 +1356,7 @@ fn notify_offerer(
         });
         let request = state
             .control_json_request(
-                cliente
+                client
                     .post(format!("{base_url}/api/transfer/offers/answer"))
                     .timeout(Duration::from_secs(30)),
                 "/api/transfer/offers/answer",
@@ -1392,14 +1392,14 @@ async fn reject_offer(
         )
             .into_response();
     }
-    let recusada = {
+    let refused = {
         let mut offers = state.transfers.offers.write().await;
         offers
             .iter()
             .position(|o| o.id == id)
             .map(|i| offers.remove(i))
     };
-    if let Some(offer) = &recusada {
+    if let Some(offer) = &refused {
         notify_offerer(&state, offer, false, None);
     }
     Json(json!({ "rejected": true })).into_response()
@@ -1431,7 +1431,7 @@ async fn accept_offer(
         }
     };
 
-    let alvo = match alvo_da_oferta(&state, &offer).await {
+    let target = match offer_target(&state, &offer).await {
         Ok(a) => a,
         Err(e) => {
             // A oferta não pôde nem começar: quem ofereceu precisa saber, ou
@@ -1444,7 +1444,7 @@ async fn accept_offer(
         state.clone(),
         offer.from_node_id.clone(),
         offer.from_gateway.clone(),
-        alvo,
+        target,
         offer.from_host.clone(),
     )
     .await
@@ -1526,15 +1526,15 @@ async fn start_pull(
     // arquivo cai direto na pasta do modelo e só recebe o nome depois de
     // conferido. Sem ele, é o caminho antigo - um arquivo avulso, pelo caminho
     // que o outro lado expõe, com o digest que ele declarar.
-    let alvo = match req.sha256.as_deref() {
+    let target = match req.sha256.as_deref() {
         Some(sha) if crate::pom::is_sha256_hex(sha) => {
-            let modelo = req.model.as_deref().unwrap_or("partes");
-            Alvo::Parte {
+            let model = req.model.as_deref().unwrap_or("partes");
+            OfferTarget::Part {
                 sha256: sha.to_string(),
                 // A pasta depende do id da rodada, que vem no manifesto que o
                 // download vai buscar na origem.
                 model_dir: None,
-                model_hint: modelo.to_string(),
+                model_hint: model.to_string(),
             }
         }
         Some(_) => {
@@ -1544,14 +1544,14 @@ async fn start_pull(
             )
                 .into_response();
         }
-        None => Alvo::Avulso {
+        None => OfferTarget::Standalone {
             remote_path: req.remote_path,
             grant: None,
             name: req.name,
         },
     };
 
-    match spawn_download(state.clone(), peer.node_id.clone(), base, alvo, host).await {
+    match spawn_download(state.clone(), peer.node_id.clone(), base, target, host).await {
         Ok(job_id) => Json(json!({ "started": true, "job_id": job_id })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
@@ -1708,11 +1708,11 @@ async fn manifest_for(state: &GatewayState, path: &Path) -> Option<crate::pom::P
         .file_stem()
         .and_then(|s| s.to_str())
         .filter(|s| crate::pom::is_sha256_hex(s))?;
-    let pasta = path.parent()?;
+    let folder = path.parent()?;
     // Só vale um manifesto que esteja na pasta do próprio arquivo: um `.pom`
     // de outro lugar poderia descrever uma parte homônima de outra rodada.
     let _ = state;
-    crate::pom::load_dir(pasta).into_iter().find(|m| {
+    crate::pom::load_dir(folder).into_iter().find(|m| {
         m.parts
             .iter()
             .chain(m.tp_parts.iter())
@@ -1823,8 +1823,8 @@ async fn send_to_peer(
 
     // A faixa de camadas saía daqui lida do nome do arquivo. Agora sai do
     // manifesto, que é quem sabe; sem manifesto, não se inventa.
-    let fatia = pom.as_ref().and_then(|m| slice_label(m, sha));
-    let shard: Option<(u32, u32)> = fatia.as_ref().map(|f| (f.start_layer, f.end_layer));
+    let slice = pom.as_ref().and_then(|m| slice_label(m, sha));
+    let shard: Option<(u32, u32)> = slice.as_ref().map(|f| (f.start_layer, f.end_layer));
 
     // Where the peer should come and fetch it from — our own gateway, on the
     // address the peer already reaches us at.
@@ -1856,7 +1856,7 @@ async fn send_to_peer(
             name: name.clone(),
             path: path.to_string_lossy().into_owned(),
             size_bytes: size,
-            fatia: fatia.clone(),
+            slice: slice.clone(),
         },
     );
 
@@ -1877,7 +1877,7 @@ async fn send_to_peer(
                 .advertised_host()
                 .unwrap_or_else(|| local_ip_for(&peer_base)),
             state.gateway_port,
-            crate::peer_client::tls_ativo(),
+            crate::peer_client::tls_enabled(),
         ),
         "grant": grant,
         "remote_path": path.to_string_lossy(),
@@ -2002,10 +2002,10 @@ const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// "manifesto inválido: error decoding response body" - uma mensagem que não
 /// aponta para lugar nenhum. A política local é a que vale para discar, então é
 /// ela que decide.
-fn normaliza_esquema(url: &str) -> String {
+fn normalize_scheme(url: &str) -> String {
     let scheme = crate::peer_client::peer_scheme();
     match url.split_once("://") {
-        Some((atual, resto)) if atual != scheme => format!("{scheme}://{resto}"),
+        Some((current, rest)) if current != scheme => format!("{scheme}://{rest}"),
         _ => url.to_string(),
     }
 }
@@ -2017,13 +2017,13 @@ fn normaliza_esquema(url: &str) -> String {
 /// direto na pasta do modelo com o hash por nome. A segunda dispensa a
 /// quarentena: o nome só é dado depois da conferência, então um arquivo com
 /// nome de parte é, por construção, uma parte conferida.
-enum Alvo {
-    Avulso {
+enum OfferTarget {
+    Standalone {
         remote_path: String,
         grant: Option<String>,
         name: String,
     },
-    Parte {
+    Part {
         sha256: String,
         /// A pasta, quando quem pediu já tinha o manifesto em mãos (é o caso de
         /// uma oferta, que traz o `.pom` junto).
@@ -2041,12 +2041,12 @@ async fn spawn_download(
     state: GatewayState,
     peer_id: String,
     base_url: String,
-    alvo: Alvo,
+    target: OfferTarget,
     from_host: String,
 ) -> Result<String, String> {
     // A oferta traz o esquema que o REMETENTE gravou; quem disca é esta
-    // máquina, então a política local é a que vale. Ver `normaliza_esquema`.
-    let base_url = normaliza_esquema(&base_url);
+    // máquina, então a política local é a que vale. Ver `normalize_scheme`.
+    let base_url = normalize_scheme(&base_url);
     let key = state.auth.read().await.connection_key.clone();
 
     // O id nasce aqui e viaja no pedido: o outro lado registra o mesmo id, e é
@@ -2061,8 +2061,8 @@ async fn spawn_download(
         PathBuf,
         String,
         Option<String>,
-    ) = match &alvo {
-        Alvo::Avulso {
+    ) = match &target {
+        OfferTarget::Standalone {
             remote_path,
             grant,
             name,
@@ -2078,7 +2078,7 @@ async fn spawn_download(
                 None,
             )
         }
-        Alvo::Parte {
+        OfferTarget::Part {
             sha256,
             model_dir,
             model_hint,
@@ -2097,7 +2097,7 @@ async fn spawn_download(
             // pede à origem aqui, antes de qualquer byte de peso - um `.pom`
             // são alguns kB, e descobrir agora custa muito menos que descobrir
             // depois de mover gigabytes.
-            let pasta = match model_dir {
+            let folder = match model_dir {
                 Some(p) => p.clone(),
                 None => {
                     let m = fetch_pom(&state, &peer_id, &base_url, &key, sha256)
@@ -2136,7 +2136,7 @@ async fn spawn_download(
             };
             (
                 vec![("sha", sha256.clone())],
-                pasta,
+                folder,
                 format!("{sha256}.gguf"),
                 Some(sha256.clone()),
             )
@@ -2164,8 +2164,8 @@ async fn spawn_download(
     // na pasta; quem puxa por hash pediu o dele à origem logo acima - nos dois
     // casos antes de qualquer byte de peso. Ler daqui é o que troca o
     // `<sha256>.gguf` da notificação por "qwen3:8b · L0-15".
-    let destino = dir.join(&name);
-    let fatia = slice_label_for_path(&destino);
+    let destination = dir.join(&name);
+    let slice = slice_label_for_path(&destination);
 
     // `bytes_total` 0 até o manifesto responder — a barra fica indeterminada, o
     // que é a verdade: ainda não se sabe o tamanho.
@@ -2176,9 +2176,9 @@ async fn spawn_download(
             &name,
             TRANSFER_RECEIVING,
             &from_host,
-            &destino.to_string_lossy(),
+            &destination.to_string_lossy(),
             0,
-            fatia.as_ref(),
+            slice.as_ref(),
         )
         .await;
     set_detail(&state, &job_id, "conferindo o arquivo na origem").await;
@@ -2476,12 +2476,12 @@ async fn fetch_manifest(
     // que existe: repetir ela.
     let status = resp.status();
     if !status.is_success() {
-        let corpo = resp.text().await.unwrap_or_default();
-        let corpo = corpo.trim();
-        return Err(if corpo.is_empty() {
+        let body = resp.text().await.unwrap_or_default();
+        let body = body.trim();
+        return Err(if body.is_empty() {
             format!("{from_host} recusou o manifesto: HTTP {status}")
         } else {
-            format!("{from_host} recusou o manifesto (HTTP {status}): {corpo}")
+            format!("{from_host} recusou o manifesto (HTTP {status}): {body}")
         });
     }
 
@@ -2568,12 +2568,12 @@ async fn run_download(
             // Junto com o status vai a frase do outro lado: ver a nota gêmea em
             // `fetch_manifest`.
             let status = resp.status();
-            let corpo = direct.expect("checked above").text().await.unwrap_or_default();
-            let corpo = corpo.trim();
-            return Err(if corpo.is_empty() {
+            let body = direct.expect("checked above").text().await.unwrap_or_default();
+            let body = body.trim();
+            return Err(if body.is_empty() {
                 format!("peer respondeu {status}")
             } else {
-                format!("peer respondeu {status}: {corpo}")
+                format!("peer respondeu {status}: {body}")
             });
         }
     }
@@ -2655,21 +2655,21 @@ async fn finish_download(
         }
     }
 
-    if let Some(esperado) = expected_sha256 {
+    if let Some(expected) = expected_sha256 {
         let p = part.to_path_buf();
-        let esperado = esperado.to_string();
+        let expected = expected.to_string();
         let got = tokio::task::spawn_blocking(move || crate::pom::hash_file(&p))
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?
             .0;
-        if got != esperado {
+        if got != expected {
             // Não é "falhou o download": é conteúdo que não é o que foi
             // pedido. O arquivo parcial some no tratamento de erro de
             // `spawn_download`, e nada com este nome chega ao disco bom.
             return Err(format!(
                 "sha256 não confere (pedido {}, obtido {})",
-                &esperado[..12],
+                &expected[..12],
                 &got[..12]
             ));
         }
@@ -2805,7 +2805,7 @@ mod tests {
         use crate::pom::{PomKind, PomManifest, PomModel, PomPart};
 
         let sha = "a".repeat(64);
-        let outro = "b".repeat(64);
+        let other = "b".repeat(64);
         let m = PomManifest::new(
             PomModel {
                 name: "qwen3-8b".into(),
@@ -2832,7 +2832,7 @@ mod tests {
         assert_eq!((f.start_layer, f.end_layer), (16, 31));
 
         assert!(
-            slice_label(&m, &outro).is_none(),
+            slice_label(&m, &other).is_none(),
             "parte que o manifesto não descreve não ganha rótulo inventado"
         );
     }
@@ -2892,11 +2892,11 @@ mod tests {
             .await;
 
         transfers.cancel("job-1", "atena").await;
-        let quando = {
+        let when = {
             let jobs = transfers.jobs.read().await;
             jobs.get("job-1").unwrap().finished_at.clone()
         };
-        assert!(quando.is_some(), "cancelar também carimba a hora");
+        assert!(when.is_some(), "cancelar também carimba a hora");
 
         transfers
             .finish("job-1", TRANSFER_FAILED, "conexão morreu")
@@ -2907,7 +2907,7 @@ mod tests {
         let job = jobs.get("job-1").unwrap();
         assert_eq!(job.state, TRANSFER_CANCELLED, "a decisão de alguém venceu");
         assert!(job.detail.contains("atena"), "detail: {}", job.detail);
-        assert_eq!(job.finished_at, quando, "e a hora é a do cancelamento");
+        assert_eq!(job.finished_at, when, "e a hora é a do cancelamento");
     }
 
     /// Cancelar é idempotente e não depende de o job existir: o aviso do outro
@@ -3193,29 +3193,29 @@ mod offer_latency_tests {
     /// response body" - erro que não aponta para nada (18/08).
     #[test]
     fn the_dialled_scheme_comes_from_local_policy_not_from_the_offer() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
 
-        crate::peer_client::set_tls_ativo(true);
+        crate::peer_client::set_tls_enabled(true);
         assert_eq!(
-            normaliza_esquema("http://ksia:8080"),
+            normalize_scheme("http://ksia:8080"),
             "https://ksia:8080",
             "oferta antiga em http tem que ser promovida"
         );
-        assert_eq!(normaliza_esquema("https://ksia:8080"), "https://ksia:8080");
+        assert_eq!(normalize_scheme("https://ksia:8080"), "https://ksia:8080");
         assert_eq!(
-            normaliza_esquema("http://[2804:d55::1]:8080"),
+            normalize_scheme("http://[2804:d55::1]:8080"),
             "https://[2804:d55::1]:8080",
             "IPv6 entre colchetes sobrevive"
         );
 
-        crate::peer_client::set_tls_ativo(false);
+        crate::peer_client::set_tls_enabled(false);
         assert_eq!(
-            normaliza_esquema("https://ksia:8080"),
+            normalize_scheme("https://ksia:8080"),
             "http://ksia:8080",
             "cluster em claro rebaixa a oferta"
         );
 
-        crate::peer_client::set_tls_ativo(false);
+        crate::peer_client::set_tls_enabled(false);
     }
 
     /// aceitar, com o número que ele mesmo pede em `/api/transfer/manifest` -
@@ -3229,8 +3229,8 @@ mod offer_latency_tests {
         // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
         // erro e a asserção estourava em `offers[0]` com a lista vazia - a
         // intermitência que perseguiu a suíte o dia 18/08 inteiro.
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
-        crate::peer_client::set_tls_ativo(false);
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
+        crate::peer_client::set_tls_enabled(false);
 
         let dir = std::env::temp_dir().join(format!("pom-offer-fast-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3294,8 +3294,8 @@ mod offer_latency_tests {
         // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
         // erro e a asserção estourava em `offers[0]` com a lista vazia - a
         // intermitência que perseguiu a suíte o dia 18/08 inteiro.
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
-        crate::peer_client::set_tls_ativo(false);
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
+        crate::peer_client::set_tls_enabled(false);
 
         let dir = std::env::temp_dir().join(format!("pom-offer-size-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3336,8 +3336,8 @@ mod offer_latency_tests {
         // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
         // erro e a asserção estourava em `offers[0]` com a lista vazia - a
         // intermitência que perseguiu a suíte o dia 18/08 inteiro.
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
-        crate::peer_client::set_tls_ativo(false);
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
+        crate::peer_client::set_tls_enabled(false);
 
         let slow_hits = Arc::new(AtomicU64::new(0));
         let hits = slow_hits.clone();
@@ -3369,7 +3369,7 @@ mod offer_latency_tests {
             state.clone(),
             "peer-b".into(),
             format!("http://127.0.0.1:{port}"),
-            Alvo::Avulso {
+            OfferTarget::Standalone {
                 remote_path: "/qualquer/fatia.gguf".into(),
                 grant: None,
                 name: "fatia.gguf".into(),
@@ -3453,12 +3453,12 @@ mod part_fetch_tests {
         state.auth.write().await.shard_dir = Some(shard_dir.to_string_lossy().into());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let porta = listener.local_addr().unwrap().port();
+        let port = listener.local_addr().unwrap().port();
         let app = routes().with_state(state.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (state, porta)
+        (state, port)
     }
 
     /// **Uma parte não viaja sem o `.pom` dela.**
@@ -3470,34 +3470,34 @@ mod part_fetch_tests {
     /// falta é melhor que terminar bem e deixar lixo com cara de fatia.
     #[tokio::test]
     async fn a_part_without_its_manifest_is_refused() {
-        let raiz =
+        let root =
             std::env::temp_dir().join(format!("pom-parte-{}", uuid::Uuid::new_v4().simple()));
-        let disco_servidor = raiz.join("servidor");
-        let disco_cliente = raiz.join("cliente");
+        let server_disk = root.join("servidor");
+        let client_disk = root.join("cliente");
 
         // Os bytes existem na origem, o manifesto não.
-        let conteudo = crate::splitter::test_gguf_bytes(8);
+        let content = crate::splitter::test_gguf_bytes(8);
         let (sha, _) = {
-            let tmp = raiz.join("tmp.gguf");
-            std::fs::create_dir_all(&raiz).unwrap();
-            std::fs::write(&tmp, &conteudo).unwrap();
+            let tmp = root.join("tmp.gguf");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(&tmp, &content).unwrap();
             pom::hash_file(&tmp).unwrap()
         };
-        let pasta_servidor = disco_servidor.join("qwen3-8b-orfa");
-        std::fs::create_dir_all(&pasta_servidor).unwrap();
-        std::fs::write(pom::part_path(&pasta_servidor, &sha).unwrap(), &conteudo).unwrap();
+        let server_folder = server_disk.join("qwen3-8b-orfa");
+        std::fs::create_dir_all(&server_folder).unwrap();
+        std::fs::write(pom::part_path(&server_folder, &sha).unwrap(), &content).unwrap();
 
-        let (_servidor, porta) = serving_node(&disco_servidor).await;
-        let cliente = crate::gateway::testkit::state_with(
+        let (_server, port) = serving_node(&server_disk).await;
+        let client = crate::gateway::testkit::state_with(
             "cliente",
-            vec![crate::gateway::testkit::peer("servidor", "servidor", porta)],
+            vec![crate::gateway::testkit::peer("servidor", "servidor", port)],
         )
         .await;
-        cliente.auth.write().await.shard_dir = Some(disco_cliente.to_string_lossy().into());
+        client.auth.write().await.shard_dir = Some(client_disk.to_string_lossy().into());
 
         let resp = start_pull(
             ConnectionAuth,
-            State(cliente.clone()),
+            State(client.clone()),
             Json(PullRequest {
                 sha256: Some(sha.clone()),
                 model: Some("qwen3-8b".into()),
@@ -3514,33 +3514,33 @@ mod part_fetch_tests {
         );
 
         // E nada foi escrito: nem pasta de rodada inventada, nem quarentena.
-        assert!(!disco_cliente.join("recebidos").exists());
-        assert!(!disco_cliente.join("qwen3-8b").exists());
+        assert!(!client_disk.join("recebidos").exists());
+        assert!(!client_disk.join("qwen3-8b").exists());
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Oferecer uma parte órfã também é recusado, e do lado de quem manda: a
     /// máquina que tem o arquivo sem o `.pom` é a que precisa consertar.
     #[tokio::test]
     async fn offering_an_orphan_part_is_refused_at_the_source() {
-        let raiz = std::env::temp_dir().join(format!("pom-orf-{}", uuid::Uuid::new_v4().simple()));
-        let pasta = raiz.join("qwen3-8b-orfa");
-        std::fs::create_dir_all(&pasta).unwrap();
+        let root = std::env::temp_dir().join(format!("pom-orf-{}", uuid::Uuid::new_v4().simple()));
+        let folder = root.join("qwen3-8b-orfa");
+        std::fs::create_dir_all(&folder).unwrap();
 
-        let conteudo = crate::splitter::test_gguf_bytes(8);
-        let tmp = raiz.join("tmp.gguf");
-        std::fs::write(&tmp, &conteudo).unwrap();
+        let content = crate::splitter::test_gguf_bytes(8);
+        let tmp = root.join("tmp.gguf");
+        std::fs::write(&tmp, &content).unwrap();
         let (sha, _) = pom::hash_file(&tmp).unwrap();
-        let caminho = pom::part_path(&pasta, &sha).unwrap();
-        std::fs::rename(&tmp, &caminho).unwrap();
+        let path = pom::part_path(&folder, &sha).unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
 
         let state = crate::gateway::testkit::state_with(
             "eu",
             vec![crate::gateway::testkit::peer("outro", "outro", 8080)],
         )
         .await;
-        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        state.auth.write().await.shard_dir = Some(root.to_string_lossy().into());
 
         let resp = send_to_peer(
             ConnectionAuth,
@@ -3549,38 +3549,38 @@ mod part_fetch_tests {
             // catálogo desta máquina - caminho não vem mais do navegador.
             Json(SendRequest {
                 to_node_id: "outro".into(),
-                filename: caminho.file_name().unwrap().to_string_lossy().into_owned(),
+                filename: path.file_name().unwrap().to_string_lossy().into_owned(),
             }),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Pedir um hash que ninguém tem é recusado na hora, sem deixar arquivo.
     #[tokio::test]
     async fn a_part_nobody_has_fails_without_leaving_a_file() {
-        let raiz =
+        let root =
             std::env::temp_dir().join(format!("pom-sem-parte-{}", uuid::Uuid::new_v4().simple()));
-        let disco_servidor = raiz.join("servidor");
-        let disco_cliente = raiz.join("cliente");
-        std::fs::create_dir_all(&disco_servidor).unwrap();
+        let server_disk = root.join("servidor");
+        let client_disk = root.join("cliente");
+        std::fs::create_dir_all(&server_disk).unwrap();
 
-        let (_servidor, porta) = serving_node(&disco_servidor).await;
-        let cliente = crate::gateway::testkit::state_with(
+        let (_server, port) = serving_node(&server_disk).await;
+        let client = crate::gateway::testkit::state_with(
             "cliente",
-            vec![crate::gateway::testkit::peer("servidor", "servidor", porta)],
+            vec![crate::gateway::testkit::peer("servidor", "servidor", port)],
         )
         .await;
-        cliente.auth.write().await.shard_dir = Some(disco_cliente.to_string_lossy().into());
+        client.auth.write().await.shard_dir = Some(client_disk.to_string_lossy().into());
 
-        let ausente = "c".repeat(64);
+        let absent = "c".repeat(64);
         let resp = start_pull(
             ConnectionAuth,
-            State(cliente.clone()),
+            State(client.clone()),
             Json(PullRequest {
-                sha256: Some(ausente.clone()),
+                sha256: Some(absent.clone()),
                 model: Some("qwen3-8b".into()),
                 node_id: "servidor".into(),
                 remote_path: String::new(),
@@ -3589,11 +3589,11 @@ mod part_fetch_tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert!(!pom::part_path(&disco_cliente.join("recebidos"), &ausente)
+        assert!(!pom::part_path(&client_disk.join("recebidos"), &absent)
             .unwrap()
             .exists());
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A regra vale nos dois sentidos: aceitar uma oferta de fatia sem `.pom`
@@ -3609,7 +3609,7 @@ mod part_fetch_tests {
             from_node_id: "outro".into(),
             from_host: "outro".into(),
             from_gateway: "http://127.0.0.1:1".into(),
-            remote_path: format!("/fatias/qwen/{sha}.gguf"),
+            remote_path: format!("/shards/qwen/{sha}.gguf"),
             grant: Some("g".into()),
             name: format!("{sha}.gguf"),
             size_bytes: 4096,
@@ -3631,12 +3631,12 @@ mod part_fetch_tests {
 
         // Um arquivo que **não** é parte continua passando: a exigência é sobre
         // fatia, não sobre tudo que chega.
-        let inteiro = TransferOffer {
+        let whole = TransferOffer {
             id: "of-2".into(),
             from_node_id: "outro".into(),
             from_host: "outro".into(),
             from_gateway: "http://127.0.0.1:1".into(),
-            remote_path: "/modelos/qwen3.5-9b.gguf".into(),
+            remote_path: "/models/qwen3.5-9b.gguf".into(),
             grant: Some("g".into()),
             name: "qwen3.5-9b.gguf".into(),
             size_bytes: 4096,
@@ -3645,7 +3645,7 @@ mod part_fetch_tests {
             start_layer: None,
             end_layer: None,
         };
-        assert!(alvo_da_oferta(&state, &inteiro).await.is_ok());
+        assert!(offer_target(&state, &whole).await.is_ok());
     }
 
     /// Um `sha` da rede não pode virar caminho: `find_part` só aceita hash.
@@ -3666,15 +3666,15 @@ mod pom_travels_tests {
     use crate::pom::{self, PomKind, PomManifest, PomModel, PomPart};
 
     /// Um nó com uma parte e o manifesto dela em disco, servindo o roteador.
-    async fn no_com_parte(raiz: &Path) -> (GatewayState, u16, PomManifest, String) {
-        let pasta = pom::scratch_dir(raiz);
-        std::fs::create_dir_all(&pasta).unwrap();
+    async fn node_with_part(root: &Path) -> (GatewayState, u16, PomManifest, String) {
+        let folder = pom::scratch_dir(root);
+        std::fs::create_dir_all(&folder).unwrap();
 
         let bytes = crate::splitter::test_gguf_bytes(8);
-        let tmp = pasta.join("tmp");
+        let tmp = folder.join("tmp");
         std::fs::write(&tmp, &bytes).unwrap();
         let (sha, n) = pom::hash_file(&tmp).unwrap();
-        std::fs::rename(&tmp, pom::part_path(&pasta, &sha).unwrap()).unwrap();
+        std::fs::rename(&tmp, pom::part_path(&folder, &sha).unwrap()).unwrap();
 
         let m = PomManifest::new(
             PomModel {
@@ -3696,18 +3696,18 @@ mod pom_travels_tests {
                 tp: None,
             }],
         );
-        let pasta = pom::finalize_run(raiz, &pasta, &m).unwrap();
-        let _ = &pasta;
+        let folder = pom::finalize_run(root, &folder, &m).unwrap();
+        let _ = &folder;
 
         let state = crate::gateway::testkit::state_with("origem", vec![]).await;
-        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        state.auth.write().await.shard_dir = Some(root.to_string_lossy().into());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let porta = listener.local_addr().unwrap().port();
+        let port = listener.local_addr().unwrap().port();
         let app = routes().with_state(state.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (state, porta, m, sha)
+        (state, port, m, sha)
     }
 
     /// Puxar por hash tem que trazer o `.pom` junto e gravar tudo na pasta do
@@ -3716,25 +3716,25 @@ mod pom_travels_tests {
     /// nome ilegível.
     #[tokio::test]
     async fn pulling_a_part_brings_its_manifest_along() {
-        let raiz = std::env::temp_dir().join(format!("pom-tr-{}", uuid::Uuid::new_v4().simple()));
-        let disco_origem = raiz.join("origem");
-        let disco_destino = raiz.join("destino");
-        let (origem, porta, manifesto, sha) = no_com_parte(&disco_origem).await;
-        origem.network.peers.write().await.insert(
+        let root = std::env::temp_dir().join(format!("pom-tr-{}", uuid::Uuid::new_v4().simple()));
+        let source_disk = root.join("origem");
+        let dest_disk = root.join("destino");
+        let (source, port, manifesto, sha) = node_with_part(&source_disk).await;
+        source.network.peers.write().await.insert(
             "destino".into(),
             crate::gateway::testkit::peer("destino", "destino", 0),
         );
 
-        let cliente = crate::gateway::testkit::state_with(
+        let client = crate::gateway::testkit::state_with(
             "destino",
-            vec![crate::gateway::testkit::peer("origem", "origem", porta)],
+            vec![crate::gateway::testkit::peer("origem", "origem", port)],
         )
         .await;
-        cliente.auth.write().await.shard_dir = Some(disco_destino.to_string_lossy().into());
+        client.auth.write().await.shard_dir = Some(dest_disk.to_string_lossy().into());
 
         let resp = start_pull(
             ConnectionAuth,
-            State(cliente.clone()),
+            State(client.clone()),
             Json(PullRequest {
                 sha256: Some(sha.clone()),
                 model: Some("qwen3-8b".into()),
@@ -3746,26 +3746,26 @@ mod pom_travels_tests {
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let pasta = pom::dir_for(&disco_destino, &manifesto);
-        let destino = pom::part_path(&pasta, &sha).unwrap();
+        let folder = pom::dir_for(&dest_disk, &manifesto);
+        let destination = pom::part_path(&folder, &sha).unwrap();
         for _ in 0..100 {
-            if destino.is_file() {
+            if destination.is_file() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        assert!(destino.is_file(), "a parte cai na pasta do modelo");
+        assert!(destination.is_file(), "a parte cai na pasta do modelo");
         // E **nada** na raiz da pasta de fatias, que era onde ela ia parar.
-        assert!(!disco_destino.join("recebidos").exists());
-        assert!(!disco_destino.join(format!("{sha}.gguf")).exists());
+        assert!(!dest_disk.join("recebidos").exists());
+        assert!(!dest_disk.join(format!("{sha}.gguf")).exists());
 
         // O manifesto chegou junto, e é ele que dá nome à fatia no catálogo.
-        let manifestos = pom::load_dir(&pasta);
+        let manifestos = pom::load_dir(&folder);
         assert_eq!(manifestos.len(), 1, "o `.pom` veio com a parte");
         assert_eq!(manifestos[0].pom_id, manifesto.pom_id);
 
-        let cat = crate::catalog::discover(&[], &disco_destino);
+        let cat = crate::catalog::discover(&[], &dest_disk);
         assert_eq!(cat.models.len(), 1);
         assert!(
             cat.models[0].name.contains("qwen3:8b") && cat.models[0].name.contains("L0-7"),
@@ -3774,7 +3774,7 @@ mod pom_travels_tests {
         );
         assert!(cat.models[0].is_shard(), "e como fatia, não modelo inteiro");
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Por que `recebidos/` ainda existe.
@@ -3788,17 +3788,17 @@ mod pom_travels_tests {
     /// para a pasta do modelo (ver `pulling_a_part_brings_its_manifest_along`).
     #[tokio::test]
     async fn a_whole_model_has_no_manifest_and_lands_in_recebidos() {
-        let raiz = std::env::temp_dir().join(format!("pom-av-{}", uuid::Uuid::new_v4().simple()));
-        let recebidos = raiz.join("recebidos");
-        std::fs::create_dir_all(&recebidos).unwrap();
+        let root = std::env::temp_dir().join(format!("pom-av-{}", uuid::Uuid::new_v4().simple()));
+        let received = root.join("recebidos");
+        std::fs::create_dir_all(&received).unwrap();
         // Um modelo inteiro que chegou por este caminho.
         std::fs::write(
-            recebidos.join("qwen3.5-9b.gguf"),
+            received.join("qwen3.5-9b.gguf"),
             crate::splitter::test_gguf_bytes(8),
         )
         .unwrap();
 
-        let cat = crate::catalog::discover(&[], &raiz);
+        let cat = crate::catalog::discover(&[], &root);
         assert_eq!(cat.models.len(), 1);
         let m = &cat.models[0];
         assert_eq!(m.name, "qwen3.5-9b.gguf", "aparece pelo nome, não por hash");
@@ -3806,36 +3806,36 @@ mod pom_travels_tests {
         assert!(m.sha256.is_none());
         assert!(cat.shard_sets.is_empty(), "não forma conjunto de fatias");
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Quem oferece manda o manifesto na própria oferta, para o outro lado
     /// saber o que está aceitando antes de baixar nada.
     #[tokio::test]
     async fn an_offer_carries_the_manifest() {
-        let raiz = std::env::temp_dir().join(format!("pom-of-{}", uuid::Uuid::new_v4().simple()));
-        let disco = raiz.join("origem");
-        let (state, _porta, manifesto, sha) = no_com_parte(&disco).await;
+        let root = std::env::temp_dir().join(format!("pom-of-{}", uuid::Uuid::new_v4().simple()));
+        let disk = root.join("origem");
+        let (state, _port, manifesto, sha) = node_with_part(&disk).await;
 
-        let pasta = pom::dir_for(&disco, &manifesto);
-        let caminho = pom::part_path(&pasta, &sha).unwrap();
+        let folder = pom::dir_for(&disk, &manifesto);
+        let path = pom::part_path(&folder, &sha).unwrap();
 
-        let achado = manifest_for(&state, &caminho)
+        let found = manifest_for(&state, &path)
             .await
             .expect("o manifesto da parte está ao lado dela");
-        assert_eq!(achado.pom_id, manifesto.pom_id);
+        assert_eq!(found.pom_id, manifesto.pom_id);
 
         // Um arquivo que não é parte de manifesto nenhum vai sozinho.
-        let solto = raiz.join("solto.gguf");
-        std::fs::write(&solto, crate::splitter::test_gguf_bytes(4)).unwrap();
-        assert!(manifest_for(&state, &solto).await.is_none());
+        let loose = root.join("solto.gguf");
+        std::fs::write(&loose, crate::splitter::test_gguf_bytes(4)).unwrap();
+        assert!(manifest_for(&state, &loose).await.is_none());
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]
     async fn accepting_a_part_merges_with_the_local_manifest() {
-        let raiz = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "pom-transfer-merge-{}",
             uuid::Uuid::new_v4().simple()
         ));
@@ -3873,13 +3873,13 @@ mod pom_travels_tests {
             source_sha256.clone(),
             vec![local_part],
         );
-        let scratch = pom::scratch_dir(&raiz);
+        let scratch = pom::scratch_dir(&root);
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(pom::part_path(&scratch, &local_sha256).unwrap(), b"local").unwrap();
-        let model_dir = pom::finalize_run(&raiz, &scratch, &local_manifest).unwrap();
+        let model_dir = pom::finalize_run(&root, &scratch, &local_manifest).unwrap();
 
         let state = crate::gateway::testkit::state_with("destino", vec![]).await;
-        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        state.auth.write().await.shard_dir = Some(root.to_string_lossy().into());
         let incoming = PomManifest::new(
             model,
             PomKind::Layers,
@@ -3902,13 +3902,13 @@ mod pom_travels_tests {
             end_layer: Some(31),
         };
 
-        let alvo = alvo_da_oferta(&state, &offer).await.unwrap();
-        let destino = match alvo {
-            Alvo::Parte { model_dir, .. } => model_dir.unwrap(),
-            Alvo::Avulso { .. } => panic!("a oferta com manifesto é uma parte"),
+        let target = offer_target(&state, &offer).await.unwrap();
+        let destination = match target {
+            OfferTarget::Part { model_dir, .. } => model_dir.unwrap(),
+            OfferTarget::Standalone { .. } => panic!("a oferta com manifesto é uma parte"),
         };
-        assert_eq!(destino, model_dir);
-        let manifestos = pom::load_dir(&destino);
+        assert_eq!(destination, model_dir);
+        let manifestos = pom::load_dir(&destination);
         assert_eq!(manifestos.len(), 1);
         assert_eq!(manifestos[0].pom_id, source_sha256);
         assert_eq!(manifestos[0].parts.len(), 2);
@@ -3918,7 +3918,7 @@ mod pom_travels_tests {
             .iter()
             .any(|p| p.sha256 == remote_sha256));
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 
@@ -3940,7 +3940,7 @@ mod verdict_tests {
     /// `from_gateway` da oferta, e é por esse endereço que o veredito volta.
     /// Com o 8080 do testkit os dois lados discariam uma porta onde não há
     /// ninguém.
-    async fn no_servindo(state: GatewayState, listener: tokio::net::TcpListener) -> GatewayState {
+    async fn serving_node(state: GatewayState, listener: tokio::net::TcpListener) -> GatewayState {
         let app = routes().with_state(state.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
@@ -3949,15 +3949,15 @@ mod verdict_tests {
     }
 
     /// Um nó com uma parte em disco, servindo o roteador de transferências.
-    async fn no_com_parte(node_id: &str, raiz: &Path) -> (GatewayState, u16, PomManifest, String) {
-        let pasta = pom::scratch_dir(raiz);
-        std::fs::create_dir_all(&pasta).unwrap();
+    async fn node_with_part(node_id: &str, root: &Path) -> (GatewayState, u16, PomManifest, String) {
+        let folder = pom::scratch_dir(root);
+        std::fs::create_dir_all(&folder).unwrap();
 
         let bytes = crate::splitter::test_gguf_bytes(8);
-        let tmp = pasta.join("tmp");
+        let tmp = folder.join("tmp");
         std::fs::write(&tmp, &bytes).unwrap();
         let (sha, n) = pom::hash_file(&tmp).unwrap();
-        std::fs::rename(&tmp, pom::part_path(&pasta, &sha).unwrap()).unwrap();
+        std::fs::rename(&tmp, pom::part_path(&folder, &sha).unwrap()).unwrap();
 
         let m = PomManifest::new(
             PomModel {
@@ -3979,33 +3979,33 @@ mod verdict_tests {
                 tp: None,
             }],
         );
-        pom::finalize_run(raiz, &pasta, &m).unwrap();
+        pom::finalize_run(root, &folder, &m).unwrap();
 
         let mut state = crate::gateway::testkit::state_with(node_id, vec![]).await;
-        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        state.auth.write().await.shard_dir = Some(root.to_string_lossy().into());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let porta = listener.local_addr().unwrap().port();
-        state.gateway_port = porta;
-        let state = no_servindo(state, listener).await;
-        (state, porta, m, sha)
+        let port = listener.local_addr().unwrap().port();
+        state.gateway_port = port;
+        let state = serving_node(state, listener).await;
+        (state, port, m, sha)
     }
 
     /// O outro lado: um nó vazio que já conhece `peer`, servindo o roteador.
-    async fn no_vazio(
+    async fn empty_node(
         node_id: &str,
-        raiz: &Path,
+        root: &Path,
         peer: crate::network::PeerInfo,
     ) -> (GatewayState, u16) {
         let mut state = crate::gateway::testkit::state_with(node_id, vec![peer]).await;
-        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        state.auth.write().await.shard_dir = Some(root.to_string_lossy().into());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let porta = listener.local_addr().unwrap().port();
-        state.gateway_port = porta;
-        (no_servindo(state, listener).await, porta)
+        let port = listener.local_addr().unwrap().port();
+        state.gateway_port = port;
+        (serving_node(state, listener).await, port)
     }
 
     /// Espera o job chegar a um estado terminal, ou desiste.
-    async fn ate_terminar(state: &GatewayState, job_id: &str) -> TransferJob {
+    async fn until_done(state: &GatewayState, job_id: &str) -> TransferJob {
         for _ in 0..200 {
             if let Some(j) = state.transfers.jobs.read().await.get(job_id) {
                 if is_finished(&j.state) {
@@ -4021,27 +4021,27 @@ mod verdict_tests {
     /// byte sai.
     #[tokio::test]
     async fn accepting_tells_the_sender_and_the_send_completes() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
-        crate::peer_client::set_tls_ativo(false);
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
+        crate::peer_client::set_tls_enabled(false);
 
-        let raiz =
+        let root =
             std::env::temp_dir().join(format!("pom-vd-ok-{}", uuid::Uuid::new_v4().simple()));
-        let disco_a = raiz.join("atena");
-        let disco_b = raiz.join("ksia");
-        let (atena, porta_a, _m, sha) = no_com_parte("atena", &disco_a).await;
+        let disk_a = root.join("atena");
+        let disk_b = root.join("ksia");
+        let (atena, port_a, _m, sha) = node_with_part("atena", &disk_a).await;
 
         // O receptor precisa alcançar o remetente pelo roteador de verdade: é
         // por ele que o veredito volta.
-        let (ksia, porta_b) = no_vazio(
+        let (ksia, port_b) = empty_node(
             "ksia",
-            &disco_b,
-            crate::gateway::testkit::peer("atena", "atena", porta_a),
+            &disk_b,
+            crate::gateway::testkit::peer("atena", "atena", port_a),
         )
         .await;
         // E o remetente precisa conhecer o destino, para nomeá-lo na tela.
         atena.network.peers.write().await.insert(
             "ksia".into(),
-            crate::gateway::testkit::peer("ksia", "ksia", porta_b),
+            crate::gateway::testkit::peer("ksia", "ksia", port_b),
         );
 
         let resp = send_to_peer(
@@ -4058,18 +4058,18 @@ mod verdict_tests {
         // O remetente guardou a oferta para saber nomear o veredito.
         assert_eq!(atena.transfers.offered.read().await.len(), 1);
 
-        let oferta_id = {
+        let offer_id = {
             let offers = ksia.transfers.offers.read().await;
             assert_eq!(offers.len(), 1, "a oferta chegou no destino");
             offers[0].id.clone()
         };
 
-        let resp = accept_offer(ConnectionAuth, State(ksia.clone()), AxumPath(oferta_id)).await;
+        let resp = accept_offer(ConnectionAuth, State(ksia.clone()), AxumPath(offer_id)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         // O download termina, e o **envio** também: era este segundo fecho que
         // não existia, e por isso o sino de quem mandou nunca esvaziava.
-        let recebido = {
+        let received = {
             let id = ksia
                 .transfers
                 .jobs
@@ -4079,27 +4079,27 @@ mod verdict_tests {
                 .next()
                 .cloned()
                 .expect("o receptor registrou o job");
-            ate_terminar(&ksia, &id).await
+            until_done(&ksia, &id).await
         };
-        assert_eq!(recebido.state, TRANSFER_DONE);
-        assert_eq!(recebido.direction, TRANSFER_RECEIVING);
+        assert_eq!(received.state, TRANSFER_DONE);
+        assert_eq!(received.direction, TRANSFER_RECEIVING);
 
-        let enviado = ate_terminar(&atena, &recebido.id).await;
+        let sent = until_done(&atena, &received.id).await;
         assert_eq!(
-            enviado.direction, TRANSFER_SENDING,
+            sent.direction, TRANSFER_SENDING,
             "o mesmo id existe nos dois lados, com direções opostas"
         );
         assert_eq!(
-            enviado.state, TRANSFER_DONE,
+            sent.state, TRANSFER_DONE,
             "o envio ficava `running` para sempre: nada o fechava"
         );
-        assert_eq!(enviado.peer_host, "ksia", "e a tela diz para quem foi");
+        assert_eq!(sent.peer_host, "ksia", "e a tela diz para quem foi");
         assert!(
-            enviado.finished_at.is_some(),
+            sent.finished_at.is_some(),
             "sem a hora o sino não mostra o desfecho"
         );
         assert_eq!(
-            enviado.bytes_done, enviado.bytes_total,
+            sent.bytes_done, sent.bytes_total,
             "e o número final é o arquivo inteiro, não o último relato de 500 ms"
         );
 
@@ -4109,48 +4109,48 @@ mod verdict_tests {
         // **E os dois lados sabem dizer o que era, sem falar em hash.** O nome
         // do arquivo é o sha256; quem diz de que modelo é e que camadas traz é
         // o `.pom`, e ele viaja com a oferta e é gravado antes do primeiro byte.
-        for (quem, job) in [("recebido", &recebido), ("enviado", &enviado)] {
+        for (who, job) in [("recebido", &received), ("enviado", &sent)] {
             assert_eq!(
                 job.model_label.as_deref(),
                 Some("qwen3:8b"),
-                "{quem}: a tela precisa do modelo, não do hash"
+                "{who}: a tela precisa do modelo, não do hash"
             );
             assert_eq!(
                 (job.start_layer, job.end_layer),
                 (Some(0), Some(7)),
-                "{quem}: e da faixa de camadas"
+                "{who}: e da faixa de camadas"
             );
             // O hash continua disponível, como identificação secundária: é ele
             // que nomeia o arquivo em disco.
-            assert_eq!(job.name, format!("{sha}.gguf"), "{quem}");
+            assert_eq!(job.name, format!("{sha}.gguf"), "{who}");
         }
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Recusar também avisa - e era o caso que não produzia sinal nenhum.
     #[tokio::test]
     async fn rejecting_tells_the_sender_who_refused() {
-        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
-        crate::peer_client::set_tls_ativo(false);
+        let _guard = crate::peer_client::GLOBAL_POLICY.lock();
+        crate::peer_client::set_tls_enabled(false);
 
-        let raiz =
+        let root =
             std::env::temp_dir().join(format!("pom-vd-nao-{}", uuid::Uuid::new_v4().simple()));
-        let disco_a = raiz.join("atena");
-        let disco_b = raiz.join("ksia");
-        let (atena, porta_a, _m, sha) = no_com_parte("atena", &disco_a).await;
+        let disk_a = root.join("atena");
+        let disk_b = root.join("ksia");
+        let (atena, port_a, _m, sha) = node_with_part("atena", &disk_a).await;
 
         // O receptor precisa alcançar o remetente pelo roteador de verdade: é
         // por ele que o veredito volta.
-        let (ksia, porta_b) = no_vazio(
+        let (ksia, port_b) = empty_node(
             "ksia",
-            &disco_b,
-            crate::gateway::testkit::peer("atena", "atena", porta_a),
+            &disk_b,
+            crate::gateway::testkit::peer("atena", "atena", port_a),
         )
         .await;
         atena.network.peers.write().await.insert(
             "ksia".into(),
-            crate::gateway::testkit::peer("ksia", "ksia", porta_b),
+            crate::gateway::testkit::peer("ksia", "ksia", port_b),
         );
 
         let _ = send_to_peer(
@@ -4163,39 +4163,39 @@ mod verdict_tests {
         )
         .await;
 
-        let oferta_id = ksia.transfers.offers.read().await[0].id.clone();
-        let resp = reject_offer(ConnectionAuth, State(ksia.clone()), AxumPath(oferta_id)).await;
+        let offer_id = ksia.transfers.offers.read().await[0].id.clone();
+        let resp = reject_offer(ConnectionAuth, State(ksia.clone()), AxumPath(offer_id)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         // O remetente fica sabendo. Antes disto a recusa era um silêncio: nem
         // job, nem linha de log, nem nada na tela de quem tinha oferecido.
-        let mut recusa = None;
+        let mut refusal = None;
         for _ in 0..200 {
             let jobs = atena.transfers.jobs.read().await;
             if let Some(j) = jobs.values().next() {
-                recusa = Some(j.clone());
+                refusal = Some(j.clone());
                 break;
             }
             drop(jobs);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let recusa = recusa.expect("a recusa tem que virar aviso no remetente");
-        assert_eq!(recusa.direction, TRANSFER_SENDING);
+        let refusal = refusal.expect("a recusa tem que virar aviso no remetente");
+        assert_eq!(refusal.direction, TRANSFER_SENDING);
         assert_eq!(
-            recusa.state, TRANSFER_CANCELLED,
+            refusal.state, TRANSFER_CANCELLED,
             "recusa é decisão de alguém, não falha"
         );
         assert!(
-            recusa.detail.contains("ksia"),
+            refusal.detail.contains("ksia"),
             "a tela precisa dizer quem recusou: {}",
-            recusa.detail
+            refusal.detail
         );
-        assert!(recusa.finished_at.is_some());
+        assert!(refusal.finished_at.is_some());
         // O aviso de recusa também fala em modelo, não em hash.
-        assert_eq!(recusa.model_label.as_deref(), Some("qwen3:8b"));
-        assert_eq!((recusa.start_layer, recusa.end_layer), (Some(0), Some(7)));
+        assert_eq!(refusal.model_label.as_deref(), Some("qwen3:8b"));
+        assert_eq!((refusal.start_layer, refusal.end_layer), (Some(0), Some(7)));
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Um veredito sobre uma concessão que esta máquina não ofereceu não
@@ -4233,7 +4233,7 @@ mod verdict_tests {
                 name: "f.gguf".into(),
                 path: "/m/f.gguf".into(),
                 size_bytes: 10,
-                fatia: None,
+                slice: None,
             },
         );
 

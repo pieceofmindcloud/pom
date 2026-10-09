@@ -7,7 +7,7 @@ const utf8 = (text: string) => new TextEncoder().encode(text);
 
 describe("sha256", () => {
   // Vetores da FIPS 180-4, inclusive a mensagem de dois blocos.
-  it("bate com os vetores de teste do padrão", () => {
+  it("matches the test vectors of the standard", () => {
     expect(hex(sha256(utf8("")))).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     expect(hex(sha256(utf8("abc")))).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     expect(hex(sha256(utf8("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")))).toBe(
@@ -25,7 +25,7 @@ describe("fingerprintFromTrustDocument", () => {
    * O assistente de primeiro acesso é aberto por HTTP no IP da máquina, onde o
    * navegador não oferece `crypto.subtle`. A impressão digital tem de sair igual.
    */
-  it("calcula a mesma impressão digital sem crypto.subtle", async () => {
+  it("computes the same fingerprint without crypto.subtle", async () => {
     vi.stubGlobal("crypto", webcrypto);
     const withSubtle = await fingerprintFromTrustDocument(document);
 
@@ -36,7 +36,7 @@ describe("fingerprintFromTrustDocument", () => {
     expect(withoutSubtle).toBe(withSubtle);
   });
 
-  it("devolve null para o que não é documento de confiança", async () => {
+  it("returns null for what is not a trust document", async () => {
     expect(await fingerprintFromTrustDocument("não é json")).toBeNull();
     expect(await fingerprintFromTrustDocument(JSON.stringify({ anchor: {} }))).toBeNull();
   });

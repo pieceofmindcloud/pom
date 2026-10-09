@@ -156,8 +156,8 @@ pub(super) async fn deploy_endpoint(
             .deployments()
             .ok()
             .as_deref()
-            .and_then(|todas| {
-                crate::deployment::matching_shape(todas, record_kind(req.kind), proof, &ranges)
+            .and_then(|all| {
+                crate::deployment::matching_shape(all, record_kind(req.kind), proof, &ranges)
                     .map(|d| d.deploy_id.clone())
             }),
         None => None,
@@ -181,7 +181,7 @@ pub(super) async fn deploy_endpoint(
     // com cada `apply` para que o nó saiba de que conjunto passou a fazer parte.
     let record_plan = match reuse_id {
         Some(id) => match find_record(&state, &id).await {
-            Some(existente) => RecordPlan::ReuseVersion(Box::new(existente)),
+            Some(existing) => RecordPlan::ReuseVersion(Box::new(existing)),
             // O registro sumiu entre o `matching_shape` e agora: trata como novo.
             None => RecordPlan::New {
                 deploy_id: crate::deployment::new_deploy_id(),
@@ -512,7 +512,7 @@ pub(super) fn launch_targets(
         })
         .transpose()?;
     let _ = rank0_url;
-    let membros = match tp {
+    let members = match tp {
         Some(t) => tp_members(t, machines)?,
         None => Vec::new(),
     };
@@ -561,7 +561,7 @@ pub(super) fn launch_targets(
                     } else {
                         "worker"
                     },
-                    &membros,
+                    &members,
                 )),
                 mmproj_path: (target.rank == 0)
                     .then(|| held.mmproj_path.clone())
@@ -646,7 +646,7 @@ pub(super) fn launch_targets(
                 no_embeddings: None,
                 peer_index,
                 peer_count,
-                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &members)),
                 mmproj_path: if step.start_layer == 0 {
                     target_machine.and_then(|machine| {
                         step.parts.first().and_then(|part| {
@@ -692,7 +692,7 @@ pub(super) fn launch_targets(
             no_embeddings: None,
             peer_index,
             peer_count,
-            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &members)),
             mmproj_path: (step.start_layer == 0)
                 .then(|| held.mmproj_path.clone())
                 .flatten(),
@@ -737,7 +737,7 @@ pub(super) fn launch_targets(
                 no_embeddings: None,
                 peer_index: None,
                 peer_count: None,
-                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
+                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &members)),
                 mmproj_path: None,
                 mtp_draft_path: None,
                 mtp_draft_file: None,

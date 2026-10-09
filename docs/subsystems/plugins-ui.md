@@ -3,7 +3,7 @@
 A plugin can ship, together with its backend, its own menu, screens, routes,
 profiles and texts. POM only implements the generic mechanism (the
 `pom-plugin-ui/v1` contract); the frontend knows no specific plugin. The native
-routes `/logs` and `/estatisticas` remain as **advertising fallbacks** of
+routes `/logs` and `/statistics` remain as **advertising fallbacks** of
 `EnterpriseFeatureShowcase`, but a manifest can declare one of them to replace
 the screen at that URL. Other plugin screens live under each `plugin_code`'s
 namespace. The real code of Request Logs and Statistics lives in
@@ -80,7 +80,7 @@ them into the workspace.
 }
 ~~~
 
-The `/admin-ui/documentacao` screen adds the guides and reference of active
+The `/admin-ui/documentation` screen adds the guides and reference of active
 plugins to the system documentation. It downloads each Markdown file through
 the assets route only when the person opens it; an inactive plugin or an
 invalid manifest publishes no pages.
@@ -97,7 +97,7 @@ structures make the host ignore the whole manifest. A menu target must also be
 covered by a declared route.
 
 Different plugins can use the same relative path: their targets end up at, for
-example, `/base/example` and `/analytics/example`. `/logs` and `/estatisticas`
+example, `/base/example` and `/analytics/example`. `/logs` and `/statistics`
 are native extension points: if exactly one active plugin declares one of
 them, its route and menu use the native URL and replace the matching fallback.
 If two plugins claim the same point, neither takes the native URL and both stay
@@ -233,13 +233,13 @@ applies to new data and the plugin decides how to preserve its legacy data.
 ## Local rebuild in development
 
 The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory containing the sibling plugin repositories) at
-`/opt/pom/dev-plugins` and enables `POM_DESENV=1`. The optional cluster
+`/opt/pom/dev-plugins` and enables `POM_DEV_MODE=1`. The optional cluster
 `docker-compose.dev-plugins.yml` keeps each source bind read-only and overrides
 the build image to `dev-runtime`; that target includes Rust/Cargo and native
 tools, exposes the toolchain to the non-root node user and sets `CARGO_HOME`
 to a writable cache in the project data volume. The release
 `runtime` image still has no compiler. The panel offers the rebuild block on every
-profile when `/api/ui/node` confirms `pom_desenv=true`.
+profile when `/api/ui/node` confirms `pom_dev_mode=true`.
 
 The backend discovers direct child directories named `pom-plugin-*` under the
 source mount; a mounted directory is listed only when its Cargo manifest and

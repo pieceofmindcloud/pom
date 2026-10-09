@@ -55,7 +55,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perfil_desconhecido_cai_no_basico_e_os_nomes_sao_estaveis() {
+    fn an_unknown_profile_falls_back_to_basic_and_the_names_are_stable() {
         assert_eq!(Profile::parse("unexpected"), Profile::Basic);
         assert_eq!(Profile::Off.as_str(), "off");
         assert_eq!(Profile::Basic.as_str(), "basic");
@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn perfil_controla_spans_e_detalhes_de_chunk() {
+    fn the_profile_controls_spans_and_chunk_details() {
         assert!(!Profile::Off.collects_spans());
         assert!(Profile::Basic.collects_spans());
         assert!(!Profile::Basic.collects_chunk_details());

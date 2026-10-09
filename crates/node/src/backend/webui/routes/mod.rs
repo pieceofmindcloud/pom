@@ -785,7 +785,7 @@ mod policy_tests {
         use crate::profile::NodeProfile::{Admin, Infer, Node};
 
         // A local build installs on this machine only, like any plugin;
-        // `POM_DESENV` is what turns it on (checked by the handlers).
+        // `POM_DEV_MODE` is what turns it on (checked by the handlers).
 
         for (method, path) in [
             (Method::GET, "/api/ui/plugins/dev-sources"),

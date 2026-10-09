@@ -96,11 +96,11 @@ mod undeploy_tests {
     /// modo que um "desimplantar qwen35" teria levado as duas junto.
     #[tokio::test]
     async fn undeploying_one_deployment_leaves_the_other_serving() {
-        let (porta_a, chamadas_a) = fake_machine(axum::http::StatusCode::OK).await;
-        let (porta_b, chamadas_b) = fake_machine(axum::http::StatusCode::OK).await;
+        let (port_a, calls_a) = fake_machine(axum::http::StatusCode::OK).await;
+        let (port_b, calls_b) = fake_machine(axum::http::StatusCode::OK).await;
 
-        let mut a = peer("no-a", "maquina-a", porta_a, (0, 31));
-        let mut b = peer("no-b", "maquina-b", porta_b, (0, 31));
+        let mut a = peer("no-a", "maquina-a", port_a, (0, 31));
+        let mut b = peer("no-b", "maquina-b", port_b, (0, 31));
         a.deploy_id = "d-aaaaaaaa".into();
         b.deploy_id = "d-bbbbbbbb".into();
 
@@ -124,9 +124,9 @@ mod undeploy_tests {
             1,
             "a outra implantação nem aparece no relatório"
         );
-        assert_eq!(chamadas_a.load(Ordering::SeqCst), 1);
+        assert_eq!(calls_a.load(Ordering::SeqCst), 1);
         assert_eq!(
-            chamadas_b.load(Ordering::SeqCst),
+            calls_b.load(Ordering::SeqCst),
             0,
             "a máquina da outra implantação não pode ser tocada"
         );
@@ -135,8 +135,8 @@ mod undeploy_tests {
     /// Um id que ninguém serve não pode virar "derruba o rótulo inteiro".
     #[tokio::test]
     async fn an_unknown_deployment_id_releases_nothing() {
-        let (porta, chamadas) = fake_machine(axum::http::StatusCode::OK).await;
-        let mut a = peer("no-a", "maquina-a", porta, (0, 31));
+        let (port, calls) = fake_machine(axum::http::StatusCode::OK).await;
+        let mut a = peer("no-a", "maquina-a", port, (0, 31));
         a.deploy_id = "d-aaaaaaaa".into();
 
         let state = admin_state(vec![a]).await;
@@ -151,7 +151,7 @@ mod undeploy_tests {
         )
         .await;
         assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(chamadas.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     /// O relatório tem uma linha por máquina, e uma máquina que não confirmou
@@ -260,14 +260,14 @@ mod undeploy_tests {
     /// errada custa uma reimplantação inteira, então o palpite não é nosso.
     #[test]
     fn the_group_is_only_guessed_when_there_is_no_doubt() {
-        let uma = vec![peer("a", "h", 1, (0, 15)), peer("b", "h", 2, (16, 31))];
-        assert_eq!(resolve_group("", &uma).unwrap(), "qwen35");
-        assert_eq!(resolve_group("outro", &uma).unwrap(), "outro");
+        let one = vec![peer("a", "h", 1, (0, 15)), peer("b", "h", 2, (16, 31))];
+        assert_eq!(resolve_group("", &one).unwrap(), "qwen35");
+        assert_eq!(resolve_group("outro", &one).unwrap(), "outro");
 
-        let mut duas = uma.clone();
-        duas[1].model = "llama3".into();
-        let erro = resolve_group("", &duas).unwrap_err();
-        assert!(erro.contains("llama3") && erro.contains("qwen35"), "{erro}");
+        let mut two = one.clone();
+        two[1].model = "llama3".into();
+        let error = resolve_group("", &two).unwrap_err();
+        assert!(error.contains("llama3") && error.contains("qwen35"), "{error}");
 
         assert!(resolve_group("", &[]).is_err());
     }

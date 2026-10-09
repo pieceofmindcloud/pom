@@ -1214,10 +1214,10 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
     for _ in 0..n_kv {
         let key = r.string()?;
         let vtype = r.u32()?;
-        let escalada = key.ends_with(".attention.head_count")
+        let scaled = key.ends_with(".attention.head_count")
             || key.ends_with(".attention.head_count_kv")
             || key.ends_with(".feed_forward_length");
-        if !escalada {
+        if !scaled {
             r.skip_value(vtype)?;
             continue;
         }
@@ -4158,10 +4158,10 @@ mod tests {
         std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
 
         // head_count_kv = 2 no fixture: um grupo de 4 não divide.
-        let erro = validate_tensor_parallel(&whole, 4).unwrap_err().to_string();
+        let error = validate_tensor_parallel(&whole, 4).unwrap_err().to_string();
         assert!(
-            erro.contains("head_count_kv") && erro.contains("4"),
-            "a recusa tem que nomear a chave e o tamanho: {erro}"
+            error.contains("head_count_kv") && error.contains("4"),
+            "a recusa tem que nomear a chave e o tamanho: {error}"
         );
 
         let out = dir.join("rank0.gguf");

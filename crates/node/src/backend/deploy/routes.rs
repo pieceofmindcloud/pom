@@ -54,8 +54,8 @@ pub(super) fn local_deployments(
     self_id: &str,
     database: &crate::db::PomDb,
 ) -> anyhow::Result<serde_json::Value> {
-    let todas = database.deployments()?;
-    Ok(json!({ "node_id": self_id, "deployments": todas }))
+    let all = database.deployments()?;
+    Ok(json!({ "node_id": self_id, "deployments": all }))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -98,25 +98,25 @@ pub(super) async fn list_deployments(
 
     let peers = state.all_peers().await;
     // Por `deploy_id`, ficando com a cópia mais recentemente ativada.
-    let mut por_id: HashMap<String, crate::deployment::Deployment> = HashMap::new();
-    let mut guardado_por: HashMap<String, Vec<String>> = HashMap::new();
+    let mut by_id: HashMap<String, crate::deployment::Deployment> = HashMap::new();
+    let mut stored_by: HashMap<String, Vec<String>> = HashMap::new();
 
-    let absorve = |quem: &str,
-                   registros: Vec<crate::deployment::Deployment>,
-                   por_id: &mut HashMap<String, crate::deployment::Deployment>,
-                   guardado_por: &mut HashMap<String, Vec<String>>| {
-        for mut d in registros {
+    let absorb = |who: &str,
+                   records: Vec<crate::deployment::Deployment>,
+                   by_id: &mut HashMap<String, crate::deployment::Deployment>,
+                   stored_by: &mut HashMap<String, Vec<String>>| {
+        for mut d in records {
             d.ensure_versions();
-            guardado_por
+            stored_by
                 .entry(d.deploy_id.clone())
                 .or_default()
-                .push(quem.to_string());
-            if por_id
+                .push(who.to_string());
+            if by_id
                 .get(&d.deploy_id)
-                .map(|atual| deployment_is_newer(&d, atual))
+                .map(|current| deployment_is_newer(&d, current))
                 .unwrap_or(true)
             {
-                por_id.insert(d.deploy_id.clone(), d);
+                by_id.insert(d.deploy_id.clone(), d);
             }
         }
     };
@@ -128,10 +128,10 @@ pub(super) async fn list_deployments(
             return bad(json!({ "error": "não foi possível ler implantações locais" }));
         }
     };
-    absorve(&self_id, local, &mut por_id, &mut guardado_por);
+    absorb(&self_id, local, &mut by_id, &mut stored_by);
 
     let peer_state = state.clone();
-    let buscas = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
+    let searches = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
         let state = peer_state.clone();
         let node_id = peer.node_id.clone();
         let peer = peer.clone();
@@ -141,22 +141,22 @@ pub(super) async fn list_deployments(
                 .await
                 .ok()?;
             let body: serde_json::Value = resp.json().await.ok()?;
-            let registros: Vec<crate::deployment::Deployment> =
+            let records: Vec<crate::deployment::Deployment> =
                 serde_json::from_value(body.get("deployments")?.clone()).ok()?;
-            Some((node_id, registros))
+            Some((node_id, records))
         }
     });
 
-    for (node_id, registros) in futures::future::join_all(buscas)
+    for (node_id, records) in futures::future::join_all(searches)
         .await
         .into_iter()
         .flatten()
     {
-        absorve(&node_id, registros, &mut por_id, &mut guardado_por);
+        absorb(&node_id, records, &mut by_id, &mut stored_by);
     }
 
-    let todas: Vec<crate::deployment::Deployment> = {
-        let mut v: Vec<_> = por_id.into_values().collect();
+    let all: Vec<crate::deployment::Deployment> = {
+        let mut v: Vec<_> = by_id.into_values().collect();
         v.sort_by(|a, b| a.deploy_id.cmp(&b.deploy_id));
         v
     };
@@ -164,32 +164,32 @@ pub(super) async fn list_deployments(
     // "No ar" é o que os peers anunciam, não o que o registro diz: o registro
     // sobrevive a um nó cair, e mostrá-lo como servindo seria mentir para quem
     // está tentando entender por que a inferência parou.
-    let anunciados: std::collections::BTreeSet<String> = peers
+    let announced: std::collections::BTreeSet<String> = peers
         .iter()
         .filter(|p| p.is_alive() && !p.deploy_id.is_empty())
         .map(|p| p.deploy_id.clone())
         .collect();
-    let linhas: Vec<serde_json::Value> = todas
+    let lines: Vec<serde_json::Value> = all
         .iter()
         .map(|d| {
-            let padrao = crate::deployment::active(&todas, &d.model.label)
+            let is_default = crate::deployment::active(&all, &d.model.label)
                 .is_some_and(|a| a.deploy_id == d.deploy_id);
-            let mut holders = guardado_por.get(&d.deploy_id).cloned().unwrap_or_default();
+            let mut holders = stored_by.get(&d.deploy_id).cloned().unwrap_or_default();
             holders.sort();
             holders.dedup();
             json!({
                 "deployment": d,
-                "serving": anunciados.contains(&d.deploy_id),
-                "idle": anunciados.contains(&d.deploy_id)
+                "serving": announced.contains(&d.deploy_id),
+                "idle": announced.contains(&d.deploy_id)
                     && peers.iter().any(|p| p.is_alive() && p.deploy_id == d.deploy_id)
                     && peers.iter().filter(|p| p.is_alive() && p.deploy_id == d.deploy_id).all(|p| p.idle),
-                "is_default": padrao,
+                "is_default": is_default,
                 "holders": holders,
             })
         })
         .collect();
 
-    Json(json!({ "node_id": self_id, "deployments": linhas })).into_response()
+    Json(json!({ "node_id": self_id, "deployments": lines })).into_response()
 }
 
 /// Recebe do coordenador o registro de uma implantação de que este nó faz parte.
@@ -200,20 +200,20 @@ pub(super) async fn list_deployments(
 pub(super) async fn receive_deployment(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
-    Json(registro): Json<crate::deployment::Deployment>,
+    Json(record): Json<crate::deployment::Deployment>,
 ) -> Response {
     let self_id = state.network.node_id.clone();
     // Um registro que não menciona esta máquina não é dela para guardar. A
     // exceção é uma atualização que ela já conhecia: depois de remover uma
     // máquina, o snapshot precisa chegar também ao peer removido para que ele
     // não anuncie uma versão antiga no próximo fan-out.
-    let ja_conhecia = state
+    let already_knew = state
         .database
-        .deployment(&registro.deploy_id)
+        .deployment(&record.deploy_id)
         .ok()
         .flatten()
         .is_some();
-    if registro.node(&self_id).is_none() && !ja_conhecia {
+    if record.node(&self_id).is_none() && !already_knew {
         return bad(json!({
             "error": "este nó não faz parte da implantação"
         }));
@@ -223,14 +223,14 @@ pub(super) async fn receive_deployment(
     // de que conjunto ela faz parte. Mas dizer em voz alta, porque uma
     // cobertura furada só se manifestaria muito depois, como "Gap at layer N"
     // na primeira requisição.
-    if !registro.covers_the_model() {
+    if !record.covers_the_model() {
         warn!(
             "implantação {} não cobre as {} camadas de {}",
-            registro.deploy_id, registro.model.total_layers, registro.model.label
+            record.deploy_id, record.model.total_layers, record.model.label
         );
     }
-    match state.database.save_deployment(&registro) {
-        Ok(_) => Json(json!({ "stored": true, "deploy_id": registro.deploy_id })).into_response(),
+    match state.database.save_deployment(&record) {
+        Ok(_) => Json(json!({ "stored": true, "deploy_id": record.deploy_id })).into_response(),
         Err(e) => bad(json!({ "error": format!("{e:#}") })),
     }
 }
@@ -239,9 +239,9 @@ pub(super) async fn receive_deployment(
 ///
 /// Nao e recusa: e o que a tela mostra ao operador para ele saber que esta
 /// criando uma rota paralela em vez de preencher um buraco.
-pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u32> {
-    (nova.0..=nova.1)
-        .filter(|c| existentes.iter().any(|(i, f)| c >= i && c <= f))
+pub fn overlapping_layers(existing: &[(u32, u32)], new: (u32, u32)) -> Vec<u32> {
+    (new.0..=new.1)
+        .filter(|c| existing.iter().any(|(i, f)| c >= i && c <= f))
         .collect()
 }
 
@@ -254,13 +254,13 @@ pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u3
 ///
 /// Réplicas da mesma faixa ocupam o mesmo estágio lógico, mesmo quando entram
 /// pelo endpoint incremental de adicionar uma máquina.
-pub fn split_position(existentes: &[(u32, u32)], nova: (u32, u32)) -> (u32, u32) {
-    let mut faixas: Vec<(u32, u32)> = existentes.to_vec();
-    faixas.push(nova);
-    faixas.sort();
-    faixas.dedup();
-    let index = faixas.iter().position(|f| *f == nova).unwrap_or(0) as u32;
-    (index, faixas.len() as u32)
+pub fn split_position(existing: &[(u32, u32)], new: (u32, u32)) -> (u32, u32) {
+    let mut ranges: Vec<(u32, u32)> = existing.to_vec();
+    ranges.push(new);
+    ranges.sort();
+    ranges.dedup();
+    let index = ranges.iter().position(|f| *f == new).unwrap_or(0) as u32;
+    (index, ranges.len() as u32)
 }
 
 /// Camadas que ficam sem ninguem depois de tirar esta maquina.
@@ -268,8 +268,8 @@ pub fn split_position(existentes: &[(u32, u32)], nova: (u32, u32)) -> (u32, u32)
 /// Vazio significa que outra maquina cobre a mesma faixa - a rede perde uma
 /// rota paralela e segue servindo, e o aviso ao operador e ameno. Nao vazio
 /// significa buraco, e ai a confirmacao e explicita.
-pub fn uncovered_after_removal(restantes: &[(u32, u32)], removida: (u32, u32)) -> Vec<u32> {
-    (removida.0..=removida.1)
-        .filter(|c| !restantes.iter().any(|(i, f)| c >= i && c <= f))
+pub fn uncovered_after_removal(remaining: &[(u32, u32)], removed: (u32, u32)) -> Vec<u32> {
+    (removed.0..=removed.1)
+        .filter(|c| !remaining.iter().any(|(i, f)| c >= i && c <= f))
         .collect()
 }

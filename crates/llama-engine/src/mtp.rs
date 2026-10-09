@@ -475,11 +475,11 @@ impl MtpDrafter {
             // Linha 0: o `h` que sobrou da chamada anterior. Linhas 1..n: o `h`
             // que o alvo acabou de produzir para as posições 0..n-1.
             ptr::copy_nonoverlapping(self.pending_h.as_ptr(), batch.embd, self.hidden_width);
-            let mut faltou = None;
+            let mut missing = None;
             for i in 1..n {
                 let src = pom_llama_get_embeddings_nextn_ith(ctx_tgt, (i - 1) as i32);
                 if src.is_null() {
-                    faltou = Some(i - 1);
+                    missing = Some(i - 1);
                     break;
                 }
                 ptr::copy_nonoverlapping(
@@ -488,7 +488,7 @@ impl MtpDrafter {
                     self.hidden_width,
                 );
             }
-            if let Some(i) = faltou {
+            if let Some(i) = missing {
                 batch.token = restore_token;
                 sys::llama_batch_free(batch);
                 bail!("llama_get_embeddings_nextn_ith devolveu NULL para i={i}");
@@ -709,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn contexto_mtp_mantem_512_com_executor_moe_externo() {
+    fn mtp_context_keeps_512_with_an_external_moe_executor() {
         let mut cfg = cfg();
         cfg.moe_external_executor = true;
         let params = context_params(&cfg);
@@ -725,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn contexto_mtp_para_ram_desliga_o_offload_do_cache() {
+    fn mtp_context_to_ram_turns_off_the_cache_offload() {
         let cfg = cfg();
         let params = context_params_with_offload(&cfg, false);
 
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn arquitetura_com_nextn_mas_sem_grafo_mtp_e_recusada_antes_do_contexto() {
+    fn an_architecture_with_nextn_but_no_mtp_graph_is_refused_before_the_context() {
         let reason = mtp_graph_unavailable_reason(Some("graniteswitch"))
             .expect("arquitetura sem grafo MTP precisa ser recusada");
 
@@ -743,12 +743,12 @@ mod tests {
     }
 
     #[test]
-    fn qwen35moe_e_uma_arquitetura_de_grafo_mtp_conhecida() {
+    fn qwen35moe_is_a_known_mtp_graph_architecture() {
         assert_eq!(mtp_graph_unavailable_reason(Some("qwen35moe")), None);
     }
 
     #[test]
-    fn lista_gerada_contem_as_arquiteturas_mtp_conhecidas_do_fork() {
+    fn the_generated_list_contains_the_known_mtp_architectures_of_the_fork() {
         let known = [
             "bailingmoe3",
             "cohere2moe",
@@ -895,11 +895,11 @@ mod tests {
             !draft.is_empty(),
             "a cabeça nextn não rascunhou nada — sem rascunho o MTP não acelera coisa nenhuma"
         );
-        let texto: String = draft
+        let text: String = draft
             .iter()
             .map(|&t| String::from_utf8_lossy(&engine.token_to_piece_bytes(t, false)).into_owned())
             .collect();
-        eprintln!("rascunho MTP: {draft:?} → {texto:?}");
+        eprintln!("rascunho MTP: {draft:?} → {text:?}");
         assert!(
             draft
                 .iter()
@@ -910,9 +910,9 @@ mod tests {
         // Aceitar move o `pending_h`; a rodada seguinte tem que continuar
         // rascunhando em vez de degenerar.
         engine.mtp_accept(1);
-        let de_novo = engine.mtp_draft(seed, n_past, 0, 3, 0.0);
+        let again = engine.mtp_draft(seed, n_past, 0, 3, 0.0);
         assert!(
-            !de_novo.is_empty(),
+            !again.is_empty(),
             "a segunda rodada parou de rascunhar — o estado entre rodadas não sobreviveu"
         );
     }

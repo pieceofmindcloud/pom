@@ -33,10 +33,10 @@ function wrap(children: React.ReactNode) {
   );
 }
 
-describe("serviços de plugin", () => {
+describe("plugin services", () => {
   afterEach(cleanup);
 
-  it("diz o que o serviço é e em que estado está", () => {
+  it("says what the service is and what state it is in", () => {
     wrap(<PluginServiceBadge service={qdrant} />);
     const badge = screen.getByTestId("plugin-service");
     expect(badge.textContent).toContain("Qdrant");
@@ -45,17 +45,17 @@ describe("serviços de plugin", () => {
     expect(badge.getAttribute("data-status")).toBe("ready");
   });
 
-  it("escreve o estado quando o serviço não está no ar", () => {
+  it("writes the state when the service is not up", () => {
     wrap(<PluginServiceBadge service={{ ...qdrant, status: "installing" }} />);
     expect(screen.getByTestId("plugin-service").textContent).toContain("instalando");
   });
 
-  it("mostra um tipo desconhecido como o plugin o chamou", () => {
+  it("shows an unknown type as the plugin called it", () => {
     wrap(<PluginServiceBadge service={{ ...qdrant, kind: "search" }} />);
     expect(screen.getByTestId("plugin-service").textContent).toContain("search");
   });
 
-  it("pendura os serviços sob o card da máquina no Fluxo", () => {
+  it("hangs the services under the machine card in the Flow", () => {
     wrap(
       <PluginServiceTether
         services={[qdrant]}
@@ -68,30 +68,30 @@ describe("serviços de plugin", () => {
     expect(tether.style.left).toBe("116px");
   });
 
-  it("dentro do card expandido fica sob a borda dele, qualquer que seja a altura", () => {
+  it("inside the expanded card it sits under its border, whatever the height", () => {
     wrap(<PluginServiceTether services={[qdrant]} />);
     const tether = screen.getByTestId("plugin-service-tether");
     expect(tether.style.top).toBe("100%");
     expect(tether.style.left).toBe("16px");
   });
 
-  it("não desenha nada para uma máquina sem serviços", () => {
+  it("draws nothing for a machine without services", () => {
     wrap(<PluginServiceTether services={[]} position={{ left: 0, top: 0 }} size={{ width: 1, height: 1 }} />);
     expect(screen.queryByTestId("plugin-service-tether")).toBeNull();
   });
 
-  it("lista os serviços no card de detalhes da máquina que os roda", () => {
-    const comQdrant = fakePeer({
+  it("lists the services in the details card of the machine that runs them", () => {
+    const withQdrant = fakePeer({
       node_id: "q",
       node: fakeNode({ node_id: "q", short_id: "q", hostname: "atena", plugin_services: [qdrant] }),
     });
-    wrap(<PeerDetailCard peer={comQdrant} index={0} group="qwen35" otherRanges={[]} />);
+    wrap(<PeerDetailCard peer={withQdrant} index={0} group="qwen35" otherRanges={[]} />);
     expect(screen.getByTestId("plugin-services").textContent).toContain("Qdrant");
   });
 
-  it("não cria a seção numa máquina sem serviços", () => {
-    const semServico = fakePeer({ node_id: "z", node: fakeNode({ node_id: "z", short_id: "z" }) });
-    wrap(<PeerDetailCard peer={semServico} index={0} group="qwen35" otherRanges={[]} />);
+  it("creates no section on a machine without services", () => {
+    const withoutService = fakePeer({ node_id: "z", node: fakeNode({ node_id: "z", short_id: "z" }) });
+    wrap(<PeerDetailCard peer={withoutService} index={0} group="qwen35" otherRanges={[]} />);
     expect(screen.queryByTestId("plugin-services")).toBeNull();
   });
 });

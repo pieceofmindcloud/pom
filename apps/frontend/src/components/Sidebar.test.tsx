@@ -50,7 +50,7 @@ describe("Sidebar", () => {
   it("collapses to icon buttons and exposes child destinations in a hover flyout", () => {
     render(
       <MemoryRouter
-        initialEntries={["/modelos/fatiar"]}
+        initialEntries={["/models/slice"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -71,7 +71,7 @@ describe("Sidebar", () => {
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
   });
 
-  it("abre o submenu minimizado por clique e navega pelo destino escolhido", () => {
+  it("opens the minimized submenu by click and navigates to the chosen destination", () => {
     render(
       <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
@@ -85,10 +85,10 @@ describe("Sidebar", () => {
     fireEvent.click(models);
     expect(models.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("link", { name: "Encontrar Modelos HF" }));
-    expect(screen.getByTestId("route").textContent).toBe("/modelos/remotos");
+    expect(screen.getByTestId("route").textContent).toBe("/models/remote");
   });
 
-  it("mantém o cabeçalho da logo com 64px, igual à toolbar", () => {
+  it("keeps the logo header at 64px, same as the toolbar", () => {
     render(
       <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR"><Sidebar /></LocaleProvider>
@@ -97,7 +97,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("complementary").firstElementChild?.className).toContain("h-16");
   });
 
-  it("reabre pelo clique na logo quando o menu está minimizado", () => {
+  it("reopens by clicking the logo when the menu is minimized", () => {
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -119,7 +119,7 @@ describe("Sidebar", () => {
     );
   });
 
-  it("não minimiza ao passar o mouse sobre a logo", () => {
+  it("does not minimize when hovering the logo", () => {
     vi.useFakeTimers();
     render(
       <MemoryRouter
@@ -145,7 +145,7 @@ describe("Sidebar", () => {
    * Enterprise são a exceção de descoberta: o item permanece visível sem
    * licença e a tela explica como ativá-lo.
    */
-  it("esconde do perfil do nó as entradas que ele não abre e mantém Enterprise", () => {
+  it("hides from the node profile the entries it cannot open and keeps Enterprise", () => {
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -168,7 +168,7 @@ describe("Sidebar", () => {
     expect(screen.getByText("Configurações")).toBeTruthy();
   });
 
-  it("mantém o menu inteiro para o administrador", () => {
+  it("keeps the whole menu for the administrator", () => {
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -189,7 +189,7 @@ describe("Sidebar", () => {
     expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
   });
 
-  it("oculta o indicador TLS das bandeiras", () => {
+  it("hides the TLS indicator from the flags", () => {
     sidebarNodeData = fakeNode({ tls_required: true });
     render(
       <MemoryRouter
@@ -206,7 +206,7 @@ describe("Sidebar", () => {
     expect(within(controls).queryByTestId("tls-indicator")).toBeNull();
   });
 
-  it("transforma o menu do infer em histórico acionável e deixa docs/config no rodapé", () => {
+  it("turns the infer menu into an actionable history and leaves docs/config in the footer", () => {
     window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
       {
         id: "active",
@@ -268,7 +268,7 @@ describe("Sidebar", () => {
    * uma conversa das configurações ou da documentação trocava a conversa ativa
    * e deixava a tela onde estava - o menu parecia ter parado de responder.
    */
-  it("leva ao chat ao escolher uma conversa a partir de outra rota", () => {
+  it("goes to the chat when a conversation is chosen from another route", () => {
     window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
       {
         id: "older",
@@ -281,7 +281,7 @@ describe("Sidebar", () => {
 
     render(
       <MemoryRouter
-        initialEntries={["/config/rede"]}
+        initialEntries={["/config/network"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -295,16 +295,16 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByTestId("route").textContent).toBe("/config/rede");
+    expect(screen.getByTestId("route").textContent).toBe("/config/network");
 
     fireEvent.click(screen.getAllByRole("button", { name: /Conversa antiga/ })[0]);
     expect(screen.getByTestId("route").textContent).toBe("/chat");
   });
 
-  it("leva ao chat ao começar uma conversa nova a partir da documentação", () => {
+  it("goes to the chat when a new conversation is started from the documentation", () => {
     render(
       <MemoryRouter
-        initialEntries={["/documentacao"]}
+        initialEntries={["/documentation"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">

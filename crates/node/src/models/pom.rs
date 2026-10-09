@@ -173,20 +173,20 @@ impl PomManifest {
     /// Um manifesto incompleto é legítimo enquanto a rodada não terminou; quem
     /// implanta é que não pode subir um pipeline furado.
     pub fn complete(&self) -> bool {
-        let mut proxima = 0u32;
+        let mut next = 0u32;
         loop {
-            let Some(fim) = self
+            let Some(end) = self
                 .parts
                 .iter()
-                .filter(|p| p.start_layer == proxima)
+                .filter(|p| p.start_layer == next)
                 .map(|p| p.end_layer)
                 .max()
             else {
                 return false;
             };
-            proxima = fim.saturating_add(1);
-            if proxima >= self.model.total_layers {
-                return proxima == self.model.total_layers;
+            next = end.saturating_add(1);
+            if next >= self.model.total_layers {
+                return next == self.model.total_layers;
             }
         }
     }
@@ -232,12 +232,12 @@ impl PomManifest {
         if self.tp_parts.iter().any(|p| p.tp.is_none()) {
             bail!("tp_parts exige rank e tamanho do grupo TP");
         }
-        let esperado = kind_for(&self.parts, &self.tp_parts);
-        if self.kind != esperado {
+        let expected = kind_for(&self.parts, &self.tp_parts);
+        if self.kind != expected {
             bail!(
                 "kind do manifesto não confere com as partes: {:?}, esperado {:?}",
                 self.kind,
-                esperado
+                expected
             );
         }
         Ok(())
@@ -412,20 +412,20 @@ pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathB
     }
     incoming.validate()?;
     let _lock = acquire_pom_lock(shard_dir, &incoming.pom_id)?;
-    let destino = locate_source_dir(shard_dir, &incoming.pom_id)
+    let destination = locate_source_dir(shard_dir, &incoming.pom_id)
         .unwrap_or_else(|| source_run_dir(shard_dir, &incoming.model.name, &incoming.pom_id));
-    std::fs::create_dir_all(&destino)
-        .with_context(|| format!("criar diretório do modelo {}", destino.display()))?;
+    std::fs::create_dir_all(&destination)
+        .with_context(|| format!("criar diretório do modelo {}", destination.display()))?;
 
-    let existente = load_dir(&destino)
+    let existing = load_dir(&destination)
         .into_iter()
         .find(|m| m.pom_version == POM_VERSION && m.pom_id == incoming.pom_id);
-    let mut agregado = existente.unwrap_or_else(|| incoming.clone());
-    if agregado.parts != incoming.parts || agregado.tp_parts != incoming.tp_parts {
-        agregado.merge_from(incoming.clone())?;
+    let mut aggregate = existing.unwrap_or_else(|| incoming.clone());
+    if aggregate.parts != incoming.parts || aggregate.tp_parts != incoming.tp_parts {
+        aggregate.merge_from(incoming.clone())?;
     }
-    write_atomic(&destino, &agregado)?;
-    Ok((destino, agregado))
+    write_atomic(&destination, &aggregate)?;
+    Ok((destination, aggregate))
 }
 
 /// Move as partes de uma pasta de trabalho para a pasta do modelo e mescla o
@@ -434,31 +434,31 @@ pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathB
 /// Partes repetidas são descartadas por hash.
 pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
-    let destino = locate_source_dir(shard_dir, &m.pom_id)
+    let destination = locate_source_dir(shard_dir, &m.pom_id)
         .unwrap_or_else(|| source_run_dir(shard_dir, &m.model.name, &m.pom_id));
-    std::fs::create_dir_all(&destino).with_context(|| format!("criar {}", destino.display()))?;
+    std::fs::create_dir_all(&destination).with_context(|| format!("criar {}", destination.display()))?;
 
-    for parte in m.parts.iter().chain(m.tp_parts.iter()) {
-        let de = part_path(temp, &parte.sha256)?;
-        let para = part_path(&destino, &parte.sha256)?;
-        if !de.is_file() {
+    for part in m.parts.iter().chain(m.tp_parts.iter()) {
+        let from = part_path(temp, &part.sha256)?;
+        let to = part_path(&destination, &part.sha256)?;
+        if !from.is_file() {
             // A parte foi reaproveitada de uma rodada anterior e nunca passou
             // pela pasta de trabalho: nada a mover.
             continue;
         }
-        if para.is_file() {
-            let _ = std::fs::remove_file(&de);
+        if to.is_file() {
+            let _ = std::fs::remove_file(&from);
             continue;
         }
-        std::fs::rename(&de, &para)
-            .with_context(|| format!("mover {} para {}", de.display(), para.display()))?;
+        std::fs::rename(&from, &to)
+            .with_context(|| format!("mover {} para {}", from.display(), to.display()))?;
     }
 
-    let (destino, _) = merge_manifest(shard_dir, m)?;
+    let (destination, _) = merge_manifest(shard_dir, m)?;
     // A pasta de trabalho só some se estiver vazia: um arquivo inesperado ali
     // é sinal de defeito, e apagá-lo escondería a evidência.
     let _ = std::fs::remove_dir(temp);
-    Ok(destino)
+    Ok(destination)
 }
 
 /// Uma pasta de trabalho para uma rodada que ainda não tem nome.
@@ -468,7 +468,7 @@ pub fn scratch_dir(shard_dir: &Path) -> PathBuf {
 
 /// Nome que pode virar pasta sem surpresa.
 pub fn sanitize_name(name: &str) -> String {
-    let limpo: String = name
+    let clean: String = name
         .trim()
         .chars()
         .map(|c| {
@@ -479,11 +479,11 @@ pub fn sanitize_name(name: &str) -> String {
             }
         })
         .collect();
-    let limpo = limpo.trim_matches(['-', '.', '_']).to_string();
-    if limpo.is_empty() {
+    let clean = clean.trim_matches(['-', '.', '_']).to_string();
+    if clean.is_empty() {
         "modelo".to_string()
     } else {
-        limpo
+        clean
     }
 }
 
@@ -496,7 +496,7 @@ pub fn write_atomic(model_dir: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
     std::fs::create_dir_all(model_dir).with_context(|| format!("criar {}", model_dir.display()))?;
 
-    let destino = manifest_path(model_dir, m);
+    let destination = manifest_path(model_dir, m);
     let temp = model_dir.join(format!(".{}.{}.tmp", m.pom_id, std::process::id()));
 
     let json = serde_json::to_vec_pretty(m).context("serializar manifesto")?;
@@ -507,11 +507,11 @@ pub fn write_atomic(model_dir: &Path, m: &PomManifest) -> Result<PathBuf> {
         // Sem isto o rename pode chegar ao disco antes do conteúdo.
         f.sync_all()?;
     }
-    if let Err(e) = std::fs::rename(&temp, &destino) {
+    if let Err(e) = std::fs::rename(&temp, &destination) {
         let _ = std::fs::remove_file(&temp);
-        return Err(e).with_context(|| format!("renomear para {}", destino.display()));
+        return Err(e).with_context(|| format!("renomear para {}", destination.display()));
     }
-    Ok(destino)
+    Ok(destination)
 }
 
 /// Lê e valida um manifesto.
@@ -689,19 +689,19 @@ mod tests {
         manifest
     }
 
-    fn parte(sha: &str, inicio: u32, fim: u32) -> PomPart {
+    fn part(sha: &str, start: u32, end: u32) -> PomPart {
         PomPart {
             sha256: sha.repeat(64 / sha.len()),
             bytes: 1000,
-            start_layer: inicio,
-            end_layer: fim,
-            is_first: inicio == 0,
+            start_layer: start,
+            end_layer: end,
+            is_first: start == 0,
             is_last: false,
             tp: None,
         }
     }
 
-    fn manifesto(partes: Vec<PomPart>, total: u32) -> PomManifest {
+    fn manifesto(parts: Vec<PomPart>, total: u32) -> PomManifest {
         PomManifest::new(
             PomModel {
                 name: "qwen3-8b".into(),
@@ -712,60 +712,60 @@ mod tests {
             PomKind::Layers,
             "no-1",
             hash("a"),
-            partes,
+            parts,
         )
     }
 
     #[test]
-    fn o_pom_id_e_o_hash_do_arquivo_original() {
+    fn the_pom_id_is_the_hash_of_the_original_file() {
         let source_sha256 = hash("a");
-        let manifest = source_manifest("a", vec![parte("b", 0, 31)], vec![]);
+        let manifest = source_manifest("a", vec![part("b", 0, 31)], vec![]);
         assert_eq!(manifest.pom_version, POM_VERSION);
         assert_eq!(manifest.pom_id, source_sha256);
         manifest.validate().unwrap();
     }
 
     #[test]
-    fn o_manifesto_sobrevive_a_ida_e_volta_em_json() {
-        let m = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
+    fn the_manifest_survives_a_json_round_trip() {
+        let m = manifesto(vec![part("a", 0, 15), part("b", 16, 31)], 32);
         let json = serde_json::to_string(&m).unwrap();
-        let volta: PomManifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(m, volta);
-        volta.validate().unwrap();
+        let restored: PomManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, restored);
+        restored.validate().unwrap();
     }
 
     #[test]
-    fn um_pom_id_que_nao_e_hash_e_recusado() {
-        let mut m = manifesto(vec![parte("a", 0, 31)], 32);
+    fn a_pom_id_that_is_not_a_hash_is_refused() {
+        let mut m = manifesto(vec![part("a", 0, 31)], 32);
         m.pom_id = "nao-e-hash".into();
         assert!(m.validate().is_err());
     }
 
     #[test]
-    fn faixa_invertida_e_hash_torto_sao_recusados() {
-        let mut m = manifesto(vec![parte("a", 0, 31)], 32);
+    fn an_inverted_range_and_a_malformed_hash_are_refused() {
+        let mut m = manifesto(vec![part("a", 0, 31)], 32);
         m.parts[0].start_layer = 40; // depois do `end_layer`, que é 31
         assert!(m.validate().is_err());
 
-        let mut m = manifesto(vec![parte("a", 0, 31)], 32);
+        let mut m = manifesto(vec![part("a", 0, 31)], 32);
         m.parts[0].sha256 = "nao-e-hash".into();
         assert!(m.validate().is_err());
     }
 
     #[test]
-    fn completude_e_buraco_na_cobertura() {
-        assert!(manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32).complete());
+    fn completeness_and_a_hole_in_the_coverage() {
+        assert!(manifesto(vec![part("a", 0, 15), part("b", 16, 31)], 32).complete());
         // Buraco em 16-19.
-        assert!(!manifesto(vec![parte("a", 0, 15), parte("b", 20, 31)], 32).complete());
+        assert!(!manifesto(vec![part("a", 0, 15), part("b", 20, 31)], 32).complete());
         // Cobre até 31 mas o modelo tem 36 camadas.
-        assert!(!manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 36).complete());
+        assert!(!manifesto(vec![part("a", 0, 15), part("b", 16, 31)], 36).complete());
     }
 
     /// Um `sha256` chega pela rede e vira nome de arquivo: se `..` passasse,
     /// um peer escolheria onde gravar no disco de quem baixa.
     #[test]
-    fn hash_que_nao_e_hash_nao_vira_caminho() {
-        let dir = Path::new("/tmp/modelos/qwen");
+    fn a_hash_that_is_not_a_hash_does_not_become_a_path() {
+        let dir = Path::new("/tmp/models/qwen");
         assert!(part_path(dir, "../../etc/passwd").is_err());
         assert!(part_path(dir, "ABCD").is_err());
         assert!(part_path(dir, &"a".repeat(63)).is_err());
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn o_writer_hasheia_o_que_passa_por_ele() {
+    fn the_writer_hashes_what_goes_through_it() {
         let mut w = HashingWriter::new(Vec::new());
         w.write_all(b"abc").unwrap();
         let (sha, bytes) = w.finish();
@@ -787,22 +787,22 @@ mod tests {
     }
 
     #[test]
-    fn gravar_e_reler_um_manifesto() {
+    fn write_and_reread_a_manifest() {
         let tmp = std::env::temp_dir().join(format!("pom-teste-{}", uuid::Uuid::new_v4().simple()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let m = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
+        let m = manifesto(vec![part("a", 0, 15), part("b", 16, 31)], 32);
         let dir = dir_for(&tmp, &m);
 
-        let escrito = write_atomic(&dir, &m).unwrap();
-        assert_eq!(load(&escrito).unwrap(), m);
+        let written = write_atomic(&dir, &m).unwrap();
+        assert_eq!(load(&written).unwrap(), m);
         assert_eq!(load_dir(&dir), vec![m.clone()]);
         assert_eq!(
-            escrito.file_name().unwrap().to_string_lossy(),
+            written.file_name().unwrap().to_string_lossy(),
             "qwen3-8b-aaaaaaaa.pom"
         );
         // O `:` do rótulo não pode virar pasta, e o hash da fonte entra no nome.
-        let nome = dir.file_name().unwrap().to_string_lossy().into_owned();
-        assert_eq!(nome, format!("qwen3-8b-{}", short_id(&m.pom_id)));
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name, format!("qwen3-8b-{}", short_id(&m.pom_id)));
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -810,51 +810,51 @@ mod tests {
     /// Fatiamentos diferentes do **mesmo arquivo original** compartilham a
     /// pasta e o manifesto, porque o hash da fonte é a identidade do modelo.
     #[test]
-    fn duas_fatiagens_do_mesmo_arquivo_compartilham_pasta() {
-        let raiz = Path::new("/tmp/fatias");
-        let um = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
-        let outro = manifesto(vec![parte("c", 0, 19), parte("d", 20, 31)], 32);
+    fn two_slicings_of_the_same_file_share_a_folder() {
+        let root = Path::new("/tmp/slices");
+        let um = manifesto(vec![part("a", 0, 15), part("b", 16, 31)], 32);
+        let other = manifesto(vec![part("c", 0, 19), part("d", 20, 31)], 32);
 
-        assert_eq!(um.pom_id, outro.pom_id);
-        assert_eq!(dir_for(raiz, &um), dir_for(raiz, &outro));
+        assert_eq!(um.pom_id, other.pom_id);
+        assert_eq!(dir_for(root, &um), dir_for(root, &other));
     }
 
     /// Refatiar exatamente do mesmo jeito **não** duplica nada: mesmo conteúdo,
     /// mesmo `pom_id`, mesma pasta. É a mesma rodada.
     #[test]
-    fn refatiar_igual_cai_na_mesma_pasta() {
-        let raiz = Path::new("/tmp/fatias");
-        let um = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
-        let de_novo = manifesto(vec![parte("b", 16, 31), parte("a", 0, 15)], 32);
-        assert_eq!(dir_for(raiz, &um), dir_for(raiz, &de_novo));
+    fn reslicing_the_same_way_lands_in_the_same_folder() {
+        let root = Path::new("/tmp/slices");
+        let um = manifesto(vec![part("a", 0, 15), part("b", 16, 31)], 32);
+        let again = manifesto(vec![part("b", 16, 31), part("a", 0, 15)], 32);
+        assert_eq!(dir_for(root, &um), dir_for(root, &again));
     }
 
     /// A rodada só se muda para o nome definitivo quando está inteira, e as
     /// partes vão junto.
     #[test]
-    fn finalizar_muda_a_rodada_para_a_pasta_com_o_id() {
-        let raiz = std::env::temp_dir().join(format!("pom-fin-{}", uuid::Uuid::new_v4().simple()));
-        let trabalho = scratch_dir(&raiz);
-        std::fs::create_dir_all(&trabalho).unwrap();
+    fn finalizing_moves_the_round_to_the_folder_with_the_id() {
+        let root = std::env::temp_dir().join(format!("pom-fin-{}", uuid::Uuid::new_v4().simple()));
+        let work = scratch_dir(&root);
+        std::fs::create_dir_all(&work).unwrap();
 
-        let m = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
+        let m = manifesto(vec![part("a", 0, 15), part("b", 16, 31)], 32);
         for p in &m.parts {
-            std::fs::write(part_path(&trabalho, &p.sha256).unwrap(), b"conteudo").unwrap();
+            std::fs::write(part_path(&work, &p.sha256).unwrap(), b"conteudo").unwrap();
         }
 
-        let destino = finalize_run(&raiz, &trabalho, &m).unwrap();
-        assert_eq!(destino, dir_for(&raiz, &m));
+        let destination = finalize_run(&root, &work, &m).unwrap();
+        assert_eq!(destination, dir_for(&root, &m));
         for p in &m.parts {
-            assert!(part_path(&destino, &p.sha256).unwrap().is_file());
+            assert!(part_path(&destination, &p.sha256).unwrap().is_file());
         }
-        assert_eq!(load_dir(&destino), vec![m]);
-        assert!(!trabalho.exists(), "a pasta de trabalho não fica para trás");
+        assert_eq!(load_dir(&destination), vec![m]);
+        assert!(!work.exists(), "a pasta de trabalho não fica para trás");
 
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn o_nome_do_modelo_remove_o_sufixo_gguf() {
+    fn the_model_name_drops_the_gguf_suffix() {
         let model_hash = hash("a");
         let manifest = PomManifest::new(
             PomModel {
@@ -876,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_preserva_alternativas_locais_e_adiciona_tp_parts() {
+    fn merge_preserves_local_alternatives_and_adds_tp_parts() {
         let mut local = source_manifest("a", vec![layer_part("b", 0, 7)], vec![]);
         let remote = source_manifest("a", vec![layer_part("c", 0, 3)], vec![tp_part("d", 0, 2)]);
 
@@ -896,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_repetido_nao_duplica_sha() {
+    fn a_repeated_merge_does_not_duplicate_the_sha() {
         let part = layer_part("b", 0, 7);
         let mut local = source_manifest("a", vec![part.clone()], vec![]);
         local
@@ -906,37 +906,37 @@ mod tests {
     }
 
     #[test]
-    fn merge_manifest_reusa_a_pasta_quando_o_nome_legivel_muda() {
-        let raiz =
+    fn merge_manifest_reuses_the_folder_when_the_readable_name_changes() {
+        let root =
             std::env::temp_dir().join(format!("pom-source-{}", uuid::Uuid::new_v4().simple()));
         let local = source_manifest("a", vec![layer_part("b", 0, 7)], vec![]);
-        let local_dir = source_run_dir(&raiz, "nome-antigo", &local.pom_id);
+        let local_dir = source_run_dir(&root, "nome-antigo", &local.pom_id);
         std::fs::create_dir_all(&local_dir).unwrap();
         write_atomic(&local_dir, &local).unwrap();
 
         let incoming = source_manifest("a", vec![layer_part("c", 0, 3)], vec![]);
-        let (merged_dir, merged) = merge_manifest(&raiz, &incoming).unwrap();
+        let (merged_dir, merged) = merge_manifest(&root, &incoming).unwrap();
 
         assert_eq!(merged_dir, local_dir);
         assert_eq!(merged.parts.len(), 2);
         assert_eq!(load_dir(&local_dir).len(), 1);
-        std::fs::remove_dir_all(&raiz).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
-    fn merge_manifest_preserva_o_conteudo_local() {
-        let raiz =
+    fn merge_manifest_preserves_the_local_content() {
+        let root =
             std::env::temp_dir().join(format!("pom-merge-{}", uuid::Uuid::new_v4().simple()));
         let local = source_manifest("a", vec![layer_part("b", 0, 7)], vec![]);
-        let local_dir = source_run_dir(&raiz, "qwen3-8b", &local.pom_id);
+        let local_dir = source_run_dir(&root, "qwen3-8b", &local.pom_id);
         std::fs::create_dir_all(&local_dir).unwrap();
         write_atomic(&local_dir, &local).unwrap();
 
         let incoming = source_manifest("a", vec![layer_part("c", 0, 3)], vec![]);
-        let (_, merged) = merge_manifest(&raiz, &incoming).unwrap();
+        let (_, merged) = merge_manifest(&root, &incoming).unwrap();
 
         assert!(merged.parts.iter().any(|p| p.sha256 == hash("b")));
         assert!(merged.parts.iter().any(|p| p.sha256 == hash("c")));
-        std::fs::remove_dir_all(&raiz).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

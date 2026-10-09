@@ -45,14 +45,14 @@ pub(super) async fn plan_split_endpoint(
                 return bad_request(format!("peer {target} não está acessível para ler o GGUF"));
             };
             // Resolvido antes de mover `req`: `target` empresta dele.
-            let cliente = match state.peer_http.for_peer(target) {
+            let client = match state.peer_http.for_peer(target) {
                 Ok(c) => c,
                 Err(e) => return bad_request(format!("sem cliente para o peer {target}: {e}")),
             };
             let mut forwarded = req;
             // Clear the hop marker so the receiving peer measures locally.
             forwarded.layout_node_id = None;
-            return match cliente
+            return match client
                 .post(format!("{base}/api/ui/plan"))
                 .bearer_auth(state.auth.read().await.connection_key.clone())
                 .json(&forwarded)

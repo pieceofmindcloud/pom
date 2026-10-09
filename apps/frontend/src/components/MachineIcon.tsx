@@ -51,10 +51,10 @@ export function machineKind(system?: SystemLoad | null) {
         accent: "lime" as const,
       };
     }
-    const marca = system.gpu_kind === "amd" ? "AMD" : "NVIDIA";
+    const brand = system.gpu_kind === "amd" ? "AMD" : "NVIDIA";
     const gpu = system.gpus[0] ? gpuLabel(system.gpus[0]) : undefined;
     return {
-      label: gpu ? `${marca} · ${gpu}` : marca,
+      label: gpu ? `${brand} · ${gpu}` : brand,
       icon: Server,
       accent: "lime" as const,
     };

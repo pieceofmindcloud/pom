@@ -994,7 +994,7 @@ pub mod tests {
     }
 
     #[test]
-    fn low_bits_mxfp4_tq1_tq2_q1_q2_decodifica_vetores() {
+    fn low_bits_mxfp4_tq1_tq2_q1_q2_decode_vectors() {
         for format in [
             LowBitFormat::Mxfp4,
             LowBitFormat::Tq1_0,
@@ -1016,7 +1016,7 @@ pub mod tests {
     }
 
     #[test]
-    fn low_bit_source_e_executor_cobrem_fused_e_split() {
+    fn low_bit_source_and_executor_cover_fused_and_split() {
         for format in [
             LowBitFormat::Mxfp4,
             LowBitFormat::Tq1_0,

@@ -810,8 +810,8 @@ export function Plugins() {
   const githubRepositories = useGithubRepositories();
   const node = useNode();
   // Local development builds install on this machine only, so every profile
-  // gets them; `pom_desenv` is what turns them on.
-  const developmentEnabled = node.data?.pom_desenv === true;
+  // gets them; `pom_dev_mode` is what turns them on.
+  const developmentEnabled = node.data?.pom_dev_mode === true;
   const developmentSources = useDevelopmentPluginSources(developmentEnabled);
   const [tab, setTab] = useState<"catalog" | "develop">("catalog");
   const [search, setSearch] = useState("");

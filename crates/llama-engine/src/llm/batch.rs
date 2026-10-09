@@ -257,7 +257,7 @@ mod batch_layout_tests {
     use super::*;
 
     #[test]
-    fn layout_marca_a_posicao_global_de_logits_de_cada_item() {
+    fn layout_marks_the_global_logits_position_of_each_item() {
         let entries = vec![
             BatchEntry::test("a", 0, 10, 3, true),
             BatchEntry::test("b", 1, 4, 2, true),
@@ -275,7 +275,7 @@ mod batch_layout_tests {
     }
 
     #[test]
-    fn layout_recusa_item_duplicado_ou_sem_tokens() {
+    fn layout_refuses_a_duplicate_or_tokenless_item() {
         let duplicate = vec![
             BatchEntry::test("a", 0, 0, 1, false),
             BatchEntry::test("a", 1, 0, 1, false),
@@ -293,7 +293,7 @@ mod batch_layout_tests {
     }
 
     #[test]
-    fn saida_do_batch_devolve_residual_somente_do_item_pedido() {
+    fn batch_output_returns_the_residual_of_the_requested_item_only() {
         let entries = vec![
             BatchEntry::test("a", 0, 0, 2, false),
             BatchEntry::test("b", 1, 0, 1, false),
@@ -407,20 +407,20 @@ mod pool_tests {
         let ubatch = 2;
         let tokens = 6; // tres microlotes, como um chunk maior que `n_ubatch`
         for micro in 0..(tokens / ubatch) {
-            let inicio = (micro * ubatch * n_embd) as f32;
-            let pedaco: Vec<f32> = (0..(ubatch * n_embd)).map(|i| inicio + i as f32).collect();
-            accumulate_capture(&mut slot, pedaco);
+            let start = (micro * ubatch * n_embd) as f32;
+            let chunk: Vec<f32> = (0..(ubatch * n_embd)).map(|i| start + i as f32).collect();
+            accumulate_capture(&mut slot, chunk);
         }
 
-        let capturado = slot.buf.expect("a captura tem que ter disparado");
+        let captured = slot.buf.expect("a captura tem que ter disparado");
         assert_eq!(
-            capturado.len(),
+            captured.len(),
             tokens * n_embd,
             "o residual do chunk inteiro, nao o do ultimo microlote"
         );
-        let esperado: Vec<f32> = (0..(tokens * n_embd)).map(|i| i as f32).collect();
+        let expected: Vec<f32> = (0..(tokens * n_embd)).map(|i| i as f32).collect();
         assert_eq!(
-            capturado, esperado,
+            captured, expected,
             "os microlotes entram na ordem em que o split_simple os produz"
         );
     }
@@ -701,7 +701,7 @@ mod pool_tests {
     }
 
     #[test]
-    fn contexto_principal_moe_externo_usa_excecao_de_128() {
+    fn external_moe_main_context_uses_the_128_exception() {
         let mut cfg = cfg();
         cfg.moe_external_executor = true;
         assert_eq!(cfg.n_batch, 512);
@@ -770,9 +770,9 @@ mod pool_tests {
     /// um contexto de 120.320 atendia 2 sessoes de 60.160.
     #[test]
     fn each_context_gets_the_slice_a_session_already_had() {
-        let por_contexto = per_context_config(&cfg(), 2);
-        assert_eq!(por_contexto.n_ctx, 60_160);
-        assert_eq!(por_contexto.n_ctx * 2, cfg().n_ctx, "o total nao cresce");
+        let by_context = per_context_config(&cfg(), 2);
+        assert_eq!(by_context.n_ctx, 60_160);
+        assert_eq!(by_context.n_ctx * 2, cfg().n_ctx, "o total nao cresce");
     }
 
     /// Cada contexto atende uma sessao; quem divide agora e o pool.

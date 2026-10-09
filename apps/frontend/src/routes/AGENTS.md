@@ -111,7 +111,7 @@ Per-file list:
 
 - `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
   preferências locais **e** da identidade desta máquina, que vive em
-  `MyMachine.tsx` (rota `/config/minha-maquina`). Node e infer recebem uma
+  `MyMachine.tsx` (rota `/config/my-machine`). Node e infer recebem uma
   leitura somente leitura com nome, descrição, regras, organização, canais,
   visibilidade e localização; um administrador autorizado pode editar o bloco
   completo. A edição grava no nó, propaga o envelope assinado aos peers e
@@ -143,7 +143,7 @@ Per-file list:
   qual exigia log de depuração na máquina certa; nó antigo não manda o campo e
   o painel não aparece. A tela também agrega nós,
   latência média, VRAM e modelos conhecidos. A lista de participantes foi
-  movida para a rota `/config/rede/participantes`, apenas para `admin` e
+  movida para a rota `/config/network/participants`, apenas para `admin` e
   `node`. O painel de informações também oferece `Esquecer rede`, que pede
   confirmação e chama `POST /api/ui/network/leave` para limpar a configuração
   local e reiniciar no setup - continua aqui porque é sobre a rede, não sobre
@@ -163,7 +163,7 @@ Per-file list:
   fall back to English. License validity, granted plugins, activation
   candidates and usage by `plugin_code` come from the node's authenticated
   state, never the public catalog. The full-bleed screen follows the header and
-  inner container used by `/modelos`. `state` represents license validity;
+  inner container used by `/models`. `state` represents license validity;
   `active` is true only after the host completes its handshake and is ready.
   Local state may publish `installation_error`, shown on the card with an
   actionable detail; a failed activation refreshes status before the screen
@@ -215,7 +215,7 @@ Per-file list:
 
   Updating the `pom` binary is separate in `About.tsx` (see
   `crates/node/src/pom_core_update.rs`). With
-  `NodeInfo.pom_desenv=true`, on any profile, the screen queries local sources and allows
+  `NodeInfo.pom_dev_mode=true`, on any profile, the screen queries local sources and allows
   building and installing even inactive plugins. A local build is separate
   from license state, grants no licensed features and does not activate a
   license; an existing licensed/GitHub installation keeps its entitlement.
@@ -225,7 +225,7 @@ Per-file list:
   data is selected for the local node's `system.os`/`system.arch`; if the
   catalog does not publish that target, the screen shows no release rather than
   suggesting one for another platform.
-- `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
+- `MyMachine.tsx` - "Minha Máquina" (rota `/config/my-machine`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
   portas, perfil, autoridade efetiva, e `Sair da rede`/`Voltar para a rede` via
@@ -315,7 +315,7 @@ Per-file list:
   `LobbyHardwareCard`, sends text with `room_id: "lobby"`, and offers neither
   files nor typing, because machines that are not members read that room.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
-  the top of the navigation column (`?tab=guias|referencia`).
+  the top of the navigation column (`?tab=guides|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG
   diagrams, rendered by `GuideView` from `Block[]` data. **Reference** is the
   repository's living markdown, written for agents, self-contained and
@@ -325,7 +325,7 @@ Per-file list:
   `import.meta.glob` + the manifest - no node route, so it renders on any
   machine serving `dist/`, even one that never had the repo.
   Three decisions that are not cosmetic:
-  - **The screen is full-bleed** (`App.tsx` lists `/documentacao` alongside `/`
+  - **The screen is full-bleed** (`App.tsx` lists `/documentation` alongside `/`
     in `isFullBleed`) and owns its scrolling: the nav column and the reader
     scroll independently, each a flex child with `min-h-0`. Without that
     `min-h-0` the child grows to its content and the overflow never engages -
@@ -345,9 +345,9 @@ Per-file list:
     takes the full width and the reader is hidden (`mobileReaderOpen` state);
     picking a guide/doc entry opens the reader full-screen with a `Voltar`
     button pinned at its top (`sm:hidden`, only mounted while open). `Voltar`
-    only flips that local state - it never touches `?doc=`/`?guia=`, so the
+    only flips that local state - it never touches `?doc=`/`?guide=`, so the
     selection survives the round trip. A deep link present at mount
-    (`?doc=`/`?guia=` already in the URL) counts as that same selection and
+    (`?doc=`/`?guide=` already in the URL) counts as that same selection and
     opens straight into the reader. From `sm:` up both columns render side by
     side regardless of the flag, exactly like before.
   Search filters label, path *and* body, and replaces the tree with a flat
@@ -355,11 +355,11 @@ Per-file list:
   `Documentation.test.tsx` covers the contract: guides first (a person must not
   land on agent markdown), the guide->reference deep link, no `.md` or
   `AGENTS.md` in the list, section header opens the overview, collapse works
-  while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
+  while holding the selection, the two scroll containers, `?doc=`/`?guide=` deep
   links, search + clear, empty state, and the mobile nav/reader/Voltar
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
-- `About.tsx` - Tela informativa em `/config/sobre`, última folha de
+- `About.tsx` - Tela informativa em `/config/about`, última folha de
   Configurações. Mostra o `LICENSE` AGPL-3.0 do repositório e a página oficial
   GNU, o aviso de risco/LGPD e links para o site (`pieceofmind.cloud`), contato
   (`contact.html`) e repositórios oficiais. É a ÚNICA tela que trata da atualização do binário
@@ -446,7 +446,7 @@ Per-file list:
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
   central peer map and compact property inspector. Tensor mode, Simple/Complete
-  strategy and "Voltar ao plano do nó" are visible only when `pom_desenv` is true.
+  strategy and "Voltar ao plano do nó" are visible only when `pom_dev_mode` is true.
   (`../components/DeploymentInspector`, o mesmo componente que o Histórico usa
   em somente leitura) and draggable bottom peer strip. O que continua no
   `DeployModel` e não migrou para o inspetor são as seções que só a tela de
@@ -614,7 +614,7 @@ Per-file list:
   reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
   Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
 - `DeploymentLogs.tsx` - consola full-bleed do log de processo do cluster em
-  `/implantacoes/logs`. Consulta a réplica local do admin, atualiza a cada
+  `/deployments/logs`. Consulta a réplica local do admin, atualiza a cada
   segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
   `deploy_id`; mantém apenas o terminal em preto, acompanha o fim enquanto o
   leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
@@ -643,10 +643,10 @@ Per-file list:
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
-  keeps `/config/pastas` as an alias.
+  keeps `/config/folders` as an alias.
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
-  `/config/rede/participantes`; the route is allowed only to `admin` and
+  `/config/network/participants`; the route is allowed only to `admin` and
   `node`, and block/unblock mutations remain admin-only. Each peer row shows
   the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
   never the advertised `addr`, which only goes into the row's `title`. A
@@ -660,7 +660,7 @@ Per-file list:
   present - `profile: admin` alone grants nothing. The "Papel" row was replaced
   by the effective authority: the old `NodeInfo.role` left `/api/ui/node` with
   the trust model and was rendering an empty cell.
-  O perfil `infer` também abre `/config/rede`, mas o backend devolve somente a
+  O perfil `infer` também abre `/config/network`, mas o backend devolve somente a
   própria máquina. The screen no longer offers turning an `infer` into a
   `node`: the role is what the network admitted the machine as, and changing
   it means leaving and asking for admission again. The card says so and has
@@ -693,7 +693,7 @@ Per-file list:
   disponível apenas ao principal e aplicado em tempo real, e `QuicPanel`, que
   alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
   controle de autoridade. The access password is a human credential and is not the
-  cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
+  cluster `connection_key`. A rota `/config/preferences/admin` renderiza
   somente TLS, QUIC, logs de processo entre nós e chat da rede, além do
   interruptor de descoberta local, desligado por padrão; a rota normal mantém
   exposição, Hugging Face e proteção térmica; Armazenamento só tem entrada no menu.
@@ -721,8 +721,8 @@ Per-file list:
   Parallelism are a segmented tab pair (`role="tablist"`), not a checkbox -
   each mode owns its own controls (Pipeline: size list, one explicit layer
   range, or Tensor Parallelism's rank count). The Tensor Parallelism tab only
-  mounts when `useNode().data.pom_desenv === true` (the same
-  `POM_DESENV=1`-gated pattern as `DeploymentInspector`);
+  mounts when `useNode().data.pom_dev_mode === true` (the same
+  `POM_DEV_MODE=1`-gated pattern as `DeploymentInspector`);
   without it the screen never offers or sends `mode: "tensor_parallel"`, and an
   effect snaps a stale selection back to `"pipeline"` if the flag turns out
   false after the first render. Pipeline builds a by-size plan
@@ -756,7 +756,7 @@ Per-file list:
   de cartões anterior, com cabeçalho fixo e ações na última coluna.
 - `WholeModels.tsx` — Full-model catalog from `useLocalCatalog`, one full-width
   table row (`ModelRow`) per model with actions: slice (links to
-  `/modelos/fatiar?path=`), send (`/transferencias/enviar?path=`), delete
+  `/models/slice?path=`), send (`/transfers/send?path=`), delete
   (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
@@ -796,7 +796,7 @@ Key logic carriers:
 - `DeployModel` and `Deployments` both edit the runtime knobs through
   `DeploymentInspector` (the Deploy Studio inspector, and the History redeploy
   panel), so a new property cannot reach one screen and miss the other.
-  As duas telas leem `NodeInfo.pom_desenv` de `useNode`; o Deploy Studio, o
+  As duas telas leem `NodeInfo.pom_dev_mode` de `useNode`; o Deploy Studio, o
   inspetor do histórico e o painel de reimplantação falham fechados. A flag só
   esconde os controles de desenvolvimento locais; o estado de planejamento,
   lançamento e reimplantação mantém os valores recebidos da implantação,

@@ -110,7 +110,7 @@ def check_config(
         environment = service.get("environment", {})
         if environment.get("POM_HOME") != "/data":
             fail(f"{filename}: {name} perdeu POM_HOME=/data")
-        if environment.get("POM_DESENV") != "1":
+        if environment.get("POM_DEV_MODE") != "1":
             fail(f"{filename}: {name} não habilita os controles de desenvolvimento")
         if environment.get("NVIDIA_DRIVER_CAPABILITIES") != "compute,utility":
             fail(f"{filename}: {name} alterou as capacidades NVIDIA")

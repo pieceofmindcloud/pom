@@ -5,18 +5,18 @@
  * They live apart from `content.ts` because they are reference for one screen,
  * read from a dialog next to the fields, and they follow the inspector's own
  * categories. `content.ts` appends them after the general guides, so they also
- * open from Documentation under `?guia=`.
+ * open from Documentation under `?guide=`.
  *
  * Same rule as the other guides: every number and behaviour here is in the
  * field hints (`deploy.knob.*Hint`) or in `docs/subsystems/deployment.md`.
  */
 import type { Guide } from "./content";
 
-/** The `?guia=` id of each inspector category's guide. */
+/** The `?guide=` id of each inspector category's guide. */
 export const DEPLOY_SETTINGS_GUIDES = {
-  defaults: "config-padrao",
-  pom: "config-pom",
-  beta: "config-beta",
+  defaults: "default-settings",
+  pom: "pom-settings",
+  beta: "beta-settings",
 } as const;
 
 export const deploySettingsPtBR: Guide[] = [

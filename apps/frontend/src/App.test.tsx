@@ -122,7 +122,7 @@ function RouteDriver() {
       <button type="button" onClick={() => navigate("/base/example")}>
         ir para exemplo
       </button>
-      <button type="button" onClick={() => navigate("/estatisticas")}>
+      <button type="button" onClick={() => navigate("/statistics")}>
         ir para estatísticas
       </button>
     </>
@@ -145,7 +145,7 @@ function openWithRouteDriver(path: string, profile: Profile) {
   );
 }
 
-describe("guarda de perfil por rota", () => {
+describe("profile guard per route", () => {
   afterEach(() => {
     cleanup();
     adminSurface.value = "available";
@@ -153,26 +153,26 @@ describe("guarda de perfil por rota", () => {
     window.history.replaceState({}, "", "/");
   });
 
-  it("renderiza Plugins no contêiner full-bleed", async () => {
+  it("renders Plugins in the full-bleed container", async () => {
     open("/plugins", "admin");
 
     const content = await screen.findByText("tela-plugins");
     expect(content.closest(".h-full.w-full")).toBeTruthy();
   });
 
-  const fechadas = [
-    ["/implantar", "tela-implantar"],
-    ["/implantacoes", "tela-implantacoes"],
+  const closed = [
+    ["/deploy", "tela-implantar"],
+    ["/deployments", "tela-implantacoes"],
   ] as const;
 
-  for (const [path, marker] of fechadas) {
-    it(`abre ${path} para o administrador`, async () => {
+  for (const [path, marker] of closed) {
+    it(`opens ${path} for the administrator`, async () => {
       open(path, "admin");
       expect(await screen.findByText(marker)).toBeTruthy();
       expect(screen.queryByText("Tela restrita a outro perfil")).toBeNull();
     });
 
-    it(`barra ${path} para o perfil do nó`, async () => {
+    it(`blocks ${path} for the node profile`, async () => {
       open(path, "node");
       expect(screen.queryByText(marker)).toBeNull();
       expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
@@ -187,11 +187,11 @@ describe("guarda de perfil por rota", () => {
       plugin_code: "logs",
       menu: [
         { id: "logs", label: { en: "Request Logs" }, to: "/logs", profiles },
-        { id: "stats", label: { en: "Statistics" }, to: "/estatisticas", profiles },
+        { id: "stats", label: { en: "Statistics" }, to: "/statistics", profiles },
       ],
       routes: [
         { path: "/logs", screen: "logs", profiles, full_bleed: true },
-        { path: "/estatisticas", screen: "stats", profiles },
+        { path: "/statistics", screen: "stats", profiles },
       ],
       screens: { logs: { module: "ui/logs.js" }, stats: { module: "ui/stats.js" } },
       assets: ["ui/logs.js", "ui/stats.js"],
@@ -233,12 +233,12 @@ describe("guarda de perfil por rota", () => {
     },
   };
 
-  it("shows the advertising fallback when no plugin provides /logs or /estatisticas", async () => {
+  it("shows the advertising fallback when no plugin provides /logs or /statistics", async () => {
     open("/logs", "admin");
     expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
     expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
     cleanup();
-    open("/estatisticas", "admin");
+    open("/statistics", "admin");
     expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
   });
 
@@ -247,7 +247,7 @@ describe("guarda de perfil por rota", () => {
     open("/logs", "admin");
     expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
     cleanup();
-    open("/estatisticas", "node");
+    open("/statistics", "node");
     expect(await screen.findByText("tela-plugin:logs:stats")).toBeTruthy();
     cleanup();
     // infer não está nos perfis do manifesto: recusa, e não cai na propaganda.
@@ -345,21 +345,21 @@ describe("guarda de perfil por rota", () => {
     expect(await screen.findByText("tela-chat")).toBeTruthy();
   });
 
-  it("não mexe nas rotas que ninguém restringiu", async () => {
+  it("leaves the routes nobody restricted alone", async () => {
     pluginUi.plugins = [baseManifest];
-    open("/modelos", "node");
+    open("/models", "node");
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
   });
 
-  it("a tela de modelos ocupa a tela cheia, como Implantações e Painel", async () => {
-    const { container } = open("/modelos", "admin");
+  it("the models screen takes the full screen, like Deployments and Dashboard", async () => {
+    const { container } = open("/models", "admin");
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
     expect(container.querySelector(".h-full.w-full")).toBeTruthy();
     expect(container.querySelector(".max-w-\\[1400px\\]")).toBeNull();
   });
 
-  it("abre Preferências para o perfil do nó", async () => {
-    open("/config/preferencias", "node");
+  it("opens Preferences for the node profile", async () => {
+    open("/config/preferences", "node");
     expect(await screen.findByText("tela-preferencias")).toBeTruthy();
   });
 
@@ -374,12 +374,12 @@ describe("guarda de perfil por rota", () => {
    * de fora. Hoje ele é livre, e este teste é o que avisa se a exceção do chat
    * voltar a escapar do guarda quando alguém o restringir.
    */
-  it("passa o chat pelo mesmo guarda", async () => {
+  it("passes the chat through the same guard", async () => {
     open("/chat", "node");
     expect(await screen.findByText("tela-chat")).toBeTruthy();
   });
 
-  it("renderiza um formulário reconhecível pelo gestor de senhas", () => {
+  it("renders a form a password manager can recognize", () => {
     adminSurface.value = "requires-password";
     open("/", "admin");
 
@@ -399,7 +399,7 @@ describe("guarda de perfil por rota", () => {
     expect(screen.getByRole("button", { name: "English" }).getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("mantém a tela local autônoma e nas duas línguas", () => {
+  it("keeps the local screen self-contained and in both languages", () => {
     adminSurface.value = "local-only";
     open("/", "admin");
 
@@ -409,7 +409,7 @@ describe("guarda de perfil por rota", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("abre o chat compacto pelo caminho usado pelo app da barra de menus", async () => {
+  it("opens the compact chat through the path used by the menu bar app", async () => {
     open("/admin-ui/chat", "node");
     const chat = await screen.findByText("tela-chat");
     expect(chat).toBeTruthy();

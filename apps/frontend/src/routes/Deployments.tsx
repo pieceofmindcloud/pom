@@ -80,12 +80,12 @@ function dateTimeLabel(iso: string, locale: string) {
 function RedeployPanel({
   row,
   editing,
-  pomDesenv,
+  pomDevMode,
   onClose,
 }: {
   row: DeploymentRow;
   editing: Editing;
-  pomDesenv: boolean;
+  pomDevMode: boolean;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -166,7 +166,7 @@ function RedeployPanel({
         value={params}
         onChange={setParams}
         showInferenceMode
-        pomDesenv={pomDesenv}
+        pomDevMode={pomDevMode}
         showHiddenStateDtype={params.hidden_state_dtype != null}
         inferenceService={engine ?? undefined}
       />
@@ -430,7 +430,7 @@ function Row({
         <td className="whitespace-nowrap px-5 py-3">
           <div className="flex flex-col items-start gap-1">
             <a
-              href={`/implantacoes/logs?deploy_id=${encodeURIComponent(d.deploy_id)}`}
+              href={`/deployments/logs?deploy_id=${encodeURIComponent(d.deploy_id)}`}
               className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-line px-2.5 text-[0.8rem] font-medium text-muted transition-colors hover:border-line-strong hover:text-fg"
             >
               <Terminal className="h-3.5 w-3.5" />
@@ -484,7 +484,7 @@ export function Deployments() {
   const { t } = useI18n();
   const { data, isLoading } = useDeployments();
   const node = useNode();
-  const pomDesenv = node.data?.pom_desenv === true;
+  const pomDevMode = node.data?.pom_dev_mode === true;
   /*
    * A versão aberta no inspetor da direita. Guarda a versão inteira, e não só
    * o número: o registro de uma versão não muda depois de gravado, então uma
@@ -618,7 +618,7 @@ export function Deployments() {
               value={inspected.version.params}
               readOnly
               showInferenceMode
-              pomDesenv={pomDesenv}
+              pomDevMode={pomDevMode}
               showHiddenStateDtype={inspected.version.params.hidden_state_dtype != null}
               inferenceService={inspectedEngine ?? undefined}
             />
@@ -643,7 +643,7 @@ export function Deployments() {
                 key={`${editing.deployId}:${editing.fromVersion}`}
                 row={row}
                 editing={editing}
-                pomDesenv={pomDesenv}
+                pomDevMode={pomDevMode}
                 onClose={() => setEditing(null)}
               />
             </aside>

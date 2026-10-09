@@ -222,7 +222,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn estado_oculto_com_varios_fluxos_viaja_em_tres_eixos() {
+    fn a_hidden_state_with_several_streams_travels_on_three_axes() {
         // Qwen3.8 "qwen4exp": 4 fluxos de 2560.
         assert_eq!(
             hidden_input_layout(2560, 2560, 10240),
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn media_movel_segue_o_trafego_e_ignora_amostras_atipicas() {
+    fn the_moving_average_follows_the_traffic_and_ignores_outliers() {
         let mut perf = SlicePerf::default();
         perf.seed(BenchResult {
             prefill_us_per_token: 1000.0,

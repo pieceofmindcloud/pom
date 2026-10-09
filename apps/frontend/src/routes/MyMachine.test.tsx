@@ -60,7 +60,7 @@ describe("MyMachine", () => {
     vi.clearAllMocks();
   });
 
-  it("mostra a identidade da máquina e o endereço anunciado", () => {
+  it("shows the machine identity and the announced address", () => {
     mount();
     expect(screen.getByText("Esta máquina")).toBeTruthy();
     expect(screen.getByText("infer-box")).toBeTruthy();
@@ -88,7 +88,7 @@ describe("MyMachine", () => {
     await waitFor(() => expect(input.value).toBe("Mesa do laboratório"));
   });
 
-  it("mantém Sair da rede como saída da máquina do cluster", async () => {
+  it("keeps Leave network as the exit of the machine from the cluster", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     mount();
@@ -99,7 +99,7 @@ describe("MyMachine", () => {
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/leave");
   });
 
-  it("deixa um node sair mesmo sem autoridade e sem modelo carregado", async () => {
+  it("lets a node leave even without authority and without a loaded model", async () => {
     queryMocks.node.data.profile = "node";
     queryMocks.node.data.authority_level = null;
     mount();

@@ -73,7 +73,12 @@ impl Default for NetworkVisibility {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkAccessPolicy {
+    /// An admin decides each admission request.
     Authorized,
+    /// The principal approves every admission request on arrival, for a role
+    /// the network accepts. A blocked or recently rejected machine is still
+    /// refused.
+    AutoApprove,
     AnyoneWithAnchor,
     LocalOnly,
 }
@@ -176,12 +181,6 @@ pub struct NetworkSettings {
     /// Which enrollment roles the network advertises as open right now.
     #[serde(default)]
     pub accepted_enrollments: AcceptedEnrollments,
-    /// Opens the lobby to machines that are not members, which is where
-    /// they ask to be admitted (`network/network_lobby.rs`). Only takes
-    /// effect with discovery on (public or hidden). With the network Chat on
-    /// the lobby is also a room where an admin talks to a candidate.
-    #[serde(default)]
-    pub lobby_chat: bool,
     /// Publishes the served models, the node count and the total VRAM to
     /// machines that are not members, answered live by the principal
     /// (`network_lobby::PublicStats`). Only takes effect on a public network.

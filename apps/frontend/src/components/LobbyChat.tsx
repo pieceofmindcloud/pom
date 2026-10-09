@@ -97,7 +97,8 @@ export function LobbyChat({ network, endpoint, onClose }: {
   }, [adopt, auth, endpoint, key]);
 
   const messages = exchange?.messages ?? [];
-  // The network Chat is off there: asking to join still works, talking does not.
+  // The network Chat is off there: the window is only the request side, with
+  // no conversation to show.
   const closed = exchange?.messages_closed === true;
   const latest = messages[messages.length - 1]?.message_id;
   useEffect(() => {
@@ -161,9 +162,9 @@ export function LobbyChat({ network, endpoint, onClose }: {
 
   if (!network) return null;
   return (
-    <Modal open size="lg" title={t("lobby.title", { name: network.name })} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
-      <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]">
-        <div className="flex min-w-0 flex-col">
+    <Modal open size={closed ? "md" : "lg"} title={t("lobby.title", { name: network.name })} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
+      <div className={closed ? "min-w-0" : "grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]"}>
+        {!closed && <div className="flex min-w-0 flex-col">
           <p className="mb-3 text-xs leading-relaxed text-muted">{t("lobby.detail")}</p>
           <div
             ref={messagesRef}
@@ -171,7 +172,7 @@ export function LobbyChat({ network, endpoint, onClose }: {
             onScroll={(event) => { autoFollow.current = isNearBottom(event.currentTarget); }}
             className="h-72 space-y-2.5 overflow-y-auto rounded-lg border border-line bg-ink p-3"
           >
-            {messages.length === 0 && <p className="py-8 text-center text-sm text-faint">{t(closed ? "lobby.messagesClosed" : exchange ? "lobby.empty" : failure ? failure : "lobby.connecting")}</p>}
+            {messages.length === 0 && <p className="py-8 text-center text-sm text-faint">{t(exchange ? "lobby.empty" : failure ? failure : "lobby.connecting")}</p>}
             {messages.map((message) => {
               const own = message.sender_node_id === exchange?.node_id;
               return (
@@ -195,17 +196,18 @@ export function LobbyChat({ network, endpoint, onClose }: {
               placeholder={t("lobby.placeholder")}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }}
-              disabled={sending || !exchange || closed}
+              disabled={sending || !exchange}
             />
-            <Button variant="primary" className="h-9 w-9 shrink-0 px-0" aria-label={t("networkChat.send")} disabled={!draft.trim() || sending || !exchange || closed} loading={sending} onClick={() => void submit()}>
+            <Button variant="primary" className="h-9 w-9 shrink-0 px-0" aria-label={t("networkChat.send")} disabled={!draft.trim() || sending || !exchange} loading={sending} onClick={() => void submit()}>
               <Send className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-        <div className="min-w-0">
+        </div>}
+        <div className="min-w-0" data-testid="lobby-request">
           <p className="eyebrow mb-2">{t("lobby.yourCard")}</p>
           {exchange ? <LobbyHardwareCard nodeId={exchange.node_id} card={exchange.card} self /> : <p className="text-xs text-faint">{t("lobby.connecting")}</p>}
-          <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t("lobby.cardNote")}</p>
+          <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t(closed ? "lobby.cardNoteRequest" : "lobby.cardNote")}</p>
+          {closed && failure && <p role="alert" className="mt-2 text-xs text-amber">{t(failure)}</p>}
           {canAsk && exchange && (
             <div className="mt-4 border-t border-line pt-3" data-testid="lobby-admission">
               <p className="eyebrow mb-2">{t("lobby.admission")}</p>

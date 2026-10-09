@@ -427,6 +427,7 @@ function NetworkInfoPanel({
 }) {
   const update = (patch: Partial<NetworkSettingsData>) => onChange({ ...draft, ...patch });
   const publicNetwork = draft.visibility === "public";
+  const discoverable = draft.visibility !== "local";
   return (
     <Panel>
       <PanelHeader
@@ -476,58 +477,67 @@ function NetworkInfoPanel({
               <option value="public">{t("network.visibilityPublic")}</option>
             </Select>
           </Field>
-          <Field label={t("network.accessPolicy")}>
-            <Select value={draft.access_policy} onChange={(event) => update({ access_policy: event.target.value as NetworkSettingsData["access_policy"] })}>
-              <option value="authorized">{t("network.accessAuthorized")}</option>
-              {/* The open mode is no longer offered. A network already on it
-                  keeps showing it, so saving another field does not silently
-                  close the network to its current members. */}
-              {draft.access_policy === "anyone_with_anchor" && <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>}
-              <option value="local_only">{t("network.accessLocalOnly")}</option>
-            </Select>
-          </Field>
-          <Field label={t("network.acceptedEnrollments")} hint={t("network.acceptedEnrollmentsHint")} className="md:col-span-2">
-            <div className="flex flex-wrap gap-x-5 gap-y-2">
-              {ENROLLMENT_ROLES.map((role) => (
-                <label key={role} className="flex items-center gap-2 text-sm text-fg">
-                  <input
-                    type="checkbox"
-                    checked={draft.accepted_enrollments.includes(role)}
-                    onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })}
-                  />
-                  {t(`network.enrollment.${role}`)}
-                </label>
-              ))}
+          {/* Admission only exists with discovery: a network nobody can
+              reach has nobody to admit, so its options are not shown. */}
+          {discoverable && (
+            <Field label={t("network.accessPolicy")}>
+              <Select value={draft.access_policy} onChange={(event) => update({ access_policy: event.target.value as NetworkSettingsData["access_policy"] })}>
+                <option value="authorized">{t("network.accessAuthorized")}</option>
+                <option value="auto_approve">{t("network.accessAutoApprove")}</option>
+                {/* The open mode is no longer offered. A network already on it
+                    keeps showing it, so saving another field does not silently
+                    close the network to its current members. */}
+                {draft.access_policy === "anyone_with_anchor" && <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>}
+                <option value="local_only">{t("network.accessLocalOnly")}</option>
+              </Select>
+            </Field>
+          )}
+          {discoverable && draft.access_policy === "auto_approve" && (
+            <div role="alert" data-testid="auto-approve-warning" className="flex items-start gap-3 rounded-lg border border-amber/40 bg-amber/[0.07] px-3 py-2.5 md:col-span-2">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <p className="text-sm leading-relaxed text-fg">{t("network.accessAutoApproveWarning")}</p>
             </div>
-          </Field>
-          <Field label={t("network.lobbyChat")} hint={t("network.lobbyChatHint")} className="md:col-span-2">
-            <label className="flex items-center gap-2 text-sm text-fg">
-              <input
-                type="checkbox"
-                checked={Boolean(draft.lobby_chat)}
-                disabled={draft.visibility === "local"}
-                onChange={(event) => update({ lobby_chat: event.target.checked })}
-              />
-              {t("network.lobbyChatEnable")}
-            </label>
-          </Field>
-          <Field label={t("network.publicStats")} hint={t("network.publicStatsHint")} className="md:col-span-2">
-            <label className="flex items-center gap-2 text-sm text-fg">
-              <input
-                type="checkbox"
-                checked={Boolean(draft.public_stats)}
-                disabled={!publicNetwork}
-                onChange={(event) => update({ public_stats: event.target.checked })}
-              />
-              {t("network.publicStatsEnable")}
-            </label>
-          </Field>
-          <div className="min-w-0 md:col-span-2">
-            <LocationEditor value={draft} source={NETWORK_GEO} required={publicNetwork} t={t} onChange={(place) => update(place)} />
-          </div>
-          <div className="min-w-0 md:col-span-2">
-            <KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue>
-          </div>
+          )}
+          {discoverable && (
+            <Field label={t("network.acceptedEnrollments")} hint={t("network.acceptedEnrollmentsHint")} className="md:col-span-2">
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
+                {ENROLLMENT_ROLES.map((role) => (
+                  <label key={role} className="flex items-center gap-2 text-sm text-fg">
+                    <input
+                      type="checkbox"
+                      checked={draft.accepted_enrollments.includes(role)}
+                      onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })}
+                    />
+                    {t(`network.enrollment.${role}`)}
+                  </label>
+                ))}
+              </div>
+            </Field>
+          )}
+          {publicNetwork && (
+            <Field label={t("network.publicStats")} hint={t("network.publicStatsHint")} className="md:col-span-2">
+              <label className="flex items-center gap-2 text-sm text-fg">
+                <input
+                  type="checkbox"
+                  checked={Boolean(draft.public_stats)}
+                  onChange={(event) => update({ public_stats: event.target.checked })}
+                />
+                {t("network.publicStatsEnable")}
+              </label>
+            </Field>
+          )}
+          {/* The place is what the public directory groups and sorts by: a
+              network that is not listed has no use for it. */}
+          {publicNetwork && (
+            <>
+              <div className="min-w-0 md:col-span-2">
+                <LocationEditor value={draft} source={NETWORK_GEO} required t={t} onChange={(place) => update(place)} />
+              </div>
+              <div className="min-w-0 md:col-span-2">
+                <KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue>
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <dl className="grid min-w-0 gap-x-6 gap-y-4 px-5 py-5 sm:grid-cols-2">
@@ -537,12 +547,11 @@ function NetworkInfoPanel({
           <KeyValue label={t("network.rules")}>{draft.rules ? <Markdown>{draft.rules}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
           <KeyValue label={t("network.channels")}>{draft.channels ? <Markdown>{draft.channels}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
           <KeyValue label={t("network.visibility")}><span>{visibilityLabel(draft.visibility, t)}</span></KeyValue>
-          <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>
-          <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>
-          <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats && publicNetwork ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>
-          <KeyValue label={t("network.lobbyChat")}><span>{t(draft.lobby_chat && draft.visibility !== "local" ? "network.lobbyChatOn" : "network.lobbyChatOff")}</span></KeyValue>
-          <KeyValue label={t("location.title")}><span className="break-words">{placeLabel(draft) || t("network.notProvided")}</span></KeyValue>
-          {draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
+          {discoverable && <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>}
+          {discoverable && <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>}
+          {publicNetwork && <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>}
+          {publicNetwork && <KeyValue label={t("location.title")}><span className="break-words">{placeLabel(draft) || t("network.notProvided")}</span></KeyValue>}
+          {publicNetwork && draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
         </dl>
       )}
       {info?.network.visibility === "public" && <Footnote className="border-t border-line px-5 py-3" icon={<Radio className="h-3.5 w-3.5" />}>{t("network.publicInfoPropagation")}</Footnote>}
@@ -620,5 +629,5 @@ export function acceptedEnrollmentsLabel(roles: EnrollmentRole[], t: (key: strin
 }
 
 function accessLabel(value: NetworkSettingsData["access_policy"], t: (key: string, values?: Record<string, string | number>) => string) {
-  return t(`network.access${value === "anyone_with_anchor" ? "AnyoneWithAnchor" : value === "local_only" ? "LocalOnly" : "Authorized"}`);
+  return t(`network.access${value === "anyone_with_anchor" ? "AnyoneWithAnchor" : value === "auto_approve" ? "AutoApprove" : value === "local_only" ? "LocalOnly" : "Authorized"}`);
 }

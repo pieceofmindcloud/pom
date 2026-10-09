@@ -63,7 +63,6 @@ pub(crate) fn network_from_trust_document(content: &str) -> anyhow::Result<Pinne
             geo_label: String::new(),
             access_policy: setup.map(|setup| setup.access_policy).unwrap_or_default(),
             accepted_enrollments: Default::default(),
-            lobby_chat: true,
             public_stats: false,
             location: None,
             discovered_via: "custom".to_string(),

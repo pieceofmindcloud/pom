@@ -766,16 +766,21 @@ impl NetworkChat {
             && config.network.visibility == crate::config::NetworkVisibility::Public
     }
 
-    /// Whether this network opened a lobby to non-members: the operator's
-    /// lobby switch set and discovery not off. A hidden (private) network
-    /// answers too: nobody lists it, and whoever was handed its trust document
-    /// reaches the principal by key. It does not depend on the network Chat:
-    /// with the Chat off the lobby still takes admission requests, and only
-    /// its conversation is closed (`enabled`).
+    /// Whether this network has a lobby for non-members: discovery not off.
+    /// There is no switch, because the lobby is the only way in. A hidden
+    /// (private) network answers too: nobody lists it, and whoever was handed
+    /// its trust document reaches the principal by key. It does not depend on
+    /// the network Chat: with the Chat off the lobby still takes admission
+    /// requests, and only its conversation is closed (`enabled`).
     pub async fn lobby_enabled(&self) -> bool {
-        let config = self.auth.read().await;
-        config.network.lobby_chat
-            && config.network.visibility != crate::config::NetworkVisibility::Local
+        self.auth.read().await.network.visibility != crate::config::NetworkVisibility::Local
+    }
+
+    /// Whether an admission request is approved on arrival, with no admin
+    /// deciding it (`NetworkAccessPolicy::AutoApprove`).
+    pub async fn auto_approves(&self) -> bool {
+        self.auth.read().await.network.access_policy
+            == crate::config::NetworkAccessPolicy::AutoApprove
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ChatEvent> {

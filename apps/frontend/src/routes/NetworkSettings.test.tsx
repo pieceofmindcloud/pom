@@ -243,6 +243,34 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 
+  it("offers admission options only with discovery, and warns about joining without approval", () => {
+    queryMocks.node.data.profile = "admin";
+    queryMocks.node.data.authority_level = "primary";
+    queryMocks.networkInfo.data.can_edit = true;
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    // The place only matters to the public directory.
+    expect(screen.queryByText("Rótulo de descoberta")).toBeNull();
+    const policy = screen.getByDisplayValue("Aprovados por um administrador");
+    expect(screen.getByText("Aceitando novos membros")).toBeTruthy();
+    expect(screen.queryByText("Lobby")).toBeNull();
+    expect(screen.queryByTestId("auto-approve-warning")).toBeNull();
+    fireEvent.change(policy, { target: { value: "auto_approve" } });
+    expect(screen.getByTestId("auto-approve-warning")).toBeTruthy();
+
+    fireEvent.change(screen.getByDisplayValue(/^Oculta/), { target: { value: "public" } });
+    expect(screen.getByText("Rótulo de descoberta")).toBeTruthy();
+    fireEvent.change(screen.getByDisplayValue(/^Ligada/), { target: { value: "local" } });
+    expect(screen.queryByText("Rótulo de descoberta")).toBeNull();
+    expect(screen.queryByText("Quem pode entrar")).toBeNull();
+    expect(screen.queryByText("Aceitando novos membros")).toBeNull();
+    expect(screen.queryByTestId("auto-approve-warning")).toBeNull();
+  });
+
   it("lets the admin revoke an admitted machine, behind a confirmation", async () => {
     admissionMocks.admissions.data = [
       { node_id: "aaaaaaaaaaaa1111", role: "node", status: "approved", requested_at: "", card: { hostname: "forasteiro", os: "", arch: "", cpu_count: 0, ram_total_mb: 0, gpus: [] } },

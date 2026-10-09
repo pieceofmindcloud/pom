@@ -289,9 +289,9 @@ describe("PublicNetworks", () => {
 
     const row = (await screen.findByText("Rede Curitiba")).closest("tr")!;
     const leave = await within(row).findByRole("button", { name: "Sair da rede" });
-    expect(within(row).queryByRole("button", { name: "Sem lobby" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Conversar e pedir para entrar" })).toBeNull();
     const other = screen.getByText("Rede Lisboa").closest("tr")!;
-    expect(within(other).getByRole("button", { name: "Sem lobby" })).toBeTruthy();
+    expect(within(other).getByRole("button", { name: "Conversar e pedir para entrar" })).toBeTruthy();
 
     fireEvent.click(leave);
     const dialog = await screen.findByRole("dialog");
@@ -310,17 +310,17 @@ describe("PublicNetworks", () => {
 
     const other = (await screen.findByText("Rede Lisboa")).closest("tr")!;
     const row = screen.getByText("Rede Curitiba").closest("tr")!;
-    await waitFor(() => expect(within(row).queryByRole("button", { name: "Sem lobby" })).toBeNull());
+    await waitFor(() => expect(within(row).queryByRole("button", { name: "Conversar e pedir para entrar" })).toBeNull());
     expect(within(row).queryByRole("button", { name: "Sair da rede" })).toBeNull();
-    expect(within(other).getByRole("button", { name: "Sem lobby" })).toBeTruthy();
+    expect(within(other).getByRole("button", { name: "Conversar e pedir para entrar" })).toBeTruthy();
   });
 
-  it("asks for admission through the lobby, and only where a lobby is open", async () => {
+  it("asks for admission through the lobby, which every listed network has", async () => {
     mocks.get.mockImplementation((path: string) => {
       if (path === "/api/public/networks") {
         return Promise.resolve([
-          { ...networks[0], lobby_chat: true, accepted_enrollments: ["infer"] },
-          { ...networks[1], lobby_chat: true, accepted_enrollments: [] },
+          { ...networks[0], accepted_enrollments: ["infer"] },
+          { ...networks[1], accepted_enrollments: [] },
           networks[2],
         ]);
       }
@@ -345,9 +345,9 @@ describe("PublicNetworks", () => {
     // A network that takes no new member can still be talked to.
     const closed = screen.getByText("Rede São Paulo").closest("tr")!;
     expect(within(closed).getByRole("button", { name: "Conversar" })).toBeTruthy();
-    // Without a lobby there is nobody to ask.
-    const silent = screen.getByText("Rede Lisboa").closest("tr")!;
-    expect((within(silent).getByRole("button", { name: "Sem lobby" }) as HTMLButtonElement).disabled).toBe(true);
+    // There is no network without a lobby: every listed one can be asked.
+    const third = screen.getByText("Rede Lisboa").closest("tr")!;
+    expect((within(third).getByRole("button", { name: "Conversar e pedir para entrar" }) as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(within(open).getByRole("button", { name: "Conversar e pedir para entrar" }));
     const dialog = await screen.findByRole("dialog", { name: "Lobby de Rede Curitiba" });
@@ -394,7 +394,7 @@ describe("PublicNetworks", () => {
 
   it("keeps this machine's network and the imported ones on top, apart from the public ones", async () => {
     const own = { ...networks[2], fingerprint: "fingerprint-own", name: "Minha rede", publisher_key: "pk:own", trust_document: "{\"own\":true}" };
-    const custom = { ...networks[1], fingerprint: "fingerprint-custom", name: "Rede privada", publisher_key: "pk:custom", discovered_via: "custom", lobby_chat: true, trust_document: "{\"custom\":true}" };
+    const custom = { ...networks[1], fingerprint: "fingerprint-custom", name: "Rede privada", publisher_key: "pk:custom", discovered_via: "custom", trust_document: "{\"custom\":true}" };
     let pinned = { own: { network: own, visibility: "local" }, custom: [{ network: custom, visibility: "private" }] };
     mocks.get.mockImplementation((path: string) => {
       if (path === "/api/public/networks") return Promise.resolve(networks);

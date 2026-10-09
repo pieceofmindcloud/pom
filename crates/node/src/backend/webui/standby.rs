@@ -190,7 +190,7 @@ mod tests {
         let own = config(serde_json::json!({
             "profile": "admin",
             "connection_key": "chave-da-minha-rede",
-            "network": { "public_name": "Minha Rede", "visibility": "public", "lobby_chat": true },
+            "network": { "public_name": "Minha Rede", "visibility": "public", "public_stats": true },
             "blocked_nodes": ["alguem"],
             "network_chat_enabled": true,
         }));
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(leaving.connection_key, "chave-da-minha-rede");
         assert_eq!(leaving.network.public_name, "Minha Rede");
         assert_eq!(leaving.network.visibility, crate::config::NetworkVisibility::Public);
-        assert!(leaving.network.lobby_chat);
+        assert!(leaving.network.public_stats);
         assert_eq!(leaving.blocked_nodes, vec!["alguem".to_string()]);
         assert!(leaving.network_chat_enabled);
         assert!(!leaving.setup_pending);

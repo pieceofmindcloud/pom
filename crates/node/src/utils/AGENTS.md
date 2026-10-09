@@ -204,11 +204,12 @@ closed. It is an advertisement for the public directory only: admission
 (`Network::public_peer_is_admitted`) does not read it and current members are
 never affected.
 
-`NetworkSettings.lobby_chat` opens the lobby to machines that are not
-members, which is where they ask to be admitted (`network/network_lobby.rs`).
-It is off by default and only takes effect with discovery on (`public` or
-`private`). It does not need the network Chat: the Chat only adds the
-conversation to the lobby.
+The lobby, where machines that are not members ask to be admitted
+(`network/network_lobby.rs`), has no setting: it exists whenever discovery is
+on (`public` or `private`). It does not need the network Chat: the Chat only
+adds the conversation to the lobby. `NetworkSettings.access_policy` says who
+decides a request: `authorized` (an admin), `auto_approve` (the principal
+approves every request on arrival) or `local_only`.
 `NetworkSettings.visibility` is what the interface calls discovery: `local`
 announces nothing (the node runs detached and publishes no pkarr record),
 `private` announces without being listed, `public` is listed.

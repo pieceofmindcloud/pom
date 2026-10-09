@@ -1160,9 +1160,9 @@ faz o download autenticado do blob persistido.
   `pk:` key and `relay_hints` for the no-secret join flow - never an address.
   The view also carries `accepted_enrollments` (roles open to new members;
   empty = closed), which the directory screen uses to disable joining. It is
-  advisory: no route refuses a join because of it. `lobby_chat` says the
-  network answers its lobby to non-members (admission requests; the
-  conversation also needs the network Chat on).
+  advisory: no route refuses a join because of it. Every listed network
+  answers its lobby to non-members (admission requests; the conversation
+  also needs the network Chat on).
   `webui/lobby.rs` is the candidate's side of the lobby over HTTP
   (`/api/ui/network-chat/lobby` behind the operator session, `/api/setup/lobby`
   on the setup router) and `setup_public_networks`, the directory-only listing

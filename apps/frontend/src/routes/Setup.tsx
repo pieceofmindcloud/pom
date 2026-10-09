@@ -29,7 +29,7 @@ import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFing
 import pomMark from "../assets/pom-mark-dark.png";
 
 type NetworkVisibility = "local" | "private" | "public";
-type AccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
+type AccessPolicy = "authorized" | "auto_approve" | "anyone_with_anchor" | "local_only";
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 interface GpuStat {
@@ -829,7 +829,6 @@ interface DirectoryNetwork {
   city: string;
   access_policy?: AccessPolicy;
   accepted_enrollments?: EnrollmentRole[];
-  lobby_chat?: boolean;
   public_stats?: boolean;
   directory_replicas?: string[];
 }
@@ -903,11 +902,9 @@ export function PublicDirectoryPanel({ setup, onUse, onAddress, t }: { setup: Se
                 <DirectoryNetworkStats network={network} t={t} />
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {network.lobby_chat && (
-                  <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setChatTarget(network)}>
-                    <MessageCircle className="h-3.5 w-3.5" />{t("publicNetworks.chat")}
-                  </button>
-                )}
+                <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" onClick={() => setChatTarget(network)}>
+                  <MessageCircle className="h-3.5 w-3.5" />{t("publicNetworks.chat")}
+                </button>
                 <button type="button" className="pom-setup-ghost pom-setup-ghost-sm" disabled={closed} title={closed ? t("firstRun.roleNotAccepted") : undefined} onClick={() => onUse(network)}>
                   {t(closed ? "publicNetworks.closed" : selected ? "firstRun.publicDirectorySelected" : "firstRun.publicDirectoryUse")}
                 </button>

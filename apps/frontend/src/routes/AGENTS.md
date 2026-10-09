@@ -96,13 +96,13 @@ Per-file list:
   the directory.
   The screen is titled "Networks". For a network this node is not in, the one
   action opens the lobby window (`LobbyChat`), where admission is requested;
-  without `lobby_chat` the button is disabled ("No lobby"). The old path that
+  every listed network has a lobby. The old path that
   left the network and opened the wizard is gone.
   A network advertising an empty `accepted_enrollments` can still be talked to
   but offers no admission request; the list (or "Any role" when the record has
   none) is shown in the details modal and travels to the wizard in the
-  `sessionStorage` handoff. A network with `lobby_chat` also gets "Chat", which
-  opens `../components/LobbyChat` against `/api/ui/network-chat/lobby`. A
+  `sessionStorage` handoff. That window is `../components/LobbyChat` against
+  `/api/ui/network-chat/lobby`. A
   network with `public_stats` that this node is not in gets its nodes, VRAM and
   models columns from `usePublicStats` (`../lib/publicStats`); latency stays
   unavailable for it.
@@ -118,8 +118,14 @@ Per-file list:
   atualiza a descoberta pública. The editable block includes "Accepting new
   members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
   `lib/types.ts`); unchecking all of them advertises the network as closed.
-  "Lobby chat" (`lobby_chat`) lets machines that are not members talk to the
-  network; the checkbox is disabled only with discovery off. Discovery offers
+  There is no lobby option: the lobby follows discovery. "Who can join"
+  (`access_policy`) and "Accepting new members" are shown only with discovery
+  on or hidden, and the published stats only on a public network; with
+  discovery off they are not rendered at all. The location editor and the
+  geographic label are rendered only on a public network, the only kind the
+  directory places on a map. "Who can join" offers "Approved
+  by an admin", "Anyone without approval" (`auto_approve`, with a warning
+  block under it, `auto-approve-warning`) and "This machine only". Discovery offers
   "Hidden" (`private`) again: no relay lists the network, and another machine
   reaches it by importing its trust document on the Networks screen. The leave
   action ("Return to my own network", `POST /api/ui/network/leave`) is not

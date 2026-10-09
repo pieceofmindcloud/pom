@@ -1158,6 +1158,7 @@ lobby.admissionStanding,This machine was already admitted to this network as {ro
 lobby.candidate,candidate,candidato
 lobby.candidates,{count} in the lobby,{count} no lobby
 lobby.cardNote,This card goes with every message so the network can judge whether your machine fits.,Este cartão acompanha cada mensagem para a rede avaliar se a sua máquina serve.
+lobby.cardNoteRequest,This card goes with your request so the network can judge whether your machine fits.,Este cartão acompanha o seu pedido para a rede avaliar se a sua máquina serve.
 lobby.connecting,Reaching the network...,Conectando à rede...
 lobby.connection,Connection,Conexão
 lobby.connectionDirect,direct connection,conexão direta
@@ -1169,7 +1170,7 @@ lobby.detail,You are talking to this network before joining it. Its members read
 lobby.empty,No messages yet. Introduce yourself to the network.,Nenhuma mensagem ainda. Apresente-se à rede.
 lobby.emptyMember,Machines that have not joined yet write here before asking to be admitted.,Máquinas que ainda não entraram escrevem aqui antes de pedir admissão.
 lobby.errorBlocked,This network blocked this machine.,Esta rede bloqueou esta máquina.
-lobby.errorDisabled,This network is not accepting lobby chat right now.,Esta rede não está aceitando conversa no lobby no momento.
+lobby.errorDisabled,This network cannot be reached for admission right now.,Esta rede não pode ser alcançada para admissão no momento.
 lobby.errorFull,The lobby is full. Try again later.,O lobby está cheio. Tente novamente mais tarde.
 lobby.errorMember,This machine is already a member of this network. Use the network chat.,Esta máquina já é membro desta rede. Use o chat da rede.
 lobby.errorRate,Too many messages. Wait a moment and try again.,Mensagens demais. Aguarde um instante e tente de novo.
@@ -1315,9 +1316,11 @@ nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
 network.acceptedEnrollments,Accepting new members,Aceitando novos membros
-network.acceptedEnrollmentsHint,"Advertised in the public directory. With none selected the network shows as closed and nobody can start joining it from there. Current members are not affected.","Anunciado no diretório público. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue iniciar a entrada por lá. Os membros atuais não são afetados."
+network.acceptedEnrollmentsHint,"The roles a machine may ask to join with. With none selected the network shows as closed and nobody can ask to join it. Current members are not affected.","Os papéis com que uma máquina pode pedir para entrar. Sem nenhum marcado, a rede aparece como fechada e ninguém consegue pedir para entrar. Os membros atuais não são afetados."
 network.accessAnyoneWithAnchor,Anyone with the trust root (legacy),Qualquer pessoa com a raiz de confiança (legado)
 network.accessAuthorized,Approved by an admin,Aprovados por um administrador
+network.accessAutoApprove,Anyone without approval,Qualquer um sem aprovação
+network.accessAutoApproveWarning,"Every machine that asks to join is admitted at once, with no admin looking at it, and receives the connection key of this network. Anyone who finds the network, or holds its trust document, can become a member, use its models and see its nodes. Blocked machines are still refused. Use this only on a network you are ready to open to strangers.","Toda máquina que pedir para entrar é admitida na hora, sem um administrador olhar, e recebe a chave de conexão desta rede. Qualquer um que encontre a rede, ou tenha o documento de confiança, pode virar membro, usar os modelos e ver os nós. Máquinas bloqueadas continuam recusadas. Use isto só numa rede que você está pronto para abrir a desconhecidos."
 network.accessLocalOnly,This machine only,Apenas esta máquina
 network.accessPolicy,Who can join,Quem pode entrar
 network.addrEffective,Currently advertising,Anunciando agora
@@ -1426,11 +1429,6 @@ network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
-network.lobbyChat,Lobby,Lobby
-network.lobbyChatEnable,Let machines that are not members reach this network and ask to join,Permitir que máquinas que não são membros alcancem esta rede e peçam para entrar
-network.lobbyChatHint,"The lobby is where a machine that has not joined asks to be admitted; you approve the request from the bell. Needs discovery on (public or hidden). With the network chat on, in Administrative preferences, the candidate can also talk to the members, who see its messages and declared hardware in the Lobby room.","O lobby é onde uma máquina que ainda não entrou pede para ser admitida; você aprova o pedido pelo sino. Exige descoberta ligada (pública ou oculta). Com o chat da rede ligado, em Preferências administrativas, o candidato também pode conversar com os membros, que veem as mensagens e o hardware declarado na sala Lobby."
-network.lobbyChatOff,Closed,Fechado
-network.lobbyChatOn,Open,Aberto
 network.location,Location,Localização
 network.locationCoordinates,"{latitude}, {longitude}","{latitude}, {longitude}"
 network.logsDisable,Turn logs off,Desligar logs
@@ -1501,7 +1499,7 @@ network.publicNameRequired,Required for a public network,Obrigatório para uma r
 network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
 network.publicStats,Published stats,Dados publicados
 network.publicStatsEnable,"Publish served models, node count and total VRAM","Publicar modelos servidos, número de nós e VRAM total"
-network.publicStatsHint,"Shown in the public directory to machines that have not joined. They are asked live from this node, so they are only available while it is online. Needs a public network.","Aparecem no diretório público para máquinas que ainda não entraram. São consultados ao vivo neste nó, então só ficam disponíveis enquanto ele está online. Exige rede pública."
+network.publicStatsHint,"Shown in the public directory to machines that have not joined. They are asked live from this node, so they are only available while it is online.","Aparecem no diretório público para máquinas que ainda não entraram. São consultados ao vivo neste nó, então só ficam disponíveis enquanto ele está online."
 network.publicStatsOff,Not published,Não publicados
 network.publicStatsOn,Published,Publicados
 network.quicDisable,Turn QUIC off,Desligar QUIC
@@ -1984,8 +1982,6 @@ publicNetworks.locationNote,"Each network's city and country come from the coord
 publicNetworks.measureLatency,Measure latency,Medir latência
 publicNetworks.models,Served models,Modelos servidos
 publicNetworks.name,Public name,Nome público
-publicNetworks.noLobby,No lobby,Sem lobby
-publicNetworks.noLobbyDetail,"This network has not opened its lobby, so it cannot be asked for admission from here.","Esta rede não abriu o lobby, então não é possível pedir admissão por aqui."
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
 publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
 publicNetworks.nodes,Nodes,Nós

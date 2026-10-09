@@ -100,7 +100,10 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   runs in setup mode. The principal's handler is
   `discovery.rs::answer_lobby_request`; inside the network the lobby is the
   `lobby` room of `network_chat.rs`, which gained `ChatAction::LobbyPresence`
-  and `NetworkChat::{lobby_guests, lobby_enabled}`. The `Info` request and
+  and `NetworkChat::{lobby_guests, lobby_enabled, auto_approves}`. The lobby
+  has no switch: it answers whenever discovery is not off, and under
+  `access_policy = auto_approve` the handler approves an admission request as
+  it arrives. The `Info` request and
   `PublicStats` publish models, node count and VRAM under a separate switch
   (`NetworkChat::{public_stats, public_stats_enabled}`); the slot is filled by
   `webui::spawn_public_stats_publisher`, never by the swarm loop.

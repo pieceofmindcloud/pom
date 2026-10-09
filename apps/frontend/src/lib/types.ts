@@ -432,7 +432,7 @@ export interface NodeInfo {
 }
 
 export type NetworkVisibility = "local" | "private" | "public";
-export type NetworkAccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
+export type NetworkAccessPolicy = "authorized" | "auto_approve" | "anyone_with_anchor" | "local_only";
 
 /** A role a new machine can enroll with; `admin` is never an enrollment. */
 export type EnrollmentRole = "node" | "infer";
@@ -464,7 +464,6 @@ export interface NetworkSettings {
   /** Roles the network advertises as open to new members; empty means closed. */
   accepted_enrollments: EnrollmentRole[];
   /** Opens the lobby room of the network Chat to machines that are not members. */
-  lobby_chat: boolean;
   /** Publishes served models, node count and total VRAM to non-members. */
   public_stats: boolean;
   location: NetworkLocation | null;

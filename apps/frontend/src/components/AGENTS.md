@@ -493,6 +493,9 @@ Per-file list:
   button switches at once, and the bell does not list it. A declined request
   shows how many minutes are left before asking again (`retryWaitMinutes`
   over `retry_at`), and the request form comes back when the wait is over.
+  When the network answers `messages_closed` (its Chat is off) the
+  conversation column is not rendered: the window is only the hardware card
+  and the request panel (`lobby-request`).
   Test: `LobbyChat.test.tsx`.
 - `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
   OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens

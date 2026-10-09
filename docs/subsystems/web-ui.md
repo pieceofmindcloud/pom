@@ -293,10 +293,15 @@ local-only notice. Routes:
   (`POST /api/ui/networks/custom`), and an added row can be removed from the
   list. Every row has an export button that saves its trust document as
   `<name>-trust.json`, the file another machine imports. An added network is
-  joined like a public one, through its lobby; its admin must have discovery
-  on "Hidden" and the lobby switch set. The network Chat is not needed to ask
-  for admission; without it the lobby window says the conversation is closed
-  and keeps the request panel. The table groups by country/city and sorts
+  joined like a public one, through its lobby; its admin only needs discovery
+  on "Hidden", since the lobby follows discovery. The network Chat is not
+  needed to ask for admission; without it the lobby window shows no
+  conversation, only the hardware card and the request panel. In Network
+  settings, "Who can join" and "Accepting new members" appear only with
+  discovery on or hidden; "Who can join" has "Anyone without approval"
+  (`auto_approve`), which admits every request on arrival and shows a
+  warning when selected. The location (city, pin, geographic label) is
+  shown only on a public network. The table groups by country/city and sorts
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust
@@ -306,9 +311,11 @@ local-only notice. Routes:
   is empty shows a disabled "Closed" button; with a partial list Join stays
   enabled and the join dialog disables the roles that are not
   accepted. The principal edits the list in Network settings ("Accepting new
-  members"). A network with `lobby_chat` gets a "Chat" button that opens
-  `components/LobbyChat.tsx`: a conversation with that network's lobby through
-  this node, with the hardware card the network will see. The same component
+  members"). Every listed network gets a button that opens
+  `components/LobbyChat.tsx`: that network's lobby through this node, with
+  the hardware card the network will see and the admission request. The
+  conversation is shown only when that network has its Chat on; otherwise the
+  window is just the card and the request. The same component
   is used by the deprecated setup wizard, whose join step lists the federated directory
   (`PublicDirectoryPanel`), so a machine that has joined nothing can ask first;
   the list comes from the installation's relays and from the relay key or

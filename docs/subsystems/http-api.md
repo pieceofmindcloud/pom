@@ -65,11 +65,12 @@ last):
   view includes `accepted_enrollments`, the list of enrollment roles (`node`,
   `infer`) the network advertises as open; an empty list means it is not
   accepting new members. It is edited by the principal through `POST
-  /api/ui/network/settings` and is advisory - no route enforces it. `lobby_chat`
-  is `true` while the network answers its lobby to non-members (the
-  `network.lobby_chat` switch; the network Chat only adds the conversation,
-  and a lobby answer says `messages_closed: true` without it), and
-  `public_stats` says it publishes models, node count and VRAM.
+  /api/ui/network/settings` and is advisory - no route enforces it. Every
+  listed network answers its lobby to non-members (the network Chat only adds
+  the conversation, and a lobby answer says `messages_closed: true` without
+  it). `access_policy` is `authorized`, `auto_approve` (admission requests are
+  approved on arrival) or `local_only`; `public_stats` says the network
+  publishes models, node count and VRAM.
 - **Lobby, candidate side** (`webui/lobby.rs`): `GET
   /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`
   (`{key, message_id, text}`) make this node talk to **another** network's

@@ -2095,8 +2095,12 @@ async fn answer_lobby_request(
         if !chat.accepts_role(*role).await {
             return LobbyResponse::rejected("role_not_accepted");
         }
-        if let Err(error) = chat.request_admission(&node_id, card.clone(), *role) {
-            return LobbyResponse::rejected(error);
+        match chat.request_admission(&node_id, card.clone(), *role) {
+            Ok(crate::network_lobby::AdmissionStatus::Pending) if chat.auto_approves().await => {
+                chat.decide_admission(&node_id, Some(crate::network_lobby::AdmissionStatus::Approved));
+            }
+            Ok(_) => {}
+            Err(error) => return LobbyResponse::rejected(error),
         }
     }
     let admission = lobby_admission_view(network, chat, &node_id).await;

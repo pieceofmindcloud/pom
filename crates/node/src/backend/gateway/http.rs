@@ -174,10 +174,6 @@ pub(crate) struct PublicNetworkView {
     /// accepting new members and the directory disables its join button.
     #[serde(default)]
     pub accepted_enrollments: crate::config::AcceptedEnrollments,
-    /// The network answers lobby chat from non-members right now (the
-    /// operator's switch and the network Chat are both on).
-    #[serde(default)]
-    pub lobby_chat: bool,
     /// The network publishes models, node count and VRAM to non-members,
     /// asked live from its principal.
     #[serde(default)]
@@ -247,7 +243,6 @@ fn directory_network_from_view(
         geo_label: view.geo_label.clone(),
         access_policy: view.access_policy,
         accepted_enrollments: view.accepted_enrollments.clone(),
-        lobby_chat: view.lobby_chat,
         public_stats: view.public_stats,
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
@@ -280,7 +275,6 @@ fn view_from_directory_record(
         geo_label: network.geo_label,
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments,
-        lobby_chat: network.lobby_chat,
         public_stats: network.public_stats,
         location: network.location,
         discovered_via: "directory".to_string(),
@@ -717,7 +711,6 @@ pub(crate) async fn local_network_view(state: &GatewayState) -> Option<PublicNet
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
-        lobby_chat: network.lobby_chat,
         public_stats: network.public_stats,
         // Already reduced to the precision the admin chose; `accuracy_m` is
         // what tells a viewer the point is approximate.

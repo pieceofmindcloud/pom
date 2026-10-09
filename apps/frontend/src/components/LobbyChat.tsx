@@ -24,6 +24,7 @@ export type LobbyEndpoint = "/api/ui/network-chat/lobby" | "/api/setup/lobby";
 /** The refusal codes of the principal that deserve their own sentence. */
 const ERROR_KEYS: Record<string, string> = {
   lobby_disabled: "lobby.errorDisabled",
+  lobby_messages_closed: "lobby.messagesClosed",
   node_blocked: "lobby.errorBlocked",
   already_member: "lobby.errorMember",
   rate_limited: "lobby.errorRate",
@@ -96,6 +97,8 @@ export function LobbyChat({ network, endpoint, onClose }: {
   }, [adopt, auth, endpoint, key]);
 
   const messages = exchange?.messages ?? [];
+  // The network Chat is off there: asking to join still works, talking does not.
+  const closed = exchange?.messages_closed === true;
   const latest = messages[messages.length - 1]?.message_id;
   useEffect(() => {
     const element = messagesRef.current;
@@ -168,7 +171,7 @@ export function LobbyChat({ network, endpoint, onClose }: {
             onScroll={(event) => { autoFollow.current = isNearBottom(event.currentTarget); }}
             className="h-72 space-y-2.5 overflow-y-auto rounded-lg border border-line bg-ink p-3"
           >
-            {messages.length === 0 && <p className="py-8 text-center text-sm text-faint">{t(exchange ? "lobby.empty" : failure ? failure : "lobby.connecting")}</p>}
+            {messages.length === 0 && <p className="py-8 text-center text-sm text-faint">{t(closed ? "lobby.messagesClosed" : exchange ? "lobby.empty" : failure ? failure : "lobby.connecting")}</p>}
             {messages.map((message) => {
               const own = message.sender_node_id === exchange?.node_id;
               return (
@@ -192,9 +195,9 @@ export function LobbyChat({ network, endpoint, onClose }: {
               placeholder={t("lobby.placeholder")}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }}
-              disabled={sending || !exchange}
+              disabled={sending || !exchange || closed}
             />
-            <Button variant="primary" className="h-9 w-9 shrink-0 px-0" aria-label={t("networkChat.send")} disabled={!draft.trim() || sending || !exchange} loading={sending} onClick={() => void submit()}>
+            <Button variant="primary" className="h-9 w-9 shrink-0 px-0" aria-label={t("networkChat.send")} disabled={!draft.trim() || sending || !exchange || closed} loading={sending} onClick={() => void submit()}>
               <Send className="h-4 w-4" />
             </Button>
           </div>

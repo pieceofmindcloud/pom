@@ -247,6 +247,7 @@ async fn exchange(
                 },
                 "card": card,
                 "messages": response.messages,
+                "messages_closed": response.messages_closed,
                 // Status and role only: the grant never reaches the browser.
                 "admission": admission,
             }))

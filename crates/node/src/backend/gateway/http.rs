@@ -717,7 +717,7 @@ pub(crate) async fn local_network_view(state: &GatewayState) -> Option<PublicNet
         geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
-        lobby_chat: network.lobby_chat && state.network_chat.enabled(),
+        lobby_chat: network.lobby_chat,
         public_stats: network.public_stats,
         // Already reduced to the precision the admin chose; `accuracy_m` is
         // what tells a viewer the point is approximate.

@@ -261,7 +261,11 @@ async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() 
     assert!(chat.lobby_enabled().await);
     auth.write().await.network.visibility = crate::config::NetworkVisibility::Public;
     assert!(chat.lobby_enabled().await);
+    // The network Chat off closes the conversation, not the lobby: it still
+    // takes admission requests.
     chat.set_enabled(false);
+    assert!(chat.lobby_enabled().await);
+    auth.write().await.network.visibility = crate::config::NetworkVisibility::Local;
     assert!(!chat.lobby_enabled().await);
     let _ = std::fs::remove_file(path);
 }

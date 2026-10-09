@@ -2775,7 +2775,8 @@ pub(super) async fn network_chat_snapshot(
         "notices": state.network_chat.notice_snapshot(),
         "dropped": state.network_chat.dropped(),
         "room": room,
-        "lobbyEnabled": state.network_chat.lobby_enabled().await,
+        // The lobby room is read through the network Chat.
+        "lobbyEnabled": state.network_chat.enabled() && state.network_chat.lobby_enabled().await,
         // Candidates talking in the lobby, with the hardware they declared.
         "lobbyGuests": state
             .network_chat

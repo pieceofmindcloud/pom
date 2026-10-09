@@ -66,8 +66,9 @@ last):
   `infer`) the network advertises as open; an empty list means it is not
   accepting new members. It is edited by the principal through `POST
   /api/ui/network/settings` and is advisory - no route enforces it. `lobby_chat`
-  is `true` while the network answers lobby chat from non-members (the
-  `network.lobby_chat` switch and the network Chat are both on), and
+  is `true` while the network answers its lobby to non-members (the
+  `network.lobby_chat` switch; the network Chat only adds the conversation,
+  and a lobby answer says `messages_closed: true` without it), and
   `public_stats` says it publishes models, node count and VRAM.
 - **Lobby, candidate side** (`webui/lobby.rs`): `GET
   /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`

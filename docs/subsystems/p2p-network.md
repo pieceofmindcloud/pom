@@ -1447,11 +1447,16 @@ A network can open the `lobby` room of its Chat to machines that are
 **not** members, so an admin can talk to a candidate before admitting it. The
 code is `network/network_lobby.rs`; the switch is `network.lobby_chat`, off by
 default, and it only takes effect with discovery on (`public` or `private`,
-never `local`) and the network Chat on (`NetworkChat::lobby_enabled`). A
+never `local`; `NetworkChat::lobby_enabled`). The switch does not depend on
+the network Chat. With the Chat off the lobby still answers and takes
+admission requests, which the admin approves from the bell; only the
+conversation is closed: a post is refused with `lobby_messages_closed`, no
+presence is relayed to members, and the answers to `Post`, `Fetch` and
+`Admission` carry `messages_closed: true`. A
 `private` network is listed by no relay: a candidate reaches its lobby by the
 principal's key, taken from the trust document its admin exported and the
 candidate imported on the Networks screen (`webui/networks.rs`). The public directory record and
-`PublicNetworkView` carry `lobby_chat` so the directory only offers the chat
+`PublicNetworkView` carry `lobby_chat` so the directory only offers the lobby
 where it will be answered.
 
 A candidate has no API key, no announce and no admission, so the star's

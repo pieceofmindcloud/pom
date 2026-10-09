@@ -1184,6 +1184,7 @@ lobby.joinNow,Join now,Entrar agora
 lobby.joinTitle,Join {name}?,Entrar em {name}?
 lobby.latency,{value} ms,{value} ms
 lobby.member,member,membro
+lobby.messagesClosed,This network has its lobby conversation off. You can still ask to join it.,Esta rede está com a conversa do lobby desligada. Você ainda pode pedir para entrar.
 lobby.noCandidates,Nobody is in the lobby right now.,Ninguém está no lobby agora.
 lobby.noGpu,No GPU reported,Nenhuma GPU informada
 lobby.placeholder,Write to the lobby of this network…,Escreva para o lobby desta rede…
@@ -1425,9 +1426,9 @@ network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
-network.lobbyChat,Lobby chat,Chat de lobby
-network.lobbyChatEnable,Accept messages from machines that are not members,Aceitar mensagens de máquinas que não são membros
-network.lobbyChatHint,Lets a machine that has not joined talk to this network before being admitted. Members see its messages and declared hardware in the Lobby room of the network chat. Needs discovery on (public or hidden) and the network chat on.,Permite que uma máquina que ainda não entrou converse com esta rede antes de ser admitida. Os membros veem as mensagens e o hardware declarado na sala Lobby do chat da rede. Exige descoberta ligada (pública ou oculta) e o chat da rede ligado.
+network.lobbyChat,Lobby,Lobby
+network.lobbyChatEnable,Let machines that are not members reach this network and ask to join,Permitir que máquinas que não são membros alcancem esta rede e peçam para entrar
+network.lobbyChatHint,"The lobby is where a machine that has not joined asks to be admitted; you approve the request from the bell. Needs discovery on (public or hidden). With the network chat on, in Administrative preferences, the candidate can also talk to the members, who see its messages and declared hardware in the Lobby room.","O lobby é onde uma máquina que ainda não entrou pede para ser admitida; você aprova o pedido pelo sino. Exige descoberta ligada (pública ou oculta). Com o chat da rede ligado, em Preferências administrativas, o candidato também pode conversar com os membros, que veem as mensagens e o hardware declarado na sala Lobby."
 network.lobbyChatOff,Closed,Fechado
 network.lobbyChatOn,Open,Aberto
 network.location,Location,Localização

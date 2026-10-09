@@ -294,7 +294,9 @@ local-only notice. Routes:
   list. Every row has an export button that saves its trust document as
   `<name>-trust.json`, the file another machine imports. An added network is
   joined like a public one, through its lobby; its admin must have discovery
-  on "Hidden", the network Chat on and the lobby switch set. The table groups by country/city and sorts
+  on "Hidden" and the lobby switch set. The network Chat is not needed to ask
+  for admission; without it the lobby window says the conversation is closed
+  and keeps the request panel. The table groups by country/city and sorts
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust

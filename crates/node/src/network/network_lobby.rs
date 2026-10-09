@@ -444,6 +444,11 @@ pub struct LobbyResponse {
     /// to `Post`, `Fetch` and `Admission`.
     #[serde(default)]
     pub admission: Option<AdmissionView>,
+    /// The lobby is open but its conversation is not: the network Chat is
+    /// off there, so only an admission request goes through. Only in answers
+    /// to `Post`, `Fetch` and `Admission`.
+    #[serde(default)]
+    pub messages_closed: bool,
 }
 
 impl LobbyResponse {
@@ -1379,6 +1384,7 @@ mod tests {
                             networks: Vec::new(),
                             pending: false,
                             admission: None,
+                            messages_closed: false,
                             messages: vec![LobbyMessage {
                                 message_id: "m1".into(),
                                 sender_node_id: node_id,

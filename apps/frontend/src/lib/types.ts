@@ -590,6 +590,8 @@ export interface LobbyExchange {
   node_id: string;
   card: LobbyCard;
   messages: LobbyMessage[];
+  /** The network takes admission requests but has its conversation off. */
+  messages_closed?: boolean;
   /** This machine's admission request on that network, when it made one. */
   admission?: {
     key: string;

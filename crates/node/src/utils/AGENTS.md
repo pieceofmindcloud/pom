@@ -204,10 +204,11 @@ closed. It is an advertisement for the public directory only: admission
 (`Network::public_peer_is_admitted`) does not read it and current members are
 never affected.
 
-`NetworkSettings.lobby_chat` opens the lobby room of the network Chat to
-machines that are not members (`network/network_lobby.rs`). It is off by
-default and only takes effect with discovery on (`public` or `private`) and
-the network Chat on.
+`NetworkSettings.lobby_chat` opens the lobby to machines that are not
+members, which is where they ask to be admitted (`network/network_lobby.rs`).
+It is off by default and only takes effect with discovery on (`public` or
+`private`). It does not need the network Chat: the Chat only adds the
+conversation to the lobby.
 `NetworkSettings.visibility` is what the interface calls discovery: `local`
 announces nothing (the node runs detached and publishes no pkarr record),
 `private` announces without being listed, `public` is listed.

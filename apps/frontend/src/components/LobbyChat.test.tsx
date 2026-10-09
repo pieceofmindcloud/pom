@@ -84,6 +84,14 @@ describe("LobbyChat", () => {
     expect((screen.getByLabelText("Escreva para o lobby desta rede…") as HTMLInputElement).disabled).toBe(true);
   });
 
+  it("keeps the request panel when the network has its conversation off", async () => {
+    mocks.get.mockResolvedValue({ ...exchange, messages: [], messages_closed: true });
+    mount();
+    expect(await screen.findByText("Esta rede está com a conversa do lobby desligada. Você ainda pode pedir para entrar.")).toBeTruthy();
+    expect((screen.getByLabelText("Escreva para o lobby desta rede…") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByTestId("lobby-admission")).toBeTruthy();
+  });
+
   it("offers to switch at once to a network that already admitted this machine", async () => {
     mocks.get.mockResolvedValue({
       ...exchange,

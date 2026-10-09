@@ -55,6 +55,11 @@ pub(crate) struct PluginService {
     /// which the deploy inspector draws and `engine.load` receives back.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<EngineSetting>,
+    /// For a service of kind `inference`: its engine also runs POM layer
+    /// slices, one stage per machine, linked through the nodes
+    /// (`plugin_engine`, the stage link).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stages: bool,
 }
 
 const MAX_SETTINGS: usize = 32;
@@ -86,9 +91,9 @@ fn setting_key(value: &Value) -> Option<String> {
     let text = value.as_str()?;
     (!text.is_empty()
         && text.len() <= 64
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_'))
+        && text.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+        })
         && !text.starts_with('.')
         && !text.ends_with('.'))
     .then(|| text.to_owned())
@@ -105,8 +110,10 @@ fn localized(value: &Value, max_len: usize) -> std::collections::BTreeMap<String
                 })
                 .filter_map(|(lang, text)| {
                     let text = text.as_str()?.trim();
-                    (!text.is_empty() && text.len() <= max_len && !text.chars().any(char::is_control))
-                        .then(|| (lang.clone(), text.to_owned()))
+                    (!text.is_empty()
+                        && text.len() <= max_len
+                        && !text.chars().any(char::is_control))
+                    .then(|| (lang.clone(), text.to_owned()))
                 })
                 .collect()
         })
@@ -115,7 +122,10 @@ fn localized(value: &Value, max_len: usize) -> std::collections::BTreeMap<String
 
 fn parse_setting(entry: &Value) -> Option<EngineSetting> {
     let key = setting_key(&entry["key"])?;
-    let kind = entry["type"].as_str().filter(|kind| SETTING_KINDS.contains(kind))?.to_owned();
+    let kind = entry["type"]
+        .as_str()
+        .filter(|kind| SETTING_KINDS.contains(kind))?
+        .to_owned();
     let label = localized(&entry["label"], MAX_TEXT);
     if !label.contains_key("en") {
         return None;
@@ -209,6 +219,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
         if services.iter().any(|service| service.id == id) {
             continue;
         }
+        let stages = kind == "inference" && entry["stages"] == true;
         services.push(PluginService {
             plugin_code: plugin_code.to_owned(),
             id,
@@ -219,9 +230,15 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             detail: text(&entry["detail"]),
             architectures: entry["architectures"]
                 .as_array()
-                .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(slug)
+                        .take(MAX_ARCHITECTURES)
+                        .collect()
+                })
                 .unwrap_or_default(),
             settings: parse_settings(&entry["settings"]),
+            stages,
         });
     }
     services
@@ -373,6 +390,14 @@ mod tests {
         ]});
         let services = parse_services("strata", &answer);
         assert_eq!(services[0].architectures, vec!["qwen4exp".to_string()]);
+        assert!(!services[0].stages);
+        let staged = parse_services(
+            "strata",
+            &json!({"services": [{"id": "s", "kind": "inference", "name": "S", "status": "ready", "stages": true},
+                                 {"id": "r", "kind": "rag", "name": "R", "status": "ready", "stages": true}]}),
+        );
+        assert!(staged[0].stages && !staged[1].stages);
+        assert_eq!(serde_json::to_value(&staged[0]).unwrap()["stages"], true);
         assert_eq!(
             serde_json::to_value(&services[0]).unwrap()["architectures"],
             json!(["qwen4exp"])

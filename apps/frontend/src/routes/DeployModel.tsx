@@ -429,7 +429,7 @@ export function DeployModel() {
    * question. The operator's own choice always wins once made.
    */
   const kind: DeployKind = service
-    ? "whole"
+    ? service.stages && pickedKind === "shards" ? "shards" : "whole"
     : pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
   const isWhole = kind === "whole";
   const isTp = kind === "tensor_parallel";
@@ -1253,7 +1253,7 @@ export function DeployModel() {
                   aria-checked={kind === value}
                   data-guide={value === "whole" && kind !== "whole" ? "deploy-whole" : undefined}
                   onClick={() => selectKind(value)}
-                  disabled={service != null && value !== "whole"}
+                  disabled={service != null && value !== "whole" && !(service.stages && value === "shards")}
                   className={`rounded-md px-3 py-1.5 text-[0.72rem] font-medium transition-colors disabled:opacity-40 ${
                     kind === value ? "bg-iris text-white" : "text-muted hover:text-fg"
                   }`}
@@ -1269,10 +1269,14 @@ export function DeployModel() {
                 name="inference_service"
                 value={serviceCode}
                 onChange={(event) => {
+                  const next = inferenceServices.find((entry) => entry.code === event.target.value);
+                  // A service that runs slices keeps the slices on screen; any other one runs a whole model.
+                  const whole = next != null && !(next.stages && kind === "shards");
+                  if (next != null && !whole) setPickedKind("shards");
                   setServiceCode(event.target.value);
                   setWholeName("");
-                  setSelection(event.target.value ? [] : null);
-                  setSettled(event.target.value ? [] : null);
+                  setSelection(whole ? [] : null);
+                  setSettled(whole ? [] : null);
                   setPreferredNodeIds([]);
                   setJobId(null);
                 }}

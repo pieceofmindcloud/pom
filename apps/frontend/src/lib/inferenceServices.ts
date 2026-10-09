@@ -1,12 +1,13 @@
 /**
- * Whole-model inference services that plugins offer (`kind: "inference"`,
- * for example Strata), as the deploy screen offers them.
+ * Inference services that plugins offer (`kind: "inference"`), as the deploy
+ * screen offers them.
  *
  * A machine publishes its plugins' services in `node.plugin_services`. A
  * service of kind `inference` runs a whole model on that machine instead of
- * POM's own engine, and names the GGUF architectures it runs. The deploy
- * screen offers it next to llama.cpp, limited to the machines that run it and
- * to the models of those architectures.
+ * POM's own engine, and names the GGUF architectures it runs; one that
+ * publishes `stages` also runs layer slices, one stage per machine. The
+ * deploy screen offers it next to llama.cpp, limited to the machines that run
+ * it and to the models of those architectures.
  */
 import type { EngineSetting, PeerView, PluginService } from "./types";
 
@@ -19,6 +20,8 @@ export interface InferenceServiceEntry {
   settings: EngineSetting[];
   /** Machines that run it and can take a model (not in error). */
   nodeIds: string[];
+  /** Its engine also runs layer slices across machines. */
+  stages: boolean;
 }
 
 const USABLE: PluginService["status"][] = ["ready", "starting", "installing"];
@@ -34,7 +37,9 @@ export function inferenceServicesOf(peers: PeerView[] | undefined): InferenceSer
         architectures: [],
         settings: [],
         nodeIds: [],
+        stages: false,
       };
+      if (service.stages) entry.stages = true;
       if (entry.settings.length === 0 && service.settings?.length) entry.settings = service.settings;
       for (const architecture of service.architectures ?? []) {
         if (!entry.architectures.includes(architecture)) entry.architectures.push(architecture);

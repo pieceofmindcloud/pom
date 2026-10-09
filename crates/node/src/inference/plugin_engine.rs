@@ -92,12 +92,23 @@ pub(crate) fn plugin_of_capabilities(capabilities: &[String]) -> Option<&str> {
         .filter(|code| valid_code(code))
 }
 
-/// The plugin engine a plan runs on: a single step served by one.
+/// The plugin engine a plan runs on: every step served by the same one, as
+/// whole slices in layer order - a single machine, or the stages of a model
+/// split across machines ([`crate::plugin_stage_link`]), whose last step
+/// takes the prompt.
 pub(crate) fn plugin_of_plan(plan: &crate::pipeline::PipelinePlan) -> Option<String> {
-    match plan.steps.as_slice() {
-        [step] => plugin_of_capabilities(&step.inference_frame_capabilities).map(str::to_owned),
-        _ => None,
-    }
+    let first = plan.steps.first()?;
+    let code = plugin_of_capabilities(&first.inference_frame_capabilities)?;
+    let whole_slices = plan.steps.iter().all(|step| {
+        plugin_of_capabilities(&step.inference_frame_capabilities) == Some(code)
+            && step.exec_start == step.start_layer
+            && step.exec_end == step.end_layer
+    });
+    let in_order = plan
+        .steps
+        .windows(2)
+        .all(|pair| pair[1].start_layer == pair[0].end_layer + 1);
+    (whole_slices && in_order).then(|| code.to_owned())
 }
 
 // ── Target node ──────────────────────────────────────────────────────────────
@@ -120,9 +131,14 @@ async fn nvidia_gpus() -> Vec<u32> {
         .collect()
 }
 
-/// What `engine.load` receives.
-pub(crate) fn load_params(cfg: &crate::runtime::NodeConfig, gpus: &[u32]) -> Value {
-    json!({
+/// What `engine.load` receives. `link` is set for one stage of a model split
+/// across machines ([`crate::plugin_stage_link::prepare`]).
+pub(crate) fn load_params(
+    cfg: &crate::runtime::NodeConfig,
+    gpus: &[u32],
+    link: Option<&Value>,
+) -> Value {
+    let mut params = json!({
         "model_path": cfg.model_path,
         "model_label": cfg.model_label,
         "n_ctx": cfg.n_ctx,
@@ -130,7 +146,11 @@ pub(crate) fn load_params(cfg: &crate::runtime::NodeConfig, gpus: &[u32]) -> Val
         "kv": kv_of(cfg),
         "gpus": gpus,
         "settings": cfg.engine_settings,
-    })
+    });
+    if let Some(link) = link {
+        params["link"] = link.clone();
+    }
+    params
 }
 
 /// The `/health` this node answers while a plugin engine serves its model:
@@ -193,6 +213,18 @@ pub(crate) async fn run(
     // fails because of the outside world, and loading costs minutes.
     let listener = crate::infer_server::bind_dual_stack(cfg.inference_port).await?;
     let gpus = nvidia_gpus().await;
+    // One stage of a split model: a later stage waits here for the earlier
+    // stage's machine and keeps the relay to it while it serves.
+    let (link, _relay) = if crate::plugin_stage_link::is_stage(&cfg) {
+        let stop_check = stop_rx.clone();
+        let (link, relay) = crate::plugin_stage_link::prepare(&cfg, &code, move || {
+            *stop_check.borrow() != generation
+        })
+        .await?;
+        (Some(link), relay)
+    } else {
+        (None, None)
+    };
     info!(
         plugin = %code,
         model = %cfg.model_label,
@@ -202,7 +234,7 @@ pub(crate) async fn run(
     let accepted = query(
         &code,
         "engine.load",
-        json!({ "params": load_params(&cfg, &gpus) }),
+        json!({ "params": load_params(&cfg, &gpus, link.as_ref()) }),
     )
     .await;
     if accepted.is_none() {
@@ -472,7 +504,8 @@ pub(crate) async fn generate(
     cancellation: &crate::prefill::Cancellation,
     request_started: Instant,
 ) {
-    let Some(step) = plan.steps.first() else {
+    // The last stage holds the head: it serves the request.
+    let Some(step) = plan.steps.last() else {
         let _ = tx.send(GenEvent::Failed("empty plan".into())).await;
         return;
     };
@@ -639,7 +672,8 @@ async fn services_of(state: &GatewayState, node_id: &str) -> Option<Vec<Value>> 
 }
 
 /// Why a deployment on a plugin's inference service cannot go ahead, if it
-/// cannot: it is a whole model on one machine, and that machine runs the
+/// cannot. A whole model goes to one machine; layer slices go one per
+/// machine, to a service that publishes `stages`. Every machine runs the
 /// plugin with an inference service that is not in error.
 pub(crate) async fn deploy_block(
     state: &GatewayState,
@@ -650,35 +684,53 @@ pub(crate) async fn deploy_block(
     if !valid_code(service) {
         return Some(format!("serviço de inferência inválido: {service}"));
     }
-    if !whole {
-        return Some(format!(
-            "o serviço de inferência {service} serve o modelo inteiro: escolha \"modelo inteiro\""
-        ));
-    }
-    let mut unique: Vec<&String> = targets.iter().filter(|id| !id.is_empty()).collect();
+    let named: Vec<&String> = targets.iter().filter(|id| !id.is_empty()).collect();
+    let mut unique = named.clone();
     unique.sort();
     unique.dedup();
-    let [target] = unique.as_slice() else {
+    if unique.is_empty() {
+        return Some("escolha a máquina que roda o serviço de inferência".into());
+    }
+    if whole && unique.len() != 1 {
         return Some(format!(
             "o serviço de inferência {service} roda o modelo inteiro numa máquina só: escolha uma máquina"
         ));
-    };
-    let Some(services) = services_of(state, target).await else {
-        return Some("a máquina escolhida não respondeu quais serviços oferece".into());
-    };
-    let offered = services
-        .iter()
-        .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference");
-    match offered {
-        None => Some(format!(
-            "a máquina escolhida não tem o plugin {service} com o serviço de inferência ativo"
-        )),
-        Some(entry) if entry["status"] == "error" || entry["status"] == "waiting" => Some(format!(
-            "o serviço de inferência {service} da máquina escolhida não está pronto: {}",
-            entry["detail"].as_str().unwrap_or("sem detalhe")
-        )),
-        Some(_) => None,
     }
+    if !whole && unique.len() != named.len() {
+        return Some(format!(
+            "o serviço de inferência {service} roda uma fatia por máquina: escolha máquinas diferentes"
+        ));
+    }
+    for target in unique {
+        let Some(services) = services_of(state, target).await else {
+            return Some(format!(
+                "a máquina {target} não respondeu quais serviços oferece"
+            ));
+        };
+        let offered = services
+            .iter()
+            .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference");
+        match offered {
+            None => {
+                return Some(format!(
+                    "a máquina {target} não tem o plugin {service} com o serviço de inferência ativo"
+                ))
+            }
+            Some(entry) if entry["status"] == "error" || entry["status"] == "waiting" => {
+                return Some(format!(
+                    "o serviço de inferência {service} da máquina {target} não está pronto: {}",
+                    entry["detail"].as_str().unwrap_or("sem detalhe")
+                ))
+            }
+            Some(entry) if !whole && entry["stages"] != true => {
+                return Some(format!(
+                    "o serviço de inferência {service} serve o modelo inteiro: escolha \"modelo inteiro\""
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    None
 }
 
 // ── Route between nodes ──────────────────────────────────────────────────────
@@ -760,6 +812,73 @@ mod tests {
         assert_eq!(
             plugin_of_capabilities(&[format!("{CAPABILITY_PREFIX}Bad")]),
             None
+        );
+    }
+
+    fn step(node: &str, start: u32, end: u32, caps: &[String]) -> crate::pipeline::PipelineStep {
+        crate::pipeline::PipelineStep {
+            node_id: node.into(),
+            inference_url: String::new(),
+            inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
+            start_layer: start,
+            end_layer: end,
+            exec_start: start,
+            exec_end: end,
+            inference_frame_capabilities: caps.to_vec(),
+            libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_plan_runs_on_a_plugin_engine_when_every_step_is_one_of_its_slices() {
+        let caps = vec![capability("strata")];
+        let plan = |steps| crate::pipeline::plan_from_steps(steps);
+        assert_eq!(
+            plugin_of_plan(&plan(vec![step("a", 0, 47, &caps)])).as_deref(),
+            Some("strata")
+        );
+        assert_eq!(
+            plugin_of_plan(&plan(vec![
+                step("a", 0, 26, &caps),
+                step("b", 27, 47, &caps)
+            ]))
+            .as_deref(),
+            Some("strata")
+        );
+        // a llama.cpp hop, another plugin, a gap or a step entered mid-slice is not
+        let llama = vec!["relay/v1-chain".to_owned()];
+        assert!(plugin_of_plan(&plan(vec![
+            step("a", 0, 26, &caps),
+            step("b", 27, 47, &llama)
+        ]))
+        .is_none());
+        let other = vec![capability("other")];
+        assert!(plugin_of_plan(&plan(vec![
+            step("a", 0, 26, &caps),
+            step("b", 27, 47, &other)
+        ]))
+        .is_none());
+        assert!(plugin_of_plan(&plan(vec![
+            step("a", 0, 20, &caps),
+            step("b", 27, 47, &caps)
+        ]))
+        .is_none());
+        let mut entered = step("b", 20, 47, &caps);
+        entered.exec_start = 27;
+        assert!(plugin_of_plan(&plan(vec![step("a", 0, 26, &caps), entered])).is_none());
+    }
+
+    #[test]
+    fn a_stage_receives_its_link() {
+        let cfg =
+            crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
+        assert!(load_params(&cfg, &[0], None).get("link").is_none());
+        let link = json!({"token": "t", "prev_port": 4100});
+        assert_eq!(
+            load_params(&cfg, &[0], Some(&link))["link"]["prev_port"],
+            4100
         );
     }
 

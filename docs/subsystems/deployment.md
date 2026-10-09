@@ -312,17 +312,20 @@ ceiling, without delaying the local start when DNS or UDP do not answer.
 runs the model instead of llama.cpp (the Strata plugin publishes `"strata"`).
 The deploy screen offers it as "Inference service" next to llama.cpp when any
 machine publishes a service of kind `inference`; choosing it fixes the kind to
-`whole`, lists only the whole models whose GGUF `architecture` the service
-declares, and keeps only the machines that run it in the peer strip. Its
+`whole` - or keeps "Slices" when the service publishes `stages` - lists only
+the whole models whose GGUF `architecture` the service declares, and keeps
+only the machines that run it in the peer strip. Its
 inspector shows the settings the engine reads (context, concurrent requests,
 idle unloading) and the engine's own settings, as the service publishes them
 (`components/EngineSettings.tsx`); those go in `RuntimeParams.engine_settings`.
 
 `POST /api/ui/deploy` (and the preview, when the screen sends the service in
 `params`) refuses such a deployment unless it is a whole model on exactly one
-machine whose plugin publishes that `inference` service in a state other than
-`error` or `waiting` (`plugin_engine::deploy_block`, which asks the machine for
-its services). Everything after that is the whole-model path of section 1.1:
+machine, or layer slices on distinct machines for a service that publishes
+`stages`, where every machine's plugin publishes that `inference` service in a
+state other than `error` or `waiting` (`plugin_engine::deploy_block`, which
+asks each machine for its services). The slices of a split model link through
+the nodes (`inference.md`, section 7.1, "Split across machines"). Everything after that is the whole-model path of section 1.1:
 the same survey, copy, `launch`, `apply`, journal, versions and undeploy. The
 difference is on the target, where the runtime asks the plugin to load the
 model instead of starting llama.cpp (`inference.md`, section 7.1); undeploying

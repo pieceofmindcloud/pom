@@ -2441,8 +2441,10 @@ was an earlier state of the code, corrected on 2026-08-15.)
 A deployment may name a plugin's inference service instead of POM's own
 engine (`RuntimeParams::inference_service`, for example `"strata"`). That is
 an explicit, separate deployment class, never a fallback: the plan for such a
-model is one step on one machine, and the gateway runs it through that plugin
-or fails. `crates/node/src/inference/plugin_engine.rs` holds the three pieces.
+model is one step on one machine - or, for a service that publishes `stages`,
+one step per layer slice (see "Split across machines" below) - and the gateway
+runs it through that plugin or fails.
+`crates/node/src/inference/plugin_engine.rs` holds the three pieces.
 
 - **Target node.** The runtime supervisor calls `plugin_engine::run` instead
   of `infer_server::run`. It binds the inference port first, asks the plugin
@@ -2464,8 +2466,10 @@ or fails. `crates/node/src/inference/plugin_engine.rs` holds the three pieces.
   every builder of the node's capabilities uses it: the announce, the
   gateway's own peer entry and `/api/ui/node`.
 - **Gateway.** After planning, `generate_stream_inner` checks
-  `plugin_of_plan`: a single step that announces `engine/plugin-v1:<code>` is
-  run by `plugin_engine::generate`. It sends the prompt the protocol adapter
+  `plugin_of_plan`: a plan whose steps all announce the same
+  `engine/plugin-v1:<code>` and run whole slices in layer order is run by
+  `plugin_engine::generate` on its last step (the machine with the head). It
+  sends the prompt the protocol adapter
   already rendered, with the same `chat_template` and thinking flags a
   llama.cpp head receives, plus the client's `max_tokens`, stop sequences and
   numeric sampling fields (`temperature`, `top_p`, `top_k`, `min_p`,
@@ -2490,9 +2494,32 @@ or fails. `crates/node/src/inference/plugin_engine.rs` holds the three pieces.
   streams the answer back unchanged. The plugin's server never listens beyond
   loopback.
 
-The hidden-state boundary is untouched: a plugin engine is a whole model on one
-machine. Splitting a model between plugin engines would need the engine to
-implement the hop protocol of section 2.
+**Split across machines.** A service that publishes `stages: true` also runs
+POM layer slices, one per machine (`crates/node/src/inference/plugin_stage_link.rs`).
+Every machine of such a deployment runs `plugin_engine::run` on its slice; the
+engines exchange their own hidden states, never POM's hop protocol of section
+2, and the node only carries them:
+
+- A later stage's runtime (`prepare`) waits for the live peer of the same
+  `deploy_id` whose slice ends at `start_layer - 1` and serves the same
+  plugin, asks it for the stage's link secret
+  (`GET /api/internal/plugins/:code/engine/link/:deploy`) and opens a relay on
+  loopback. Its `engine.load` gets `link: {token, prev_port}`; the first
+  stage's gets `link: {}` and its plugin makes the secret, which
+  `engine.link` (`{status, port?, token?}`) returns to the local node only.
+- The relay reads the engine's frames (a little-endian `u32` length, then the
+  bytes, both ways) and posts each one, signed and along the measured route,
+  to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn` on the
+  earlier machine (up to 64 MiB a frame); the answer's body is the answer
+  frame, and a wait while the earlier stage loads is retried. That route keeps
+  one loopback connection per `conn` to the port of `engine.link` and passes
+  the frames through; an empty body closes `conn`.
+- Both routes take only a signed call from the live peer that serves the next
+  slice of the same deployment. The node reads nothing of a frame but its
+  length, and no engine listens beyond loopback.
+
+Only the last stage takes requests: the earlier one answers `engine.upstream`
+with an error.
 
 ## 8. direct_lab.rs - the "law"
 

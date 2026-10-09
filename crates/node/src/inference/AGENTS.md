@@ -671,13 +671,22 @@ visibilidade dos controles de implantação na UI local.
   budget. While it runs, `Network::set_external_engine` makes the announce
   carry only `engine/plugin-v1:<code>` (plus the tunnel capability), never the
   hidden-state capabilities. On the gateway, `plugin_of_plan` recognises a
-  one-step plan served that way and `generate` posts the rendered prompt to the
-  plugin's generation route (locally through `engine.upstream`, remotely
+  plan whose steps are all whole slices served that way, and `generate` posts
+  the rendered prompt to its last step's generation route (locally through `engine.upstream`, remotely
   through `POST /api/internal/plugins/:code/engine/generate`, which
   `engine_generate_route` serves) and turns its NDJSON stream into `GenEvent`s.
-  `deploy_block` is the deployment check: whole model, one machine, which runs
-  the plugin's `inference` service. See `docs/subsystems/inference.md`,
-  "Plugin inference services".
+  `deploy_block` is the deployment check: a whole model on one machine, or
+  slices on distinct machines for a service that publishes `stages`, each
+  running the plugin's `inference` service. A slice's `engine.load` also gets
+  the `link` from `plugin_stage_link::prepare`. See
+  `docs/subsystems/inference.md`, "Plugin inference services".
+- `plugin_stage_link.rs` - the stage link of a plugin engine split across
+  machines: `prepare` (a later stage finds the earlier stage's machine, takes
+  its link secret and opens a loopback relay that posts each length-prefixed
+  frame of the engine to it), `link_secret_route` and `link_frame_route` (the
+  earlier machine's side, which keeps one loopback connection per relay
+  connection to the port of `engine.link`). Both routes take only the signed
+  live peer that serves the next slice of the same deployment.
 - `relay.rs` - `BatchCoordinator` agenda o flush imediatamente e ainda agrupa
   chamadas concorrentes para o mesmo próximo hop no mesmo ciclo do executor;
   envia um frame único e distribui respostas por `item_id`. QUIC também

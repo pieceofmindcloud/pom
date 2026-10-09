@@ -742,6 +742,8 @@ export interface PluginService {
   architectures?: string[];
   /** Kind `inference`: the settings its engine takes, drawn by the deploy inspector. */
   settings?: EngineSetting[];
+  /** Kind `inference`: its engine also runs layer slices, one stage per machine. */
+  stages?: boolean;
 }
 
 /** One setting an inference service's engine publishes (`host.services`). */

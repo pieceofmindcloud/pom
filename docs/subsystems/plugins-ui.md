@@ -335,15 +335,19 @@ entries of `{key, type, label, description?, min?, max?, options?}`, where
 `description` are texts per language with `en` required. The node checks only
 that shape; the deploy inspector draws them, an empty field keeps the
 engine's default, and the values travel in `RuntimeParams.engine_settings` to
-`engine.load` (`params.settings`), where the plugin validates them. Such a
+`engine.load` (`params.settings`), where the plugin validates them. A service
+that also runs POM layer slices, one stage per machine, publishes
+`stages: true`. Such a
 plugin implements four operations the node calls through its own local host,
 never from another machine or a browser: `engine.load` (`params`:
 `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,
-`settings`),
+`settings`, and for a slice `link`),
 `engine.unload`, `engine.status` (`state` among `idle`, `installing`,
 `preparing`, `loading`, `ready`, `stopping`, `error`, with `detail`, `n_ctx`,
 `busy`) and `engine.upstream` (`{status: "ready", port, token}` of a loopback
-server whose `POST /pom/generate` takes the rendered prompt and streams NDJSON).
+server whose `POST /pom/generate` takes the rendered prompt and streams NDJSON),
+plus `engine.link` (`{status, port?, token?}`) for a service with `stages`: the
+loopback port of an earlier stage's link and its secret.
 The deployment and generation contract is in `inference.md`, section 7.1, and
 `deployment.md`, section 1.6.
 

@@ -165,6 +165,8 @@ mod pom;
 mod pom_core_update;
 #[path = "inference/plugin_engine.rs"]
 mod plugin_engine;
+#[path = "inference/plugin_stage_link.rs"]
+mod plugin_stage_link;
 #[path = "inference/prefill/mod.rs"]
 mod prefill;
 #[path = "inference/prefix_cache.rs"]
@@ -1572,6 +1574,7 @@ fn merged_bootstrap_nodes(from_config: &[String], cli: &str) -> Vec<String> {
 
 /// Tarefas de fundo que acompanham todo gateway.
 fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
+    crate::plugin_stage_link::install(gw_state.clone());
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::plugins::spawn_host_context(gw_state.clone());

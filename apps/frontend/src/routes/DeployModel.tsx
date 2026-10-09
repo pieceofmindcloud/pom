@@ -896,9 +896,9 @@ export function DeployModel() {
   const inferenceModeReason = !p
     ? null
     : eff.inference_mode === "moe" && !isMoePlan
-      ? "MoE exige metadata real de experts no GGUF deste modelo."
+      ? t("deployStudio.moeNeedsMetadata")
       : isTp && isMoePlan
-        ? "Tensor Parallelism não suporta MoE nesta versão."
+        ? t("deployStudio.tpNoMoe")
         : null;
   const inferenceModeSupported = inferenceModeReason == null;
   /** Merged units in force: the operator's toggle, or the node's default. */
@@ -1251,15 +1251,15 @@ export function DeployModel() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="mr-auto flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
               {([
-                ["shards", "Fatias"],
-                ["whole", "Modelo inteiro"],
+                ["shards", t("deployStudio.kindShards")],
+                ["whole", t("deployStudio.kindWhole")],
                 ...(pomDevMode ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
               ] as [DeployKind, string][]).map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
                   role="radio"
-                  aria-label={value === "whole" ? "Um modelo inteiro" : label}
+                  aria-label={value === "whole" ? t("deploy.kindWhole") : label}
                   aria-checked={kind === value}
                   data-guide={value === "whole" && kind !== "whole" ? "deploy-whole" : undefined}
                   onClick={() => selectKind(value)}
@@ -1301,7 +1301,7 @@ export function DeployModel() {
                 </Select>
               )}
               <Select
-                aria-label="Modelo técnico"
+                aria-label={t("deployStudio.technicalModel")}
                 name="model"
                 value={isTp && hasSlicedTp ? (tpGroup?.key ?? "") : chosen}
                 onChange={(event) => {
@@ -1335,11 +1335,11 @@ export function DeployModel() {
                     ))}
               </Select>
               <Input
-                aria-label="Nome da implantação"
+                aria-label={t("deployStudio.deploymentName")}
                 name="deployment_name"
                 value={deploymentName}
                 onChange={(event) => setDeploymentName(event.target.value)}
-                placeholder={chosen || "Nome da implantação"}
+                placeholder={chosen || t("deployStudio.deploymentName")}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />
             </div>
@@ -1372,7 +1372,7 @@ export function DeployModel() {
               disabled={!p || running}
               onClick={restoreNodePlan}
             >
-              Voltar ao plano do nó
+              {t("deployStudio.restoreNodePlan")}
             </Button>}
             <Button
               variant="primary"
@@ -1383,7 +1383,7 @@ export function DeployModel() {
               data-guide={running ? "deploy-running" : canDeploy ? "deploy-run" : undefined}
               onClick={attemptDeploy}
             >
-              Implantar
+              {t("deployStudio.deploy")}
             </Button>
           </div>
           {whyNot && <p className="mt-2 text-right text-[0.7rem] text-muted">{whyNot}</p>}
@@ -1391,12 +1391,12 @@ export function DeployModel() {
 
         {answered && p?.blocked && (
           <div className="shrink-0 border-b border-rose/25 bg-rose/[0.06] px-4 py-2 text-[0.68rem] text-rose sm:px-5">
-            <span className="font-semibold">Não dá para implantar deste jeito:</span>{" "}{p.blocked}
+            <span className="font-semibold">{t("deploy.blocked")}:</span>{" "}{p.blocked}
           </div>
         )}
         {answered && p && !p.blocked && !p.complete && p.missing.length > 0 && (
           <div className="shrink-0 border-b border-amber/25 bg-amber/[0.06] px-4 py-2 text-[0.68rem] text-amber">
-            Camadas sem máquina: {p.missing.map(([start, end]) => layerRange(start, end)).join(", ")}
+            {t("deployStudio.layersWithoutMachine", { ranges: p.missing.map(([start, end]) => layerRange(start, end)).join(", ") })}
           </div>
         )}
         {job && (
@@ -1455,15 +1455,15 @@ export function DeployModel() {
             <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45">
             <Tabs
               fill
-              label="Propriedades da implantação"
+              label={t("deployStudio.propertiesLabel")}
               className="sticky top-0 z-10"
               value={inspectorTab}
               onChange={setInspectorTab}
               items={[
-                { value: "global", label: "Globais" },
+                { value: "global", label: t("deployStudio.tabGlobal") },
                 {
                   value: "machine",
-                  label: `Máquina: ${liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}`,
+                  label: t("deployStudio.tabMachine", { name: liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-" }),
                   disabled: !inspectedNodeId,
                 },
               ]}
@@ -1488,7 +1488,7 @@ export function DeployModel() {
               inferenceModeAlert={
                 inferenceModeSupported
                   ? undefined
-                  : (inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido.")
+                  : (inferenceModeReason ?? t("deployStudio.engineUnsupported"))
               }
               showHiddenStateDtype={crossesPeerBoundary}
               vision={{
@@ -1519,27 +1519,27 @@ export function DeployModel() {
             />
             {isMoePlan && !inferenceModeSupported && (
               <p role="alert" className="border-b border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
-                {inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido."}
+                {inferenceModeReason ?? t("deployStudio.engineUnsupported")}
               </p>
             )}
             {isTp && tpGroup && (
               <section className="border-b border-line px-2 py-3">
-                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{hasSlicedTp ? "Grupo Tensor Parallelism" : "Modelo inteiro"}</p>
+                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{hasSlicedTp ? t("deployStudio.tpGroup") : t("deployStudio.kindWhole")}</p>
                 <dl className="grid grid-cols-3 gap-2 text-[0.6rem]">
-                  <div><dt className="text-faint">Quantização</dt><dd className="font-mono text-muted">{wholeModel?.quant ?? tpGroup?.quant ?? "-"}</dd></div>
-                  <div><dt className="text-faint">Camadas</dt><dd className="font-mono text-muted">{wholeModel?.total_layers ?? tpGroup?.total_layers ?? "-"}</dd></div>
-                  <div><dt className="text-faint">Tamanho</dt><dd className="font-mono text-muted">{bytes(wholeModel?.size_bytes ?? tpGroup?.size_bytes ?? 0)}</dd></div>
+                  <div><dt className="text-faint">{t("deployStudio.quantization")}</dt><dd className="font-mono text-muted">{wholeModel?.quant ?? tpGroup?.quant ?? "-"}</dd></div>
+                  <div><dt className="text-faint">{t("deployStudio.layers")}</dt><dd className="font-mono text-muted">{wholeModel?.total_layers ?? tpGroup?.total_layers ?? "-"}</dd></div>
+                  <div><dt className="text-faint">{t("deployStudio.size")}</dt><dd className="font-mono text-muted">{bytes(wholeModel?.size_bytes ?? tpGroup?.size_bytes ?? 0)}</dd></div>
                 </dl>
-                <p className="mt-1.5 text-[0.6rem] text-faint"><span>{isTp && hasSlicedTp ? "Ranks disponíveis em" : "Está em"}</span>{" "}<span>{(wholeModel?.holders ?? tpGroup?.holders ?? []).map(labelOf).join(", ") || "nenhuma máquina"}</span></p>
+                <p className="mt-1.5 text-[0.6rem] text-faint"><span>{isTp && hasSlicedTp ? t("deployStudio.ranksAvailableOn") : t("deployStudio.heldBy")}</span>{" "}<span>{(wholeModel?.holders ?? tpGroup?.holders ?? []).map(labelOf).join(", ") || t("deployStudio.noMachine")}</span></p>
                 {isTp && hasSlicedTp && (
                   <div className="mt-3 border-t border-line pt-2">
-                    <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Ranks do grupo TP</p>
+                    <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.tpGroupRanks")}</p>
                     <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
                       {tpRankRows.map((rank) => (
                         <div key={`${rank.rank}-${rank.size}`} className="flex items-center justify-between gap-2 rounded-md border border-aqua/20 bg-aqua/[0.04] px-2 py-1.5 text-[0.62rem]">
                           <span className="font-mono text-aqua">{rank.rank + 1}of{rank.size}</span>
-                          <span className="truncate text-muted">{rank.target_node_id ? labelOf(rank.target_node_id) : "não atribuído"}</span>
-                          <Badge tone={rank.ready ? "aqua" : "amber"} className="px-1.5 py-0 text-[0.56rem]">{rank.ready ? "pronto" : "aguardando"}</Badge>
+                          <span className="truncate text-muted">{rank.target_node_id ? labelOf(rank.target_node_id) : t("deployStudio.unassigned")}</span>
+                          <Badge tone={rank.ready ? "aqua" : "amber"} className="px-1.5 py-0 text-[0.56rem]">{rank.ready ? t("deployStudio.ready") : t("deployStudio.waiting")}</Badge>
                         </div>
                       ))}
                     </div>
@@ -1550,11 +1550,11 @@ export function DeployModel() {
 
             {isTp && (wholeModel || tpGroup) && (
               <section className="border-b border-line px-2 py-3">
-                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Tensor paralelo</p>
+                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("deployStudio.tensorParallel")}</p>
                 <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
-                  <span className="truncate text-muted">Principal</span>
+                  <span className="truncate text-muted">{t("deployStudio.primary")}</span>
                   <Select
-                    aria-label="Máquina principal do Tensor Parallelism"
+                    aria-label={t("deployStudio.tpPrimaryAria")}
                     name="tp_primary_node"
                     value={tp.primary_node_id}
                     onChange={(event) => {
@@ -1567,7 +1567,7 @@ export function DeployModel() {
                     }}
                     compact
                   >
-                    <option value="">não atribuído</option>
+                    <option value="">{t("deployStudio.unassigned")}</option>
                     {tpCandidates.map((nodeId) => (
                       <option key={nodeId} value={nodeId}>{labelOf(nodeId)}</option>
                     ))}
@@ -1576,7 +1576,7 @@ export function DeployModel() {
                 <label className="mt-2 block text-[0.65rem]">
                   <span className="mb-1 block text-muted">Workers</span>
                   <Select
-                    aria-label="Workers do Tensor Parallelism"
+                    aria-label={t("deployStudio.tpWorkersAria")}
                     name="tp_worker_node_ids"
                     multiple
                     value={tp.worker_node_ids}
@@ -1593,7 +1593,7 @@ export function DeployModel() {
                     ))}
                   </Select>
                 </label>
-                <p className="mt-1.5 font-mono text-[0.58rem] text-faint">{tpPayload().size} ranks · {hasSlicedTp ? "partes TP pré-fatiadas" : "modelo inteiro em cada peer"}</p>
+                <p className="mt-1.5 font-mono text-[0.58rem] text-faint">{tpPayload().size} ranks · {hasSlicedTp ? t("deployStudio.tpPartsPresliced") : t("deployStudio.wholeOnEachPeer")}</p>
               </section>
             )}
             </> : <>
@@ -1601,36 +1601,36 @@ export function DeployModel() {
               const machine = liveMachines.find((item) => item.node_id === inspectedNodeId);
               const taking = rows.filter((row) => row.target_node_id === machine?.node_id);
               const first = taking[0];
-              if (!machine) return <p className="py-4 text-[0.68rem] text-faint">Selecione uma máquina no canvas.</p>;
+              if (!machine) return <p className="py-4 text-[0.68rem] text-faint">{t("deployStudio.selectMachine")}</p>;
               const availableForMachine = p?.available.filter((candidate) => candidate.holders.includes(machine.node_id)) ?? [];
               return (
                 <section className="border border-aqua/20 bg-aqua/[0.035] pt-0">
                   <div className="flex items-center justify-between gap-2 border-b border-aqua/20 bg-aqua/10 px-2 py-1.5">
                     <div className="flex min-w-0 items-center gap-2">
                       <p className="truncate text-[0.7rem] font-semibold text-fg">{machine.label}</p>
-                      {!taking.length && <Badge tone="neutral" className="px-1.5 py-0 text-[0.58rem]">disponível</Badge>}
+                      {!taking.length && <Badge tone="neutral" className="px-1.5 py-0 text-[0.58rem]">{t("deployStudio.available")}</Badge>}
                     </div>
                   </div>
                   <div className="px-2 pb-2">
                   <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5 text-[0.62rem]">
-                    <div><dt className="text-faint">GPU uso / free</dt><dd className="font-mono text-muted">{machine.gpu_used_pct == null ? "-" : `${machine.gpu_used_pct.toFixed(0)}%`} / {machine.gpu_free_mb > 0 ? megabytes(machine.gpu_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">RAM uso / free</dt><dd className="font-mono text-muted">{machine.ram_used_pct == null ? "-" : `${machine.ram_used_pct.toFixed(0)}%`} / {machine.ram_free_mb > 0 ? megabytes(machine.ram_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">Disco livre</dt><dd className="font-mono text-muted">{machine.disk_free_mb > 0 ? megabytes(machine.disk_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">RTT local</dt><dd className="font-mono text-muted">{machine.rtt_ms == null ? "-" : `${machine.rtt_ms.toFixed(1)} ms`}</dd></div>
+                    <div><dt className="text-faint">{t("deployStudio.gpuUseFree")}</dt><dd className="font-mono text-muted">{machine.gpu_used_pct == null ? "-" : `${machine.gpu_used_pct.toFixed(0)}%`} / {machine.gpu_free_mb > 0 ? megabytes(machine.gpu_free_mb) : "-"}</dd></div>
+                    <div><dt className="text-faint">{t("deployStudio.ramUseFree")}</dt><dd className="font-mono text-muted">{machine.ram_used_pct == null ? "-" : `${machine.ram_used_pct.toFixed(0)}%`} / {machine.ram_free_mb > 0 ? megabytes(machine.ram_free_mb) : "-"}</dd></div>
+                    <div><dt className="text-faint">{t("deployStudio.diskFree")}</dt><dd className="font-mono text-muted">{machine.disk_free_mb > 0 ? megabytes(machine.disk_free_mb) : "-"}</dd></div>
+                    <div><dt className="text-faint">{t("deployStudio.localRtt")}</dt><dd className="font-mono text-muted">{machine.rtt_ms == null ? "-" : `${machine.rtt_ms.toFixed(1)} ms`}</dd></div>
                   </dl>
                   {isTp ? (
                     <>
                       <div className="mt-3 border-t border-line pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Ranks nesta máquina</p>
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("deployStudio.ranksOnMachine")}</p>
                         <div className="mt-1.5 flex flex-wrap gap-1">
                           {tpRankRows.filter((rank) => rank.target_node_id === machine.node_id).map((rank) => (
                             <Badge key={`${rank.rank}-${rank.size}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">{rank.rank + 1}of{rank.size}</Badge>
                           ))}
-                          {!tpRankRows.some((rank) => rank.target_node_id === machine.node_id) && <span className="text-[0.64rem] text-faint">Nenhum rank atribuído</span>}
+                          {!tpRankRows.some((rank) => rank.target_node_id === machine.node_id) && <span className="text-[0.64rem] text-faint">{t("deployStudio.noRankAssigned")}</span>}
                         </div>
                       </div>
                       <div className="mt-3 border-t border-aqua/15 pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Ranks disponíveis neste peer</p>
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.ranksOnPeer")}</p>
                         <div className="mt-1.5 flex flex-wrap gap-1">
                           {(tpGroup?.ranks.filter((rank) => rank.holders.includes(machine.node_id)) ?? []).map((rank) => (
                             <Badge key={`${rank.rank}-${rank.size}-available`} tone="aqua" mono className="px-1.5 py-0 text-[0.62rem]">{rank.rank + 1}of{rank.size}</Badge>
@@ -1641,15 +1641,15 @@ export function DeployModel() {
                   ) : (
                     <>
                       <div className="mt-3 border-t border-line pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Camadas nesta máquina</p>
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("deployStudio.layersOnMachine")}</p>
                         <div className="mt-1.5 flex flex-wrap gap-1">
                           {taking.length > 0 ? taking.map((row) => (
                             <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">{layerRange(row.start_layer, row.end_layer)}</Badge>
-                          )) : <span className="text-[0.64rem] text-faint">Nenhuma camada atribuída</span>}
+                          )) : <span className="text-[0.64rem] text-faint">{t("deployStudio.noLayerAssigned")}</span>}
                         </div>
                       </div>
                       <div className="mt-3 border-t border-aqua/15 pt-2">
-                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Camadas disponíveis neste peer</p>
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">{t("deployStudio.layersOnPeer")}</p>
                         <div className="mt-1.5 flex flex-wrap gap-1">
                           {availableForMachine.length > 0 ? availableForMachine.map((candidate) => {
                             const assigned = rows.some((row) => row.start_layer === candidate.start_layer && row.end_layer === candidate.end_layer && row.target_node_id === machine.node_id);
@@ -1658,8 +1658,8 @@ export function DeployModel() {
                               <button
                                 key={`${candidate.start_layer}-${candidate.end_layer}`}
                                 type="button"
-                                aria-label={assigned ? `Remover ${range} de ${machine.label}` : `Atribuir ${range} a ${machine.label}`}
-                                title={assigned ? `Tirar ${range} de ${machine.label}` : `Dar ${range} a ${machine.label}`}
+                                aria-label={t(assigned ? "deployStudio.removeRangeAria" : "deployStudio.assignRangeAria", { range, machine: machine.label })}
+                                title={t(assigned ? "deployStudio.removeRangeTitle" : "deployStudio.assignRangeTitle", { range, machine: machine.label })}
                                 onClick={() => (assigned
                                   ? unassignRangeFromMachine(candidate.start_layer, candidate.end_layer, machine.node_id)
                                   : assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id))}
@@ -1668,7 +1668,7 @@ export function DeployModel() {
                                 {assigned ? `${range} ✓` : range}
                               </button>
                             );
-                          }) : <span className="text-[0.64rem] text-faint">Nenhuma fatia disponível</span>}
+                          }) : <span className="text-[0.64rem] text-faint">{t("deployStudio.noSliceAvailable")}</span>}
                         </div>
                       </div>
                     </>
@@ -1680,11 +1680,11 @@ export function DeployModel() {
                       como todas as outras. */}
                   {first && (
                     <div className="mt-3 space-y-1 border-t border-line pt-2">
-                      <InspectorRow label="Camadas GPU" tip={t("deploy.knob.n_gpu_layersHint")}>
-                        <Input aria-label="Camadas GPU" name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" />
+                      <InspectorRow label={t("deployStudio.gpuLayers")} tip={t("deploy.knob.n_gpu_layersHint")}>
+                        <Input aria-label={t("deployStudio.gpuLayers")} name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" />
                       </InspectorRow>
-                      <InspectorRow label="KV cache na GPU" tip={t("deploy.knob.offload_kqvHint")}>
-                        <Tick on={first.offload_kqv ?? eff.offload_kqv} label="KV cache na GPU" onToggle={() => setPeerKqv(machine.node_id, !(first.offload_kqv ?? eff.offload_kqv))} />
+                      <InspectorRow label={t("deployStudio.kvCacheOnGpu")} tip={t("deploy.knob.offload_kqvHint")}>
+                        <Tick on={first.offload_kqv ?? eff.offload_kqv} label={t("deployStudio.kvCacheOnGpu")} onToggle={() => setPeerKqv(machine.node_id, !(first.offload_kqv ?? eff.offload_kqv))} />
                       </InspectorRow>
                     </div>
                   )}
@@ -1696,8 +1696,8 @@ export function DeployModel() {
             </aside>
             <button
               type="button"
-              aria-label="Ocultar inspetor"
-              title="Ocultar inspetor"
+              aria-label={t("deployStudio.hideInspector")}
+              title={t("deployStudio.hideInspector")}
               onClick={() => setInspectorOpen(false)}
               className="group absolute inset-y-0 right-0 z-30 w-6 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-1 focus-visible:ring-offset-surface lg:right-[19rem]"
             >
@@ -1709,8 +1709,8 @@ export function DeployModel() {
           </> : (
             <button
               type="button"
-              aria-label="Mostrar inspetor"
-              title="Mostrar inspetor"
+              aria-label={t("deployStudio.showInspector")}
+              title={t("deployStudio.showInspector")}
               onClick={() => setInspectorOpen(true)}
               className="flex h-full w-8 items-center justify-center border-l border-line bg-surface/70 text-faint hover:text-fg"
             >
@@ -1730,7 +1730,7 @@ export function DeployModel() {
             ))}
             {p && !isWhole && (
               <div className="ml-auto min-w-[12rem] max-w-[24rem] shrink-0 border-l border-line pl-3">
-                <Coverage label="Cobertura do modelo" total={p.total_layers} rows={rows} />
+                <Coverage label={t("deployStudio.modelCoverage")} total={p.total_layers} rows={rows} />
               </div>
             )}
           </div>

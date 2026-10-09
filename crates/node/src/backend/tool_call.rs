@@ -964,8 +964,7 @@ impl CallArgsStreamer {
             warn!(
                 emitted = self.emitted.len(),
                 new = prefix.len(),
-                "prefixo de argumentos não estende o que já foi transmitido; \
-                 fragmento suprimido para não corromper o JSON do cliente"
+                "argument prefix does not extend what was already transmitted; fragment suppressed so the client JSON is not corrupted"
             );
             return None;
         }
@@ -1343,7 +1342,7 @@ mod tests {
         let (parts, cut_inside) = parse_output_truncated(raw);
         assert!(cut_inside);
         let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
-            panic!("esperava chamada cortada, veio {parts:?}");
+            panic!("expected a cut call, got {parts:?}");
         };
         assert_eq!(partial.name, "Write");
         assert_eq!(
@@ -1352,7 +1351,7 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<serde_json::Value>(&partial.arguments).is_err(),
-            "argumentos de chamada cortada não podem parsear"
+            "arguments of a cut call cannot parse"
         );
         // E o objeto recuperado, para o `input` da Anthropic, é JSON válido
         // com o que deu para recuperar.
@@ -1369,7 +1368,7 @@ mod tests {
         let (parts, cut_inside) = parse_output_truncated(raw);
         assert!(cut_inside);
         let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
-            panic!("esperava chamada cortada, veio {parts:?}");
+            panic!("expected a cut call, got {parts:?}");
         };
         assert_eq!(partial.arguments, r#"{"command":"ls""#);
         assert_eq!(partial.recovered["command"], "ls");
@@ -1381,7 +1380,7 @@ mod tests {
         let raw = "<tool_call>\n<function=Bash>\n";
         let (parts, _) = parse_output_truncated(raw);
         let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
-            panic!("esperava chamada cortada, veio {parts:?}");
+            panic!("expected a cut call, got {parts:?}");
         };
         assert_eq!(partial.name, "Bash");
         assert_eq!(partial.arguments, "{");
@@ -1399,7 +1398,7 @@ mod tests {
             "<function>rea",
         ] {
             let (parts, cut_inside) = parse_output_truncated(raw);
-            assert!(cut_inside, "{raw:?} abriu chamada");
+            assert!(cut_inside, "{raw:?} opened a call");
             assert!(parts.is_empty(), "{raw:?} produziu {parts:?}");
         }
     }
@@ -1428,7 +1427,7 @@ mod tests {
         let raw = r#"<tool_call>{"name":"Bash","arguments":{"command":"ls -"#;
         let (parts, _) = parse_output_truncated(raw);
         let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
-            panic!("esperava chamada cortada, veio {parts:?}");
+            panic!("expected a cut call, got {parts:?}");
         };
         assert_eq!(partial.name, "Bash");
         assert_eq!(partial.arguments, r#"{"command":"ls -"#);
@@ -1439,7 +1438,7 @@ mod tests {
     /// prefixo de tag pendente nunca chegou a abrir chamada nenhuma.
     #[test]
     fn truncation_outside_a_call_behaves_exactly_like_a_normal_finish() {
-        for raw in ["prosa cortada ao meio", "prosa <tool_c"] {
+        for raw in ["prose cut in half", "prosa <tool_c"] {
             let (parts, cut_inside) = parse_output_truncated(raw);
             assert!(!cut_inside, "{raw:?}");
             assert_eq!(parts, parse_output(raw), "{raw:?}");
@@ -1529,7 +1528,7 @@ mod tests {
         let frags = fragments(true, None);
         assert!(
             frags.len() > 5,
-            "os argumentos continuam represados: {} fragmento(s)",
+            "the arguments are still held up: {} fragment(s)",
             frags.len()
         );
     }
@@ -1541,7 +1540,7 @@ mod tests {
     fn concatenating_the_fragments_reproduces_the_final_argument_exactly() {
         let whole: String = fragments(true, None).concat();
         let json: serde_json::Value =
-            serde_json::from_str(&whole).expect("a concatenação é JSON válido");
+            serde_json::from_str(&whole).expect("the concatenation is valid JSON");
         assert_eq!(json["path"], "/tmp/calc.py");
         assert!(json["content"]
             .as_str()
@@ -1552,7 +1551,7 @@ mod tests {
         // das chaves difere, porque `serde_json::Map` ordena e o modelo não.
         let raw: String = long_call_script().concat();
         let OutputPart::ToolCall { arguments, .. } = &parse_output(&raw)[0] else {
-            panic!("esperava chamada completa");
+            panic!("expected a complete call");
         };
         assert_eq!(&json, arguments);
     }
@@ -1571,14 +1570,14 @@ mod tests {
         let large = frags
             .iter()
             .find(|f| f.contains("linha_39"))
-            .expect("o content saiu");
+            .expect("the content went out");
         assert!(large.contains("linha_0 = 0 * 2"), "{large:?}");
         let whole = frags.concat();
         assert!(
             whole.starts_with(r#"{"path":"/tmp/calc.py""#),
             "{whole:?}"
         );
-        let json: serde_json::Value = serde_json::from_str(&whole).expect("JSON válido");
+        let json: serde_json::Value = serde_json::from_str(&whole).expect("valid JSON");
         assert!(json["content"]
             .as_str()
             .expect("content")
@@ -1594,17 +1593,17 @@ mod tests {
         let raw_cut: String = long_call_script()[..20].concat();
         let (parts, _) = parse_output_truncated(&raw_cut);
         let OutputPart::ToolCallTruncated(expected) = &parts[0] else {
-            panic!("esperava chamada cortada");
+            panic!("expected a cut call");
         };
 
         let whole: String = fragments(true, Some(20)).concat();
         assert_eq!(
             whole, expected.arguments,
-            "a concatenação do streaming tem de bater com a da Fase 1"
+            "the streaming concatenation must match that of Phase 1"
         );
         assert!(
             serde_json::from_str::<serde_json::Value>(&whole).is_err(),
-            "argumentos de chamada cortada não podem parsear: {whole:?}"
+            "arguments of a cut call cannot parse: {whole:?}"
         );
     }
 
@@ -1613,7 +1612,7 @@ mod tests {
     #[test]
     fn a_short_call_keeps_its_argument_types_even_in_eager_mode() {
         let raw = "<function=Bash>\n<parameter=command>\nls -la\n</parameter>\n                     <parameter=limit>\n5\n</parameter>\n";
-        let prefix = streamable_arguments_prefix(raw, true).expect("transcodifica");
+        let prefix = streamable_arguments_prefix(raw, true).expect("transcodes");
         assert_eq!(prefix, r#"{"command":"ls -la","limit":5"#);
     }
 
@@ -1628,7 +1627,7 @@ mod tests {
         assert!(array.len() > EAGER_MIN_VALUE_BYTES);
         assert!(
             !streams_eagerly(true, &array),
-            "array longo não pode ser transmitido"
+            "a long array cannot be transmitted"
         );
         assert!(!streams_eagerly(true, &format!("{{\"a\": {array}}}")));
         assert!(!streams_eagerly(true, &format!("\"{}\"", "x".repeat(80))));
@@ -1656,7 +1655,7 @@ mod tests {
                         if let Some(p) = streamable_arguments_prefix(&body, eager) {
                             assert!(
                                 p.starts_with(&anterior),
-                                "eager={eager}: o prefixo divergiu\nantes: {anterior:?}\ndepois: {p:?}"
+                                "eager={eager}: the prefix diverged\nbefore: {anterior:?}\nafter: {p:?}"
                             );
                             anterior = p;
                         }

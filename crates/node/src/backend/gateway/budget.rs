@@ -556,7 +556,7 @@ impl OutputTokenLimit {
     pub fn rejection_reason(self) -> Option<String> {
         if self.capacity_pending {
             return Some(
-                "a capacidade efetiva do modelo ainda não foi confirmada por todos os peers da pipeline planejada"
+                "the effective capacity of the model has not been confirmed yet by all the peers of the planned pipeline"
                     .into(),
             );
         } else if self.effective > 0 && self.leg > 0 {
@@ -565,13 +565,13 @@ impl OutputTokenLimit {
 
         if self.context_available == Some(0) {
             Some(
-                "o prompt ocupa todo o contexto disponível; não há espaço para tokens de saída"
+                "the prompt takes the whole available context; there is no room for output tokens"
                     .into(),
             )
         } else if self.deployment == Some(0) {
-            Some("max_new_tokens da implantação precisa ser maior que zero".into())
+            Some("the deployment max_new_tokens must be greater than zero".into())
         } else {
-            Some("não há tokens de saída disponíveis para esta requisição".into())
+            Some("there are no output tokens available for this request".into())
         }
     }
 }
@@ -691,7 +691,7 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
     if limit.capacity_pending() {
         info!(
             route,
-            "capacidade efetiva aguardando confirmação dos peers da pipeline planejada"
+            "effective capacity waiting for confirmation from the peers of the planned pipeline"
         );
         return;
     }
@@ -701,7 +701,7 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
             requested_max_tokens = limit.requested,
             effective_max_tokens = limit.effective,
             context_available_tokens = ?limit.context_available,
-            "limite de saída reduzido pelo contexto"
+            "output limit reduced by the context"
         );
     }
     if limit.continuation_possible() {
@@ -710,8 +710,7 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
             effective_max_tokens = limit.effective,
             leg_max_tokens = limit.leg,
             deployment_max_tokens = ?limit.deployment,
-            "saída maior que uma geração da implantação: o laço de continuação \
-             costura as pernas no mesmo fluxo"
+            "output larger than one generation of the deployment: the continuation loop stitches the legs in the same stream"
         );
     }
 }
@@ -721,7 +720,7 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
 pub(super) fn resolve_request_max_tokens(requested: Option<u32>) -> Result<u32, String> {
     let max_tokens = requested.unwrap_or(DEFAULT_MAX_TOKENS);
     if max_tokens == 0 {
-        return Err("max_tokens deve ser maior que zero".to_string());
+        return Err("max_tokens must be greater than zero".to_string());
     }
     Ok(max_tokens)
 }
@@ -1193,7 +1192,7 @@ pub(super) fn note_leg_boundary(budget: OutputBudget, tokens_generated: u32, leg
             tokens_generated,
             leg_max_tokens = budget.leg,
             total_max_tokens = budget.total,
-            "perna esgotada: continuando a mesma geração na perna seguinte"
+            "leg exhausted: continuing the same generation on the next leg"
         );
     }
 }

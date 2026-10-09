@@ -1171,7 +1171,7 @@ impl LobbyClient {
     /// address is resolved through pkarr at dial time and never stored.
     pub async fn request(&self, key: &str, request: LobbyRequest) -> Result<LobbyResponse> {
         let peer_id = crate::pkarr_node::peer_id_from_uri(key)
-            .context("a chave do publicador é inválida")?;
+            .context("the publisher key is invalid")?;
         let addresses = self.dial_addresses(key).await;
         if addresses.is_empty() {
             anyhow::bail!("publisher_unresolved");

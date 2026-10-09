@@ -808,12 +808,12 @@ impl NetworkChat {
             .try_send(ChatOutbound { request, reply })
             .map_err(|_| {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-                anyhow::anyhow!("fila do Chat da rede está cheia")
+                anyhow::anyhow!("network Chat queue is full")
             })?;
         tokio::time::timeout(Duration::from_secs(5), receiver)
             .await
-            .context("tempo esgotado aguardando o principal")?
-            .context("principal encerrou o envio do Chat da rede")
+            .context("timed out waiting for the principal")?
+            .context("the principal closed the network Chat send")
     }
 
     pub fn history(&self, room_id: &str, limit: usize) -> Result<Vec<ChatEvent>> {
@@ -926,7 +926,7 @@ impl NetworkChat {
             .try_send(PersistCommand::Action(action.clone()))
             .map_err(|_| {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-                anyhow::anyhow!("fila de persistência do Chat da rede está cheia")
+                anyhow::anyhow!("network Chat persistence queue is full")
             })?;
         let _ = self.live.send(ChatEvent::from_action(&action));
         Ok(true)

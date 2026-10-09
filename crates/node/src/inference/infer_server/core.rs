@@ -34,7 +34,7 @@ pub(super) fn required_session_id(meta: &Value) -> Result<String> {
         .map(str::trim)
         .filter(|session_id| !session_id.is_empty())
         .map(ToOwned::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("quadro de inferência sem session_id"))
+        .ok_or_else(|| anyhow::anyhow!("inference frame without session_id"))
 }
 
 pub(crate) const SPECULATION_REASON_TAIL_WITHOUT_NEXTN: &str = "tail_without_nextn";
@@ -763,7 +763,7 @@ impl DirectForwardOrder {
         let mut sequences = self
             .sequences
             .lock()
-            .map_err(|_| anyhow::anyhow!("ordem do repasse direto corrompida"))?;
+            .map_err(|_| anyhow::anyhow!("direct forward order corrupted"))?;
         sequences.entry(key.to_owned()).or_insert_with(|| {
             Arc::new(DirectForwardSequence {
                 next_chunk: Mutex::new(0),
@@ -784,7 +784,7 @@ impl DirectForwardOrder {
             let mut sequences = self
                 .sequences
                 .lock()
-                .map_err(|_| anyhow::anyhow!("ordem do repasse direto corrompida"))?;
+                .map_err(|_| anyhow::anyhow!("direct forward order corrupted"))?;
             if let Some(sequence) = sequences.get(&key) {
                 sequence.clone()
             } else if chunk_index == 0 {
@@ -797,7 +797,7 @@ impl DirectForwardOrder {
                 sequence
             } else {
                 return Err(anyhow::anyhow!(
-                    "chunk direto {chunk_index} chegou sem o chunk predecessor"
+                    "direct chunk {chunk_index} arrived without the predecessor chunk"
                 ));
             }
         };
@@ -807,7 +807,7 @@ impl DirectForwardOrder {
             if let Some(error) = sequence
                 .failed
                 .lock()
-                .map_err(|_| anyhow::anyhow!("estado de ordem do repasse corrompido"))?
+                .map_err(|_| anyhow::anyhow!("forward order state corrupted"))?
                 .clone()
             {
                 return Err(anyhow::anyhow!(error));
@@ -815,7 +815,7 @@ impl DirectForwardOrder {
             let next_chunk = *sequence
                 .next_chunk
                 .lock()
-                .map_err(|_| anyhow::anyhow!("estado de ordem do repasse corrompido"))?;
+                .map_err(|_| anyhow::anyhow!("forward order state corrupted"))?;
             if next_chunk == chunk_index {
                 drop(notified);
                 return Ok(DirectForwardTurn {
@@ -827,7 +827,7 @@ impl DirectForwardOrder {
             }
             if chunk_index < next_chunk {
                 return Err(anyhow::anyhow!(
-                    "chunk direto {chunk_index} chegou depois de {next_chunk}"
+                    "direct chunk {chunk_index} arrived after {next_chunk}"
                 ));
             }
             notified.await;
@@ -845,7 +845,7 @@ impl DirectForwardTurn {
             }
         } else if let Ok(mut failed) = self.sequence.failed.lock() {
             *failed = Some(format!(
-                "repasse direto falhou no chunk {}",
+                "direct forward failed at chunk {}",
                 self.chunk_index
             ));
         }
@@ -874,7 +874,7 @@ impl crate::relay::InProcessInference for InferenceAppState {
             "/v1/step-stream" => handle_step_stream(State(self.clone()), headers, body).await,
             "/v1/session/rewind" => {
                 let request = serde_json::from_slice(&body)
-                    .map_err(|e| anyhow::anyhow!("rewind inválido: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("invalid rewind: {e}"))?;
                 handle_rewind(
                     State(self.clone()),
                     axum::http::HeaderMap::new(),
@@ -885,7 +885,7 @@ impl crate::relay::InProcessInference for InferenceAppState {
             }
             _ => {
                 return Err(anyhow::anyhow!(
-                    "rota de inferência em processo desconhecida: {path}"
+                    "unknown in-process inference route: {path}"
                 ))
             }
         })
@@ -969,7 +969,7 @@ pub(super) async fn run_scheduler(
                 break;
             };
             if queue.try_push(command.into_queue_item()).is_err() {
-                unreachable!("a fila foi verificada antes de inserir o comando");
+                unreachable!("the queue was checked before inserting the command");
             }
         }
         stats.queue_depth.store(queue.len(), Ordering::Relaxed);
@@ -981,7 +981,7 @@ pub(super) async fn run_scheduler(
                     break;
                 };
                 if queue.try_push(command.into_queue_item()).is_err() {
-                    unreachable!("a fila foi verificada antes de inserir o comando");
+                    unreachable!("the queue was checked before inserting the command");
                 }
             }
             stats.queue_depth.store(queue.len(), Ordering::Relaxed);
@@ -1134,7 +1134,7 @@ pub(super) fn execute_scheduled_batch(
                     InferenceCommand::Prefill { job, reply, .. } => jobs.push((job, reply)),
                     InferenceCommand::Step { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
-                            "scheduler recebeu fase de inferência incompatível"
+                            "scheduler received an incompatible inference phase"
                         )));
                     }
                 }
@@ -1150,7 +1150,7 @@ pub(super) fn execute_scheduled_batch(
                     InferenceCommand::Step { job, reply, .. } => jobs.push((job, reply)),
                     InferenceCommand::Prefill { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
-                            "scheduler recebeu fase de inferência incompatível"
+                            "scheduler received an incompatible inference phase"
                         )));
                     }
                 }
@@ -1229,7 +1229,7 @@ pub(super) fn inference_frame_body_limit() -> usize {
 pub(super) fn lock_inference_state<T>(state: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     state
         .lock()
-        .map_err(|_| anyhow::anyhow!("mutex do estado de inferência envenenado"))
+        .map_err(|_| anyhow::anyhow!("inference state mutex poisoned"))
 }
 
 pub(super) fn finish_terminal_stream(
@@ -1239,7 +1239,7 @@ pub(super) fn finish_terminal_stream(
 ) -> Result<()> {
     let session = sessions
         .get_mut(sid_key)
-        .ok_or_else(|| anyhow::anyhow!("sessão '{sid_key}' desconhecida"))?;
+        .ok_or_else(|| anyhow::anyhow!("unknown session '{sid_key}'"))?;
     text.push_str(&session.finish_token_stream());
     Ok(())
 }
@@ -1459,14 +1459,14 @@ mod tests {
         let (requested, executor, dtypes, reason) = moe_health_summary(
             crate::executor::InferencePath::MoeQ4_0,
             None,
-            Some("executor MoE indisponível: formato sem decoder"),
+            Some("MoE executor unavailable: format without a decoder"),
         );
         assert!(requested);
         assert_eq!(executor, "not-installed");
         assert!(dtypes.is_empty());
         assert_eq!(
             reason.as_deref(),
-            Some("executor MoE indisponível: formato sem decoder")
+            Some("MoE executor unavailable: format without a decoder")
         );
     }
 
@@ -1527,7 +1527,7 @@ mod tests {
             executor: crate::moe::runtime::MoeExecutorKind::CpuReference,
             dtypes: vec![21, 22, 23],
             reason: Some(
-                "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado".into(),
+                "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected".into(),
             ),
             diagnostics: None,
         });
@@ -1541,7 +1541,7 @@ mod tests {
         );
         assert_eq!(
             value["moe_executor_reason"],
-            "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado"
+            "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected"
         );
     }
 
@@ -1603,7 +1603,7 @@ mod tests {
 
         let error = finish_terminal_stream(&mut sessions, "gone", &mut text).unwrap_err();
 
-        assert!(error.to_string().contains("sessão 'gone' desconhecida"));
+        assert!(error.to_string().contains("unknown session 'gone'"));
     }
 
     #[test]
@@ -1616,7 +1616,7 @@ mod tests {
 
         let error = lock_inference_state(&state).unwrap_err();
 
-        assert!(error.to_string().contains("mutex do estado de inferência"));
+        assert!(error.to_string().contains("inference state mutex"));
     }
 
     #[tokio::test]
@@ -1658,8 +1658,8 @@ mod tests {
         let accepted = std::thread::spawn(move || l.accept().is_ok());
         let connected = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
 
-        assert!(connected, "um cliente IPv4 não conseguiu conectar em [::]");
-        assert!(accepted.join().unwrap(), "a conexão IPv4 não foi aceita");
+        assert!(connected, "an IPv4 client could not connect on [::]");
+        assert!(accepted.join().unwrap(), "the IPv4 connection was not accepted");
     }
 
     #[test]
@@ -1675,8 +1675,8 @@ mod tests {
         let accepted = std::thread::spawn(move || l.accept().is_ok());
         let connected = std::net::TcpStream::connect(("::1", port)).is_ok();
 
-        assert!(connected, "um cliente IPv6 não conseguiu conectar em [::]");
-        assert!(accepted.join().unwrap(), "a conexão IPv6 não foi aceita");
+        assert!(connected, "an IPv6 client could not connect on [::]");
+        assert!(accepted.join().unwrap(), "the IPv6 connection was not accepted");
     }
 
     /// O socket tem que pedir `SO_REUSEADDR`, como o `TcpListener::bind` da std
@@ -1700,7 +1700,7 @@ mod tests {
         let sock = socket2::Socket::from(l);
         assert!(
             sock.reuse_address().unwrap(),
-            "sem SO_REUSEADDR, TIME_WAIT segura a porta por ~60s a cada troca de versao"
+            "without SO_REUSEADDR, TIME_WAIT holds the port for ~60s on every version swap"
         );
     }
 
@@ -1818,15 +1818,15 @@ mod tests {
             crate::reqlog::RequestActivity::new(),
         )
         .await
-        .expect_err("porta ocupada devia falhar");
+        .expect_err("a busy port should fail");
 
         assert!(
             error.to_string().to_lowercase().contains("address") || error.to_string().contains("use"),
-            "o erro tinha que ser o da porta, e foi: {error}"
+            "the error had to be the port one, and it was: {error}"
         );
         assert!(
             started.elapsed() < std::time::Duration::from_secs(1),
-            "falhou depois de carregar alguma coisa: levou {:?}",
+            "failed after loading something: took {:?}",
             started.elapsed()
         );
     }

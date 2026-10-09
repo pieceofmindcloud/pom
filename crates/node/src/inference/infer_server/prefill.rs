@@ -121,7 +121,7 @@ pub(super) async fn handle_prefill(
     if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
         match wire::decode_batch(&body) {
             Ok(batch) => return handle_prefill_batch(app, headers, batch).await,
-            Err(error) => return err400(format!("quadro inválido: {error}")),
+            Err(error) => return err400(format!("invalid frame: {error}")),
         }
     }
     // A one-item frame is still a batch frame: the gateway's
@@ -152,7 +152,7 @@ pub(super) async fn handle_prefill(
     let frame_decode_started = Instant::now();
     let (meta, tensor, inbound_wire_timing) = match wire::decode_inference_request_profiled(&body) {
         Ok(v) => v,
-        Err(e) => return err400(format!("quadro inválido: {e}")),
+        Err(e) => return err400(format!("invalid frame: {e}")),
     };
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
     let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
@@ -160,7 +160,7 @@ pub(super) async fn handle_prefill(
             Ok(dtype) => dtype,
             Err(error) => return err400(error),
         },
-        None => return err400("quadro sem dtype de estado oculto"),
+        None => return err400("frame without a hidden state dtype"),
     };
 
     let sid_key = match required_session_id(&meta) {
@@ -242,16 +242,16 @@ pub(super) async fn handle_prefill(
         None => None,
         Some(value) => {
             let Some(values) = value.as_array() else {
-                return err400("campo images inválido");
+                return err400("invalid images field");
             };
             let mut decoded = Vec::with_capacity(values.len());
             for value in values {
                 let Some(encoded) = value.as_str() else {
-                    return err400("campo images contém um item inválido");
+                    return err400("images field contains an invalid item");
                 };
                 match base64::engine::general_purpose::STANDARD.decode(encoded) {
                     Ok(bytes) => decoded.push(bytes),
-                    Err(error) => return err400(format!("imagem codificada inválida: {error}")),
+                    Err(error) => return err400(format!("invalid encoded image: {error}")),
                 }
             }
             Some(decoded)
@@ -273,7 +273,7 @@ pub(super) async fn handle_prefill(
         None => None,
         Some(value) => match serde_json::from_value::<Vec<[u32; 4]>>(value.clone()) {
             Ok(positions) => Some(positions),
-            Err(error) => return err400(format!("campo mrope_positions inválido: {error}")),
+            Err(error) => return err400(format!("invalid mrope_positions field: {error}")),
         },
     };
 
@@ -353,20 +353,20 @@ pub(super) async fn handle_prefill(
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(axum::http::header::RETRY_AFTER, "1")],
-                format!("fila de inferência cheia (limite {limit})"),
+                format!("inference queue full (limit {limit})"),
             )
                 .into_response();
         }
         Err(SchedulerSubmitError::Closed) => {
-            return err500("scheduler de inferência encerrado");
+            return err500("inference scheduler shut down");
         }
     };
 
     let mut reply = match result {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
-            let code = if e.to_string().contains("desconhecida")
-                || e.to_string().contains("fora de ordem")
+            let code = if e.to_string().contains("unknown")
+                || e.to_string().contains("out of order")
             {
                 StatusCode::BAD_REQUEST
             } else {
@@ -459,7 +459,7 @@ pub(super) async fn handle_prefill(
             let failure = crate::relay::RelayFailure {
                 failed_node_id: hops[0].node_id.clone(),
                 kind: "protocol".into(),
-                message: "hop intermediário não produziu estado oculto".into(),
+                message: "intermediate hop produced no hidden state".into(),
             };
             tokio::spawn(async move {
                 crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
@@ -582,7 +582,7 @@ pub(super) async fn handle_prefill(
             Err(join) => {
                 forget_ring_relay_slot(&sid_for_forward);
                 return err500(anyhow::anyhow!(
-                    "repasse do pedaço anterior abortou: {join}"
+                    "forward of the previous chunk aborted: {join}"
                 ));
             }
         },
@@ -888,9 +888,7 @@ pub(super) fn guard_chunk_fits_batch(
     let n_batch = engine.n_batch();
     if n_tokens as u64 > n_batch as u64 {
         bail!(
-            "pedaço {chunk_index} tem {n_tokens} tokens, acima do n_batch={n_batch} deste nó; \
-             o llama.cpp abortaria. Reduza prefill_chunk_tokens para <= n_batch, ou aumente \
-             n_batch, nos ajustes avançados da implantação"
+            "chunk {chunk_index} has {n_tokens} tokens, above the n_batch={n_batch} of this node; llama.cpp would abort. Reduce prefill_chunk_tokens to <= n_batch, or increase n_batch, in the advanced settings of the deployment"
         );
     }
     Ok(())
@@ -923,15 +921,15 @@ fn logical_end_from_mrope_positions(
 ) -> Result<u32> {
     if positions.len() != physical_cells {
         bail!(
-            "estado oculto declara {physical_cells} células, mas recebeu {} posições M-RoPE",
+            "hidden state declares {physical_cells} cells, but received {} M-RoPE positions",
             positions.len()
         );
     }
     let next_pos = declared_next_pos.ok_or_else(|| {
-        anyhow::anyhow!("estado oculto M-RoPE sem next_pos lógico produzido pelo head")
+        anyhow::anyhow!("M-RoPE hidden state without a logical next_pos produced by the head")
     })?;
     if next_pos < start_pos {
-        bail!("next_pos M-RoPE {next_pos} recua da posição inicial {start_pos}");
+        bail!("M-RoPE next_pos {next_pos} goes back from the start position {start_pos}");
     }
     Ok(next_pos)
 }
@@ -965,15 +963,15 @@ pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<HeadProbe>
         }));
     };
     let labels: Vec<String> = serde_json::from_value(value.clone())
-        .map_err(|_| "campo probe deve ser uma lista de rótulos".to_owned())?;
+        .map_err(|_| "probe field must be a list of labels".to_owned())?;
     if labels.is_empty() || labels.len() > 256 {
-        return Err("campo probe aceita de 1 a 256 rótulos".into());
+        return Err("probe field accepts 1 to 256 labels".into());
     }
     if labels
         .iter()
         .any(|label| label.trim().is_empty() || label.len() > 32)
     {
-        return Err("rótulo de probe vazio ou maior que 32 bytes".into());
+        return Err("probe label empty or longer than 32 bytes".into());
     }
     Ok(Some(HeadProbe {
         labels,
@@ -1153,20 +1151,19 @@ pub(super) fn prefill_blocking(
         let session = s.sessions.get_mut(&sid_key).unwrap();
         if session.n_past > expected_pos {
             warn!(
-                "refazendo chunk {chunk_index} da sessão {}… (pos {expected_pos})",
+                "redoing chunk {chunk_index} of session {}… (pos {expected_pos})",
                 &sid_key[..8.min(sid_key.len())]
             );
             let seq_id = session.seq_id();
             if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                 bail!(
-                    "este modelo não aceita descartar posições do meio do cache, \
-                     então refazer o pedaço {chunk_index} corromperia a sessão"
+                    "this model does not accept discarding positions from the middle of the cache, so redoing chunk {chunk_index} would corrupt the session"
                 );
             }
             s.sessions.get_mut(&sid_key).unwrap().n_past = expected_pos;
         } else if session.n_past < expected_pos {
             bail!(
-                "chunk fora de ordem: recebi {chunk_index} (pos {expected_pos}) mas a sessão está em {}",
+                "chunk out of order: received {chunk_index} (pos {expected_pos}) but the session is at {}",
                 session.n_past
             );
         }
@@ -1245,11 +1242,11 @@ pub(super) fn prefill_blocking(
         )?;
     } else if has_images {
         if chunk_index != 0 || tensor.is_some() {
-            bail!("imagens só podem acompanhar o primeiro chunk de prefill");
+            bail!("images can only accompany the first prefill chunk");
         }
         let text = prompt
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("imagem sem prompt"))?;
+            .ok_or_else(|| anyhow::anyhow!("image without a prompt"))?;
         let use_tmpl = use_chat_template(chat_template, s.chat_template);
         let no_think = s.no_thinking || !thinking_enabled.unwrap_or(!s.no_thinking);
         let formatted = if use_tmpl {
@@ -1272,7 +1269,7 @@ pub(super) fn prefill_blocking(
         engine_timing = decoded.timings;
     } else {
         if tokens_for_chunk.is_empty() {
-            bail!("chunk {chunk_index} não tem tokens");
+            bail!("chunk {chunk_index} has no tokens");
         }
         n_tokens = tokens_for_chunk.len();
         guard_chunk_fits_batch(&s.engine, n_tokens, chunk_index)?;
@@ -1436,7 +1433,7 @@ pub(super) fn prefill_blocking(
         let n_prompt_tokens = s
             .sessions
             .get(&sid_key)
-            .ok_or_else(|| anyhow::anyhow!("sessão '{sid_key}' desapareceu antes da resposta"))?
+            .ok_or_else(|| anyhow::anyhow!("session '{sid_key}' disappeared before the response"))?
             .prompt_tokens
             .len();
         let mut reply = terminal_prefill_meta(
@@ -1684,14 +1681,13 @@ pub(super) fn prefill_batch_blocking(
                     let seq_id = session.seq_id();
                     if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                         bail!(
-                            "este modelo não aceita descartar posições do meio do cache, \
-                             então refazer o pedaço {chunk_index} corromperia a sessão"
+                            "this model does not accept discarding positions from the middle of the cache, so redoing chunk {chunk_index} would corrupt the session"
                         );
                     }
                     s.sessions.get_mut(&sid_key).unwrap().n_past = expected_pos;
                 } else if session.n_past < expected_pos {
                     bail!(
-                        "chunk fora de ordem: recebi {chunk_index} (pos {expected_pos}) mas a sessão está em {}",
+                        "chunk out of order: received {chunk_index} (pos {expected_pos}) but the session is at {}",
                         session.n_past
                     );
                 }
@@ -1714,7 +1710,7 @@ pub(super) fn prefill_batch_blocking(
                         s.engine.n_embd,
                         s.engine.n_embd_inp,
                         s.engine.n_embd_out,
-                        &format!("hidden state de {sid_key}"),
+                        &format!("hidden state of {sid_key}"),
                     )?;
                     (
                         session.seq_id(),
@@ -1738,7 +1734,7 @@ pub(super) fn prefill_batch_blocking(
                         .unwrap_or(&[])
                         .to_vec();
                     if tokens.is_empty() {
-                        bail!("chunk {chunk_index} não tem tokens");
+                        bail!("chunk {chunk_index} has no tokens");
                     }
                     let n_tokens = tokens.len();
                     (
@@ -1806,7 +1802,7 @@ pub(super) fn prefill_batch_blocking(
             replies.push((
                 reply,
                 Err(anyhow::anyhow!(
-                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                    "batch with different sub-ranges: each would stop at a block, and the graph is a single one"
                 )),
             ));
         }
@@ -2001,7 +1997,7 @@ pub(super) fn prefill_batch_blocking(
                     .range(&item.sid_key)
                     .and_then(|range| range.logits_index)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("batch não produziu logits para {}", item.sid_key)
+                        anyhow::anyhow!("batch produced no logits for {}", item.sid_key)
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
@@ -2296,7 +2292,7 @@ pub(super) fn step_batch_blocking(
             // sequência do prompt - ver `InferState::open_generation`.
             s.open_generation(&sid_key)?;
             let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
-                anyhow::anyhow!("sessão '{}' desconhecida - faça o prefill antes", sid_key)
+                anyhow::anyhow!("unknown session '{}' - run the prefill first", sid_key)
             })?;
             session.last_used = Instant::now();
             let seq_id = session.seq_id();
@@ -2310,7 +2306,7 @@ pub(super) fn step_batch_blocking(
                     s.engine.n_embd,
                     s.engine.n_embd_inp,
                     s.engine.n_embd_out,
-                    &format!("hidden state de {sid_key}"),
+                    &format!("hidden state of {sid_key}"),
                 )?;
                 PreparedStepInput::Hidden {
                     values: hidden,
@@ -2318,7 +2314,7 @@ pub(super) fn step_batch_blocking(
                 }
             } else {
                 let token =
-                    token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
+                    token_id.ok_or_else(|| anyhow::anyhow!("the first peer needs a token_id"))?;
                 s.sessions
                     .get_mut(&sid_key)
                     .unwrap()
@@ -2367,7 +2363,7 @@ pub(super) fn step_batch_blocking(
             replies.push((
                 reply,
                 Err(anyhow::anyhow!(
-                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                    "batch with different sub-ranges: each would stop at a block, and the graph is a single one"
                 )),
             ));
         }
@@ -2501,7 +2497,7 @@ pub(super) fn step_batch_blocking(
                     .range(&item.sid_key)
                     .and_then(|range| range.logits_index)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("batch não produziu logits para {}", item.sid_key)
+                        anyhow::anyhow!("batch produced no logits for {}", item.sid_key)
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);

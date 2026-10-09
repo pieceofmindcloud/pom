@@ -66,7 +66,7 @@ pub struct Brand {
 pub fn brand() -> &'static Brand {
     static BRAND: OnceLock<Brand> = OnceLock::new();
     BRAND.get_or_init(|| {
-        serde_json::from_str(BRAND_JSON).expect("brand.json na raiz do repositório está malformado")
+        serde_json::from_str(BRAND_JSON).expect("brand.json at the repository root is malformed")
     })
 }
 

@@ -11,7 +11,6 @@ import { bytes, clock, duration, rate, since } from "../lib/format";
 import { useJobs } from "../lib/queries";
 import type { Job } from "../lib/types";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 // Written out rather than composed: Tailwind only emits classes it can find as
 // literal strings, so `text-${tone}` would produce no CSS at all.
@@ -22,7 +21,7 @@ const STATE = {
 } as const;
 
 function JobCard({ job }: { job: Job }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const meta = STATE[job.state] ?? STATE.running;
   const Icon = meta.icon;
   const phaseProgress =
@@ -37,9 +36,9 @@ function JobCard({ job }: { job: Job }) {
             className={`mt-0.5 h-4 w-4 shrink-0 ${meta.color} ${job.state === "running" ? "animate-pulse-soft" : ""}`}
           />
           <div className="min-w-0">
-            <p className="font-medium text-fg">{localizeServerText(locale, job.title || job.step)}</p>
+            <p className="font-medium text-fg">{job.title || job.step}</p>
             <p className="break-path mt-0.5 text-[0.82rem] leading-relaxed text-muted">
-              {localizeServerText(locale, job.message || job.step)}
+              {job.message || job.step}
             </p>
           </div>
         </div>
@@ -57,7 +56,7 @@ function JobCard({ job }: { job: Job }) {
         <>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[0.72rem]">
             <span className="font-medium uppercase tracking-[0.12em] text-iris">
-              {localizeServerText(locale, job.step)}
+              {job.step}
             </span>
             {job.bytes_processed != null && job.total_bytes != null ? (
               <span className="font-mono text-muted">
@@ -87,7 +86,7 @@ function JobCard({ job }: { job: Job }) {
 
       {job.state === "failed" && job.error && job.error !== job.message && (
         <p className="mt-3 border-t border-rose/20 pt-2.5 text-[0.78rem] leading-relaxed text-rose">
-          {localizeServerText(locale, job.error)}
+          {job.error}
         </p>
       )}
 

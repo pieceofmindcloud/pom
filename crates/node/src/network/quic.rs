@@ -190,7 +190,7 @@ impl ClientPool {
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<QuicResponse> {
-        let mut last_error = "nenhum endereço QUIC anunciado".to_string();
+        let mut last_error = "no QUIC address announced".to_string();
         let budget = self.establish_budget.unwrap_or_else(|| {
             crate::route_plan::book().establish_budget(peer_id, QUIC_FALLBACK_BUDGET)
         });
@@ -198,11 +198,11 @@ impl ClientPool {
         for advertised in quic_addresses {
             let key = format!("{peer_id}@{}", advertised.trim());
             if let Some(reason) = self.quic_quarantine_reason(&key).await {
-                last_error = format!("{advertised}: endpoint QUIC em quarentena ({reason})");
+                last_error = format!("{advertised}: QUIC endpoint in quarantine ({reason})");
                 continue;
             }
             if remaining_budget(fallback_deadline).is_none() {
-                last_error = "orçamento de estabelecimento QUIC esgotado".to_string();
+                last_error = "QUIC establishment budget exhausted".to_string();
                 break;
             }
             match self
@@ -260,7 +260,7 @@ impl ClientPool {
         loop {
             let session_timeout = remaining_budget(request_deadline).ok_or_else(|| {
                 anyhow!(QuicDeliveryError::new(
-                    "deadline de transporte HTTP/3 expirou antes do handshake",
+                    "HTTP/3 transport deadline expired before the handshake",
                     true,
                 ))
             })?;
@@ -275,7 +275,7 @@ impl ClientPool {
                 }
                 Err(_) => {
                     return Err(anyhow!(QuicDeliveryError::new(
-                        "deadline de transporte HTTP/3 expirou durante o handshake",
+                        "HTTP/3 transport deadline expired during the handshake",
                         true,
                     )))
                 }
@@ -330,7 +330,7 @@ impl ClientPool {
     ) -> Result<QuicResponse> {
         let operation_timeout = remaining_budget(request_deadline).ok_or_else(|| {
             anyhow!(QuicDeliveryError::new(
-                "deadline de transporte HTTP/3 expirou antes do stream",
+                "HTTP/3 transport deadline expired before the stream",
                 true,
             ))
         })?;
@@ -355,29 +355,29 @@ impl ClientPool {
             // `QUIC_ESTABLISH_TIMEOUT` => caminho UDP morto, aborta já para o
             // chamador cair no próximo transporte sem penalidade de espera.
             let stream_timeout = remaining_budget(fallback_deadline)
-                .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do stream"))?
+                .ok_or_else(|| anyhow!("QUIC discovery budget exhausted before the stream"))?
                 .min(QUIC_ESTABLISH_TIMEOUT);
             let mut stream = tokio::time::timeout(stream_timeout, sender.send_request(request))
                 .await
-                .context("abertura do stream HTTP/3 não fechou no orçamento de RTT")??;
+                .context("HTTP/3 stream open did not complete within the RTT budget")??;
             // Marcar antes de iniciar `send_data`: em uma falha daqui em
             // diante o peer pode ter recebido parte ou todo o frame. O prazo
             // deriva do orçamento total restante, não de um limite fixo que
             // confunda upload de 5,2 MB com handshake.
             body_may_have_been_sent = true;
             let body_timeout = remaining_budget(request_deadline)
-                .ok_or_else(|| anyhow!("deadline expirou antes do envio do corpo"))?;
+                .ok_or_else(|| anyhow!("deadline expired before sending the body"))?;
             let request_body_send_started = std::time::Instant::now();
             tokio::time::timeout(body_timeout, stream.send_data(Bytes::from(body)))
                 .await
-                .context("envio do corpo HTTP/3 travou")?
-                .map_err(|error| anyhow!("envio do corpo HTTP/3 falhou: {error}"))?;
+                .context("HTTP/3 body send stalled")?
+                .map_err(|error| anyhow!("HTTP/3 body send failed: {error}"))?;
             let finish_timeout = remaining_budget(request_deadline)
-                .ok_or_else(|| anyhow!("deadline expirou ao finalizar o corpo"))?;
+                .ok_or_else(|| anyhow!("deadline expired while finishing the body"))?;
             tokio::time::timeout(finish_timeout, stream.finish())
                 .await
-                .context("finalização do corpo HTTP/3 travou")?
-                .map_err(|error| anyhow!("finalização do corpo HTTP/3 falhou: {error}"))?;
+                .context("HTTP/3 body finish stalled")?
+                .map_err(|error| anyhow!("HTTP/3 body finish failed: {error}"))?;
             let request_body_send_us = request_body_send_started.elapsed().as_micros() as u64;
             let headers_started = std::time::Instant::now();
             // A espera da resposta cobre o processamento remoto (prefill/decode
@@ -387,11 +387,11 @@ impl ClientPool {
             let response = stream
                 .recv_response()
                 .await
-                .context("resposta HTTP/3 falhou")?;
+                .context("HTTP/3 response failed")?;
             let response_headers_ms = headers_started.elapsed().as_millis() as u64;
             let body_started = std::time::Instant::now();
             let mut output = Vec::new();
-            while let Some(mut chunk) = stream.recv_data().await.context("corpo HTTP/3 falhou")? {
+            while let Some(mut chunk) = stream.recv_data().await.context("HTTP/3 body failed")? {
                 while chunk.has_remaining() {
                     let take = chunk.remaining();
                     output.extend_from_slice(&chunk.copy_to_bytes(take));
@@ -414,7 +414,7 @@ impl ClientPool {
                 !body_may_have_been_sent,
             ))),
             Err(_) => Err(anyhow!(QuicDeliveryError::new(
-                format!("deadline de transporte HTTP/3 expirou após {:?}", timeout),
+                format!("HTTP/3 transport deadline expired after {:?}", timeout),
                 !body_may_have_been_sent,
             ))),
         }
@@ -442,10 +442,10 @@ impl ClientPool {
             return Ok((session, true));
         }
         let resolve_timeout = remaining_budget(fallback_deadline)
-            .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do DNS"))?;
+            .ok_or_else(|| anyhow!("QUIC discovery budget exhausted before DNS"))?;
         let addr = tokio::time::timeout(resolve_timeout, resolve_addr(advertised))
             .await
-            .context("resolução do endereço QUIC excedeu o orçamento")??;
+            .context("QUIC address resolution exceeded the budget")??;
         ensure_local_route(addr)?;
         let tls = crate::tls::quic_client_config(peer_id)?;
         let mut config = quinn::ClientConfig::new(Arc::new(
@@ -459,7 +459,7 @@ impl ClientPool {
         // sub-segundo é o que transforma "peer QUIC inalcançável" em um
         // fallback imediato para TCP, em vez de segurar o hop de inferência.
         let establish_timeout = remaining_budget(fallback_deadline)
-            .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do handshake"))?;
+            .ok_or_else(|| anyhow!("QUIC discovery budget exhausted before the handshake"))?;
         let connection = tokio::time::timeout(
             establish_timeout.min(QUIC_ESTABLISH_TIMEOUT),
             endpoint
@@ -469,7 +469,7 @@ impl ClientPool {
                 .connect_with(config, addr, &format!("peer.{}", crate::brand::slug()))?,
         )
         .await
-        .context("handshake QUIC não fechou no orçamento de RTT")??;
+        .context("QUIC handshake did not complete within the RTT budget")??;
         let connection_for_metrics = connection.clone();
         let (mut driver, sender) = h3::client::new(H3Connection::new(connection)).await?;
         tokio::spawn(async move {
@@ -553,7 +553,7 @@ pub(crate) fn inference_transport_config() -> quinn::TransportConfig {
     transport.max_idle_timeout(Some(
         QUIC_MAX_IDLE
             .try_into()
-            .expect("QUIC_MAX_IDLE cabe em VarInt"),
+            .expect("QUIC_MAX_IDLE fits in VarInt"),
     ));
     transport.keep_alive_interval(Some(QUIC_KEEP_ALIVE));
     transport
@@ -567,7 +567,7 @@ pub async fn serve(
 ) -> Result<()> {
     let socket = bind_quic_socket(format!("[::]:{port}").parse()?)?;
     let runtime = quinn::default_runtime()
-        .ok_or_else(|| anyhow!("runtime QUIC assíncrono não está disponível"))?;
+        .ok_or_else(|| anyhow!("async QUIC runtime is not available"))?;
     let endpoint = quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         Some(config.as_ref().clone()),
@@ -590,10 +590,10 @@ pub async fn serve(
                     match incoming.await {
                         Ok(connection) => {
                             if let Err(error) = serve_connection(connection, router).await {
-                                debug!("conexão HTTP/3 encerrada: {error}");
+                                debug!("HTTP/3 connection closed: {error}");
                             }
                         }
-                        Err(error) => debug!("handshake QUIC recusado: {error}"),
+                        Err(error) => debug!("QUIC handshake refused: {error}"),
                     }
                 });
             }
@@ -665,10 +665,10 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
 
 fn authority(base_url: &str) -> Result<String> {
     let parsed = url::Url::parse(base_url)?;
-    let host = parsed.host().ok_or_else(|| anyhow!("URL QUIC sem host"))?;
+    let host = parsed.host().ok_or_else(|| anyhow!("QUIC URL without a host"))?;
     let port = parsed
         .port_or_known_default()
-        .ok_or_else(|| anyhow!("URL QUIC sem porta"))?;
+        .ok_or_else(|| anyhow!("QUIC URL without a port"))?;
     // `Url::host_str()` já devolve hosts IPv6 colchetados (`[::1]`); só
     // `Url::host()` distingue a variante, então colchetar de novo em cima de
     // `host_str()` sempre que ele "contém `:`" duplicava os colchetes em
@@ -694,16 +694,16 @@ fn ensure_local_route(addr: SocketAddr) -> Result<()> {
         (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
     };
     let socket = std::net::UdpSocket::bind(bind)
-        .map_err(|error| anyhow!("sem socket local para {addr}: {error}"))?;
+        .map_err(|error| anyhow!("no local socket for {addr}: {error}"))?;
     socket
         .connect(addr)
-        .map_err(|error| anyhow!("sem rota local para {addr}: {error}"))
+        .map_err(|error| anyhow!("no local route to {addr}: {error}"))
 }
 
 async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {
     if advertised.contains("://") {
         return Err(anyhow!(
-            "endereço QUIC precisa ser host:porta, não uma URL HTTP"
+            "QUIC address must be host:port, not an HTTP URL"
         ));
     }
     if let Ok(addr) = advertised.parse::<SocketAddr>() {
@@ -712,12 +712,12 @@ async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {
     lookup_host(advertised)
         .await?
         .next()
-        .ok_or_else(|| anyhow!("endereço QUIC não resolveu"))
+        .ok_or_else(|| anyhow!("QUIC address did not resolve"))
 }
 
 fn quic_socket_addr(advertised_host: &str, quic_port: u16) -> Result<SocketAddr> {
     if advertised_host.contains("://") {
-        return Err(anyhow!("endereço anunciado não pode conter scheme"));
+        return Err(anyhow!("announced address cannot contain a scheme"));
     }
     let host = advertised_host
         .parse::<SocketAddr>()
@@ -790,7 +790,7 @@ mod tests {
             for b in (a + 1)..all.len() {
                 assert_ne!(
                     all[a].1, all[b].1,
-                    "colisão de porta entre {} e {} ({})",
+                    "port collision between {} and {} ({})",
                     all[a].0, all[b].0, all[a].1
                 );
             }
@@ -819,7 +819,7 @@ mod tests {
         let a = authority("https://[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777").unwrap();
         assert_eq!(a, "[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777");
         a.parse::<http::uri::Authority>()
-            .expect("authority precisa parsear como Authority válida");
+            .expect("authority must parse as a valid Authority");
 
         // IPv4 e hostname DNS continuam funcionando (casos que já passavam).
         assert_eq!(
@@ -841,7 +841,7 @@ mod tests {
         let socket = bind_quic_socket("[::]:0".parse().unwrap()).unwrap();
         assert!(
             !socket2::SockRef::from(&socket).only_v6().unwrap(),
-            "o socket QUIC do servidor precisa ser dual-stack"
+            "the server QUIC socket must be dual-stack"
         );
     }
 
@@ -860,7 +860,7 @@ mod tests {
 
         assert_eq!(
             attempts, 1,
-            "um endpoint morto não deve serializar timeouts"
+            "a dead endpoint must not serialize timeouts"
         );
         assert_eq!(spent, QUIC_FALLBACK_BUDGET);
         assert!(spent < Duration::from_secs(1));
@@ -974,7 +974,7 @@ mod tests {
         stop_tx.send(()).unwrap();
         server.await.unwrap();
 
-        let response = result.expect("um restart remoto deve forçar um handshake QUIC novo");
+        let response = result.expect("a remote restart must force a new QUIC handshake");
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(response.body, b"before-restart");
     }
@@ -1019,13 +1019,13 @@ mod tests {
             ),
         )
         .await
-        .expect("endpoint HTTP/3 sem resposta não pode exceder o prazo do frame");
-        let error = result.expect_err("endpoint sem headers deve falhar");
+        .expect("an unanswering HTTP/3 endpoint cannot exceed the frame deadline");
+        let error = result.expect_err("an endpoint without headers must fail");
         assert!(
             error
                 .to_string()
-                .contains("deadline de transporte HTTP/3 expirou"),
-            "erro inesperado: {error:#}"
+                .contains("HTTP/3 transport deadline expired"),
+            "unexpected error: {error:#}"
         );
 
         stop_tx.send(()).unwrap();

@@ -305,17 +305,17 @@ fn validate_public_directory_semantics(
     record: &crate::public_directory::SignedPublicDirectoryRecord,
 ) -> Result<()> {
     let document = crate::admin_trust::parse_transported(&record.network.trust_document)
-        .map_err(|error| anyhow::anyhow!("cadeia pública inválida: {error:#}"))?;
+        .map_err(|error| anyhow::anyhow!("invalid public chain: {error:#}"))?;
     if document.anchor.cluster_id != record.network.cluster_id
         || crate::admin_trust::anchor_fingerprint(&document) != record.network.fingerprint
     {
         return Err(anyhow::anyhow!(
-            "o registro não corresponde à raiz de confiança anunciada"
+            "the record does not match the announced trust root"
         ));
     }
     if document.primary.pubkey != record.publisher_pubkey {
         return Err(anyhow::anyhow!(
-            "somente o principal da rede pode publicar seu registro"
+            "only the principal of the network can publish its record"
         ));
     }
     Ok(())
@@ -466,7 +466,7 @@ async fn merge_directory_replicas(
     let mut learned = Vec::new();
     for incoming in responses.into_iter().flatten().flatten() {
         if let Err(error) = validate_public_directory_semantics(&incoming) {
-            warn!("registro do diretório federado recusado: {error:#}");
+            warn!("federated directory record refused: {error:#}");
             continue;
         }
         let learned_record = incoming.clone();
@@ -477,7 +477,7 @@ async fn merge_directory_replicas(
                 learned.push(learned_record);
             }
             Ok(_) => {}
-            Err(error) => warn!("registro do diretório federado recusado: {error:#}"),
+            Err(error) => warn!("federated directory record refused: {error:#}"),
         }
     }
     let before = records.len();
@@ -493,7 +493,7 @@ async fn merge_directory_replicas(
     changed |= before != records.len();
     if changed {
         if let Err(error) = database.save_public_directory_records(&records) {
-            warn!("não foi possível salvar o cache do diretório federado: {error:#}");
+            warn!("could not save the federated directory cache: {error:#}");
         }
     }
     (records, learned)
@@ -527,7 +527,7 @@ async fn replicate_directory_records(
     let failures = sends.iter().filter(|result| result.is_err()).count();
     if failures > 0 {
         warn!(
-            "{} publicação(ões) de anti-entropia do diretório federado falharam",
+            "{} anti-entropy publication(s) of the federated directory failed",
             failures
         );
     }
@@ -590,7 +590,7 @@ async fn publish_local_directory_record(state: &GatewayState) -> Result<()> {
     .await;
     for result in sends {
         if let Err(error) = result {
-            warn!("não foi possível publicar no ingresso do diretório federado: {error}");
+            warn!("could not publish to the federated directory ingress: {error}");
         }
     }
     Ok(())
@@ -602,7 +602,7 @@ pub(crate) fn spawn_public_directory_republisher(state: GatewayState) {
         ticker.tick().await;
         loop {
             if let Err(error) = publish_local_directory_record(&state).await {
-                warn!("publicação no diretório federado falhou: {error:#}");
+                warn!("publication to the federated directory failed: {error:#}");
             }
             ticker.tick().await;
         }
@@ -621,7 +621,7 @@ async fn public_directory_records(State(state): State<GatewayState>) -> impl Int
         record.validate(now).is_ok() && validate_public_directory_semantics(record).is_ok()
     });
     if let Err(error) = state.database.save_public_directory_records(&records) {
-        warn!("não foi possível podar o cache do diretório federado: {error:#}");
+        warn!("could not prune the federated directory cache: {error:#}");
     }
     Json(PublicDirectoryRecordsResponse {
         version: crate::public_directory::PUBLIC_DIRECTORY_VERSION,
@@ -649,7 +649,7 @@ pub(super) async fn accept_public_directory_record(
     match crate::public_directory::merge_record(&mut records, record, now) {
         Ok(outcome) => {
             if let Err(error) = state.database.save_public_directory_records(&records) {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("não foi possível persistir o registro: {error:#}") }))).into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("could not persist the record: {error:#}") }))).into_response();
             }
             let status = match outcome {
                 crate::public_directory::MergeOutcome::Inserted => StatusCode::CREATED,
@@ -979,7 +979,7 @@ pub(crate) async fn relay_directory(key: &str) -> Vec<PublicNetworkView> {
     let mut response = match client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
         Ok(response) => response,
         Err(error) => {
-            debug!("lobby: relé {key} não respondeu ao diretório: {error:#}");
+            debug!("lobby: relay {key} did not answer the directory: {error:#}");
             return Vec::new();
         }
     };
@@ -1070,7 +1070,7 @@ async fn collect_public_networks(
     }
 
     if let Err(error) = publish_local_directory_record(state).await {
-        warn!("não foi possível atualizar o registro local do diretório federado: {error:#}");
+        warn!("could not update the local record of the federated directory: {error:#}");
     }
     let directory_records = read_directory_records(state).await;
     for record in directory_records {
@@ -1216,7 +1216,7 @@ async fn collect_public_networks(
     }
 
     if let Err(error) = state.database.save_public_network_geo_cache(&geo_cache) {
-        warn!("não foi possível atualizar o índice geo de redes públicas: {error:#}");
+        warn!("could not update the geo index of public networks: {error:#}");
     }
 
     networks
@@ -1258,10 +1258,10 @@ pub(crate) fn spawn_directory_publisher(state: GatewayState) {
                 match client.request(&key, request).await {
                     Ok(response) if response.accepted => {}
                     Ok(response) => debug!(
-                        "lobby: relé {key} não listou a rede: {:?}",
+                        "lobby: relay {key} did not list the network: {:?}",
                         response.error
                     ),
-                    Err(error) => debug!("lobby: relé {key} inalcançável para publicar: {error:#}"),
+                    Err(error) => debug!("lobby: relay {key} unreachable for publishing: {error:#}"),
                 }
             }
         }
@@ -1305,7 +1305,7 @@ pub(crate) fn spawn_directory_board_publisher(state: GatewayState) {
                         gathered = found;
                         board.publish(own, Some(gathered.clone()));
                     }
-                    Err(_) => debug!("lobby: a varredura de redes públicas passou do prazo"),
+                    Err(_) => debug!("lobby: the public networks scan exceeded the deadline"),
                 }
             }
             tokio::time::sleep(crate::network_lobby::INFO_REFRESH).await;
@@ -1326,7 +1326,7 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
     crate::infer_server::listener_dual_stack(port)
         .map(|_| ())
         .map_err(|error| {
-            anyhow::anyhow!("a porta da interface {port} não está disponível: {error}")
+            anyhow::anyhow!("the interface port {port} is not available: {error}")
         })
 }
 
@@ -1387,10 +1387,10 @@ pub(super) async fn handle_remote_stream_link(
         async move {
             crate::auth::validate_internal_node_headers(&auth, &headers)
                 .await
-                .map_err(|_| anyhow::anyhow!("credencial de peer inválida"))?;
+                .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             if path != crate::direct::REMOTE_STREAM_RESULT_PATH {
                 return Err(anyhow::anyhow!(
-                    "rota de retorno remoto desconhecida: {path}"
+                    "unknown remote return route: {path}"
                 ));
             }
             Ok(crate::direct::handle_remote_stream_link(&inbox, bytes).await)

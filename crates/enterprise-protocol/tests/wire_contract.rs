@@ -40,7 +40,7 @@ fn validate_with_a_plugin_code_also_previews_the_release() {
         decode_response::<ValidateResponse>(VALIDATE_PLUGIN.as_bytes()).expect("validate body");
 
     assert_eq!(response.payload.licensed_plugins, vec!["logs"]);
-    let release = response.payload.eligible_release.expect("release elegível");
+    let release = response.payload.eligible_release.expect("eligible release");
     assert_eq!(release.release_id, "logs-0.8.0-linux-x86_64");
     assert_eq!(release.version, "0.8.0");
 }
@@ -127,7 +127,7 @@ fn the_signed_grant_body_is_scoped_to_one_plugin_code() {
         decode_response::<ActivationResponse>(ACTIVATE.as_bytes()).expect("activation body");
     let raw = base64_url_decode(&response.payload.grant.body);
     let grant: enterprise_protocol::GrantBody =
-        serde_json::from_slice(&raw).expect("grant body assinado");
+        serde_json::from_slice(&raw).expect("signed grant body");
 
     assert_eq!(grant.v, 1);
     assert_eq!(grant.iss, "license.pieceofmind.cloud");
@@ -162,7 +162,7 @@ fn base64_url_decode(value: &str) -> Vec<u8> {
         let index = ALPHABET
             .iter()
             .position(|candidate| *candidate == byte)
-            .unwrap_or_else(|| panic!("caractere base64url inválido: {byte}"));
+            .unwrap_or_else(|| panic!("invalid base64url character: {byte}"));
         buffer = (buffer << 6) | index as u32;
         bits += 6;
         if bits >= 8 {

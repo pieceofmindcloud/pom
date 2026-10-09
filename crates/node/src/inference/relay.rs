@@ -567,7 +567,7 @@ impl BatchCoordinator {
             let mut pending = self
                 .pending
                 .lock()
-                .map_err(|_| anyhow!("fila de lotes corrompida"))?;
+                .map_err(|_| anyhow!("batch queue corrupted"))?;
             let entries = pending.entry(key.clone()).or_default();
             entries.push(call);
             entries.len() == 1
@@ -582,7 +582,7 @@ impl BatchCoordinator {
 
         receiver
             .await
-            .map_err(|_| anyhow!("coordenador de lotes encerrou a chamada"))?
+            .map_err(|_| anyhow!("batch coordinator closed the call"))?
             .map_err(BatchFailure::into_error)
     }
 
@@ -648,7 +648,7 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
                 .get("session_id")
                 .and_then(Value::as_str)
                 .filter(|session_id| !session_id.trim().is_empty())
-                .ok_or_else(|| anyhow!("chamada batch {} sem session_id", call.item_id))?;
+                .ok_or_else(|| anyhow!("batch call {} without session_id", call.item_id))?;
             Ok(wire::BatchPayloadItem {
                 item_id: call.item_id.clone(),
                 session_id: session_id.to_string(),
@@ -699,7 +699,7 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
                 let mut output = Vec::with_capacity(calls.len());
                 for call in &calls {
                     let item = by_id.remove(&call.item_id).ok_or_else(|| {
-                        anyhow!("resposta batch não contém o item {}", call.item_id)
+                        anyhow!("batch response does not contain item {}", call.item_id)
                     })?;
                     let hidden_state_bytes_sent = hidden_state_bytes(
                         call.tensor
@@ -890,7 +890,7 @@ impl std::fmt::Display for HttpRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "peer {} recusou: {} {}",
+            "peer {} refused: {} {}",
             self.peer_label, self.status, self.body
         )
     }
@@ -908,9 +908,9 @@ pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
         return true;
     }
     let text = error.to_string();
-    text.contains("payload do batch excede limite")
-        || text.contains("payload do tensor excede limite")
-        || text.contains("corpo do frame excede limite")
+    text.contains("batch payload exceeds the limit")
+        || text.contains("tensor payload exceeds the limit")
+        || text.contains("frame body exceeds the limit")
 }
 
 /// Identifica a recusa que o gateway consegue reparar reconstruindo o prefill
@@ -920,7 +920,7 @@ pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
 pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let text = cause.to_string().to_lowercase();
-        text.contains("sessão") && text.contains("desconhecida")
+        text.contains("session") && text.contains("unknown")
     })
 }
 
@@ -928,9 +928,9 @@ pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
 /// transporte antes da entrega, eles pedem que a sessão inteira seja limpa.
 pub fn is_prefill_state_error(error: &anyhow::Error) -> bool {
     let text = error.to_string().to_lowercase();
-    text.contains("chunk fora de ordem")
-        || text.contains("sem start_pos absoluto")
-        || text.contains("não aceita descartar posições do meio do cache")
+    text.contains("chunk out of order")
+        || text.contains("without an absolute start_pos")
+        || text.contains("does not accept discarding positions from the middle of the cache")
 }
 
 /// Uma falha de repasse entre hops causada pelo **transporte** - caminho
@@ -954,13 +954,13 @@ pub fn is_transport_relay_failure(error: &anyhow::Error) -> bool {
     if text.contains("missing authorization header") {
         return true;
     }
-    if text.contains("pipeline falhou em")
+    if text.contains("pipeline failed at")
         && (text.contains(": transport") || text.contains(": timeout"))
     {
         return true;
     }
-    text.contains("recusou: 401")
-        || text.contains("recusou: 403")
+    text.contains("refused: 401")
+        || text.contains("refused: 403")
         || text.contains("http 401:")
         || text.contains("http 403:")
 }
@@ -1062,7 +1062,7 @@ fn encode_link_single_profiled(
         .get("session_id")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("quadro persistente sem session_id"))?;
+        .ok_or_else(|| anyhow!("persistent frame without session_id"))?;
     let item_id = meta
         .get("item_id")
         .and_then(Value::as_str)
@@ -1097,11 +1097,11 @@ fn received_hidden_state_bytes(
     let actual_dtype = WireDtype::parse(
         meta.get("dtype")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("{peer_label}: resposta com estado oculto sem dtype"))?,
+            .ok_or_else(|| anyhow!("{peer_label}: response with a hidden state without a dtype"))?,
     )?;
     if actual_dtype != expected_dtype {
         return Err(anyhow!(
-            "{peer_label}: resposta de estado oculto usa {}, mas o formato negociado é {}",
+            "{peer_label}: hidden state response uses {}, but the negotiated format is {}",
             actual_dtype.as_str(),
             expected_dtype.as_str()
         ));
@@ -1119,7 +1119,7 @@ async fn send_frame_in_process(
     use_batch_frame: bool,
     peer_label: &str,
 ) -> Result<SentFrame> {
-    debug!(peer = peer_label, path, "inferência em processo");
+    debug!(peer = peer_label, path, "in-process inference");
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let (body, encode_timing) =
@@ -1347,10 +1347,10 @@ async fn send_frame_with_protocol(
                         on_issue(SendIssue {
                             kind: SendIssueKind::Transport,
                             attempt,
-                            message: format!("QUIC HTTP/3 indisponível: {}", response.status),
+                            message: format!("QUIC HTTP/3 unavailable: {}", response.status),
                         });
                         warn!(
-                            "peer {peer_label} não aceitou a rota HTTP/3 ({}), usando TCP",
+                            "peer {peer_label} did not accept the HTTP/3 route ({}), using TCP",
                             response.status
                         );
                     }
@@ -1381,7 +1381,7 @@ async fn send_frame_with_protocol(
                             message: format!("QUIC: {error}"),
                         });
                         warn!(
-                            "chamada QUIC para {peer_label} em {base} falhou ({error}), usando TCP"
+                            "QUIC call to {peer_label} at {base} failed ({error}), using TCP"
                         );
                     }
                 }
@@ -1391,7 +1391,7 @@ async fn send_frame_with_protocol(
                 // esconderia do plano que a rota fixada falhou.
                 last_error = transport_fallback_reason
                     .clone()
-                    .unwrap_or_else(|| "a rota QUIC fixada não entregou".to_string());
+                    .unwrap_or_else(|| "the pinned QUIC route did not deliver".to_string());
                 continue;
             }
             let request = http
@@ -1499,7 +1499,7 @@ async fn send_frame_with_protocol(
                         attempt,
                         message: last_error.clone(),
                     });
-                    warn!("peer {peer_label} recusou o HTTP direto ({code}), tentando o túnel");
+                    warn!("peer {peer_label} refused direct HTTP ({code}), trying the tunnel");
                 }
                 Ok(r) => {
                     let code = r.status;
@@ -1528,7 +1528,7 @@ async fn send_frame_with_protocol(
                         message: last_error.clone(),
                     });
                     warn!(
-                        "chamada para {peer_label} em {base} falhou (tentativa {attempt}/{attempts}): {last_error}"
+                        "call to {peer_label} at {base} failed (attempt {attempt}/{attempts}): {last_error}"
                     );
                     if !is_pre_delivery_error(&e) {
                         return Err(e);
@@ -1543,7 +1543,7 @@ async fn send_frame_with_protocol(
 
     Err(anyhow::Error::new(FrameNotDelivered {
         message: format!(
-            "{peer_label} não recebeu o frame após {attempts} tentativa(s): {last_error}"
+            "{peer_label} did not receive the frame after {attempts} attempt(s): {last_error}"
         ),
     }))
 }
@@ -1566,7 +1566,7 @@ impl std::fmt::Display for TransportDeadline {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "deadline de transporte {} expirou após {:?}",
+            "transport deadline {} expired after {:?}",
             self.protocol, self.timeout
         )
     }
@@ -1658,7 +1658,7 @@ async fn send_http_request_with_deadline(
         // entregue, e a escada segue para o próximo caminho.
         Ok(Ok(Err(actual))) => Err(anyhow::Error::new(FrameNotDelivered {
             message: format!(
-                "o endereço respondeu como o nó {}, não {}",
+                "the address answered as node {}, not {}",
                 crate::network::short(&actual),
                 crate::network::short(expected_node_id.unwrap_or_default())
             ),
@@ -1765,7 +1765,7 @@ async fn send_batch_body(
     profiling: Option<crate::prefill::TelemetryContext>,
 ) -> Result<BatchTransportResponse> {
     if let Some(local) = local {
-        debug!(peer = peer_label, path, "inferência em processo em batch");
+        debug!(peer = peer_label, path, "in-process batch inference");
         let started = Instant::now();
         let bytes_sent = body.len() as u64;
         let response = local.dispatch(path, body).await?;
@@ -1864,7 +1864,7 @@ async fn send_batch_body(
             Err(error) => {
                 transport_fallback = true;
                 transport_fallback_reason = Some(format!("https-link: {error}"));
-                warn!("{peer_label}: canal persistente falhou ({error}), usando o caminho por requisição")
+                warn!("{peer_label}: persistent channel failed ({error}), using the per-request path")
             }
         }
     }
@@ -1898,7 +1898,7 @@ async fn send_batch_body(
             clients.route_order(&route_key, &route_candidates)
         };
         if ordered.is_empty() && !skip_direct {
-            last_error = "nenhuma rota HTTP de inferência disponível".to_string();
+            last_error = "no HTTP inference route available".to_string();
         }
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
@@ -1956,7 +1956,7 @@ async fn send_batch_body(
                             None => format!("quic: HTTP {}", response.status),
                         });
                         warn!(
-                            "peer {peer_label} não aceitou a rota HTTP/3 do batch ({}), usando TCP",
+                            "peer {peer_label} did not accept the HTTP/3 route of the batch ({}), using TCP",
                             response.status
                         );
                     }
@@ -1976,14 +1976,14 @@ async fn send_batch_body(
                             Some(previous) => format!("{previous}; quic: {error}"),
                             None => format!("quic: {error}"),
                         });
-                        warn!("{peer_label}: QUIC batch falhou ({error}), tentando TCP direto");
+                        warn!("{peer_label}: QUIC batch failed ({error}), trying direct TCP");
                     }
                 }
             }
             if !transport.tcp {
                 last_error = transport_fallback_reason
                     .clone()
-                    .unwrap_or_else(|| "a rota QUIC fixada não entregou".to_string());
+                    .unwrap_or_else(|| "the pinned QUIC route did not deliver".to_string());
                 continue;
             }
             let request = client
@@ -2049,7 +2049,7 @@ async fn send_batch_body(
                         None => format!("http: {last_error}"),
                     });
                     clients.remember_route_failure(&route_key, &base);
-                    warn!("peer {peer_label} recusou o HTTP direto do batch ({status}), tentando o túnel");
+                    warn!("peer {peer_label} refused direct HTTP for the batch ({status}), trying the tunnel");
                 }
                 Ok(response) => {
                     let status = response.status;
@@ -2077,7 +2077,7 @@ async fn send_batch_body(
             message: if skip_direct {
                 format!("{peer_label}: {DIRECT_SKIPPED}")
             } else {
-                format!("{peer_label} não recebeu o batch: {last_error}")
+                format!("{peer_label} did not receive the batch: {last_error}")
             },
         });
 
@@ -2135,7 +2135,7 @@ async fn send_batch_body(
 
     Err(anyhow::Error::new(FrameNotDelivered {
         message: format!(
-            "{peer_label} não recebeu o batch após {attempts} tentativa(s): {last_error}"
+            "{peer_label} did not receive the batch after {attempts} attempt(s): {last_error}"
         ),
     }))
 }
@@ -2180,7 +2180,7 @@ async fn send_batch_via_tunnel(
         .await
         .map_err(|_| {
             anyhow::Error::new(crate::infer_tunnel::TunnelDeliveryError::before_request(
-                format!("{peer_label}: swarm de libp2p não está disponível (canal fechado)"),
+                format!("{peer_label}: libp2p swarm is not available (channel closed)"),
             ))
         })?;
     let send_finished = Instant::now();
@@ -2191,20 +2191,20 @@ async fn send_batch_via_tunnel(
     let response = match tokio::time::timeout(frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => {
-            let message = format!("{peer_label}: falha no túnel libp2p: {error}");
+            let message = format!("{peer_label}: libp2p tunnel failure: {error}");
             return Err(anyhow::Error::new(error).context(message));
         }
         Ok(Err(_)) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: túnel libp2p encerrou sem responder"
+                    "{peer_label}: libp2p tunnel closed without answering"
                 )),
             ))
         }
         Err(_) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: túnel libp2p não respondeu a tempo"
+                    "{peer_label}: libp2p tunnel did not answer in time"
                 )),
             ))
         }
@@ -2355,15 +2355,15 @@ pub async fn send_bytes_or_tunnel_with_candidates(
             }
             Err(error) => {
                 let detail = error.to_string();
-                warn!("{peer_label}: HTTPS direto não alcançou {candidate}: {detail}");
+                warn!("{peer_label}: direct HTTPS did not reach {candidate}: {detail}");
                 last_error = Some(detail);
             }
         }
     }
 
     let direct_error = anyhow!(
-        "{peer_label}: nenhum endereço HTTPS respondeu: {}",
-        last_error.unwrap_or_else(|| "sem candidatos anunciados".to_string())
+        "{peer_label}: no HTTPS address answered: {}",
+        last_error.unwrap_or_else(|| "no announced candidates".to_string())
     );
 
     if let (Some(tunnel), Some(peer_id)) = (tunnel.filter(|_| supports_tunnel), peer_id) {
@@ -2384,8 +2384,8 @@ pub async fn send_bytes_or_tunnel_with_candidates(
             }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
-                warn!("{peer_label}: HTTPS direto e libp2p falharam ({error})");
-                return Err(anyhow!("{direct_error}; túnel: {error}"));
+                warn!("{peer_label}: direct HTTPS and libp2p failed ({error})");
+                return Err(anyhow!("{direct_error}; tunnel: {error}"));
             }
         }
     }
@@ -2412,14 +2412,14 @@ async fn send_bytes_via_tunnel(
         })
         .await
         .map_err(|_| {
-            anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
+            anyhow!("{peer_label}: libp2p swarm is not available (channel closed)")
         })?;
 
     let response = match tokio::time::timeout(TUNNEL_BYTES_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
-        Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {error}")),
-        Ok(Err(_)) => return Err(anyhow!("{peer_label}: túnel libp2p encerrou sem responder")),
-        Err(_) => return Err(anyhow!("{peer_label}: túnel libp2p não respondeu a tempo")),
+        Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: libp2p tunnel failure: {error}")),
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: libp2p tunnel closed without answering")),
+        Err(_) => return Err(anyhow!("{peer_label}: libp2p tunnel did not answer in time")),
     };
 
     if !(200..300).contains(&response.status) {
@@ -2587,7 +2587,7 @@ async fn send_frame_planned(
                 Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
                 Err(error) if is_pre_delivery_error(&error) => {
                     warn!(
-                        "{peer_label}: rota fixada {} falhou antes da entrega: {error}",
+                        "{peer_label}: pinned route {} failed before delivery: {error}",
                         route.describe()
                     );
                     if book().record_failure(&step.node_id, Plane::Inference)
@@ -2668,7 +2668,7 @@ async fn send_frame_or_tunnel_inner(
     let local = if crate::infer_tunnel::is_local_node(&step.node_id) {
         Some(current_local_inference().await.ok_or_else(|| {
             anyhow!(
-                "inferência em processo indisponível para o próprio nó {}",
+                "in-process inference unavailable for the node itself {}",
                 step.node_id
             )
         })?)
@@ -2819,7 +2819,7 @@ async fn send_frame_or_tunnel_inner(
             Err(error) if is_pre_delivery_error(&error) => {
                 transport_fallback = true;
                 transport_fallback_reason = Some(format!("https-link: {error}"));
-                warn!("{peer_label}: canal persistente falhou ({error}), tentando transporte de reserva");
+                warn!("{peer_label}: persistent channel failed ({error}), trying the fallback transport");
             }
             Err(error) => return Err(error),
         }
@@ -2939,7 +2939,7 @@ async fn send_frame_or_tunnel_inner(
     }
 
     Err(anyhow::Error::new(FrameNotDelivered {
-        message: format!("{peer_label} não recebeu o frame: {last_error}"),
+        message: format!("{peer_label} did not receive the frame: {last_error}"),
     }))
 }
 
@@ -3037,7 +3037,7 @@ pub async fn post_json_via_tunnel(
         .libp2p_peer_id
         .as_deref()
         .and_then(|value| value.parse::<PeerId>().ok())
-        .ok_or_else(|| anyhow!("{} não anuncia PeerId libp2p", step.node_id))?;
+        .ok_or_else(|| anyhow!("{} does not announce a libp2p PeerId", step.node_id))?;
     let mut headers = vec![(
         reqwest::header::CONTENT_TYPE.as_str().to_string(),
         "application/json".to_string(),
@@ -3067,12 +3067,12 @@ pub async fn post_json_via_tunnel(
             reply: reply_tx,
         })
         .await
-        .map_err(|_| anyhow!("swarm de libp2p não está disponível (canal fechado)"))?;
+        .map_err(|_| anyhow!("libp2p swarm is not available (channel closed)"))?;
     let response = match tokio::time::timeout(timeout, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
-        Ok(Ok(Err(error))) => return Err(anyhow!("túnel libp2p: {error}")),
-        Ok(Err(_)) => return Err(anyhow!("túnel libp2p encerrou sem responder")),
-        Err(_) => return Err(anyhow!("túnel libp2p não respondeu em {timeout:?}")),
+        Ok(Ok(Err(error))) => return Err(anyhow!("libp2p tunnel: {error}")),
+        Ok(Err(_)) => return Err(anyhow!("libp2p tunnel closed without answering")),
+        Err(_) => return Err(anyhow!("libp2p tunnel did not answer in {timeout:?}")),
     };
     if !(200..300).contains(&response.status) {
         // The refusal body goes along: a "snapshot does not exist" or "unknown
@@ -3093,7 +3093,7 @@ pub async fn post_json_via_tunnel(
                     .collect()
             });
         return Err(anyhow!(
-            "{path} em {} respondeu HTTP {} pelo túnel: {detail}",
+            "{path} on {} answered HTTP {} through the tunnel: {detail}",
             step.node_id,
             response.status
         ));
@@ -3148,7 +3148,7 @@ async fn send_frame_via_tunnel_with_auth(
     };
     tunnel.send(outbound).await.map_err(|_| {
         anyhow::Error::new(crate::infer_tunnel::TunnelDeliveryError::before_request(
-            format!("{peer_label}: swarm de libp2p não está disponível (canal fechado)"),
+            format!("{peer_label}: libp2p swarm is not available (channel closed)"),
         ))
     })?;
     let frame_sent_at = Instant::now();
@@ -3160,20 +3160,20 @@ async fn send_frame_via_tunnel_with_auth(
     let response = match tokio::time::timeout(frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => {
-            let message = format!("{peer_label}: falha no túnel libp2p: {error}");
+            let message = format!("{peer_label}: libp2p tunnel failure: {error}");
             return Err(anyhow::Error::new(error).context(message));
         }
         Ok(Err(_)) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: túnel libp2p encerrou sem responder"
+                    "{peer_label}: libp2p tunnel closed without answering"
                 )),
             ))
         }
         Err(_) => {
             return Err(anyhow::Error::new(
                 crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
-                    "{peer_label}: túnel libp2p não respondeu a tempo"
+                    "{peer_label}: libp2p tunnel did not answer in time"
                 )),
             ))
         }
@@ -3390,7 +3390,7 @@ mod tests {
     fn frame_size_refusals_are_not_retried_as_a_cold_prefix() {
         let error = anyhow::Error::new(HttpRefusal {
             status: 500,
-            body: "payload do batch excede limite de 67108864 bytes".into(),
+            body: "batch payload exceeds the limit of 67108864 bytes".into(),
             peer_label: "peer-x".into(),
         });
 
@@ -3409,27 +3409,27 @@ mod tests {
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("old-peer"), "erro inesperado: {error}");
-        assert!(error.contains("f16"), "erro inesperado: {error}");
-        assert!(error.contains("f8"), "erro inesperado: {error}");
+        assert!(error.contains("old-peer"), "unexpected error: {error}");
+        assert!(error.contains("f16"), "unexpected error: {error}");
+        assert!(error.contains("f8"), "unexpected error: {error}");
     }
 
     #[test]
     fn unknown_session_refusal_is_classified() {
         let unknown = anyhow::Error::new(HttpRefusal {
             status: 400,
-            body: "sessão 's' desconhecida - envie reset=true antes".into(),
+            body: "unknown session 's' - send reset=true first".into(),
             peer_label: "peer-x".into(),
         });
         let other = anyhow::Error::new(HttpRefusal {
             status: 400,
-            body: "chunk fora de ordem".into(),
+            body: "chunk out of order".into(),
             peer_label: "peer-x".into(),
         });
 
         assert!(is_unknown_session_error(&unknown));
         assert!(is_unknown_session_error(
-            &unknown.context("telemetria parcial do prefill")
+            &unknown.context("partial prefill telemetry")
         ));
         assert!(!is_unknown_session_error(&other));
     }
@@ -3443,24 +3443,24 @@ mod tests {
         // O achatado que o gateway vê pela resposta direta (kind "http",
         // corpo do 401 do peer), build pré-fallback.
         let direct_http_401 = anyhow!(
-            "pipeline falhou em 02eb8c40: http — peer recusou: 401 {{\"error\":\"missing Authorization header\"}}"
+            "pipeline failed at 02eb8c40: http — peer refused: 401 {{\"error\":\"missing Authorization header\"}}"
         );
         // O mesmo caminho já com a classificação de transporte nova.
         let direct_transport =
-            anyhow!("pipeline falhou em 02eb8c40: transport — quic/http: caminho morto");
+            anyhow!("pipeline failed at 02eb8c40: transport — quic/http: dead path");
         // HttpRefusal direto de um hop 403.
         let refusal_403 = anyhow::Error::new(HttpRefusal {
             status: 403,
-            body: "peer-y recusou: 403 forbidden".into(),
+            body: "peer-y refused: 403 forbidden".into(),
             peer_label: "peer-y".into(),
         });
         // Não é falha de transporte: pedido malformado / erro de modelo.
         let bad_request = anyhow::Error::new(HttpRefusal {
             status: 400,
-            body: "chunk fora de ordem".into(),
+            body: "chunk out of order".into(),
             peer_label: "peer-x".into(),
         });
-        let unknown_session = anyhow!("sessão 's' desconhecida");
+        let unknown_session = anyhow!("unknown session 's'");
 
         assert!(is_transport_relay_failure(&direct_http_401));
         assert!(is_transport_relay_failure(&direct_transport));
@@ -3497,7 +3497,7 @@ mod tests {
             "tp-worker",
         )
         .await
-        .expect("segundo endereço direto");
+        .expect("second direct address");
 
         assert_eq!(response.body, b"partial");
         assert_eq!(response.transport, ByteTransport::Direct);
@@ -3543,7 +3543,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("o mesmo pedaço deve ser reenviado após uma recusa de conexão");
+        .expect("the same chunk must be resent after a connection refusal");
 
         assert_eq!(sent.meta["done"], true);
     }
@@ -3597,7 +3597,7 @@ mod tests {
         .await;
         let error = match result {
             Err(error) => error,
-            Ok(_) => panic!("uma resposta atrasada não prova que o frame ficou sem efeito"),
+            Ok(_) => panic!("a late response does not prove the frame had no effect"),
         };
 
         assert!(is_delivery_ambiguous(&error));
@@ -3646,7 +3646,7 @@ mod tests {
             "tp-worker",
         )
         .await
-        .expect("HTTPS direto");
+        .expect("direct HTTPS");
 
         assert_eq!(response.body, b"reduced-directly");
         assert_eq!(response.transport, ByteTransport::Direct);
@@ -4051,7 +4051,7 @@ mod tests {
         .await;
         let err = expect_err(result, "closed channel must fail immediately");
 
-        assert!(err.to_string().contains("canal fechado"));
+        assert!(err.to_string().contains("channel closed"));
     }
 
     // ── send_frame_or_tunnel ─────────────────────────────────────────────────
@@ -4061,7 +4061,7 @@ mod tests {
         let peer_id = PeerId::random();
         let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
         let receiver = tokio::spawn(async move {
-            let outbound = received.recv().await.expect("pedido pelo túnel");
+            let outbound = received.recv().await.expect("request through the tunnel");
             let content_type = outbound
                 .request
                 .headers
@@ -4090,7 +4090,7 @@ mod tests {
             std::time::Duration::from_secs(5),
         )
         .await
-        .expect("resposta pelo túnel");
+        .expect("response through the tunnel");
 
         let (sent_to, path, content_type, body) = receiver.await.unwrap();
         assert_eq!(sent_to, peer_id);
@@ -4277,13 +4277,13 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("a rota fixada no túnel deve entregar");
+        .expect("the route pinned on the tunnel must deliver");
 
         assert_eq!(sent.meta["done"], true);
         assert_eq!(
             http_hits.load(Ordering::Relaxed),
             0,
-            "o direto não é a rota fixada"
+            "the direct one is not the pinned route"
         );
     }
 
@@ -4327,12 +4327,12 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("a segunda rota medida deve entregar");
+        .expect("the second measured route must deliver");
 
         assert_eq!(sent.meta["done"], true);
         let active = crate::route_plan::book()
             .active(node, crate::route_plan::Plane::Inference)
-            .expect("ainda há rota fixada");
+            .expect("there is still a pinned route");
         assert_eq!(active.base_url, live);
     }
 
@@ -4380,7 +4380,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("prefill deve usar o endpoint direto alcançável");
+        .expect("prefill must use the reachable direct endpoint");
 
         assert_eq!(sent.transport, InferenceTransport::Http);
         assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 0);
@@ -4413,7 +4413,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("HTTP deve assumir quando o peer não fala QUIC");
+        .expect("HTTP must take over when the peer does not speak QUIC");
 
         assert_eq!(sent.transport, InferenceTransport::Http);
         assert!(sent.transport_fallback);
@@ -4456,7 +4456,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("HTTP deve assumir quando QUIC não está disponível");
+        .expect("HTTP must take over when QUIC is not available");
 
         assert_eq!(sent.meta["done"], true);
         assert_eq!(sent.transport, InferenceTransport::Http);
@@ -4523,7 +4523,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("a primeira chamada deve aquecer a sessão QUIC");
+        .expect("the first call must warm up the QUIC session");
         assert_eq!(first.transport, InferenceTransport::Quic);
 
         stop_tx.send(()).unwrap();
@@ -4543,7 +4543,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("o HTTP direto deve sobreviver à queda da sessão QUIC");
+        .expect("direct HTTP must survive the drop of the QUIC session");
         assert_eq!(second.transport, InferenceTransport::Http);
         assert!(second.transport_fallback);
         assert!(second
@@ -4659,7 +4659,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("o túnel deve ser a última reserva quando HTTP e QUIC falham");
+        .expect("the tunnel must be the last resort when HTTP and QUIC fail");
 
         assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
         assert!(sent.transport_fallback);
@@ -4703,7 +4703,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("um 401 do HTTP direto deve cair para o túnel, não falhar");
+        .expect("a 401 from direct HTTP must fall to the tunnel, not fail");
 
         assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
         assert!(sent.transport_fallback);
@@ -4748,12 +4748,12 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("QUIC morto deve cair para o túnel, não pendurar");
+        .expect("dead QUIC must fall to the tunnel, not hang");
 
         assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
         assert!(
             started.elapsed() < Duration::from_secs(3),
-            "fallback demorou {:?}, deveria ser sub-segundo por transporte",
+            "fallback took {:?}, should be sub-second per transport",
             started.elapsed()
         );
     }
@@ -4789,13 +4789,13 @@ mod tests {
             ),
         )
         .await
-        .expect("fallback HTTP sem resposta não pode exceder o prazo do frame");
-        let error = result.expect_err("endpoint HTTP sem headers deve falhar");
+        .expect("an unanswered HTTP fallback cannot exceed the frame deadline");
+        let error = result.expect_err("an HTTP endpoint without headers must fail");
         assert!(
             error
                 .to_string()
-                .contains("deadline de transporte HTTP expirou"),
-            "erro inesperado: {error:#}"
+                .contains("transport deadline HTTP expired"),
+            "unexpected error: {error:#}"
         );
     }
 
@@ -4865,7 +4865,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("QUIC deve vencer o túnel quando o endpoint existe");
+        .expect("QUIC must beat the tunnel when the endpoint exists");
 
         assert_eq!(sent.meta["done"], true);
         assert_eq!(sent.transport, InferenceTransport::Quic);
@@ -4908,13 +4908,13 @@ mod tests {
                 |_| {},
             )
             .await
-            .expect("o endereço saudável deve assumir a sessão");
+            .expect("the healthy address must take over the session");
             assert_eq!(sent.meta["done"], true);
         }
 
         assert!(
             started.elapsed() < DIRECT_FRAME_TIMEOUT * 2,
-            "o endereço morto voltou a ser pago por quadro: {:?}",
+            "the dead address was paid per frame again: {:?}",
             started.elapsed()
         );
     }
@@ -5045,7 +5045,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let port = spawn_fake_inference_server(|body| {
-            let batch = wire::decode_batch(&body).expect("batch válido");
+            let batch = wire::decode_batch(&body).expect("valid batch");
             let item = &batch.items[0];
             (
                 200,
@@ -5112,7 +5112,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("step em batch deve usar o endpoint direto alcançável");
+        .expect("a batched step must use the reachable direct endpoint");
 
         assert_eq!(sent.transport, InferenceTransport::Http);
         assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 0);
@@ -5142,7 +5142,7 @@ mod tests {
                 if attempt == 0 {
                     let _ = outbound.reply.send(Err(
                         crate::infer_tunnel::TunnelDeliveryError::before_request(
-                            "primeiro dial falhou",
+                            "first dial failed",
                         ),
                     ));
                     continue;
@@ -5183,7 +5183,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("após um dial falhar, a repetição deve percorrer a escada de transportes");
+        .expect("after a dial fails, the retry must walk the transport ladder");
 
         assert_eq!(sent.meta["done"], true);
         assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
@@ -5200,7 +5200,7 @@ mod tests {
         let observed_sizes_for_server = observed_sizes.clone();
         let port = spawn_fake_inference_server(move |body| {
             request_count_for_server.fetch_add(1, Ordering::Relaxed);
-            let batch = wire::decode_batch(&body).expect("batch obrigatório");
+            let batch = wire::decode_batch(&body).expect("batch required");
             observed_sizes_for_server
                 .lock()
                 .unwrap()
@@ -5256,8 +5256,8 @@ mod tests {
             |_| {},
         );
         let (first, second) = tokio::join!(first, second);
-        assert!(first.is_ok(), "primeira chamada falhou");
-        assert!(second.is_ok(), "segunda chamada falhou");
+        assert!(first.is_ok(), "first call failed");
+        assert!(second.is_ok(), "second call failed");
         assert_eq!(request_count.load(Ordering::Relaxed), 1);
         assert_eq!(*observed_sizes.lock().unwrap(), vec![2]);
         assert_eq!(first.unwrap().meta["done"], true);
@@ -5364,18 +5364,18 @@ mod tests {
     ///    contrário. `/v1/step` não serve aqui: com uma sessão que não existe
     ///    ele fica esperando, e a sonda mediria a espera em vez do caminho.
     #[tokio::test]
-    #[ignore = "precisa de um peer vivo; ver o doc do teste"]
+    #[ignore = "needs a live peer; see the test doc"]
     async fn the_tunnel_carries_a_real_frame_to_a_live_peer() {
         let target = std::env::var("POM_TUNNEL_PROBE")
-            .expect("defina POM_TUNNEL_PROBE com o multiaddr do peer");
-        let addr: libp2p::Multiaddr = target.parse().expect("multiaddr inválido");
+            .expect("set POM_TUNNEL_PROBE to the multiaddr of the peer");
+        let addr: libp2p::Multiaddr = target.parse().expect("invalid multiaddr");
         let peer_id = addr
             .iter()
             .find_map(|p| match p {
                 libp2p::multiaddr::Protocol::P2p(id) => Some(id),
                 _ => None,
             })
-            .expect("o multiaddr tem que terminar em /p2p/<peer-id>");
+            .expect("the multiaddr must end in /p2p/<peer-id>");
 
         let tunnel_tx = crate::infer_tunnel::live_probe_swarm(peer_id, addr);
         // Um endereço que nunca responde: é assim que se força o `Timeout` sem
@@ -5400,14 +5400,14 @@ mod tests {
         .await;
 
         println!(
-            "primeira perna (HTTP direto): {issues:?} em {} s",
+            "first leg (direct HTTP): {issues:?} in {} s",
             direct.elapsed().as_secs()
         );
         assert!(
             issues
                 .iter()
                 .any(|k| matches!(k, SendIssueKind::Timeout | SendIssueKind::Transport)),
-            "o HTTP direto tem que falhar por Timeout/Transport para o desvio abrir: {issues:?}"
+            "direct HTTP must fail with Timeout/Transport for the detour to open: {issues:?}"
         );
 
         let crossed = tokio::time::timeout(
@@ -5424,16 +5424,16 @@ mod tests {
             ),
         )
         .await
-        .expect("o peer não respondeu pelo túnel dentro do prazo");
+        .expect("the peer did not answer through the tunnel within the deadline");
 
         match crossed {
-            Ok(sent) => println!("o peer respondeu pelo túnel: {:?}", sent.meta),
+            Ok(sent) => println!("the peer answered through the tunnel: {:?}", sent.meta),
             Err(e) => {
                 let refusal = e.downcast_ref::<HttpRefusal>().unwrap_or_else(|| {
-                    panic!("o quadro não chegou ao peer - isto é falha de transporte: {e}")
+                    panic!("the frame did not reach the peer - this is a transport failure: {e}")
                 });
                 println!(
-                    "o peer recusou pelo túnel (o que já prova o caminho): {} {}",
+                    "the peer refused through the tunnel (which already proves the path): {} {}",
                     refusal.status, refusal.body
                 );
             }

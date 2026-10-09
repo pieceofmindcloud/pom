@@ -23,7 +23,7 @@ impl InferenceMode {
             "auto" => Ok(Self::Auto),
             "dense" | "llama.cpp" | "llama-cpp" => Ok(Self::Dense),
             "moe" => Ok(Self::Moe),
-            other => bail!("modo de inferência inválido '{other}'; use auto, dense ou moe"),
+            other => bail!("invalid inference mode '{other}'; use auto, dense or moe"),
         }
     }
 
@@ -34,7 +34,7 @@ impl InferenceMode {
         match crate::brand::env("INFERENCE_MODE") {
             Ok(value) if !value.trim().is_empty() => Self::parse(&value),
             Ok(_) | Err(std::env::VarError::NotPresent) => Ok(Self::Auto),
-            Err(error) => bail!("não foi possível ler POM_INFERENCE_MODE: {error}"),
+            Err(error) => bail!("could not read POM_INFERENCE_MODE: {error}"),
         }
     }
 }
@@ -116,7 +116,7 @@ pub fn select(mode: InferenceMode, info: Option<&crate::gguf::GgufInfo>) -> Resu
         InferenceMode::Auto | InferenceMode::Dense => Ok(InferencePath::DenseLlamaCpp),
         InferenceMode::Moe if detected_moe => Ok(InferencePath::MoeQ4_0),
         InferenceMode::Moe => {
-            bail!("modo moe exige metadados GGUF com expert_count > 1; modelo denso recusado")
+            bail!("moe mode requires GGUF metadata with expert_count > 1; dense model refused")
         }
     }
 }
@@ -150,7 +150,7 @@ mod tests {
         assert_eq!(
             path.execution_engine(),
             ExecutionEngine::LlamaCpp,
-            "telemetria deve refletir o executor denso"
+            "telemetry must reflect the dense executor"
         );
     }
 
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn moe_override_rejects_a_dense_model() {
         let error = select(InferenceMode::Moe, Some(&dense())).unwrap_err();
-        assert!(error.to_string().contains("modelo denso recusado"));
+        assert!(error.to_string().contains("dense model refused"));
     }
 
     #[test]

@@ -41,7 +41,7 @@ impl PublicDirectorySettings {
                 continue;
             }
             let parsed = url::Url::parse(raw)
-                .with_context(|| format!("ingresso do diretório inválido: {raw}"))?;
+                .with_context(|| format!("invalid directory ticket: {raw}"))?;
             if !matches!(parsed.scheme(), "http" | "https")
                 || parsed.host_str().is_none()
                 || !parsed.username().is_empty()
@@ -49,7 +49,7 @@ impl PublicDirectorySettings {
                 || parsed.query().is_some()
                 || parsed.fragment().is_some()
             {
-                bail!("ingresso do diretório deve ser uma URL HTTP(S) sem credenciais ou query");
+                bail!("directory ticket must be an HTTP(S) URL without credentials or query");
             }
             let normalized = raw.trim_end_matches('/').to_string();
             if seen.insert(normalized.clone()) {
@@ -58,7 +58,7 @@ impl PublicDirectorySettings {
         }
         if replicas.len() > PUBLIC_DIRECTORY_MAX_REPLICAS {
             bail!(
-                "o diretório público aceita no máximo {} ingressos",
+                "the public directory accepts at most {} tickets",
                 PUBLIC_DIRECTORY_MAX_REPLICAS
             );
         }
@@ -165,7 +165,7 @@ impl SignedPublicDirectoryRecord {
             record.pow_nonce = record
                 .pow_nonce
                 .checked_add(1)
-                .context("prova de trabalho esgotou o nonce")?;
+                .context("proof of work exhausted the nonce")?;
         }
         record.signature = hex::encode(signing_key.sign(&record.signing_bytes()).to_bytes());
         Ok(record)
@@ -174,39 +174,39 @@ impl SignedPublicDirectoryRecord {
     pub(crate) fn validate(&self, now: i64) -> Result<()> {
         self.validate_unsigned()?;
         if self.issued_at > now + PUBLIC_DIRECTORY_CLOCK_SKEW_SECS {
-            bail!("registro do diretório está no futuro");
+            bail!("directory record is in the future");
         }
         if self.expires_at <= now {
-            bail!("registro do diretório expirou");
+            bail!("directory record expired");
         }
         if now.saturating_sub(self.issued_at) > PUBLIC_DIRECTORY_RECORD_MAX_AGE_SECS {
-            bail!("registro do diretório é antigo demais");
+            bail!("directory record is too old");
         }
         if !self.has_valid_pow() {
-            bail!("prova de trabalho do diretório inválida");
+            bail!("invalid directory proof of work");
         }
         let signature_bytes: [u8; 64] = hex::decode(&self.signature)
-            .context("assinatura do diretório não é hexadecimal")?
+            .context("directory signature is not hexadecimal")?
             .as_slice()
             .try_into()
-            .map_err(|_| anyhow::anyhow!("assinatura do diretório tem tamanho inválido"))?;
+            .map_err(|_| anyhow::anyhow!("directory signature has an invalid size"))?;
         let signature = Signature::from_bytes(&signature_bytes);
         let public_key_bytes: [u8; 32] = hex::decode(&self.publisher_pubkey)
-            .context("publicador do diretório não é hexadecimal")?
+            .context("directory publisher is not hexadecimal")?
             .as_slice()
             .try_into()
-            .map_err(|_| anyhow::anyhow!("publicador do diretório tem tamanho inválido"))?;
+            .map_err(|_| anyhow::anyhow!("directory publisher has an invalid size"))?;
         let public_key = VerifyingKey::from_bytes(&public_key_bytes)
-            .context("publicador do diretório é inválido")?;
+            .context("directory publisher is invalid")?;
         public_key
             .verify(&self.signing_bytes(), &signature)
-            .context("assinatura do diretório não confere")?;
+            .context("directory signature does not match")?;
         Ok(())
     }
 
     fn validate_unsigned(&self) -> Result<()> {
         if self.version != PUBLIC_DIRECTORY_VERSION {
-            bail!("versão do diretório público não suportada");
+            bail!("public directory version not supported");
         }
         if self.publisher_pubkey.len() != 64
             || self.sequence == 0
@@ -214,7 +214,7 @@ impl SignedPublicDirectoryRecord {
             || self.expires_at <= self.issued_at
             || self.expires_at - self.issued_at > PUBLIC_DIRECTORY_MAX_RECORD_TTL_SECS
         {
-            bail!("metadados temporais do diretório são inválidos");
+            bail!("directory time metadata is invalid");
         }
         validate_network(&self.network)
     }
@@ -239,7 +239,7 @@ impl SignedPublicDirectoryRecord {
             network: &self.network,
             pow_nonce: self.pow_nonce,
         })
-        .expect("registro do diretório só contém tipos serializáveis")
+        .expect("directory record only contains serializable types")
     }
 
     fn has_valid_pow(&self) -> bool {
@@ -262,14 +262,14 @@ fn validate_network(network: &PublicDirectoryNetwork) -> Result<()> {
         ("trust_document", &network.trust_document),
     ] {
         if value.trim().is_empty() {
-            bail!("campo público obrigatório ausente: {label}");
+            bail!("required public field missing: {label}");
         }
         if value.len() > 64 * 1024 {
-            bail!("campo público grande demais: {label}");
+            bail!("public field too large: {label}");
         }
     }
     if network.directory_replicas.len() > PUBLIC_DIRECTORY_MAX_REPLICAS {
-        bail!("o registro anuncia ingressos demais");
+        bail!("the record announces too many tickets");
     }
     PublicDirectorySettings::from_urls(network.directory_replicas.iter())?;
     if network.relay_hints.len() > PUBLIC_DIRECTORY_MAX_RELAY_HINTS {
@@ -321,7 +321,7 @@ pub(crate) fn merge_record(
         record.publisher_pubkey != incoming.publisher_pubkey || record.sequence >= incoming.sequence
     });
     if records.len() >= PUBLIC_DIRECTORY_MAX_RECORDS {
-        bail!("o cache do diretório atingiu o limite de registros");
+        bail!("the directory cache reached the record limit");
     }
     records.push(incoming);
     Ok(MergeOutcome::Inserted)
@@ -337,19 +337,19 @@ pub(crate) fn prune_records(records: &mut Vec<SignedPublicDirectoryRecord>, now:
 pub(crate) fn current_time_secs() -> Result<i64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .context("relógio local anterior ao Unix epoch")?
+        .context("local clock before the Unix epoch")?
         .as_secs()
         .try_into()
-        .context("relógio local fora do intervalo suportado")?)
+        .context("local clock outside the supported range")?)
 }
 
 pub(crate) fn next_sequence() -> Result<u64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .context("relógio local anterior ao Unix epoch")?
+        .context("local clock before the Unix epoch")?
         .as_millis()
         .try_into()
-        .context("sequência do diretório fora do intervalo suportado")?)
+        .context("directory sequence outside the supported range")?)
 }
 
 #[cfg(test)]
@@ -357,7 +357,7 @@ impl PublicDirectoryNetwork {
     fn test_fixture() -> Self {
         Self {
             cluster_id: "cluster-test".to_string(),
-            name: "Rede pública de teste".to_string(),
+            name: "Public test network".to_string(),
             fingerprint: "a".repeat(64),
             trust_document: "{}".to_string(),
             organization: "POM".to_string(),

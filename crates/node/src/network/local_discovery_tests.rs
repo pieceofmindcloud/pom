@@ -59,7 +59,7 @@ async fn large_private_trust_documents_are_fragmented_and_reassembled() {
     admin
         .set_admin_material(true, trust_document.clone(), "secret-key")
         .await
-        .expect("documentos privados maiores que um datagrama devem ser aceitos");
+        .expect("private documents larger than a datagram must be accepted");
 
     let request_id = node.begin_search(None).await.unwrap();
     let probe = node.take_outbound_for_test().await.unwrap();
@@ -85,7 +85,7 @@ async fn large_private_trust_documents_are_fragmented_and_reassembled() {
         node.handle_for_test(message, admin_address).await;
     }
 
-    let result = node.peek_result().await.expect("handshake completo");
+    let result = node.peek_result().await.expect("complete handshake");
     assert_eq!(result.request_id, request_id);
     assert_eq!(result.connection_key, "secret-key");
     assert_eq!(result.trust_document, trust_document);

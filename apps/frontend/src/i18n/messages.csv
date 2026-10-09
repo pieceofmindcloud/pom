@@ -1,4 +1,8 @@
 key,en,pt-BR
+"canvas.relayBypassed","The direct return {from} → {to} would go through the relay. POM is working around it: the answer comes back by the ring, over the same connections as the forward path.","A volta direta {from} → {to} passaria pelo relé. O POM está contornando: a resposta volta pelo anel, pelas mesmas conexões da ida."
+"canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
+"canvas.relayNotBypassed","POM cannot work around these legs: they are part of the forward path. When the first leg leaves this node, only requests that enter through here pay for it.","O POM não consegue contornar essas pernas: elas fazem parte da ida da pipeline. Quando a primeira perna sai deste nó, só as requisições que entram por aqui pagam por ela."
+"canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
 about.contactLink,Contact POM,Contato do POM
 about.dataCities,"the countries, states and cities built into the node, unmodified, under the Open Database License 1.0.","os países, estados e cidades embutidos no nó, sem modificação, sob a Open Database License 1.0."
 about.dataMap,"the map images of the network location dialog, loaded from its servers only while that dialog is open.","as imagens do mapa do diálogo de localização da rede, carregadas dos servidores dele somente enquanto o diálogo está aberto."
@@ -146,30 +150,27 @@ canvas.machineTps,decode {decode} · prefill {prefill} tok/s,decode {decode} · 
 canvas.machineTpsUnknown,speed not measured,velocidade não medida
 canvas.memory,Memory,Memória
 canvas.meterUnknown,unknown,desconhecido
+canvas.modelGroupAria,Model,Modelo
 canvas.noCapacity,No inference capacity announced yet.,Nenhuma capacidade de inferência anunciada ainda.
 canvas.noModel,No model deployed,Nenhum modelo implantado
 canvas.openDetails,Double-click to open this machine''s details,Duplo clique abre os detalhes desta máquina
 canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
 canvas.pipelineRouteBreakdown,network {network} ms ({mode}) · compute {compute} ms,rede {network} ms ({mode}) · compute {compute} ms
-canvas.returnDirect,direct return,resposta direta
-canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
-canvas.returnRing,ring,anel
-canvas.relayBadge,RELAY,RELAY
-"canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
-canvas.relayRouteTitle,Route through relay,Rota por relé
-canvas.relayLegs,Relayed legs: {legs},Pernas por relé: {legs}
-canvas.relayBypassedChip,Relay bypassed by the ring,Relé contornado pelo anel
-canvas.relayDetails,Relay route details,Detalhes da rota por relé
-canvas.relayClose,Close,Fechar
-"canvas.relayBypassed","The direct return {from} → {to} would go through the relay. POM is working around it: the answer comes back by the ring, over the same connections as the forward path.","A volta direta {from} → {to} passaria pelo relé. O POM está contornando: a resposta volta pelo anel, pelas mesmas conexões da ida."
-"canvas.relayNotBypassed","POM cannot work around these legs: they are part of the forward path. When the first leg leaves this node, only requests that enter through here pay for it.","O POM não consegue contornar essas pernas: elas fazem parte da ida da pipeline. Quando a primeira perna sai deste nó, só as requisições que entram por aqui pagam por ela."
-"canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
 canvas.pipelineRouteCount,"{count} route{count, plural, =1 {} other {s}}","{count} rota{count, plural, =1 {} other {s}}"
 canvas.pipelineThroughput,≈ {tps} tok/s per token cycle,≈ {tps} tok/s por ciclo de token
 canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
 canvas.pipelineTotalLabel,cycle cost,custo do ciclo
 canvas.pipelineTotalUnknown,not measured,não medido
+canvas.relayBadge,RELAY,RELAY
+canvas.relayBypassedChip,Relay bypassed by the ring,Relé contornado pelo anel
+canvas.relayClose,Close,Fechar
+canvas.relayDetails,Relay route details,Detalhes da rota por relé
+canvas.relayLegs,Relayed legs: {legs},Pernas por relé: {legs}
+canvas.relayRouteTitle,Route through relay,Rota por relé
 canvas.resetLayout,"Reset the arrangement, including what you dragged","Redefinir o arranjo, inclusive o que você arrastou"
+canvas.returnDirect,direct return,resposta direta
+canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
+canvas.returnRing,ring,anel
 canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
 canvas.speedDecode,decode,decode
 canvas.speedPrefill,prefill,prefill
@@ -184,6 +185,7 @@ chat.ask,Ask the network anything,Pergunte alguma coisa à rede
 chat.askDetail,Messages travel through machines in Dashboard order and return token by token.,As mensagens percorrem as máquinas na ordem do Painel e voltam token a token.
 chat.attach,Attach file,Anexar ficheiro
 chat.attachmentAlt,Sent image: {name},Imagem enviada: {name}
+chat.attachmentFormatAria,Format {format},Formato {format}
 chat.attachmentResized,Resized automatically,Redimensionada automaticamente
 chat.attachmentThumbnail,Thumbnail of {name},Miniatura de {name}
 chat.attachmentTooLarge,Attachment too large,Anexo grande demais
@@ -226,7 +228,10 @@ chat.headUnavailable,Head selection unavailable,Escolha da cabeça indisponível
 chat.headUnavailableDetail,"This node could not read the current head candidates. Inference remains protected until a fresh choice is available.","Este nó não conseguiu ler as candidatas atuais à cabeça. A inferência fica protegida até haver uma escolha fresca."
 chat.history,Conversation history,Histórico de conversas
 chat.imageContextTooSmallDetail,"The image is still too large for the available context after reduction.",A imagem ainda é grande demais para o contexto disponível mesmo após a redução.
+chat.imageNoDimensions,image without valid dimensions,imagem sem dimensões válidas
 chat.imageRejected,Image rejected,Imagem recusada
+chat.imageStillTooLarge,the image still exceeds the available context even at 512 px,a imagem ainda excede o contexto disponível mesmo em 512 px
+chat.imageUnreadable,could not read the image,não foi possível ler a imagem
 chat.imageVisionUnavailable,This model does not support vision,este modelo não tem visão
 chat.incomplete,incomplete coverage,cobertura incompleta
 chat.interrupted,Interrupted.,Interrompido.
@@ -235,12 +240,14 @@ chat.keyRejectedDetail,Reload the page to pick up the node''s current key.,Recar
 chat.legacyTotalSpeed,Total: {value} tok/s,Total: {value} tok/s
 chat.localOnly,Chats stay in this browser.,As conversas ficam neste navegador.
 chat.message,"{count, plural, =1 {message} other {messages}}","{count, plural, =1 {mensagem} other {mensagens}}"
+chat.messageFieldAria,Message field,Campo de mensagem
 chat.model,Model,Modelo
 chat.modelAtStart,model used at conversation start: {model},modelo usado no início da conversa: {model}
 chat.modelChanged,model changed to {model},modelo alterado para {model}
 chat.networkTab,Network,Rede
 chat.new,New chat,Conversa nova
 chat.newShort,New,Nova
+chat.noCanvas2d,the browser does not offer a 2D canvas,o navegador não oferece um canvas 2D
 chat.noModel,The network is not serving any model,A rede não está servindo nenhum modelo
 chat.noModelDetail,Assign a model to the nodes in Settings before testing.,Atribua um modelo aos nós em Configurações antes de testar.
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
@@ -317,6 +324,9 @@ common.next,Next,Próxima
 common.previous,Previous,Anterior
 common.retry,Retry,Tentar de novo
 common.serverDetails,The node returned details in an unsupported language.,O nó retornou detalhes em um idioma não suportado.
+common.viewWarningFor,View warning for {label},Ver aviso para {label}
+common.warningFor,Warning for {label},Aviso para {label}
+common.whatIs,What is {label},O que é {label}
 dashboard.activeModel,Network serving {model}.,Rede servindo {model}.
 dashboard.build,Build,Build
 dashboard.closedPipeline,pipeline complete,pipeline fechado
@@ -724,6 +734,85 @@ deploy.whyNotEmpty,select at least one shard,marque ao menos uma fatia
 deploy.whyNotMismatch,the node did not accept this selection - see the reason above,o nó não aceitou esta seleção - veja o motivo acima
 deploy.whyNotNoModel,choose a machine for the model,escolha uma máquina para o modelo
 deploy.yourChoice,Your selection,Sua escolha
+deployStudio.assignRangeAria,Assign {range} to {machine},Atribuir {range} a {machine}
+deployStudio.assignRangeTitle,Give {range} to {machine},Dar {range} a {machine}
+deployStudio.available,available,disponível
+deployStudio.availableForPlan,available for the plan,disponível para o plano
+deployStudio.deploy,Deploy,Implantar
+deployStudio.deploymentName,Deployment name,Nome da implantação
+deployStudio.diskFree,Free disk,Disco livre
+deployStudio.dropMachine,Drop a machine here to build the topology.,Solte uma máquina aqui para montar a topologia.
+deployStudio.dropToInclude,drop here to include,solte aqui para incluir
+deployStudio.engineUnsupported,This path cannot honor the chosen engine.,Este caminho não pode honrar o motor escolhido.
+deployStudio.fitCanvas,Fit to canvas,Ajustar ao canvas
+deployStudio.fitsButTrimmed,"It fits on {machine}, but ""Fit to memory"" would trim the request.","Cabe em {machine}, mas o ""Ajustar à memória"" apararia o pedido."
+deployStudio.gpuLayers,GPU layers,Camadas GPU
+deployStudio.gpuProjectedOf,GPU {index}: {projected} of {total},GPU {index}: {projected} de {total}
+deployStudio.gpuProjection,GPU · projection,GPU · projeção
+deployStudio.gpuUseFree,GPU used / free,GPU uso / livre
+deployStudio.heldBy,Held by,Está em
+deployStudio.hideInspector,Hide inspector,Ocultar inspetor
+deployStudio.inDeployment,in the deployment,na implantação
+deployStudio.kindShards,Shards,Fatias
+deployStudio.kindWhole,Whole model,Modelo inteiro
+deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
+deployStudio.layers,Layers,Camadas
+deployStudio.layersOnMachine,Layers on this machine,Camadas nesta máquina
+deployStudio.layersOnPeer,Layers available on this peer,Camadas disponíveis neste peer
+deployStudio.layersWithoutMachine,Layers without a machine: {ranges},Camadas sem máquina: {ranges}
+deployStudio.localRtt,Local RTT,RTT local
+deployStudio.mapSummary,{nodes} nodes · {layers} layers,{nodes} nós · {layers} camadas
+deployStudio.mapTitle,Deployment map,Mapa da implantação
+deployStudio.markPrimary,Mark as primary,Marcar como primary
+deployStudio.markPrimaryAria,Mark {machine} as primary,Marcar {machine} como primary
+deployStudio.modelCoverage,Model coverage,Cobertura do modelo
+deployStudio.moeNeedsMetadata,MoE requires real expert metadata in the GGUF of this model.,MoE exige metadata real de experts no GGUF deste modelo.
+deployStudio.noGpu,no GPU,sem GPU
+deployStudio.noLayerAssigned,No layer assigned,Nenhuma camada atribuída
+deployStudio.noMachine,no machine,nenhuma máquina
+deployStudio.noRankAssigned,No rank assigned,Nenhum rank atribuído
+deployStudio.noSliceAvailable,No slice available,Nenhuma fatia disponível
+deployStudio.nowProjection,now {pct}% · projection after the copy,agora {pct}% · projeção após a cópia
+deployStudio.organizeMachines,Organize machines,Organizar máquinas
+deployStudio.primary,Primary,Principal
+deployStudio.projectionExceedsMany,The projection exceeds the VRAM of one of the GPUs of {machine}.,A projeção passa da VRAM de uma das GPUs de {machine}.
+deployStudio.projectionExceedsOne,The projection exceeds the VRAM of the GPU of {machine}.,A projeção passa da VRAM da GPU de {machine}.
+deployStudio.propertiesLabel,Deployment properties,Propriedades da implantação
+deployStudio.quantization,Quantization,Quantização
+deployStudio.ramUseFree,RAM used / free,RAM uso / livre
+deployStudio.ranksAvailableOn,Ranks available on,Ranks disponíveis em
+deployStudio.ranksOnMachine,Ranks on this machine,Ranks nesta máquina
+deployStudio.ranksOnPeer,Ranks available on this peer,Ranks disponíveis neste peer
+deployStudio.ready,ready,pronto
+deployStudio.removeFromDeployment,Remove from the deployment,Remover da implantação
+deployStudio.removeMachineAria,Remove {machine} from the deployment,Remover {machine} da implantação
+deployStudio.removeRangeAria,Remove {range} from {machine},Remover {range} de {machine}
+deployStudio.removeRangeTitle,Take {range} from {machine},Tirar {range} de {machine}
+deployStudio.resetLayout,Reset layout,Redefinir disposição
+deployStudio.restoreNodePlan,Back to the node plan,Voltar ao plano do nó
+deployStudio.selectMachine,Select a machine on the canvas.,Selecione uma máquina no canvas.
+deployStudio.showInspector,Show inspector,Mostrar inspetor
+deployStudio.size,Size,Tamanho
+deployStudio.tabGlobal,Global,Globais
+deployStudio.tabMachine,Machine: {name},Máquina: {name}
+deployStudio.technicalModel,Technical model,Modelo técnico
+deployStudio.tensorParallel,Tensor parallel,Tensor paralelo
+deployStudio.tpGroup,Tensor Parallelism group,Grupo Tensor Parallelism
+deployStudio.tpGroupRanks,TP group ranks,Ranks do grupo TP
+deployStudio.tpNoMoe,Tensor Parallelism does not support MoE in this version.,Tensor Parallelism não suporta MoE nesta versão.
+deployStudio.tpPartsPresliced,pre-sliced TP parts,partes TP pré-fatiadas
+deployStudio.tpPrimaryAria,Tensor Parallelism primary machine,Máquina principal do Tensor Parallelism
+deployStudio.tpWorkersAria,Tensor Parallelism workers,Workers do Tensor Parallelism
+deployStudio.trimmed,trimmed,aparada
+deployStudio.unassigned,unassigned,não atribuído
+deployStudio.unmarkPrimary,Unmark primary,Desmarcar primary
+deployStudio.unmarkPrimaryAria,Unmark {machine} as primary,Desmarcar {machine} como primary
+deployStudio.visionModel,Vision model,Modelo de visão
+deployStudio.visionModelTip,Choose the compatible projector that will be used at the head of the deployment.,Escolha o projetor compatível que será usado na cabeça da implantação.
+deployStudio.visionProjector,Vision projector,Projetor de visão
+deployStudio.vramProjectionOf,VRAM projection of {machine},projeção de VRAM de {machine}
+deployStudio.waiting,waiting,aguardando
+deployStudio.wholeOnEachPeer,whole model on each peer,modelo inteiro em cada peer
 deploymentLogs.allDeployments,All deployments,Todas as implantações
 deploymentLogs.autoScrollOff,Auto-scroll: off,Rolagem automática: desligada
 deploymentLogs.autoScrollOn,Auto-scroll: on,Rolagem automática: ligada
@@ -1242,6 +1331,7 @@ location.searchEmpty,No city with that name in this country.,Nenhuma cidade com 
 location.searchTitle,Or pick a city by name,Ou escolha uma cidade pelo nome
 location.title,Location,Localização
 location.useBrowser,Use my browser's location,Usar a localização do meu navegador
+machine.kindUnknown,Unknown,Desconhecida
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas
 models.columnActions,Actions,Ações
@@ -1533,8 +1623,8 @@ network.relayFixed,Set on the command line for this run,Definido na linha de com
 network.relaySaveFailed,Could not save the relay options,Não foi possível salvar as opções de relé
 network.relaySaved,Relay options saved,Opções de relé salvas
 network.relaySavedDetail,They apply now; no restart is needed.,"Valem a partir de agora, sem reiniciar."
-network.relayStateEveryone,Relaying for any network,Servindo de relé para qualquer rede
 network.relayStateCluster,Relaying for this network,Servindo de relé para esta rede
+network.relayStateEveryone,Relaying for any network,Servindo de relé para qualquer rede
 network.relayStateOff,Not relaying,Não está servindo de relé
 network.relayStateUnreachable,Not relaying: the internet does not reach this machine,Não está servindo de relé: a internet não alcança esta máquina
 network.relayStatus,Now,Agora
@@ -1731,6 +1821,7 @@ paths.workspaceDetail,"One shared root for user projects and dynamic data from e
 paths.workspaceFolder,Project workspace,Workspace de projetos
 paths.workspaceHint,"Blank restores the default: {path}. The folder must be absolute and writable inside the container.","Em branco volta para o padrão: {path}. A pasta precisa ser absoluta e gravável dentro do container."
 paths.workspaceLayout,"Projects live directly under this root. Plugins keep hidden namespaced data below it.","Os projetos ficam diretamente sob esta raiz. Plugins guardam dados ocultos namespaced abaixo dela."
+peer.routeUnavailable,route unavailable on this node,rota indisponível neste nó
 pipeline.empty,No machine on the network,Nenhuma máquina na rede
 pipeline.emptyDetail,This node has not found peers yet. Check the bootstrap address under Settings › Network.,Este nó ainda não encontrou peers. Confira o endereço de bootstrap em Configurações › Rede.
 pipeline.footnote,Each connection carries hidden state as f16. The on-screen order is the order the request travels through machines.,Cada conexão carrega o estado oculto em f16. A ordem na tela é a ordem em que a requisição percorre as máquinas.
@@ -1775,27 +1866,12 @@ plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.activeTitle,Active,Ativo
 plugins.annualPrice,{price}/year,{price}/ano
 plugins.buy,Buy,Comprar
-plugins.developDescription,"The example of how to build a POM plugin: screens, menu, preferences and the host interface. Install it to see it working, then use its repository as the starting point for yours.","O exemplo de como desenvolver um plugin do POM: telas, menu, preferências e a interface com o host. Instale para ver funcionando e use o repositório dele como ponto de partida para o seu."
-plugins.developEyebrow,Example plugin,Plugin de exemplo
-plugins.developSource,View the source code on GitHub,Ver o código-fonte no GitHub
-plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
-plugins.featured,Featured,Destaque
-plugins.pageNext,Next,Próxima
-plugins.pagePrevious,Previous,Anterior
-plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
-plugins.pagination,Plugin pages,Páginas de plugins
-plugins.platform.linux,Linux,Linux
-plugins.platform.macos,macOS,macOS
-plugins.platform.windows,Windows,Windows
-plugins.platforms,Platforms,Plataformas
-plugins.pomTeam,POM team,Equipe POM
-plugins.community,Community,Comunidade
-plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
 plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
 plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.
 plugins.catalogError,Could not load the public plugin catalog.,Não foi possível carregar o catálogo público.
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
+plugins.community,Community,Comunidade
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
@@ -1823,8 +1899,14 @@ plugins.devUninstallConfirmDescription,This removes the local development plugin
 plugins.devUninstallConfirmTitle,Remove local build of {name}?,Remover o build local de {name}?
 plugins.devUnknownFailure,The local rebuild failed.,O rebuild local falhou.
 plugins.devUnknownRepository,This repository is not in the supported plugin list.,Este repositório não está na lista de plugins compatíveis.
+plugins.developDescription,"The example of how to build a POM plugin: screens, menu, preferences and the host interface. Install it to see it working, then use its repository as the starting point for yours.","O exemplo de como desenvolver um plugin do POM: telas, menu, preferências e a interface com o host. Instale para ver funcionando e use o repositório dele como ponto de partida para o seu."
+plugins.developEyebrow,Example plugin,Plugin de exemplo
+plugins.developSource,View the source code on GitHub,Ver o código-fonte no GitHub
+plugins.developTitle,Start from pom-plugin-base,Comece pelo pom-plugin-base
+plugins.featured,Featured,Destaque
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
+plugins.githubAddFromCatalog,Install from GitHub,Instalar do GitHub
 plugins.githubCheck,Refresh releases,Atualizar releases
 plugins.githubCheckFailed,Could not refresh this GitHub repository.,Não foi possível atualizar este repositório GitHub.
 plugins.githubInstall,Install,Instalar
@@ -1862,6 +1944,15 @@ plugins.manage,Manage,Gerenciar
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível
 plugins.monthlyPrice,{price}/month,{price}/mês
 plugins.noLicenseRequired,No license required,Não exige licença
+plugins.pageNext,Next,Próxima
+plugins.pagePrevious,Previous,Anterior
+plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
+plugins.pagination,Plugin pages,Páginas de plugins
+plugins.platform.linux,Linux,Linux
+plugins.platform.macos,macOS,macOS
+plugins.platform.windows,Windows,Windows
+plugins.platforms,Platforms,Plataformas
+plugins.pomTeam,POM team,Equipe POM
 plugins.preferencesDialogTitle,{name} preferences,Preferências de {name}
 plugins.preferencesDirectoryHint,Absolute path on this node. It is created when missing.,Caminho absoluto neste nó. Ele é criado se não existir.
 plugins.preferencesLocalOnly,These values are stored on this node and are never sent to the license server.,Estes valores ficam armazenados neste nó e nunca são enviados ao servidor de licenças.
@@ -1877,6 +1968,7 @@ plugins.publishReview,Every submission goes through a review process before it i
 plugins.publishTitle,Publish your plugin on POM,Publique seu plugin no POM
 plugins.refresh,Refresh,Atualizar
 plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
+plugins.screenExportMissing,"the screen module does not export the component ""{name}""","o módulo da tela não exporta o componente ""{name}"""
 plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
 plugins.screenshotClose,Close screenshot,Fechar captura de tela
 plugins.screenshotNext,Next screenshot,Próxima captura de tela

@@ -291,7 +291,7 @@ mostra o que ele decidiu. As regras, na ordem em que importam:
    ela processa o prompt inteiro de toda requisição.
 
 Depois das cópias, o caminho de cada arquivo é perguntado à máquina que o
-recebeu em vez de deduzido — só ela sabe onde o próprio `recebidos/` fica.
+recebeu em vez de deduzido — só ela sabe onde o próprio `received/` fica.
 
 ### O que o operador escolhe por cima do plano
 

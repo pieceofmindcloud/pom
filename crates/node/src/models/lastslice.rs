@@ -110,7 +110,7 @@ fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
             .unwrap_or("last-slice"),
         std::process::id()
     ));
-    std::fs::write(&tmp, raw).with_context(|| format!("não deu para gravar {}", tmp.display()))?;
+    std::fs::write(&tmp, raw).with_context(|| format!("could not write {}", tmp.display()))?;
     // Windows não substitui o destino existente com rename. A tentativa
     // normal é atômica; só removemos o destino se a plataforma exigir.
     if let Err(error) = std::fs::rename(&tmp, p) {
@@ -118,13 +118,13 @@ fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
         {
             let _ = std::fs::remove_file(p);
             std::fs::rename(&tmp, p).with_context(|| {
-                format!("não deu para substituir {} depois de {error}", p.display())
+                format!("could not replace {} after {error}", p.display())
             })?;
         }
         #[cfg(not(windows))]
         {
             let _ = std::fs::remove_file(&tmp);
-            return Err(error).with_context(|| format!("não deu para substituir {}", p.display()));
+            return Err(error).with_context(|| format!("could not replace {}", p.display()));
         }
     }
     Ok(())
@@ -159,7 +159,7 @@ fn force_disable_at(p: &Path) -> Result<()> {
     let _ = std::fs::remove_file(p);
     std::fs::write(disable_path(p), "manual\n").with_context(|| {
         format!(
-            "não deu para criar o bloqueio {}",
+            "could not create the lock {}",
             disable_path(p).display()
         )
     })
@@ -271,12 +271,12 @@ mod tests {
 
         assert!(
             matches!(inspect_at(&f), LastSlice::Serving(_)),
-            "a leitura devolve a fatia"
+            "the read returns the slice"
         );
-        assert!(f.exists(), "a leitura não pode apagar o journal");
+        assert!(f.exists(), "the read cannot erase the journal");
         assert!(
             matches!(inspect_at(&f), LastSlice::Serving(_)),
-            "a leitura seguinte ainda devolve a mesma fatia"
+            "the next read still returns the same slice"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -301,7 +301,7 @@ mod tests {
 
         match inspect_at(&f) {
             LastSlice::Serving(cfg) => assert_eq!(cfg.model_label, "qwen35"),
-            _ => panic!("uma fatia vista servindo tem que voltar servindo"),
+            _ => panic!("a slice seen serving must come back serving"),
         }
 
         std::fs::remove_dir_all(&dir).ok();
@@ -327,10 +327,10 @@ mod tests {
 
         clear_at(&f);
 
-        assert!(!f.exists(), "parar de propósito esquece");
+        assert!(!f.exists(), "stopping on purpose forgets");
         assert!(
             matches!(inspect_at(&f), LastSlice::Nothing),
-            "e o arranque seguinte nao ressuscita"
+            "and the next startup does not resurrect it"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -354,13 +354,13 @@ mod tests {
                 assert_eq!(cfg.model_label, "qwen35");
                 assert_eq!(attempts, 1);
             }
-            LastSlice::Serving(_) => panic!("uma fatia que nunca carregou não pode ser retomada"),
-            LastSlice::Idle(_) => panic!("uma fatia pendente não pode ser ociosa"),
-            LastSlice::Nothing => panic!("a razão da falha se perdeu: o operador fica sem saber"),
+            LastSlice::Serving(_) => panic!("a slice that never loaded cannot be resumed"),
+            LastSlice::Idle(_) => panic!("a pending slice cannot be idle"),
+            LastSlice::Nothing => panic!("the reason of the failure was lost: the operator is left not knowing"),
         }
         assert!(
             f.exists(),
-            "o journal precisa sobreviver ao próximo arranque"
+            "the journal must survive the next startup"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -384,7 +384,7 @@ mod tests {
                 assert_eq!(cfg.start_layer, 8);
                 assert_eq!(attempts, 1);
             }
-            _ => panic!("a fatia nova nunca carregou; a velha já não é servida"),
+            _ => panic!("the new slice never loaded; the old one is no longer served"),
         }
 
         std::fs::remove_dir_all(&dir).ok();
@@ -402,7 +402,7 @@ mod tests {
 
         assert!(
             matches!(inspect_at(&f), LastSlice::Serving(_)),
-            "o formato antigo é uma fatia que estava no ar"
+            "the old format is a slice that was up"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -426,7 +426,7 @@ mod tests {
         );
         assert!(
             f.exists(),
-            "o bloqueio precisa sobreviver ao próximo arranque"
+            "the block must survive the next startup"
         );
 
         clear_at(&f);

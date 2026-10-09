@@ -157,7 +157,7 @@ fn resolve_slot(
         option.kind == kind && option.file_name == file.file_name && option.size_bytes == file.size_bytes
     }) else {
         slot.problem = Some(format!(
-            "nenhuma máquina da rede tem {} ({}) compatível com este modelo",
+            "no machine on the network has {} ({}) compatible with this model",
             file.file_name,
             human_bytes(file.size_bytes)
         ));
@@ -242,7 +242,7 @@ pub(super) fn attach_sidecars(
         if let Some(draft) = out.options.iter().find(|option| option.kind == SidecarKind::Mtp) {
             plan.capabilities.mtp = crate::capabilities::supported(
                 "sidecar",
-                format!("MTP externo compatível disponível: {}", draft.file_name),
+                format!("compatible external MTP available: {}", draft.file_name),
             );
         }
     }
@@ -285,11 +285,11 @@ pub(super) fn attach_sidecars(
             if let Some(file) = &slot.file {
                 plan.transfer_bytes = plan.transfer_bytes.saturating_add(file.size_bytes);
                 plan.warnings.push(format!(
-                    "{} copia {} ({}) de {} antes de subir",
+                    "{} copies {} ({}) from {} before starting",
                     slot.target_host,
                     file.file_name,
                     human_bytes(file.size_bytes),
-                    slot.source_host.as_deref().unwrap_or("outra máquina"),
+                    slot.source_host.as_deref().unwrap_or("another machine"),
                 ));
             }
         }

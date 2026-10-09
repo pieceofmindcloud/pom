@@ -47,7 +47,7 @@ pub(super) async fn run(
                 (&target.source_node_id, &target.source_path)
             else {
                 return Err(format!(
-                    "o rank {}of{} não tem de onde vir",
+                    "rank {}of{} has nowhere to come from",
                     target.rank + 1,
                     target.size
                 ));
@@ -75,7 +75,7 @@ pub(super) async fn run(
                         (&part.source_node_id, &part.source_path)
                     else {
                         return Err(format!(
-                            "a fatia L{}-{} não tem de onde vir",
+                            "slice L{}-{} has nowhere to come from",
                             part.start_layer, part.end_layer
                         ));
                     };
@@ -96,7 +96,7 @@ pub(super) async fn run(
                     (&step.source_node_id, &step.source_path)
                 else {
                     return Err(format!(
-                        "a fatia L{}-{} não tem de onde vir",
+                        "slice L{}-{} has nowhere to come from",
                         step.start_layer, step.end_layer
                     ));
                 };
@@ -154,7 +154,7 @@ pub(super) async fn run(
                     pull.source_node_id.clone(),
                     pull.source_path.clone(),
                     plan.total_layers.ok_or_else(|| {
-                        format!("as fatias de {} não dizem o total de camadas", plan.group)
+                        format!("the slices of {} do not state the total number of layers", plan.group)
                     })?,
                     plan.group.clone(),
                 ))
@@ -173,9 +173,9 @@ pub(super) async fn run(
         set_job(
             job_id,
             "running",
-            "fatiando modelo inteiro",
+            "slicing the whole model",
             &format!(
-                "materializando {} faixa(s) na máquina que propôs o modelo",
+                "materializing {} range(s) on the machine that proposed the model",
                 ranges.len()
             ),
         )
@@ -200,7 +200,7 @@ pub(super) async fn run(
                     && pull.end_layer == materialized.end_layer
             }) else {
                 return Err(format!(
-                    "o fatiador devolveu uma faixa L{}-{} que não estava no plano",
+                    "the slicer returned a range L{}-{} that was not in the plan",
                     materialized.start_layer, materialized.end_layer
                 ));
             };
@@ -210,7 +210,7 @@ pub(super) async fn run(
         }
     }
     if pulls.iter().any(|pull| pull.source_needs_split) {
-        return Err("o fatiamento local não devolveu todas as faixas pedidas".to_string());
+        return Err("the local slicing did not return all the requested ranges".to_string());
     }
 
     // ── Phase 1: transfers ───────────────────────────────────────────────────
@@ -221,9 +221,9 @@ pub(super) async fn run(
         set_job(
             job_id,
             "running",
-            "copiando fatias",
+            "copying slices",
             &format!(
-                "{} fatia(s), {:.1} GB no total",
+                "{} slice(s), {:.1} GB in total",
                 pulls.len(),
                 plan.transfer_bytes as f64 / 1_073_741_824.0
             ),
@@ -240,7 +240,7 @@ pub(super) async fn run(
             }
             let target = peer_of(&state, &pull.target_node_id)
                 .await
-                .ok_or_else(|| format!("{} saiu da rede", pull.target_host))?;
+                .ok_or_else(|| format!("{} left the network", pull.target_host))?;
             let pull_body = json!({
                 "node_id": pull.source_node_id,
                 "sha256": pull.source_sha256,
@@ -256,7 +256,7 @@ pub(super) async fn run(
             let body: serde_json::Value = state
                 .control_post_json(&target, "/api/transfer/pull", &pull_body, PEER_TIMEOUT * 4)
                 .await
-                .map_err(|e| format!("{} não aceitou puxar a fatia: {e:#}", pull.target_host))?
+                .map_err(|e| format!("{} did not accept pulling the slice: {e:#}", pull.target_host))?
                 .json()
                 .await
                 .unwrap_or(json!({}));
@@ -264,18 +264,18 @@ pub(super) async fn run(
             match body.get("job_id").and_then(|v| v.as_str()) {
                 Some(tid) => {
                     info!(
-                        "{} puxando L{}-{} de {}",
+                        "{} pulling L{}-{} from {}",
                         pull.target_host, pull.start_layer, pull.end_layer, pull.source_node_id
                     );
                     watching.push((target, tid.to_string()));
                 }
                 None => {
                     return Err(format!(
-                        "{} recusou a cópia: {}",
+                        "{} refused the copy: {}",
                         pull.target_host,
                         body.get("error")
                             .and_then(|e| e.as_str())
-                            .unwrap_or("motivo não informado")
+                            .unwrap_or("no reason given")
                     ));
                 }
             }
@@ -285,7 +285,7 @@ pub(super) async fn run(
     }
 
     // ── Phase 2: bind every peer to its range ────────────────────────────────
-    set_job(job_id, "running", "subindo os nós", "atribuindo as faixas").await;
+    set_job(job_id, "running", "starting the nodes", "assigning the ranges").await;
     set_job_progress(job_id, 92.0).await;
 
     // Where each file ended up is the target's own business, so ask it rather
@@ -323,7 +323,7 @@ pub(super) async fn run(
             .iter_mut()
             .find(|target| target.start_layer == 0)
             .ok_or_else(|| {
-                "a implantação com visão precisa de um alvo que comece na camada 0".to_string()
+                "a deployment with vision needs a target that starts at layer 0".to_string()
             })?;
         head.use_mmproj = true;
         head.mmproj_path = plan.mmproj_path.clone();
@@ -375,7 +375,7 @@ pub(super) async fn run(
     // fact by the time we get here rather than a default worth inventing.
     let total_layers = plan
         .total_layers
-        .ok_or_else(|| format!("as fatias de {} não dizem o total de camadas", plan.group))?;
+        .ok_or_else(|| format!("the slices of {} do not state the total number of layers", plan.group))?;
 
     // O registro da implantação nasce aqui, com os alvos já resolvidos: é o
     // último ponto em que se sabe, de uma vez só, quem recebeu qual faixa e com
@@ -537,7 +537,7 @@ pub(super) fn build_record(
 pub(super) async fn publish_record(state: &GatewayState, record: &crate::deployment::Deployment) {
     if let Err(e) = state.database.save_deployment(record) {
         warn!(
-            "não deu para anotar a implantação {}: {e:#}",
+            "could not record the deployment {}: {e:#}",
             record.deploy_id
         );
     }
@@ -554,7 +554,7 @@ pub(super) async fn publish_record(state: &GatewayState, record: &crate::deploym
             .await;
         if let Err(e) = send_result {
             warn!(
-                "{} não aceitou o registro da implantação: {e:#}",
+                "{} did not accept the deployment record: {e:#}",
                 peer.node_id
             );
         }
@@ -618,10 +618,10 @@ pub(super) async fn activate_deployment(
     Path(id): Path<String>,
 ) -> Response {
     if !crate::deployment::is_deploy_id(&id) {
-        return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
+        return bad(json!({ "error": format!("invalid deploy_id: {id}") }));
     }
     let Some(mut record) = find_record(&state, &id).await else {
-        return bad(json!({ "error": format!("implantação {id} desconhecida") }));
+        return bad(json!({ "error": format!("unknown deployment {id}") }));
     };
 
     record.activated_at = chrono::Utc::now().to_rfc3339();
@@ -677,14 +677,14 @@ impl RedeployRequest {
                     .versions
                     .iter_mut()
                     .find(|ver| ver.version == active_version)
-                    .expect("set_active_version garantiu a versão ativa");
+                    .expect("set_active_version guaranteed the active version");
                 (version.params.clone(), version.nodes.clone())
             };
             record.nodes = nodes;
             return Ok(params);
         }
         let Some(params) = self.params.clone() else {
-            return Err("informe `version` ou `params`".to_string());
+            return Err("provide `version` or `params`".to_string());
         };
         let mut nodes = record.nodes.clone();
         for n in &mut nodes {
@@ -734,25 +734,25 @@ pub(super) async fn redeploy_endpoint(
     Json(req): Json<RedeployRequest>,
 ) -> Response {
     if !crate::deployment::is_deploy_id(&id) {
-        return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
+        return bad(json!({ "error": format!("invalid deploy_id: {id}") }));
     }
     let Some(mut record) = find_record(&state, &id).await else {
-        return bad(json!({ "error": format!("implantação {id} desconhecida") }));
+        return bad(json!({ "error": format!("unknown deployment {id}") }));
     };
     record.ensure_versions();
     if req.version.is_none() && req.params.is_none() {
-        return bad(json!({ "error": "informe `version` ou `params`" }));
+        return bad(json!({ "error": "provide `version` or `params`" }));
     }
     if let Some(v) = req.version {
         if !record.versions.iter().any(|ver| ver.version == v) {
             let available: Vec<u32> = record.versions.iter().map(|ver| ver.version).collect();
             return bad(json!({
-                "error": format!("versão {v} não existe (há {available:?})")
+                "error": format!("version {v} does not exist (available: {available:?})")
             }));
         }
     }
     info!(
-        "redeploy pedido para {} ({}), {} nó(s), versão={:?}",
+        "redeploy requested for {} ({}), {} node(s), version={:?}",
         id,
         record.model.label,
         record.nodes.len(),
@@ -761,18 +761,18 @@ pub(super) async fn redeploy_endpoint(
 
     let job_id = uuid::Uuid::new_v4().to_string();
     let title = format!(
-        "Reconfigurar {} em {} {}",
+        "Reconfigure {} on {} {}",
         record.model.label,
         record.nodes.len(),
         if record.nodes.len() == 1 {
-            "nó"
+            "node"
         } else {
-            "nós"
+            "nodes"
         }
     );
     jobs().write().await.insert(
         job_id.clone(),
-        new_job(&job_id, "redeploy", title, "recarregando"),
+        new_job(&job_id, "redeploy", title, "reloading"),
     );
     state.plugins.publish_event(
         "deployment.started",
@@ -790,20 +790,20 @@ pub(super) async fn redeploy_endpoint(
     tokio::spawn(async move {
         match run_redeploy(state, record, req, &id_job).await {
             Ok(failures) if failures == 0 => {
-                set_job(&id_job, "done", "pronto", "as máquinas recarregaram").await
+                set_job(&id_job, "done", "pronto", "the machines reloaded").await
             }
             Ok(failures) => {
                 set_job(
                     &id_job,
                     "failed",
-                    "parcial",
-                    &format!("{failures} máquina(s) não recarregaram"),
+                    "partial",
+                    &format!("{failures} machine(s) did not reload"),
                 )
                 .await
             }
             Err(e) => {
-                warn!("reconfiguração falhou: {e}");
-                set_job(&id_job, "failed", "falhou", &e).await
+                warn!("reconfiguration failed: {e}");
+                set_job(&id_job, "failed", "failed", &e).await
             }
         }
     });
@@ -823,7 +823,7 @@ pub(super) async fn run_redeploy(
     let total = record.nodes.len().max(1);
 
     info!(
-        "redeploy {} ({}): {} nó(s), kind={:?}",
+        "redeploy {} ({}): {} node(s), kind={:?}",
         record.deploy_id,
         record.model.label,
         record.nodes.len(),
@@ -921,15 +921,15 @@ pub(super) async fn run_redeploy(
         .collect();
     if serving.is_empty() {
         info!(
-            "redeploy {}: nada servindo, indo direto para a subida",
+            "redeploy {}: nothing serving, going straight to the start",
             record.deploy_id
         );
     } else {
         set_job(
             job_id,
             "running",
-            "descarregando",
-            &format!("{} máquina(s)", serving.len()),
+            "unloading",
+            &format!("{} machine(s)", serving.len()),
         )
         .await;
         let unloads = futures::future::join_all(serving.iter().map(|peer| {
@@ -946,8 +946,8 @@ pub(super) async fn run_redeploy(
         .await;
         for (host, result) in unloads {
             match result {
-                Ok(()) => info!("redeploy: {host} descarregada"),
-                Err(e) => warn!("redeploy: {host} não descarregou: {e}"),
+                Ok(()) => info!("redeploy: {host} unloaded"),
+                Err(e) => warn!("redeploy: {host} did not unload: {e}"),
             }
         }
     }
@@ -963,7 +963,7 @@ pub(super) async fn run_redeploy(
         set_job(
             job_id,
             "running",
-            "subindo",
+            "starting",
             &format!("{} ({}/{})", no.hostname, i + 1, total),
         )
         .await;
@@ -1012,7 +1012,7 @@ pub(super) async fn run_redeploy(
 
         match relaunch_one(&state, &peers, no, &self_id, &key, &params, slice).await {
             None => {
-                info!("redeploy: {} subiu", no.hostname);
+                info!("redeploy: {} started", no.hostname);
                 accepted.insert(no.node_id.clone(), params);
                 results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
@@ -1022,7 +1022,7 @@ pub(super) async fn run_redeploy(
                 });
             }
             Some(e) => {
-                warn!("redeploy: {} não subiu: {e}", no.hostname);
+                warn!("redeploy: {} did not start: {e}", no.hostname);
                 results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
                     hostname: no.hostname.clone(),
@@ -1080,7 +1080,7 @@ pub(super) async fn finish_redeploy(
                 .iter()
                 .map(|r| match &r.error {
                     Some(e) => format!("{}: {e}", r.hostname),
-                    None => format!("{}: recarregada", r.hostname),
+                    None => format!("{}: reloaded", r.hostname),
                 })
                 .collect();
         }
@@ -1107,7 +1107,7 @@ pub(super) async fn relaunch_one(
         }
     } else {
         let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) else {
-            return Some("peer não encontrado".to_string());
+            return Some("peer not found".to_string());
         };
         let body = json!({ "params": params, "slice": slice });
         // Recarregar pesos é minutos, não segundos.
@@ -1119,9 +1119,9 @@ pub(super) async fn relaunch_one(
             Ok(r) => {
                 let status = r.status();
                 let detail = r.text().await.unwrap_or_default();
-                return Some(format!("a máquina recusou: HTTP {status} {detail}"));
+                return Some(format!("the machine refused: HTTP {status} {detail}"));
             }
-            Err(e) => return Some(format!("máquina inacessível: {e}")),
+            Err(e) => return Some(format!("machine unreachable: {e}")),
         }
     }
 
@@ -1155,7 +1155,7 @@ pub(super) async fn run_redeploy_in_place(
         set_job(
             job_id,
             "running",
-            "recarregando",
+            "reloading",
             &format!("{} ({}/{})", no.hostname, i + 1, total),
         )
         .await;
@@ -1174,7 +1174,7 @@ pub(super) async fn run_redeploy_in_place(
 
         match reconfigure_one(state, peers, &no.node_id, self_id, key, &params).await {
             None => {
-                info!("redeploy (tp): {} recarregada", no.hostname);
+                info!("redeploy (tp): {} reloaded", no.hostname);
                 accepted.insert(no.node_id.clone(), params);
                 results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
@@ -1184,7 +1184,7 @@ pub(super) async fn run_redeploy_in_place(
                 });
             }
             Some(e) => {
-                warn!("redeploy (tp): {} não recarregou: {e}", no.hostname);
+                warn!("redeploy (tp): {} did not reload: {e}", no.hostname);
                 results.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
                     hostname: no.hostname.clone(),
@@ -1215,14 +1215,14 @@ pub(super) async fn validate_redeploy_wire_dtype(
             continue;
         }
         let Some(peer) = peers.iter().find(|peer| peer.node_id == node.node_id) else {
-            blocked.push(format!("{}: peer não encontrado", node.hostname));
+            blocked.push(format!("{}: peer not found", node.hostname));
             continue;
         };
         let response = match state.control_get(peer, "/api/ui/node", PEER_TIMEOUT).await {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
                 blocked.push(format!(
-                    "{}: /api/ui/node respondeu HTTP {}",
+                    "{}: /api/ui/node answered HTTP {}",
                     node.hostname,
                     response.status()
                 ));
@@ -1230,7 +1230,7 @@ pub(super) async fn validate_redeploy_wire_dtype(
             }
             Err(error) => {
                 blocked.push(format!(
-                    "{}: não foi possível consultar /api/ui/node: {error}",
+                    "{}: could not query /api/ui/node: {error}",
                     node.hostname
                 ));
                 continue;
@@ -1240,7 +1240,7 @@ pub(super) async fn validate_redeploy_wire_dtype(
             Ok(body) => body,
             Err(error) => {
                 blocked.push(format!(
-                    "{}: resposta de /api/ui/node inválida: {error}",
+                    "{}: invalid /api/ui/node response: {error}",
                     node.hostname
                 ));
                 continue;
@@ -1256,7 +1256,7 @@ pub(super) async fn validate_redeploy_wire_dtype(
             });
         if !supports_dtype {
             blocked.push(format!(
-                "{}: não anuncia {}",
+                "{}: does not announce {}",
                 node.hostname, required_capability
             ));
         }
@@ -1266,7 +1266,7 @@ pub(super) async fn validate_redeploy_wire_dtype(
         Ok(())
     } else {
         Err(format!(
-            "A precisão {} do estado oculto foi solicitada, mas a negociação falhou: {}",
+            "Hidden state precision {} was requested, but the negotiation failed: {}",
             dtype.as_str(),
             blocked.join("; ")
         ))
@@ -1306,8 +1306,8 @@ pub(super) async fn reconfigure_one(
         Ok(r) => {
             let status = r.status();
             let detail = r.text().await.unwrap_or_default();
-            Some(format!("a máquina recusou: HTTP {status} {detail}"))
+            Some(format!("the machine refused: HTTP {status} {detail}"))
         }
-        Err(e) => Some(format!("máquina inacessível: {e}")),
+        Err(e) => Some(format!("machine unreachable: {e}")),
     }
 }

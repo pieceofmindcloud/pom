@@ -61,31 +61,31 @@ impl fmt::Display for HfError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::HfAuthenticationRequired => {
-                write!(f, "autenticação do Hugging Face é necessária")
+                write!(f, "Hugging Face authentication is required")
             }
-            Self::HfRepositoryNotFound => write!(f, "repositório do Hugging Face não encontrado"),
-            Self::HfFileNotFound => write!(f, "arquivo do Hugging Face não encontrado"),
-            Self::HfAccessDenied => write!(f, "acesso ao repositório do Hugging Face negado"),
+            Self::HfRepositoryNotFound => write!(f, "Hugging Face repository not found"),
+            Self::HfFileNotFound => write!(f, "Hugging Face file not found"),
+            Self::HfAccessDenied => write!(f, "access to the Hugging Face repository denied"),
             Self::HfRateLimited => {
-                write!(f, "o Hugging Face recusou a requisição por limite de uso")
+                write!(f, "Hugging Face refused the request because of a usage limit")
             }
             Self::HfDownloadFailed { message } => write!(
                 f,
-                "download do Hugging Face falhou: {}",
+                "Hugging Face download failed: {}",
                 redact_sensitive(message)
             ),
             Self::HfInvalidResponse { message } => write!(
                 f,
-                "resposta inválida do Hugging Face: {}",
+                "invalid response from Hugging Face: {}",
                 redact_sensitive(message)
             ),
             Self::InvalidInput { field, message } => {
-                write!(f, "{field} inválido: {}", redact_sensitive(message))
+                write!(f, "invalid {field}: {}", redact_sensitive(message))
             }
             Self::Io { message } => {
-                write!(f, "operação local falhou: {}", redact_sensitive(message))
+                write!(f, "local operation failed: {}", redact_sensitive(message))
             }
-            Self::Cancelled => write!(f, "download cancelado"),
+            Self::Cancelled => write!(f, "download cancelled"),
         }
     }
 }
@@ -312,7 +312,7 @@ impl ModelStorage for LocalModelStorage {
                 })?;
                 if !metadata.is_file() {
                     return Err(HfError::Io {
-                        message: format!("{} não é um arquivo regular", input.path.display()),
+                        message: format!("{} is not a regular file", input.path.display()),
                     });
                 }
                 let (sha256, size_bytes) =
@@ -335,7 +335,7 @@ impl ModelStorage for LocalModelStorage {
         })
         .await
         .map_err(|error| HfError::Io {
-            message: redact_sensitive(format!("worker de manifesto falhou: {error}")),
+            message: redact_sensitive(format!("manifest worker failed: {error}")),
         })?
     }
 }
@@ -372,7 +372,7 @@ pub type DynModelProvider = Arc<dyn ModelProvider>;
 
 pub fn validate_repo_id(value: &str) -> Result<String, HfError> {
     if value.is_empty() || value.trim() != value || value.contains('\0') {
-        return Err(invalid("repo_id", "deve ser um identificador não vazio"));
+        return Err(invalid("repo_id", "must be a non-empty identifier"));
     }
     let parts: Vec<&str> = value.split('/').collect();
     if parts.len() != 2
@@ -380,14 +380,14 @@ pub fn validate_repo_id(value: &str) -> Result<String, HfError> {
             .iter()
             .any(|part| part.is_empty() || *part == "." || *part == "..")
     {
-        return Err(invalid("repo_id", "use OWNER/REPOSITORY sem traversal"));
+        return Err(invalid("repo_id", "use OWNER/REPOSITORY without traversal"));
     }
     if parts.iter().any(|part| {
         !part
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     }) {
-        return Err(invalid("repo_id", "contém caractere não permitido"));
+        return Err(invalid("repo_id", "contains a character that is not allowed"));
     }
     Ok(value.to_string())
 }
@@ -403,7 +403,7 @@ pub fn validate_revision(value: &str) -> Result<String, HfError> {
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Err(invalid("revision", "caminho ou revisão inválida"));
+        return Err(invalid("revision", "invalid path or revision"));
     }
     Ok(value.to_string())
 }
@@ -420,14 +420,14 @@ pub fn validate_filename(value: &str) -> Result<String, HfError> {
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Err(invalid("filename", "nome de arquivo relativo inválido"));
+        return Err(invalid("filename", "invalid relative file name"));
     }
     Ok(value.to_string())
 }
 
 pub fn validate_filter(value: &str, field: &str) -> Result<String, HfError> {
     if value.is_empty() || value.contains('\0') {
-        return Err(invalid(field, "filtro vazio ou com NUL"));
+        return Err(invalid(field, "filter is empty or contains NUL"));
     }
     Ok(value.to_string())
 }
@@ -438,7 +438,7 @@ pub fn validate_directory(path: &Path, field: &str) -> Result<PathBuf, HfError> 
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
     {
-        return Err(invalid(field, "caminho contém NUL ou traversal"));
+        return Err(invalid(field, "path contains NUL or traversal"));
     }
     Ok(path.to_path_buf())
 }

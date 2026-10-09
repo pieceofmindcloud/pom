@@ -109,7 +109,7 @@ pub async fn step(
         .await
         .map_err(|error| {
             routes.mark_failure(&peer.node_id, &peer.inference_url);
-            anyhow!("peer {} não respondeu: {error}", peer.node_id)
+            anyhow!("peer {} did not answer: {error}", peer.node_id)
         })?;
         trace.record_hop_from_sent(i, Phase::Decode, &sent);
         meta = sent.meta;
@@ -294,7 +294,7 @@ pub(super) async fn step_direct(
 pub(super) fn ring_relay_error(head_node_id: &str, e: anyhow::Error) -> anyhow::Error {
     match crate::relay::extract_relay_failure(&e) {
         Some(failure) => anyhow!(
-            "pipeline falhou em {} (retransmitido por {head_node_id}): {} — {}",
+            "pipeline failed at {} (relayed by {head_node_id}): {} — {}",
             failure.failed_node_id,
             failure.kind,
             failure.message
@@ -363,17 +363,17 @@ impl RemoteDecodeStream {
         let meta = cancelable(cancellation, async {
             tokio::time::timeout(deadline, self.ticket.recv())
                 .await
-                .map_err(|_| anyhow!("cabeça remota não entregou a rodada em {deadline:?}"))
+                .map_err(|_| anyhow!("remote head did not deliver the round in {deadline:?}"))
         })
         .await?
-        .ok_or_else(|| anyhow!("transporte remoto encerrou sem lote terminal"))?;
+        .ok_or_else(|| anyhow!("remote transport ended without a terminal batch"))?;
         let callback_at = Instant::now();
         let callback_interval_ms = self
             .last_callback_at
             .replace(callback_at)
             .map(|previous| callback_at.saturating_duration_since(previous).as_millis() as u64);
         if let Some(error) = meta.get("error").and_then(|value| value.as_str()) {
-            return Err(anyhow!("peer remoto falhou durante o stream: {error}"));
+            return Err(anyhow!("remote peer failed during the stream: {error}"));
         }
 
         let batch_bytes = meta
@@ -541,7 +541,7 @@ pub(crate) async fn step_stream(
         .and_then(|value| value.as_bool())
         != Some(true)
     {
-        return Err(anyhow!("peer não aceitou o transporte remoto por lotes"));
+        return Err(anyhow!("peer did not accept the batched remote transport"));
     }
 
     let mut initial_trace = RequestTrace::from_plan_with_trace_id(&request_trace_id, model, plan);
@@ -692,7 +692,7 @@ pub(super) async fn step_speculative_hub(
 
         let payload = tensor.take();
         let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), s.clone()));
-        let peer_label = format!("{} (especulativo)", peer.node_id);
+        let peer_label = format!("{} (speculative)", peer.node_id);
         let sent = crate::relay::send_frame_or_tunnel(
             http,
             peer,
@@ -846,7 +846,7 @@ pub(super) fn speculative_step_from_meta(
     if accepted.is_empty() {
         let Some(token_id) = meta.get("token_id").and_then(|v| v.as_u64()) else {
             return Err(anyhow!(
-                "último peer não devolveu token nenhum na rodada especulativa"
+                "last peer returned no token at all in the speculative round"
             ));
         };
         return Ok(SpeculativeStep {

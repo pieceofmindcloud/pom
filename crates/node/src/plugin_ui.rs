@@ -161,18 +161,18 @@ fn valid_locale(tag: &str) -> bool {
 /// espaço `<plugin_code>.` (um plugin não sobrescreve texto do POM nem de outro
 /// plugin), com tetos de quantidade e tamanho.
 pub(crate) fn validate_catalog(plugin_code: &str, value: &Value) -> Result<(), String> {
-    let object = value.as_object().ok_or("catálogo não é um objeto")?;
+    let object = value.as_object().ok_or("catalog is not an object")?;
     if object.len() > MAX_CATALOG_KEYS {
-        return Err("catálogo com chaves demais".into());
+        return Err("catalog with too many keys".into());
     }
     let prefix = format!("{plugin_code}.");
     for (key, text) in object {
         if !key.starts_with(&prefix) {
-            return Err(format!("chave {key:?} fora do espaço {prefix:?}"));
+            return Err(format!("key {key:?} outside the namespace {prefix:?}"));
         }
         match text.as_str() {
             Some(text) if text.len() <= MAX_CATALOG_TEXT => {}
-            _ => return Err(format!("texto de {key:?} inválido")),
+            _ => return Err(format!("invalid text for {key:?}")),
         }
     }
     Ok(())
@@ -224,7 +224,7 @@ fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
             "id": format!("legacy-guide-{}", index + 1),
             "title": {
                 "en": format!("Guide {}: {title}", index + 1),
-                "pt-BR": format!("Guia {}: {title}", index + 1)
+                "pt-BR": format!("Guide {}: {title}", index + 1)
             },
             "asset": asset
         }));
@@ -269,16 +269,16 @@ impl PluginUiManifest {
     pub(crate) fn parse(expected_code: &str, value: Value) -> Result<Self, String> {
         let value = normalize_ui_manifest_documentation(value)?;
         let manifest: Self =
-            serde_json::from_value(value).map_err(|e| format!("manifesto ilegível: {e}"))?;
+            serde_json::from_value(value).map_err(|e| format!("unreadable manifest: {e}"))?;
         if manifest.schema != MANIFEST_SCHEMA {
-            return Err(format!("schema {:?} não suportado", manifest.schema));
+            return Err(format!("schema {:?} not supported", manifest.schema));
         }
         if manifest.plugin_code != expected_code {
-            return Err("plugin_code do manifesto não é o do plugin instalado".into());
+            return Err("manifest plugin_code is not that of the installed plugin".into());
         }
         if let Some(icon) = &manifest.icon_image {
             if !icon.ends_with(".png") || !manifest.assets.iter().any(|asset| asset == icon) {
-                return Err("icon_image precisa ser um asset PNG declarado".into());
+                return Err("icon_image must be a declared PNG asset".into());
             }
         }
         if !manifest.description.is_empty()
@@ -289,7 +289,7 @@ impl PluginUiManifest {
                         || text.len() > MAX_DESCRIPTION_TEXT
                 }))
         {
-            return Err("description precisa de en e textos curtos por idioma".into());
+            return Err("description needs en and short texts per language".into());
         }
         if manifest.screenshots.len() > MAX_SCREENSHOTS
             || !manifest
@@ -297,7 +297,7 @@ impl PluginUiManifest {
                 .iter()
                 .all(|shot| valid_screenshot(shot))
         {
-            return Err("screenshots inválidos".into());
+            return Err("invalid screenshots".into());
         }
         let mut menu_ids = std::collections::HashSet::new();
         for item in &manifest.menu {
@@ -308,10 +308,10 @@ impl PluginUiManifest {
                 || !valid_role_fields
                 || !menu_ids.insert(item.id.as_str())
             {
-                return Err(format!("item de menu {:?} inválido", item.id));
+                return Err(format!("invalid menu item {:?}", item.id));
             }
             if !item.label.contains_key("en") {
-                return Err(format!("item de menu {:?} sem rótulo en", item.id));
+                return Err(format!("menu item {:?} without an en label", item.id));
             }
             for child in &item.children {
                 if child.id.is_empty()
@@ -320,7 +320,7 @@ impl PluginUiManifest {
                     || !child.label.contains_key("en")
                     || !menu_ids.insert(child.id.as_str())
                 {
-                    return Err(format!("submenu {:?} inválido", child.id));
+                    return Err(format!("invalid submenu {:?}", child.id));
                 }
             }
         }
@@ -331,37 +331,37 @@ impl PluginUiManifest {
                 || !valid_role_fields
                 || !manifest.screens.contains_key(&route.screen)
             {
-                return Err(format!("rota {:?} inválida", route.path));
+                return Err(format!("invalid route {:?}", route.path));
             }
         }
         if manifest.slots.len() > MAX_SLOTS {
-            return Err("slots demais".into());
+            return Err("too many slots".into());
         }
         for (slot, screen) in &manifest.slots {
             if !valid_slot_id(slot) || !manifest.screens.contains_key(screen) {
-                return Err(format!("slot {slot:?} inválido"));
+                return Err(format!("invalid slot {slot:?}"));
             }
         }
         for asset in &manifest.assets {
             if !valid_asset(asset) {
-                return Err(format!("asset {asset:?} inválido"));
+                return Err(format!("invalid asset {asset:?}"));
             }
         }
         if !manifest.i18n.is_empty() && !manifest.i18n.contains_key("en") {
-            return Err("i18n sem o idioma en".into());
+            return Err("i18n without the en language".into());
         }
         for (locale, asset) in &manifest.i18n {
             if !valid_locale(locale)
                 || !asset.ends_with(".json")
                 || !manifest.assets.contains(asset)
             {
-                return Err(format!("catálogo i18n {locale:?} inválido"));
+                return Err(format!("invalid i18n catalog {locale:?}"));
             }
         }
         if let Some(documentation) = &manifest.documentation {
             for (kind, entries) in [
-                ("guia", &documentation.guides),
-                ("referência", &documentation.reference),
+                ("guide", &documentation.guides),
+                ("reference", &documentation.reference),
             ] {
                 for entry in entries {
                     if entry.id.is_empty()
@@ -370,7 +370,7 @@ impl PluginUiManifest {
                         || !valid_documentation_asset(&entry.asset)
                         || !manifest.assets.iter().any(|asset| asset == &entry.asset)
                     {
-                        return Err(format!("{kind} de documentação inválido"));
+                        return Err(format!("invalid documentation {kind}"));
                     }
                 }
             }
@@ -379,7 +379,7 @@ impl PluginUiManifest {
             let files = std::iter::once(&screen.module).chain(screen.styles.iter());
             for file in files {
                 if !manifest.assets.contains(file) {
-                    return Err(format!("tela {name:?} usa {file:?} fora de assets"));
+                    return Err(format!("screen {name:?} uses {file:?} outside assets"));
                 }
             }
         }
@@ -422,17 +422,17 @@ pub(crate) fn decode_asset(value: &Value) -> Result<(String, Vec<u8>), String> {
                     | "font/woff2"
             )
         })
-        .ok_or("content_type ausente ou não permitido")?;
+        .ok_or("content_type missing or not allowed")?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(
             value
                 .get("base64")
                 .and_then(Value::as_str)
-                .ok_or("asset sem base64")?,
+                .ok_or("asset without base64")?,
         )
-        .map_err(|e| format!("base64 inválido: {e}"))?;
+        .map_err(|e| format!("invalid base64: {e}"))?;
     if bytes.len() > MAX_ASSET_BYTES {
-        return Err("asset acima do teto".into());
+        return Err("asset above the cap".into());
     }
     Ok((content_type.to_owned(), bytes))
 }
@@ -532,7 +532,7 @@ pub(crate) async fn plugin_asset(
     State(state): State<crate::gateway::GatewayState>,
     Path((code, path)): Path<(String, String)>,
 ) -> Response {
-    let not_found = || (StatusCode::NOT_FOUND, "asset não encontrado").into_response();
+    let not_found = || (StatusCode::NOT_FOUND, "asset not found").into_response();
     let Some(manifest) = state.plugins.ui_manifest(&code).await else {
         return not_found();
     };
@@ -548,15 +548,15 @@ pub(crate) async fn plugin_asset(
     };
     let decoded = decode_asset(&reply).and_then(|(content_type, bytes)| {
         if manifest.is_icon_image(&path) && content_type != "image/png" {
-            return Err("icon_image não foi servido como PNG".into());
+            return Err("icon_image was not served as PNG".into());
         }
         if manifest.is_documentation(&path) && content_type != "text/markdown" {
-            return Err("documentação não foi servida como Markdown".into());
+            return Err("documentation was not served as Markdown".into());
         }
         // Catálogo de texto: só sai se o conteúdo obedece ao contrato.
         if manifest.i18n.values().any(|asset| *asset == path) {
             let parsed: Value =
-                serde_json::from_slice(&bytes).map_err(|e| format!("catálogo ilegível: {e}"))?;
+                serde_json::from_slice(&bytes).map_err(|e| format!("unreadable catalog: {e}"))?;
             validate_catalog(&code, &parsed)?;
         }
         Ok((content_type, bytes))
@@ -572,7 +572,7 @@ pub(crate) async fn plugin_asset(
         )
             .into_response(),
         Err(error) => {
-            tracing::warn!(plugin_code = %code, %path, %error, "asset de plugin recusado");
+            tracing::warn!(plugin_code = %code, %path, %error, "plugin asset refused");
             not_found()
         }
     }
@@ -825,7 +825,7 @@ mod tests {
         }]);
         assert!(PluginUiManifest::parse("base", manifest(duplicated, json!({}))).is_err());
         for extra in [
-            json!({ "description": { "pt-BR": "sem en" } }),
+            json!({ "description": { "pt-BR": "without en" } }),
             json!({ "screenshots": ["../fora.png"] }),
             json!({ "screenshots": ["docs/script.js"] }),
             json!({ "screenshots": ["http://example.com/a.png"] }),

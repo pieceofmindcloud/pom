@@ -18,7 +18,7 @@ pub const CRASH_RELAUNCH_DELAY_SECS: u64 = 1;
 fn wait_for_gateway_ready(receiver: &std::sync::mpsc::Receiver<()>) -> Result<(), String> {
     receiver
         .recv()
-        .map_err(|_| "o serviço Windows terminou antes de o gateway ficar pronto".to_string())
+        .map_err(|_| "the Windows service ended before the gateway became ready".to_string())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,10 +73,10 @@ mod native {
 
     fn tray_icon() -> Result<Icon> {
         let image = load_from_memory(include_bytes!("../../../assets/brand/pom-icon-32.png"))
-            .context("não deu para ler o ícone da bandeja do Windows")?
+            .context("could not read the Windows tray icon")?
             .to_rgba8();
         Icon::from_rgba(image.clone().into_raw(), image.width(), image.height())
-            .map_err(|error| anyhow!("não deu para montar o ícone da bandeja: {error}"))
+            .map_err(|error| anyhow!("could not build the tray icon: {error}"))
     }
 
     fn restore_window(window: &tao::window::Window) {
@@ -97,20 +97,20 @@ mod native {
     }
 
     fn run_supervisor() -> Result<()> {
-        let executable = std::env::current_exe().context("não foi possível localizar o pom.exe")?;
+        let executable = std::env::current_exe().context("could not locate pom.exe")?;
         let args = std::env::args_os().skip(1).collect::<Vec<_>>();
         loop {
             let status = ProcessCommand::new(&executable)
                 .args(&args)
                 .env(super::SUPERVISED_CHILD_ENV, "1")
                 .status()
-                .with_context(|| format!("não foi possível iniciar {}", executable.display()))?;
+                .with_context(|| format!("could not start {}", executable.display()))?;
             if !super::should_relaunch(status.code()) {
                 return Ok(());
             }
             tracing::error!(
                 exit_code = ?status.code(),
-                "POM encerrou sem saída do usuário; relançando o processo Windows"
+                "POM ended without a user exit; relaunching the Windows process"
             );
             thread::sleep(Duration::from_secs(super::CRASH_RELAUNCH_DELAY_SECS));
         }
@@ -139,32 +139,32 @@ mod native {
         if wait_for_gateway_ready(&gateway_ready).is_err() {
             return service
                 .join()
-                .map_err(|_| anyhow!("thread do serviço Windows terminou em pânico"))?;
+                .map_err(|_| anyhow!("Windows service thread ended in a panic"))?;
         }
 
         let window = WindowBuilder::new()
             .with_title("POM")
             .with_inner_size(LogicalSize::new(WINDOW_SIZE.0, WINDOW_SIZE.1))
             .build(&event_loop)
-            .map_err(|error| anyhow!("não deu para abrir a janela Windows: {error}"))?;
+            .map_err(|error| anyhow!("could not open the Windows window: {error}"))?;
         let webview = WebViewBuilder::new()
             .with_url(crate::gateway_url(port))
             .build(&window)
-            .context("não deu para iniciar o WebView2; confirme que o runtime está instalado")?;
+            .context("could not start WebView2; confirm that the runtime is installed")?;
 
         let menu = Menu::new();
-        let show_item = MenuItem::with_id(TRAY_SHOW_ID, "Abrir POM", true, None);
-        let quit_item = MenuItem::with_id(TRAY_QUIT_ID, "Sair do POM", true, None);
+        let show_item = MenuItem::with_id(TRAY_SHOW_ID, "Open POM", true, None);
+        let quit_item = MenuItem::with_id(TRAY_QUIT_ID, "Quit POM", true, None);
         menu.append(&show_item)
-            .context("não deu para adicionar Restaurar ao menu da bandeja")?;
+            .context("could not add Restore to the tray menu")?;
         menu.append(&quit_item)
-            .context("não deu para adicionar Sair ao menu da bandeja")?;
+            .context("could not add Quit to the tray menu")?;
         let tray = TrayIconBuilder::new()
             .with_tooltip("POM")
             .with_menu(Box::new(menu))
             .with_icon(tray_icon()?)
             .build()
-            .context("não deu para instalar o ícone na bandeja do Windows")?;
+            .context("could not install the icon in the Windows tray")?;
 
         let proxy = event_loop.create_proxy();
         MenuEvent::set_event_handler(Some(move |event| {
@@ -221,7 +221,7 @@ mod native {
 
         service
             .join()
-            .map_err(|_| anyhow!("thread do serviço Windows terminou em pânico"))?
+            .map_err(|_| anyhow!("Windows service thread ended in a panic"))?
     }
 }
 

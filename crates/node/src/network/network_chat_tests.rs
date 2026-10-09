@@ -182,7 +182,7 @@ async fn plugin_notices_are_validated_kept_in_memory_and_never_persisted() {
         recipient_node_id: None,
         plugin_code: plugin_code.into(),
         title: "Deploy pronto".into(),
-        body: "O modelo foi implantado.".into(),
+        body: "The model was deployed.".into(),
         level: level.into(),
         sent_at: chrono::Utc::now(),
     };

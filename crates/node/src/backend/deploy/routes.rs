@@ -90,8 +90,8 @@ pub(super) async fn list_deployments(
         return match local_deployments(&self_id, &state.database) {
             Ok(body) => Json(body).into_response(),
             Err(error) => {
-                tracing::error!("não foi possível ler implantações locais: {error:#}");
-                bad(json!({ "error": "não foi possível ler implantações locais" }))
+                tracing::error!("could not read local deployments: {error:#}");
+                bad(json!({ "error": "could not read local deployments" }))
             }
         };
     }
@@ -124,8 +124,8 @@ pub(super) async fn list_deployments(
     let local = match state.database.deployments() {
         Ok(local) => local,
         Err(error) => {
-            tracing::error!("não foi possível ler implantações locais: {error:#}");
-            return bad(json!({ "error": "não foi possível ler implantações locais" }));
+            tracing::error!("could not read local deployments: {error:#}");
+            return bad(json!({ "error": "could not read local deployments" }));
         }
     };
     absorb(&self_id, local, &mut by_id, &mut stored_by);
@@ -215,7 +215,7 @@ pub(super) async fn receive_deployment(
         .is_some();
     if record.node(&self_id).is_none() && !already_knew {
         return bad(json!({
-            "error": "este nó não faz parte da implantação"
+            "error": "this node is not part of the deployment"
         }));
     }
     // Aceita mesmo incompleto - uma implantação que não fecha o modelo é um
@@ -225,7 +225,7 @@ pub(super) async fn receive_deployment(
     // na primeira requisição.
     if !record.covers_the_model() {
         warn!(
-            "implantação {} não cobre as {} camadas de {}",
+            "deployment {} does not cover the {} layers of {}",
             record.deploy_id, record.model.total_layers, record.model.label
         );
     }

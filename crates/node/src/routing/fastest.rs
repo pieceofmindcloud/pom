@@ -256,8 +256,8 @@ pub enum ReturnMode {
 impl ReturnMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            ReturnMode::Direct => "direta",
-            ReturnMode::Ring => "anel",
+            ReturnMode::Direct => "direct",
+            ReturnMode::Ring => "ring",
         }
     }
 
@@ -283,8 +283,8 @@ pub fn forced_return_mode() -> Option<ReturnMode> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "direct" | "direta" => Some(ReturnMode::Direct),
-        "ring" | "anel" => Some(ReturnMode::Ring),
+        "direct" | "direct" => Some(ReturnMode::Direct),
+        "ring" | "ring" => Some(ReturnMode::Ring),
         _ => None,
     }
 }
@@ -655,7 +655,7 @@ pub fn return_path_prefers_ring(
         let short = deliverer.get(..12).unwrap_or(deliverer);
         match back {
             None if !deliverer_perf.gateway_route_kinds.is_empty() => {
-                return Some(format!("{short} não tem rota de volta até este gateway"));
+                return Some(format!("{short} has no route back to this gateway"));
             }
             Some("tunnel") => {
                 let upto = if position == 0 { 0 } else { chain.len() - 1 };
@@ -663,7 +663,7 @@ pub fn return_path_prefers_ring(
                     .all(|index| matches!(forward_kind(index), Some("quic" | "http" | "local")));
                 if forward_direct {
                     return Some(format!(
-                        "{short} só volta pelo túnel libp2p e a ida é direta"
+                        "{short} only comes back through the libp2p tunnel and the outbound path is direct"
                     ));
                 }
             }

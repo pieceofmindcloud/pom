@@ -673,7 +673,7 @@ pub(crate) async fn generate(
                     generated,
                     total_ms,
                     finish,
-                    "geração concluída pelo serviço de inferência do plugin"
+                    "generation completed by the plugin inference service"
                 );
                 let summary = GenSummary {
                     source: format!("pipeline:{}", plan.hop_chain()),
@@ -743,29 +743,29 @@ pub(crate) async fn deploy_block(
     targets: &[String],
 ) -> Option<String> {
     if !valid_code(service) {
-        return Some(format!("serviço de inferência inválido: {service}"));
+        return Some(format!("invalid inference service: {service}"));
     }
     let named: Vec<&String> = targets.iter().filter(|id| !id.is_empty()).collect();
     let mut unique = named.clone();
     unique.sort();
     unique.dedup();
     if unique.is_empty() {
-        return Some("escolha a máquina que roda o serviço de inferência".into());
+        return Some("choose the machine that runs the inference service".into());
     }
     if whole && unique.len() != 1 {
         return Some(format!(
-            "o serviço de inferência {service} roda o modelo inteiro numa máquina só: escolha uma máquina"
+            "the inference service {service} runs the whole model on a single machine: choose one machine"
         ));
     }
     if !whole && unique.len() != named.len() {
         return Some(format!(
-            "o serviço de inferência {service} roda uma fatia por máquina: escolha máquinas diferentes"
+            "the inference service {service} runs one slice per machine: choose different machines"
         ));
     }
     for target in unique {
         let Some(services) = services_of(state, target).await else {
             return Some(format!(
-                "a máquina {target} não respondeu quais serviços oferece"
+                "machine {target} did not answer which services it offers"
             ));
         };
         let offered = services
@@ -774,18 +774,18 @@ pub(crate) async fn deploy_block(
         match offered {
             None => {
                 return Some(format!(
-                    "a máquina {target} não tem o plugin {service} com o serviço de inferência ativo"
+                    "machine {target} does not have the plugin {service} with the inference service active"
                 ))
             }
             Some(entry) if entry["status"] == "error" || entry["status"] == "waiting" => {
                 return Some(format!(
-                    "o serviço de inferência {service} da máquina {target} não está pronto: {}",
-                    entry["detail"].as_str().unwrap_or("sem detalhe")
+                    "the inference service {service} of machine {target} is not ready: {}",
+                    entry["detail"].as_str().unwrap_or("no detail")
                 ))
             }
             Some(entry) if !whole && entry["stages"] != true => {
                 return Some(format!(
-                    "o serviço de inferência {service} serve o modelo inteiro: escolha \"modelo inteiro\""
+                    "the inference service {service} serves the whole model: choose \"whole model\""
                 ))
             }
             Some(_) => {}

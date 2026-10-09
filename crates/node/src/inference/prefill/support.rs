@@ -65,7 +65,7 @@ pub struct GenerationCancelled;
 
 impl std::fmt::Display for GenerationCancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("geração cancelada pelo cliente")
+        f.write_str("generation cancelled by the client")
     }
 }
 
@@ -95,7 +95,7 @@ impl std::fmt::Display for PrefillResumable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{RESUMABLE_TEXT_PREFIX}{} (posição {})",
+            "{RESUMABLE_TEXT_PREFIX}{} (position {})",
             self.from_chunk, self.start_pos
         )
     }
@@ -119,8 +119,8 @@ impl std::fmt::Display for PartialPrefillTrace {
 
 impl std::error::Error for PartialPrefillTrace {}
 
-const PARTIAL_TRACE_TEXT: &str = "telemetria parcial do prefill";
-const RESUMABLE_TEXT_PREFIX: &str = "prefill retomável do pedaço ";
+const PARTIAL_TRACE_TEXT: &str = "partial prefill telemetry";
+const RESUMABLE_TEXT_PREFIX: &str = "resumable prefill of chunk ";
 
 /// The prefill error as a person reads it: the context chain without the
 /// wrappers that only carry telemetry or a resume point. Printing just the
@@ -182,7 +182,7 @@ impl std::fmt::Display for PrefillRebuildRequired {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "retoma insegura do pedaço {} (posição {}): {}",
+            "unsafe resume of chunk {} (position {}): {}",
             self.from_chunk, self.start_pos, self.reason
         )
     }
@@ -271,7 +271,7 @@ impl PrefillOverlapWindow {
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| anyhow!("janela de sobreposição foi encerrada"))
+            .map_err(|_| anyhow!("overlap window was closed"))
     }
 
     /// Reserva `amount` bytes do orçamento em voo, esperando um pedaço anterior
@@ -284,7 +284,7 @@ impl PrefillOverlapWindow {
             .clone()
             .acquire_many_owned(want)
             .await
-            .expect("semáforo de bytes do prefill nunca é fechado")
+            .expect("the prefill byte semaphore is never closed")
     }
 }
 
@@ -3617,7 +3617,7 @@ pub(super) fn required_prefill_position(
         .and_then(|value| value.as_u64())
         .map(|value| value as u32)
         .ok_or_else(|| {
-            anyhow!("peer omitiu {field} no chunk {chunk_index}; posição absoluta obrigatória")
+            anyhow!("peer omitted {field} at chunk {chunk_index}; absolute position required")
         })
 }
 

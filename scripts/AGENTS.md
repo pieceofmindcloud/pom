@@ -25,7 +25,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
   `--origins`, `--repetitions` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
-  (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes) e
+  (`git rev-parse --short HEAD`, sufixo `-dirty` se a arvore tem alteracoes) e
   exporta `POM_BUILD_COMMIT` apenas para o runtime. Por padrao resolve a tag da
   branch remota `pom-tensor-parallel` (mesmo algoritmo da action de release,
   completando a historia de um clone raso sem baixar blobs) e usa

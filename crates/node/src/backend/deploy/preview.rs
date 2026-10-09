@@ -215,7 +215,7 @@ pub(super) async fn enrich_capacity_previews(
         }
         if checked < assigned {
             notes.push(format!(
-                "{} de {} faixas desta máquina ainda não têm projeção (aguardando cópia)",
+                "{} of {} ranges of this machine have no projection yet (waiting for the copy)",
                 assigned - checked,
                 assigned
             ));

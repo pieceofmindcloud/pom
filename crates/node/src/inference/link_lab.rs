@@ -201,7 +201,7 @@ async fn handle_link(State(hop): State<Hop>, body: axum::body::Body) -> Response
         let hop = hop.clone();
         async move {
             if !matches!(path.as_str(), "/v1/step" | "/v1/prefill") {
-                return Err(anyhow::anyhow!("rota inesperada no canal: {path}"));
+                return Err(anyhow::anyhow!("unexpected route on the channel: {path}"));
             }
             Ok(fake_step(State(hop), bytes).await)
         }
@@ -315,7 +315,7 @@ async fn measure(hops: usize, link: bool, tokens: usize) -> Measurement {
     let mut transport = "";
     let warm = forward(&clients, &steps, &session, (&residual, shape.clone()))
         .await
-        .expect("aquecimento");
+        .expect("warmup");
     let _ = warm;
     for counter in &counters {
         counter.read.store(0, Ordering::Relaxed);
@@ -350,13 +350,13 @@ async fn measure(hops: usize, link: bool, tokens: usize) -> Measurement {
             |_| {},
         )
         .await
-        .expect("travessia");
+        .expect("traversal");
         transport = match sent.transport {
             crate::relay::InferenceTransport::HttpsLink => "https-link",
             crate::relay::InferenceTransport::Https => "https",
             crate::relay::InferenceTransport::Http => "http",
             other => {
-                panic!("transporte inesperado na bancada: {}", other.as_str())
+                panic!("unexpected transport on the bench: {}", other.as_str())
             }
         };
         assert_eq!(sent.meta["token_id"], json!(1234));
@@ -398,8 +398,7 @@ async fn the_persistent_link_costs_fewer_bytes_per_token() {
         let after = measure(hops, true, DECODE_TOKENS).await;
         for (label, m) in [("antes ", &before), ("depois", &after)] {
             println!(
-                "hops={hops} {label} transporte={:<10} bytes/ficha(1º hop)={:.1} \
-                 bytes/ficha(cadeia)={:.1} quadro={} estado_oculto={} conexões={} ms/ficha={:.3}",
+                "hops={hops} {label} transport={:<10} bytes/token(1st hop)={:.1} bytes/token(chain)={:.1} frame={} hidden_state={} connections={} ms/token={:.3}",
                 m.transport,
                 m.bytes_per_token_first_hop,
                 m.bytes_per_token_all_hops,
@@ -413,17 +412,17 @@ async fn the_persistent_link_costs_fewer_bytes_per_token() {
         assert_eq!(after.transport, "https-link");
         assert_eq!(
             after.connections_first_hop, 0,
-            "o canal persistente não pode abrir conexão por ficha"
+            "the persistent channel cannot open a connection per token"
         );
         assert!(
             after.bytes_per_token_first_hop < before.bytes_per_token_first_hop,
-            "hops={hops}: o canal gastou {:.1} B/ficha contra {:.1} B/ficha da requisição por ficha",
+            "hops={hops}: the channel spent {:.1} B/token against {:.1} B/token of the per-token request",
             after.bytes_per_token_first_hop,
             before.bytes_per_token_first_hop
         );
         assert!(
             after.bytes_per_token_all_hops < before.bytes_per_token_all_hops,
-            "hops={hops}: a cadeia inteira não economizou"
+            "hops={hops}: the whole chain saved nothing"
         );
     }
 }
@@ -496,7 +495,7 @@ async fn direct_prefill_handoff_uses_the_persistent_link() {
         |_| {},
     )
     .await
-    .expect("handoff de prefill");
+    .expect("prefill handoff");
 
     assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
     assert_eq!(crate::link::channels_opened(&node_id, &url), 1);
@@ -545,16 +544,16 @@ async fn an_unavailable_channel_degrades_to_the_per_request_path() {
         |_| {},
     )
     .await
-    .expect("a geração continua pelo caminho de sempre");
+    .expect("the generation continues through the usual path");
     assert_eq!(sent.transport, crate::relay::InferenceTransport::Http);
     assert!(
         sent.transport_fallback,
-        "a telemetria tem que denunciar que o canal não serviu"
+        "the telemetry must report that the channel did not work"
     );
     assert_eq!(sent.meta["token_id"], json!(1234));
     assert!(
         !crate::link::has_channel("lab-sem-canal", &url).await,
-        "um canal que não abriu não pode ficar no pool"
+        "a channel that did not open cannot stay in the pool"
     );
 }
 
@@ -598,11 +597,11 @@ async fn the_internal_remote_stream_reuses_the_persistent_link() {
             |_| {},
         )
         .await
-        .expect("travessia interna");
+        .expect("internal traversal");
         assert_eq!(
             sent.transport,
             crate::relay::InferenceTransport::HttpsLink,
-            "remote-stream deve usar o canal persistente quando anunciado"
+            "remote-stream must use the persistent channel when announced"
         );
         assert_eq!(sent.meta["token_id"], json!(1234));
     }
@@ -610,7 +609,7 @@ async fn the_internal_remote_stream_reuses_the_persistent_link() {
     assert_eq!(
         counters.connections.load(Ordering::Relaxed),
         1,
-        "quatro ativações internas devem compartilhar uma conexão"
+        "four internal activations must share one connection"
     );
     assert_eq!(
         crate::link::channels_opened("lab-remote-stream-link", &url),
@@ -659,19 +658,19 @@ async fn concurrent_sessions_share_the_link() {
                     |_| {},
                 )
                 .await
-                .expect("travessia");
+                .expect("traversal");
                 assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
                 assert_eq!(sent.meta["token_id"], json!(1234));
             }
         }));
     }
     for session in sessions {
-        session.await.expect("sessão");
+        session.await.expect("session");
     }
     assert_eq!(
         counters.connections.load(Ordering::Relaxed),
         1,
-        "seis sessões e sessenta travessias têm que caber numa ligação"
+        "six sessions and sixty traversals must fit in one link"
     );
     assert_eq!(crate::link::channels_opened("lab-multiplexado", &url), 1);
 }

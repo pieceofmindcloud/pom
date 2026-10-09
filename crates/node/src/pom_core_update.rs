@@ -77,7 +77,7 @@ impl PomCoreUpdater {
             loop {
                 tokio::time::sleep(AUTO_CHECK_INTERVAL).await;
                 if let Err(error) = updater.detect().await {
-                    tracing::warn!(error = %error, "detecção automática de atualização do pom falhou");
+                    tracing::warn!(error = %error, "automatic detection of the pom update failed");
                 }
             }
         });
@@ -90,7 +90,7 @@ impl PomCoreUpdater {
     fn logs_lease_error() -> LicenseClientError {
         LicenseClientError::new(
             LicenseErrorCode::LeaseUnknown,
-            "lease do plugin logs ausente para atualização do pom",
+            "logs plugin lease missing for the pom update",
         )
     }
 
@@ -137,7 +137,7 @@ impl PomCoreUpdater {
             tracing::info!(
                 release_id = %update.release_id,
                 version = %update.version,
-                "release nova do pom encontrada"
+                "new pom release found"
             );
         }
         *self.status.write().await = available;
@@ -152,12 +152,12 @@ impl PomCoreUpdater {
         let requested_release_id = requested_release_id.trim();
         let Some(available) = self.status.read().await.clone() else {
             return Err(update_unavailable(
-                "nenhuma atualização do pom está disponível",
+                "no pom update is available",
             ));
         };
         if available.release_id != requested_release_id {
             return Err(update_unavailable(
-                "a atualização confirmada já não é a atualização disponível",
+                "the confirmed update is no longer the available update",
             ));
         }
         let Some(logs) = self.plugins.runtime_for(LOGS_PLUGIN_CODE) else {
@@ -166,7 +166,7 @@ impl PomCoreUpdater {
         if !logs.status().await.active {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "uma licença do plugin logs ativa é necessária para atualizar o pom",
+                "an active logs plugin license is required to update pom",
             ));
         }
         let persisted = logs
@@ -193,7 +193,7 @@ impl PomCoreUpdater {
             )
         {
             return Err(update_unavailable(
-                "a atualização confirmada já não é uma release nova disponível",
+                "the confirmed update is no longer a new available release",
             ));
         }
 
@@ -205,7 +205,7 @@ impl PomCoreUpdater {
             crate::core_update::InstallResult::Replaced => {
                 tracing::info!(
                     release_id = %requested_release_id,
-                    "binário pom trocado; reinício autorizado pelo operador"
+                    "pom binary swapped; restart authorized by the operator"
                 );
                 schedule_core_restart(executable);
                 Ok(())
@@ -221,7 +221,7 @@ impl PomCoreUpdater {
                 tracing::info!(
                     staged = %staged.display(),
                     release_id = %requested_release_id,
-                    "binário pom preparado; reinício autorizado pelo operador"
+                    "pom binary prepared; restart authorized by the operator"
                 );
                 schedule_core_restart(executable);
                 Ok(())
@@ -247,7 +247,7 @@ fn schedule_core_restart(executable: std::path::PathBuf) {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let error = crate::respawn::respawn_at(&executable);
-        tracing::error!(error = %error, "reinício autorizado do pom falhou; o processo segue no ar");
+        tracing::error!(error = %error, "authorized pom restart failed; the process stays up");
     });
 }
 

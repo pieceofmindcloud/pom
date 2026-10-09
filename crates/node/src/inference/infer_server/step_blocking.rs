@@ -77,7 +77,7 @@ pub(crate) fn step_blocking(
     // reutilizável no turno seguinte sem remover nada do cache.
     s.open_generation(&sid_key)?;
     let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
-        anyhow::anyhow!("sessão '{}' desconhecida — faça o prefill antes", sid_key)
+        anyhow::anyhow!("unknown session '{}' — run the prefill first", sid_key)
     })?;
     session.last_used = Instant::now();
     let n_past = session.n_past;
@@ -166,7 +166,7 @@ pub(crate) fn step_blocking(
         mtp_k_echo = mtp_k;
     } else {
         // First peer: receives the token ID sampled by the previous last peer.
-        let tid = token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
+        let tid = token_id.ok_or_else(|| anyhow::anyhow!("the first peer needs a token_id"))?;
         // Only the tail pushed to `recent_tokens` before this fix, so on a
         // real (head != tail) multi-hop pipeline the head's own history was
         // permanently empty — harmless until something needed it (repetition
@@ -410,7 +410,7 @@ pub(crate) fn step_blocking(
                 } else if batch_tokens.is_none() {
                     (
                         Some(SPECULATION_REASON_MTP_INPUT_MISSING),
-                        Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                        Some("tail received a hidden state without the tokens field".to_owned()),
                     )
                 } else {
                     (None, None)
@@ -446,7 +446,7 @@ pub(crate) fn step_blocking(
                     if dr.is_empty() {
                         speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                         speculation_disabled_detail =
-                            Some("nextn não produziu tokens para a rodada seguinte".to_owned());
+                            Some("nextn produced no tokens for the next round".to_owned());
                         None
                     } else {
                         Some(dr)
@@ -462,7 +462,7 @@ pub(crate) fn step_blocking(
                 if new_n_past < n_past_after_batch
                     && !s.engine.kv_remove(seq_id, new_n_past as i32, -1)
                 {
-                    bail!("rollback especulativo remoto recusado na cauda");
+                    bail!("remote speculative rollback refused at the tail");
                 }
                 s.sessions.get_mut(&sid_key).unwrap().n_past = new_n_past;
             }
@@ -601,7 +601,7 @@ pub(crate) fn step_blocking(
             } else if batch_tokens.is_none() {
                 (
                     Some(SPECULATION_REASON_MTP_INPUT_MISSING),
-                    Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                    Some("tail received a hidden state without the tokens field".to_owned()),
                 )
             } else {
                 (None, None)
@@ -633,7 +633,7 @@ pub(crate) fn step_blocking(
                 if dr.is_empty() {
                     speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                     speculation_disabled_detail =
-                        Some("nextn não produziu tokens para a rodada seguinte".to_owned());
+                        Some("nextn produced no tokens for the next round".to_owned());
                     None
                 } else {
                     Some(dr)

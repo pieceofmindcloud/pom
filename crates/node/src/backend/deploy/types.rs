@@ -81,11 +81,11 @@ pub(crate) fn normalize_deployment_name(
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback.trim());
     if name.is_empty() {
-        return Err("o nome da implantação não pode ficar vazio".to_string());
+        return Err("the deployment name cannot be empty".to_string());
     }
     if name.chars().count() > MAX_DEPLOYMENT_NAME_CHARS {
         return Err(format!(
-            "o nome da implantação pode ter no máximo {MAX_DEPLOYMENT_NAME_CHARS} caracteres"
+            "the deployment name can have at most {MAX_DEPLOYMENT_NAME_CHARS} characters"
         ));
     }
     Ok(name.to_string())
@@ -103,18 +103,18 @@ impl DeployKind {
     /// something that is not on their screen.
     pub(super) fn unit(self, group: &str, start: u32, end: u32) -> String {
         match self {
-            DeployKind::Shards => format!("a fatia L{start}-{end}"),
-            DeployKind::Whole => format!("o modelo {group}"),
-            DeployKind::TensorParallel => format!("o grupo tensor-parallel {group}"),
+            DeployKind::Shards => format!("slice L{start}-{end}"),
+            DeployKind::Whole => format!("the model {group}"),
+            DeployKind::TensorParallel => format!("the tensor-parallel group {group}"),
         }
     }
 
     /// The same thing, indefinite, for a sentence about its weight.
     pub(super) fn indefinite(self) -> &'static str {
         match self {
-            DeployKind::Shards => "uma fatia",
-            DeployKind::Whole => "um modelo",
-            DeployKind::TensorParallel => "um grupo tensor-parallel",
+            DeployKind::Shards => "a slice",
+            DeployKind::Whole => "a model",
+            DeployKind::TensorParallel => "a tensor-parallel group",
         }
     }
 }

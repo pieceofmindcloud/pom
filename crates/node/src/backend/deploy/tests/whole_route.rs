@@ -167,7 +167,7 @@ mod whole_route_tests {
     async fn the_route_plans_a_whole_model_from_the_machines_own_catalog() {
         let body = plan_for("whole", "qwen3.5-9b").await;
 
-        assert_eq!(body["kind"], "whole", "o plano diz que pergunta respondeu");
+        assert_eq!(body["kind"], "whole", "the plan says which question it answered");
         assert!(body["blocked"].is_null(), "{}", body["blocked"]);
         assert_eq!(body["complete"], true);
         assert_eq!(body["total_layers"], 32);
@@ -182,7 +182,7 @@ mod whole_route_tests {
 
         // A fatia da mesma máquina não entrou no inventário desta pergunta.
         let available = body["available"].as_array().unwrap();
-        assert_eq!(available.len(), 1, "só o modelo inteiro: {available:?}");
+        assert_eq!(available.len(), 1, "only the whole model: {available:?}");
         assert_eq!(available[0]["name"], "qwen3.5-9b");
     }
 
@@ -361,7 +361,7 @@ mod whole_route_tests {
 
         let blocked = body["blocked"].as_str().unwrap_or_default();
         assert!(blocked.contains("L16-31"), "{blocked}");
-        assert!(blocked.contains("metadados do GGUF"), "{blocked}");
+        assert!(blocked.contains("GGUF metadata"), "{blocked}");
     }
 
     /// A pergunta padrão continua sendo a das fatias, e ela não enxerga o
@@ -388,8 +388,8 @@ mod whole_route_tests {
     #[tokio::test]
     async fn a_model_nobody_has_is_refused_by_name() {
         let body = plan_for("whole", "llama3-70b").await;
-        let reason = body["blocked"].as_str().expect("recusa");
+        let reason = body["blocked"].as_str().expect("refusal");
         assert!(reason.contains("llama3-70b"), "{reason}");
-        assert!(!reason.contains("fatias de"), "{reason}");
+        assert!(!reason.contains("slices of"), "{reason}");
     }
 }

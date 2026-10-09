@@ -93,15 +93,15 @@ mod dead_address_tests {
             .unwrap()
             .iter()
             .find(|v| v["node_id"] == "outro")
-            .expect("o peer tem de aparecer no cluster");
+            .expect("the peer must appear in the cluster");
 
         assert_eq!(
             other["node"]["hostname"], "macbook",
-            "a leitura tinha de cair no endereço vivo em vez de morrer no primeiro"
+            "the read had to fall on the live address instead of dying on the first"
         );
         assert!(
             other["unreachable"].is_null(),
-            "o aviso permanente do Painel não pode sobreviver a um peer legível: {}",
+            "the permanent Dashboard warning cannot survive a readable peer: {}",
             other["unreachable"]
         );
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -109,11 +109,11 @@ mod dead_address_tests {
         let routes = &state.network.routes;
         assert!(
             routes.is_failed("outro", &dead),
-            "o endereço que não respondeu tem de ficar na memória de falha"
+            "the address that did not answer must stay in the failure memory"
         );
         assert!(
             !routes.is_failed("outro", &alive),
-            "o endereço que respondeu não pode ficar desacreditado"
+            "the address that answered cannot stay discredited"
         );
         let candidates = state
             .all_peers()
@@ -125,7 +125,7 @@ mod dead_address_tests {
         assert_eq!(
             routes.usable("outro", &candidates),
             vec![alive],
-            "a leitura seguinte não pode voltar a pagar o timeout do endereço morto"
+            "the next read cannot pay the timeout of the dead address again"
         );
     }
 
@@ -150,15 +150,15 @@ mod dead_address_tests {
             .clone();
         assert_eq!(
             other["rediscovering"], true,
-            "sem endereço utilizável, o Painel mostra o nó a ser reencontrado"
+            "without a usable address, the Dashboard shows the node being rediscovered"
         );
         assert!(
             other["unreachable"].is_null(),
-            "reencontrando não é inalcançável: o utilizador não pode ler um beco sem saída"
+            "rediscovering is not unreachable: the user cannot read a dead end"
         );
         assert!(
             state.network.is_rediscovering("outro"),
-            "o nó tem de ter pedido o endereço atual do par"
+            "the node must have asked for the current address of the peer"
         );
 
         // E o cadáver saiu da entrada local, para que o próximo `Announce` do
@@ -168,7 +168,7 @@ mod dead_address_tests {
             .clone();
         assert!(
             stored.is_empty(),
-            "o candidato desacreditado tinha de sair da entrada: {stored:?}"
+            "the discredited candidate had to leave the entry: {stored:?}"
         );
     }
 
@@ -204,13 +204,13 @@ mod dead_address_tests {
         let gave_up = read_file(state.clone()).await;
         assert_eq!(
             gave_up["rediscovering"], false,
-            "passado o prazo, a tela não pode continuar prometendo que reencontra"
+            "past the deadline, the screen cannot keep promising it rediscovers"
         );
         assert!(
             gave_up["unreachable"]
                 .as_str()
-                .is_some_and(|error| error.contains("endereços conhecidos")),
-            "e tem de dizer por quê: {}",
+                .is_some_and(|error| error.contains("known addresses")),
+            "and it must say why: {}",
             gave_up["unreachable"]
         );
     }
@@ -232,15 +232,15 @@ mod dead_address_tests {
             .unwrap()
             .iter()
             .find(|m| m["model_id"] == "qwen")
-            .expect("o modelo anunciado entra no inventário");
+            .expect("the announced model enters the inventory");
         assert_eq!(
             qwen["covered_layers"], 16,
-            "as camadas continuam anunciadas; retirá-las seria mentir na outra direção"
+            "the layers stay announced; removing them would be lying in the other direction"
         );
         assert_eq!(
             qwen["unreadable_nodes"],
             json!(["outro"]),
-            "a cobertura tem de dizer de quem ela depende sem conseguir ler"
+            "the coverage must say whom it depends on without being able to read"
         );
     }
 
@@ -269,7 +269,7 @@ mod dead_address_tests {
             .unwrap()
             .iter()
             .find(|model| model["model_id"] == "qwen")
-            .expect("o modelo anunciado entra no inventário");
+            .expect("the announced model enters the inventory");
         assert_eq!(qwen["covered_layers"], 16);
         assert_eq!(qwen["complete"], false);
     }
@@ -286,12 +286,12 @@ mod profile_network_tests {
         state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
 
         let body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
-        let peers = body["peers"].as_array().expect("peers precisa ser uma lista");
+        let peers = body["peers"].as_array().expect("peers must be a list");
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0]["node_id"], "eu");
         assert!(
             !peers.iter().any(|peer| peer["node_id"] == "outro"),
-            "infer não pode receber dados de outro nó"
+            "infer cannot receive data from another node"
         );
     }
 

@@ -153,15 +153,15 @@ pub struct LinkResponse {
 /// Monta `[tamanho][status][id][corpo]`.
 pub fn encode_envelope(status: u16, id: &str, body: &[u8]) -> Result<Vec<u8>> {
     if id.len() > u16::MAX as usize {
-        return Err(anyhow!("identificador de quadro longo demais"));
+        return Err(anyhow!("frame identifier too long"));
     }
     let rest = ENVELOPE_HEAD
         .checked_add(id.len())
         .and_then(|len| len.checked_add(body.len()))
-        .ok_or_else(|| anyhow!("quadro do canal excede o limite numérico"))?;
+        .ok_or_else(|| anyhow!("channel frame exceeds the numeric limit"))?;
     if rest > MAX_LINK_FRAME_BYTES {
         return Err(anyhow!(
-            "quadro do canal excede o limite de {MAX_LINK_FRAME_BYTES} bytes"
+            "channel frame exceeds the limit of {MAX_LINK_FRAME_BYTES} bytes"
         ));
     }
     let mut out = Vec::with_capacity(4 + rest);
@@ -214,11 +214,11 @@ impl FrameReader {
         ]) as usize;
         if rest > MAX_LINK_FRAME_BYTES {
             return Err(anyhow!(
-                "quadro do canal anuncia {rest} bytes, acima do limite de {MAX_LINK_FRAME_BYTES}"
+                "channel frame announces {rest} bytes, above the limit of {MAX_LINK_FRAME_BYTES}"
             ));
         }
         if rest < ENVELOPE_HEAD {
-            return Err(anyhow!("quadro do canal curto demais: {rest} bytes"));
+            return Err(anyhow!("channel frame too short: {rest} bytes"));
         }
         let total = 4 + rest;
         if self.buffer.len() < total {
@@ -228,10 +228,10 @@ impl FrameReader {
         let id_len = u16::from_be_bytes([self.buffer[6], self.buffer[7]]) as usize;
         let id_end = 8 + id_len;
         if id_end > total {
-            return Err(anyhow!("identificador do quadro excede o quadro"));
+            return Err(anyhow!("frame identifier exceeds the frame"));
         }
         let id = String::from_utf8(self.buffer[8..id_end].to_vec())
-            .map_err(|_| anyhow!("identificador do quadro não é UTF-8"))?;
+            .map_err(|_| anyhow!("frame identifier is not UTF-8"))?;
         let body = self.buffer[id_end..total].to_vec();
         self.buffer.drain(..total);
         Ok(Some(Envelope { status, id, body }))
@@ -275,7 +275,7 @@ where
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(error) => {
-                    debug!("canal de inferência encerrou a leitura: {error}");
+                    debug!("inference channel stopped reading: {error}");
                     break;
                 }
             };
@@ -298,7 +298,7 @@ where
                     }
                     Ok(None) => break,
                     Err(error) => {
-                        warn!("canal de inferência recebeu quadro inválido: {error}");
+                        warn!("inference channel received an invalid frame: {error}");
                         return;
                     }
                 }
@@ -311,7 +311,7 @@ where
         .status(axum::http::StatusCode::OK)
         .header("content-type", "application/octet-stream")
         .body(axum::body::Body::from_stream(stream))
-        .expect("resposta de canal sempre montável")
+        .expect("channel response is always buildable")
 }
 
 fn is_remote_stream_callback(body: &[u8]) -> bool {
@@ -326,7 +326,7 @@ where
 {
     let path = match wire::peek_batch_header(&envelope.body) {
         Ok(header) => header.kind,
-        Err(error) => return refusal(&envelope.id, 400, format!("quadro inválido: {error}")),
+        Err(error) => return refusal(&envelope.id, 400, format!("invalid frame: {error}")),
     };
     let response = match dispatch(path, Bytes::from(envelope.body.clone())).await {
         Ok(response) => response,
@@ -336,7 +336,7 @@ where
     let bytes =
         match axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES).await {
             Ok(bytes) => bytes,
-            Err(error) => return refusal(&envelope.id, 500, format!("resposta ilegível: {error}")),
+            Err(error) => return refusal(&envelope.id, 500, format!("unreadable response: {error}")),
         };
     match encode_envelope(status, &envelope.id, &bytes) {
         Ok(frame) => frame,
@@ -349,7 +349,7 @@ fn refusal(id: &str, status: u16, message: String) -> Vec<u8> {
         // O identificador é o único campo de tamanho livre, e ele veio do fio
         // já limitado. Se ainda assim não couber, o quadro vazio mantém o canal
         // coerente em vez de emudecer a chamada.
-        encode_envelope(status, "", b"").expect("envelope vazio sempre cabe")
+        encode_envelope(status, "", b"").expect("an empty envelope always fits")
     })
 }
 
@@ -508,7 +508,7 @@ async fn channel_for(
         }
     }
     if quarantined(&key) {
-        return Err(anyhow!("canal com {node_id} em quarentena após falha"));
+        return Err(anyhow!("channel with {node_id} quarantined after a failure"));
     }
 
     // O guarda é por aresta. Duas travessias da mesma aresta compartilham a
@@ -526,7 +526,7 @@ async fn channel_for(
     }
 
     if quarantined(&key) {
-        return Err(anyhow!("canal com {node_id} em quarentena após falha"));
+        return Err(anyhow!("channel with {node_id} quarantined after a failure"));
     }
 
     match open(clients, node_id, base_url, session_id).await {
@@ -566,11 +566,11 @@ async fn open(
         .send();
     let response = tokio::time::timeout(LINK_OPEN_TIMEOUT, response)
         .await
-        .map_err(|_| anyhow!("canal com {node_id} não abriu antes do timeout de conexão"))?
-        .map_err(|error| anyhow!("canal com {node_id} não abriu: {error}"))?;
+        .map_err(|_| anyhow!("channel with {node_id} did not open before the connection timeout"))?
+        .map_err(|error| anyhow!("channel with {node_id} did not open: {error}"))?;
     if !response.status().is_success() {
         return Err(anyhow!(
-            "canal com {node_id} recusado com HTTP {}",
+            "channel with {node_id} refused with HTTP {}",
             response.status()
         ));
     }
@@ -589,12 +589,12 @@ async fn open(
     tokio::spawn(async move {
         let mut stream = response.bytes_stream();
         let mut reader = FrameReader::new();
-        let mut cause = String::from("canal encerrado pelo peer");
+        let mut cause = String::from("channel closed by the peer");
         'outer: while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(error) => {
-                    cause = format!("leitura do canal falhou: {error}");
+                    cause = format!("channel read failed: {error}");
                     break;
                 }
             };
@@ -612,13 +612,13 @@ async fn open(
                             debug!(
                                 peer = %node,
                                 id = %envelope.id,
-                                "resposta do canal chegou depois da desistência"
+                                "channel response arrived after giving up"
                             );
                         }
                     }
                     Ok(None) => break,
                     Err(error) => {
-                        cause = format!("quadro inválido no canal: {error}");
+                        cause = format!("invalid frame on the channel: {error}");
                         break 'outer;
                     }
                 }
@@ -635,7 +635,7 @@ async fn open(
         }
     });
 
-    debug!(peer = node_id, url = %url, "canal de inferência aberto");
+    debug!(peer = node_id, url = %url, "inference channel open");
     Ok(channel)
 }
 
@@ -727,7 +727,7 @@ pub async fn send_batch_with_session_profile(
     let open_deadline = Instant::now() + LINK_OPEN_TIMEOUT.saturating_mul(2);
     for base in ordered {
         let Some(open_budget) = open_deadline.checked_duration_since(Instant::now()) else {
-            last_error = "orçamento de abertura do canal esgotado".to_string();
+            last_error = "channel open budget exhausted".to_string();
             break;
         };
         let setup_started = Instant::now();
@@ -745,7 +745,7 @@ pub async fn send_batch_with_session_profile(
             }
             Err(_) => {
                 last_error = format!(
-                    "canal não abriu dentro do orçamento de {} ms",
+                    "channel did not open within the budget of {} ms",
                     LINK_OPEN_TIMEOUT.as_millis()
                 );
                 quarantine(&target_key(node_id, &base));
@@ -789,7 +789,7 @@ pub async fn send_batch_with_session_profile(
         }
     }
     Err(anyhow::Error::new(LinkDeliveryError::before_frame(
-        format!("canal com {node_id} não abriu dentro do orçamento: {last_error}"),
+        format!("channel with {node_id} did not open within the budget: {last_error}"),
     )))
 }
 
@@ -851,7 +851,7 @@ async fn send_body_with_session(
         }
     }
     Err(anyhow!(
-        "canal de retorno com {node_id} não abriu por nenhuma rota: {last_error}"
+        "return channel with {node_id} did not open through any route: {last_error}"
     ))
 }
 
@@ -929,7 +929,7 @@ pub async fn send_body_without_response_with_session(
         }
     }
     Err(anyhow!(
-        "canal de retorno com {node_id} não enfileirou por nenhuma rota: {last_error}"
+        "return channel with {node_id} did not enqueue through any route: {last_error}"
     ))
 }
 
@@ -964,9 +964,9 @@ async fn send_frame_on_channel(
         let mut map = channel
             .pending
             .lock()
-            .map_err(|_| anyhow!("registro de entregas do canal corrompido"))?;
+            .map_err(|_| anyhow!("channel delivery record corrupted"))?;
         if map.contains_key(batch_id) {
-            return Err(anyhow!("batch_id repetido no canal: {batch_id}"));
+            return Err(anyhow!("repeated batch_id on the channel: {batch_id}"));
         }
         map.insert(batch_id.to_string(), Pending { reply: reply_tx });
     }
@@ -982,14 +982,14 @@ async fn send_frame_on_channel(
         .clone()
         .send(Bytes::from(frame))
         .await
-        .map_err(|_| anyhow!("canal com {node_id} fechou antes do envio"))?;
+        .map_err(|_| anyhow!("channel with {node_id} closed before the send"))?;
     let send_finished = Instant::now();
 
     let envelope = match tokio::time::timeout(crate::relay::frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(envelope))) => envelope,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: {error}")),
-        Ok(Err(_)) => return Err(anyhow!("{peer_label}: canal encerrou sem responder")),
-        Err(_) => return Err(anyhow!("{peer_label}: canal não respondeu a tempo")),
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: channel closed without answering")),
+        Err(_) => return Err(anyhow!("{peer_label}: channel did not answer in time")),
     };
     let received = Instant::now();
     if !(200..300).contains(&envelope.status) {
@@ -1048,7 +1048,7 @@ async fn send_frame_without_response(
     channel_key: String,
 ) -> Result<CallbackStatus> {
     if !channel.alive.load(Ordering::Acquire) {
-        return Err(anyhow!("canal com {node_id} já está encerrado"));
+        return Err(anyhow!("channel with {node_id} is already closed"));
     }
     let frame = encode_envelope(0, batch_id, &body)?;
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1056,9 +1056,9 @@ async fn send_frame_without_response(
         let mut map = channel
             .pending
             .lock()
-            .map_err(|_| anyhow!("registro de entregas do canal corrompido"))?;
+            .map_err(|_| anyhow!("channel delivery record corrupted"))?;
         if map.contains_key(batch_id) {
-            return Err(anyhow!("batch_id repetido no canal: {batch_id}"));
+            return Err(anyhow!("repeated batch_id on the channel: {batch_id}"));
         }
         map.insert(batch_id.to_string(), Pending { reply: reply_tx });
     }
@@ -1071,7 +1071,7 @@ async fn send_frame_without_response(
         .clone()
         .send(Bytes::from(frame))
         .await
-        .map_err(|_| anyhow!("{peer_label}: canal fechou antes do envio"))?;
+        .map_err(|_| anyhow!("{peer_label}: channel closed before the send"))?;
 
     let pending = channel.pending.clone();
     let channel = channel.clone();
@@ -1090,7 +1090,7 @@ async fn send_frame_without_response(
                 } else {
                     ack_status.transport_failed.store(true, Ordering::Release);
                 }
-                Some(format!("peer respondeu HTTP {}", envelope.status))
+                Some(format!("peer answered HTTP {}", envelope.status))
             }
             Ok(Ok(Err(error))) => {
                 ack_status.transport_failed.store(true, Ordering::Release);
@@ -1098,11 +1098,11 @@ async fn send_frame_without_response(
             }
             Ok(Err(_)) => {
                 ack_status.transport_failed.store(true, Ordering::Release);
-                Some("canal encerrou sem responder".to_string())
+                Some("channel closed without answering".to_string())
             }
             Err(_) => {
                 ack_status.transport_failed.store(true, Ordering::Release);
-                Some("canal não respondeu ACK a tempo".to_string())
+                Some("channel did not answer the ACK in time".to_string())
             }
         };
         drop(guard);
@@ -1112,7 +1112,7 @@ async fn send_frame_without_response(
                 entries.remove(&batch_id);
             }
             forget(&channel_key, &channel).await;
-            warn!(peer = %node_id, batch = %batch_id, %error, "ACK assíncrono do callback falhou; canal descartado");
+            warn!(peer = %node_id, batch = %batch_id, %error, "async ACK of the callback failed; channel discarded");
         }
     });
     Ok(status)
@@ -1137,7 +1137,7 @@ mod tests {
                 dtype: wire::WireDtype::F16,
             }],
         )
-        .expect("quadro válido")
+        .expect("valid frame")
     }
 
     #[test]
@@ -1158,7 +1158,7 @@ mod tests {
             while let Some(envelope) = reader.next().unwrap() {
                 got.push(envelope);
             }
-            assert_eq!(got.len(), 2, "corte em {cut} perdeu um quadro");
+            assert_eq!(got.len(), 2, "cut at {cut} lost a frame");
             assert_eq!(got[0].id, "um");
             assert_eq!(got[0].status, 0);
             assert_eq!(got[0].body, b"corpo-um");
@@ -1204,8 +1204,8 @@ mod tests {
         delay: std::collections::HashMap<String, u64>,
     ) -> impl Fn(String, Bytes) -> axum::response::Response + Clone + Send + Sync + 'static {
         move |path: String, body: Bytes| {
-            let header = wire::peek_batch_header(&body).expect("quadro válido");
-            let (_, items) = wire::decode_batch_items(&body).expect("itens válidos");
+            let header = wire::peek_batch_header(&body).expect("valid frame");
+            let (_, items) = wire::decode_batch_items(&body).expect("valid items");
             let delay = delay.get(&header.batch_id).copied().unwrap_or(0);
             let out = wire::encode_batch_items(
                 path,
@@ -1221,7 +1221,7 @@ mod tests {
                     })
                     .collect::<Vec<_>>(),
             )
-            .expect("resposta válida");
+            .expect("valid response");
             let response = axum::response::Response::builder()
                 .status(200)
                 .header("content-type", "application/octet-stream")
@@ -1256,14 +1256,14 @@ mod tests {
             let body = batch("/v1/step", &id, "item-0");
             let response = send_batch(&clients, "hop", &url, &id, Bytes::from(body), "hop")
                 .await
-                .expect("travessia pelo canal");
+                .expect("traversal through the channel");
             let header = wire::peek_batch_header(&response.body).unwrap();
             assert_eq!(header.batch_id, id);
         }
         assert_eq!(
             channels_opened("hop", &url),
             1,
-            "oito travessias não podem abrir oito ligações"
+            "eight traversals cannot open eight links"
         );
     }
 
@@ -1272,7 +1272,7 @@ mod tests {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(200)
-                .body(axum::body::Body::from("callback aceito"))
+                .body(axum::body::Body::from("callback accepted"))
                 .unwrap()
         })
         .await;
@@ -1290,9 +1290,9 @@ mod tests {
             None,
         )
         .await
-        .expect("callback deve reutilizar o canal persistente");
+        .expect("the callback must reuse the persistent channel");
 
-        assert_eq!(response.body, b"callback aceito");
+        assert_eq!(response.body, b"callback accepted");
         assert_eq!(channels_opened("gateway", &url), 1);
     }
 
@@ -1319,13 +1319,13 @@ mod tests {
                 Some("session-full-duplex"),
             )
             .await
-            .expect("o frame deve ser enfileirado sem esperar o ACK");
+            .expect("the frame must be enqueued without waiting for the ACK");
         }
 
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(150),
-            "o emissor esperou ACK por frame: {elapsed:?}"
+            "the emitter waited for an ACK per frame: {elapsed:?}"
         );
     }
 
@@ -1334,7 +1334,7 @@ mod tests {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(410)
-                .body(axum::body::Body::from("stream desconhecido"))
+                .body(axum::body::Body::from("unknown stream"))
                 .unwrap()
         })
         .await;
@@ -1354,7 +1354,7 @@ mod tests {
             Some("session-gone"),
         )
         .await
-        .expect("o callback deve ser enfileirado sem esperar o ACK");
+        .expect("the callback must be enqueued without waiting for the ACK");
 
         tokio::time::timeout(Duration::from_secs(1), async {
             while !status.gateway_gone() {
@@ -1362,7 +1362,7 @@ mod tests {
             }
         })
         .await
-        .expect("o ACK 410 assíncrono deve ser observado");
+        .expect("the async 410 ACK must be observed");
         assert!(!status.transport_failed());
     }
 
@@ -1404,17 +1404,17 @@ mod tests {
             "hop",
         )
         .await
-        .expect("a sessão rápida atravessa");
+        .expect("the fast session crosses");
         let fast_elapsed = started.elapsed();
-        let slow_ms = slow.await.unwrap().expect("a sessão lenta atravessa");
+        let slow_ms = slow.await.unwrap().expect("the slow session crosses");
 
         assert!(
             fast_elapsed < Duration::from_millis(200),
-            "a sessão rápida esperou {fast_elapsed:?} pela lenta - o canal está bloqueando por cabeça de fila"
+            "the fast session waited {fast_elapsed:?} for the slow one - the channel is head-of-line blocking"
         );
         assert!(
             slow_ms >= 250,
-            "a sessão lenta devia ter demorado, veio {slow_ms}ms"
+            "the slow session should have taken long, got {slow_ms}ms"
         );
         let _ = fast;
     }
@@ -1424,7 +1424,7 @@ mod tests {
         let url = spawn_link_server(|_path: String, _body: Bytes| {
             axum::response::Response::builder()
                 .status(400)
-                .body(axum::body::Body::from("sessão desconhecida"))
+                .body(axum::body::Body::from("unknown session"))
                 .unwrap()
         })
         .await;
@@ -1432,12 +1432,12 @@ mod tests {
         let body = batch("/v1/step", "b", "item-0");
         let error = send_batch(&clients, "hop", &url, "b", Bytes::from(body), "hop")
             .await
-            .expect_err("uma recusa não pode virar sucesso");
+            .expect_err("a refusal cannot become a success");
         let refusal = error
             .downcast_ref::<crate::relay::HttpRefusal>()
-            .expect("recusa do peer preserva o status");
+            .expect("a peer refusal preserves the status");
         assert_eq!(refusal.status, 400);
-        assert!(refusal.body.contains("sessão desconhecida"));
+        assert!(refusal.body.contains("unknown session"));
     }
 
     /// Um quadro recusado pelo despachante - é assim que a credencial
@@ -1458,7 +1458,7 @@ mod tests {
                         let server = server.clone();
                         async move {
                             if server.swap(false, Ordering::Relaxed) {
-                                return Err(anyhow!("credencial de inferência inválida"));
+                                return Err(anyhow!("invalid inference credential"));
                             }
                             let header = wire::peek_batch_header(&bytes).unwrap();
                             let (_, items) = wire::decode_batch_items(&bytes).unwrap();
@@ -1497,17 +1497,17 @@ mod tests {
             &clients,
             "estrito",
             &url,
-            "recusado",
-            Bytes::from(batch("/v1/step", "recusado", "item-0")),
+            "refused",
+            Bytes::from(batch("/v1/step", "refused", "item-0")),
             "estrito",
         )
         .await
-        .expect_err("o quadro sem credencial válida tem que ser recusado");
+        .expect_err("a frame without a valid credential must be refused");
         let refusal = error
             .downcast_ref::<crate::relay::HttpRefusal>()
-            .expect("recusa por quadro preserva o status");
+            .expect("a per-frame refusal preserves the status");
         assert_eq!(refusal.status, 400);
-        assert!(refusal.body.contains("credencial"));
+        assert!(refusal.body.contains("credential"));
 
         let accepted = send_batch(
             &clients,
@@ -1518,7 +1518,7 @@ mod tests {
             "estrito",
         )
         .await
-        .expect("o quadro seguinte usa o mesmo canal, que continua vivo");
+        .expect("the next frame uses the same channel, which stays alive");
         assert_eq!(
             wire::peek_batch_header(&accepted.body).unwrap().batch_id,
             "aceito"
@@ -1535,7 +1535,7 @@ mod tests {
         let accepted = Arc::new(Notify::new());
         let accepted_task = accepted.clone();
         tokio::spawn(async move {
-            let (stream, _) = blackhole.accept().await.expect("aceitou a abertura morta");
+            let (stream, _) = blackhole.accept().await.expect("accepted the dead open");
             accepted_task.notify_one();
             let _stream = stream;
             std::future::pending::<()>().await;
@@ -1559,7 +1559,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), accepted.notified())
             .await
-            .expect("a abertura morta começou");
+            .expect("the dead open started");
 
         let started = Instant::now();
         let healthy_result = tokio::time::timeout(
@@ -1574,22 +1574,22 @@ mod tests {
             ),
         )
         .await
-        .expect("a abertura de outra aresta não pode esperar o blackhole")
-        .expect("a aresta saudável deve atravessar");
+        .expect("opening another edge cannot wait for the blackhole")
+        .expect("the healthy edge must cross");
 
         assert_eq!(
             wire::peek_batch_header(&healthy_result.body)
-                .expect("resposta válida")
+                .expect("valid response")
                 .batch_id,
             "healthy"
         );
         println!(
-            "link_lab: aresta saudável respondeu enquanto a abertura morta estava em voo em {:?}",
+            "link_lab: healthy edge answered while the dead open was in flight in {:?}",
             started.elapsed()
         );
         assert!(
             started.elapsed() < LINK_OPEN_TIMEOUT / 2,
-            "a aresta saudável ficou parada por {:?}",
+            "the healthy edge was stalled for {:?}",
             started.elapsed()
         );
         assert!(dead_task.await.unwrap().is_err());
@@ -1618,14 +1618,14 @@ mod tests {
         let started = Instant::now();
         let error = send_batch(&clients, "morto", &url, "b2", Bytes::from(body), "morto")
             .await
-            .expect_err("segunda tentativa também falha");
+            .expect_err("the second attempt also fails");
         assert!(
-            error.to_string().contains("quarentena"),
-            "a segunda tentativa devia parar na memória de falha, veio: {error}"
+            error.to_string().contains("quarantined"),
+            "the second attempt should stop at the failure memory, got: {error}"
         );
         assert!(
             started.elapsed() < Duration::from_millis(100),
-            "a quarentena existe para não pagar a conexão morta de novo"
+            "the quarantine exists to not pay for the dead connection again"
         );
     }
 
@@ -1661,7 +1661,7 @@ mod tests {
                 "blackhole-fallback",
             )
             .await
-            .expect("a rota saudável deve assumir o canal");
+            .expect("the healthy route must take over the channel");
             assert_eq!(
                 wire::peek_batch_header(&response.body).unwrap().batch_id,
                 batch_id
@@ -1671,7 +1671,7 @@ mod tests {
         assert_eq!(channels_opened("blackhole-fallback", &healthy), 1);
         assert!(
             started.elapsed() < Duration::from_millis(250),
-            "a abertura morta voltou a ser paga: {:?}",
+            "the dead open was paid again: {:?}",
             started.elapsed()
         );
     }
@@ -1706,14 +1706,14 @@ mod tests {
         let body = batch("/v1/step", "b", "item-0");
         let error = send_batch(&clients, "mudo", &url, "b", Bytes::from(body), "mudo")
             .await
-            .expect_err("um canal que morre tem que devolver erro, não pendurar");
+            .expect_err("a channel that dies must return an error, not hang");
         assert!(
             error.to_string().contains("mudo"),
-            "o erro precisa nomear o peer: {error}"
+            "the error must name the peer: {error}"
         );
         assert!(
             !has_channel("mudo", &url).await,
-            "o canal morto tem que sair do pool para a chamada seguinte reabrir"
+            "the dead channel must leave the pool so the next call reopens"
         );
     }
 }

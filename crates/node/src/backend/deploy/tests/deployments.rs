@@ -84,14 +84,14 @@ mod deployments_tests {
         let body = body_of(resp).await;
 
         let lines = body["deployments"].as_array().unwrap();
-        assert_eq!(lines.len(), 1, "uma implantação, uma linha");
+        assert_eq!(lines.len(), 1, "one deployment, one row");
         assert_eq!(lines[0]["deployment"]["deploy_id"], "d-aaaaaaaa");
         assert_eq!(
             lines[0]["deployment"]["activated_at"], "2026-08-19T00:00:00Z",
-            "a cópia mais recentemente ativada é a que vale"
+            "the most recently activated copy is the one that counts"
         );
-        assert_eq!(lines[0]["serving"], true, "há peer vivo anunciando o id");
-        assert_eq!(lines[0]["is_default"], true, "é a única do seu modelo");
+        assert_eq!(lines[0]["serving"], true, "there is a live peer announcing the id");
+        assert_eq!(lines[0]["is_default"], true, "it is the only one of its model");
     }
 
     /// O coordenador pode ter uma cópia velha no próprio banco enquanto um
@@ -115,7 +115,7 @@ mod deployments_tests {
 
         let found = find_record(&state, "d-aaaaaaaa")
             .await
-            .expect("a cópia do peer deve ser encontrada");
+            .expect("the peer copy must be found");
 
         assert_eq!(found.activated_at, current.activated_at);
         assert_eq!(found.active_version, 2);
@@ -158,12 +158,12 @@ mod deployments_tests {
         };
 
         let a = by_id("d-aaaaaaaa");
-        assert_eq!(a["serving"], true, "tem peer anunciando");
-        assert_eq!(a["is_default"], false, "mas não é a mais recente");
+        assert_eq!(a["serving"], true, "there is a peer announcing");
+        assert_eq!(a["is_default"], false, "but it is not the most recent");
 
         let b = by_id("d-bbbbbbbb");
-        assert_eq!(b["serving"], false, "registrada, mas ninguém no ar");
-        assert_eq!(b["is_default"], true, "é a de ativação mais recente");
+        assert_eq!(b["serving"], false, "registered, but nobody up");
+        assert_eq!(b["is_default"], true, "it is the one with the most recent activation");
     }
 
     /// `?local=true` responde do disco e **não** varre o cluster - é o que

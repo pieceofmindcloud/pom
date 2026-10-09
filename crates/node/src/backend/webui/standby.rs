@@ -143,7 +143,7 @@ fn restore_primary_at(
 pub(crate) fn discard() {
     if let Err(error) = std::fs::remove_file(standby_path()) {
         if error.kind() != std::io::ErrorKind::NotFound {
-            warn!("não foi possível remover a rede em espera: {error}");
+            warn!("could not remove the standby network: {error}");
         }
     }
 }

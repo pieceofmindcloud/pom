@@ -79,12 +79,12 @@
         let req: super::DeployRequest = serde_json::from_value(serde_json::json!({
             "group": "qwen35"
         }))
-        .expect("request válida");
+        .expect("valid request");
 
         assert_eq!(req.strategy, super::DeployStrategy::Simple);
         assert_eq!(
             super::normalize_deployment_name(req.deployment_name.as_deref(), &req.group)
-                .expect("nome padrão"),
+                .expect("default name"),
             "qwen35"
         );
     }
@@ -105,13 +105,13 @@
         use super::DeployKind;
         assert_eq!(
             DeployKind::TensorParallel.unit("qwen", 0, 31),
-            "o grupo tensor-parallel qwen"
+            "the tensor-parallel group qwen"
         );
         assert_eq!(
             DeployKind::TensorParallel.indefinite(),
-            "um grupo tensor-parallel"
+            "a tensor-parallel group"
         );
-        assert!(!DeployKind::TensorParallel.whole(), "TP não é whole");
+        assert!(!DeployKind::TensorParallel.whole(), "TP is not whole");
     }
 
     #[test]
@@ -141,9 +141,9 @@
     #[test]
     fn a_node_added_in_the_middle_is_not_the_tail_of_the_split() {
         let (index, count) = super::split_position(&[(0, 11), (32, 39)], (12, 31));
-        assert_eq!(count, 3, "tres faixas depois de somar esta");
-        assert_eq!(index, 1, "12-31 fica no meio, entre 0-11 e 32-39");
-        assert!(index + 1 < count, "nao pode se dizer o ultimo da divisao");
+        assert_eq!(count, 3, "three ranges after adding this one");
+        assert_eq!(index, 1, "12-31 sits in the middle, between 0-11 and 32-39");
+        assert!(index + 1 < count, "it cannot call itself the last of the split");
     }
 
     #[test]
@@ -209,7 +209,7 @@
 
     #[test]
     fn f8_request_is_blocked_when_peer_capability_is_unsupported() {
-        let capability = crate::capabilities::supported("teste", "capacidade presente");
+        let capability = crate::capabilities::supported("teste", "capability present");
         let capabilities = crate::capabilities::DeploymentCapabilities {
             fit_memory: capability.clone(),
             no_thinking: capability.clone(),
@@ -217,16 +217,16 @@
             speculative_decoding: capability.clone(),
             mtp: capability,
             hidden_state_f8: crate::capabilities::unsupported(
-                "capacidades runtime dos peers selecionados",
-                "pelo menos um peer selecionado não anuncia estado oculto f8",
+                "runtime capabilities of the selected peers",
+                "at least one selected peer does not announce f8 hidden state",
             ),
             hidden_state_i4g64: crate::capabilities::unsupported(
-                "capacidades runtime dos peers selecionados",
-                "pelo menos um peer selecionado não anuncia estado oculto i4g64",
+                "runtime capabilities of the selected peers",
+                "at least one selected peer does not announce i4g64 hidden state",
             ),
             hidden_state_i4g128: crate::capabilities::unsupported(
-                "capacidades runtime dos peers selecionados",
-                "pelo menos um peer selecionado não anuncia estado oculto i4g128",
+                "runtime capabilities of the selected peers",
+                "at least one selected peer does not announce i4g128 hidden state",
             ),
         };
         let no_embeddings = crate::capabilities::evaluate_no_embeddings(&[]);
@@ -234,9 +234,9 @@
         params.hidden_state_dtype = crate::wire::WireDtype::F8;
 
         let error = super::requested_capability_block(&params, &capabilities, &no_embeddings)
-            .expect("precisão f8 sem capacidade não pode seguir silenciosamente");
+            .expect("f8 precision without the capability cannot proceed silently");
         assert!(error.contains("f8"));
-        assert!(error.contains("não anuncia"));
+        assert!(error.contains("does not announce"));
     }
 
     #[test]
@@ -248,9 +248,9 @@
             no_embeddings: supported.clone(),
             speculative_decoding: supported.clone(),
             mtp: supported,
-            hidden_state_f8: crate::capabilities::unsupported("teste", "f8 ausente"),
-            hidden_state_i4g64: crate::capabilities::unsupported("teste", "i4g64 ausente"),
-            hidden_state_i4g128: crate::capabilities::unsupported("teste", "i4g128 ausente"),
+            hidden_state_f8: crate::capabilities::unsupported("teste", "f8 missing"),
+            hidden_state_i4g64: crate::capabilities::unsupported("teste", "i4g64 missing"),
+            hidden_state_i4g128: crate::capabilities::unsupported("teste", "i4g128 missing"),
         };
         let no_embeddings = crate::capabilities::evaluate_no_embeddings(&[]);
         let mut params = RuntimeParams::default();
@@ -270,12 +270,12 @@
             mtp: supported.clone(),
             hidden_state_f8: supported,
             hidden_state_i4g64: crate::capabilities::unsupported(
-                "capacidades runtime dos peers selecionados",
-                "pelo menos um peer não anuncia i4g64",
+                "runtime capabilities of the selected peers",
+                "at least one peer does not announce i4g64",
             ),
             hidden_state_i4g128: crate::capabilities::unknown(
-                "capacidades runtime dos peers selecionados",
-                "não foi possível consultar todos os peers",
+                "runtime capabilities of the selected peers",
+                "could not query all the peers",
             ),
         };
         let no_embeddings = crate::capabilities::evaluate_no_embeddings(&[]);
@@ -283,9 +283,9 @@
         params.hidden_state_dtype = crate::wire::WireDtype::I4G64;
 
         let error = super::requested_capability_block(&params, &capabilities, &no_embeddings)
-            .expect("i4 sem capacidade não pode seguir");
+            .expect("i4 without the capability cannot proceed");
         assert!(error.contains("i4g64"));
-        assert!(error.contains("não anuncia"));
+        assert!(error.contains("does not announce"));
     }
 
     use super::*;
@@ -467,7 +467,7 @@
                 remainder_bytes: GIB,
             }],
             granularity: Some(4),
-            rule: "fronteiras reais".to_string(),
+            rule: "real boundaries".to_string(),
             reason: None,
         };
         super::add_virtual_whole_slices(
@@ -480,7 +480,7 @@
             },
             &options,
         )
-        .expect("corte válido");
+        .expect("valid cut");
 
         assert!(machines[0]
             .holds(0, 3)
@@ -557,7 +557,7 @@
         ]);
         let p = plan("m", &ms, None);
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
-        assert!(p.complete, "0-15 e 16-31 cobrem 32 camadas");
+        assert!(p.complete, "0-15 and 16-31 cover 32 layers");
         assert_eq!(p.transfer_bytes, 0);
         assert!(p.steps.iter().all(|s| s.ready));
         assert!(p.auto);
@@ -607,7 +607,7 @@
 
         assert_eq!(p.steps.len(), 2);
         let copied: Vec<&Step> = p.steps.iter().filter(|s| !s.ready).collect();
-        assert_eq!(copied.len(), 1, "só uma fatia precisa viajar");
+        assert_eq!(copied.len(), 1, "only one slice needs to travel");
         assert_eq!(copied[0].source_node_id.as_deref(), Some("a"));
         assert_eq!(copied[0].target_node_id, "b");
         assert_eq!(p.transfer_bytes, GIB);
@@ -634,7 +634,7 @@
         let p = plan("m", &ms, None);
         let first = p.steps.iter().find(|s| s.start_layer == 0).unwrap();
         assert_eq!(first.target_node_id, "grande");
-        assert!(first.primary, "quem tem a camada 0 recebe o prompt");
+        assert!(first.primary, "whoever has layer 0 receives the prompt");
         assert_eq!(first.position, 1);
     }
 
@@ -661,7 +661,7 @@
             m("b", 100_000, &[(20, 31)]),
         ]);
         let p = plan("m", &ms, None);
-        assert!(!p.complete, "faltam as camadas 16-19");
+        assert!(!p.complete, "missing layers 16-19");
         assert_eq!(p.missing, vec![[16, 19]]);
         assert!(p.warnings.iter().any(|w| w.contains("L16-19")));
     }
@@ -679,11 +679,11 @@
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
         assert!(p.overlap.is_empty(), "{:?}", p.overlap);
         assert!(p.complete);
-        assert_eq!(p.steps.len(), 2, "duas fatias, não quatro");
+        assert_eq!(p.steps.len(), 2, "two slices, not four");
         // Longest first from layer 0: 0-10 beats 0-4.
         assert_eq!((p.steps[0].start_layer, p.steps[0].end_layer), (0, 10));
         assert_eq!((p.steps[1].start_layer, p.steps[1].end_layer), (11, 31));
-        assert_eq!(p.available.len(), 4, "as quatro continuam à disposição");
+        assert_eq!(p.available.len(), 4, "the four are still available");
         assert_eq!(p.available.iter().filter(|c| c.selected).count(), 2);
     }
 
@@ -691,7 +691,7 @@
     fn a_set_nobody_holds_is_refused() {
         let ms = build(vec![m("a", 100_000, &[])]);
         let p = plan("m", &ms, None);
-        assert!(p.blocked.unwrap().contains("nenhuma máquina"));
+        assert!(p.blocked.unwrap().contains("no machine"));
     }
 
     // ── The order the steps come back in ────────────────────────────────────
@@ -726,7 +726,7 @@
             .collect();
         assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
         let positions: Vec<u32> = p.steps.iter().map(|s| s.position).collect();
-        assert_eq!(positions, vec![1, 2, 3, 4], "posição é o lugar no pipeline");
+        assert_eq!(positions, vec![1, 2, 3, 4], "position is the place in the pipeline");
     }
 
     /// The auto planner reuses an eligible machine after all peers have been
@@ -772,8 +772,8 @@
             .map(|s| (s.start_layer, s.end_layer))
             .collect();
         assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
-        let blocked = p.blocked.expect("faixa sem máquina é recusa");
-        assert!(blocked.contains("sem máquina"), "{blocked}");
+        let blocked = p.blocked.expect("a range without a machine is a refusal");
+        assert!(blocked.contains("no machine"), "{blocked}");
     }
 
     // ── The operator's own choice ───────────────────────────────────────────
@@ -818,7 +818,7 @@
 
         assert!(
             p.blocked.is_none(),
-            "capacidade suficiente não deve bloquear: {:?}",
+            "sufficient capacity must not block: {:?}",
             p.blocked
         );
         assert_eq!(p.steps.len(), 2);
@@ -837,7 +837,7 @@
         ]);
         let p = plan("m", &ms, Some(&[pick(0, 10, "a"), pick(5, 31, "b")]));
         assert_eq!(p.overlap, vec![[5, 10]]);
-        let blocked = p.blocked.expect("sobreposição tem que barrar");
+        let blocked = p.blocked.expect("overlap must block");
         assert!(blocked.contains("L5-10"), "{blocked}");
         assert!(!p.complete);
     }
@@ -860,7 +860,7 @@
 
         assert!(
             p.blocked.is_none(),
-            "réplica exata não deve bloquear: {:?}",
+            "an exact replica must not block: {:?}",
             p.blocked
         );
         assert!(p.complete);
@@ -901,7 +901,7 @@
             m("b", 100_000, &[(0, 15), (20, 31)]),
         ]);
         let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(20, 31, "b")]));
-        let blocked = p.blocked.expect("um gap não pode ser implantado");
+        let blocked = p.blocked.expect("a gap cannot be deployed");
         assert!(blocked.contains("L16-19"), "{blocked}");
         assert!(!p.complete);
         assert_eq!(p.missing, vec![[16, 19]]);
@@ -913,7 +913,7 @@
     fn a_partial_selection_reports_what_is_left_out() {
         let ms = build(vec![m("a", 100_000, &[(0, 15), (16, 31)])]);
         let p = plan("m", &ms, Some(&[pick(0, 15, "a")]));
-        let blocked = p.blocked.expect("a cobertura incompleta é inválida");
+        let blocked = p.blocked.expect("incomplete coverage is invalid");
         assert!(blocked.contains("L16-31"), "{blocked}");
         assert_eq!(p.missing, vec![[16, 31]]);
         assert_eq!(p.steps.len(), 1);
@@ -1033,18 +1033,18 @@
             &[pick(0, 7, "a"), pick(8, 15, "a"), pick(16, 31, "b")],
         );
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
-        assert!(p.complete, "0-7 + 8-15 + 16-31 cobrem 32 camadas");
-        assert_eq!(p.transfer_bytes, 0, "a já tem as duas fatias");
+        assert!(p.complete, "0-7 + 8-15 + 16-31 cover 32 layers");
+        assert_eq!(p.transfer_bytes, 0, "a already has both slices");
         assert_eq!(p.steps.len(), 2);
 
         let joined = p.steps.iter().find(|s| s.merged).unwrap();
         assert_eq!((joined.start_layer, joined.end_layer), (0, 15));
         assert!(joined.ready);
-        assert_eq!(joined.parts.len(), 2, "duas fatias entram no arquivo");
+        assert_eq!(joined.parts.len(), 2, "two slices go into the file");
         assert!(joined.parts.iter().all(|part| part.ready));
         // Rótulo de tela, não nome de arquivo: o arquivo junto só ganha nome
         // depois de existir, e o nome dele é o hash.
-        assert_eq!(joined.name, "m L0-15", "rótulo do passo de junção");
+        assert_eq!(joined.name, "m L0-15", "label of the merge step");
 
         let solo = p.steps.iter().find(|s| !s.merged).unwrap();
         assert_eq!((solo.start_layer, solo.end_layer), (16, 31));
@@ -1116,7 +1116,7 @@
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
         let joined = p.steps.iter().find(|s| s.merged).unwrap();
         assert!(!joined.ready);
-        assert_eq!(p.transfer_bytes, 2 * GIB, "as duas fatias viajam");
+        assert_eq!(p.transfer_bytes, 2 * GIB, "both slices travel");
         let first = &joined.parts[0];
         assert_eq!(first.source_node_id.as_deref(), Some("a"));
         let second = &joined.parts[1];
@@ -1126,7 +1126,7 @@
             .options
             .iter()
             .find(|o| o.node_id == "d" && o.has)
-            .expect("d tem as duas fatias, logo está pronta para juntar");
+            .expect("d has both slices, so it is ready to merge");
         assert!(option.ok);
     }
 
@@ -1136,7 +1136,7 @@
     fn a_merged_unit_with_an_unobtainable_part_is_refused() {
         let ms = build(vec![m("a", 100_000, &[(0, 7)])]);
         let p = merged("m", &ms, &[pick(0, 7, "a"), pick(8, 15, "a")]);
-        let blocked = p.blocked.expect("L8-15 não existe em máquina nenhuma");
+        let blocked = p.blocked.expect("L8-15 exists on no machine");
         assert!(blocked.contains("L8-15"), "{blocked}");
     }
 
@@ -1144,7 +1144,7 @@
     fn a_slice_with_no_machine_is_refused() {
         let ms = build(vec![m("a", 100_000, &[(0, 15), (16, 31)])]);
         let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(16, 31, "")]));
-        assert!(p.blocked.unwrap().contains("sem máquina"));
+        assert!(p.blocked.unwrap().contains("no machine"));
     }
 
     #[test]
@@ -1155,7 +1155,7 @@
             &ms,
             Some(&[pick(0, 15, "a"), pick(16, 31, "fantasma")]),
         );
-        assert!(p.blocked.unwrap().contains("não está no cluster"));
+        assert!(p.blocked.unwrap().contains("is not in the cluster"));
     }
 
     /// A range nobody in the cluster has cannot be deployed however the
@@ -1164,7 +1164,7 @@
     fn a_selected_range_nobody_holds_is_refused() {
         let ms = build(vec![m("a", 100_000, &[(0, 15)])]);
         let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(16, 31, "a")]));
-        assert!(p.blocked.unwrap().contains("não existe em máquina nenhuma"));
+        assert!(p.blocked.unwrap().contains("exists on no machine"));
     }
 
     /// Disk is a hard fact — `transfer.rs` would refuse the copy anyway, so it
@@ -1177,8 +1177,8 @@
         ]);
         ms[1].disk_free_mb = 100; // 100 MB for a 1 GiB slice
         let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(16, 31, "b")]));
-        let blocked = p.blocked.expect("não cabe no disco");
-        assert!(blocked.contains("disco"), "{blocked}");
+        let blocked = p.blocked.expect("does not fit on disk");
+        assert!(blocked.contains("disk"), "{blocked}");
     }
 
     /// Memory is an estimate, so it warns and marks the row instead of
@@ -1193,8 +1193,8 @@
         let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(16, 31, "b")]));
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
         let tight = p.steps.iter().find(|s| s.target_node_id == "b").unwrap();
-        assert!(tight.note.as_deref().unwrap().contains("memória"));
-        assert!(p.warnings.iter().any(|w| w.contains("memória")));
+        assert!(tight.note.as_deref().unwrap().contains("memory"));
+        assert!(p.warnings.iter().any(|w| w.contains("memory")));
     }
 
     /// Every machine is offered for every range, including the one already busy
@@ -1212,7 +1212,7 @@
         let a = first.options.iter().find(|o| o.node_id == "a").unwrap();
         assert!(a.has && a.ok);
         let c = first.options.iter().find(|o| o.node_id == "c").unwrap();
-        assert!(!c.has && c.ok, "c não tem a fatia mas pode receber");
+        assert!(!c.has && c.ok, "c does not have the slice but can receive it");
     }
 
     #[test]

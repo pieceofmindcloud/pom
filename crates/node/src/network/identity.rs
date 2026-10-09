@@ -76,13 +76,13 @@ impl Identity {
                     };
                 }
             }
-            tracing::warn!("{} ilegível — gerando identidade nova", path.display());
+            tracing::warn!("{} unreadable — generating a new identity", path.display());
         }
 
         let identity = Self::generate();
         if let Err(e) = std::fs::write(path, hex::encode(identity.signing_key.to_bytes())) {
             tracing::warn!(
-                "não deu para gravar {}: {e} — o node_id vai mudar no próximo arranque",
+                "could not write {}: {e} — the node_id will change on the next start",
                 path.display()
             );
         } else {
@@ -133,7 +133,7 @@ mod tests {
 
         assert_eq!(
             first.node_id.0, second.node_id.0,
-            "o node_id tem de ser o mesmo depois de reiniciar"
+            "the node_id must be the same after restarting"
         );
         assert_eq!(first.public_key_hex(), second.public_key_hex());
         std::fs::remove_dir_all(&dir).ok();

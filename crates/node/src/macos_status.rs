@@ -111,7 +111,7 @@ where
     // mantém o código de saída do CLI honesto.
     service
         .join()
-        .map_err(|_| anyhow::anyhow!("thread do serviço macOS terminou em pânico"))?
+        .map_err(|_| anyhow::anyhow!("macOS service thread ended in a panic"))?
 }
 
 #[cfg(test)]
@@ -124,10 +124,10 @@ mod tests {
         // smartphone" quer dizer, e a largura em que o chat foi conferido.
         let (width, height) = POPOVER_SIZE;
         assert_eq!(width, 390.0);
-        assert!(height > width, "o painel da barra é retrato, não paisagem");
+        assert!(height > width, "the status bar panel is portrait, not landscape");
         assert!(
             WINDOW_SIZE.0 > width && WINDOW_SIZE.1 > height,
-            "a janela maior tem de ser maior que o painel nos dois eixos"
+            "the larger window must be larger than the panel on both axes"
         );
     }
 

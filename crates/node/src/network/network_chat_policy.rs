@@ -38,7 +38,7 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
         Ok(value) if value != local => PolicyOutcome::Adopt(value),
         Ok(_) => PolicyOutcome::Unchanged,
         Err(error) => {
-            warn!("busca da política do Chat da rede falhou, mantendo {local}: {error}");
+            warn!("network Chat policy fetch failed, keeping {local}: {error}");
             PolicyOutcome::Unchanged
         }
     }
@@ -77,10 +77,10 @@ pub(crate) async fn fetch_from_principal_candidates(
             tunnel,
         )
         .await
-        .context("não deu para falar com o principal")?;
+        .context("could not reach the principal")?;
     Ok(response
         .json::<NetworkChatReply>()
-        .context("resposta do Chat da rede não parseou")?
+        .context("network Chat response did not parse")?
         .network_chat_enabled)
 }
 
@@ -110,7 +110,7 @@ pub fn spawn_ratchet(
                 peer.gateway_candidates_with_tls(announced_tls),
             );
             if candidates.is_empty() {
-                warn!("principal {principal} não anuncia porta de gateway; política do Chat da rede não pôde ser confirmada");
+                warn!("principal {principal} does not announce a gateway port; network Chat policy could not be confirmed");
                 continue;
             }
             let (local, connection_key) = {
@@ -138,14 +138,14 @@ pub fn spawn_ratchet(
                     let mut cfg = auth.write().await;
                     cfg.network_chat_enabled = value;
                     if let Err(error) = cfg.save() {
-                        warn!("política do Chat da rede confirmada mas não gravada: {error}");
+                        warn!("network Chat policy confirmed but not written: {error}");
                     }
                 }
                 net.set_network_chat_enabled(value);
                 chat.set_enabled(value);
                 info!(
-                    "política do Chat da rede adotada do principal: {}",
-                    if value { "ligada" } else { "desligada" }
+                    "network Chat policy adopted from the principal: {}",
+                    if value { "on" } else { "off" }
                 );
             }
         }

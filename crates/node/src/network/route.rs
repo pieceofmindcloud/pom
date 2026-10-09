@@ -627,7 +627,7 @@ mod tests {
         let choice = choose_route(&measurements, Some("192.168.100.138:8092")).unwrap();
         assert_eq!(
             choice.addr, "192.168.100.138:8092",
-            "7,2 vs 9,6 nao passa dos 25%"
+            "7.2 vs 9.6 does not exceed 25%"
         );
     }
 
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(
             table.resolve("n1"),
             Some(healthy_inference),
-            "a sonda precisa medir a porta de inferência, não um gateway diferente"
+            "the probe must measure the inference port, not a different gateway"
         );
     }
 
@@ -910,7 +910,7 @@ mod tests {
     /// `inference_url` do plano, que e o comportamento de hoje.
     #[test]
     fn an_unmeasured_peer_resolves_to_nothing() {
-        assert_eq!(RouteTable::new().resolve("desconhecido"), None);
+        assert_eq!(RouteTable::new().resolve("unknown"), None);
     }
 
     /// Recem-medido nao remede: e o que mantem a sonda barata no regime normal.
@@ -918,7 +918,7 @@ mod tests {
     async fn a_freshly_measured_peer_is_not_measured_again() {
         let alive = tests_support::health_server(0).await;
         let table = RouteTable::new();
-        assert!(table.needs_measuring("n1"), "nunca medido precisa medir");
+        assert!(table.needs_measuring("n1"), "never measured needs measuring");
         table
             .measure_peer(
                 &crate::peer_client::PeerClients::new(Duration::from_secs(10)),

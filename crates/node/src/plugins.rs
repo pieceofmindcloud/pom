@@ -138,7 +138,7 @@ pub(crate) trait LicenseService: Send + Sync {
     ) -> Result<ResponseEnvelope<enterprise_protocol::ValidateResponse>, LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "validação de licença não disponível",
+            "license validation not available",
         ))
     }
 
@@ -161,7 +161,7 @@ pub(crate) trait LicenseService: Send + Sync {
     {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "status de licença não disponível",
+            "license status not available",
         ))
     }
 
@@ -175,7 +175,7 @@ pub(crate) trait LicenseService: Send + Sync {
     ) -> Result<ManifestResponse, LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "manifest do plugin não disponível",
+            "plugin manifest not available",
         ))
     }
 
@@ -193,7 +193,7 @@ pub(crate) trait LicenseService: Send + Sync {
     async fn download(&self, _grant: &DownloadGrant) -> Result<Vec<u8>, LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "download do plugin não disponível",
+            "plugin download not available",
         ))
     }
 
@@ -205,7 +205,7 @@ pub(crate) trait LicenseService: Send + Sync {
     ) -> Result<(), LicenseClientError> {
         Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "desativação de licença não disponível",
+            "license deactivation not available",
         ))
     }
 }
@@ -241,7 +241,7 @@ impl HttpLicenseService {
             "{}/v1/plugins/{plugin_code}/manifest",
             self.base_url
         ))
-        .expect("base URL de licenças deve ser válida");
+        .expect("license base URL must be valid");
         url.query_pairs_mut()
             .append_pair("lease_id", lease_id)
             .append_pair("os", os)
@@ -318,7 +318,7 @@ impl LicenseService for HttpLicenseService {
         let body = verify_signed_bytes(&keys, &response.grant, "grant")?;
         let grant: enterprise_protocol::GrantBody =
             serde_json::from_slice(&body).map_err(|_| {
-                LicenseClientError::new(LicenseErrorCode::ServerError, "grant de licença inválido")
+                LicenseClientError::new(LicenseErrorCode::ServerError, "invalid license grant")
             })?;
         if grant.product != "pom"
             || grant.iss != "license.pieceofmind.cloud"
@@ -332,7 +332,7 @@ impl LicenseService for HttpLicenseService {
         {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                "grant de licença não corresponde à ativação",
+                "license grant does not match the activation",
             ));
         }
         Ok(())
@@ -352,14 +352,14 @@ impl LicenseService for HttpLicenseService {
             .ok_or_else(|| {
                 LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "manifest do plugin sem assinatura",
+                    "plugin manifest without a signature",
                 )
             })?
             .to_owned();
         let mut unsigned = value;
         unsigned
             .as_object_mut()
-            .expect("manifest serializa como objeto")
+            .expect("manifest serializes as an object")
             .remove("signature");
         let bytes = canonical_json(&unsigned)
             .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error))?;
@@ -402,7 +402,7 @@ impl LicenseService for HttpLicenseService {
     ) -> Result<ResponseEnvelope<enterprise_protocol::LicenseStatusResponse>, LicenseClientError>
     {
         let mut url = reqwest::Url::parse(&format!("{}/v1/licenses/status", self.base_url))
-            .expect("base URL de licenças deve ser válida");
+            .expect("license base URL must be valid");
         url.query_pairs_mut()
             .append_pair("activation_id", &persisted.activation_id)
             .append_pair("lease_id", &persisted.lease_id)
@@ -579,7 +579,7 @@ fn verify_signed_bytes(
     let body = URL_SAFE_NO_PAD.decode(&grant.body).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("{kind} de licença malformado"),
+            format!("malformed license {kind}"),
         )
     })?;
     verify_public_signature(keys, &grant.key_id, &grant.signature, &body, kind)?;
@@ -599,49 +599,49 @@ fn verify_public_signature(
         .ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                format!("chave pública de {kind} desconhecida"),
+                format!("unknown {kind} public key"),
             )
         })?;
     if key.alg != "Ed25519" {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("algoritmo de {kind} não suportado"),
+            format!("unsupported {kind} algorithm"),
         ));
     }
     let raw_key = URL_SAFE_NO_PAD.decode(&key.public_key).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("chave pública de {kind} inválida"),
+            format!("invalid {kind} public key"),
         )
     })?;
     let raw_key: [u8; 32] = raw_key.try_into().map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("tamanho da chave pública de {kind} inválido"),
+            format!("invalid {kind} public key size"),
         )
     })?;
     let verifying_key = VerifyingKey::from_bytes(&raw_key).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("chave pública de {kind} inválida"),
+            format!("invalid {kind} public key"),
         )
     })?;
     let signature = URL_SAFE_NO_PAD.decode(signature).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("assinatura de {kind} inválida"),
+            format!("invalid {kind} signature"),
         )
     })?;
     let signature = Signature::from_slice(&signature).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("tamanho da assinatura de {kind} inválido"),
+            format!("invalid {kind} signature size"),
         )
     })?;
     verifying_key.verify(bytes, &signature).map_err(|_| {
         LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            format!("assinatura de {kind} não confere"),
+            format!("{kind} signature does not match"),
         )
     })
 }
@@ -700,7 +700,7 @@ fn parse_license_error(status: StatusCode, body: &[u8], _request_id: &str) -> Li
         .as_ref()
         .and_then(|body| body.get("message_for_user"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("O servidor de licenças está indisponível.");
+        .unwrap_or("The license server is unavailable.");
     LicenseClientError::new(code, message)
 }
 
@@ -1032,7 +1032,7 @@ impl PluginRuntime {
             }
         }
         if let Err(error) = host.query(payload).await {
-            tracing::debug!(plugin_code = %self.code, %error, "plugin não aceitou host.configure");
+            tracing::debug!(plugin_code = %self.code, %error, "plugin did not accept host.configure");
         }
     }
 
@@ -1145,10 +1145,10 @@ impl PluginRuntime {
         &self,
     ) -> Result<(PersistedPluginState, semver::Version), LicenseClientError> {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Local activation missing.")
         })?;
         let version = semver::Version::parse(&persisted.plugin_version)
-            .map_err(|_| update_unavailable("versão instalada do plugin não é SemVer válida"))?;
+            .map_err(|_| update_unavailable("installed plugin version is not valid SemVer"))?;
         Ok((persisted, version))
     }
 
@@ -1159,7 +1159,7 @@ impl PluginRuntime {
         if !self.status.read().await.active {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "Ative o plugin antes de editar suas preferências.",
+                "Activate the plugin before editing its preferences.",
             ));
         }
         let licensed_schema = self
@@ -1176,7 +1176,7 @@ impl PluginRuntime {
                 .await
                 .as_ref()
                 .and_then(|installed| installed.preferences_schema.clone())
-                .ok_or_else(|| update_unavailable("este release não declara preferências"))?,
+                .ok_or_else(|| update_unavailable("this release declares no preferences"))?,
         };
         prepare_storage_directory(&schema, &values).map_err(|message| {
             LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, message)
@@ -1212,7 +1212,7 @@ impl PluginRuntime {
         };
         let request = serde_json::json!({ "operation": "host.event", "event": envelope });
         if let Err(error) = host.query(request).await {
-            tracing::debug!(plugin_code = %self.code, %error, "plugin não aceitou host.event");
+            tracing::debug!(plugin_code = %self.code, %error, "plugin did not accept host.event");
         }
     }
 
@@ -1241,7 +1241,7 @@ impl PluginRuntime {
         };
         *self.persisted.lock().await = Some(persisted.clone());
         let restore_error = persisted.installation_error.clone().unwrap_or_else(|| {
-            "O plugin não tem um binário instalado. Reative-o para repetir a instalação.".into()
+            "The plugin has no installed binary. Reactivate it to repeat the installation.".into()
         });
         let Some(path) = persisted.plugin_path.clone().map(std::path::PathBuf::from) else {
             let mut status = self.status.write().await;
@@ -1257,9 +1257,9 @@ impl PluginRuntime {
             status.licensed_plugins = persisted.licensed_plugins.clone();
             status.license_expires_at = persisted.license_expires_at.clone();
             status.installation_error = Some(if path.is_file() {
-                "O banco local do POM não está disponível para iniciar o host do plugin.".into()
+                "The local POM database is not available to start the plugin host.".into()
             } else {
-                "O binário instalado do plugin está ausente. Reative-o para baixá-lo novamente."
+                "The installed plugin binary is missing. Reactivate it to download it again."
                     .into()
             });
             return;
@@ -1324,7 +1324,7 @@ impl PluginRuntime {
         }
         let path = std::path::Path::new(&installed.plugin_path);
         let Ok(bytes) = std::fs::read(path) else {
-            tracing::warn!(plugin_code = %self.code, "binário do plugin público instalado está ausente");
+            tracing::warn!(plugin_code = %self.code, "installed public plugin binary is missing");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.public_install_key());
             }
@@ -1338,7 +1338,7 @@ impl PluginRuntime {
         if bytes.len() as u64 != installed.size
             || !hex::encode(sha2::Sha256::digest(&bytes)).eq_ignore_ascii_case(expected)
         {
-            tracing::error!(plugin_code = %self.code, "integridade do plugin público instalado não confere");
+            tracing::error!(plugin_code = %self.code, "installed public plugin integrity does not match");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.public_install_key());
             }
@@ -1367,7 +1367,7 @@ impl PluginRuntime {
                 status.installation_error = None;
             }
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, %error, "plugin público instalado não pôde ser iniciado");
+                tracing::warn!(plugin_code = %self.code, %error, "installed public plugin could not be started");
                 let mut status = self.status.write().await;
                 status.active = false;
                 status.state = LicenseState::Unavailable;
@@ -1389,7 +1389,7 @@ impl PluginRuntime {
         }
         let path = std::path::Path::new(&installed.plugin_path);
         let Ok(bytes) = std::fs::read(path) else {
-            tracing::warn!(plugin_code = %self.code, "binário local de desenvolvimento está ausente");
+            tracing::warn!(plugin_code = %self.code, "local development binary is missing");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.development_install_key());
             }
@@ -1400,7 +1400,7 @@ impl PluginRuntime {
             || !hex::encode(sha2::Sha256::digest(&bytes))
                 .eq_ignore_ascii_case(&installed.plugin_sha256)
         {
-            tracing::error!(plugin_code = %self.code, "integridade do plugin local de desenvolvimento não confere");
+            tracing::error!(plugin_code = %self.code, "local development plugin integrity does not match");
             if let Some(database) = &self.database {
                 let _ = database.delete_local_setting(&self.development_install_key());
             }
@@ -1421,7 +1421,7 @@ impl PluginRuntime {
                 status.installation_error = None;
             }
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, %error, "plugin local de desenvolvimento não pôde ser iniciado");
+                tracing::warn!(plugin_code = %self.code, %error, "local development plugin could not be started");
                 let mut status = self.status.write().await;
                 status.state = LicenseState::NeedsActivation;
                 status.development_install = true;
@@ -1453,7 +1453,7 @@ impl PluginRuntime {
             None
         } else {
             persisted.installation_error.clone().or_else(|| {
-                Some("O host do plugin não ficou pronto. Consulte o erro e tente novamente.".into())
+                Some("The plugin host did not become ready. Check the error and try again.".into())
             })
         };
     }
@@ -1475,7 +1475,7 @@ impl PluginRuntime {
         let pending = self.pending.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "Nenhuma ativação aguardando o download.",
+                "No activation waiting for the download.",
             )
         })?;
         let manifest = self
@@ -1506,7 +1506,7 @@ impl PluginRuntime {
                 let _ = std::fs::remove_file(&path);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    format!("host local anterior não pôde ser parado: {error}"),
+                    format!("previous local host could not be stopped: {error}"),
                 ));
             }
         }
@@ -1535,7 +1535,7 @@ impl PluginRuntime {
         };
         *self.host.lock().await = Some(host);
         let mut persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Local activation missing.")
         })?;
         persisted.installed_release_id = manifest.manifest.release_id;
         persisted.plugin_version = manifest.manifest.version.clone();
@@ -1580,7 +1580,7 @@ impl PluginRuntime {
             state.installation_error = Some(error.clone());
             if let Some(database) = &self.database {
                 if let Err(save_error) = database.save_local_setting(&self.setting_key(), state) {
-                    tracing::warn!(plugin_code = %self.code, error = %save_error, "falha de instalação do plugin não pôde ser persistida");
+                    tracing::warn!(plugin_code = %self.code, error = %save_error, "plugin installation failure could not be persisted");
                 }
             }
         }
@@ -1605,13 +1605,13 @@ impl PluginRuntime {
     pub(crate) async fn activate(&self, license_key: &str) -> Result<(), LicenseClientError> {
         if self.public_install.lock().await.is_some() {
             return Err(update_unavailable(
-                "desinstale a instalação pública antes de ativar uma licença para este plugin",
+                "uninstall the public installation before activating a license for this plugin",
             ));
         }
         if license_key.trim().is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::InvalidKey,
-                "Informe uma chave de licença.",
+                "Enter a license key.",
             ));
         }
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -1645,7 +1645,7 @@ impl PluginRuntime {
         {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                "A resposta de ativação não contém um grant ou ABI válido.",
+                "The activation response does not contain a valid grant or ABI.",
             ));
         }
 
@@ -1657,7 +1657,7 @@ impl PluginRuntime {
         if features.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "O release instalado não declara nenhuma feature para este plugin.",
+                "The installed release declares no feature for this plugin.",
             ));
         }
         *self.pending.lock().await = Some(PendingActivation {
@@ -1739,7 +1739,7 @@ impl PluginRuntime {
                     *self.host.lock().await = Some(host);
                     return Err(LicenseClientError::new(
                         LicenseErrorCode::ServerError,
-                        format!("plugin local não pôde ser parado: {error}"),
+                        format!("local plugin could not be stopped: {error}"),
                     ));
                 }
             }
@@ -1767,7 +1767,7 @@ impl PluginRuntime {
                     *self.host.lock().await = Some(host);
                     return Err(LicenseClientError::new(
                         LicenseErrorCode::ServerError,
-                        format!("plugin público não pôde ser parado: {error}"),
+                        format!("public plugin could not be stopped: {error}"),
                     ));
                 }
             }
@@ -1804,7 +1804,7 @@ impl PluginRuntime {
             return Ok(());
         }
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhuma licença ativa.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "No active license.")
         })?;
         if let Err(error) = self
             .service
@@ -1857,7 +1857,7 @@ impl PluginRuntime {
             state.installation_error = None;
             if let Some(database) = &self.database {
                 if let Err(error) = database.save_local_setting(&self.setting_key(), state) {
-                    tracing::warn!(plugin_code = %self.code, %error, "estado de instalação pronta do plugin não pôde ser persistido");
+                    tracing::warn!(plugin_code = %self.code, %error, "plugin installation-ready state could not be persisted");
                 }
             }
         }
@@ -1876,7 +1876,7 @@ impl PluginRuntime {
         };
         if !path.is_file() {
             self.record_installation_failure(
-                "O binário instalado do plugin está ausente. Reative-o para baixá-lo novamente."
+                "The installed plugin binary is missing. Reactivate it to download it again."
                     .into(),
             )
             .await;
@@ -1884,7 +1884,7 @@ impl PluginRuntime {
         }
         if self.database.is_none() {
             self.record_installation_failure(
-                "O banco local do POM não está disponível para iniciar o host do plugin.".into(),
+                "The local POM database is not available to start the plugin host.".into(),
             )
             .await;
             return;
@@ -1893,10 +1893,10 @@ impl PluginRuntime {
             Ok(host) => {
                 *self.host.lock().await = Some(host);
                 self.clear_installation_failure().await;
-                tracing::info!(plugin_code = %self.code, "host do plugin reiniciado após licença voltar a ficar ativa");
+                tracing::info!(plugin_code = %self.code, "plugin host restarted after the license became active again");
             }
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, error = %error, "host do plugin não pôde ser reiniciado após licença voltar a ficar ativa");
+                tracing::warn!(plugin_code = %self.code, error = %error, "plugin host could not be restarted after the license became active again");
                 self.record_installation_failure(error.to_string()).await;
             }
         }
@@ -1906,7 +1906,7 @@ impl PluginRuntime {
         let Some(host) = self.host.lock().await.clone() else {
             tracing::warn!(
                 plugin_code = %self.code,
-                "evento de auditoria descartado: host do plugin não está rodando (licença inativa ou aguardando restauração)"
+                "audit event dropped: the plugin host is not running (license inactive or waiting for restore)"
             );
             return false;
         };
@@ -1919,7 +1919,7 @@ impl PluginRuntime {
             }
         };
         if let Err(error) = host.ingest(event).await {
-            tracing::warn!(plugin_code = %self.code, error = %error, "evento de auditoria não entrou no plugin");
+            tracing::warn!(plugin_code = %self.code, error = %error, "audit event did not enter the plugin");
             return false;
         }
         true
@@ -1930,10 +1930,10 @@ impl PluginRuntime {
     /// would otherwise log one warning per event.
     pub(crate) async fn ingest_event(&self, event: serde_json::Value) -> Result<(), String> {
         if !self.status().await.active {
-            return Err("plugin inativo neste nó".into());
+            return Err("plugin inactive on this node".into());
         }
         let Some(host) = self.host.lock().await.clone() else {
-            return Err("host do plugin não está rodando".into());
+            return Err("plugin host is not running".into());
         };
         host.ingest(event).await.map_err(|error| error.to_string())
     }
@@ -1957,7 +1957,7 @@ impl PluginRuntime {
         match host.query(payload).await {
             Ok(result) => Some(result),
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, error = %error, "consulta do plugin falhou");
+                tracing::warn!(plugin_code = %self.code, error = %error, "plugin query failed");
                 None
             }
         }
@@ -1984,7 +1984,7 @@ impl PluginRuntime {
         match host.query(payload).await {
             Ok(result) => Some(result),
             Err(error) => {
-                tracing::debug!(plugin_code = %self.code, operation, %error, "plugin não respondeu à operação opcional");
+                tracing::debug!(plugin_code = %self.code, operation, %error, "plugin did not answer the optional operation");
                 None
             }
         }
@@ -1999,7 +1999,7 @@ impl PluginRuntime {
         match crate::plugin_ui::PluginUiManifest::parse(&self.code, value) {
             Ok(manifest) => Some(manifest),
             Err(error) => {
-                tracing::warn!(plugin_code = %self.code, %error, "manifesto de UI do plugin recusado");
+                tracing::warn!(plugin_code = %self.code, %error, "plugin UI manifest refused");
                 None
             }
         }
@@ -2012,26 +2012,26 @@ impl PluginRuntime {
         let pending = self.pending.lock().await.take().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "Nenhuma ativação aguardando o host.",
+                "No activation waiting for the host.",
             )
         })?;
         if pending.fingerprint != self.fingerprint {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FingerprintMismatch,
-                "A ativação não pertence a esta instalação.",
+                "The activation does not belong to this installation.",
             ));
         }
         let features = features_for_code(&self.code, &pending.response.plugin_manifest.feature_set);
         if features.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "O release instalado não declara nenhuma feature para este plugin.",
+                "The installed release declares no feature for this plugin.",
             ));
         }
         let installed_at = chrono::Utc::now().to_rfc3339();
         let mut persisted_guard = self.persisted.lock().await;
         let mut persisted = persisted_guard.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Local activation missing.")
         })?;
         persisted.installed_at = Some(installed_at.clone());
         if let Some(database) = &self.database {
@@ -2072,7 +2072,7 @@ impl PluginRuntime {
 
     pub(crate) async fn heartbeat(&self, nonce: &str) -> Result<(), LicenseClientError> {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhum lease local.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "No local lease.")
         })?;
         let request = RequestEnvelope::new(
             uuid::Uuid::new_v4().to_string(),
@@ -2155,7 +2155,7 @@ impl PluginRuntime {
                         plugin_code = %self.code,
                         plugin_release_id = %plugin_release_id,
                         available_release_id = ?available_release_id,
-                        "heartbeat indicou alteração de release do plugin"
+                        "heartbeat indicated a plugin release change"
                     );
                 }
                 let host_running = self.host.lock().await.is_some();
@@ -2180,7 +2180,7 @@ impl PluginRuntime {
                 if !license_was_active {
                     tracing::info!(
                         plugin_code = %self.code,
-                        "licença do plugin voltou a ficar ativa após heartbeat bem-sucedido"
+                        "plugin license became active again after a successful heartbeat"
                     );
                 }
                 if let Some(persisted) = updated_persisted {
@@ -2198,7 +2198,7 @@ impl PluginRuntime {
                         tracing::warn!(
                             plugin_code = %self.code,
                             error = %error,
-                            "detecção de atualização após heartbeat falhou"
+                            "update detection after the heartbeat failed"
                         );
                     }
                 }
@@ -2250,9 +2250,9 @@ impl PluginRuntime {
                     continue;
                 }
                 if let Err(error) = runtime.heartbeat(&uuid::Uuid::new_v4().to_string()).await {
-                    tracing::warn!(plugin_code = %runtime.code, error = %error, "heartbeat do plugin falhou");
+                    tracing::warn!(plugin_code = %runtime.code, error = %error, "plugin heartbeat failed");
                 } else if let Err(error) = runtime.detect_update().await {
-                    tracing::warn!(plugin_code = %runtime.code, error = %error, "detecção de atualização do plugin falhou");
+                    tracing::warn!(plugin_code = %runtime.code, error = %error, "plugin update detection failed");
                 }
             }
         });
@@ -2281,7 +2281,7 @@ impl PluginRuntime {
     /// prova de validade.
     async fn refresh_license_status(&self) -> Result<(), LicenseClientError> {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhum lease local.")
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "No local lease.")
         })?;
         let response = self.service.status(&persisted, &self.fingerprint).await?;
         let mut status = self.status.write().await;
@@ -2301,7 +2301,7 @@ impl PluginRuntime {
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "lease local ausente para checar atualização do plugin",
+                "local lease missing to check the plugin update",
             )
         })?;
         let manifest = self
@@ -2342,7 +2342,7 @@ impl PluginRuntime {
         if !has_persisted {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "lease local ausente ao salvar a verificação de atualização",
+                "local lease missing while saving the update check",
             ));
         }
         let mut status = self.status.write().await;
@@ -2352,7 +2352,7 @@ impl PluginRuntime {
                     plugin_code = %self.code,
                     release_id = %update.release_id,
                     version = %update.version,
-                    "release nova do plugin encontrada"
+                    "new plugin release found"
                 );
             }
             status.update_checked_at = Some(update_checked_at);
@@ -2373,24 +2373,24 @@ impl PluginRuntime {
         if !status.active {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "este plugin precisa estar ativo para ser atualizado",
+                "this plugin must be active to be updated",
             ));
         }
         let requested_release_id = requested_release_id.trim();
         let Some(available) = status.available_update.as_ref() else {
             return Err(update_unavailable(
-                "nenhuma atualização deste plugin está disponível",
+                "no update of this plugin is available",
             ));
         };
         if available.release_id != requested_release_id {
             return Err(update_unavailable(
-                "a atualização confirmada já não é a atualização disponível",
+                "the confirmed update is no longer the available update",
             ));
         }
         let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
-                "lease local ausente para atualizar o plugin",
+                "local lease missing to update the plugin",
             )
         })?;
         let manifest = self
@@ -2405,7 +2405,7 @@ impl PluginRuntime {
             .await?;
         if manifest.manifest.release_id != requested_release_id {
             return Err(update_unavailable(
-                "a atualização confirmada já não é uma release nova disponível",
+                "the confirmed update is no longer a new available release",
             ));
         }
         validate_manifest_for_runtime(&self.code, &manifest.manifest)?;
@@ -2460,12 +2460,12 @@ impl PluginRuntime {
         let _guard = self.update_lock.lock().await;
         if self.persisted.lock().await.is_some() {
             return Err(update_unavailable(
-                "este código de plugin já está instalado pelo mecanismo de licença",
+                "this plugin code is already installed through the license mechanism",
             ));
         }
         let manifest = downloaded.manifest;
         if manifest.plugin_code != self.code {
-            return Err(update_unavailable("manifesto pertence a outro plugin"));
+            return Err(update_unavailable("manifest belongs to another plugin"));
         }
         if let Some(preferences) = &manifest.preferences {
             crate::plugin_github::validate_preferences_schema(preferences)
@@ -2523,7 +2523,7 @@ impl PluginRuntime {
                 *self.host.lock().await = Some(old_host);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    format!("o host anterior do plugin não pôde ser parado: {error}"),
+                    format!("the previous plugin host could not be stopped: {error}"),
                 ));
             }
         }
@@ -2609,7 +2609,7 @@ impl PluginRuntime {
     ) -> Result<String, LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         if bytes.is_empty() || bytes.len() as u64 > 512 * 1024 * 1024 {
-            return Err(update_unavailable("plugin de desenvolvimento inválido"));
+            return Err(update_unavailable("invalid development plugin"));
         }
 
         let mut licensed = self.persisted.lock().await.clone();
@@ -2650,7 +2650,7 @@ impl PluginRuntime {
                 let _ = std::fs::remove_file(&path);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    format!("o host anterior do plugin não pôde ser parado: {error}"),
+                    format!("the previous plugin host could not be stopped: {error}"),
                 ));
             }
         }
@@ -2964,7 +2964,7 @@ impl PluginManager {
                     .collect::<Vec<_>>()
             }
             Err(error) => {
-                tracing::warn!(error = %error, "licenças de plugins locais não puderam ser enumeradas na inicialização");
+                tracing::warn!(error = %error, "local plugin licenses could not be enumerated at startup");
                 Vec::new()
             }
         };
@@ -3096,7 +3096,7 @@ impl PluginManager {
         if !is_valid_plugin_code(code) {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::ServerError,
-                "o servidor retornou um plugin_code inválido",
+                "the server returned an invalid plugin_code",
             ));
         }
         let mut runtimes = self
@@ -3250,7 +3250,7 @@ impl PluginManager {
             .clone();
         if current.contains_key(&repository.id) {
             return Err(update_unavailable(
-                "este repositório GitHub já foi cadastrado",
+                "this GitHub repository was already registered",
             ));
         }
         let mut next = current;
@@ -3290,7 +3290,7 @@ impl PluginManager {
         let previous = current
             .get(id)
             .cloned()
-            .ok_or_else(|| update_unavailable("repositório GitHub desconhecido"))?;
+            .ok_or_else(|| update_unavailable("unknown GitHub repository"))?;
         // A repository listed by the license server is refreshed from it when
         // GitHub still fails; one read from GitHub keeps its saved inspection.
         let refreshed = self
@@ -3306,7 +3306,7 @@ impl PluginManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let Some(previous) = current.get(id).cloned() else {
-            return Err(update_unavailable("repositório GitHub foi removido"));
+            return Err(update_unavailable("GitHub repository was removed"));
         };
         match refreshed {
             Ok(repository) => {
@@ -3340,7 +3340,7 @@ impl PluginManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if !current.contains_key(id) {
-            return Err(update_unavailable("repositório GitHub desconhecido"));
+            return Err(update_unavailable("unknown GitHub repository"));
         }
         let mut next = current;
         next.remove(id);
@@ -3365,7 +3365,7 @@ impl PluginManager {
         let repository = current
             .get(id)
             .cloned()
-            .ok_or_else(|| update_unavailable("repositório GitHub desconhecido"))?;
+            .ok_or_else(|| update_unavailable("unknown GitHub repository"))?;
         let downloaded = self
             .github_client
             .download_release(
@@ -3385,20 +3385,20 @@ impl PluginManager {
                 })?;
             if license_state.is_some() {
                 return Err(update_unavailable(
-                    "este código de plugin já tem uma instalação local pelo mecanismo de licença",
+                    "this plugin code already has a local installation through the license mechanism",
                 ));
             }
         }
         let runtime = self.get_or_create_runtime(plugin_code)?;
         if runtime.persisted.lock().await.is_some() {
             return Err(update_unavailable(
-                "este código de plugin já está instalado pelo mecanismo de licença; desative-o antes de instalar outra origem",
+                "this plugin code is already installed through the license mechanism; deactivate it before installing another source",
             ));
         }
         if let Some(installed) = runtime.public_install.lock().await.as_ref() {
             if installed.repository_id.as_deref() != Some(repository.id.as_str()) {
                 return Err(update_unavailable(
-                    "este código de plugin já está instalado de outro repositório GitHub",
+                    "this plugin code is already installed from another GitHub repository",
                 ));
             }
         }
@@ -3410,7 +3410,7 @@ impl PluginManager {
             .clone();
         if !current.contains_key(id) {
             return Err(update_unavailable(
-                "repositório GitHub foi removido durante a instalação",
+                "GitHub repository was removed during the installation",
             ));
         }
         let mut next = current;
@@ -3429,7 +3429,7 @@ impl PluginManager {
     ) -> Result<(), LicenseClientError> {
         let runtime = self
             .runtime_for(code)
-            .ok_or_else(|| update_unavailable("plugin desconhecido"))?;
+            .ok_or_else(|| update_unavailable("unknown plugin"))?;
         runtime.save_preferences(preferences).await
     }
 
@@ -3451,7 +3451,7 @@ impl PluginManager {
     ) -> Result<(), String> {
         match self.runtime_for(code) {
             Some(runtime) => runtime.ingest_event(event).await,
-            None => Err("plugin desconhecido neste nó".into()),
+            None => Err("unknown plugin on this node".into()),
         }
     }
 
@@ -3498,7 +3498,7 @@ impl PluginManager {
         if license_key.trim().is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::InvalidKey,
-                "Informe uma chave de licença.",
+                "Enter a license key.",
             ));
         }
         let validate_request = RequestEnvelope::new(
@@ -3519,7 +3519,7 @@ impl PluginManager {
             if !is_valid_plugin_code(&code) {
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "o servidor retornou um plugin_code inválido",
+                    "the server returned an invalid plugin_code",
                 ));
             }
             if seen.insert(code.clone()) {
@@ -3529,7 +3529,7 @@ impl PluginManager {
         if granted_plugins.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "A chave não concede nenhum plugin.",
+                "The key grants no plugin.",
             ));
         }
         let mut activated = Vec::new();
@@ -3539,7 +3539,7 @@ impl PluginManager {
             match runtime.activate_and_install(license_key).await {
                 Ok(()) => activated.push(code),
                 Err(error) => {
-                    tracing::warn!(plugin_code = %code, error = %error, "ativação do plugin falhou");
+                    tracing::warn!(plugin_code = %code, error = %error, "plugin activation failed");
                     last_error = Some(error);
                 }
             }
@@ -3548,7 +3548,7 @@ impl PluginManager {
             return Err(last_error.unwrap_or_else(|| {
                 LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "nenhum plugin concedido pôde ser ativado",
+                    "no granted plugin could be activated",
                 )
             }));
         }
@@ -3557,35 +3557,35 @@ impl PluginManager {
 
     pub(crate) async fn deactivate(&self, code: &str) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         runtime.deactivate().await
     }
 
     pub(crate) async fn refresh(&self, code: &str) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         if runtime.public_install.lock().await.is_some() {
             return Ok(());
         }
         runtime.heartbeat(&uuid::Uuid::new_v4().to_string()).await?;
         if let Err(error) = runtime.detect_update().await {
-            tracing::warn!(plugin_code = %code, error = %error, "detecção de atualização do plugin falhou");
+            tracing::warn!(plugin_code = %code, error = %error, "plugin update detection failed");
         }
         if let Err(error) = runtime.refresh_license_status().await {
-            tracing::warn!(plugin_code = %code, error = %error, "checagem de validade da licença falhou");
+            tracing::warn!(plugin_code = %code, error = %error, "license validity check failed");
         }
         Ok(())
     }
 
     pub(crate) async fn check_update(&self, code: &str) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         if runtime.public_install.lock().await.is_some() {
             return Err(update_unavailable(
-                "consulte as releases no card do repositório GitHub cadastrado",
+                "see the releases on the card of the registered GitHub repository",
             ));
         }
         runtime.detect_update().await
@@ -3597,11 +3597,11 @@ impl PluginManager {
         release_id: &str,
     ) -> Result<(), LicenseClientError> {
         let runtime = self.runtime_for(code).ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
+            LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
         if runtime.public_install.lock().await.is_some() {
             return Err(update_unavailable(
-                "plugins instalados por GitHub são atualizados pelo card do repositório",
+                "plugins installed from GitHub are updated from the repository card",
             ));
         }
         runtime.apply_update(release_id).await
@@ -3770,7 +3770,7 @@ pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
             let wait = match refresh_host_context(&state).await {
                 Ok(()) => REFRESH,
                 Err(error) => {
-                    tracing::warn!(%error, "contexto dos plugins sem API key; nova tentativa em 30 s");
+                    tracing::warn!(%error, "plugin context without an API key; retrying in 30 s");
                     RETRY
                 }
             };
@@ -3862,11 +3862,11 @@ fn prepare_storage_directory(
     };
     let path = std::path::Path::new(directory);
     if directory.trim().is_empty() || !path.is_absolute() || directory.contains('\0') {
-        return Err("o diretório de armazenamento precisa ser um caminho absoluto".into());
+        return Err("the storage directory must be an absolute path".into());
     }
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|error| {
-            format!("não foi possível criar o diretório de armazenamento {directory}: {error}")
+            format!("could not create the storage directory {directory}: {error}")
         })?;
     }
     Ok(())
@@ -3883,17 +3883,17 @@ fn validate_preferences(
             .iter()
             .any(|preference| preference.key == *key)
     }) {
-        return Err("preferência booleana desconhecida para este plugin".into());
+        return Err("unknown boolean preference for this plugin".into());
     }
     match (&schema.storage_directory, &values.storage_directory) {
-        (None, Some(_)) => return Err("este plugin não aceita diretório de armazenamento".into()),
+        (None, Some(_)) => return Err("this plugin does not accept a storage directory".into()),
         (Some(_), Some(directory)) => {
             if directory.trim().is_empty() || directory.len() > 4096 || directory.contains('\0') {
-                return Err("diretório de armazenamento inválido".into());
+                return Err("invalid storage directory".into());
             }
             let path = std::path::Path::new(directory);
             if !path.is_absolute() || !path.is_dir() {
-                return Err("o diretório de armazenamento precisa existir e ser absoluto".into());
+                return Err("the storage directory must exist and be absolute".into());
             }
         }
         _ => {}
@@ -3940,7 +3940,7 @@ pub(crate) async fn activate_plugin(
         }))
         .into_response(),
         Err(error) => {
-            tracing::warn!(error = %error, "ativação de plugin falhou");
+            tracing::warn!(error = %error, "plugin activation failed");
             license_error_response(error)
         }
     }
@@ -4149,7 +4149,7 @@ pub(crate) async fn plugin_peer_fingerprint(
     {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({"error": "desafio de fingerprint inválido"})),
+            axum::Json(serde_json::json!({"error": "invalid fingerprint challenge"})),
         )
             .into_response();
     }
@@ -4157,7 +4157,7 @@ pub(crate) async fn plugin_peer_fingerprint(
     if identity.node_id.0 != state.plugins.fingerprint().node_id {
         return (
             axum::http::StatusCode::CONFLICT,
-            axum::Json(serde_json::json!({"error": "identidade do peer divergente"})),
+            axum::Json(serde_json::json!({"error": "peer identity mismatch"})),
         )
             .into_response();
     }
@@ -4409,7 +4409,7 @@ fn plugin_path(
     {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "release_id de plugin inválido",
+            "invalid plugin release_id",
         ));
     }
     let extension = match os {
@@ -4431,7 +4431,7 @@ fn validate_manifest(
     if manifest.release_id != activation.plugin_release_id || activation.plugin_code != code {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "manifest do plugin incompatível com a ativação",
+            "plugin manifest incompatible with the activation",
         ));
     }
     validate_manifest_for_runtime(code, manifest)
@@ -4451,7 +4451,7 @@ fn validate_manifest_for_runtime(
     {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "manifest do plugin incompatível com esta instalação",
+            "plugin manifest incompatible with this installation",
         ));
     }
     if let Some(preferences) = &manifest.preferences {
@@ -4468,7 +4468,7 @@ fn validate_download(
     if bytes.len() as u64 != manifest.size {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "tamanho do plugin divergente",
+            "plugin size mismatch",
         ));
     }
     let actual = hex::encode(sha2::Sha256::digest(bytes));
@@ -4479,7 +4479,7 @@ fn validate_download(
     if actual != expected {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
-            "hash do plugin divergente",
+            "plugin hash mismatch",
         ));
     }
     Ok(())
@@ -4495,7 +4495,7 @@ fn install_plugin_atomically(
 ) -> Result<(), LicenseClientError> {
     let parent = destination
         .parent()
-        .ok_or_else(|| io_error(std::io::Error::other("diretório do plugin ausente")))?;
+        .ok_or_else(|| io_error(std::io::Error::other("plugin directory missing")))?;
     std::fs::create_dir_all(parent).map_err(io_error)?;
     let temporary = parent.join(format!(
         ".{}.part-{}",
@@ -4595,11 +4595,11 @@ pub(crate) mod tests_support {
         fn grant_sync(&self, code: &str, response: ActivationResponse, artifact: Vec<u8>) {
             self.responses
                 .try_lock()
-                .expect("uso síncrono em setup de teste")
+                .expect("synchronous use in test setup")
                 .insert(code.to_owned(), MockResponse::Valid(response));
             self.artifacts
                 .try_lock()
-                .expect("uso síncrono em setup de teste")
+                .expect("synchronous use in test setup")
                 .insert(code.to_owned(), artifact);
         }
 
@@ -4741,7 +4741,7 @@ pub(crate) mod tests_support {
                 }
                 None => Err(LicenseClientError::new(
                     LicenseErrorCode::FeatureNotEntitled,
-                    "mock: plugin_code sem resposta registrada",
+                    "mock: plugin_code without a registered response",
                 )),
             }
         }
@@ -4824,7 +4824,7 @@ pub(crate) mod tests_support {
                 }
                 None => Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    "mock: plugin_code sem manifest registrado",
+                    "mock: plugin_code without a registered manifest",
                 )),
             }
         }
@@ -4840,7 +4840,7 @@ pub(crate) mod tests_support {
                 .ok_or_else(|| {
                     LicenseClientError::new(
                         LicenseErrorCode::ServerError,
-                        "artefato mock não configurado",
+                        "mock artifact not configured",
                     )
                 })
         }
@@ -4853,7 +4853,7 @@ pub(crate) mod tests_support {
         ) -> Result<(), LicenseClientError> {
             *self.deactivate_calls.lock().await += 1;
             match *self.deactivate_error.lock().await {
-                Some(code) => Err(LicenseClientError::new(code, "desativação recusada")),
+                Some(code) => Err(LicenseClientError::new(code, "deactivation refused")),
                 None => Ok(()),
             }
         }
@@ -4988,7 +4988,7 @@ mod tests {
             "linux",
             "x86_64",
         )
-        .expect("release_id com '+' de metadado de build deve ser aceito");
+        .expect("a release_id with a build metadata '+' must be accepted");
 
         assert!(path
             .to_string_lossy()
@@ -5451,7 +5451,7 @@ mod tests {
         assert!(manager.deactivate("logs").await.is_err());
         assert!(
             manager.status("logs").await.expect("status").active,
-            "uma falha comum do servidor mantém a licença"
+            "a regular server failure keeps the license"
         );
 
         let unknown = parse_license_error(
@@ -5501,7 +5501,7 @@ mod tests {
         assert!(!manager.status("logs").await.expect("status").active);
         assert!(
             manager.status("sample").await.expect("status").active,
-            "revogar um plugin não pode desativar o outro"
+            "revoking one plugin cannot deactivate the other"
         );
     }
 
@@ -5529,11 +5529,11 @@ mod tests {
     async fn production_manager_restores_any_persisted_plugin_code() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database = Arc::new(
-            crate::db::PomDb::open(directory.path().join("pom.db")).expect("abrir banco de teste"),
+            crate::db::PomDb::open(directory.path().join("pom.db")).expect("open the test database"),
         );
         database
             .save_local_setting("plugin_license:future.plugin-v2", &serde_json::json!({}))
-            .expect("salvar código de plugin persistido");
+            .expect("save persisted plugin code");
 
         let manager = PluginManager::runtime_with_database("node-dynamic", database);
 
@@ -5761,7 +5761,7 @@ mod tests {
 
         let status = runtime.status().await;
         assert_eq!(status.state, LicenseState::Degraded);
-        assert!(status.active, "uma falha transitória não desativa o plugin");
+        assert!(status.active, "a transient failure does not deactivate the plugin");
     }
 
     #[tokio::test]
@@ -5795,7 +5795,7 @@ mod tests {
         assert!(!manager.status("logs").await.expect("status").active);
         assert!(
             manager.status("sample").await.expect("status").active,
-            "o heartbeat de um plugin não deve afetar o outro"
+            "the heartbeat of one plugin must not affect the other"
         );
     }
 
@@ -5912,7 +5912,7 @@ mod tests {
             .status()
             .await
             .available_update
-            .expect("o heartbeat não pode apagar a atualização real");
+            .expect("the heartbeat cannot erase the real update");
         assert_eq!(available.release_id, "ent-0.1.0+build.2-linux-x86_64");
         assert_eq!(available.version, "0.1.0+build.2");
         // `installed_release_id` só avança com um download confirmado - o
@@ -5955,7 +5955,7 @@ mod tests {
             .status()
             .await
             .available_update
-            .expect("a release sinalizada em segundo plano deve aparecer");
+            .expect("the release flagged in the background must show up");
         assert_eq!(available.release_id, "ent-2");
         assert_eq!(
             runtime
@@ -6025,10 +6025,10 @@ mod tests {
 
     fn fake_host_binary() -> std::path::PathBuf {
         let fake_host = std::env::current_exe()
-            .expect("localizar binário de teste")
+            .expect("locate the test binary")
             .parent()
             .and_then(|deps| deps.parent())
-            .expect("localizar diretório target/<profile>")
+            .expect("locate the target/<profile> directory")
             .join(if cfg!(windows) {
                 "pom-fake-enterprise-plugin-host.exe"
             } else {
@@ -6036,7 +6036,7 @@ mod tests {
             });
         assert!(
             fake_host.is_file(),
-            "binário auxiliar {} não foi compilado; rode `cargo test -p node` (não `--lib`) para produzir todos os alvos [[bin]]",
+            "helper binary {} was not built; run `cargo test -p node` (not `--lib`) to produce all the [[bin]] targets",
             fake_host.display()
         );
         fake_host
@@ -6114,7 +6114,7 @@ mod tests {
         ]);
         let host_log = directory.path().join("host.log");
         let data_dir = directory.path().join("data");
-        std::fs::create_dir(&data_dir).expect("criar diretório persistente");
+        std::fs::create_dir(&data_dir).expect("create the persistent directory");
         std::env::set_var("POM_HOME", directory.path());
         std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
@@ -6122,7 +6122,7 @@ mod tests {
         std::env::remove_var("POM_FAKE_HOST_READY_ERROR");
 
         let database =
-            Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("abrir banco do POM"));
+            Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("open the POM database"));
         let service = Arc::new(MockLicenseService::single(
             "logs",
             activation("logs", "ent-1"),
@@ -6133,7 +6133,7 @@ mod tests {
             manager
                 .activate("PM-test-key")
                 .await
-                .expect("ativar plugin"),
+                .expect("activate plugin"),
             vec!["logs"]
         );
         let expected_path = data_dir.join("logs.db");
@@ -6163,10 +6163,10 @@ mod tests {
         std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
-        std::env::set_var("POM_FAKE_HOST_READY_ERROR", "plugin recusou configuração");
+        std::env::set_var("POM_FAKE_HOST_READY_ERROR", "plugin refused the configuration");
 
         let database = Arc::new(
-            crate::db::PomDb::open(directory.path().join("pom.db")).expect("abrir banco do POM"),
+            crate::db::PomDb::open(directory.path().join("pom.db")).expect("open the POM database"),
         );
         let service = Arc::new(MockLicenseService::single(
             "logs",
@@ -6178,21 +6178,21 @@ mod tests {
         let error = manager
             .activate("PM-test-key")
             .await
-            .expect_err("handshake recusado deve falhar a instalação");
+            .expect_err("a refused handshake must fail the installation");
         let status = manager.status("logs").await.expect("status");
         assert_eq!(
             error.code(),
             LicenseErrorCode::ServerError,
-            "falha de instalação deve voltar como erro: {error}"
+            "an installation failure must come back as an error: {error}"
         );
         assert_eq!(
             status.state,
             LicenseState::Active,
-            "licença continua válida"
+            "license stays valid"
         );
         assert!(
             !status.active,
-            "handshake recusado não deixa o plugin pronto"
+            "a refused handshake does not leave the plugin ready"
         );
         assert!(status.installed_at.is_none());
         assert!(!status.has_feature("request_logs"));
@@ -6201,16 +6201,16 @@ mod tests {
                 .installation_error
                 .as_deref()
                 .is_some_and(|message| message
-                    .contains("plugin host recusou ready: plugin recusou configuração")),
+                    .contains("plugin host refused ready: plugin refused the configuration")),
             "installation_error={:?}; host_log={}",
             status.installation_error,
             std::fs::read_to_string(&host_log).unwrap_or_default()
         );
         let persisted = database
             .local_setting_json("plugin_license:logs")
-            .expect("ler estado persistido")
-            .expect("estado de licença persistido");
-        assert!(persisted.contains("plugin recusou configuração"));
+            .expect("read persisted state")
+            .expect("persisted license state");
+        assert!(persisted.contains("plugin refused the configuration"));
     }
 
     /// Contexto do nó (`host.configure`) chega ao host na subida, no
@@ -6239,7 +6239,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let plugin_path = dir.path().join("logs-plugin.bin");
-        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("write fake plugin");
         let host_log = dir.path().join("host.log");
         let token = "t".repeat(32);
         // SAFETY: serializado por `REAL_HOST`.
@@ -6252,7 +6252,7 @@ mod tests {
         );
 
         let db = Arc::new(
-            crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
+            crate::db::PomDb::open(dir.path().join("pom.db")).expect("open the test database"),
         );
         let service = Arc::new(MockLicenseService::single(
             "logs",
@@ -6290,19 +6290,19 @@ mod tests {
         assert_eq!(
             configures("sk-first"),
             1,
-            "host recém-iniciado recebe o contexto"
+            "a freshly started host receives the context"
         );
         assert!(std::fs::read_to_string(&host_log)
             .unwrap_or_default()
             .contains("/data/workspace"));
 
         manager.set_host_context(context("sk-first")).await;
-        assert_eq!(configures("sk-first"), 1, "contexto igual não é reenviado");
+        assert_eq!(configures("sk-first"), 1, "an equal context is not resent");
         manager.set_host_context(context("sk-second")).await;
         assert_eq!(
             configures("sk-second"),
             1,
-            "host em execução recebe o contexto novo"
+            "a running host receives the new context"
         );
 
         let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -6330,7 +6330,7 @@ mod tests {
         let body = crate::gateway::testkit::body_of(response).await;
         assert_eq!(body["uri"], "/hello?x=1");
         assert_eq!(body["token"], token.as_str());
-        assert_eq!(body["cookie"], false, "a sessão do POM não chega ao plugin");
+        assert_eq!(body["cookie"], false, "the POM session does not reach the plugin");
 
         let root = app
             .clone()
@@ -6400,7 +6400,7 @@ mod tests {
         assert_eq!(
             configures("sk-second"),
             2,
-            "host reiniciado recebe o contexto atual"
+            "a restarted host receives the current context"
         );
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
         runtime.stop_host_for_test().await;
@@ -6425,10 +6425,10 @@ mod tests {
         // produção: ao lado do diretório de saída do cargo
         // (`target/<profile>/deps/pom-<hash>` -> `target/<profile>/`).
         let fake_host = std::env::current_exe()
-            .expect("localizar binário de teste")
+            .expect("locate the test binary")
             .parent()
             .and_then(|deps| deps.parent())
-            .expect("localizar diretório target/<profile>")
+            .expect("locate the target/<profile> directory")
             .join(if cfg!(windows) {
                 "pom-fake-enterprise-plugin-host.exe"
             } else {
@@ -6436,12 +6436,12 @@ mod tests {
             });
         assert!(
             fake_host.is_file(),
-            "binário auxiliar {} não foi compilado; rode `cargo test -p node` (não `--lib`) para produzir todos os alvos [[bin]]",
+            "helper binary {} was not built; run `cargo test -p node` (not `--lib`) to produce all the [[bin]] targets",
             fake_host.display()
         );
         let dir = tempfile::tempdir().expect("tempdir");
         let plugin_path = dir.path().join("logs-plugin.bin");
-        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("write fake plugin");
         let host_log = dir.path().join("ingest.log");
 
         // SAFETY: nenhum outro teste desta suíte lê ou grava
@@ -6451,7 +6451,7 @@ mod tests {
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
 
         let db = Arc::new(
-            crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
+            crate::db::PomDb::open(dir.path().join("pom.db")).expect("open the test database"),
         );
         let service = Arc::new(MockLicenseService::single(
             "logs",
@@ -6475,17 +6475,17 @@ mod tests {
         runtime.ensure_host_running(&persisted).await;
         assert!(
             runtime.host.lock().await.is_some(),
-            "host deveria subir na primeira ativação"
+            "the host should start on the first activation"
         );
 
         service.set_heartbeat_error(LicenseErrorCode::Revoked).await;
         runtime
             .heartbeat("nonce-revoke")
             .await
-            .expect_err("heartbeat deve refletir a revogação");
+            .expect_err("the heartbeat must reflect the revocation");
         assert!(
             runtime.host.lock().await.is_none(),
-            "host deveria parar quando a licença é revogada"
+            "the host should stop when the license is revoked"
         );
         assert!(!runtime.status().await.active);
 
@@ -6493,11 +6493,11 @@ mod tests {
         runtime
             .heartbeat("nonce-self-heal")
             .await
-            .expect("heartbeat de self-heal deve ter sucesso");
+            .expect("the self-heal heartbeat must succeed");
 
         assert!(
             runtime.host.lock().await.is_some(),
-            "heartbeat de sucesso deveria reiniciar o host sem restart do processo pom"
+            "a successful heartbeat should restart the host without restarting the pom process"
         );
         assert!(runtime.status().await.active);
 
@@ -6516,12 +6516,12 @@ mod tests {
                     }
                 ))
                 .await,
-            "ingest deveria funcionar com o host restaurado"
+            "ingest should work with the restored host"
         );
         let events = std::fs::read_to_string(&host_log).expect("ler log do fake host");
         assert!(
             events.contains("req-1"),
-            "evento de auditoria deveria ter chegado ao host reiniciado"
+            "audit event should have reached the restarted host"
         );
     }
 }

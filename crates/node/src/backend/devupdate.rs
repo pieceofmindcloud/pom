@@ -43,7 +43,7 @@ fn gate_rejection() -> Option<(StatusCode, String)> {
     Some((
         StatusCode::FORBIDDEN,
         format!(
-            "atualização remota desligada neste nó. Suba o processo com {}=1 para habilitar.",
+            "remote update is off on this node. Start the process with {}=1 to enable it.",
             env_gate()
         ),
     ))
@@ -151,10 +151,10 @@ async fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
         .stdin(std::process::Stdio::null())
         .output()
         .await
-        .map_err(|e| format!("não deu para rodar git {}: {e}", args.join(" ")))?;
+        .map_err(|e| format!("could not run git {}: {e}", args.join(" ")))?;
     if !out.status.success() {
         return Err(format!(
-            "git {} falhou:\n{}",
+            "git {} failed:\n{}",
             args.join(" "),
             String::from_utf8_lossy(&out.stderr)
         ));
@@ -207,7 +207,7 @@ async fn update_endpoint(
                 StatusCode::NOT_FOUND,
                 Json(json!({
                     "error": format!(
-                        "peer {target} não está anunciando gateway ou não é mais visto na rede"
+                        "peer {target} is not announcing a gateway or is no longer seen on the network"
                     )
                 })),
             )
@@ -219,7 +219,7 @@ async fn update_endpoint(
             Err(e) => {
                 return (
                     StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("sem cliente para o peer {target}: {e}") })),
+                    Json(json!({ "error": format!("no client for peer {target}: {e}") })),
                 )
                     .into_response()
             }
@@ -246,14 +246,14 @@ async fn update_endpoint(
             Ok(resp) => {
                 let status = resp.status();
                 let peer_body = resp.text().await.unwrap_or_else(|e| {
-                    format!("{{\"error\":\"resposta do peer {target} sem corpo legível: {e}\"}}")
+                    format!("{{\"error\":\"response from peer {target} without a readable body: {e}\"}}")
                 });
                 (status, peer_body).into_response()
             }
             Err(e) => (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({
-                    "error": format!("não deu para repassar a atualização para {target}: {e}")
+                    "error": format!("could not forward the update to {target}: {e}")
                 })),
             )
                 .into_response(),
@@ -269,8 +269,8 @@ async fn update_endpoint(
     let job = crate::webui::new_job(
         &id,
         "update",
-        "Atualizar esta máquina",
-        "conferindo o repositório",
+        "Update this machine",
+        "checking the repository",
     );
     crate::webui::jobs().write().await.insert(id.clone(), job);
 
@@ -301,13 +301,13 @@ async fn update_endpoint(
         }
 
         // ── Pull ─────────────────────────────────────────────────────────────
-        step(&job_id, "puxando o código").await;
+        step(&job_id, "pulling the code").await;
         if let Err(e) = git(&root, &["pull", "--ff-only", "origin", "main"]).await {
             return fail(&job_id, e).await;
         }
 
         // ── Build ────────────────────────────────────────────────────────────
-        step(&job_id, "compilando").await;
+        step(&job_id, "building").await;
         let features = std::env::var(env_features()).ok();
         let args = build_args(features.as_deref());
         let out =
@@ -332,15 +332,15 @@ async fn update_endpoint(
                     .join("\n");
                 return fail(
                     &job_id,
-                    format!("o build falhou. Ninguém reiniciou.\n{tail}"),
+                    format!("the build failed. Nobody restarted.\n{tail}"),
                 )
                 .await;
             }
-            Err(e) => return fail(&job_id, format!("não deu para rodar cargo: {e}")).await,
+            Err(e) => return fail(&job_id, format!("could not run cargo: {e}")).await,
         }
 
         // ── Reinícios ────────────────────────────────────────────────────────
-        step(&job_id, "reiniciando os nós desta máquina").await;
+        step(&job_id, "restarting the nodes of this machine").await;
         let me = crate::sysmon::sample().await.hostname;
         let peers = state.network.alive_peers().await;
         let tuples: Vec<(&str, &str, Option<u16>, &str)> = peers
@@ -385,11 +385,11 @@ async fn update_endpoint(
             match request.send().await {
                 Ok(resp) if resp.status().is_success() => restarted += 1,
                 Ok(resp) => {
-                    tracing::warn!("irmão {url} recusou o reinício: {}", resp.status());
+                    tracing::warn!("sibling {url} refused the restart: {}", resp.status());
                     failed.push(url.clone());
                 }
                 Err(e) => {
-                    tracing::warn!("não deu para reiniciar o irmão {url}: {e}");
+                    tracing::warn!("could not restart sibling {url}: {e}");
                     failed.push(url.clone());
                 }
             }
@@ -398,10 +398,10 @@ async fn update_endpoint(
         let siblings_msg = if targets.is_empty() {
             String::new()
         } else if failed.is_empty() {
-            format!(" {restarted} irmão(s) desta máquina também reiniciaram.")
+            format!(" {restarted} sibling(s) of this machine also restarted.")
         } else {
             format!(
-                " {restarted} irmão(s) desta máquina reiniciaram, {} falharam: {}.",
+                " {restarted} sibling(s) of this machine restarted, {} failed: {}.",
                 failed.len(),
                 failed.join(", ")
             )
@@ -413,7 +413,7 @@ async fn update_endpoint(
                 j.state = "done";
                 j.step = "pronto".into();
                 j.message =
-                    format!("código atualizado; esta máquina está reiniciando.{siblings_msg}");
+                    format!("code updated; this machine is restarting.{siblings_msg}");
                 j.finished_at = Some(chrono::Utc::now().to_rfc3339());
             }
         }
@@ -427,7 +427,7 @@ async fn update_endpoint(
         // infinito de 2026-08-15 entrando por outra porta.
         tokio::time::sleep(RESTART_DELAY).await;
         let e = crate::respawn::respawn_self();
-        tracing::error!("respawn falhou, o nó segue no ar: {e}");
+        tracing::error!("respawn failed, the node stays up: {e}");
     });
 
     Json(json!({ "job_id": id })).into_response()
@@ -455,7 +455,7 @@ async fn restart_endpoint(
     tokio::spawn(async {
         tokio::time::sleep(RESTART_DELAY).await;
         let e = crate::respawn::respawn_self();
-        tracing::error!("respawn falhou, o nó segue no ar: {e}");
+        tracing::error!("respawn failed, the node stays up: {e}");
     });
 
     Json(json!({ "restarting": true })).into_response()
@@ -500,17 +500,14 @@ impl Preflight {
         match self {
             Preflight::Ok => None,
             Preflight::DetachedOrNoBranch => Some(
-                "o repositório desta máquina não está num branch (HEAD destacado). \
-                 A atualização só roda no main."
+                "the repository of this machine is not on a branch (detached HEAD). The update only runs on main."
                     .into(),
             ),
             Preflight::WrongBranch(b) => Some(format!(
-                "o repositório desta máquina está no branch '{b}', não no main. \
-                 Alguém pode estar trabalhando aqui — a atualização não troca de branch."
+                "the repository of this machine is on branch '{b}', not on main. Someone may be working here — the update does not switch branches."
             )),
             Preflight::DirtyTree(files) => Some(format!(
-                "há alterações não commitadas nesta máquina: {}. \
-                 A atualização não descarta trabalho, então ela para aqui.",
+                "there are uncommitted changes on this machine: {}. The update does not discard work, so it stops here.",
                 files.join(", ")
             )),
         }
@@ -538,11 +535,11 @@ mod tests {
     #[test]
     fn a_closed_gate_refuses_with_403() {
         // Num ambiente de teste a variável não está ligada, então há recusa.
-        let r = gate_rejection().expect("sem a variável, tem que recusar");
+        let r = gate_rejection().expect("without the variable, it must refuse");
         assert_eq!(r.0, axum::http::StatusCode::FORBIDDEN);
         assert!(
             r.1.contains(&env_gate()),
-            "a mensagem tem que dizer qual variável liga: {}",
+            "the message must say which variable turns it on: {}",
             r.1
         );
     }
@@ -584,7 +581,7 @@ mod tests {
                     &vec!["src/llm.rs".to_string(), "src/webui.rs".to_string()]
                 );
             }
-            other => panic!("esperava árvore suja, veio {other:?}"),
+            other => panic!("expected a dirty tree, got {other:?}"),
         }
         assert!(p.message().unwrap().contains("src/llm.rs"));
     }
@@ -620,14 +617,14 @@ mod tests {
     /// respostas que decidem entre executar aqui e repassar.
     #[test]
     fn should_forward_only_with_another_peer_node_id() {
-        assert!(!should_forward(None, "meu-id"), "sem node_id, executa aqui");
+        assert!(!should_forward(None, "meu-id"), "without node_id, runs here");
         assert!(
             !should_forward(Some("meu-id"), "meu-id"),
-            "node_id igual ao meu, executa aqui"
+            "node_id equal to mine, runs here"
         );
         assert!(
             should_forward(Some("outro-id"), "meu-id"),
-            "node_id de outro peer, repassa"
+            "node_id of another peer, forwards"
         );
     }
 
@@ -651,7 +648,7 @@ mod tests {
                 ("id-a".to_string(), "http://[2804:d55::1]:8090".to_string()),
                 ("id-b".to_string(), "http://[2804:d55::1]:8094".to_string()),
             ],
-            "outra máquina fica de fora, e peer sem gateway_port não dá para chamar"
+            "another machine stays out, and a peer without gateway_port cannot be called"
         );
     }
 
@@ -671,7 +668,7 @@ mod tests {
         assert_eq!(
             targets,
             vec![("id-a".to_string(), "http://[2804:d55::1]:8090".to_string())],
-            "a VM em 203.0.113.9 tem o mesmo hostname mas não é esta máquina"
+            "the VM at 203.0.113.9 has the same hostname but is not this machine"
         );
     }
 
@@ -692,7 +689,7 @@ mod tests {
         );
         assert!(
             targets.is_empty(),
-            "sentinela não reescrito não pode virar alvo: {targets:?}"
+            "an unrewritten sentinel cannot become a target: {targets:?}"
         );
     }
 }

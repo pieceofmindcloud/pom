@@ -215,10 +215,10 @@ impl NetworkSettings {
 pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
     if settings.visibility == NetworkVisibility::Public {
         if settings.public_name.trim().is_empty() {
-            anyhow::bail!("redes públicas precisam de um nome público");
+            anyhow::bail!("public networks need a public name");
         }
         if settings.city_id.is_none() {
-            anyhow::bail!("redes públicas precisam de uma cidade");
+            anyhow::bail!("public networks need a city");
         }
     }
     Ok(())
@@ -556,7 +556,7 @@ fn default_gateway_port() -> u16 {
 }
 
 pub fn validate_gateway_port(port: u16) -> anyhow::Result<()> {
-    anyhow::ensure!(port != 0, "a porta da interface deve estar entre 1 e 65535");
+    anyhow::ensure!(port != 0, "the interface port must be between 1 and 65535");
     Ok(())
 }
 /// The node as a circuit relay (`"relay"` in the config file).
@@ -1171,7 +1171,7 @@ fn parse_config(content: &str, path: &Path) -> Result<Config> {
             .ok()
             .filter(|value| value.get("role").is_some())
             .map(|_| {
-                ". O campo `role` foi removido da configuração; remova-o e use `profile` (`admin`, `node` ou `infer`)"
+                ". The `role` field was removed from the configuration; remove it and use `profile` (`admin`, `node` or `infer`)"
             })
             .unwrap_or("");
         anyhow::anyhow!("Failed to parse config at {:?}: {error}{role_hint}", path)
@@ -1248,9 +1248,9 @@ mod tests {
     #[test]
     fn migrates_the_legacy_admin_token_into_a_password_hash() {
         let (migrated, changed) = migrate_admin_access_token(Some("legacy-admin-token".into()))
-            .expect("migrar o token legado");
+            .expect("migrate the legacy token");
 
-        let migrated = migrated.expect("hash migrado");
+        let migrated = migrated.expect("migrated hash");
         assert!(changed);
         assert!(migrated.starts_with("$argon2id$"));
         assert!(crate::auth::verify_admin_password(
@@ -1264,9 +1264,9 @@ mod tests {
     fn invalid_argon2id_prefix_is_migrated_as_a_legacy_token() {
         let legacy = "$argon2id$not-a-complete-phc";
         let (migrated, changed) = migrate_admin_access_token(Some(legacy.into()))
-            .expect("migrar o token legado com prefixo ambíguo");
+            .expect("migrate the legacy token with an ambiguous prefix");
 
-        let migrated = migrated.expect("hash migrado");
+        let migrated = migrated.expect("migrated hash");
         assert!(changed);
         assert!(crate::auth::verify_admin_password(&migrated, legacy));
         assert!(!migrated.contains(legacy));
@@ -1280,7 +1280,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .expect("relógio do sistema")
+                .expect("system clock")
                 .as_nanos()
         ));
         std::fs::write(
@@ -1291,26 +1291,26 @@ mod tests {
             })
             .to_string(),
         )
-        .expect("escrever configuração legada");
+        .expect("write legacy configuration");
 
-        let config = Config::load_from(&path).expect("carregar configuração legada");
+        let config = Config::load_from(&path).expect("load legacy configuration");
         let hash = config
             .admin_access_token
             .as_deref()
-            .expect("token legado migrado");
+            .expect("legacy token migrated");
         assert!(crate::auth::verify_admin_password(hash, legacy));
         assert!(hash.starts_with("$argon2id$"));
 
-        let persisted = std::fs::read_to_string(&path).expect("ler configuração migrada");
+        let persisted = std::fs::read_to_string(&path).expect("read migrated configuration");
         assert!(!persisted.contains(legacy));
         assert!(persisted.contains("$argon2id$"));
 
-        std::fs::remove_file(path).expect("remover configuração temporária");
+        std::fs::remove_file(path).expect("remove temporary configuration");
     }
 
     #[test]
     fn absent_admin_token_stays_without_a_password() {
-        let (migrated, changed) = migrate_admin_access_token(None).expect("ler ausência");
+        let (migrated, changed) = migrate_admin_access_token(None).expect("read absence");
         assert!(migrated.is_none());
         assert!(!changed);
     }
@@ -1387,7 +1387,7 @@ mod tests {
             .unwrap()
             .insert(legacy_field.clone(), serde_json::json!(32000));
         let result: Result<Config, _> = serde_json::from_value(value);
-        let error = result.expect_err("campo removido não pode ser aceito silenciosamente");
+        let error = result.expect_err("a removed field cannot be accepted silently");
         assert!(error.to_string().contains(&legacy_field));
     }
 
@@ -1501,7 +1501,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("campo `role` foi removido"));
+        assert!(error.contains("`role` field was removed"));
         assert!(error.contains("use `profile`"));
     }
 
@@ -1582,8 +1582,8 @@ mod tests {
         };
 
         let error = validate_network_settings(&settings)
-            .expect_err("uma rede pública sem localização não deve ser salva");
-        assert!(error.to_string().contains("cidade"));
+            .expect_err("a public network without a location must not be saved");
+        assert!(error.to_string().contains("city"));
     }
 
     #[test]

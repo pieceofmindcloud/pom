@@ -144,7 +144,7 @@ mod tests {
             output.extend_from_slice(&chunk[..read as usize]);
         }
         let text = String::from_utf8_lossy(&output);
-        assert!(libc::WIFSIGNALED(status), "o filho devia morrer pelo sinal: {text}");
+        assert!(libc::WIFSIGNALED(status), "the child should have died from the signal: {text}");
         assert_eq!(libc::WTERMSIG(status), libc::SIGSEGV);
         assert!(text.contains("native crash: SIGSEGV at address 0x0"), "{text}");
         assert!(text.contains("end of native crash report"), "{text}");

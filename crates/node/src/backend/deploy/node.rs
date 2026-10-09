@@ -88,8 +88,8 @@ pub struct RemoveNodeRequest {
 }
 
 const ADD_NODE_ADMIN_ONLY: &str =
-    "somente o administrador pode adicionar uma máquina à implantação";
-const UNDEPLOY_ADMIN_ONLY: &str = "somente o administrador pode desimplantar a implantação";
+    "only the administrator can add a machine to the deployment";
+const UNDEPLOY_ADMIN_ONLY: &str = "only the administrator can undeploy the deployment";
 
 pub(super) fn deployment_authority(
     profile: NodeProfile,
@@ -151,14 +151,14 @@ async fn target_json(
         .await
         .into_iter()
         .find(|peer| peer.node_id == target_node_id)
-        .ok_or_else(|| "a máquina escolhida não está no cluster".to_string())?;
+        .ok_or_else(|| "the chosen machine is not in the cluster".to_string())?;
     state
         .control_get(&peer, &format!("/api/ui/{path}"), PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("peer inacessível: {e:#}"))?
+        .map_err(|e| format!("peer unreachable: {e:#}"))?
         .json()
         .await
-        .map_err(|e| format!("resposta inválida do peer: {e}"))
+        .map_err(|e| format!("invalid peer response: {e}"))
 }
 
 async fn apply_target_cache_types(
@@ -174,16 +174,16 @@ async fn apply_target_cache_types(
     let current_k = current
         .get("cache_type_k")
         .cloned()
-        .ok_or_else(|| "a máquina não informou o tipo de cache K".to_string())
+        .ok_or_else(|| "the machine did not report the K cache type".to_string())
         .and_then(|value| {
-            serde_json::from_value(value).map_err(|e| format!("cache K inválido: {e}"))
+            serde_json::from_value(value).map_err(|e| format!("invalid K cache: {e}"))
         })?;
     let current_v = current
         .get("cache_type_v")
         .cloned()
-        .ok_or_else(|| "a máquina não informou o tipo de cache V".to_string())
+        .ok_or_else(|| "the machine did not report the V cache type".to_string())
         .and_then(|value| {
-            serde_json::from_value(value).map_err(|e| format!("cache V inválido: {e}"))
+            serde_json::from_value(value).map_err(|e| format!("invalid V cache: {e}"))
         })?;
     let cache_type_k = requested_k.unwrap_or(current_k);
     let cache_type_v = requested_v.unwrap_or(current_v);
@@ -193,7 +193,7 @@ async fn apply_target_cache_types(
         cfg.cache_type_k = cache_type_k;
         cfg.cache_type_v = cache_type_v;
         cfg.save()
-            .map_err(|e| format!("não deu para gravar pom.json: {e}"))?;
+            .map_err(|e| format!("could not write pom.json: {e}"))?;
         return Ok(());
     }
 
@@ -202,7 +202,7 @@ async fn apply_target_cache_types(
         .await
         .into_iter()
         .find(|peer| peer.node_id == target_node_id)
-        .ok_or_else(|| "a máquina escolhida não está no cluster".to_string())?;
+        .ok_or_else(|| "the chosen machine is not in the cluster".to_string())?;
     let response = state
         .control_post_json(
             &peer,
@@ -211,12 +211,12 @@ async fn apply_target_cache_types(
             PEER_TIMEOUT,
         )
         .await
-        .map_err(|e| format!("peer inacessível: {e:#}"))?;
+        .map_err(|e| format!("peer unreachable: {e:#}"))?;
     if response.status().is_success() {
         Ok(())
     } else {
         Err(format!(
-            "a máquina recusou a configuração do cache: HTTP {}",
+            "the machine refused the cache configuration: HTTP {}",
             response.status()
         ))
     }
@@ -249,7 +249,7 @@ pub(super) async fn add_node_options_endpoint(
         }
     }
     if !target_seen {
-        return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
+        return bad(json!({ "error": "the chosen machine is not in the cluster" }));
     }
 
     let mut options = Vec::new();
@@ -380,11 +380,11 @@ pub(super) async fn add_node_endpoint(
     }
 
     if req.start_layer > req.end_layer {
-        return bad(json!({ "error": "faixa de camadas invertida" }));
+        return bad(json!({ "error": "inverted layer range" }));
     }
 
     if !req.deploy_id.is_empty() && !crate::deployment::is_deploy_id(&req.deploy_id) {
-        return bad(json!({ "error": format!("deploy_id inválido: {}", req.deploy_id) }));
+        return bad(json!({ "error": format!("invalid deploy_id: {}", req.deploy_id) }));
     }
 
     let existing_record = if req.deploy_id.is_empty() {
@@ -398,7 +398,7 @@ pub(super) async fn add_node_endpoint(
         .unwrap_or_else(|| req.deploy_id.clone());
     if !req.deploy_id.is_empty() && existing_record.is_none() {
         return bad(json!({
-            "error": format!("implantação {} desconhecida", req.deploy_id)
+            "error": format!("unknown deployment {}", req.deploy_id)
         }));
     }
     let params = req
@@ -417,7 +417,7 @@ pub(super) async fn add_node_endpoint(
         .await
         .machines;
     let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
-        return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
+        return bad(json!({ "error": "the chosen machine is not in the cluster" }));
     };
     let requested_kind = match req.kind {
         DeployKind::Whole => Some(HeldKind::Whole),
@@ -426,7 +426,7 @@ pub(super) async fn add_node_endpoint(
     let Some(shard) = target.holds_kind(req.start_layer, req.end_layer, requested_kind) else {
         return bad(json!({
             "error": format!(
-                "{} nao tem {}; mande para la antes",
+                "{} does not have {}; send it there first",
                 target.label(),
                 req.kind.unit(&req.group, req.start_layer, req.end_layer)
             )
@@ -451,13 +451,13 @@ pub(super) async fn add_node_endpoint(
     let candidates = candidates(&machines);
     let Some(total_layers) = model_size(&candidates).value() else {
         return bad(json!({
-            "error": format!("as fatias de {} nao dizem o total de camadas", req.group)
+            "error": format!("the slices of {} do not state the total number of layers", req.group)
         }));
     };
     if req.end_layer >= total_layers {
         return bad(json!({
             "error": format!(
-                "{} passa do fim de um modelo de {total_layers} camadas",
+                "{} goes past the end of a model with {total_layers} layers",
                 req.kind.unit(&req.group, req.start_layer, req.end_layer)
             )
         }));
@@ -612,7 +612,7 @@ pub(super) async fn remove_node_endpoint(
     Json(req): Json<RemoveNodeRequest>,
 ) -> Response {
     if !req.deploy_id.is_empty() && !crate::deployment::is_deploy_id(&req.deploy_id) {
-        return bad(json!({ "error": format!("deploy_id inválido: {}", req.deploy_id) }));
+        return bad(json!({ "error": format!("invalid deploy_id: {}", req.deploy_id) }));
     }
     let record = if req.deploy_id.is_empty() {
         record_for_group(&state, &req.group).await
@@ -629,7 +629,7 @@ pub(super) async fn remove_node_endpoint(
         .find(|(id, _, _)| id == &req.target_node_id)
         .cloned()
     else {
-        return bad(json!({ "error": "essa maquina nao esta servindo este modelo" }));
+        return bad(json!({ "error": "this machine is not serving this model" }));
     };
     let remaining: Vec<(u32, u32)> = live
         .iter()
@@ -649,7 +649,7 @@ pub(super) async fn remove_node_endpoint(
             .into_iter()
             .find(|peer| peer.node_id == req.target_node_id)
         else {
-            return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
+            return bad(json!({ "error": "the chosen machine is not in the cluster" }));
         };
         match state
             .control_post_empty(&peer, "/api/ui/unload", crate::webui::PEER_STOP_TIMEOUT)
@@ -657,9 +657,9 @@ pub(super) async fn remove_node_endpoint(
         {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
-                return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }));
+                return bad(json!({ "error": format!("the peer refused: HTTP {}", r.status()) }));
             }
-            Err(e) => return bad(json!({ "error": format!("peer inacessivel: {e}") })),
+            Err(e) => return bad(json!({ "error": format!("peer unreachable: {e}") })),
         }
     }
 
@@ -781,13 +781,13 @@ pub(super) async fn undeploy_endpoint(
         .collect();
     if serving.is_empty() {
         return bad(json!({
-            "error": format!("nenhuma máquina está servindo {}", target.describe())
+            "error": format!("no machine is serving {}", target.describe())
         }));
     }
 
     let group = target.label();
     info!(
-        "desimplantando {} de {} máquina(s)",
+        "undeploying {} from {} machine(s)",
         target.describe(),
         serving.len()
     );
@@ -824,7 +824,7 @@ pub(super) async fn undeploy_endpoint(
     let released = results.iter().filter(|r| r.released).count();
     let failed = results.len() - released;
     if failed > 0 {
-        warn!("{failed} máquina(s) não confirmaram a desimplantação de {group}");
+        warn!("{failed} machine(s) did not confirm the undeploy of {group}");
     }
 
     // O registro só é esquecido depois: um registro apagado com máquinas ainda
@@ -834,7 +834,7 @@ pub(super) async fn undeploy_endpoint(
     // que ele ainda está no ar.
     if let UndeployTarget::Deployment { deploy_id, .. } = &target {
         if let Err(e) = state.database.remove_deployment(deploy_id) {
-            warn!("não deu para esquecer a implantação {deploy_id}: {e:#}");
+            warn!("could not forget the deployment {deploy_id}: {e:#}");
         }
     }
 
@@ -868,10 +868,10 @@ pub(super) fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<Strin
     models.sort();
     models.dedup();
     match models.len() {
-        0 => Err("nenhuma pipeline no ar para desimplantar".to_string()),
+        0 => Err("no pipeline up to undeploy".to_string()),
         1 => Ok(models.remove(0)),
         _ => Err(format!(
-            "há mais de uma pipeline no ar ({}); diga qual desimplantar",
+            "there is more than one pipeline up ({}); say which one to undeploy",
             models.join(", ")
         )),
     }
@@ -903,10 +903,10 @@ impl UndeployTarget {
     pub(super) fn describe(&self) -> String {
         match self {
             UndeployTarget::Deployment { deploy_id, label } if label.is_empty() => {
-                format!("a implantação {deploy_id}")
+                format!("the deployment {deploy_id}")
             }
             UndeployTarget::Deployment { deploy_id, label } => {
-                format!("{label} (implantação {deploy_id})")
+                format!("{label} (deployment {deploy_id})")
             }
             UndeployTarget::Label(l) => l.clone(),
         }
@@ -925,7 +925,7 @@ pub(super) fn resolve_target(
 ) -> Result<UndeployTarget, String> {
     if !deploy_id.is_empty() {
         if !crate::deployment::is_deploy_id(deploy_id) {
-            return Err(format!("deploy_id inválido: {deploy_id}"));
+            return Err(format!("invalid deploy_id: {deploy_id}"));
         }
         let label = peers
             .iter()
@@ -959,8 +959,8 @@ pub(super) async fn release_one(
         .await
     {
         Ok(r) if r.status().is_success() => Ok(()),
-        Ok(r) => Err(format!("a máquina recusou: HTTP {}", r.status())),
-        Err(e) => Err(format!("máquina inacessível: {e}")),
+        Ok(r) => Err(format!("the machine refused: HTTP {}", r.status())),
+        Err(e) => Err(format!("machine unreachable: {e}")),
     }
 }
 
@@ -984,8 +984,8 @@ pub(super) async fn refusal(response: Response) -> String {
                 .map(|s| s.to_string())
         });
     match body {
-        Some(reason) => format!("o launch recusou: {reason}"),
-        None => format!("o launch recusou: HTTP {status}"),
+        Some(reason) => format!("the launch refused: {reason}"),
+        None => format!("the launch refused: HTTP {status}"),
     }
 }
 
@@ -1028,7 +1028,7 @@ pub(super) async fn wait_for_transfers(
             let body: serde_json::Value = state
                 .control_get(peer, "/api/transfer/jobs", PEER_TIMEOUT)
                 .await
-                .map_err(|e| format!("perdi contato com {}: {e:#}", peer.hostname))?
+                .map_err(|e| format!("lost contact with {}: {e:#}", peer.hostname))?
                 .json()
                 .await
                 .unwrap_or(json!({}));
@@ -1054,10 +1054,10 @@ pub(super) async fn wait_for_transfers(
                 }
                 Some("failed") => {
                     return Err(format!(
-                        "a cópia falhou: {}",
+                        "the copy failed: {}",
                         job.get("error")
                             .and_then(|e| e.as_str())
-                            .unwrap_or("sem detalhe")
+                            .unwrap_or("no detail")
                     ));
                 }
                 _ => {

@@ -52,7 +52,7 @@ pub const MAX_CONTEXT_TOKENS: u32 = 250_000;
 pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
     n_ctx
         .checked_mul(max_sessions.max(1))
-        .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions excede o limite numérico"))
+        .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions exceeds the numeric limit"))
 }
 
 /// A mesma conversão `NodeConfig` -> `EngineConfig` que `infer_server::run`
@@ -638,14 +638,14 @@ impl NodeConfig {
 
     fn validate(&self) -> Result<()> {
         if self.model_path.trim().is_empty() {
-            bail!("model_path é obrigatório");
+            bail!("model_path is required");
         }
         if !PathBuf::from(&self.model_path).exists() {
-            bail!("arquivo não encontrado: {}", self.model_path);
+            bail!("file not found: {}", self.model_path);
         }
         if let Some(mmproj_path) = self.mmproj_path.as_deref() {
             if !PathBuf::from(mmproj_path).is_file() {
-                bail!("arquivo mmproj não encontrado: {mmproj_path}");
+                bail!("mmproj file not found: {mmproj_path}");
             }
             crate::catalog::validate_mmproj_pair(
                 std::path::Path::new(&self.model_path),
@@ -654,31 +654,31 @@ impl NodeConfig {
         }
         if self.start_layer > self.end_layer {
             bail!(
-                "faixa de camadas inválida: {}-{}",
+                "invalid layer range: {}-{}",
                 self.start_layer,
                 self.end_layer
             );
         }
         if self.total_layers == 0 {
-            bail!("total_layers não pode ser zero");
+            bail!("total_layers cannot be zero");
         }
         if self.n_ctx == 0 || self.n_ctx > MAX_CONTEXT_TOKENS {
-            bail!("n_ctx precisa estar entre 1 e {MAX_CONTEXT_TOKENS}");
+            bail!("n_ctx must be between 1 and {MAX_CONTEXT_TOKENS}");
         }
         total_context_tokens(self.n_ctx, self.max_sessions)?;
         if self.end_layer >= self.total_layers {
             bail!(
-                "camada final {} fora do modelo de {} camadas",
+                "final layer {} outside the model of {} layers",
                 self.end_layer,
                 self.total_layers
             );
         }
         if self.peer_count == 0 {
-            bail!("peer_count precisa ser >= 1");
+            bail!("peer_count must be >= 1");
         }
         if self.peer_index >= self.peer_count {
             bail!(
-                "peer_index {} fora de um split de {} peers",
+                "peer_index {} outside a split of {} peers",
                 self.peer_index,
                 self.peer_count
             );
@@ -853,7 +853,7 @@ impl NodeRuntime {
             config: RwLock::new(None),
             status: Arc::new(RwLock::new(RuntimeStatus::new(
                 ServerState::Disabled,
-                "nenhum modelo carregado",
+                "no model loaded",
             ))),
             assignment,
             net,
@@ -905,13 +905,13 @@ impl NodeRuntime {
         match tokio::time::timeout(deadline, &mut supervisor).await {
             Ok(Ok(())) => (None, Ok(())),
             Ok(Err(error)) => {
-                warn!("supervisor anterior terminou de forma inesperada: {error}");
+                warn!("previous supervisor ended unexpectedly: {error}");
                 (None, Ok(()))
             }
             Err(_) => (
                 Some(supervisor),
                 Err(anyhow::anyhow!(
-                    "supervisor anterior não encerrou em {deadline:?}"
+                    "previous supervisor did not stop in {deadline:?}"
                 )),
             ),
         }
@@ -930,9 +930,9 @@ impl NodeRuntime {
             let notified = self.status_changed.notified();
             match self.status.read().await.state {
                 ServerState::Ready => return Ok(()),
-                ServerState::Failed => bail!("o modelo não conseguiu recarregar"),
-                ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
-                ServerState::Disabled => bail!("o deployment não está configurado"),
+                ServerState::Failed => bail!("the model could not reload"),
+                ServerState::Thermal => bail!("the model is waiting for cooldown"),
+                ServerState::Disabled => bail!("the deployment is not configured"),
                 ServerState::Starting | ServerState::Idle => notified.await,
             }
         }
@@ -953,11 +953,11 @@ impl NodeRuntime {
         match state {
             ServerState::Idle => {
                 let Some(cfg) = self.config.read().await.clone() else {
-                    bail!("deployment idle sem configuração");
+                    bail!("idle deployment without configuration");
                 };
                 self.note_request();
                 info!(
-                    "⏰ acordando a implantação ociosa: {} camadas {}-{}",
+                    "⏰ waking the idle deployment: {} layers {}-{}",
                     cfg.model_label, cfg.start_layer, cfg.end_layer
                 );
                 // Keep the operation lock while transitioning Idle ->
@@ -973,11 +973,11 @@ impl NodeRuntime {
                 Ok(Wake::Loading)
             }
             ServerState::Failed => bail!(
-                "o modelo não conseguiu recarregar: {}",
+                "the model could not reload: {}",
                 self.status.read().await.detail
             ),
-            ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
-            ServerState::Disabled => bail!("o deployment não está configurado"),
+            ServerState::Thermal => bail!("the model is waiting for cooldown"),
+            ServerState::Disabled => bail!("the deployment is not configured"),
         }
     }
 
@@ -1033,20 +1033,20 @@ impl NodeRuntime {
         *self.status.write().await = RuntimeStatus::new(
             ServerState::Idle,
             format!(
-                "modelo descarregado após {} min sem requisições",
+                "model unloaded after {} min without requests",
                 cfg.idle_minutes
             ),
         );
         self.status_changed.notify_waiters();
         info!(
-            "💤 modelo descarregado após {} min sem requisições; a próxima requisição o recarrega",
+            "💤 model unloaded after {} min without requests; the next request reloads it",
             cfg.idle_minutes
         );
         if let Err(error) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Idle) {
-            warn!("não deu para anotar a fatia ociosa: {error}");
+            warn!("could not record the idle slice: {error}");
         }
         if let Err(error) = self.net.announce(Some(&assignment)).await {
-            warn!("announce após unload por inatividade falhou: {error}");
+            warn!("announce after the idle unload failed: {error}");
         }
     }
 
@@ -1062,7 +1062,7 @@ impl NodeRuntime {
         self.net.set_slot_persist_ready(false);
         *self.status.write().await = RuntimeStatus::new(
             ServerState::Idle,
-            "deployment restaurado ocioso; aguardando requisição",
+            "deployment restored idle; waiting for a request",
         );
         self.status_changed.notify_waiters();
         let _ = self.net.announce(Some(&assignment)).await;
@@ -1114,7 +1114,7 @@ impl NodeRuntime {
             warn!(
                 temperature_c = observed_c,
                 limit_c = policy.limit_c,
-                "GPU acima do limite antes do carregamento; novas implantações aguardam resfriamento"
+                "GPU above the limit before loading; new deployments wait for cooldown"
             );
             self.thermal.lock().await.blocked = true;
         }
@@ -1135,7 +1135,7 @@ impl NodeRuntime {
                     }
                     ThermalAction::Resume { observed_c } => {
                         if let Err(error) = runtime.resume_from_thermal(observed_c, policy).await {
-                            warn!("não deu para reimplantar após resfriamento: {error:#}");
+                            warn!("could not redeploy after cooldown: {error:#}");
                         }
                     }
                 }
@@ -1148,7 +1148,7 @@ impl NodeRuntime {
     /// so no peer sends inference requests to a stale endpoint.
     pub async fn stop(&self) {
         let _operation = self.operation.lock().await;
-        info!("parando servidor de inferencia neste no");
+        info!("stopping the inference server on this node");
 
         let previous_supervisor = self.take_supervisor();
         let generation = *self.generation.borrow() + 1;
@@ -1162,7 +1162,7 @@ impl NodeRuntime {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
             if let Err(error) = wait_result {
-                warn!("não deu para parar o servidor de inferência: {error}");
+                warn!("could not stop the inference server: {error}");
                 return;
             }
         }
@@ -1171,7 +1171,7 @@ impl NodeRuntime {
         *self.assignment.write().await = None;
         self.model_cache.clear();
         *self.status.write().await =
-            RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
+            RuntimeStatus::new(ServerState::Disabled, "stopped for reconfiguration");
         self.status_changed.notify_waiters();
         self.net.set_idle(false);
         self.net.set_batching_ready(false);
@@ -1247,7 +1247,7 @@ impl NodeRuntime {
             let attempt = crate::lastslice::begin_new_attempt(&cfg)?;
             info!(
                 attempt,
-                "implantação persistida antes de iniciar o servidor"
+                "deployment persisted before starting the server"
             );
         }
 
@@ -1255,7 +1255,7 @@ impl NodeRuntime {
         let assignment = cfg.to_assignment(&profile);
 
         info!(
-            "⚙️  Reconfigurando nó: {} camadas {}-{}/{} (peer {}/{})",
+            "⚙️  Reconfiguring node: {} layers {}-{}/{} (peer {}/{})",
             cfg.model_label,
             cfg.start_layer,
             cfg.end_layer,
@@ -1300,12 +1300,12 @@ impl NodeRuntime {
                 .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
         }
         wait_result?;
-        info!("supervisor anterior encerrado; preparando nova geração");
+        info!("previous supervisor stopped; preparing a new generation");
 
         *self.config.write().await = Some(cfg.clone());
         *self.assignment.write().await = Some(assignment.clone());
         *self.status.write().await =
-            RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
+            RuntimeStatus::new(ServerState::Starting, "starting the inference server");
         self.status_changed.notify_waiters();
         self.request_activity.mark_now();
         self.net.set_idle(waking);
@@ -1319,13 +1319,13 @@ impl NodeRuntime {
         // socket must not keep the local reload from starting the server.
         match tokio::time::timeout(ANNOUNCE_DEADLINE, self.net.announce(Some(&assignment))).await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => warn!("announce após reconfiguração falhou: {error}"),
+            Ok(Err(error)) => warn!("announce after the reconfiguration failed: {error}"),
             Err(_) => warn!(
-                "announce após reconfiguração excedeu {ANNOUNCE_DEADLINE:?}; seguindo localmente"
+                "announce after the reconfiguration exceeded {ANNOUNCE_DEADLINE:?}; continuing locally"
             ),
         }
 
-        info!("anúncio da nova geração concluído; iniciando supervisor");
+        info!("announce of the new generation completed; starting the supervisor");
         self.spawn_supervisor(cfg, generation, reuse_weights);
         Ok(())
     }
@@ -1353,7 +1353,7 @@ impl NodeRuntime {
         append_log(
             port,
             &format!(
-                "modelo aguardando resfriamento: limite {:.1} °C, retomada abaixo de {:.1} °C",
+                "model waiting for cooldown: limit {:.1} °C, resume below {:.1} °C",
                 policy.limit_c,
                 policy.resume_limit_c()
             ),
@@ -1378,12 +1378,12 @@ impl NodeRuntime {
             limit_c = policy.limit_c,
             resume_below_c = policy.resume_limit_c(),
             cooldown_secs = policy.cooldown_secs,
-            "desimplantando modelo por temperatura da GPU"
+            "undeploying the model because of the GPU temperature"
         );
         append_log(
             current.inference_port,
             &format!(
-                "desimplantado por temperatura: {:.1} °C (limite {:.1} °C; retomada abaixo de {:.1} °C por {}s)",
+                "undeployed because of temperature: {:.1} °C (limit {:.1} °C; resume below {:.1} °C for {}s)",
                 observed_c,
                 policy.limit_c,
                 policy.resume_limit_c(),
@@ -1409,12 +1409,12 @@ impl NodeRuntime {
             limit_c = policy.limit_c,
             resume_below_c = policy.resume_limit_c(),
             cooldown_secs = policy.cooldown_secs,
-            "reimplantando modelo após resfriamento da GPU"
+            "redeploying the model after the GPU cooldown"
         );
         append_log(
             cfg.inference_port,
             &format!(
-                "reimplantando após resfriamento: {:.1} °C (limite {:.1} °C; retomada abaixo de {:.1} °C por {}s)",
+                "redeploying after cooldown: {:.1} °C (limit {:.1} °C; resume below {:.1} °C for {}s)",
                 observed_c,
                 policy.limit_c,
                 policy.resume_limit_c(),
@@ -1438,7 +1438,7 @@ impl NodeRuntime {
         let reason = observed_c.map_or_else(
             || {
                 format!(
-                    "modelo aguardando resfriar abaixo de {:.1} °C por {}s (limite {:.1} °C)",
+                    "model waiting to cool below {:.1} °C for {}s (limit {:.1} °C)",
                     policy.resume_limit_c(),
                     policy.cooldown_secs,
                     policy.limit_c
@@ -1446,7 +1446,7 @@ impl NodeRuntime {
             },
             |temperature| {
                 format!(
-                    "modelo desimplantado por temperatura da GPU ({temperature:.1} °C; limite {:.1} °C); aguardando resfriar abaixo de {:.1} °C por {}s",
+                    "model undeployed because of the GPU temperature ({temperature:.1} °C; limit {:.1} °C); waiting to cool below {:.1} °C for {}s",
                     policy.limit_c,
                     policy.resume_limit_c(),
                     policy.cooldown_secs
@@ -1458,7 +1458,7 @@ impl NodeRuntime {
         self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
         if let Err(error) = crate::lastslice::save(cfg, crate::lastslice::SliceState::Serving) {
-            warn!("não deu para preservar a fatia para recuperação térmica: {error}");
+            warn!("could not preserve the slice for thermal recovery: {error}");
         }
         let _ = self.net.announce(None).await;
     }
@@ -1467,7 +1467,7 @@ impl NodeRuntime {
         *self.status.write().await = RuntimeStatus::new(
             ServerState::Thermal,
             format!(
-                "modelo aguardando resfriar abaixo de {:.1} °C por {}s (limite {:.1} °C)",
+                "model waiting to cool below {:.1} °C for {}s (limit {:.1} °C)",
                 policy.resume_limit_c(),
                 policy.cooldown_secs,
                 policy.limit_c
@@ -1476,7 +1476,7 @@ impl NodeRuntime {
         append_log(
             cfg.inference_port,
             &format!(
-                "modelo aguardando resfriamento: limite {:.1} °C, retomada abaixo de {:.1} °C",
+                "model waiting for cooldown: limit {:.1} °C, resume below {:.1} °C",
                 policy.limit_c,
                 policy.resume_limit_c()
             ),
@@ -1494,7 +1494,7 @@ impl NodeRuntime {
     /// menos camadas a ela.
     pub async fn note_unloadable_slice(&self, cfg: &NodeConfig, attempts: u32) {
         let detail = format!(
-            "a fatia {} {}-{} não chegou a carregar: falhou {} tentativas consecutivas antes de /health e foi bloqueada; desimplante ou aplique novamente manualmente",
+            "slice {} {}-{} never loaded: it failed {} consecutive attempts before /health and was blocked; undeploy or apply again manually",
             cfg.model_label, cfg.start_layer, cfg.end_layer, attempts
         );
         warn!("⚠️  {detail}");
@@ -1536,7 +1536,7 @@ impl NodeRuntime {
 
         let supervisor = tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
-            append_log(port, "supervisor iniciado");
+            append_log(port, "supervisor started");
             let mut restarts = 0u32;
             loop {
                 if *gen_rx.borrow() != generation {
@@ -1544,7 +1544,7 @@ impl NodeRuntime {
                 }
                 if crate::lastslice::auto_resume_disabled() {
                     let detail =
-                        "retomada automática bloqueada por undeploy; aguardando implantação manual";
+                        "automatic resume blocked by undeploy; waiting for a manual deployment";
                     append_log(port, detail);
                     status
                         .set(ServerState::Disabled, detail.to_string(), restarts)
@@ -1558,7 +1558,7 @@ impl NodeRuntime {
                 let held_port = free_port(port).await.err();
                 if restarts > 0 {
                     warn!(
-                        "reiniciando servidor de inferência (tentativa {}/{})",
+                        "restarting the inference server (attempt {}/{})",
                         restarts, MAX_RESTARTS
                     );
                     sleep(Duration::from_secs(5)).await;
@@ -1566,7 +1566,7 @@ impl NodeRuntime {
                         return;
                     }
                     let Ok(attempt) = crate::lastslice::resume_attempt(&cfg) else {
-                        let detail = "não foi possível persistir a retomada da implantação; servidor bloqueado";
+                        let detail = "could not persist the deployment resume; server blocked";
                         append_log(port, detail);
                         status
                             .set(ServerState::Failed, detail.to_string(), restarts)
@@ -1575,7 +1575,7 @@ impl NodeRuntime {
                     };
                     if !crate::lastslice::should_resume(attempt) {
                         let detail = format!(
-                            "desistiu depois de {attempt} tentativas persistentes; desimplante ou aplique novamente manualmente"
+                            "gave up after {attempt} persistent attempts; undeploy or apply again manually"
                         );
                         append_log(port, &detail);
                         status.set(ServerState::Failed, detail, restarts).await;
@@ -1595,7 +1595,7 @@ impl NodeRuntime {
                         status
                             .set(
                                 ServerState::Failed,
-                                format!("{reason}; tentativa {}/{MAX_RESTARTS}", restarts + 1),
+                                format!("{reason}; attempt {}/{MAX_RESTARTS}", restarts + 1),
                                 restarts,
                             )
                             .await;
@@ -1604,7 +1604,7 @@ impl NodeRuntime {
                         append_log(
                             port,
                             &format!(
-                                "carregando {} (tentativa {}/{MAX_RESTARTS})",
+                                "loading {} (attempt {}/{MAX_RESTARTS})",
                                 short_path(&cfg.model_path),
                                 restarts + 1
                             ),
@@ -1612,7 +1612,7 @@ impl NodeRuntime {
                         status
                             .set(
                                 ServerState::Starting,
-                                format!("carregando {}", short_path(&cfg.model_path)),
+                                format!("loading {}", short_path(&cfg.model_path)),
                                 restarts,
                             )
                             .await;
@@ -1653,20 +1653,20 @@ impl NodeRuntime {
                 }
                 match result {
                     Ok(()) => {
-                        info!("servidor de inferência encerrado graciosamente");
-                        append_log(port, "encerrado graciosamente");
+                        info!("inference server stopped gracefully");
+                        append_log(port, "stopped gracefully");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         capacity_net.set_runtime_capacity_for_generation(generation, None);
                         return;
                     }
                     Err(e) => {
-                        warn!("servidor de inferência encerrou com erro: {e}");
+                        warn!("inference server stopped with an error: {e}");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         capacity_net.set_runtime_capacity_for_generation(generation, None);
                         let _ = capacity_net.announce(None).await;
-                        append_log(port, &format!("encerrou com erro: {e}"));
+                        append_log(port, &format!("stopped with an error: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
                             // Uma fatia que chegou a servir (e por isso está
@@ -1677,10 +1677,10 @@ impl NodeRuntime {
                             // novo até o operador intervir.
                             let detail = match &held_port {
                                 Some(reason) => {
-                                    format!("desistiu depois de {MAX_RESTARTS} tentativas persistentes: {reason}")
+                                    format!("gave up after {MAX_RESTARTS} persistent attempts: {reason}")
                                 }
                                 None => {
-                                    format!("encerrou {MAX_RESTARTS}x: {e}; implantação bloqueada")
+                                    format!("stopped {MAX_RESTARTS}x: {e}; deployment blocked")
                                 }
                             };
                             append_log(port, &detail);
@@ -1758,7 +1758,7 @@ impl NodeRuntime {
                     append_log(
                         port,
                         &format!(
-                            "modelo respondeu model_loaded; aguardando estabilidade ({healthy_polls}/{HEALTH_CONFIRMATION_POLLS})"
+                            "model answered model_loaded; waiting for stability ({healthy_polls}/{HEALTH_CONFIRMATION_POLLS})"
                         ),
                     );
                     continue;
@@ -1788,7 +1788,7 @@ impl NodeRuntime {
                     if let Some(ref mut a) = *w {
                         if a.total_layers != total {
                             info!(
-                                "total_layers corrigido: {} → {total} (metadata GGUF)",
+                                "total_layers corrected: {} → {total} (GGUF metadata)",
                                 a.total_layers
                             );
                             a.total_layers = total;
@@ -1806,13 +1806,13 @@ impl NodeRuntime {
                     &cfg,
                     crate::lastslice::SliceState::Serving,
                 ) {
-                    warn!("não deu para anotar a fatia servida: {e}");
+                    warn!("could not record the served slice: {e}");
                 }
 
                 if *gen_rx.borrow() != generation {
                     return;
                 }
-                append_log(port, "modelo carregado (/health respondeu model_loaded)");
+                append_log(port, "model loaded (/health answered model_loaded)");
                 status.set_ready(reported, reported_gpu).await;
                 net.set_idle(false);
                 if *gen_rx.borrow() != generation {
@@ -1820,7 +1820,7 @@ impl NodeRuntime {
                 }
                 let current_assignment = assignment.read().await.clone();
                 if let Err(e) = net.announce(current_assignment.as_ref()).await {
-                    warn!("announce de capability batch após readiness falhou: {e}");
+                    warn!("batch capability announce after readiness failed: {e}");
                 }
                 return;
             }
@@ -1857,10 +1857,10 @@ fn append_log(port: u16, line: &str) {
     match opened {
         Ok(mut f) => {
             if let Err(e) = f.write_all(stamped.as_bytes()) {
-                warn!("não deu para escrever em {}: {e}", path.display());
+                warn!("could not write to {}: {e}", path.display());
             }
         }
-        Err(e) => warn!("não deu para abrir {}: {e}", path.display()),
+        Err(e) => warn!("could not open {}: {e}", path.display()),
     }
 }
 
@@ -1937,7 +1937,7 @@ async fn pids_holding_port(port: u16) -> Vec<u32> {
             .output()
             .await;
         let Ok(out) = out else {
-            warn!("nao foi possivel executar netstat para verificar a porta {port}");
+            warn!("could not run netstat to check port {port}");
             return Vec::new();
         };
         return parse_netstat_pids(&String::from_utf8_lossy(&out.stdout), port);
@@ -1950,7 +1950,7 @@ async fn pids_holding_port(port: u16) -> Vec<u32> {
             .output()
             .await;
         let Ok(out) = out else {
-            warn!("nao foi possivel executar lsof para verificar a porta {port}");
+            warn!("could not run lsof to check port {port}");
             return Vec::new();
         };
         String::from_utf8_lossy(&out.stdout)
@@ -1987,12 +1987,12 @@ async fn free_port(port: u16) -> Result<(), String> {
         return Ok(());
     }
 
-    info!("porta {port} em uso — procurando processo para matar");
+    info!("port {port} in use — looking for the process to kill");
 
     let pids = pids_holding_port(port).await;
     if pids.is_empty() {
         let reason =
-            format!("porta {port} ocupada e o processo que a segura não pôde ser identificado");
+            format!("port {port} busy and the process holding it could not be identified");
         warn!("{reason}");
         return Err(reason);
     }
@@ -2002,7 +2002,7 @@ async fn free_port(port: u16) -> Result<(), String> {
         if pid == std::process::id() {
             continue;
         }
-        info!("matando processo {pid} que ocupa a porta {port}");
+        info!("killing process {pid} that holds port {port}");
         kill_pid(pid).await;
     }
 
@@ -2010,11 +2010,11 @@ async fn free_port(port: u16) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         if port_is_free(port) {
-            info!("porta {port} liberada");
+            info!("port {port} released");
             return Ok(());
         }
         if tokio::time::Instant::now() > deadline {
-            let reason = format!("porta {port} continua ocupada 5s depois de matar o ocupante");
+            let reason = format!("port {port} still busy 5s after killing the occupant");
             warn!("{reason}");
             return Err(reason);
         }
@@ -2054,7 +2054,7 @@ impl StatusWriter {
     ) {
         let mut s = self.status.write().await;
         s.state = ServerState::Ready;
-        s.detail = "modelo carregado".to_string();
+        s.detail = "model loaded".to_string();
         s.reported_total_layers = reported_total_layers;
         s.reported_gpu_layers = reported_gpu_layers;
         s.changed_at = chrono::Utc::now().to_rfc3339();
@@ -2097,7 +2097,7 @@ mod tests {
         let net = Arc::new(
             Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
-                .expect("socket UDP em porta efêmera"),
+                .expect("UDP socket on an ephemeral port"),
         );
         let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
         let mut c = cfg();
@@ -2127,7 +2127,7 @@ mod tests {
         .await;
         assert!(
             pending_supervisor.is_none(),
-            "supervisor da porta presa terminou"
+            "supervisor of the held port ended"
         );
         wait_result.unwrap();
 
@@ -2139,22 +2139,22 @@ mod tests {
         assert_eq!(
             status.state,
             ServerState::Failed,
-            "porta presa não pode ficar em Starting: {}",
+            "a held port cannot stay in Starting: {}",
             status.detail
         );
         assert!(
             status.detail.contains(&port.to_string()),
-            "o status tem que nomear a porta, e diz: {}",
+            "the status must name the port, and it says: {}",
             status.detail
         );
         assert_eq!(
             status.log_path.as_deref(),
             Some(log.to_string_lossy().as_ref()),
-            "o status tem que apontar o arquivo de log"
+            "the status must point to the log file"
         );
         assert!(
-            content.contains("supervisor iniciado"),
-            "o arquivo de log tem que existir e ter as linhas do supervisor: {content:?}"
+            content.contains("supervisor started"),
+            "the log file must exist and have the supervisor lines: {content:?}"
         );
     }
 
@@ -2177,7 +2177,7 @@ mod tests {
 
         assert!(
             finished.load(std::sync::atomic::Ordering::Acquire),
-            "a próxima geração só pode começar depois da limpeza da anterior"
+            "the next generation can only start after the cleanup of the previous one"
         );
     }
 
@@ -2192,7 +2192,7 @@ mod tests {
             Duration::from_millis(100),
         )
         .await;
-        let pending_supervisor = pending_supervisor.expect("o supervisor deve ser preservado");
+        let pending_supervisor = pending_supervisor.expect("the supervisor must be preserved");
         assert!(wait_result.is_err());
 
         pending_supervisor.abort();
@@ -2305,7 +2305,7 @@ mod tests {
 
         assert!(
             !before.with_params(&p).fit_memory,
-            "o fit nativo não sabe lidar com split-mode tensor"
+            "the native fit cannot handle split-mode tensor"
         );
     }
 
@@ -2435,7 +2435,7 @@ mod tests {
         let net = Arc::new(
             Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
-                .expect("socket UDP em porta efêmera"),
+                .expect("UDP socket on an ephemeral port"),
         );
         let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
 
@@ -2456,14 +2456,14 @@ mod tests {
         }
         assert!(
             health_polls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
-            "o watcher precisa ter feito a primeira sondagem"
+            "the watcher must have done the first probe"
         );
         assert!(
             matches!(
                 crate::lastslice::inspect(),
                 crate::lastslice::LastSlice::Pending { .. }
             ),
-            "um único model_loaded não confirma a implantação"
+            "a single model_loaded does not confirm the deployment"
         );
         let alternate_config = dir.join("alternate-pom.json");
         std::env::set_var("POM_CONFIG", &alternate_config);
@@ -2480,14 +2480,14 @@ mod tests {
         assert_eq!(
             rt.status().await.state,
             ServerState::Ready,
-            "o /health subiu"
+            "/health came up"
         );
         assert!(
             matches!(
                 crate::lastslice::inspect(),
                 crate::lastslice::LastSlice::Nothing
             ),
-            "o watcher não pode trocar de configuração junto com o ambiente do processo"
+            "the watcher cannot change configuration along with the process environment"
         );
         std::env::set_var("POM_CONFIG", &cfg_path);
         assert!(
@@ -2495,7 +2495,7 @@ mod tests {
                 crate::lastslice::inspect(),
                 crate::lastslice::LastSlice::Serving(_)
             ),
-            "a anotação volta para a configuração capturada quando /health confirmou"
+            "the annotation goes back to the captured configuration when /health confirmed"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2512,7 +2512,7 @@ mod tests {
         let net = Arc::new(
             Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
-                .expect("socket UDP em porta efêmera"),
+                .expect("UDP socket on an ephemeral port"),
         );
         let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
 
@@ -2520,15 +2520,15 @@ mod tests {
             .await;
 
         let s = rt.status().await;
-        assert_eq!(s.state, ServerState::Disabled, "o nó não serve nada");
+        assert_eq!(s.state, ServerState::Disabled, "the node serves nothing");
         assert!(
             s.detail.contains("qwen35") && s.detail.contains("0-15"),
-            "o status tem que nomear a fatia recusada, e diz: {}",
+            "the status must name the refused slice, and it says: {}",
             s.detail
         );
         assert!(
-            s.detail.contains("carregar"),
-            "e dizer por que ela não voltou, e diz: {}",
+            s.detail.contains("never loaded"),
+            "and say why it did not come back, and it says: {}",
             s.detail
         );
     }
@@ -2538,7 +2538,7 @@ mod tests {
         let net = Arc::new(
             Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
-                .expect("socket UDP em porta efêmera"),
+                .expect("UDP socket on an ephemeral port"),
         );
         let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
         rt.thermal.lock().await.recovery = Some(cfg());
@@ -2547,7 +2547,7 @@ mod tests {
 
         assert!(
             rt.thermal.lock().await.recovery.is_none(),
-            "desimplantação manual não pode ser anulada quando a temperatura cai"
+            "a manual undeploy cannot be undone when the temperature drops"
         );
         assert_eq!(rt.status().await.state, ServerState::Disabled);
     }
@@ -2561,13 +2561,13 @@ mod tests {
     #[test]
     fn a_slice_that_serves_the_last_layer_never_exports_the_residual() {
         let mut c = cfg();
-        assert!(c.needs_residual_export(), "0-15 de 32 tem sucessor");
+        assert!(c.needs_residual_export(), "0-15 of 32 has a successor");
 
         c.start_layer = 16;
         c.end_layer = 31;
         assert!(
             !c.needs_residual_export(),
-            "16-31 de 32 amostra tokens, não exporta estado"
+            "16-31 of 32 samples tokens, does not export state"
         );
     }
 
@@ -2605,7 +2605,7 @@ mod tests {
         c.total_layers = 32;
         c.peer_count = 1;
         c.peer_index = 0;
-        assert!(c.mtp_effective(), "0-31 de 32, sozinho: é o modelo inteiro");
+        assert!(c.mtp_effective(), "0-31 of 32, alone: it is the whole model");
     }
 
     #[test]
@@ -2618,14 +2618,14 @@ mod tests {
         c.start_layer = 0;
         c.end_layer = 15;
         c.peer_index = 0;
-        assert!(!c.mtp_effective(), "a cabeça não tem o bloco nextn");
+        assert!(!c.mtp_effective(), "the head does not have the nextn block");
 
         c.start_layer = 16;
         c.end_layer = 31;
         c.peer_index = 1;
         assert!(
             c.mtp_effective(),
-            "a cauda de um pipeline fatiado tem o bloco nextn — é aqui que o rascunho nasce"
+            "the tail of a sliced pipeline has the nextn block — this is where the draft is born"
         );
     }
 
@@ -2672,7 +2672,7 @@ mod tests {
         config.mmproj_path = Some(projector.to_string_lossy().into_owned());
 
         let error = config.validate().unwrap_err().to_string();
-        assert!(error.contains("mmproj incompatível"), "{error}");
+        assert!(error.contains("incompatible mmproj"), "{error}");
         assert!(error.contains("3072") && error.contains("2048"), "{error}");
         std::fs::remove_dir_all(root).ok();
     }

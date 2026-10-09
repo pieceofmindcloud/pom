@@ -725,8 +725,8 @@ routes.
   `Intl.PluralRules`). `provider.tsx` exposes `useI18n().t` and the
   `LanguageSelect`. `index.html` has a pre-paint script that stamps `lang` from
   the stored locale/the browser locale, so the first render is already in the
-  right language. `localizeServerText` maps Portuguese strings an old binary
-  may send into the UI's language.
+  right language. Text written by the node (errors, refusal reasons, job
+  steps) is English at the source and is shown as it arrives, in both locales.
 - **`src/routes/`** - one screen per route, all through react-query talking to
   the node's HTTP gateway; none keeps cluster state in the browser. The main
   screens are described below.

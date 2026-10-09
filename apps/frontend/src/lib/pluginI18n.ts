@@ -70,9 +70,9 @@ export async function syncPluginCatalogs(
       try {
         const catalog = validateCatalog(plugin.code, await fetcher(pluginAssetUrl(plugin.code, asset)));
         if (catalog) catalogs[locale] = catalog;
-        else console.warn(`Catálogo ${locale} do plugin ${plugin.code} é inválido e foi ignorado`);
+        else console.warn(`The ${locale} catalog of plugin ${plugin.code} is invalid and was ignored`);
       } catch (error) {
-        console.warn(`Catálogo ${locale} do plugin ${plugin.code} indisponível`, error);
+        console.warn(`The ${locale} catalog of plugin ${plugin.code} is unavailable`, error);
       }
     }
     setPluginMessages(plugin.code, catalogs);

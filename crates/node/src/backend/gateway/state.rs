@@ -981,7 +981,7 @@ pub(crate) async fn require_admin_for_surface(
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
-                "error": "perfil sem autorização para esta rota",
+                "error": "profile not authorized for this route",
                 "path": path,
                 "profile": profile.to_string(),
             })),
@@ -1050,7 +1050,7 @@ pub(crate) async fn verify_control_request(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "controle assinado excede o limite" })),
+                Json(serde_json::json!({ "error": "signed control exceeds the limit" })),
             )
                 .into_response()
         }
@@ -1069,7 +1069,7 @@ pub(crate) async fn verify_control_request(
         Err(_) => {
             return (
                 StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": "assinatura de controle inválida" })),
+                Json(serde_json::json!({ "error": "invalid control signature" })),
             )
                 .into_response()
         }
@@ -1088,7 +1088,7 @@ pub(crate) async fn verify_control_request(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "assinatura de controle inválida" })),
+            Json(serde_json::json!({ "error": "invalid control signature" })),
         )
             .into_response();
     }
@@ -1096,7 +1096,7 @@ pub(crate) async fn verify_control_request(
         if let Err(error) = state.admin_trust.consume_control_replay(&envelope) {
             return (
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": format!("comando de controle recusado: {error:#}") })),
+                Json(serde_json::json!({ "error": format!("control command refused: {error:#}") })),
             )
                 .into_response();
         }

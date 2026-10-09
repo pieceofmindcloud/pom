@@ -272,19 +272,19 @@ impl TaskBudget {
     fn validation_error(&self) -> Option<String> {
         if self.kind != "tokens" {
             return Some(format!(
-                "output_config.task_budget.type precisa ser \"tokens\", não \"{}\"",
+                "output_config.task_budget.type must be \"tokens\", not \"{}\"",
                 self.kind
             ));
         }
         if self.total < TASK_BUDGET_MIN_TOTAL {
             return Some(format!(
-                "output_config.task_budget.total ({}) é menor que o mínimo de {TASK_BUDGET_MIN_TOTAL} tokens",
+                "output_config.task_budget.total ({}) is below the minimum of {TASK_BUDGET_MIN_TOTAL} tokens",
                 self.total
             ));
         }
         if self.remaining.is_some_and(|r| r > self.total) {
             return Some(format!(
-                "output_config.task_budget.remaining ({}) não pode ser maior que total ({})",
+                "output_config.task_budget.remaining ({}) cannot be greater than total ({})",
                 self.remaining.unwrap_or_default(),
                 self.total
             ));
@@ -1329,7 +1329,7 @@ mod tests {
 
         let p1 = render_prompt(None, &turn1, &[]);
         let p2 = render_prompt(None, &turn2, &[]);
-        assert!(p2.starts_with(&p1), "turno 2 não continua o turno 1");
+        assert!(p2.starts_with(&p1), "turn 2 does not continue turn 1");
 
         let k1 = conversation_cache_key(None, &turn1, &[]);
         let k2 = conversation_cache_key(None, &turn2, &[]);

@@ -33,7 +33,7 @@ pub async fn run_with_options(
     let n_peers = plan.steps.len();
     let overlap_window = PrefillOverlapWindow::new(max_inflight_chunks);
     if n_peers == 0 {
-        return Err(anyhow!("pipeline sem peers"));
+        return Err(anyhow!("pipeline without peers"));
     }
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
         return run_direct(
@@ -196,7 +196,7 @@ pub async fn run_with_options(
                         e.context(PrefillRebuildRequired {
                             from_chunk: idx,
                             start_pos: start_pos.unwrap_or(0),
-                            reason: "a resposta da cabeça é ambígua e o KV pode ter avançado",
+                            reason: "the head response is ambiguous and the KV may have advanced",
                         })
                     };
                     let _ = tx.send(HeadPumpMessage::Failure(failure)).await;
@@ -230,7 +230,7 @@ pub async fn run_with_options(
                     let failure = error.context(PrefillRebuildRequired {
                         from_chunk: idx,
                         start_pos: start_pos.unwrap_or(0),
-                        reason: "a resposta da cabeça não informou uma posição absoluta confiável",
+                        reason: "the head response did not report a reliable absolute position",
                     });
                     let _ = tx.send(HeadPumpMessage::Failure(failure)).await;
                     return Ok::<(), anyhow::Error>(());
@@ -243,7 +243,7 @@ pub async fn run_with_options(
                         let failure = error.context(PrefillRebuildRequired {
                             from_chunk: idx,
                             start_pos: chunk_start_pos,
-                            reason: "a resposta da cabeça não informou a próxima posição do KV",
+                            reason: "the head response did not report the next KV position",
                         });
                         let _ = tx.send(HeadPumpMessage::Failure(failure)).await;
                         return Ok::<(), anyhow::Error>(());
@@ -375,7 +375,7 @@ pub async fn run_with_options(
                             return Err(e.context(PrefillRebuildRequired {
                                 from_chunk: ci,
                                 start_pos: chunk_start_pos,
-                                reason: "falha downstream depois da cabeça aceitar o chunk; o KV pode ter avançado",
+                                reason: "downstream failure after the head accepted the chunk; the KV may have advanced",
                             }));
                         }
                         Err(e) => return Err(e),
@@ -389,7 +389,7 @@ pub async fn run_with_options(
                     if let Some(error) = head_failure.take() {
                         return Err(resume_with_trace(error, &trace, started.elapsed()));
                     }
-                    return Err(anyhow!("pipeline de prefill fechou sem o pedaço final"));
+                    return Err(anyhow!("prefill pipeline closed without the final chunk"));
                 }
             }
         }
@@ -401,9 +401,9 @@ pub async fn run_with_options(
     let token_id = final_meta
         .get("token_id")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))?
+        .ok_or_else(|| anyhow!("last peer returned no token at the end of the prompt"))?
         as u32;
-    info!("prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens ({prompt_tokens} tokens)");
+    info!("prompt ingested in {chunks} chunk(s) of {chunk_size} tokens ({prompt_tokens} tokens)");
     Ok(PrefillOutcome {
         token_id,
         probe: final_meta.get("probe_result").cloned(),
@@ -462,7 +462,7 @@ pub(super) async fn forward_hub_chunk(
         let is_last = i == plan.steps.len() - 1;
         let Some((values, shape)) = tensor.take() else {
             return Err(anyhow!(
-                "peer {} não devolveu estado oculto no pedaço {chunk_index}",
+                "peer {} returned no hidden state at chunk {chunk_index}",
                 plan.steps[i - 1].node_id
             ));
         };
@@ -636,7 +636,7 @@ pub(super) async fn run_ring(
                 failure.context(PrefillRebuildRequired {
                     from_chunk: chunk_index,
                     start_pos: next_start_pos.unwrap_or(0),
-                    reason: "a resposta da cadeia é ambígua e o KV pode ter avançado",
+                    reason: "the chain response is ambiguous and the KV may have advanced",
                 })
             }
         })
@@ -669,7 +669,7 @@ pub(super) async fn run_ring(
                 error.context(PrefillRebuildRequired {
                     from_chunk: chunk_index,
                     start_pos: next_start_pos.unwrap_or(0),
-                    reason: "a resposta da cabeça no anel não informou a próxima posição do KV",
+                    reason: "the head response on the ring did not report the next KV position",
                 })
             })?
         } else {
@@ -681,11 +681,11 @@ pub(super) async fn run_ring(
                 .meta
                 .get("token_id")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))?
+                .ok_or_else(|| anyhow!("last peer returned no token at the end of the prompt"))?
                 as u32;
             let chunks = chunk_index + 1;
             info!(
-                "prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens ({prompt_tokens} tokens) [anel]"
+                "prompt ingested in {chunks} chunk(s) of {chunk_size} tokens ({prompt_tokens} tokens) [ring]"
             );
             return Ok(PrefillOutcome {
                 token_id,
@@ -853,7 +853,7 @@ pub(super) async fn run_direct(
                         e.context(PrefillRebuildRequired {
                             from_chunk: idx,
                             start_pos: start_pos.unwrap_or(0),
-                            reason: "a resposta da cabeça é ambígua e o KV pode ter avançado",
+                            reason: "the head response is ambiguous and the KV may have advanced",
                         })
                     };
                     let _ = tx.send(HeadPumpMessageDirect::Failure(failure)).await;
@@ -878,7 +878,7 @@ pub(super) async fn run_direct(
                             from_chunk: idx,
                             start_pos: start_pos.unwrap_or(0),
                             reason:
-                                "a resposta direta da cabeça não informou a próxima posição do KV",
+                                "the direct head response did not report the next KV position",
                         });
                         let _ = tx.send(HeadPumpMessageDirect::Failure(failure)).await;
                         return Ok::<(), anyhow::Error>(());
@@ -1008,7 +1008,7 @@ pub(super) async fn run_direct(
                             e.context(PrefillRebuildRequired {
                                 from_chunk: ci,
                                 start_pos: chunk_start_pos,
-                                reason: "a resposta direta é ambígua e o KV pode ter avançado",
+                                reason: "the direct response is ambiguous and the KV may have advanced",
                             })
                         } else {
                             e
@@ -1060,7 +1060,7 @@ pub(super) async fn run_direct(
                         return Err(resume_with_trace(error, &trace, started.elapsed()));
                     }
                     return Err(anyhow!(
-                        "pipeline de prefill (resposta direta) fechou sem o pedaço final"
+                        "prefill pipeline (direct reply) closed without the final chunk"
                     ));
                 }
             }
@@ -1073,11 +1073,10 @@ pub(super) async fn run_direct(
     let token_id = final_meta
         .get("token_id")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))?
+        .ok_or_else(|| anyhow!("last peer returned no token at the end of the prompt"))?
         as u32;
     info!(
-        "prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens \
-         ({prompt_tokens} tokens) [resposta direta]"
+        "prompt ingested in {chunks} chunk(s) of {chunk_size} tokens ({prompt_tokens} tokens) [direct reply]"
     );
     Ok(PrefillOutcome {
         token_id,
@@ -1193,7 +1192,7 @@ pub(super) fn direct_failure(
         routes.mark_failure(&step.node_id, &step.inference_url);
     }
     Some(anyhow!(
-        "pipeline falhou em {}: {} — {}",
+        "pipeline failed at {}: {} — {}",
         failure.failed_node_id,
         failure.kind,
         failure.message
@@ -1385,7 +1384,7 @@ pub(super) async fn send_chunk(
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, TensorShape)>)> {
     check_cancelled(cancellation)?;
     let node_id = &step.node_id;
-    let peer_label = format!("{node_id} (pedaço {chunk_index})");
+    let peer_label = format!("{node_id} (chunk {chunk_index})");
     let mut issues = Vec::new();
     let result = cancelable(
         cancellation,

@@ -127,7 +127,7 @@ async fn post_internal_json<T: Serialize>(
 ) -> anyhow::Result<reqwest::Response> {
     let urls = gateway_urls(&state.network, peer);
     if urls.is_empty() && crate::peer_client::TunnelPeer::from_peer(peer).is_none() {
-        anyhow::bail!("o peer não anuncia porta de gateway");
+        anyhow::bail!("the peer does not announce a gateway port");
     }
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
@@ -408,7 +408,7 @@ async fn internal_reload_model(
     if event.get("event").and_then(|value| value.as_str()) != Some("reload_model") {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "evento desconhecido" })),
+            Json(json!({ "error": "unknown event" })),
         );
     }
     match state.runtime.wake_from_idle().await {
@@ -707,7 +707,7 @@ async fn internal_upsert_api_key(
         return StatusCode::FORBIDDEN.into_response();
     }
     if let Err(error) = state.database.insert_api_key(&key) {
-        tracing::warn!("não foi possível registrar a API key: {error:#}");
+        tracing::warn!("could not register the API key: {error:#}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     // A chave interna nova de um nó aposenta a anterior, cujo segredo o nó já
@@ -716,7 +716,7 @@ async fn internal_upsert_api_key(
         .database
         .revoke_superseded_node_keys(&state.network.node_id)
     {
-        tracing::warn!("não foi possível revogar chaves internas substituídas: {error:#}");
+        tracing::warn!("could not revoke replaced internal keys: {error:#}");
     }
     match refresh_api_key_snapshot(&state).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -873,7 +873,7 @@ async fn slot_action(
     Json(body): Json<SlotActionBody>,
 ) -> axum::response::Response {
     if body.model.trim().is_empty() {
-        return bad_request("informe 'model'");
+        return bad_request("provide 'model'");
     }
     let plan = match crate::gateway::resolve_plan_for_model(&state, body.model.trim()).await {
         Ok(plan) => plan,
@@ -882,7 +882,7 @@ async fn slot_action(
     match query.action.as_str() {
         "save" => {
             if body.session_id.trim().is_empty() {
-                return bad_request("save exige 'session_id' de uma sessão viva");
+                return bad_request("save requires the 'session_id' of a live session");
             }
             match crate::gateway::snapshot_deployment(
                 &plan,
@@ -918,7 +918,7 @@ async fn slot_action(
             crate::gateway::erase_snapshot(&plan, &name, &state.peer_http).await;
             Json(json!({ "erased": true, "slot_name": name })).into_response()
         }
-        other => bad_request(format!("ação desconhecida: {other}")),
+        other => bad_request(format!("unknown action: {other}")),
     }
 }
 
@@ -954,7 +954,7 @@ async fn list_nodes(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "o perfil infer só pode ver a própria máquina" })),
+            Json(json!({ "error": "the infer profile can only see its own machine" })),
         )
             .into_response();
     }
@@ -1026,14 +1026,14 @@ async fn promote_node_to_admin(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o administrador pode promover um nó" })),
+            Json(json!({ "error": "only the administrator can promote a node" })),
         )
             .into_response();
     }
     if node_id == state.network.node_id {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "o administrador já é este nó" })),
+            Json(json!({ "error": "the administrator is already this node" })),
         )
             .into_response();
     }
@@ -1047,21 +1047,21 @@ async fn promote_node_to_admin(
     else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "nó desconhecido ou fora da rede" })),
+            Json(json!({ "error": "unknown node or outside the network" })),
         )
             .into_response();
     };
     let Some(peer_id) = peer.libp2p_peer_id.clone() else {
         return (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o peer não anuncia sua identidade libp2p" })),
+            Json(json!({ "error": "the peer does not announce its libp2p identity" })),
         )
             .into_response();
     };
     if peer.pubkey.is_empty() {
         return (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o peer não anuncia a chave de autoridade libp2p" })),
+            Json(json!({ "error": "the peer does not announce the libp2p authority key" })),
         )
             .into_response();
     }
@@ -1091,7 +1091,7 @@ async fn promote_node_to_admin(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("não foi possível emitir a concessão: {error}") })),
+                Json(json!({ "error": format!("could not issue the grant: {error}") })),
             )
                 .into_response();
         }
@@ -1102,7 +1102,7 @@ async fn promote_node_to_admin(
     {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": format!("não foi possível registrar a concessão: {error}") })),
+            Json(json!({ "error": format!("could not record the grant: {error}") })),
         )
             .into_response();
     }
@@ -1134,11 +1134,11 @@ async fn promote_node_to_admin(
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|_| "promoção recusada pelo nó".to_string());
+                .unwrap_or_else(|_| "promotion refused by the node".to_string());
             Some((status, body))
         }
         Err(error) => {
-            tracing::warn!(node = %node_id, "promoção registrada, ainda não entregue ao nó: {error:#}");
+            tracing::warn!(node = %node_id, "promotion recorded, not yet delivered to the node: {error:#}");
             spawn_trust_fanout(&state, Some(node_id.clone()));
             return (
                 StatusCode::ACCEPTED,
@@ -1152,7 +1152,7 @@ async fn promote_node_to_admin(
             .admin_trust
             .demote_secondary(&state.authority_signing_key, grant.subject.clone())
         {
-            tracing::warn!(node = %node_id, "promoção recusada e não desfeita: {error:#}");
+            tracing::warn!(node = %node_id, "promotion refused and not undone: {error:#}");
         }
         return (status, body).into_response();
     }
@@ -1199,7 +1199,7 @@ pub(crate) async fn adopt_trust_chain(
         .map_err(|error| {
             (
                 StatusCode::FORBIDDEN,
-                format!("cadeia administrativa recusada: {error}"),
+                format!("administrative chain refused: {error}"),
             )
         })?;
     publish_chain_version(state);
@@ -1220,7 +1220,7 @@ pub(crate) async fn adopt_trust_chain(
         cfg.save().map_err(|error| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("não foi possível salvar o perfil: {error}"),
+                format!("could not save the profile: {error}"),
             )
         })?;
     }
@@ -1280,12 +1280,12 @@ fn spawn_trust_fanout(state: &crate::gateway::GatewayState, skip: Option<String>
                     Ok(response) if response.status().is_success() => {}
                     Ok(response) => tracing::debug!(
                         node = %peer.node_id,
-                        "cadeia administrativa: o peer respondeu {}",
+                        "administrative chain: the peer answered {}",
                         response.status()
                     ),
                     Err(error) => tracing::debug!(
                         node = %peer.node_id,
-                        "cadeia administrativa não chegou ao peer: {error:#}"
+                        "administrative chain did not reach the peer: {error:#}"
                     ),
                 }
             });
@@ -1357,14 +1357,14 @@ async fn sync_trust_chain_once(state: &crate::gateway::GatewayState) -> bool {
                 tracing::info!(
                     node = %peer.node_id,
                     version = %state.admin_trust.chain_version(),
-                    "cadeia administrativa atualizada a partir de um peer"
+                    "administrative chain updated from a peer"
                 );
                 return true;
             }
             Ok(false) => {}
             Err(error) => tracing::debug!(
                 node = %peer.node_id,
-                "cadeia administrativa: o peer não entregou uma cadeia mais nova: {error:#}"
+                "administrative chain: the peer did not deliver a newer chain: {error:#}"
             ),
         }
     }
@@ -1400,7 +1400,7 @@ async fn refresh_trust_chain(
         )
         .await?;
     if !response.status().is_success() {
-        anyhow::bail!("o peer respondeu {}", response.status());
+        anyhow::bail!("the peer answered {}", response.status());
     }
     let body: serde_json::Value = response.json().await?;
     let Some(document) = body.get("document").filter(|value| !value.is_null()) else {
@@ -1453,7 +1453,7 @@ async fn internal_complete_transfer(
     if completion.offer.issuer != state.authority_principal {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "a oferta não foi emitida por este principal" })),
+            Json(json!({ "error": "the offer was not issued by this principal" })),
         )
             .into_response();
     }
@@ -1463,7 +1463,7 @@ async fn internal_complete_transfer(
     {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": format!("transferência administrativa recusada: {error}") })),
+            Json(json!({ "error": format!("administrative transfer refused: {error}") })),
         )
             .into_response();
     }
@@ -1475,7 +1475,7 @@ async fn internal_complete_transfer(
     if let Err(error) = cfg.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
+            Json(json!({ "error": format!("could not save the profile: {error}") })),
         )
             .into_response();
     }
@@ -1493,7 +1493,7 @@ async fn resign_authority(
     if require_principal(&state).await.is_err() {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o principal pode resignar" })),
+            Json(json!({ "error": "only the principal can resign" })),
         )
             .into_response();
     }
@@ -1502,7 +1502,7 @@ async fn resign_authority(
         None => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": "não há um secundário elegível para sucessão" })),
+                Json(json!({ "error": "there is no secondary eligible for succession" })),
             )
                 .into_response()
         }
@@ -1515,7 +1515,7 @@ async fn resign_authority(
     }) else {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": "o último secundário promovido não está ativo" })),
+            Json(json!({ "error": "the last promoted secondary is not active" })),
         )
             .into_response();
     };
@@ -1528,7 +1528,7 @@ async fn resign_authority(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("resignação recusada: {error}") })),
+                Json(json!({ "error": format!("resignation refused: {error}") })),
             )
                 .into_response()
         }
@@ -1551,12 +1551,12 @@ async fn resign_authority(
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|_| "o sucessor recusou a oferta".into());
+                .unwrap_or_else(|_| "the successor refused the offer".into());
             (status, body).into_response()
         }
         Err(error) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("a oferta não chegou ao sucessor: {error}") })),
+            Json(json!({ "error": format!("the offer did not reach the successor: {error}") })),
         )
             .into_response(),
     }
@@ -1569,21 +1569,21 @@ pub(crate) async fn accept_authority_transfer(
     let Some(offer) = state.admin_trust.pending_transfer() else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "oferta de principal não existe" })),
+            Json(json!({ "error": "principal offer does not exist" })),
         )
             .into_response();
     };
     if offer.offer_id != offer_id || offer.successor != state.authority_principal {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "esta oferta não é destinada a este peer" })),
+            Json(json!({ "error": "this offer is not addressed to this peer" })),
         )
             .into_response();
     }
     if state.auth.read().await.profile != NodeProfile::Admin {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "o sucessor precisa continuar admin até aceitar" })),
+            Json(json!({ "error": "the successor must remain admin until it accepts" })),
         )
             .into_response();
     }
@@ -1596,7 +1596,7 @@ pub(crate) async fn accept_authority_transfer(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("aceitação recusada: {error}") })),
+                Json(json!({ "error": format!("acceptance refused: {error}") })),
             )
                 .into_response()
         }
@@ -1614,7 +1614,7 @@ pub(crate) async fn accept_authority_transfer(
             "accepted": true,
             "offer_id": offer.offer_id,
             "synchronized": false,
-            "reason": "o principal anterior está offline; a cadeia aceita permanece persistida"
+            "reason": "the previous principal is offline; the accepted chain remains persisted"
         }))
         .into_response();
     };
@@ -1636,7 +1636,7 @@ pub(crate) async fn accept_authority_transfer(
             "accepted": true,
             "offer_id": offer_id,
             "synchronized": false,
-            "reason": format!("principal anterior respondeu {}", response.status())
+            "reason": format!("previous principal answered {}", response.status())
         }))
         .into_response(),
         Err(error) => Json(json!({
@@ -1657,7 +1657,7 @@ async fn demote_secondary(
     if require_principal(&state).await.is_err() {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o principal pode despromover um secundário" })),
+            Json(json!({ "error": "only the principal can demote a secondary" })),
         )
             .into_response();
     }
@@ -1674,7 +1674,7 @@ async fn demote_secondary(
     else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "o nó não é um admin secundário" })),
+            Json(json!({ "error": "the node is not a secondary admin" })),
         )
             .into_response();
     };
@@ -1686,7 +1686,7 @@ async fn demote_secondary(
         Err(error) => {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": format!("despromoção recusada: {error}") })),
+                Json(json!({ "error": format!("demotion refused: {error}") })),
             )
                 .into_response()
         }
@@ -1718,12 +1718,12 @@ async fn demote_secondary(
         }
         Ok(response) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("o secundário recusou a mutação assinada: {}", response.status()) })),
+            Json(json!({ "error": format!("the secondary refused the signed mutation: {}", response.status()) })),
         )
             .into_response(),
         Err(error) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("a despromoção não chegou ao secundário: {error}") })),
+            Json(json!({ "error": format!("the demotion did not reach the secondary: {error}") })),
         )
             .into_response(),
 }
@@ -1744,11 +1744,11 @@ async fn block_node(
         .database
         .revoke_api_keys_by_origin(&node_id, &state.network.node_id)
     {
-        tracing::error!("não foi possível revogar as API keys da origem: {error}");
+        tracing::error!("could not revoke the API keys of the origin: {error}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     if let Err(error) = notify_origin_revoked(&state, &node_id, &state.network.node_id).await {
-        tracing::warn!("revogação central da origem falhou: {error:#}");
+        tracing::warn!("central revocation of the origin failed: {error:#}");
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let _ = refresh_api_key_snapshot(&state).await;
@@ -1797,10 +1797,10 @@ async fn list_api_keys(
     let keys = match state.database.api_keys() {
         Ok(keys) => keys,
         Err(error) => {
-            tracing::error!("não foi possível ler as API keys: {error:#}");
+            tracing::error!("could not read the API keys: {error:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível ler as API keys" })),
+                Json(json!({ "error": "could not read the API keys" })),
             )
                 .into_response();
         }
@@ -1848,10 +1848,10 @@ async fn generate_api_key(
     {
         Ok(key) => key,
         Err(error) => {
-            tracing::error!("não foi possível guardar a API key: {error}");
+            tracing::error!("could not store the API key: {error}");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": "não foi possível guardar a API key" })),
+                Json(json!({ "error": "could not store the API key" })),
             )
                 .into_response();
         }
@@ -1876,7 +1876,7 @@ pub(crate) async fn chat_key(
             tracing::warn!("could not prepare the chat key: {error:#}");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": "não foi possível preparar a chave do chat" })),
+                Json(json!({ "error": "could not prepare the chat key" })),
             )
                 .into_response()
         }
@@ -1925,7 +1925,7 @@ pub(crate) async fn node_chat_key(
         // A chave anterior não tem mais dono: ninguém sabe o segredo dela.
         let _ = state.database.revoke_api_key(&id, &node_id);
         if let Err(error) = notify_key_revoked(state, &id, &node_id).await {
-            tracing::warn!("revogação central da chave antiga do nó falhou: {error:#}");
+            tracing::warn!("central revocation of the old node key failed: {error:#}");
         }
     }
     let _ = refresh_api_key_snapshot(state).await;
@@ -1943,16 +1943,16 @@ async fn revoke_api_key(
     let existed = match state.database.revoke_api_key(&key, &revoked_by) {
         Ok(existed) => existed,
         Err(error) => {
-            tracing::error!("não foi possível revogar a API key: {error}");
+            tracing::error!("could not revoke the API key: {error}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível revogar a API key" })),
+                Json(json!({ "error": "could not revoke the API key" })),
             )
                 .into_response();
         }
     };
     if let Err(error) = notify_key_revoked(&state, &key, &revoked_by).await {
-        tracing::warn!("revogação central da API key falhou: {error:#}");
+        tracing::warn!("central revocation of the API key failed: {error:#}");
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let _ = refresh_api_key_snapshot(&state).await;
@@ -1994,8 +1994,8 @@ mod tests {
             .into_response();
         let body = crate::gateway::testkit::body_of(response).await;
 
-        let offers = body["offers"].as_array().expect("campo offers");
-        assert_eq!(offers.len(), 1, "a rota /admin não pode devolver vazio");
+        let offers = body["offers"].as_array().expect("offers field");
+        assert_eq!(offers.len(), 1, "the /admin route cannot return empty");
         assert_eq!(offers[0]["name"], "fatia_0_15.gguf");
         assert_eq!(offers[0]["from_host"], "ksia");
     }
@@ -2050,7 +2050,7 @@ mod tests {
             .unwrap();
         if response.status() != StatusCode::OK {
             let body = crate::gateway::testkit::body_of(response).await;
-            panic!("resposta inesperada: {body}");
+            panic!("unexpected response: {body}");
         }
         assert!(state.database.api_key_for_token(&secret).unwrap().is_none());
         assert_eq!(state.database.api_key_revocations().unwrap()[0].1, "eu");
@@ -2370,14 +2370,14 @@ mod tests {
         let signed_request = |path: &str, body: Vec<u8>| {
             let headers = state
                 .signed_control_headers("POST", path, &body)
-                .expect("assinar comando de teste");
+                .expect("sign test command");
             Request::post(path)
                 .header("content-type", "application/json")
                 .header(
                     crate::auth::INTERNAL_NODE_REQUEST_HEADER,
                     headers
                         .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
-                        .expect("marcador interno")
+                        .expect("internal marker")
                         .to_str()
                         .unwrap(),
                 )
@@ -2385,7 +2385,7 @@ mod tests {
                     crate::auth::CONTROL_SIGNATURE_HEADER,
                     headers
                         .get(crate::auth::CONTROL_SIGNATURE_HEADER)
-                        .expect("assinatura interna")
+                        .expect("internal signature")
                         .to_str()
                         .unwrap(),
                 )

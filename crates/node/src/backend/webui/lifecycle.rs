@@ -8,7 +8,7 @@ pub(super) async fn stop_inference(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
 ) -> Response {
-    info!("stop-inference recebido — parando servidor neste nó");
+    info!("stop-inference received — stopping the server on this node");
     state.runtime.stop().await;
     Json(json!({ "stopped": true })).into_response()
 }
@@ -32,11 +32,11 @@ pub(super) async fn unload_model(
 ) -> Response {
     let unloaded = state.runtime.config().await;
     if unloaded.is_none() {
-        return Json(json!({ "unloaded": false, "reason": "nenhum modelo carregado" }))
+        return Json(json!({ "unloaded": false, "reason": "no model loaded" }))
             .into_response();
     }
     state.runtime.stop().await;
-    info!("modelo descarregado pela interface");
+    info!("model unloaded from the interface");
     Json(json!({
         "unloaded": true,
         "model": unloaded.as_ref().map(|c| c.model_label.clone()),
@@ -177,8 +177,7 @@ pub(crate) async fn reconfigure_local(
                 path
             } else {
                 return Err(format!(
-                    "esta máquina não tem mais o arquivo da faixa L{}-{} de \"{}\" ({}); \
-                     use a tela de Implantar para copiá-lo de novo",
+                    "this machine no longer has the file of range L{}-{} of \"{}\" ({}); use the Deploy screen to copy it again",
                     slice.start_layer,
                     slice.end_layer,
                     slice.model_label,
@@ -186,7 +185,7 @@ pub(crate) async fn reconfigure_local(
                         .part_sha256
                         .as_deref()
                         .map(|s| format!("hash {}", &s[..12.min(s.len())]))
-                        .unwrap_or_else(|| "sem hash de parte no registro".to_string()),
+                        .unwrap_or_else(|| "no part hash in the record".to_string()),
                 ));
             };
             let tp_none = slice.tp.is_none();
@@ -195,7 +194,7 @@ pub(crate) async fn reconfigure_local(
             // em `[::]:0` (porta efêmera) num redeploy, e o túnel/HTTP direto
             // não achava mais o peer.
             let inference_port = state.network.inference_port.ok_or_else(|| {
-                "este nó não anuncia porta de inferência; não dá para reconfigurar a fatia"
+                "this node does not announce an inference port; the slice cannot be reconfigured"
                     .to_string()
             })?;
             // Primeiro o rascunho MTP que o nó tinha carregado, se o arquivo
@@ -233,15 +232,15 @@ pub(crate) async fn reconfigure_local(
         // Sem identidade: só troca os parâmetros do que já está carregado.
         None => {
             let Some(current) = state.runtime.config().await else {
-                warn!("reconfigure recusado: este nó não está servindo nada");
-                return Err("este nó não está servindo nada para reconfigurar".into());
+                warn!("reconfigure refused: this node is not serving anything");
+                return Err("this node is not serving anything to reconfigure".into());
             };
             current.with_params(&params)
         }
     };
 
     info!(
-        "reconfigurando {} (camadas {}-{}) com parâmetros novos",
+        "reconfiguring {} (layers {}-{}) with new parameters",
         cfg.model_label, cfg.start_layer, cfg.end_layer
     );
 
@@ -290,7 +289,7 @@ pub(super) async fn leave_network(
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
-                    "error": "só um administrador tira outra máquina da rede",
+                    "error": "only an administrator removes another machine from the network",
                     "node_id": target,
                 })),
             )
@@ -301,7 +300,7 @@ pub(super) async fn leave_network(
 
     state.runtime.stop().await;
     state.network.detach().await;
-    info!("nó saiu da rede pela interface");
+    info!("node left the network from the interface");
     Json(json!({ "detached": true })).into_response()
 }
 
@@ -341,7 +340,7 @@ pub(super) async fn leave_network_and_reset(
         if error.kind() != std::io::ErrorKind::NotFound {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("não foi possível apagar a raiz de confiança: {error}") })),
+                Json(json!({ "error": format!("could not delete the trust root: {error}") })),
             )
                 .into_response();
         }
@@ -352,7 +351,7 @@ pub(super) async fn leave_network_and_reset(
             Ok(config) => config,
             Err(error) => return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("não foi possível ler a configuração: {error:#}") })),
+                Json(json!({ "error": format!("could not read the configuration: {error:#}") })),
             )
                 .into_response(),
         };
@@ -364,7 +363,7 @@ pub(super) async fn leave_network_and_reset(
     let restored = match super::standby::restore_primary(&mut config) {
         Ok(restored) => restored,
         Err(error) => {
-            warn!("não foi possível restaurar a rede própria; criando uma nova: {error:#}");
+            warn!("could not restore the own network; creating a new one: {error:#}");
             false
         }
     };
@@ -379,7 +378,7 @@ pub(super) async fn leave_network_and_reset(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(
-                json!({ "error": format!("não foi possível preparar o próximo setup: {error:#}") }),
+                json!({ "error": format!("could not prepare the next setup: {error:#}") }),
             ),
         )
             .into_response();
@@ -388,20 +387,20 @@ pub(super) async fn leave_network_and_reset(
         super::standby::discard();
     }
     if let Err(error) = state.database.save_network_settings(&config.network) {
-        warn!("não foi possível limpar os detalhes da rede no banco: {error:#}");
+        warn!("could not clear the network details in the database: {error:#}");
     }
     if let Err(error) = state.database.clear_api_keys() {
-        warn!("não foi possível limpar as chaves de API locais: {error:#}");
+        warn!("could not clear the local API keys: {error:#}");
     }
 
     info!(
         trust = %trust_path.display(),
-        "nó saiu da rede; confiança revogada e setup pendente"
+        "node left the network; trust revoked and setup pending"
     );
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         let error = crate::respawn::respawn_self();
-        tracing::error!("respawn após saída da rede falhou, o nó segue no ar: {error}");
+        tracing::error!("respawn after leaving the network failed, the node stays up: {error}");
     });
     Json(json!({ "left": true, "restored_own_network": restored, "restart": true })).into_response()
 }
@@ -419,7 +418,7 @@ pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Respon
         .into_iter()
         .find(|p| p.node_id == node_id)
     else {
-        return bad_request("peer desconhecido");
+        return bad_request("unknown peer");
     };
     let body = json!({});
     match state
@@ -427,11 +426,11 @@ pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Respon
         .await
     {
         Ok(r) if r.status().is_success() => {
-            info!("{node_id} saiu da rede a pedido deste nó");
+            info!("{node_id} left the network at the request of this node");
             Json(json!({ "detached": true, "node_id": node_id })).into_response()
         }
-        Ok(r) => bad_request(format!("a máquina recusou: HTTP {}", r.status())),
-        Err(e) => bad_request(format!("máquina inacessível: {e}")),
+        Ok(r) => bad_request(format!("the machine refused: HTTP {}", r.status())),
+        Err(e) => bad_request(format!("machine unreachable: {e}")),
     }
 }
 
@@ -586,7 +585,7 @@ pub(super) async fn release_slice(
     body: Option<Json<ReleaseRequest>>,
 ) -> Response {
     let Some(cfg) = state.runtime.config().await else {
-        return bad_request("este nó não está servindo nenhuma fatia");
+        return bad_request("this node is not serving any slice");
     };
     let reassign = body.map(|Json(r)| r.reassign).unwrap_or(true);
 
@@ -595,7 +594,7 @@ pub(super) async fn release_slice(
     // they asked to happen immediately.
     state.runtime.stop().await;
     info!(
-        "fatia L{}-{} liberada pelo nó; memória devolvida",
+        "slice L{}-{} released by the node; memory returned",
         cfg.start_layer, cfg.end_layer
     );
 
@@ -610,20 +609,20 @@ pub(super) async fn release_slice(
         return Json(json!({
             "released": true, "slice": released,
             "reassigned_to": null, "uncovered": true,
-            "reason": "reatribuição desligada no pedido",
+            "reason": "reassignment turned off in the request",
         }))
         .into_response();
     }
 
     let Some(candidate) = find_release_candidate(&state, &cfg).await else {
         warn!(
-            "fatia L{}-{} ficou descoberta: nenhum nó ocioso tem esse arquivo",
+            "slice L{}-{} was left uncovered: no idle node has this file",
             cfg.start_layer, cfg.end_layer
         );
         return Json(json!({
             "released": true, "slice": released,
             "reassigned_to": null, "uncovered": true,
-            "reason": "nenhum outro nó está ocioso e com esta fatia no disco",
+            "reason": "no other node is idle and has this slice on disk",
         }))
         .into_response();
     };
@@ -673,7 +672,7 @@ pub(super) async fn release_slice(
     {
         Ok(r) if r.status().is_success() => {
             info!(
-                "fatia L{}-{} assumida por {}",
+                "slice L{}-{} taken over by {}",
                 cfg.start_layer, cfg.end_layer, candidate.node_id
             );
             Json(json!({
@@ -688,18 +687,18 @@ pub(super) async fn release_slice(
         Ok(r) => {
             let code = r.status();
             let text = r.text().await.unwrap_or_default();
-            warn!("{} recusou assumir a fatia: HTTP {code}", candidate.node_id);
+            warn!("{} refused to take over the slice: HTTP {code}", candidate.node_id);
             Json(json!({
                 "released": true, "slice": released,
                 "reassigned_to": null, "uncovered": true,
-                "reason": format!("{} recusou assumir: HTTP {code} {text}", candidate.hostname),
+                "reason": format!("{} refused to take over: HTTP {code} {text}", candidate.hostname),
             }))
             .into_response()
         }
         Err(e) => Json(json!({
             "released": true, "slice": released,
             "reassigned_to": null, "uncovered": true,
-            "reason": format!("{} inacessível: {e}", candidate.hostname),
+            "reason": format!("{} unreachable: {e}", candidate.hostname),
         }))
         .into_response(),
     }
@@ -713,7 +712,7 @@ pub(super) async fn rejoin_network(
     let assignment = state.local_assignment.read().await.clone();
     match state.network.rejoin(assignment.as_ref()).await {
         Ok(()) => Json(json!({ "detached": false })).into_response(),
-        Err(e) => bad_request(format!("não deu para voltar à rede: {e}")),
+        Err(e) => bad_request(format!("could not return to the network: {e}")),
     }
 }
 
@@ -904,7 +903,7 @@ pub(crate) async fn launch(
     Json(req): Json<LaunchRequest>,
 ) -> Response {
     if req.targets.is_empty() {
-        return bad_request("nenhum peer selecionado");
+        return bad_request("no peer selected");
     }
     // Checked before phase 1, which stops inference on every target: a launch
     // that cannot possibly apply must not be allowed to take the cluster down
@@ -912,13 +911,11 @@ pub(crate) async fn launch(
     // offending files named; this is the guard for every other caller.
     if req.total_layers == 0 {
         return bad_request(
-            "não foi informado de quantas camadas é o modelo, e as fatias não podem ser \
-             atribuídas sem esse total. Fatias geradas pela tela de Fatiar gravam esse dado; \
-             as antigas não, e nesse caso o total é deduzido da cobertura das fatias.",
+            "the number of layers of the model was not provided, and the slices cannot be assigned without this total. Slices generated by the Slice screen write this; the old ones do not, and in that case the total is deduced from the coverage of the slices.",
         );
     }
     if req.use_mmproj && !req.targets.iter().any(|target| target.use_mmproj) {
-        return bad_request("este modelo não tem visão: nenhum alvo recebeu mmproj");
+        return bad_request("this model has no vision: no target received an mmproj");
     }
     let deployment = match normalize_deployment_name(Some(&req.deployment_name), &req.base_name) {
         Ok(name) => name,
@@ -926,7 +923,7 @@ pub(crate) async fn launch(
     };
     if let Some(t) = req.targets.iter().find(|t| t.end_layer >= req.total_layers) {
         return bad_request(format!(
-            "a fatia L{}-{} passa do fim de um modelo de {} camadas",
+            "slice L{}-{} goes past the end of a model with {} layers",
             t.start_layer, t.end_layer, req.total_layers
         ));
     }
@@ -973,7 +970,7 @@ pub(crate) async fn launch(
             continue;
         }
         let Some(peer) = peers.iter().find(|p| p.node_id == target.node_id) else {
-            warn!("peer {} nao encontrado para stop-inference", target.node_id);
+            warn!("peer {} not found for stop-inference", target.node_id);
             continue;
         };
         match state
@@ -981,18 +978,18 @@ pub(crate) async fn launch(
             .await
         {
             Ok(r) if r.status().is_success() => {
-                info!("peer {} parou inferencia", target.node_id);
+                info!("peer {} stopped inference", target.node_id);
             }
             Ok(r) => {
                 warn!(
-                    "peer {} recusou stop-inference: HTTP {}",
+                    "peer {} refused stop-inference: HTTP {}",
                     target.node_id,
                     r.status()
                 );
             }
             Err(e) => {
                 warn!(
-                    "peer {} inacessivel para stop-inference: {e}",
+                    "peer {} unreachable for stop-inference: {e}",
                     target.node_id
                 );
             }
@@ -1045,7 +1042,7 @@ pub(crate) async fn launch(
             results.push(json!({
                 "node_id": target.node_id,
                 "dispatched": false,
-                "error": "peer não encontrado",
+                "error": "peer not found",
             }));
             continue;
         };

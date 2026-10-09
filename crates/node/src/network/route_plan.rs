@@ -378,14 +378,14 @@ impl RouteBook {
         });
         if changed {
             info!(
-                "rota {} para {label}: {} [{} alternativa(s)]",
+                "route {} to {label}: {} [{} alternative(s)]",
                 plane.as_str(),
                 chosen.describe(),
                 routes.len() - 1
             );
         } else {
             debug!(
-                "rota {} para {label} confirmada: {}",
+                "route {} to {label} confirmed: {}",
                 plane.as_str(),
                 chosen.describe()
             );
@@ -438,13 +438,13 @@ impl RouteBook {
         let label = short(node_id);
         match &outcome {
             FailureOutcome::FailedOver(next) => warn!(
-                "rota {} para {label} falhou duas vezes; passando para {}",
+                "route {} to {label} failed twice; moving on to {}",
                 plane.as_str(),
                 next.describe()
             ),
             FailureOutcome::Exhausted => {
                 warn!(
-                    "rota {} para {label}: todas as rotas medidas falharam; nova análise pedida",
+                    "route {} to {label}: all measured routes failed; new analysis requested",
                     plane.as_str()
                 );
                 self.forget_attempt(node_id, plane);
@@ -1188,7 +1188,7 @@ mod tests {
         );
         match book.record_failure("peer", Plane::Inference) {
             FailureOutcome::FailedOver(next) => assert_eq!(next.kind, RouteKind::Tunnel),
-            other => panic!("esperava troca de rota, veio {other:?}"),
+            other => panic!("expected a route switch, got {other:?}"),
         }
         assert_eq!(
             book.active("peer", Plane::Inference).unwrap().kind,

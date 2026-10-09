@@ -48,7 +48,7 @@ Per-file list:
   `PageHeader` (surfaces), `Button` (4 variants, sizes, loading spinner),
   `Input`/`Select`/`Field`, `Badge`/`Dot`/`Progress`/`Meter` (the shared `Tone`
   palette: neutral/iris/aqua/amber/rose/sky/lime), `Empty`/`Skeleton`/
-  `ErrorState` (renders `localizeServerText` on the error message),
+  `ErrorState` (renders the error message as the node wrote it),
   `Mono`/`ScrollX`/`Footnote`/`KeyValue`. Everything is token-based class names
   (e.g. `bg-iris`, `border-line`) with `clsx`, no runtime styling.
   `FullBleedHeader`/`FullBleedToolbar` are the shared contract for a
@@ -325,8 +325,8 @@ Per-file list:
   em andamento, e o resultado sumia no instante em que acontecia: quem recebia
   via a barra andar e depois nada, quem enviava não via aviso de aceite nem de
   recusa. Uma transferência terminada não desenha barra (uma barra parada em
-  100% sugere que ainda anda), e o `detail` do nó passa por
-  `localizeServerText`. O título de uma fatia é **modelo + faixa de camadas**
+  100% sugere que ainda anda), e o `detail` do nó é mostrado
+  como chegou. O título de uma fatia é **modelo + faixa de camadas**
   (`transferLabel`), com o sha256 curto como identificação secundária ao lado:
   a notificação mostrava o hash, que não diz de que modelo é nem que pedaço
   traz. Numa oferta, o que se oferece é o título e quem oferece é o subtítulo —
@@ -586,7 +586,7 @@ Per-file list:
   the report shows `released: false` with the reason instead of a rounded-up
   "pronto!". Nothing is deleted from disk (`undeploy_endpoint` in `deploy.rs`).
   `Dashboard` renders it only for the `admin` profile, while the backend is the
-  final authority and reports the refusal through `localizeServerText`.
+  final authority and its refusal text is shown as it arrives.
   Renders both a `Confirm` and a result `Modal` (no cancel). `RemoveNode` stays
   separate and keeps the per-machine button available to every profile.
 - `ErrorBoundary.tsx` — Class boundary placed around the routed page in
@@ -624,9 +624,8 @@ Key logic carriers:
 - `ui.tsx:Button` (ui.tsx:100) — the single button primitive: variant/size/
   loading/icon, `active:scale` press feedback, disabled while loading. Every
   other component here builds on it.
-- `ui.tsx:ErrorState` (ui.tsx:369) — turns any error into a localized panel;
-  because the backend writes server errors as i18n keys, this is where
-  `localizeServerText` runs.
+- `ui.tsx:ErrorState` (ui.tsx:369) — turns any error into a panel with a
+  localized title; the message itself is the node's English text.
 - `Markdown` (Markdown.tsx:32) — `memo`ized so unchanged message bubbles do
   not re-parse their transcript during a stream; the active answer is published
   at a 50 ms cadence by `ChatSessionProvider`. Fenced-code detection decides
@@ -799,7 +798,7 @@ with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,
 `format.ts` (`isServing`, `layerRange`, `serverStateLabel`, `since`, `bytes`,
 `rate`, `duration`), `theme.tsx` (`useTheme`, used by Sidebar), `toast.tsx`
 (`useToast`). i18n via `../i18n/provider.tsx` (`useI18n`, `LanguageSelect`) and
-`../i18n/locales.ts` (`localizeServerText`, `formatMessage`, `getActiveLocale`).
+`../i18n/locales.ts` (`formatMessage`, `getActiveLocale`).
 Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 `POST /api/ui/undeploy`, `POST /api/ui/deploy/node`,
 `POST /api/ui/deploy/node/remove`,

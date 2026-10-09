@@ -119,7 +119,7 @@ impl IpcConnection {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 next.checked_add(1)
             })
-            .map_err(|_| anyhow::anyhow!("esgotados os identificadores do IPC do plugin host"))?;
+            .map_err(|_| anyhow::anyhow!("plugin host IPC identifiers exhausted"))?;
         let (response_tx, mut response_rx) = oneshot::channel();
         lock_pending(&self.pending).insert(id, response_tx);
         let _pending_request = PendingRequest {
@@ -133,16 +133,16 @@ impl IpcConnection {
             payload,
         };
         if let Err(error) = send_frame(&mut *self.writer.lock().await, &request).await {
-            return Err(error).with_context(|| format!("enviar pedido IPC {method}"));
+            return Err(error).with_context(|| format!("send IPC request {method}"));
         }
 
         let response = match timeout(request_timeout, &mut response_rx).await {
             Ok(Ok(response)) => response,
-            Ok(Err(_)) => anyhow::bail!("canal de respostas IPC do plugin host foi encerrado"),
+            Ok(Err(_)) => anyhow::bail!("plugin host IPC response channel was closed"),
             Err(_) => match response_rx.try_recv() {
                 Ok(response) => response,
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    anyhow::bail!("canal de respostas IPC do plugin host foi encerrado")
+                    anyhow::bail!("plugin host IPC response channel was closed")
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                     anyhow::bail!("timeout do plugin host")
@@ -152,13 +152,13 @@ impl IpcConnection {
         .map_err(anyhow::Error::msg)?;
 
         if response.id != id {
-            anyhow::bail!("resposta IPC incompatível com o pedido {id}");
+            anyhow::bail!("IPC response incompatible with request {id}");
         }
         if !response.ok {
             anyhow::bail!(
-                "plugin host recusou {}: {}",
+                "plugin host refused {}: {}",
                 method,
-                response.error.unwrap_or_else(|| "erro desconhecido".into())
+                response.error.unwrap_or_else(|| "unknown error".into())
             );
         }
         Ok(response.result.unwrap_or(Value::Null))
@@ -175,11 +175,11 @@ impl IpcConnection {
             let response: IpcResponse = match read_frame(&mut reader).await {
                 Ok(response) => response,
                 Err(error) => {
-                    let error = format!("leitura do canal IPC do plugin host falhou: {error:#}");
+                    let error = format!("reading the plugin host IPC channel failed: {error:#}");
                     if expected_close.load(Ordering::Acquire) {
-                        tracing::debug!(%error, "canal de respostas IPC do plugin host terminou durante encerramento");
+                        tracing::debug!(%error, "plugin host IPC response channel ended during shutdown");
                     } else {
-                        tracing::warn!(%error, "canal de respostas IPC do plugin host terminou");
+                        tracing::warn!(%error, "plugin host IPC response channel ended");
                     }
                     for (_, sender) in lock_pending(&pending).drain() {
                         let _ = sender.send(Err(error.clone()));
@@ -194,7 +194,7 @@ impl IpcConnection {
             } else {
                 tracing::warn!(
                     request_id = response.id,
-                    "resposta IPC do plugin host chegou sem pedido pendente"
+                    "plugin host IPC response arrived without a pending request"
                 );
             }
         }
@@ -225,7 +225,7 @@ impl PluginHost {
         command.creation_flags(0x0800_0000);
         let mut child = command
             .spawn()
-            .with_context(|| format!("iniciar pom-plugin-host em {}", host.display()))?;
+            .with_context(|| format!("start pom-plugin-host in {}", host.display()))?;
         #[cfg(windows)]
         let tree = child.raw_handle().and_then(crate::process_tree::ProcessTree::adopt);
         if let Some(stderr) = child.stderr.take() {
@@ -242,7 +242,7 @@ impl PluginHost {
         }
         #[cfg(not(windows))]
         let tree = Some(crate::process_tree::ProcessTree);
-        let stdin = match child.stdin.take().context("capturar stdin do plugin host") {
+        let stdin = match child.stdin.take().context("capture the plugin host stdin") {
             Ok(stdin) => stdin,
             Err(error) => {
                 let _ = child.start_kill();
@@ -252,7 +252,7 @@ impl PluginHost {
         let stdout = match child
             .stdout
             .take()
-            .context("capturar stdout do plugin host")
+            .context("capture the plugin host stdout")
         {
             Ok(stdout) => stdout,
             Err(error) => {
@@ -279,16 +279,16 @@ impl PluginHost {
             }
             Ok(Ok(ready)) => {
                 supervisor.kill().await;
-                anyhow::bail!("plugin host não ficou pronto: resposta {ready}")
+                anyhow::bail!("plugin host did not become ready: response {ready}")
             }
             Ok(Err(error)) => {
                 supervisor.kill().await;
-                Err(error).context("handshake ready do plugin host falhou")
+                Err(error).context("plugin host ready handshake failed")
             }
             Err(_) => {
                 supervisor.kill().await;
                 anyhow::bail!(
-                    "handshake ready do plugin host não respondeu em {:?}",
+                    "plugin host ready handshake did not answer in {:?}",
                     READY_TIMEOUT
                 )
             }
@@ -331,7 +331,7 @@ impl PluginHost {
         let mut child = self.process.child.lock().await;
         let _ = timeout(IPC_TIMEOUT, child.wait()).await;
         if child.try_wait()?.is_none() {
-            child.kill().await.context("encerrar plugin host")?;
+            child.kill().await.context("shut down the plugin host")?;
         }
         Ok(())
     }
@@ -356,9 +356,9 @@ impl PluginHost {
 }
 
 async fn send_frame<W: AsyncWrite + Unpin>(writer: &mut W, value: &impl Serialize) -> Result<()> {
-    let bytes = serde_json::to_vec(value).context("serializar frame IPC")?;
+    let bytes = serde_json::to_vec(value).context("serialize IPC frame")?;
     if bytes.is_empty() || bytes.len() > MAX_FRAME_BYTES {
-        anyhow::bail!("frame IPC fora do limite");
+        anyhow::bail!("IPC frame outside the limit");
     }
     writer.write_u32(bytes.len() as u32).await?;
     writer.write_all(&bytes).await?;
@@ -369,11 +369,11 @@ async fn send_frame<W: AsyncWrite + Unpin>(writer: &mut W, value: &impl Serializ
 async fn read_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(reader: &mut R) -> Result<T> {
     let size = reader.read_u32().await? as usize;
     if size == 0 || size > MAX_FRAME_BYTES {
-        anyhow::bail!("frame IPC fora do limite");
+        anyhow::bail!("IPC frame outside the limit");
     }
     let mut bytes = vec![0_u8; size];
     reader.read_exact(&mut bytes).await?;
-    serde_json::from_slice(&bytes).context("interpretar resposta IPC")
+    serde_json::from_slice(&bytes).context("parse IPC response")
 }
 
 fn host_executable() -> Result<PathBuf> {
@@ -382,12 +382,12 @@ fn host_executable() -> Result<PathBuf> {
         if path.is_file() {
             return Ok(path);
         }
-        anyhow::bail!("POM_PLUGIN_HOST não aponta para um arquivo");
+        anyhow::bail!("POM_PLUGIN_HOST does not point to a file");
     }
-    let current = std::env::current_exe().context("localizar executável pom")?;
+    let current = std::env::current_exe().context("locate the pom executable")?;
     let sibling = current
         .parent()
-        .context("localizar diretório do executável pom")?
+        .context("locate the directory of the pom executable")?
         .join(if cfg!(windows) {
             "pom-plugin-host.exe"
         } else {
@@ -397,7 +397,7 @@ fn host_executable() -> Result<PathBuf> {
         return Ok(sibling);
     }
     anyhow::bail!(
-        "pom-plugin-host não encontrado ao lado de {}",
+        "pom-plugin-host not found next to {}",
         current.display()
     )
 }

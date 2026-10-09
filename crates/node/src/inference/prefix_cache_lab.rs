@@ -265,7 +265,7 @@ fn differential_battery_detects_a_broken_cache_proxy() {
     let real_mismatches = run_battery(&RealProxy::new(), &operations);
     assert!(
         real_mismatches.is_empty(),
-        "referência e cache real divergiram: {real_mismatches:?}"
+        "reference and real cache diverged: {real_mismatches:?}"
     );
 
     let broken_mismatches = run_battery(
@@ -276,6 +276,6 @@ fn differential_battery_detects_a_broken_cache_proxy() {
     );
     assert!(
         !broken_mismatches.is_empty(),
-        "o proxy quebrado passou sem disparar a bateria diferencial"
+        "the broken proxy went through without triggering the differential battery"
     );
 }

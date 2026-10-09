@@ -4,9 +4,8 @@ Each screen of the panel, one file per route, wired up in `../App.tsx`. Every
 screen is backed by React Query hooks from `../lib/queries.ts` and speaks to the
 node's HTTP gateway (`src/webui.rs`, `src/gateway.rs`); none of them keep
 cluster state in the browser. All copy goes through the i18n provider
-(`../i18n/provider.tsx`); several screens additionally pass server-side error
-strings through `localizeServerText` (`../i18n/locales.ts`), which the backend
-writes as translation keys.
+(`../i18n/provider.tsx`). Text written by the node (error messages, refusal
+reasons, job steps) is English at the source and is shown as it arrives.
 
 `PublicNetworks.tsx` carries the `data-guide` attribute the first run guide's
 balloon points at (`components/FirstRunGuide.tsx`). So do `RemoteModels.tsx` (search field,

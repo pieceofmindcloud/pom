@@ -80,7 +80,7 @@ pub(super) async fn deploy_endpoint(
         .is_some_and(|slot| slot.needs_copy());
     if req.vision && plan.mmproj_path.is_none() && !vision_arriving {
         return bad(json!({
-            "error": plan.mmproj_reason.as_deref().unwrap_or("este modelo não tem visão: nenhum projetor compatível foi comprovado para o GGUF")
+            "error": plan.mmproj_reason.as_deref().unwrap_or("this model has no vision: no compatible projector was proven for the GGUF")
         }));
     }
 
@@ -114,7 +114,7 @@ pub(super) async fn deploy_endpoint(
     if plan.steps.is_empty() {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "nada para implantar" })),
+            Json(json!({ "error": "nothing to deploy" })),
         )
             .into_response();
     }
@@ -167,14 +167,14 @@ pub(super) async fn deploy_endpoint(
     // A whole model is one machine, and "em 1 nós" is the kind of seam that
     // makes an operator wonder what else was written for the other case.
     let title = format!(
-        "Implantar {} em {} {}",
+        "Deploy {} on {} {}",
         deployment_name,
         plan.steps.len(),
-        if plan.steps.len() == 1 { "nó" } else { "nós" }
+        if plan.steps.len() == 1 { "node" } else { "nodes" }
     );
     jobs().write().await.insert(
         job_id.clone(),
-        new_job(&job_id, "deploy", title, "preparando"),
+        new_job(&job_id, "deploy", title, "preparing"),
     );
 
     // Cunhado antes de subir nada: é o nome desta implantação, e ele vai junto
@@ -208,10 +208,10 @@ pub(super) async fn deploy_endpoint(
     let id = job_id.clone();
     tokio::spawn(async move {
         match run(state, plan, params, identity, record_plan, req.vision, &id).await {
-            Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
+            Ok(()) => set_job(&id, "done", "pronto", "the model is serving on the network").await,
             Err(e) => {
-                warn!("implantação falhou: {e}");
-                set_job(&id, "failed", "falhou", &e).await;
+                warn!("deployment failed: {e}");
+                set_job(&id, "failed", "failed", &e).await;
             }
         }
     });
@@ -238,17 +238,17 @@ pub(super) async fn deploy_endpoint(
 /// sem o modelo inteiro, ou primary sem URL de inferência derivável.
 pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<String> {
     if tp.size < 2 {
-        return Some("um grupo tensor-parallel precisa de pelo menos 2 ranks".to_string());
+        return Some("a tensor-parallel group needs at least 2 ranks".to_string());
     }
     let Some(primary) = machines.iter().find(|m| m.node_id == tp.primary_node_id) else {
         return Some(format!(
-            "o primary {} não está no cluster",
+            "the primary {} is not in the cluster",
             tp.primary_node_id
         ));
     };
     if primary.inference_url.is_none() {
         return Some(format!(
-            "não foi possível descobrir a URL de inferência do primary {} (ele precisa anunciar a porta de inferência)",
+            "could not find the inference URL of the primary {} (it must announce the inference port)",
             primary.label()
         ));
     }
@@ -256,7 +256,7 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
     let expected_workers = (tp.size - 1) as usize;
     if tp.worker_node_ids.len() != expected_workers {
         return Some(format!(
-            "são {} ranks, então o grupo precisa de {} worker{} (você marcou {})",
+            "there are {} ranks, so the group needs {} worker{} (you marked {})",
             tp.size,
             expected_workers,
             if expected_workers == 1 { "" } else { "s" },
@@ -269,17 +269,17 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
     let mut seen = std::collections::HashSet::new();
     for worker_id in &tp.worker_node_ids {
         if worker_id == &tp.primary_node_id {
-            return Some("um worker não pode ser o próprio primary".to_string());
+            return Some("a worker cannot be the primary itself".to_string());
         }
         if !seen.insert(worker_id.clone()) {
-            return Some(format!("o worker {worker_id} foi marcado duas vezes"));
+            return Some(format!("worker {worker_id} was marked twice"));
         }
         let Some(worker) = machines.iter().find(|m| &m.node_id == worker_id) else {
-            return Some(format!("o worker {worker_id} não está no cluster"));
+            return Some(format!("worker {worker_id} is not in the cluster"));
         };
         if worker.inference_url.is_none() {
             return Some(format!(
-                "não foi possível descobrir a URL de inferência do worker {}",
+                "could not find the inference URL of worker {}",
                 worker.label()
             ));
         }
@@ -294,7 +294,7 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
                 .any(|machine| machine.holds_tp(0, end, rank, tp.size).is_some())
             {
                 return Some(format!(
-                    "rank {}of{} do grupo TP {group} não existe em máquina nenhuma do cluster",
+                    "rank {}of{} of TP group {group} exists on no machine of the cluster",
                     rank + 1,
                     tp.size
                 ));
@@ -305,7 +305,7 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
 
     if !primary.held.iter().any(|s| s.start_layer == 0) {
         return Some(format!(
-            "o primary {} não tem o modelo inteiro {group}",
+            "the primary {} does not have the whole model {group}",
             primary.label()
         ));
     }
@@ -313,10 +313,10 @@ pub(super) fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) 
         let worker = machines
             .iter()
             .find(|m| &m.node_id == worker_id)
-            .expect("worker validado");
+            .expect("worker validated");
         if !worker.held.iter().any(|s| s.start_layer == 0) {
             return Some(format!(
-                "o worker {} não tem o modelo inteiro {group} para extrair o shard",
+                "worker {} does not have the whole model {group} to extract the shard from",
                 worker.label()
             ));
         }
@@ -369,12 +369,12 @@ pub(super) fn tp_targets_for(
         let file = held.or_else(|| source.and_then(|m| m.holds_tp(0, end_layer, rank, tp.size)));
         let ready = held.is_some();
         let problem = if target_node_id.is_empty() {
-            Some(format!("rank {}of{} está sem máquina", rank + 1, tp.size))
+            Some(format!("rank {}of{} has no machine", rank + 1, tp.size))
         } else if target.is_none() {
-            Some(format!("a máquina {target_node_id} não está no cluster"))
+            Some(format!("machine {target_node_id} is not in the cluster"))
         } else if file.is_none() {
             Some(format!(
-                "rank {}of{} do grupo TP {group} não existe em máquina nenhuma do cluster",
+                "rank {}of{} of TP group {group} exists on no machine of the cluster",
                 rank + 1,
                 tp.size
             ))
@@ -453,10 +453,10 @@ pub(super) fn tp_members(
         let m = machines
             .iter()
             .find(|m| m.node_id == node_id)
-            .ok_or_else(|| format!("{node_id} não está no cluster"))?;
+            .ok_or_else(|| format!("{node_id} is not in the cluster"))?;
         let url = m.inference_url.clone().ok_or_else(|| {
             format!(
-                "não foi possível descobrir a URL de inferência de {} (ele precisa anunciar a porta de inferência)",
+                "could not find the inference URL of {} (it must announce the inference port)",
                 m.label()
             )
         })?;
@@ -505,7 +505,7 @@ pub(super) fn launch_targets(
                 .and_then(|m| m.inference_url.clone())
                 .ok_or_else(|| {
                     format!(
-                        "não foi possível descobrir a URL de inferência do primary {}",
+                        "could not find the inference URL of the primary {}",
                         t.primary_node_id
                     )
                 })
@@ -523,7 +523,7 @@ pub(super) fn launch_targets(
             let machine = machines
                 .iter()
                 .find(|machine| machine.node_id == target.target_node_id)
-                .ok_or_else(|| format!("{} não está no cluster", target.target_node_id))?;
+                .ok_or_else(|| format!("{} is not in the cluster", target.target_node_id))?;
             let held = machine
                 .holds_tp(
                     target.start_layer,
@@ -533,7 +533,7 @@ pub(super) fn launch_targets(
                 )
                 .ok_or_else(|| {
                     format!(
-                        "{} não achou o rank {}of{} depois da cópia",
+                        "{} did not find rank {}of{} after the copy",
                         machine.label(),
                         target.rank + 1,
                         target.size
@@ -611,7 +611,7 @@ pub(super) fn launch_targets(
                     .map(|s| s.path.clone())
                     .ok_or_else(|| {
                         format!(
-                            "{} não achou a fatia L{}-{} depois da cópia",
+                            "{} did not find slice L{}-{} after the copy",
                             step.target_host, part.start_layer, part.end_layer
                         )
                     })?;
@@ -624,7 +624,7 @@ pub(super) fn launch_targets(
             let anchor = merge
                 .first()
                 .map(|m| m.source_model_path.clone())
-                .ok_or_else(|| format!("{} não tem fatias para juntar", step.target_host))?;
+                .ok_or_else(|| format!("{} has no slices to merge", step.target_host))?;
             let (peer_index, peer_count) = pipeline_fields(step);
 
             targets.push(LaunchTarget {
@@ -670,7 +670,7 @@ pub(super) fn launch_targets(
             .and_then(|m| m.holds_ready(step.start_layer, step.end_layer))
             .ok_or_else(|| {
                 format!(
-                    "{} não achou {} depois da cópia",
+                    "{} did not find {} after the copy",
                     step.target_host,
                     kind.unit(&step.name, step.start_layer, step.end_layer)
                 )
@@ -706,19 +706,19 @@ pub(super) fn launch_targets(
     // Grupo de tensor parallelism: além do primary (o step do modelo inteiro),
     // cada worker vira um alvo que extrai o próprio shard de tensor.
     if let Some(tp) = tp {
-        let head = steps.first().ok_or("plano TP sem step")?;
+        let head = steps.first().ok_or("TP plan without a step")?;
         for (i, worker_id) in tp.worker_node_ids.iter().enumerate() {
             let rank = (i + 1) as u32;
             let worker_machine = machines
                 .iter()
                 .find(|m| m.node_id == *worker_id)
-                .ok_or_else(|| format!("worker {worker_id} não está no cluster"))?;
+                .ok_or_else(|| format!("worker {worker_id} is not in the cluster"))?;
             let path = worker_machine
                 .holds_ready(head.start_layer, head.end_layer)
                 .map(|s| s.path.clone())
                 .ok_or_else(|| {
                     format!(
-                        "{} não tem o modelo para extrair o shard de tensor",
+                        "{} does not have the model to extract the tensor shard from",
                         worker_machine.hostname
                     )
                 })?;
@@ -814,8 +814,8 @@ pub(super) async fn whole_layer_options_for_plan(
                 total_layers,
                 cuts: Vec::new(),
                 granularity: None,
-                rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
-                reason: Some(format!("{} não está no cluster", machine.label())),
+                rule: "could not confirm the real rules of this GGUF".to_string(),
+                reason: Some(format!("{} is not in the cluster", machine.label())),
             });
         };
         let request_body = crate::webui::ModelLayerOptionsRequest { path };
@@ -829,7 +829,7 @@ pub(super) async fn whole_layer_options_for_plan(
             .await
             .map_err(|error| {
                 format!(
-                    "não foi possível ler as regras de fatiamento em {}: {error:#}",
+                    "could not read the slicing rules on {}: {error:#}",
                     machine.label()
                 )
             });
@@ -841,7 +841,7 @@ pub(super) async fn whole_layer_options_for_plan(
                     total_layers,
                     cuts: Vec::new(),
                     granularity: None,
-                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                    rule: "could not confirm the real rules of this GGUF".to_string(),
                     reason: Some(error),
                 });
             }
@@ -855,9 +855,9 @@ pub(super) async fn whole_layer_options_for_plan(
                     total_layers,
                     cuts: Vec::new(),
                     granularity: None,
-                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                    rule: "could not confirm the real rules of this GGUF".to_string(),
                     reason: Some(format!(
-                        "resposta inválida das regras de fatiamento: {error}"
+                        "invalid slicing rules response: {error}"
                     )),
                 });
             }
@@ -866,11 +866,11 @@ pub(super) async fn whole_layer_options_for_plan(
             Err(body
                 .get("error")
                 .and_then(|value| value.as_str())
-                .unwrap_or("o peer recusou a leitura das regras de fatiamento")
+                .unwrap_or("the peer refused the reading of the slicing rules")
                 .to_string())
         } else {
             serde_json::from_value::<ModelLayerOptions>(body)
-                .map_err(|error| format!("resposta inválida das regras de fatiamento: {error}"))
+                .map_err(|error| format!("invalid slicing rules response: {error}"))
         }
     };
     match result {
@@ -887,7 +887,7 @@ pub(super) async fn whole_layer_options_for_plan(
             total_layers,
             cuts: Vec::new(),
             granularity: None,
-            rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+            rule: "could not confirm the real rules of this GGUF".to_string(),
             reason: Some(format!("{}: {}", group, error)),
         }),
     }
@@ -901,7 +901,7 @@ pub(super) fn add_virtual_whole_slices(
 ) -> Result<(), String> {
     if let Some(reason) = &options.reason {
         return Err(format!(
-            "não é possível escolher camadas de {}: {}",
+            "cannot choose layers of {}: {}",
             group, reason
         ));
     }
@@ -911,19 +911,19 @@ pub(super) fn add_virtual_whole_slices(
         .find(|cut| cut.end_layer == selection.end_layer)
         .ok_or_else(|| {
             format!(
-                "o corte na camada L{} não respeita as regras reais do GGUF",
+                "the cut at layer L{} does not respect the real rules of the GGUF",
                 selection.end_layer
             )
         })?;
     if selection.source_node_id == selection.target_node_id {
         return Err(
-            "a máquina de origem e a máquina de destino precisam ser diferentes".to_string(),
+            "the source machine and the destination machine must be different".to_string(),
         );
     }
     let source = machines
         .iter()
         .find(|machine| machine.node_id == selection.source_node_id)
-        .ok_or_else(|| "a máquina que propõe o modelo não está no cluster".to_string())?;
+        .ok_or_else(|| "the machine proposing the model is not in the cluster".to_string())?;
     let whole = source
         .held
         .iter()
@@ -935,7 +935,7 @@ pub(super) fn add_virtual_whole_slices(
         .cloned()
         .ok_or_else(|| {
             format!(
-                "{} não tem o modelo inteiro selecionado para fatiar",
+                "{} does not have the selected whole model to slice",
                 source.label()
             )
         })?;
@@ -943,7 +943,7 @@ pub(super) fn add_virtual_whole_slices(
         .iter()
         .any(|machine| machine.node_id == selection.target_node_id)
     {
-        return Err("a máquina de destino não está no cluster".to_string());
+        return Err("the destination machine is not in the cluster".to_string());
     }
 
     let mut ranges = vec![(0, cut.end_layer, cut.size_bytes)];
@@ -957,7 +957,7 @@ pub(super) fn add_virtual_whole_slices(
     let source = machines
         .iter_mut()
         .find(|machine| machine.node_id == selection.source_node_id)
-        .expect("origem validada");
+        .expect("source validated");
     for (start_layer, end_layer, size_bytes) in ranges {
         if source.holds_ready(start_layer, end_layer).is_some()
             || source
@@ -1005,7 +1005,7 @@ pub(super) async fn materialize_slices_on_peer(
         .await
         .into_iter()
         .find(|peer| peer.node_id == source_node_id)
-        .ok_or_else(|| format!("a máquina de origem {source_node_id} não está no cluster"))?;
+        .ok_or_else(|| format!("the source machine {source_node_id} is not in the cluster"))?;
     let response = state
         .control_post_json(
             &peer,
@@ -1016,14 +1016,14 @@ pub(super) async fn materialize_slices_on_peer(
         .await
         .map_err(|error| {
             format!(
-                "não foi possível fatiar o modelo em {}: {error:#}",
+                "could not slice the model on {}: {error:#}",
                 peer.hostname
             )
         })?;
     let status = response.status();
     let body: serde_json::Value = response.json().await.map_err(|error| {
         format!(
-            "{} respondeu uma materialização inválida: {error}",
+            "{} answered an invalid materialization: {error}",
             peer.hostname
         )
     })?;
@@ -1031,12 +1031,12 @@ pub(super) async fn materialize_slices_on_peer(
         return Err(body
             .get("error")
             .and_then(|value| value.as_str())
-            .unwrap_or("o peer recusou o fatiamento local")
+            .unwrap_or("the peer refused the local slicing")
             .to_string());
     }
     serde_json::from_value(body).map_err(|error| {
         format!(
-            "resposta inválida do fatiamento em {}: {error}",
+            "invalid slicing response from {}: {error}",
             peer.hostname
         )
     })
@@ -1056,7 +1056,7 @@ pub(super) async fn model_identity_on_peer(
         .await
         .into_iter()
         .find(|peer| peer.node_id == node_id)
-        .ok_or_else(|| format!("peer {node_id} não está no cluster"))?;
+        .ok_or_else(|| format!("peer {node_id} is not in the cluster"))?;
     let request_body = crate::webui::ModelIdentityRequest {
         path: path.to_string(),
         hash,
@@ -1064,21 +1064,21 @@ pub(super) async fn model_identity_on_peer(
     let response = state
         .control_post_json(&peer, "/api/ui/model-identity", &request_body, PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e:#}"))?;
+        .map_err(|e| format!("could not query the identity on {node_id}: {e:#}"))?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))?;
+        .map_err(|e| format!("invalid identity response from {node_id}: {e}"))?;
     if !status.is_success() {
         return Err(body
             .get("error")
             .and_then(|value| value.as_str())
             .map(str::to_string)
-            .unwrap_or_else(|| format!("peer respondeu HTTP {status}")));
+            .unwrap_or_else(|| format!("peer answered HTTP {status}")));
     }
     serde_json::from_value(body)
-        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))
+        .map_err(|e| format!("invalid identity response from {node_id}: {e}"))
 }
 
 pub(super) async fn resolve_requested_model_identity(
@@ -1100,7 +1100,7 @@ pub(super) async fn resolve_requested_model_identity(
     let paths = planned_model_paths(plan);
     if paths.is_empty() {
         return Err(format!(
-            "identidade indisponível: o plano de {} não informa o arquivo selecionado",
+            "identity unavailable: the plan of {} does not name the selected file",
             plan.group
         ));
     }
@@ -1112,7 +1112,7 @@ pub(super) async fn resolve_requested_model_identity(
             DeployKind::TensorParallel if plan.tp_targets.is_empty() => true,
             DeployKind::Shards | DeployKind::TensorParallel => {
                 return Err(format!(
-                    "identidade indisponível: o plano de {} usa fatias sem pom_id; não é seguro provar o mesmo modelo por hash de uma fatia",
+                    "identity unavailable: the plan of {} uses slices without a pom_id; it is not safe to prove the same model by the hash of a slice",
                     plan.group
                 ));
             }
@@ -1126,7 +1126,7 @@ pub(super) async fn resolve_requested_model_identity(
         })
     } else if pom_ids.len() > 1 {
         return Err(format!(
-            "identidade indisponível: o plano de {} mistura mais de um pom_id",
+            "identity unavailable: the plan of {} mixes more than one pom_id",
             plan.group
         ));
     } else {
@@ -1144,16 +1144,16 @@ pub(super) async fn resolve_requested_model_identity(
                     .await
                     .map_err(|fallback| {
                         format!(
-                            "identidade indisponível para {}: {} (reserva de caminho também falhou: {})",
+                            "identity unavailable for {}: {} (the path fallback also failed: {})",
                             plan.group,
-                            first_hash_error.as_deref().unwrap_or("hash não calculado"),
+                            first_hash_error.as_deref().unwrap_or("hash not computed"),
                             fallback
                         )
                     })?
             }
             Err(error) => {
                 return Err(format!(
-                    "identidade indisponível para {} em {}: {}",
+                    "identity unavailable for {} on {}: {}",
                     plan.group, node_id, error
                 ));
             }
@@ -1168,7 +1168,7 @@ pub(super) async fn resolve_requested_model_identity(
         info!(
             model = %plan.group,
             error = ?first_hash_error,
-            "usando caminho canônico como prova de reserva no peer de origem"
+            "using the canonical path as fallback proof on the source peer"
         );
     }
 
@@ -1198,14 +1198,14 @@ pub(super) async fn peer_node_snapshot(
     let response = state
         .control_get(peer, "/api/ui/node", PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("{} não respondeu: {e:#}", peer.hostname))?;
+        .map_err(|e| format!("{} did not answer: {e:#}", peer.hostname))?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("{} respondeu estado inválido: {e}", peer.hostname))?;
+        .map_err(|e| format!("{} answered an invalid state: {e}", peer.hostname))?;
     if !status.is_success() {
-        return Err(format!("{} respondeu HTTP {status}", peer.hostname));
+        return Err(format!("{} answered HTTP {status}", peer.hostname));
     }
     Ok(body)
 }
@@ -1244,7 +1244,7 @@ pub(super) async fn wait_for_peer_idle_with_timeout(
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Err(format!(
-                "{} não ficou ocioso dentro do limite de {}s; ficou ocupado: {}",
+                "{} did not become idle within the limit of {}s; it stayed busy: {}",
                 if peer.hostname.is_empty() {
                     &peer.node_id
                 } else {
@@ -1287,7 +1287,7 @@ pub(super) async fn wait_for_peer_serving_with_timeout(
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Err(format!(
-                "{} não voltou a servir dentro do limite de {}s; {}",
+                "{} did not resume serving within the limit of {}s; {}",
                 if peer.hostname.is_empty() {
                     &peer.node_id
                 } else {
@@ -1313,7 +1313,7 @@ pub(super) async fn prepare_existing_model(
     for peer in peers.into_iter().filter(|peer| peer.total_layers > 0) {
         if peer.model.is_empty() {
             return Err(format!(
-                "não foi possível provar a identidade antes de implantar {}: {} está ocupado, mas não anuncia qual modelo está servindo",
+                "could not prove the identity before deploying {}: {} is busy, but does not announce which model it is serving",
                 group, peer.hostname
             ));
         }
@@ -1345,7 +1345,7 @@ pub(super) async fn prepare_existing_model(
 
         let snapshot = peer_node_snapshot(state, &peer).await.map_err(|error| {
             format!(
-                "não foi possível provar a identidade do modelo em {}: {}",
+                "could not prove the identity of the model on {}: {}",
                 peer.hostname, error
             )
         })?;
@@ -1353,7 +1353,7 @@ pub(super) async fn prepare_existing_model(
             .await
             .map_err(|error| {
                 format!(
-                    "não foi possível provar a identidade do modelo em {}: {}",
+                    "could not prove the identity of the model on {}: {}",
                     peer.hostname, error
                 )
             })?;
@@ -1375,7 +1375,7 @@ pub(super) async fn prepare_existing_model(
             to_release.push(peer);
         } else {
             return Err(format!(
-                "não foi possível provar que o modelo ativo em {} é o mesmo que {}: o registro não tem hash/pom_id e o caminho canônico não coincide",
+                "could not prove that the active model on {} is the same as {}: the record has no hash/pom_id and the canonical path does not match",
                 peer.hostname, group
             ));
         }
@@ -1388,9 +1388,9 @@ pub(super) async fn prepare_existing_model(
     set_job(
         job_id,
         "running",
-        "desimplantando",
+        "undeploying",
         &format!(
-            "liberando {} máquina(s) que já servem este modelo",
+            "releasing {} machine(s) that already serve this model",
             to_release.len()
         ),
     )
@@ -1414,7 +1414,7 @@ pub(super) async fn prepare_existing_model(
         .collect();
     if !failures.is_empty() {
         return Err(format!(
-            "a nova implantação foi recusada porque a desimplantação falhou: {}",
+            "the new deployment was refused because the undeploy failed: {}",
             failures.join("; ")
         ));
     }
@@ -1422,8 +1422,8 @@ pub(super) async fn prepare_existing_model(
     set_job(
         job_id,
         "running",
-        "aguardando recursos ociosos",
-        "esperando as máquinas liberarem memória e encerrarem a inferência",
+        "waiting for idle resources",
+        "waiting for the machines to free memory and stop inference",
     )
     .await;
     let waits = futures::future::join_all(to_release.iter().map(|peer| async move {
@@ -1444,7 +1444,7 @@ pub(super) async fn prepare_existing_model(
         .collect();
     if !failures.is_empty() {
         return Err(format!(
-            "a nova implantação foi recusada porque as máquinas não ficaram ociosas: {}",
+            "the new deployment was refused because the machines did not become idle: {}",
             failures.join("; ")
         ));
     }

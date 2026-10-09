@@ -809,7 +809,7 @@ mod tests {
             "/v1/relay-result",
             "/v1/remote-stream-result",
         ] {
-            assert!(gateway_path_is_allowed(path), "{path} devia passar");
+            assert!(gateway_path_is_allowed(path), "{path} should pass");
         }
     }
 
@@ -1124,21 +1124,21 @@ mod tests {
     /// caminho: o 502 sintético de `serve_loopback` é gerado **na outra
     /// máquina**, então até ele prova que o quadro atravessou.
     #[tokio::test]
-    #[ignore = "precisa de um peer vivo; ver o doc do teste"]
+    #[ignore = "needs a live peer; see the test doc"]
     async fn tunnel_reaches_a_live_peer() {
         use libp2p::{noise, request_response::Event, swarm::SwarmEvent, tcp, yamux, Multiaddr};
 
         let Ok(target) = std::env::var("POM_TUNNEL_PROBE") else {
-            panic!("defina POM_TUNNEL_PROBE com o multiaddr do peer");
+            panic!("set POM_TUNNEL_PROBE to the multiaddr of the peer");
         };
-        let addr: Multiaddr = target.parse().expect("multiaddr inválido");
+        let addr: Multiaddr = target.parse().expect("invalid multiaddr");
         let peer_id = addr
             .iter()
             .find_map(|p| match p {
                 libp2p::multiaddr::Protocol::P2p(id) => Some(id),
                 _ => None,
             })
-            .expect("o multiaddr tem que terminar em /p2p/<peer-id>");
+            .expect("the multiaddr must end in /p2p/<peer-id>");
         let path =
             std::env::var("POM_TUNNEL_PROBE_PATH").unwrap_or_else(|_| "/v1/step".to_string());
 
@@ -1166,7 +1166,7 @@ mod tests {
         loop {
             let event = tokio::time::timeout_at(deadline, swarm.select_next_some())
                 .await
-                .expect("o peer não respondeu no prazo");
+                .expect("the peer did not answer within the deadline");
             match event {
                 SwarmEvent::Behaviour(Event::Message {
                     message:
@@ -1177,17 +1177,17 @@ mod tests {
                     ..
                 }) if request_id == id => {
                     println!(
-                        "túnel respondeu: status={} body={:?}",
+                        "tunnel answered: status={} body={:?}",
                         response.status,
                         String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
                     );
                     return;
                 }
                 SwarmEvent::Behaviour(Event::OutboundFailure { error, .. }) => {
-                    panic!("o túnel falhou: {error}");
+                    panic!("the tunnel failed: {error}");
                 }
                 SwarmEvent::OutgoingConnectionError { error, .. } => {
-                    panic!("não deu para conectar: {error}");
+                    panic!("could not connect: {error}");
                 }
                 other => println!("… {other:?}"),
             }

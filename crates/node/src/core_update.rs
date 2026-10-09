@@ -41,7 +41,7 @@ pub(crate) fn validate_manifest(
     current_version: &str,
 ) -> Result<(), String> {
     if manifest.schema != 1 {
-        return Err("schema de manifest do pom_core não suportado".into());
+        return Err("pom_core manifest schema not supported".into());
     }
     if manifest.product != "pom"
         || manifest.channel != CORE_RELEASE_CHANNEL
@@ -49,18 +49,18 @@ pub(crate) fn validate_manifest(
         || manifest.arch != std::env::consts::ARCH
         || manifest.plugin_abi != enterprise_protocol::PLUGIN_ABI_VERSION
     {
-        return Err("manifest do pom_core incompatível com esta instalação ou ABI".into());
+        return Err("pom_core manifest incompatible with this installation or ABI".into());
     }
     if manifest.release_id.trim().is_empty() || manifest.signature.trim().is_empty() {
-        return Err("manifest do pom_core sem release_id ou assinatura".into());
+        return Err("pom_core manifest without release_id or signature".into());
     }
     let current = Version::parse(current_version)
-        .map_err(|_| "versão do pom em execução inválida".to_string())?;
-    Version::parse(&manifest.version).map_err(|_| "versão do pom_core inválida".to_string())?;
+        .map_err(|_| "invalid running pom version".to_string())?;
+    Version::parse(&manifest.version).map_err(|_| "invalid pom_core version".to_string())?;
     let minimum = Version::parse(&manifest.min_host_version)
-        .map_err(|_| "min_host_version do pom_core inválido".to_string())?;
+        .map_err(|_| "invalid pom_core min_host_version".to_string())?;
     if minimum > current {
-        return Err("o pom_core exige uma versão do host mais nova".into());
+        return Err("pom_core requires a newer host version".into());
     }
     if manifest
         .sha256
@@ -75,17 +75,17 @@ pub(crate) fn validate_manifest(
             .chars()
             .all(|c| c.is_ascii_hexdigit())
     {
-        return Err("sha256 do pom_core inválido".into());
+        return Err("invalid pom_core sha256".into());
     }
     if manifest.size == 0 {
-        return Err("manifest do pom_core representa uma versão inválida".into());
+        return Err("pom_core manifest represents an invalid version".into());
     }
     Ok(())
 }
 
 pub(crate) fn validate_download(manifest: &PluginManifest, bytes: &[u8]) -> Result<(), String> {
     if bytes.len() as u64 != manifest.size {
-        return Err("tamanho do pom_core divergente".into());
+        return Err("pom_core size mismatch".into());
     }
     let actual = hex::encode(sha2::Sha256::digest(bytes));
     let expected = manifest
@@ -93,7 +93,7 @@ pub(crate) fn validate_download(manifest: &PluginManifest, bytes: &[u8]) -> Resu
         .strip_prefix("sha256:")
         .unwrap_or(&manifest.sha256);
     if actual != expected {
-        return Err("hash do pom_core divergente".into());
+        return Err("pom_core hash mismatch".into());
     }
     Ok(())
 }
@@ -104,7 +104,7 @@ pub(crate) fn install_atomically(
 ) -> std::io::Result<InstallResult> {
     let parent = destination
         .parent()
-        .ok_or_else(|| std::io::Error::other("diretório do executável ausente"))?;
+        .ok_or_else(|| std::io::Error::other("executable directory missing"))?;
     std::fs::create_dir_all(parent)?;
     let temporary = temporary_path(parent, destination);
     let result = write_temporary(&temporary, destination, bytes);
@@ -192,7 +192,7 @@ fn powershell_path_literal(path: &Path) -> std::io::Result<String> {
     let value = path.to_str().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "caminho não pode ser representado como texto Unicode para PowerShell",
+            "path cannot be represented as Unicode text for PowerShell",
         )
     })?;
     Ok(powershell_literal(value))
@@ -303,7 +303,7 @@ mod tests {
 
         let error = validate_manifest(&candidate, "0.1.0").expect_err("must reject");
 
-        assert!(error.contains("host mais nova"));
+        assert!(error.contains("newer host"));
     }
 
     #[test]

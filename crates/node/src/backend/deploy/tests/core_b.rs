@@ -189,7 +189,7 @@ fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
         if kind == DeployKind::TensorParallel {
             expected.fit_memory = false;
         }
-        assert_eq!(effective, expected, "{kind:?} reescreveu o deploy");
+        assert_eq!(effective, expected, "{kind:?} rewrote the deploy");
     }
 }
 
@@ -250,7 +250,7 @@ fn moe_capability_is_reported_for_whole_shards_and_tensor_parallel() {
     assert!(!p.inference_mode_supported);
     assert_eq!(
         p.inference_mode_reason.as_deref(),
-        Some("Tensor Parallelism não suporta MoE nesta versão.")
+        Some("Tensor Parallelism does not support MoE in this version.")
     );
 }
 
@@ -272,7 +272,7 @@ fn per_machine_gpu_offload_rides_along_with_the_slice() {
     ];
     let p = plan("m", &ms, Some(&sel));
     assert!(p.blocked.is_none(), "{:?}", p.blocked);
-    assert_eq!(p.steps[0].n_gpu_layers, None, "herda o valor do cluster");
+    assert_eq!(p.steps[0].n_gpu_layers, None, "inherits the cluster value");
     assert_eq!(p.steps[1].n_gpu_layers, Some(0));
 }
 
@@ -294,7 +294,7 @@ fn per_machine_kv_cache_rides_along_with_the_slice() {
     ];
     let p = plan("m", &ms, Some(&sel));
     assert!(p.blocked.is_none(), "{:?}", p.blocked);
-    assert_eq!(p.steps[0].offload_kqv, None, "herda a escolha do cluster");
+    assert_eq!(p.steps[0].offload_kqv, None, "inherits the cluster choice");
     assert_eq!(p.steps[1].offload_kqv, Some(false));
     // Um eixo não mexe no outro: nenhuma das duas pediu offload.
     assert_eq!(p.steps[1].n_gpu_layers, None);
@@ -344,14 +344,14 @@ fn slices_without_metadata_take_the_total_from_their_coverage() {
     assert_eq!(
         p.total_layers,
         Some(32),
-        "0-15 e 16-31 alcançam a camada 32"
+        "0-15 and 16-31 reach layer 32"
     );
-    assert!(p.total_layers_inferred, "veio da cobertura, não do arquivo");
+    assert!(p.total_layers_inferred, "came from the coverage, not from the file");
     assert!(p.blocked.is_none(), "{:?}", p.blocked);
     assert!(p.complete);
     assert!(
-        p.warnings.iter().any(|w| w.contains("deduzido")),
-        "a tela tem de dizer que o total foi deduzido: {:?}",
+        p.warnings.iter().any(|w| w.contains("deduced")),
+        "the screen must say the total was deduced: {:?}",
         p.warnings
     );
 }
@@ -379,14 +379,14 @@ fn a_set_that_cannot_say_its_size_is_refused_by_name() {
     let p = plan("qwen", &ms, None);
 
     assert_eq!(p.total_layers, None);
-    let reason = p.blocked.expect("sem total e sem camada 0 é recusa");
+    let reason = p.blocked.expect("no total and no layer 0 is a refusal");
     assert!(
         reason.contains("m_16_31.gguf"),
-        "a recusa tem de dizer qual fatia está sem o dado: {reason}"
+        "the refusal must say which slice lacks the data: {reason}"
     );
     assert!(
-        reason.contains("Fatiar"),
-        "e o que fazer a respeito: {reason}"
+        reason.contains("Slice screen"),
+        "and what to do about it: {reason}"
     );
 }
 
@@ -414,8 +414,8 @@ fn half_of_a_nameless_set_is_reported_as_a_gap() {
     let p = plan("qwen", &ms, Some(&[pick(0, 15, "a")]));
 
     assert_eq!(p.total_layers, Some(32));
-    assert_eq!(p.missing, vec![[16, 31]], "L16-31 ficou de fora");
-    assert!(!p.complete, "meia rede não é uma rede completa");
+    assert_eq!(p.missing, vec![[16, 31]], "L16-31 was left out");
+    assert!(!p.complete, "half a network is not a complete network");
 }
 
 /// The deduction walks the reach from layer 0, so a model sliced twice with
@@ -456,7 +456,7 @@ fn a_shard_that_reports_zero_layers_is_a_shard_with_no_total() {
         None,
         &[],
     )
-    .expect("a fatia é válida, só não diz o total");
+    .expect("the slice is valid, it just does not state the total");
     assert_eq!(shard.total_layers, None);
 
     let declared = parse_shard(
@@ -586,12 +586,12 @@ fn a_whole_model_is_one_machine_covering_every_layer() {
     let p = whole("qwen3.5-9b", &ms, None);
 
     assert!(p.blocked.is_none(), "{:?}", p.blocked);
-    assert!(p.complete, "uma faixa 0-31 cobre um modelo de 32 camadas");
+    assert!(p.complete, "a 0-31 range covers a model of 32 layers");
     assert!(p.missing.is_empty() && p.overlap.is_empty());
     assert_eq!(p.total_layers, Some(32));
     assert!(
         !p.total_layers_inferred,
-        "o GGUF inteiro declara o total; nada foi deduzido"
+        "the whole GGUF declares the total; nothing was deduced"
     );
     assert_eq!(p.kind, DeployKind::Whole);
 
@@ -599,8 +599,8 @@ fn a_whole_model_is_one_machine_covering_every_layer() {
     let s = &p.steps[0];
     assert_eq!((s.start_layer, s.end_layer), (0, 31));
     assert_eq!(s.position, 1);
-    assert!(s.primary, "quem tem a camada 0 recebe o prompt");
-    assert!(s.ready, "o modelo já está na máquina");
+    assert!(s.primary, "whoever has layer 0 receives the prompt");
+    assert!(s.ready, "the model is already on the machine");
     assert!(!s.merged && s.parts.is_empty());
     assert_eq!(s.target_node_id, "a");
     assert_eq!(p.transfer_bytes, 0);
@@ -617,7 +617,7 @@ fn the_operator_picks_the_machine_for_a_whole_model() {
     let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "b")]));
 
     assert!(p.blocked.is_none(), "{:?}", p.blocked);
-    assert!(!p.auto, "é a escolha do operador, não a sugestão do nó");
+    assert!(!p.auto, "it is the operator's choice, not the node's suggestion");
     assert_eq!(p.steps.len(), 1);
     assert_eq!(p.steps[0].target_node_id, "b");
     assert!(p.steps[0].ready);
@@ -640,7 +640,7 @@ fn a_whole_model_on_two_machines_is_a_parallel_route() {
 
     assert!(
         p.blocked.is_none(),
-        "réplica exata não deve bloquear: {:?}",
+        "an exact replica must not block: {:?}",
         p.blocked
     );
     assert!(p.complete);
@@ -672,8 +672,8 @@ fn a_machine_without_the_model_is_planned_as_a_copy() {
         s.note
             .as_deref()
             .unwrap_or_default()
-            .contains("Transferências"),
-        "a cópia de um modelo inteiro tem que avisar de onde ela pode sair: {:?}",
+            .contains("Transfers"),
+        "the copy of a whole model must say where it can come from: {:?}",
         s.note
     );
 }
@@ -684,20 +684,20 @@ fn a_machine_without_the_model_is_planned_as_a_copy() {
 fn a_whole_model_refusal_names_the_model_and_not_a_slice() {
     let ms = vec![whole_machine("a", 900_000, true)];
     let without_machine = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "")]));
-    let reason = without_machine.blocked.expect("sem máquina é recusa");
+    let reason = without_machine.blocked.expect("no machine is a refusal");
     assert!(
-        reason.contains("o modelo qwen3.5-9b") && !reason.contains("fatia"),
+        reason.contains("the model qwen3.5-9b") && !reason.contains("slice"),
         "{reason}"
     );
 
     let nothing = whole("qwen3.5-9b", &ms, Some(&[]));
-    let reason = nothing.blocked.expect("nada escolhido é recusa");
-    assert_eq!(reason, "nenhum modelo selecionado");
+    let reason = nothing.blocked.expect("nothing chosen is a refusal");
+    assert_eq!(reason, "no model selected");
 
     let nobody = whole("nao-existe", &[whole_machine("a", 900_000, false)], None);
-    let reason = nobody.blocked.expect("ninguém tem o modelo");
-    assert!(reason.contains("modelo inteiro nao-existe") || reason.contains("nao-existe"));
-    assert!(!reason.contains("fatias de"), "{reason}");
+    let reason = nobody.blocked.expect("nobody has the model");
+    assert!(reason.contains("whole model nao-existe") || reason.contains("nao-existe"));
+    assert!(!reason.contains("slices of"), "{reason}");
 }
 
 /// O menu de destinos diz "já tem o modelo", não "já tem a fatia".
@@ -711,10 +711,10 @@ fn the_target_menu_speaks_of_a_model() {
     let options = &p.steps[0].options;
     let a = options.iter().find(|o| o.node_id == "a").unwrap();
     assert!(a.has);
-    assert_eq!(a.note.as_deref(), Some("já tem o modelo"));
+    assert_eq!(a.note.as_deref(), Some("already has the model"));
     let b = options.iter().find(|o| o.node_id == "b").unwrap();
     assert!(!b.has);
-    assert!(b.note.as_deref().unwrap().contains("receberia"));
+    assert!(b.note.as_deref().unwrap().contains("would receive"));
 }
 
 /// A camada 0 é a que processa o prompt inteiro, e com um modelo inteiro
@@ -726,7 +726,7 @@ fn the_suggestion_puts_a_whole_model_on_the_roomiest_machine() {
         whole_machine("grande", 900_000, true),
     ];
     let p = whole("qwen3.5-9b", &ms, None);
-    assert_eq!(p.steps.len(), 1, "um modelo inteiro é um passo, sempre");
+    assert_eq!(p.steps.len(), 1, "a whole model is one step, always");
     assert_eq!(p.steps[0].target_node_id, "grande");
 }
 
@@ -780,7 +780,7 @@ fn a_slice_is_never_read_as_a_whole_model() {
 fn a_whole_model_is_launched_as_one_plain_target() {
     let ms = vec![whole_machine("a", 900_000, true)];
     let p = whole("qwen3.5-9b", &ms, None);
-    let targets = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[]).expect("um alvo");
+    let targets = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[]).expect("one target");
 
     assert_eq!(targets.len(), 1);
     let target = &targets[0];
@@ -789,11 +789,11 @@ fn a_whole_model_is_launched_as_one_plain_target() {
     // palpite sobre o sistema de arquivos alheio.
     assert_eq!(target.source_model_path, "/a/qwen3.5-9b.gguf");
     assert_eq!((target.start_layer, target.end_layer), (0, 31));
-    assert!(target.skip_split, "o arquivo já é o modelo todo");
+    assert!(target.skip_split, "the file is already the whole model");
     assert!(target.merge.is_none());
     assert!(
         target.peer_index.is_none() && target.peer_count.is_none(),
-        "a implantação inteira descreve o pipeline, então a posição sai da lista"
+        "the whole deployment describes the pipeline, so the position comes from the list"
     );
 }
 
@@ -812,7 +812,7 @@ fn a_tensor_parallel_group_launches_one_target_per_rank() {
         worker_node_ids: vec!["b".into()],
     };
     let targets = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp), &[])
-        .expect("dois alvos");
+        .expect("two targets");
 
     assert_eq!(targets.len(), 2);
 
@@ -864,7 +864,7 @@ fn a_tensor_parallel_worker_is_not_launched_as_a_pipeline_stage() {
     assert!(p.blocked.is_none(), "{:?}", p.blocked);
 
     let targets = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp), &[])
-        .expect("um alvo por rank");
+        .expect("one target per rank");
     assert_eq!(targets.len(), 2);
     assert_eq!(
         targets
@@ -907,7 +907,7 @@ fn pre_sliced_tensor_parallel_uses_one_existing_file_per_rank() {
         Some(&tp),
         &p.tp_targets,
     )
-    .expect("um alvo por rank pré-fatiado");
+    .expect("one target per pre-sliced rank");
     assert_eq!(targets.len(), 2);
     assert!(targets.iter().all(|target| target.skip_split));
     assert_eq!(
@@ -937,7 +937,7 @@ fn selected_tp_metadata_gate_names_missing_ranks() {
         Some(&tp),
         &machines,
     )
-    .expect("rank ausente deve manter a seleção bloqueada");
+    .expect("a missing rank must keep the selection blocked");
     assert!(reason.contains("ranks 2"), "{reason}");
 }
 
@@ -992,7 +992,7 @@ fn tp_group_checks_rejects_bad_groups() {
     };
     assert!(tp_group_checks(&ghost, &ms, "qwen3.5-9b")
         .unwrap()
-        .contains("não está no cluster"));
+        .contains("is not in the cluster"));
 
     let count = TpLaunch {
         size: 3,
@@ -1001,7 +1001,7 @@ fn tp_group_checks_rejects_bad_groups() {
     };
     assert!(tp_group_checks(&count, &ms, "qwen3.5-9b")
         .unwrap()
-        .contains("precisa de 2 workers"));
+        .contains("needs 2 workers"));
 
     let self_worker = TpLaunch {
         size: 2,
@@ -1010,7 +1010,7 @@ fn tp_group_checks_rejects_bad_groups() {
     };
     assert!(tp_group_checks(&self_worker, &ms, "qwen3.5-9b")
         .unwrap()
-        .contains("próprio primary"));
+        .contains("primary itself"));
 }
 
 /// A recusa do peer é repetida ao operador, em vez de virar palpite sobre a
@@ -1024,27 +1024,27 @@ fn a_refusal_is_quoted_not_guessed_as_an_old_binary() {
 
     assert_eq!(
         tp_check_verdict(
-            &json!({ "ok": false, "reason": "cabeças não dividem" }),
+            &json!({ "ok": false, "reason": "heads do not split" }),
             "ksia"
         ),
-        Some("cabeças não dividem".to_string())
+        Some("heads do not split".to_string())
     );
 
     let refusal =
         tp_check_verdict(&json!({ "error": "missing Authorization header" }), "ksia").unwrap();
     assert!(
         refusal.contains("missing Authorization header"),
-        "a razão do peer tem que aparecer: {refusal}"
+        "the peer reason must show up: {refusal}"
     );
     assert!(
-        !refusal.contains("binário antigo"),
-        "peer que recusou não é peer desatualizado: {refusal}"
+        !refusal.contains("old binary"),
+        "a peer that refused is not an outdated peer: {refusal}"
     );
 
     // Só um corpo que não explica nada continua valendo como binário velho.
     assert!(tp_check_verdict(&json!({ "outra": 1 }), "ksia")
         .unwrap()
-        .contains("binário antigo"));
+        .contains("old binary"));
 }
 
 /// A checagem tem que chegar autenticada no primary. Sem isto ela é 401 em
@@ -1131,7 +1131,7 @@ async fn the_shardability_check_carries_the_operator_key() {
     assert_eq!(
         header,
         Some("Bearer chave".to_string()),
-        "a checagem chegou sem a chave de operador: {header:?}"
+        "the check arrived without the operator key: {header:?}"
     );
 }
 
@@ -1159,7 +1159,7 @@ fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
     // propósito, porque quem manda é `worker_node_ids`.
     let members = tp_members(&tp, &[b, a]).unwrap();
     assert_eq!(members.len(), 2);
-    assert_eq!(members[0].node_id, "a", "rank 0 é o primary");
+    assert_eq!(members[0].node_id, "a", "rank 0 is the primary");
     assert_eq!(members[1].url, "https://b:8181");
 
     let with_silent = TpLaunch {
@@ -1170,7 +1170,7 @@ fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
     let mut a2 = whole_machine("a", 900_000, true);
     a2.inference_url = Some("https://a:8181".into());
     let error = tp_members(&with_silent, &[a2, silent]).unwrap_err();
-    assert!(error.contains("URL de inferência"), "{error}");
+    assert!(error.contains("inference URL"), "{error}");
 }
 
 /// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o
@@ -1183,9 +1183,9 @@ fn a_missing_file_after_the_copy_is_an_error_that_names_the_model() {
     ];
     let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
     let error = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[])
-        .expect_err("o destino não tem o arquivo");
+        .expect_err("the destination does not have the file");
     assert!(
-        error.contains("nao-tem") && error.contains("o modelo"),
+        error.contains("nao-tem") && error.contains("the model"),
         "{error}"
     );
 }
@@ -1199,7 +1199,7 @@ fn the_slice_path_still_launches_the_way_it_did() {
         m("b", 200_000, &[(16, 31)]),
     ]);
     let p = plan("m", &ms, None);
-    let targets = launch_targets(&p.steps, &ms, DeployKind::Shards, None, &[]).expect("dois alvos");
+    let targets = launch_targets(&p.steps, &ms, DeployKind::Shards, None, &[]).expect("two targets");
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0].source_model_path, "/models/m_0_15.gguf");
     assert_eq!((targets[0].start_layer, targets[0].end_layer), (0, 15));
@@ -1221,7 +1221,7 @@ fn a_whole_model_reads_as_the_range_it_covers() {
         }),
         "qwen3.5-9b",
     )
-    .expect("um GGUF inteiro com 32 camadas");
+    .expect("a whole GGUF with 32 layers");
     assert_eq!((whole.start_layer, whole.end_layer), (0, 31));
     assert_eq!(whole.total_layers, Some(32));
     assert_eq!(whole.name, "qwen3.5-9b");

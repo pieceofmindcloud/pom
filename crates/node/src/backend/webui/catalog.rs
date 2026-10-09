@@ -275,13 +275,13 @@ pub(super) async fn cluster_logs(
             StatusCode::FORBIDDEN,
             Json(json!({
                 "code": "logs_plugin_required",
-                "error": "os logs de processo do cluster ficam no plugin de logs, que não está ativo neste nó.",
+                "error": "the cluster process logs live in the logs plugin, which is not active on this node.",
             })),
         )
             .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não deu para ler os logs: {error}") })),
+            Json(json!({ "error": format!("could not read the logs: {error}") })),
         )
             .into_response(),
     }
@@ -342,7 +342,7 @@ pub(crate) fn next_admin_password_hash(
     }
     if let Some(existing_hash) = existing_hash {
         if !crate::auth::verify_admin_password(existing_hash, current_password) {
-            anyhow::bail!("a senha anterior está incorreta");
+            anyhow::bail!("the previous password is incorrect");
         }
     }
     crate::auth::hash_admin_password(new_password).map(Some)
@@ -357,7 +357,7 @@ pub(super) async fn save_admin_access(
 ) -> Response {
     let port = match u16::try_from(req.gateway_port) {
         Ok(port) => port,
-        Err(_) => return bad_request("a porta da interface deve estar entre 1 e 65535"),
+        Err(_) => return bad_request("the interface port must be between 1 and 65535"),
     };
     if let Err(error) = crate::config::validate_gateway_port(port) {
         return bad_request(error.to_string());
@@ -389,12 +389,12 @@ pub(super) async fn save_admin_access(
             Ok(Ok(next)) => next,
             Ok(Err(error)) => return bad_request(error.to_string()),
             Err(error) => {
-                return bad_request(format!("não foi possível proteger a senha: {error}"))
+                return bad_request(format!("could not protect the password: {error}"))
             }
         };
         if next.is_none() {
             return bad_request(
-                "uma senha é obrigatória quando a interface aceita conexões da rede",
+                "a password is required when the interface accepts connections from the network",
             );
         }
         next
@@ -407,7 +407,7 @@ pub(super) async fn save_admin_access(
         if cfg.admin_access_token != existing_hash {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": "a preferência de senha mudou; tente novamente" })),
+                Json(json!({ "error": "the password preference changed; try again" })),
             )
                 .into_response();
         }
@@ -427,7 +427,7 @@ pub(super) async fn save_admin_access(
 
         if let Err(error) = next.save() {
             return bad_request(format!(
-                "não deu para gravar {}: {error}",
+                "could not write {}: {error}",
                 crate::brand::config_filename()
             ));
         }
@@ -448,14 +448,14 @@ pub(super) async fn save_admin_access(
         gateway_port = port,
         restart,
         password_changed = !req.new_password.is_empty(),
-        "preferência de acesso administrativo atualizada pela interface"
+        "administrative access preference updated from the interface"
     );
 
     if restart {
         tokio::spawn(async {
             tokio::time::sleep(Duration::from_millis(800)).await;
             let error = crate::respawn::respawn_self();
-            tracing::error!("respawn falhou, o nó segue no ar: {error}");
+            tracing::error!("respawn failed, the node stays up: {error}");
         });
     }
 
@@ -622,7 +622,7 @@ pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
     })
     .await
         .unwrap_or_else(|e| {
-            warn!("varredura de modelos falhou: {e}");
+            warn!("model scan failed: {e}");
             Catalog {
                 models: Vec::new(),
                 shard_sets: Vec::new(),
@@ -641,13 +641,13 @@ pub(super) async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
     match tokio::task::spawn_blocking(move || catalog::enrich(input)).await {
         Ok(catalog) => Arc::new(catalog),
         Err(e) => {
-            warn!("enriquecimento do catálogo falhou: {e}");
+            warn!("catalog enrichment failed: {e}");
             let mut catalog = (*fallback).clone();
             catalog.metadata_complete = true;
             for model in &mut catalog.models {
                 model.metadata_identity = catalog::current_metadata_identity(model);
                 model.metadata_error = Some(format!(
-                    "a tarefa de enriquecimento do catálogo falhou: {e}"
+                    "the catalog enrichment task failed: {e}"
                 ));
             }
             Arc::new(catalog)
@@ -664,7 +664,7 @@ pub(super) fn spawn_enrichment(
     tokio::spawn(async move {
         let started = Instant::now();
         info!(
-            "iniciando enriquecimento do catálogo - {} modelos, {} conjuntos de fatias",
+            "starting catalog enrichment - {} models, {} slice sets",
             partial.models.len(),
             partial.shard_sets.len()
         );
@@ -673,14 +673,14 @@ pub(super) fn spawn_enrichment(
             let mut guard = catalog_cache().lock().await;
             let Some(current) = guard.as_mut() else {
                 warn!(
-                    "enriquecimento do catálogo concluído em {:.1}s, mas descartado: cache ausente",
+                    "catalog enrichment completed in {:.1}s, but discarded: cache missing",
                     started.elapsed().as_secs_f32()
                 );
                 return;
             };
             if current.enriching.as_ref() != Some(&roots) {
                 warn!(
-                    "enriquecimento do catálogo concluído em {:.1}s, mas descartado: tarefa substituída",
+                    "catalog enrichment completed in {:.1}s, but discarded: task replaced",
                     started.elapsed().as_secs_f32()
                 );
                 return;
@@ -694,7 +694,7 @@ pub(super) fn spawn_enrichment(
                 let catalog = Arc::make_mut(&mut current.catalog);
                 catalog.metadata_complete = catalog.models.iter().all(catalog::metadata_is_current);
                 info!(
-                    "catálogo: {} arquivo(s) não são modelos implantáveis (projetor ou rascunho MTP): {}",
+                    "catalog: {} file(s) are not deployable models (projector or MTP draft): {}",
                     discarded.len(),
                     discarded.join(", ")
                 );
@@ -714,7 +714,7 @@ pub(super) fn spawn_enrichment(
                 None
             };
             info!(
-                "metadados do catálogo concluídos em {:.1}s - {} aplicados, {} falhas, {} pendentes",
+                "catalog metadata completed in {:.1}s - {} applied, {} failures, {} pending",
                 started.elapsed().as_secs_f32(),
                 applied,
                 failed,
@@ -731,10 +731,10 @@ pub(super) fn spawn_enrichment(
             {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    warn!("não foi possível guardar o histórico do catálogo: {error:#}");
+                    warn!("could not store the catalog history: {error:#}");
                 }
                 Err(error) => {
-                    warn!("tarefa do histórico do catálogo falhou: {error}");
+                    warn!("catalog history task failed: {error}");
                 }
             }
         }
@@ -753,11 +753,11 @@ pub(super) fn spawn_refresh(database: Arc<crate::db::PomDb>, roots: CatalogRoots
         let (next_refresh, next_enrichment, snapshot) = {
             let mut guard = catalog_cache().lock().await;
             let Some(current) = guard.as_mut() else {
-                warn!("varredura do catálogo concluída, mas descartada: cache ausente");
+                warn!("catalog scan completed, but discarded: cache missing");
                 return;
             };
             if current.refreshing.as_ref() != Some(&roots) {
-                warn!("varredura do catálogo descartada: tarefa substituída");
+                warn!("catalog scan discarded: task replaced");
                 return;
             }
 
@@ -793,10 +793,10 @@ pub(super) fn spawn_refresh(database: Arc<crate::db::PomDb>, roots: CatalogRoots
             {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    warn!("não foi possível guardar o histórico do catálogo: {error:#}");
+                    warn!("could not store the catalog history: {error:#}");
                 }
                 Err(error) => {
-                    warn!("tarefa do histórico do catálogo falhou: {error}");
+                    warn!("catalog history task failed: {error}");
                 }
             }
         }
@@ -927,7 +927,7 @@ pub fn warm_catalog(state: GatewayState) {
         let started = Instant::now();
         let catalog = local_catalog(&state).await;
         info!(
-            "catálogo inicial em {:.1}s - {} modelos, {} conjuntos de fatias; cabeçalhos em background",
+            "initial catalog in {:.1}s - {} models, {} slice sets; headers in the background",
             started.elapsed().as_secs_f32(),
             catalog.models.len(),
             catalog.shard_sets.len()
@@ -1012,8 +1012,8 @@ pub(super) async fn save_thermal(
         return bad_request(error.to_string());
     }
     if let Err(error) = state.database.save_thermal_policy(policy) {
-        tracing::error!("não foi possível guardar a política térmica: {error:#}");
-        return bad_request("não foi possível guardar a política térmica");
+        tracing::error!("could not store the thermal policy: {error:#}");
+        return bad_request("could not store the thermal policy");
     }
     {
         let mut cfg = state.auth.write().await;
@@ -1023,7 +1023,7 @@ pub(super) async fn save_thermal(
         limit_c = policy.limit_c,
         hysteresis_c = policy.hysteresis_c,
         cooldown_secs = policy.cooldown_secs,
-        "política térmica atualizada pela interface"
+        "thermal policy updated from the interface"
     );
     Json(policy).into_response()
 }
@@ -1056,13 +1056,13 @@ pub(super) async fn save_cache_types(
         cfg.cache_type_k = req.cache_type_k;
         cfg.cache_type_v = req.cache_type_v;
         if let Err(e) = cfg.save() {
-            return bad_request(format!("não deu para gravar pom.json: {e}"));
+            return bad_request(format!("could not write pom.json: {e}"));
         }
     }
     info!(
         cache_type_k = req.cache_type_k.as_str(),
         cache_type_v = req.cache_type_v.as_str(),
-        "tipos do cache KV atualizados pela interface"
+        "KV cache types updated from the interface"
     );
     get_cache_types(State(state)).await.into_response()
 }
@@ -1091,12 +1091,12 @@ fn create_missing_dir(path: &std::path::Path, trimmed: &str, what: &str) -> Resu
     }
     if !path.is_absolute() {
         return Err(format!(
-            "{what}: “{trimmed}” não existe; informe o caminho absoluto para criar a pasta."
+            "{what}: “{trimmed}” does not exist; provide the absolute path to create the folder."
         ));
     }
     std::fs::create_dir_all(path)
-        .map_err(|error| format!("{what}: não foi possível criar “{trimmed}”: {error}"))?;
-    info!("{what}: pasta criada em {trimmed}");
+        .map_err(|error| format!("{what}: could not create “{trimmed}”: {error}"))?;
+    info!("{what}: folder created at {trimmed}");
     Ok(())
 }
 
@@ -1104,13 +1104,13 @@ fn create_missing_dir(path: &std::path::Path, trimmed: &str, what: &str) -> Resu
 pub(super) fn check_dir(raw: &str, what: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(format!("{what}: caminho vazio."));
+        return Err(format!("{what}: empty path."));
     }
     let path = std::path::Path::new(trimmed);
     create_missing_dir(path, trimmed, what)?;
     if !path.is_dir() {
         return Err(format!(
-            "{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."
+            "{what}: “{trimmed}” is a file, and what goes here is the folder that contains it."
         ));
     }
     Ok(trimmed.to_string())
@@ -1122,23 +1122,23 @@ pub(super) fn check_dir(raw: &str, what: &str) -> Result<String, String> {
 pub(super) fn check_workspace_dir(raw: &str, what: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(format!("{what}: caminho vazio."));
+        return Err(format!("{what}: empty path."));
     }
     let path = std::path::Path::new(trimmed);
     if !path.is_absolute() {
-        return Err(format!("{what}: o caminho precisa ser absoluto."));
+        return Err(format!("{what}: the path must be absolute."));
     }
     create_missing_dir(path, trimmed, what)?;
     let metadata = std::fs::metadata(path).map_err(|error| {
-        format!("{what}: não foi possível acessar “{trimmed}” dentro do container: {error}")
+        format!("{what}: could not access “{trimmed}” inside the container: {error}")
     })?;
     if !metadata.is_dir() {
         return Err(format!(
-            "{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."
+            "{what}: “{trimmed}” is a file, and what goes here is the folder that contains it."
         ));
     }
     std::fs::read_dir(path).map_err(|error| {
-        format!("{what}: não foi possível listar “{trimmed}” dentro do container: {error}")
+        format!("{what}: could not list “{trimmed}” inside the container: {error}")
     })?;
 
     let probe = path.join(format!(
@@ -1150,11 +1150,11 @@ pub(super) fn check_workspace_dir(raw: &str, what: &str) -> Result<String, Strin
         .create_new(true)
         .open(&probe)
         .map_err(|error| {
-            format!("{what}: a pasta “{trimmed}” não é gravável dentro do container: {error}")
+            format!("{what}: the folder “{trimmed}” is not writable inside the container: {error}")
         })?;
     if let Err(error) = std::fs::remove_file(&probe) {
         return Err(format!(
-            "{what}: não foi possível limpar o teste de escrita em “{trimmed}”: {error}"
+            "{what}: could not clean up the write test in “{trimmed}”: {error}"
         ));
     }
     Ok(trimmed.to_string())
@@ -1171,23 +1171,23 @@ pub(super) fn reject_workspace_overlap(
 ) -> Result<(), String> {
     let workspace = std::path::Path::new(workspace_root)
         .canonicalize()
-        .map_err(|e| format!("Workspace: não deu para resolver o caminho: {e}"))?;
+        .map_err(|e| format!("Workspace: could not resolve the path: {e}"))?;
     let shard = std::path::Path::new(shard_dir)
         .canonicalize()
-        .map_err(|e| format!("Pasta de modelos fatiados: não deu para resolver o caminho: {e}"))?;
+        .map_err(|e| format!("Sliced models folder: could not resolve the path: {e}"))?;
     if paths_overlap(&workspace, &shard) {
         return Err(
-            "a workspace não pode ser a mesma pasta de fatias nem ficar dentro ou conter essa pasta"
+            "the workspace cannot be the same as the slices folder, nor sit inside or contain it"
                 .to_string(),
         );
     }
     for model in model_dirs {
         let model = std::path::Path::new(model).canonicalize().map_err(|e| {
-            format!("Pasta de modelos inteiros: não deu para resolver {model}: {e}")
+            format!("Whole models folder: could not resolve {model}: {e}")
         })?;
         if paths_overlap(&workspace, &model) {
             return Err(
-                "a workspace não pode ser a mesma pasta de modelos inteiros nem ficar dentro ou conter essa pasta"
+                "the workspace cannot be the same as a whole models folder, nor sit inside or contain it"
                     .to_string(),
             );
         }
@@ -1215,7 +1215,7 @@ fn workspace_dir_validation_requires_an_absolute_writable_directory_and_creates_
 fn a_missing_storage_folder_is_created_on_save_but_only_from_an_absolute_path() {
     let root = tempfile::tempdir().unwrap();
     let models = root.path().join("new-models");
-    assert!(check_dir(&models.to_string_lossy(), "Pasta de modelos inteiros").is_ok());
+    assert!(check_dir(&models.to_string_lossy(), "Whole models folder").is_ok());
     assert!(models.is_dir());
     assert!(check_dir("relative-folder-that-should-not-exist", "Pasta").is_err());
     assert!(!std::path::Path::new("relative-folder-that-should-not-exist").exists());
@@ -1230,14 +1230,14 @@ pub(super) fn reject_nested_shard_dir(
 ) -> Result<(), String> {
     let shard = std::path::Path::new(shard_dir)
         .canonicalize()
-        .map_err(|e| format!("Pasta de modelos fatiados: não deu para resolver o caminho: {e}"))?;
+        .map_err(|e| format!("Sliced models folder: could not resolve the path: {e}"))?;
     for model in model_dirs {
         let model = std::path::Path::new(model).canonicalize().map_err(|e| {
-            format!("Pasta de modelos inteiros: não deu para resolver {model}: {e}")
+            format!("Whole models folder: could not resolve {model}: {e}")
         })?;
         if shard == model || shard.starts_with(&model) {
             return Err(
-                "a pasta de modelos fatiados não pode ser a mesma ou ficar dentro de uma pasta de modelos inteiros".to_string(),
+                "the sliced models folder cannot be the same as or sit inside a whole models folder".to_string(),
             );
         }
     }
@@ -1251,7 +1251,7 @@ pub(super) async fn save_paths(
 ) -> Response {
     let mut model_dirs = Vec::new();
     for raw in &req.model_dirs {
-        match check_dir(raw, "Pasta de modelos inteiros") {
+        match check_dir(raw, "Whole models folder") {
             Ok(p) => {
                 if !model_dirs.contains(&p) {
                     model_dirs.push(p);
@@ -1264,7 +1264,7 @@ pub(super) async fn save_paths(
     let shard_dir = if req.shard_dir.trim().is_empty() {
         None
     } else {
-        match check_dir(&req.shard_dir, "Pasta de modelos fatiados") {
+        match check_dir(&req.shard_dir, "Sliced models folder") {
             Ok(p) => Some(p),
             Err(e) => return bad_request(e),
         }
@@ -1321,7 +1321,7 @@ pub(super) async fn save_paths(
         None => crate::storage::DEFAULT_SHARD_MAX_GB,
         Some(value) if value.is_finite() && value > 0.0 => value,
         Some(_) => {
-            return bad_request("o limite da pasta de modelos fatiados precisa ser maior que zero");
+            return bad_request("the limit of the sliced models folder must be greater than zero");
         }
     };
 
@@ -1336,20 +1336,20 @@ pub(super) async fn save_paths(
         cfg.workspace_root = workspace_root;
         cfg.shard_max_gb = shard_max_gb;
         if let Err(e) = cfg.save() {
-            return bad_request(format!("não deu para gravar pom.json: {e}"));
+            return bad_request(format!("could not write pom.json: {e}"));
         }
         // An emptied field returns to a default that may not exist yet.
         for (dir, error) in cfg.create_default_storage_dirs() {
-            tracing::warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+            tracing::warn!("could not create the default folder {}: {error}", dir.display());
         }
     }
 
     if let Err(error) = crate::plugins::refresh_host_context(&state).await {
-        tracing::warn!(%error, "contexto dos plugins não foi atualizado após salvar a workspace");
+        tracing::warn!(%error, "plugin context was not updated after saving the workspace");
     }
 
     invalidate_catalog(state.database.clone()).await;
-    info!("pastas de modelos atualizadas pela interface");
+    info!("model folders updated from the interface");
     get_paths(State(state)).await.into_response()
 }
 
@@ -1378,7 +1378,7 @@ pub(super) async fn save_advertise_addr(
     } else {
         match crate::network::advertised_addr(raw, state.network.bind_addr.port()) {
             Some(a) => Some(a),
-            None => return bad_request(format!("“{raw}” não é um endereço válido.")),
+            None => return bad_request(format!("“{raw}” is not a valid address.")),
         }
     };
 
@@ -1386,12 +1386,12 @@ pub(super) async fn save_advertise_addr(
         let mut cfg = state.auth.write().await;
         cfg.advertise_addr = normalized.clone();
         if let Err(e) = cfg.save() {
-            return bad_request(format!("não deu para gravar pom.json: {e}"));
+            return bad_request(format!("could not write pom.json: {e}"));
         }
     }
 
     state.network.set_advertise_addr(normalized.as_deref());
-    info!("endereço anunciado atualizado pela interface: {normalized:?}");
+    info!("advertised address updated from the interface: {normalized:?}");
 
     Json(json!({
         "advertise_addr": normalized,
@@ -1422,11 +1422,11 @@ pub(super) async fn save_node_name(
     let name = req.node_name.trim();
     if name.chars().count() > NODE_NAME_MAX_CHARS {
         return bad_request(format!(
-            "o nome da máquina tem no máximo {NODE_NAME_MAX_CHARS} caracteres."
+            "the machine name has at most {NODE_NAME_MAX_CHARS} characters."
         ));
     }
     if name.chars().any(char::is_control) {
-        return bad_request("o nome da máquina não pode ter caracteres de controle.".to_string());
+        return bad_request("the machine name cannot have control characters.".to_string());
     }
     let node_name = (!name.is_empty()).then(|| name.to_string());
 
@@ -1434,7 +1434,7 @@ pub(super) async fn save_node_name(
         let mut cfg = state.auth.write().await;
         cfg.node_name = node_name.clone();
         if let Err(e) = cfg.save() {
-            return bad_request(format!("não deu para gravar pom.json: {e}"));
+            return bad_request(format!("could not write pom.json: {e}"));
         }
     }
 
@@ -1446,7 +1446,7 @@ pub(super) async fn save_node_name(
     state
         .cluster_logs
         .set_identity(state.network.node_id.clone(), hostname.clone());
-    info!("nome da máquina atualizado pela interface: {hostname}");
+    info!("machine name updated from the interface: {hostname}");
 
     Json(json!({ "node_name": node_name, "hostname": hostname })).into_response()
 }
@@ -1468,12 +1468,12 @@ pub(super) async fn save_relay(
         let mut cfg = state.auth.write().await;
         cfg.relay = req;
         if let Err(e) = cfg.save() {
-            return bad_request(format!("não deu para gravar pom.json: {e}"));
+            return bad_request(format!("could not write pom.json: {e}"));
         }
     }
     let gate = state.network.relay_gate();
     gate.set(req.everyone, req.cluster, req.transfers);
-    info!("opções de relé atualizadas pela interface: {req:?}");
+    info!("relay options updated from the interface: {req:?}");
     Json(gate.status()).into_response()
 }
 
@@ -1495,7 +1495,7 @@ pub(super) async fn save_quic(
     if !local_is_primary(&state).await {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "só o nó principal decide o QUIC do cluster." })),
+            Json(json!({ "error": "only the principal node decides the QUIC of the cluster." })),
         )
             .into_response();
     }
@@ -1504,7 +1504,7 @@ pub(super) async fn save_quic(
         cfg.quic_enabled = req.quic_enabled;
         if let Err(error) = cfg.save() {
             return bad_request(format!(
-                "não deu para gravar {}: {error}",
+                "could not write {}: {error}",
                 crate::brand::config_filename()
             ));
         }
@@ -1512,11 +1512,11 @@ pub(super) async fn save_quic(
     state.peer_http.set_quic(req.quic_enabled);
     crate::peer_client::set_quic_enabled(req.quic_enabled);
     info!(
-        "QUIC entre peers {} pela interface",
+        "QUIC between peers {} from the interface",
         if req.quic_enabled {
-            "ligado"
+            "on"
         } else {
-            "desligado"
+            "off"
         }
     );
     Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
@@ -1539,7 +1539,7 @@ pub(super) async fn save_tls(
     if !local_is_primary(&state).await {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "só o nó principal decide o TLS do cluster." })),
+            Json(json!({ "error": "only the principal node decides the TLS of the cluster." })),
         )
             .into_response();
     }
@@ -1549,7 +1549,7 @@ pub(super) async fn save_tls(
         cfg.tls_required = req.tls_required;
         if let Err(e) = cfg.save() {
             return bad_request(format!(
-                "não deu para gravar {}: {e}",
+                "could not write {}: {e}",
                 crate::brand::config_filename()
             ));
         }
@@ -1564,11 +1564,11 @@ pub(super) async fn save_tls(
         t.set_strict(req.tls_required);
     }
     info!(
-        "TLS entre peers {} pela interface",
+        "TLS between peers {} from the interface",
         if req.tls_required {
-            "ligado"
+            "on"
         } else {
-            "desligado"
+            "off"
         }
     );
 
@@ -1591,7 +1591,7 @@ pub(super) async fn save_cluster_logs(
     if !local_is_primary(&state).await {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "só o nó principal decide os logs do cluster." })),
+            Json(json!({ "error": "only the principal node decides the logs of the cluster." })),
         )
             .into_response();
     }
@@ -1608,7 +1608,7 @@ pub(super) async fn save_cluster_logs(
             StatusCode::FORBIDDEN,
             Json(json!({
                 "code": "logs_plugin_required",
-                "error": "ative o plugin de logs neste nó para ligar os logs de processo do cluster.",
+                "error": "activate the logs plugin on this node to turn on the cluster process logs.",
             })),
         )
             .into_response();
@@ -1619,7 +1619,7 @@ pub(super) async fn save_cluster_logs(
         cfg.cluster_logs_enabled = req.logs_enabled;
         if let Err(error) = cfg.save() {
             return bad_request(format!(
-                "não deu para gravar {}: {error}",
+                "could not write {}: {error}",
                 crate::brand::config_filename()
             ));
         }
@@ -1628,11 +1628,11 @@ pub(super) async fn save_cluster_logs(
     state.network.set_cluster_logs_enabled(req.logs_enabled);
     state.cluster_logs.set_enabled(req.logs_enabled);
     info!(
-        "logs de processo do cluster {} pela interface",
+        "cluster process logs {} from the interface",
         if req.logs_enabled {
-            "ligados"
+            "on"
         } else {
-            "desligados"
+            "off"
         }
     );
     Json(json!({ "logs_enabled": req.logs_enabled })).into_response()
@@ -1657,7 +1657,7 @@ async fn forward_network_chat_to_primary(
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     }) else {
-        return bad_request("o nó principal não está disponível para decidir o Chat da rede");
+        return bad_request("the principal node is not available to decide the network Chat");
     };
     match state
         .control_post_json(&peer, "/api/ui/network/chat", req, PEER_TIMEOUT)
@@ -1671,10 +1671,10 @@ async fn forward_network_chat_to_primary(
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|_| "o nó principal recusou a decisão".to_string());
+                .unwrap_or_else(|_| "the principal node refused the decision".to_string());
             (status, body).into_response()
         }
-        Err(error) => bad_request(format!("o nó principal está inacessível: {error:#}")),
+        Err(error) => bad_request(format!("the principal node is unreachable: {error:#}")),
     }
 }
 
@@ -1695,7 +1695,7 @@ pub(super) async fn save_network_chat(
         cfg.network_chat_enabled = req.network_chat_enabled;
         if let Err(error) = cfg.save() {
             return bad_request(format!(
-                "não deu para gravar {}: {error}",
+                "could not write {}: {error}",
                 crate::brand::config_filename()
             ));
         }
@@ -1705,11 +1705,11 @@ pub(super) async fn save_network_chat(
         .set_network_chat_enabled(req.network_chat_enabled);
     state.network_chat.set_enabled(req.network_chat_enabled);
     info!(
-        "Chat da rede {} pela interface",
+        "Network Chat {} from the interface",
         if req.network_chat_enabled {
-            "ligado"
+            "on"
         } else {
-            "desligado"
+            "off"
         }
     );
     Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
@@ -1834,26 +1834,26 @@ mod tests {
 
     #[test]
     fn admin_password_can_be_defined_without_a_previous_password() {
-        let hash = next_admin_password_hash(None, "", "senha nova")
-            .expect("definir a senha")
-            .expect("hash da senha definida");
+        let hash = next_admin_password_hash(None, "", "new password")
+            .expect("set the password")
+            .expect("hash of the set password");
 
-        assert!(crate::auth::verify_admin_password(&hash, "senha nova"));
-        assert!(!hash.contains("senha nova"));
+        assert!(crate::auth::verify_admin_password(&hash, "new password"));
+        assert!(!hash.contains("new password"));
     }
 
     #[test]
     fn changing_admin_password_requires_the_previous_password() {
-        let old_hash = crate::auth::hash_admin_password("senha antiga").expect("senha antiga");
-        assert!(next_admin_password_hash(Some(&old_hash), "errada", "senha nova").is_err());
+        let old_hash = crate::auth::hash_admin_password("old password").expect("old password");
+        assert!(next_admin_password_hash(Some(&old_hash), "errada", "new password").is_err());
 
-        let new_hash = next_admin_password_hash(Some(&old_hash), "senha antiga", "senha nova")
-            .expect("trocar a senha")
-            .expect("hash da senha nova");
-        assert!(crate::auth::verify_admin_password(&new_hash, "senha nova"));
+        let new_hash = next_admin_password_hash(Some(&old_hash), "old password", "new password")
+            .expect("change the password")
+            .expect("hash of the new password");
+        assert!(crate::auth::verify_admin_password(&new_hash, "new password"));
         assert!(!crate::auth::verify_admin_password(
             &new_hash,
-            "senha antiga"
+            "old password"
         ));
     }
 
@@ -1879,8 +1879,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
-            .expect("corpo da recusa");
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON da recusa");
+            .expect("refusal body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("refusal JSON");
         assert_eq!(body["code"], "logs_plugin_required");
     }
 }
@@ -2539,7 +2539,7 @@ pub(super) async fn chat_telemetry(
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(%error, execution_id, "não foi possível consultar o trace da execução");
+                    tracing::warn!(%error, execution_id, "could not query the execution trace");
                     break;
                 }
             }
@@ -2552,7 +2552,7 @@ pub(super) async fn chat_telemetry(
                 .into_iter()
                 .find(|trace| !execution_transport_measurements(trace, &requested).is_empty()),
             Err(error) => {
-                tracing::warn!(%error, "não foi possível consultar a última telemetria");
+                tracing::warn!(%error, "could not query the last telemetry");
                 None
             }
         }
@@ -2703,10 +2703,10 @@ pub(super) async fn chat_history(
     match state.database.chat_sessions() {
         Ok(sessions) => Json(sessions).into_response(),
         Err(error) => {
-            tracing::error!("não foi possível ler o histórico do chat: {error:#}");
+            tracing::error!("could not read the chat history: {error:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível ler o histórico do chat" })),
+                Json(json!({ "error": "could not read the chat history" })),
             )
                 .into_response()
         }
@@ -2732,10 +2732,10 @@ pub(super) async fn network_chat_snapshot(
     let mut messages = match state.network_chat.history(room, 100) {
         Ok(messages) => messages,
         Err(error) => {
-            tracing::error!("não foi possível ler o Chat da rede: {error:#}");
+            tracing::error!("could not read the network Chat: {error:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível ler o Chat da rede" })),
+                Json(json!({ "error": "could not read the network Chat" })),
             )
                 .into_response();
         }
@@ -2797,7 +2797,7 @@ pub(super) async fn network_chat_action(
     if request.api_key.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "o token do Chat da rede é obrigatório" })),
+            Json(json!({ "error": "the network Chat token is required" })),
         )
             .into_response();
     }
@@ -2821,7 +2821,7 @@ pub(super) async fn network_chat_file(
         Ok(Some(file)) => file,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(error) => {
-            tracing::error!("não foi possível ler arquivo do Chat da rede: {error:#}");
+            tracing::error!("could not read the network Chat archive: {error:#}");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -2841,10 +2841,10 @@ pub(super) async fn save_chat_history(
         return bad_request(error.to_string());
     }
     if let Err(error) = state.database.save_chat_session(&session) {
-        tracing::error!("não foi possível guardar o histórico do chat: {error:#}");
+        tracing::error!("could not store the chat history: {error:#}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "não foi possível guardar o histórico do chat" })),
+            Json(json!({ "error": "could not store the chat history" })),
         )
             .into_response();
     }
@@ -2860,10 +2860,10 @@ pub(super) async fn delete_chat_history(
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => {
-            tracing::error!("não foi possível apagar a conversa: {error:#}");
+            tracing::error!("could not delete the conversation: {error:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível apagar a conversa" })),
+                Json(json!({ "error": "could not delete the conversation" })),
             )
                 .into_response()
         }
@@ -2877,10 +2877,10 @@ pub(super) async fn clear_chat_history(
     match state.database.clear_chat_sessions() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => {
-            tracing::error!("não foi possível limpar o histórico do chat: {error:#}");
+            tracing::error!("could not clear the chat history: {error:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "não foi possível limpar o histórico do chat" })),
+                Json(json!({ "error": "could not clear the chat history" })),
             )
                 .into_response()
         }

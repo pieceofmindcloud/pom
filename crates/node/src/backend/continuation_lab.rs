@@ -214,7 +214,7 @@ struct Incoming {
 }
 
 fn read(body: &Bytes) -> Incoming {
-    let (meta, _tensor) = wire::decode(body).expect("quadro válido");
+    let (meta, _tensor) = wire::decode(body).expect("valid frame");
     let declared: Option<Vec<crate::pipeline::PipelineStep>> = meta
         .get("next_hops")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -552,10 +552,10 @@ async fn post_json(no: &No, body: Value) -> Value {
         .json(&body)
         .send()
         .await
-        .expect("resposta HTTP")
+        .expect("HTTP response")
         .json()
         .await
-        .expect("corpo JSON")
+        .expect("JSON body")
 }
 
 /// `/v1/messages`, para o que só o adaptador Anthropic diz: o `stop_reason`,
@@ -567,10 +567,10 @@ async fn post_messages(no: &No, body: Value) -> Value {
         .json(&body)
         .send()
         .await
-        .expect("resposta HTTP")
+        .expect("HTTP response")
         .json()
         .await
-        .expect("corpo JSON")
+        .expect("JSON body")
 }
 
 async fn messages_events(no: &No, body: Value) -> Vec<Value> {
@@ -580,14 +580,14 @@ async fn messages_events(no: &No, body: Value) -> Vec<Value> {
         .json(&body)
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert!(response.status().is_success(), "{:?}", response.status());
 
     let mut bytes = response.bytes_stream();
     let mut buffer = String::new();
     let mut events = Vec::new();
     while let Some(chunk) = bytes.next().await {
-        buffer.push_str(&String::from_utf8_lossy(&chunk.expect("pedaço SSE")));
+        buffer.push_str(&String::from_utf8_lossy(&chunk.expect("SSE chunk")));
         while let Some(end) = buffer.find("\n\n") {
             let event: String = buffer.drain(..end + 2).collect();
             for line in event.lines() {
@@ -595,7 +595,7 @@ async fn messages_events(no: &No, body: Value) -> Vec<Value> {
                     continue;
                 };
                 if payload != "[DONE]" {
-                    events.push(serde_json::from_str(payload).expect("evento JSON"));
+                    events.push(serde_json::from_str(payload).expect("JSON event"));
                 }
             }
         }
@@ -700,7 +700,7 @@ impl Flow {
             .iter()
             .rev()
             .find(|c| c.get("x_pom").is_some())
-            .expect("o quadro final carrega x_pom")
+            .expect("the final frame carries x_pom")
     }
 }
 
@@ -711,7 +711,7 @@ async fn post_sse(no: &No, body: Value) -> Flow {
         .json(&body)
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert!(response.status().is_success(), "{:?}", response.status());
 
     let start = std::time::Instant::now();
@@ -723,7 +723,7 @@ async fn post_sse(no: &No, body: Value) -> Flow {
         instants: Vec::new(),
     };
     while let Some(chunk) = bytes.next().await {
-        buffer.push_str(&String::from_utf8_lossy(&chunk.expect("pedaço SSE")));
+        buffer.push_str(&String::from_utf8_lossy(&chunk.expect("SSE chunk")));
         let now = start.elapsed();
         while let Some(end) = buffer.find("\n\n") {
             let event: String = buffer.drain(..end + 2).collect();
@@ -791,9 +791,9 @@ async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
     assert_eq!(
         flow.finish_reasons(),
         vec!["stop".to_string()],
-        "a costura vazou um fim de resposta para o cliente"
+        "the seam leaked an end of response to the client"
     );
-    assert_eq!(flow.done_sentinels, 1, "mais de um [DONE] é outro fluxo");
+    assert_eq!(flow.done_sentinels, 1, "more than one [DONE] is another stream");
     assert_eq!(flow.text(), expected);
     assert_eq!(
         flow.last_with_x_pom()["x_pom"]["continuation_legs"],
@@ -815,20 +815,20 @@ async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
 
     let calls = choice["message"]["tool_calls"]
         .as_array()
-        .expect("a resposta traz tool_calls");
+        .expect("the response carries tool_calls");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["function"]["name"], "write_file");
 
     let raw = calls[0]["function"]["arguments"]
         .as_str()
-        .expect("arguments é string JSON");
-    let arguments: Value = serde_json::from_str(raw).expect("arguments é JSON válido");
+        .expect("arguments is a JSON string");
+    let arguments: Value = serde_json::from_str(raw).expect("arguments is valid JSON");
     assert_eq!(arguments["path"], "/tmp/calc.py");
     let content = arguments["content"].as_str().expect("content");
     assert!(content.starts_with("linha_0 = 0 * 2"), "{content:?}");
     assert!(
         content.trim_end().ends_with("linha_39 = 39 * 2"),
-        "o conteúdo chegou cortado: {:?}",
+        "the content arrived cut: {:?}",
         &content[content.len().saturating_sub(60)..]
     );
 }
@@ -853,13 +853,13 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
     let fragments = flow.argument_fragments();
     assert!(
         fragments.len() > 5,
-        "os argumentos voltaram represados: {} fragmento(s)",
+        "the arguments came back held up: {} fragment(s)",
         fragments.len()
     );
 
     // Concatenar reproduz o argumento inteiro e válido.
     let whole: String = fragments.iter().map(|(_, s)| s.as_str()).collect();
-    let arguments: Value = serde_json::from_str(&whole).expect("arguments é JSON válido");
+    let arguments: Value = serde_json::from_str(&whole).expect("arguments is valid JSON");
     assert_eq!(arguments["path"], "/tmp/calc.py");
     assert!(arguments["content"]
         .as_str()
@@ -883,8 +883,8 @@ async fn a_large_html_tool_call_fits_the_context_capacity() {
 
     let raw = choice["message"]["tool_calls"][0]["function"]["arguments"]
         .as_str()
-        .expect("arguments é string JSON");
-    let arguments: Value = serde_json::from_str(raw).expect("chamada completa é JSON");
+        .expect("arguments is a JSON string");
+    let arguments: Value = serde_json::from_str(raw).expect("a complete call is JSON");
     assert_eq!(arguments["path"], "/tmp/index.html");
     assert!(arguments["content"]
         .as_str()
@@ -912,8 +912,8 @@ async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
 
     let raw = choice["message"]["tool_calls"][0]["function"]["arguments"]
         .as_str()
-        .expect("arguments é string JSON");
-    let arguments: Value = serde_json::from_str(raw).expect("chamada completa é JSON");
+        .expect("arguments is a JSON string");
+    let arguments: Value = serde_json::from_str(raw).expect("a complete call is JSON");
     assert!(arguments["content"]
         .as_str()
         .expect("content")
@@ -935,7 +935,7 @@ async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
         .iter()
         .map(|(_, fragment)| fragment.as_str())
         .collect();
-    let arguments: Value = serde_json::from_str(&arguments).expect("arguments é JSON");
+    let arguments: Value = serde_json::from_str(&arguments).expect("arguments is JSON");
     assert!(arguments["content"]
         .as_str()
         .expect("content")
@@ -961,8 +961,8 @@ async fn a_large_openai_tool_call_at_8192_is_structured_and_terminal() {
     assert_eq!(call["function"]["name"], "write_file");
     let arguments = call["function"]["arguments"]
         .as_str()
-        .expect("arguments é string JSON");
-    assert!(!arguments.contains("<tool_call>"), "marcação crua vazou");
+        .expect("arguments is a JSON string");
+    assert!(!arguments.contains("<tool_call>"), "raw markup leaked");
     assert!(serde_json::from_str::<Value>(arguments).is_err());
 }
 
@@ -983,7 +983,7 @@ async fn a_large_openai_tool_call_at_5000_is_structured_and_terminal_non_streami
 
     let arguments = choice["message"]["tool_calls"][0]["function"]["arguments"]
         .as_str()
-        .expect("arguments é string JSON");
+        .expect("arguments is a JSON string");
     assert!(serde_json::from_str::<Value>(arguments).is_err());
     assert!(!arguments.contains("data-line=\"846\""));
 }
@@ -1003,7 +1003,7 @@ async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
     assert!(!flow.text().contains("<tool_call>"), "{}", flow.text());
 
     let deltas = flow.tool_call_deltas();
-    assert!(!deltas.is_empty(), "o corte perdeu a chamada estruturada");
+    assert!(!deltas.is_empty(), "the cut lost the structured call");
     assert_eq!(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
@@ -1152,11 +1152,11 @@ async fn the_first_argument_fragment_arrives_well_before_the_last() {
     let fragments = flow.argument_fragments();
 
     assert!(fragments.len() > 5, "{} fragmento(s)", fragments.len());
-    let first = fragments.first().expect("primeiro").0;
-    let last = fragments.last().expect("último").0;
+    let first = fragments.first().expect("first").0;
+    let last = fragments.last().expect("last").0;
     assert!(
         first < last,
-        "primeiro e último no mesmo instante ({first:?}) - é o defeito de novo"
+        "first and last at the same instant ({first:?}) - it is the defect again"
     );
     // O relógio de parede deste teste inclui escalonamento do processo, filas
     // do kernel e agrupamento de bytes pelo socket. Esses fatores podem fazer
@@ -1165,7 +1165,7 @@ async fn the_first_argument_fragment_arrives_well_before_the_last() {
     // haver muitos fragmentos e o primeiro ser observado antes do último.
     assert!(
         first < last,
-        "o primeiro quadro não chegou antes do último"
+        "the first frame did not arrive before the last"
     );
 }
 
@@ -1223,10 +1223,10 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
         .bearer_auth(API_KEY)
         .send()
         .await
-        .expect("resposta HTTP")
+        .expect("HTTP response")
         .json()
         .await
-        .expect("corpo JSON");
+        .expect("JSON body");
 
     let model = &body["data"][0];
     assert_eq!(model["top_provider"]["max_completion_tokens"], 8_192);
@@ -1246,7 +1246,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
         .header("x-api-key", API_KEY)
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(models.status(), reqwest::StatusCode::OK);
 
     let messages = client
@@ -1260,7 +1260,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
         }))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(messages.status(), reqwest::StatusCode::OK);
 
     let both_invalid = client
@@ -1269,7 +1269,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
         .header("x-api-key", "invalid-api-key")
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(both_invalid.status(), reqwest::StatusCode::FORBIDDEN);
 
     let messages_invalid = client
@@ -1283,7 +1283,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
         }))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(messages_invalid.status(), reqwest::StatusCode::FORBIDDEN);
 
     let bearer = client
@@ -1291,7 +1291,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
         .header("authorization", format!("Bearer {API_KEY}"))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(bearer.status(), reqwest::StatusCode::OK);
 
     let x_api_key = client
@@ -1299,7 +1299,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
         .header("x-api-key", API_KEY)
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(x_api_key.status(), reqwest::StatusCode::OK);
 }
 
@@ -1314,10 +1314,10 @@ async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
         .header("x-api-key", API_KEY)
         .send()
         .await
-        .expect("resposta HTTP")
+        .expect("HTTP response")
         .json()
         .await
-        .expect("corpo JSON");
+        .expect("JSON body");
 
     assert_eq!(body["object"], "list");
     assert_eq!(body["has_more"], false);
@@ -1357,10 +1357,10 @@ async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
         .bearer_auth(API_KEY)
         .send()
         .await
-        .expect("resposta HTTP")
+        .expect("HTTP response")
         .json()
         .await
-        .expect("corpo JSON");
+        .expect("JSON body");
     assert_eq!(models["data"][0]["context_length"], 8_192);
     assert_eq!(
         models["data"][0]["top_provider"]["max_completion_tokens"],
@@ -1373,9 +1373,9 @@ async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
         .json(&request(32_000, false, false))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     let status = response.status();
-    let body = response.text().await.expect("corpo de erro");
+    let body = response.text().await.expect("error body");
     assert_eq!(status, reqwest::StatusCode::OK, "{body}");
 }
 
@@ -1406,10 +1406,10 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
         .header("x-api-key", API_KEY)
         .send()
         .await
-        .expect("resposta HTTP")
+        .expect("HTTP response")
         .json()
         .await
-        .expect("corpo JSON");
+        .expect("JSON body");
     assert_eq!(models["data"][0]["context_length"], 100_000);
     assert_eq!(
         models["data"][0]["top_provider"]["max_completion_tokens"],
@@ -1422,7 +1422,7 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
         .json(&request(32_000, false, false))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
@@ -1438,10 +1438,10 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
         .bearer_auth(API_KEY)
         .send()
         .await
-        .expect("resposta HTTP")
+        .expect("HTTP response")
         .json()
         .await
-        .expect("corpo JSON");
+        .expect("JSON body");
     assert_eq!(models["data"][0]["context_length"], 100_000);
     assert_eq!(
         models["data"][0]["top_provider"]["max_completion_tokens"],
@@ -1454,7 +1454,7 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
         .json(&request(32_000, false, false))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
@@ -1479,10 +1479,10 @@ async fn openai_chat_completions_accepts_max_completion_tokens() {
         }))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body: Value = response.json().await.expect("corpo JSON");
+    let body: Value = response.json().await.expect("JSON body");
     assert_eq!(body["choices"][0]["finish_reason"], "length");
     assert_eq!(body["usage"]["completion_tokens"], 5);
     assert_eq!(body["x_pom"]["partial"], false);
@@ -1502,7 +1502,7 @@ async fn max_completion_tokens_above_the_former_50k_ceiling_is_accepted() {
         }))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
@@ -1529,15 +1529,15 @@ fn the_cut_lands_inside_the_call() {
 
     assert!(
         (CAP_INSIDE_CALL as usize) < script.len(),
-        "o teto precisa ser menor que o roteiro, senão não corta nada"
+        "the cap must be lower than the script, otherwise it cuts nothing"
     );
     assert!(
         truncated.contains("<tool_call>"),
-        "o corte caiu antes da abertura"
+        "the cut landed before the opening"
     );
     assert!(
         !truncated.contains("</tool_call>"),
-        "o corte caiu depois do fechamento"
+        "the cut landed after the closing"
     );
     // E cai no miolo do `content`, não numa fronteira de tag.
     assert!(truncated.ends_with("linha_12 = 12 * 2\n"), "{truncated:?}");
@@ -1558,7 +1558,7 @@ async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
 
     assert_eq!(
         body["usage"]["completion_tokens"], CAP_INSIDE_CALL,
-        "a geração passou do teto que o cliente pediu"
+        "the generation went past the cap the client asked for"
     );
     assert_eq!(body["choices"][0]["finish_reason"], "length");
 }
@@ -1602,7 +1602,7 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
     // A chamada NÃO foi descartada: ela volta estruturada.
     let calls = choice["message"]["tool_calls"]
         .as_array()
-        .expect("a chamada cortada volta estruturada, não descartada");
+        .expect("the cut call comes back structured, not discarded");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["function"]["name"], "write_file");
 
@@ -1611,10 +1611,10 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
     // chamada com o `content` pela metade.
     let raw = calls[0]["function"]["arguments"]
         .as_str()
-        .expect("arguments é string");
+        .expect("arguments is a string");
     assert!(
         serde_json::from_str::<Value>(raw).is_err(),
-        "argumentos de uma chamada cortada não podem parsear: {raw:?}"
+        "arguments of a cut call cannot parse: {raw:?}"
     );
     assert!(
         raw.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
@@ -1672,7 +1672,7 @@ async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete(
         .collect();
     assert!(
         serde_json::from_str::<Value>(&raw).is_err(),
-        "argumentos de uma chamada cortada não podem parsear: {raw:?}"
+        "arguments of a cut call cannot parse: {raw:?}"
     );
     assert!(
         raw.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
@@ -1718,18 +1718,18 @@ async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block
     .await;
 
     assert_eq!(body["stop_reason"], "max_tokens");
-    let blocks = body["content"].as_array().expect("content é lista");
-    let last = blocks.last().expect("pelo menos um bloco");
+    let blocks = body["content"].as_array().expect("content is a list");
+    let last = blocks.last().expect("at least one block");
     assert_eq!(
         last["type"], "tool_use",
-        "o último bloco tem de ser a chamada cortada: {blocks:?}"
+        "the last block must be the cut call: {blocks:?}"
     );
     assert_eq!(last["name"], "write_file");
     // `input` é objeto por contrato, com o que deu para recuperar.
     assert_eq!(last["input"]["path"], "/tmp/calc.py");
     assert!(last["input"]["content"]
         .as_str()
-        .expect("content parcial")
+        .expect("partial content")
         .ends_with("linha_12 = 12 * 2\n"));
 
     // E nada de marcação crua nos blocos de texto.
@@ -1762,10 +1762,10 @@ async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
         .json(&request(100_000, false, false))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body: Value = response.json().await.expect("corpo JSON");
+    let body: Value = response.json().await.expect("JSON body");
     assert_eq!(
         body["x_pom"]["output_limits"]["requested_max_tokens"],
         100_000
@@ -1777,7 +1777,7 @@ async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
     assert_eq!(body["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
     let limits = body["x_pom"]["output_limits"]
         .as_object()
-        .expect("limites de saída");
+        .expect("output limits");
     assert_eq!(limits.len(), 5);
     assert!(limits.contains_key("context_available_tokens"));
 }
@@ -1894,11 +1894,11 @@ async fn a_task_budget_below_the_minimum_is_refused() {
         }))
         .send()
         .await
-        .expect("resposta HTTP");
+        .expect("HTTP response");
 
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: Value = response.json().await.expect("corpo JSON");
-    let message = body["error"]["message"].as_str().expect("mensagem");
+    let body: Value = response.json().await.expect("JSON body");
+    let message = body["error"]["message"].as_str().expect("message");
     assert!(message.contains("20000"), "{message}");
 }
 
@@ -1936,11 +1936,11 @@ async fn eager_input_streaming_on_a_tool_streams_the_argument_in_fragments() {
 
     assert!(
         fragments.len() > 5,
-        "os argumentos voltaram represados: {} fragmento(s)",
+        "the arguments came back held up: {} fragment(s)",
         fragments.len()
     );
     let whole: String = fragments.concat();
-    let arguments: Value = serde_json::from_str(&whole).expect("a concatenação é JSON válido");
+    let arguments: Value = serde_json::from_str(&whole).expect("the concatenation is valid JSON");
     assert_eq!(arguments["path"], "/tmp/calc.py");
     assert!(arguments["content"]
         .as_str()
@@ -1962,11 +1962,11 @@ async fn without_eager_input_streaming_each_parameter_arrives_whole() {
         let large = fragments
             .iter()
             .find(|f| f.contains("linha_39"))
-            .expect("o content saiu");
+            .expect("the content went out");
         assert!(large.contains("linha_0 = 0 * 2"), "{large:?}");
 
         let whole: String = fragments.concat();
-        let arguments: Value = serde_json::from_str(&whole).expect("JSON válido");
+        let arguments: Value = serde_json::from_str(&whole).expect("valid JSON");
         assert_eq!(arguments["path"], "/tmp/calc.py");
     }
 }

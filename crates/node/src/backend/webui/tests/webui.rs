@@ -42,12 +42,12 @@ pub(super) async fn plan_split_endpoint(
                 .find(|p| p.node_id == *target)
                 .and_then(|p| p.gateway_url());
             let Some(base) = base else {
-                return bad_request(format!("peer {target} não está acessível para ler o GGUF"));
+                return bad_request(format!("peer {target} is not reachable to read the GGUF"));
             };
             // Resolvido antes de mover `req`: `target` empresta dele.
             let client = match state.peer_http.for_peer(target) {
                 Ok(c) => c,
-                Err(e) => return bad_request(format!("sem cliente para o peer {target}: {e}")),
+                Err(e) => return bad_request(format!("no client for peer {target}: {e}")),
             };
             let mut forwarded = req;
             // Clear the hop marker so the receiving peer measures locally.
@@ -63,10 +63,10 @@ pub(super) async fn plan_split_endpoint(
                     let status = r.status();
                     match r.json::<serde_json::Value>().await {
                         Ok(v) => (status, Json(v)).into_response(),
-                        Err(e) => bad_request(format!("resposta inválida do peer: {e}")),
+                        Err(e) => bad_request(format!("invalid peer response: {e}")),
                     }
                 }
-                Err(e) => bad_request(format!("peer não respondeu: {e}")),
+                Err(e) => bad_request(format!("peer did not answer: {e}")),
             };
         }
     }
@@ -75,16 +75,16 @@ pub(super) async fn plan_split_endpoint(
     let layout_path = path.clone();
     let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&layout_path)).await {
         Ok(Ok(l)) => l,
-        Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
-        Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
+        Ok(Err(e)) => return bad_request(format!("could not read the GGUF: {e}")),
+        Err(e) => return bad_request(format!("GGUF read failed: {e}")),
     };
 
     let info = match tokio::task::spawn_blocking(move || gguf::read_info(&path)).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {
-            return bad_request(format!("não foi possível ler a geometria KV do GGUF: {e}"))
+            return bad_request(format!("could not read the KV geometry of the GGUF: {e}"))
         }
-        Err(e) => return bad_request(format!("leitura da geometria KV falhou: {e}")),
+        Err(e) => return bad_request(format!("KV geometry read failed: {e}")),
     };
 
     let reserve = req.reserve_pct.unwrap_or(DEFAULT_RESERVE_PCT);
@@ -229,7 +229,7 @@ pub(super) fn split_projection(
         })
         .collect();
     let note = (devices.len() > 1).then(|| {
-        "divisão entre GPUs estimada pela VRAM livre atual; o carregamento confirma o layout final"
+        "split between GPUs estimated from the current free VRAM; loading confirms the final layout"
             .to_string()
     });
     (projections, fits, note)
@@ -260,14 +260,14 @@ pub(super) async fn capacity_preview_endpoint(
     let path = std::path::PathBuf::from(&req.model_path);
     if !path.is_file() {
         return bad_request(format!(
-            "arquivo não encontrado localmente: {}",
+            "file not found locally: {}",
             req.model_path
         ));
     }
     let Some(_preview_slot) = try_capacity_preview_slot() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            "pré-visualizações de capacidade demais em andamento",
+            "too many capacity previews in progress",
         )
             .into_response();
     };
@@ -306,7 +306,7 @@ pub(super) async fn capacity_preview_endpoint(
     let engine_cfg =
         match crate::runtime::engine_config_from_node(&cfg, need_embeddings, false, Vec::new()) {
             Ok(engine_cfg) => engine_cfg,
-            Err(e) => return bad_request(format!("configuração inválida: {e}")),
+            Err(e) => return bad_request(format!("invalid configuration: {e}")),
         };
 
     // Este é o pedido, não uma decisão do motor nativo. O carregamento
@@ -318,16 +318,16 @@ pub(super) async fn capacity_preview_endpoint(
     let layout_path = path.clone();
     let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&layout_path)).await {
         Ok(Ok(l)) => l,
-        Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
-        Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
+        Ok(Err(e)) => return bad_request(format!("could not read the GGUF: {e}")),
+        Err(e) => return bad_request(format!("GGUF read failed: {e}")),
     };
     let info_path = path.clone();
     let info = match tokio::task::spawn_blocking(move || gguf::read_info(&info_path)).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {
-            return bad_request(format!("não foi possível ler a geometria KV do GGUF: {e}"))
+            return bad_request(format!("could not read the KV geometry of the GGUF: {e}"))
         }
-        Err(e) => return bad_request(format!("leitura da geometria KV falhou: {e}")),
+        Err(e) => return bad_request(format!("KV geometry read failed: {e}")),
     };
 
     // Camadas locais ao arquivo desta fatia - `blk.0..`, não a numeração
@@ -358,7 +358,7 @@ pub(super) async fn capacity_preview_endpoint(
             Ok((weight_bytes, kv_bytes, _total)) => (weight_bytes, kv_bytes),
             Err(e) => {
                 return bad_request(format!(
-                    "não foi possível calcular a projeção de memória: {e}"
+                    "could not compute the memory projection: {e}"
                 ))
             }
         }
@@ -378,12 +378,12 @@ pub(super) async fn capacity_preview_endpoint(
         local_layer_count,
     );
     let mut notes = vec![
-        "pré-visualização analítica; o carregamento real confirma as camadas, o contexto e a divisão entre GPUs"
+        "analytic preview; the real load confirms the layers, the context and the split between GPUs"
             .to_string(),
     ];
     if degraded {
         notes.push(
-            "a conta crua não cabe; com fit_memory e camadas no padrão, a carga real pode aparar o pedido"
+            "the raw estimate does not fit; with fit_memory and default layers, the real load may trim the request"
                 .to_string(),
         );
     }
@@ -392,7 +392,7 @@ pub(super) async fn capacity_preview_endpoint(
     }
     if !kv_in_vram && kv_bytes > 0 {
         notes.push(format!(
-            "cache KV na RAM (offload desligado): ~{} MiB fora da VRAM",
+            "KV cache in RAM (offload off): ~{} MiB outside VRAM",
             kv_bytes / (1024 * 1024)
         ));
     }

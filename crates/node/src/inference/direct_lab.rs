@@ -163,7 +163,7 @@ struct Incoming {
 }
 
 fn read(body: &Bytes) -> Incoming {
-    let (meta, _tensor) = wire::decode(body).expect("quadro válido");
+    let (meta, _tensor) = wire::decode(body).expect("valid frame");
     let declared: Option<Vec<PipelineStep>> = meta
         .get("next_hops")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -248,7 +248,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         (None, _) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("chunk {chunk_index} sem start_pos absoluto"),
+                format!("chunk {chunk_index} without an absolute start_pos"),
             )
                 .into_response();
         }
@@ -496,7 +496,7 @@ async fn fake_relay_result(
     if let Some(response) = auth_failure(&headers, gw.auth.as_ref()) {
         return response;
     }
-    let (meta, _) = wire::decode(&body).expect("resultado direto válido");
+    let (meta, _) = wire::decode(&body).expect("valid direct result");
     let is_transport_update = meta
         .get("transport_update")
         .and_then(Value::as_bool)
@@ -636,7 +636,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     .expect("prefill");
     assert_eq!(
         first.prompt_tokens, PROMPT_TOKENS,
-        "a contagem do prompt tem que chegar da cabeça ao gateway"
+        "the prompt count must arrive from the head to the gateway"
     );
     assert_eq!(
         first.chunks,
@@ -645,8 +645,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         } else {
             PROMPT_TOKENS.div_ceil(CHUNK)
         },
-        "o prompt tem que atravessar em todos os pedaços — um `prompt_progress` \
-         perdido trunca no primeiro"
+        "the prompt must cross in all the chunks — a lost `prompt_progress` truncates at the first"
     );
 
     let mut next = first.token_id;
@@ -736,7 +735,7 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
     ];
     let session = uuid::Uuid::new_v4().to_string();
     let reply = crate::direct::DirectReply::new(inbox.clone(), vec![gateway_url], "gateway".into())
-        .expect("gateway de teste precisa ser alcançável");
+        .expect("test gateway must be reachable");
     let ticket = reply.ticket_for_hops(steps.len());
     let meta = json!({
         "session_id": session,
@@ -780,7 +779,7 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
         |_| {},
     )
     .await
-    .expect("o primeiro hop deve aceitar o quadro");
+    .expect("the first hop must accept the frame");
     assert_eq!(sent.meta["accepted"], true);
 
     let observed = tokio::time::timeout(Duration::from_secs(2), async {
@@ -792,7 +791,7 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
         }
     })
     .await;
-    assert!(observed.is_ok(), "o resultado não chegou ao gateway");
+    assert!(observed.is_ok(), "the result did not reach the gateway");
     assert_eq!(head_missing.load(Ordering::Relaxed), 0);
     assert_eq!(tail_missing.load(Ordering::Relaxed), 0);
 }
@@ -841,19 +840,17 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
             let expected = minimum_legs(n_hops, entry);
             let got = legs(&outcome);
             println!(
-                "direto  N={n_hops} entrada={entry}  {:6.1} ms/token  = {got:.2} pernas \
-                 (mínimo {expected:.0})",
+                "direct  N={n_hops} entry={entry}  {:6.1} ms/token  = {got:.2} legs (minimum {expected:.0})",
                 outcome.ms_per_token
             );
             assert!(
                 (got - expected).abs() < TOLERANCE,
-                "N={n_hops} entrada={entry}: {got:.2} pernas por token, esperado {expected:.0}"
+                "N={n_hops} entry={entry}: {got:.2} legs per token, expected {expected:.0}"
             );
             assert_eq!(
                 outcome.deliveries,
                 DECODE_TOKENS as u64 - 1 + outcome.prefill_chunks as u64,
-                "cada quadro tem que ser entregue direto exatamente uma vez, \
-                 no decode e no prefill"
+                "each frame must be delivered directly exactly once, in the decode and in the prefill"
             );
             measured.push(got);
         }
@@ -864,14 +861,14 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
         let tail = measured[n_hops - 1];
         assert!(
             (head - tail).abs() < TOLERANCE,
-            "N={n_hops}: entrar pela cabeça custou {head:.2} pernas e pela cauda {tail:.2}"
+            "N={n_hops}: entering through the head cost {head:.2} legs and through the tail {tail:.2}"
         );
         // Entrar pelo meio custa uma perna a mais e nunca mais que isso — é o
         // preço irredutível de não estar em nenhuma das duas pontas.
         let worst = measured.iter().cloned().fold(f64::MIN, f64::max);
         assert!(
             worst - head < 1.0 + TOLERANCE,
-            "N={n_hops}: a pior entrada custou {worst:.2} pernas contra {head:.2} na cabeça"
+            "N={n_hops}: the worst entry cost {worst:.2} legs against {head:.2} at the head"
         );
     }
 
@@ -879,20 +876,20 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
     let ring_tail = run_scenario(2, 1, false, false).await;
     let direct_tail = run_scenario(2, 1, true, false).await;
     println!(
-        "anel    N=2 entrada=1  {:6.1} ms/token  = {:.2} pernas",
+        "ring    N=2 entry=1  {:6.1} ms/token  = {:.2} legs",
         ring_tail.ms_per_token,
         legs(&ring_tail)
     );
     assert!(
         (legs(&ring_tail) - 4.0).abs() < TOLERANCE,
-        "o anel com a cabeça remota deveria pagar 4 travessias, pagou {:.2}",
+        "the ring with the remote head should pay 4 traversals, it paid {:.2}",
         legs(&ring_tail)
     );
     assert!(
         legs(&direct_tail) < legs(&ring_tail) - 1.0,
-        "a resposta direta tem que ser mais barata que o anel no caso que doía"
+        "the direct reply must be cheaper than the ring in the case that hurt"
     );
-    assert_eq!(ring_tail.deliveries, 0, "o anel não usa a entrega direta");
+    assert_eq!(ring_tail.deliveries, 0, "the ring does not use the direct delivery");
 }
 
 /// O prompt longo precisa carregar a posição absoluta que a cabeça publicou
@@ -909,7 +906,7 @@ async fn direct_prefill_preserves_the_absolute_position_with_and_without_reuse()
         );
         assert_eq!(
             outcome.prefill_deliveries, outcome.prefill_chunks as u64,
-            "cada chunk de prefill deve chegar ao gateway exatamente uma vez"
+            "each prefill chunk must reach the gateway exactly once"
         );
         let mut starts = outcome.head_starts;
         starts.sort_by_key(|(chunk, _, _)| *chunk);

@@ -134,7 +134,7 @@ fn sync_requests(database: &crate::db::PomDb, changed: bool) {
             .map(CandidateRequest::public_json)
             .collect();
         if let Err(error) = database.save_lobby_requests(&listed) {
-            warn!("lobby: não foi possível salvar os pedidos de admissão: {error:#}");
+            warn!("lobby: could not save the admission requests: {error:#}");
         }
     }
 }
@@ -151,7 +151,7 @@ async fn exchange(
     let client = match network_lobby::client().await {
         Ok(client) => client,
         Err(error) => {
-            warn!("lobby: não foi possível iniciar o cliente: {error:#}");
+            warn!("lobby: could not start the client: {error:#}");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({ "error": "lobby_unavailable" })),
@@ -543,10 +543,10 @@ pub(super) async fn join_network(
         );
     }
     if let Err(error) = state.database.save_network_settings(&config.network) {
-        warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+        warn!("could not save the network details in the database: {error:#}");
     }
     if let Err(error) = state.database.clear_api_keys() {
-        warn!("não foi possível limpar as chaves de API locais: {error:#}");
+        warn!("could not clear the local API keys: {error:#}");
     }
     candidate_state()
         .lock()
@@ -558,7 +558,7 @@ pub(super) async fn join_network(
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         let error = crate::respawn::respawn_self();
-        tracing::error!("respawn após entrar na rede falhou, o nó segue no ar: {error}");
+        tracing::error!("respawn after joining the network failed, the node stays up: {error}");
     });
     Json(json!({ "joined": true, "restart": true })).into_response()
 }
@@ -638,7 +638,7 @@ async fn info_exchange(key: &str) -> Response {
     let client = match network_lobby::client().await {
         Ok(client) => client,
         Err(error) => {
-            warn!("lobby: não foi possível iniciar o cliente: {error:#}");
+            warn!("lobby: could not start the client: {error:#}");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({ "error": "lobby_unavailable" })),
@@ -696,7 +696,7 @@ pub(super) async fn lobby_latency(_auth: ConnectionAuth, Query(query): Query<Lob
     let client = match network_lobby::client().await {
         Ok(client) => client,
         Err(error) => {
-            warn!("lobby: não foi possível iniciar o cliente: {error:#}");
+            warn!("lobby: could not start the client: {error:#}");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({ "error": "lobby_unavailable" })),

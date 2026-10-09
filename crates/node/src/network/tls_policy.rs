@@ -87,10 +87,10 @@ pub(crate) async fn fetch_from_principal_candidates(
             tunnel,
         )
         .await
-        .context("não deu para falar com o principal")?;
-    let body: TlsReply = resp.json().context("resposta do principal não parseou")?;
+        .context("could not reach the principal")?;
+    let body: TlsReply = resp.json().context("principal response did not parse")?;
     info!(
-        "política de TLS confirmada pelo principal: {}",
+        "TLS policy confirmed by the principal: {}",
         body.tls_required
     );
     Ok(body.tls_required)
@@ -102,7 +102,7 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
         Ok(v) if v != local => PolicyOutcome::Adopt(v),
         Ok(_) => PolicyOutcome::Unchanged,
         Err(e) => {
-            warn!("busca da política de TLS falhou, mantendo o valor local ({local}): {e}");
+            warn!("TLS policy fetch failed, keeping the local value ({local}): {e}");
             PolicyOutcome::Unchanged
         }
     }
@@ -138,7 +138,7 @@ pub(crate) fn spawn_ratchet(
             let candidates =
                 net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(announced));
             if candidates.is_empty() {
-                warn!("principal {principal} não anuncia porta de gateway; política de TLS não pôde ser confirmada");
+                warn!("principal {principal} does not announce a gateway port; TLS policy could not be confirmed");
                 continue;
             }
 
@@ -171,7 +171,7 @@ pub(crate) fn spawn_ratchet(
                     let mut cfg = auth.write().await;
                     cfg.tls_required = value;
                     if let Err(e) = cfg.save() {
-                        warn!("política de TLS confirmada mas não gravada: {e}");
+                        warn!("TLS policy confirmed but not written: {e}");
                     }
                 }
                 clients.apply_cluster_policy(value);
@@ -180,8 +180,8 @@ pub(crate) fn spawn_ratchet(
                     t.set_strict(value);
                 }
                 info!(
-                    "política de TLS do cluster adotada do principal: {}",
-                    if value { "ligada" } else { "desligada" }
+                    "cluster TLS policy adopted from the principal: {}",
+                    if value { "on" } else { "off" }
                 );
             }
         }
@@ -240,11 +240,11 @@ mod tests {
     #[test]
     fn a_failing_fetch_preserves_the_local_value() {
         assert_eq!(
-            adopt_or_keep(true, Err(anyhow::anyhow!("conexão recusada"))),
+            adopt_or_keep(true, Err(anyhow::anyhow!("connection refused"))),
             PolicyOutcome::Unchanged
         );
         assert_eq!(
-            adopt_or_keep(false, Err(anyhow::anyhow!("conexão recusada"))),
+            adopt_or_keep(false, Err(anyhow::anyhow!("connection refused"))),
             PolicyOutcome::Unchanged
         );
     }

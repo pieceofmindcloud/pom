@@ -72,10 +72,10 @@ mod tests {
     async fn an_opportunistic_batch_drains_what_is_already_there_without_waiting() {
         let (sender, mut receiver) = mpsc::channel(REMOTE_STREAM_BATCH_LIMIT);
         for item in 0..REMOTE_STREAM_BATCH_LIMIT {
-            sender.send(item).await.expect("item enfileirado");
+            sender.send(item).await.expect("item enqueued");
         }
         let batch =
-            drain_opportunistic_batch(receiver.recv().await.expect("primeiro item"), &mut receiver);
+            drain_opportunistic_batch(receiver.recv().await.expect("first item"), &mut receiver);
         assert_eq!(batch, (0..REMOTE_STREAM_BATCH_LIMIT).collect::<Vec<_>>());
     }
 
@@ -517,13 +517,13 @@ mod tests {
             "remote_stream_frame_index": 0,
             "accepted": [1],
             "remote_stream_transport_fallback": true,
-            "remote_stream_transport_fallback_reason": "https-link: canal expirou",
+            "remote_stream_transport_fallback_reason": "https-link: channel expired",
         }));
 
         assert_eq!(trace.https_fallback_calls, 1);
         assert_eq!(
             trace.https_fallback_reasons,
-            vec!["https-link: canal expirou".to_string()]
+            vec!["https-link: channel expired".to_string()]
         );
     }
 
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(
             trace.tokens_per_decode_call,
             Some(119.0 / 64.0),
-            "o resumo tem que trazer o rendimento por chamada, não `None`"
+            "the summary must bring the yield per call, not `None`"
         );
 
         let serialized = serde_json::to_value(&trace).unwrap();
@@ -943,7 +943,7 @@ mod tests {
                     "moe_executor": "cpu-reference",
                     "moe_executors": ["cpu-reference"],
                     "moe_executor_dtypes": [21, 22, 23],
-                    "moe_executor_reason": "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado"
+                    "moe_executor_reason": "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected"
                 }
             }),
         );
@@ -954,7 +954,7 @@ mod tests {
         assert_eq!(phase.moe_executor_dtypes, vec![21, 22, 23]);
         assert_eq!(
             phase.moe_executor_reason.as_deref(),
-            Some("dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado")
+            Some("dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected")
         );
     }
 
@@ -1599,16 +1599,16 @@ mod tests {
             &json!({"done": false, "token_id": 42, "text": "x"}),
             empty_trace(),
         )
-        .expect("a resposta de um token é legítima, não erro");
+        .expect("a one-token response is legitimate, not an error");
 
         assert_eq!(step.accepted, vec![(42u32, "x".to_string())]);
         assert_eq!(step.accept_count, 1);
         assert_eq!(
             step.batch_width, 1,
-            "sem rascunho nada foi decodificado além do token semeado"
+            "without a draft nothing was decoded beyond the seeded token"
         );
         assert!(!step.done);
-        assert!(!step.speculated, "esta rodada não especulou");
+        assert!(!step.speculated, "this round did not speculate");
         assert!(!step.speculation_active);
     }
 
@@ -1619,7 +1619,7 @@ mod tests {
             &json!({"done": true, "token_id": 7, "text": ""}),
             empty_trace(),
         )
-        .expect("legítima");
+        .expect("legitimate");
         assert!(step.done);
     }
 
@@ -1634,7 +1634,7 @@ mod tests {
             }),
             empty_trace(),
         )
-        .expect("legítima");
+        .expect("legitimate");
 
         assert_eq!(step.accepted.len(), 2);
         assert_eq!(step.accept_count, 2);
@@ -1655,7 +1655,7 @@ mod tests {
             }),
             empty_trace(),
         )
-        .expect("callback remoto válido");
+        .expect("valid remote callback");
 
         assert!(!step.speculated);
         assert!(step.speculation_active);
@@ -1676,7 +1676,7 @@ mod tests {
             }),
             empty_trace(),
         )
-        .expect("callback remoto válido");
+        .expect("valid remote callback");
 
         assert!(!step.speculated);
         assert!(!step.speculation_active);
@@ -1748,7 +1748,7 @@ mod tests {
             )
             .await
             .is_err(),
-            "sem folga no orçamento, o próximo pedaço espera"
+            "with no slack in the budget, the next chunk waits"
         );
         drop(a);
         assert!(
@@ -1758,7 +1758,7 @@ mod tests {
             )
             .await
             .is_ok(),
-            "liberado um pedaço, o orçamento acomoda o próximo"
+            "once a chunk is released, the budget fits the next"
         );
         drop(b);
 
@@ -1770,7 +1770,7 @@ mod tests {
         .await;
         assert!(
             huge.is_ok(),
-            "um pedaço gigante passa segurando a janela inteira"
+            "a giant chunk goes through holding the whole window"
         );
     }
 
@@ -1878,8 +1878,8 @@ mod tests {
 
 #[test]
 fn a_failed_prefill_names_its_cause_not_the_telemetry_wrapper() {
-    let error = anyhow::anyhow!("captura tem 3 linhas, esperado 238")
-        .context("hop 1 recusou o pedaço 0")
+    let error = anyhow::anyhow!("capture has 3 rows, expected 238")
+        .context("hop 1 refused chunk 0")
         .context(PartialPrefillTrace {
             trace: Box::new(RequestTrace::from_plan(
                 "m",
@@ -1891,6 +1891,6 @@ fn a_failed_prefill_names_its_cause_not_the_telemetry_wrapper() {
         });
     assert_eq!(
         failure_cause(&error),
-        "hop 1 recusou o pedaço 0: captura tem 3 linhas, esperado 238"
+        "hop 1 refused chunk 0: capture has 3 rows, expected 238"
     );
 }

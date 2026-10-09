@@ -138,7 +138,7 @@ impl InferState {
         }
         if self.engine.moe_external_executor_enabled() {
             bail!(
-                "executor externo de MoE está ativo, mas o hook não está instalado; recusa para evitar executar os experts duas vezes"
+                "external MoE executor is active, but the hook is not installed; refusing to avoid running the experts twice"
             );
         }
         let Some(moe) = self.moe.as_ref() else {
@@ -151,7 +151,7 @@ impl InferState {
         let forward_started = Instant::now();
         let output = moe
             .forward_batch(layer, &hidden, n_tokens)
-            .map_err(|error| anyhow::anyhow!("forward MoE falhou: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("MoE forward failed: {error}"))?;
         timings.record_moe_telemetry(moe.executor_telemetry());
         timings.record_moe_forward(forward_started.elapsed().as_micros() as u64);
         timings.record_engine(crate::executor::ExecutionEngine::Moe);
@@ -203,9 +203,9 @@ impl InferState {
         };
         let parked = self.park_session(&sid);
         info!(
-            "despejando prefixo retido da sessão {}… para liberar slot (cache em RAM: {})",
+            "evicting the retained prefix of session {}… to free a slot (RAM cache: {})",
             &sid[..8.min(sid.len())],
-            if parked { "guardado" } else { "não" }
+            if parked { "stored" } else { "no" }
         );
         self.close_session(&sid);
         true
@@ -243,7 +243,7 @@ impl InferState {
             Ok(data) => data,
             Err(error) => {
                 warn!(
-                    "cache em RAM: não foi possível copiar o KV da sessão {}…: {error:#}",
+                    "RAM cache: could not copy the KV of session {}…: {error:#}",
                     &sid[..8.min(sid.len())]
                 );
                 return false;
@@ -261,7 +261,7 @@ impl InferState {
         let parked = self.ram_cache.insert(sid, entry);
         if parked {
             info!(
-                "cache em RAM: sessão {}… guardada ({tokens} tokens, {bytes} bytes, {} ms)",
+                "RAM cache: session {}… stored ({tokens} tokens, {bytes} bytes, {} ms)",
                 &sid[..8.min(sid.len())],
                 started.elapsed().as_millis()
             );
@@ -289,7 +289,7 @@ impl InferState {
         let _ = self.engine.kv_remove(seq, 0, -1);
         if let Err(error) = self.engine.state_seq_set_data(&entry.data, seq) {
             warn!(
-                "cache em RAM: sessão {}… não pôde ser restaurada: {error:#}",
+                "RAM cache: session {}… could not be restored: {error:#}",
                 &sid[..8.min(sid.len())]
             );
             let _ = self.engine.kv_remove(seq, 0, -1);
@@ -307,7 +307,7 @@ impl InferState {
         self.sessions.insert(sid.to_string(), session);
         self.ram_cache.note_restored();
         info!(
-            "cache em RAM: sessão {}… restaurada ({} tokens, {} bytes, {} ms)",
+            "RAM cache: session {}… restored ({} tokens, {} bytes, {} ms)",
             &sid[..8.min(sid.len())],
             entry.prompt_len,
             entry.data.len(),
@@ -324,7 +324,7 @@ impl InferState {
     /// parcial de KV - ver o doc de `Session`.
     pub(super) fn open_generation(&mut self, sid: &str) -> Result<()> {
         let Some(session) = self.sessions.get(sid) else {
-            bail!("sessão '{sid}' desconhecida — faça o prefill antes");
+            bail!("unknown session '{sid}' — run the prefill first");
         };
         if session.gen_seq.is_some() {
             return Ok(());
@@ -366,7 +366,7 @@ impl InferState {
         if requested_reuse {
             let (retained, n_past, cells, physical_cells_match) = {
                 let session = self.sessions.get(sid).ok_or_else(|| {
-                    anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
+                    anyhow::anyhow!("unknown session '{sid}' in the prefix reuse")
                 })?;
                 (
                     session.prompt_tokens.clone(),
@@ -386,7 +386,7 @@ impl InferState {
                     .take_while(|(old, new)| old == new)
                     .count();
                 debug!(
-                    "prefixo da sessão {}… não serve: comum={common} lógico={} células={} retidos={} novos={}",
+                    "prefix of session {}… is not usable: common={common} logical={} cells={} retained={} new={}",
                     &sid[..8.min(sid.len())],
                     n_past,
                     cells,
@@ -399,7 +399,7 @@ impl InferState {
         let session = self
             .sessions
             .get_mut(sid)
-            .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desapareceu no prefill"))?;
+            .ok_or_else(|| anyhow::anyhow!("session '{sid}' disappeared during the prefill"))?;
         session.prompt_tokens = tokens;
         session.stable_len = stable_len;
         session.retained = false;
@@ -478,7 +478,7 @@ impl InferState {
             );
         } else {
             warn!(
-                "prefix peer retention incompleta: session={} reusable={} reason={} retained_tokens={} stable_len={} n_past_before={} prompt_cells_before={} prompt_tokens_before={} positions_before={} positions_after={}",
+                "prefix peer retention incomplete: session={} reusable={} reason={} retained_tokens={} stable_len={} n_past_before={} prompt_cells_before={} prompt_tokens_before={} positions_before={} positions_after={}",
                 &sid[..8.min(sid.len())],
                 reusable,
                 trim_reason,
@@ -529,15 +529,15 @@ impl InferState {
         let session = self
             .sessions
             .get(sid)
-            .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desconhecida"))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown session '{sid}'"))?;
         if session.prompt_len == 0 {
-            bail!("sessão '{sid}' não tem prompt retido para snapshot");
+            bail!("session '{sid}' has no retained prompt for a snapshot");
         }
         let seq = session.prompt_seq;
         let retained = session.prompt_len;
         if !session.positions_match_cells() || session.prompt_cells != retained {
             bail!(
-                "sessão '{sid}' usa {} células para a posição lógica {retained}; snapshots de M-RoPE não são reutilizáveis",
+                "session '{sid}' uses {} cells for the logical position {retained}; M-RoPE snapshots are not reusable",
                 session.prompt_cells
             );
         }
@@ -557,7 +557,7 @@ impl InferState {
             real_tokens.clone()
         };
         std::fs::create_dir_all(dir)
-            .with_context(|| format!("criar diretório de snapshots {}", dir.display()))?;
+            .with_context(|| format!("create the snapshots directory {}", dir.display()))?;
         let bin = slot_bin_path(dir, name);
         let bin_bytes = self.engine.state_seq_save_file(&bin, seq, &header_tokens)? as u64;
         let sidecar = SlotSidecar {
@@ -575,7 +575,7 @@ impl InferState {
         };
         let json = serde_json::to_vec_pretty(&sidecar)?;
         std::fs::write(slot_json_path(dir, name), json)
-            .with_context(|| format!("gravar sidecar de {name}"))?;
+            .with_context(|| format!("write the sidecar of {name}"))?;
         Ok(sidecar)
     }
 
@@ -591,16 +591,16 @@ impl InferState {
     ) -> Result<SlotRestoreOutcome> {
         let name = sanitize_slot_name(name)?;
         if self.sessions.contains_key(new_sid) {
-            bail!("sessão '{new_sid}' já existe; escolha outro id");
+            bail!("session '{new_sid}' already exists; choose another id");
         }
         let raw = std::fs::read(slot_json_path(dir, name))
-            .with_context(|| format!("ler sidecar de {name}"))?;
+            .with_context(|| format!("read the sidecar of {name}"))?;
         let sidecar: SlotSidecar =
-            serde_json::from_slice(&raw).with_context(|| format!("sidecar de {name} ilegível"))?;
+            serde_json::from_slice(&raw).with_context(|| format!("sidecar of {name} unreadable"))?;
         self.check_slot_compatible(&sidecar)?;
 
         let seq = self.alloc_seq().ok_or_else(|| {
-            anyhow::anyhow!("seq pool esgotado; libere uma sessão antes de restaurar")
+            anyhow::anyhow!("seq pool exhausted; release a session before restoring")
         })?;
         let cap = sidecar
             .retained_tokens
@@ -639,12 +639,12 @@ impl InferState {
     pub(super) fn check_slot_compatible(&self, sidecar: &SlotSidecar) -> Result<()> {
         if sidecar.format_version != SLOT_SIDECAR_VERSION {
             bail!(
-                "sidecar de versão {} incompatível (esperado {SLOT_SIDECAR_VERSION})",
+                "sidecar of version {} incompatible (expected {SLOT_SIDECAR_VERSION})",
                 sidecar.format_version
             );
         }
         let mismatch = |field: &str, expected: String, found: String| {
-            anyhow::anyhow!("snapshot de KV incompatível: {field} {found} != {expected} deste peer")
+            anyhow::anyhow!("incompatible KV snapshot: {field} {found} != {expected} of this peer")
         };
         if sidecar.model_label != self.model_label {
             return Err(mismatch(
@@ -657,7 +657,7 @@ impl InferState {
             != (self.start_layer, self.end_layer, self.total_layers)
         {
             return Err(mismatch(
-                "faixa de camadas",
+                "layer range",
                 format!(
                     "{}-{}/{}",
                     self.start_layer, self.end_layer, self.total_layers
@@ -725,14 +725,14 @@ impl InferState {
             }
             let seq = self.alloc_seq().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "seq pool esgotado (max {} sessões simultâneas)",
+                    "seq pool exhausted (max {} simultaneous sessions)",
                     self.max_sessions
                 )
             })?;
             self.sessions.insert(sid.to_string(), Session::new(seq));
         }
         self.sessions.get_mut(sid).ok_or_else(|| {
-            anyhow::anyhow!("sessão '{}' desconhecida — envie reset=true antes", sid)
+            anyhow::anyhow!("unknown session '{}' — send reset=true first", sid)
         })
     }
 
@@ -808,19 +808,19 @@ pub async fn run(
     // cargas descartadas.
     let port = cfg.inference_port;
     let listener = bind_dual_stack(port).await?;
-    info!("porta {port} ligada; carregando o modelo");
+    info!("port {port} bound; loading the model");
 
     let model_info = match crate::gguf::read_info(std::path::Path::new(&cfg.model_path)) {
         Ok(info) => Some(info),
         Err(error) => {
-            warn!("não foi possível ler metadados GGUF antes da carga: {error}");
+            warn!("could not read the GGUF metadata before loading: {error}");
             None
         }
     };
     let inference_mode = configured_inference_mode(cfg.inference_mode)?;
     let inference_path = crate::executor::select(inference_mode, model_info.as_ref())?;
     info!(
-        "caminho de inferência selecionado: {} (modo {:?})",
+        "selected inference path: {} (mode {:?})",
         inference_path.as_str(),
         inference_mode
     );
@@ -835,7 +835,7 @@ pub async fn run(
     let moe_plan = if inference_path.is_moe() {
         Some(
             crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path).map_err(
-                |error| anyhow::anyhow!("planejamento de ownership MoE falhou: {error}"),
+                |error| anyhow::anyhow!("MoE ownership planning failed: {error}"),
             )?,
         )
     } else {
@@ -846,9 +846,9 @@ pub async fn run(
         let reason = plan
             .reason
             .as_deref()
-            .unwrap_or("nenhuma camada tem executor externo disponível");
+            .unwrap_or("no layer has an external executor available");
         return Err(anyhow::anyhow!(
-            "combinação MoE não suportada antes da carga do modelo: dtypes GGML {:?}; {reason}; o caminho MoE exige um executor externo e não usará o llama.cpp nativo",
+            "MoE combination not supported before loading the model: GGML dtypes {:?}; {reason}; the MoE path requires an external executor and will not use native llama.cpp",
             plan.dtypes
         ));
     }
@@ -875,11 +875,11 @@ pub async fn run(
 
     let moe = if inference_path.is_moe() && moe_external_executor {
         let info = model_info.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("caminho MoE exige metadados GGUF para preparar o router")
+            anyhow::anyhow!("the MoE path requires GGUF metadata to prepare the router")
         })?;
         let experts = info
             .expert_count
-            .ok_or_else(|| anyhow::anyhow!("caminho MoE exige expert_count no GGUF"))?;
+            .ok_or_else(|| anyhow::anyhow!("the MoE path requires expert_count in the GGUF"))?;
         let top_k = info.expert_used_count.unwrap_or(1).max(1) as usize;
         let weights_bytes = std::fs::metadata(&cfg.model_path)
             .map(|metadata| metadata.len())
@@ -894,7 +894,7 @@ pub async fn run(
                 weights_bytes,
                 cuda_compute_bytes,
             )
-            .map_err(|error| anyhow::anyhow!("runtime MoE indisponível: {error}"))?,
+            .map_err(|error| anyhow::anyhow!("MoE runtime unavailable: {error}"))?,
         ))
     } else {
         None
@@ -912,8 +912,7 @@ pub async fn run(
         tracing::info!(
             model = %cfg.model_label,
             moe_executor = telemetry.executor.as_str(),
-            "os pesos de expert estão fora da conta `offloaded N/N layers` do llama.cpp: \
-             quem os aloja é o executor MoE do POM, não o llama.cpp"
+            "the expert weights are outside the llama.cpp `offloaded N/N layers` count: the POM MoE executor hosts them, not llama.cpp"
         );
         if telemetry.executor == crate::moe::runtime::MoeExecutorKind::CpuReference {
             tracing::warn!(
@@ -922,9 +921,7 @@ pub async fn run(
                 moe_executor = telemetry.executor.as_str(),
                 dtypes = ?telemetry.dtypes,
                 reason = ?telemetry.reason,
-                "MoE está usando CPUReference: os pesos de expert ficam mapeados na RAM e \
-                 n_gpu_layers não os leva para a GPU. Basta UM dtype sem ponte CUDA para \
-                 derrubar a rota inteira; confira a lista `dtypes`, não o nome do ficheiro"
+                "MoE is using CPUReference: the expert weights stay mapped in RAM and n_gpu_layers does not take them to the GPU. A SINGLE dtype without a CUDA bridge is enough to bring down the whole route; check the `dtypes` list, not the file name"
             );
         } else {
             tracing::info!(
@@ -936,7 +933,7 @@ pub async fn run(
                     .diagnostics
                     .as_ref()
                     .map(|diagnostics| &diagnostics.device_cache_devices),
-                "executor MoE CUDA selecionado; experts serão admitidos no cache residente particionado por GPU"
+                "CUDA MoE executor selected; experts will be admitted to the resident cache partitioned per GPU"
             );
         }
         runtime.start_device_warmup();
@@ -971,15 +968,15 @@ pub async fn run(
             };
             match perf::run_bench(&mut s) {
                 Ok(Some(bench)) => info!(
-                    "velocidade da fatia L{}-{}: prefill {:.1} tok/s, decode {:.1} tok/s (teste de {} ms)",
+                    "speed of slice L{}-{}: prefill {:.1} tok/s, decode {:.1} tok/s (test of {} ms)",
                     s.start_layer,
                     s.end_layer,
                     1e6 / bench.prefill_us_per_token.max(1.0),
                     1e6 / bench.decode_us_per_step.max(1.0),
                     bench.duration_ms
                 ),
-                Ok(None) => debug!("teste de velocidade da fatia pulado (TP ou sem slot livre)"),
-                Err(error) => warn!("teste de velocidade da fatia falhou: {error}"),
+                Ok(None) => debug!("slice speed test skipped (TP or no free slot)"),
+                Err(error) => warn!("slice speed test failed: {error}"),
             }
         });
     }
@@ -1074,7 +1071,7 @@ pub async fn run(
             crate::peer_client::stamp_node_id,
         ));
 
-    info!("inference server pronto em [::]:{port}");
+    info!("inference server ready on [::]:{port}");
 
     // Ver a nota gêmea em `gateway::start_gateway_with_ready`: sem
     // `tcp_nodelay`, toda resposta de hop sai com Nagle ligado. Um ack de
@@ -1137,7 +1134,7 @@ pub async fn run(
         }
     })
     .await?;
-    info!("memória do modelo devolvida na porta {port}");
+    info!("model memory returned on port {port}");
 
     result?;
     batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1151,7 +1148,7 @@ where
 {
     tokio::task::spawn_blocking(cleanup)
         .await
-        .map_err(|error| anyhow::anyhow!("limpeza nativa terminou em pânico: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("native cleanup ended in a panic: {error}"))?;
     Ok(())
 }
 
@@ -1195,7 +1192,7 @@ pub(crate) fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
         Ok(l) => Ok(l),
         Err(e) => {
             // Sem IPv6 na máquina: IPv4 puro ainda serve o cluster inteiro.
-            tracing::debug!("bind IPv6 em [::]:{port} falhou ({e}); tentando IPv4");
+            tracing::debug!("IPv6 bind on [::]:{port} failed ({e}); trying IPv4");
             let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
             sock.set_reuse_address(true)?;
             sock.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
@@ -1246,7 +1243,7 @@ pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
 /// falha de medição.
 pub(super) fn last_handshake_ms(state: &SharedState) -> u64 {
     let Ok(state) = lock_inference_state(state) else {
-        warn!("não foi possível ler o último handshake: mutex do estado envenenado");
+        warn!("could not read the last handshake: state mutex poisoned");
         return 0;
     };
     state
@@ -1273,7 +1270,7 @@ pub(super) async fn handle_prefill_batch(
     };
     let batch_body = match wire::encode_batch(&batch) {
         Ok(body) => Bytes::from(body),
-        Err(error) => return err400(format!("batch inválido: {error}")),
+        Err(error) => return err400(format!("invalid batch: {error}")),
     };
     open_tp_decode(&app.state, &headers, "/v1/prefill", &batch_body);
     let calls = batch.items.iter().map(|item| {
@@ -1287,7 +1284,7 @@ pub(super) async fn handle_prefill_batch(
         async move {
             match body {
                 Ok(body) => handle_prefill(State(app), headers, Bytes::from(body)).await,
-                Err(error) => err400(format!("item batch inválido: {error}")),
+                Err(error) => err400(format!("invalid batch item: {error}")),
             }
         }
     });
@@ -1297,19 +1294,19 @@ pub(super) async fn handle_prefill_batch(
         if !response.status().is_success() {
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("item {} falhou no processamento do batch", original.item_id),
+                format!("item {} failed in the batch processing", original.item_id),
             )
                 .into_response();
         }
         let bytes =
             match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
                 Ok(bytes) => bytes,
-                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+                Err(error) => return err500(format!("invalid batch response: {error}")),
             };
         let decoded = match wire::decode_batch_items(&bytes) {
             Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
-            Ok(_) => return err500("resposta de item não contém exatamente um item"),
-            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+            Ok(_) => return err500("item response does not contain exactly one item"),
+            Err(error) => return err500(format!("invalid item response: {error}")),
         };
         items.push(wire::BatchPayloadItem {
             item_id: original.item_id.clone(),
@@ -1347,7 +1344,7 @@ pub(super) async fn handle_step_batch(
     };
     let batch_body = match wire::encode_batch(&batch) {
         Ok(body) => Bytes::from(body),
-        Err(error) => return err400(format!("batch inválido: {error}")),
+        Err(error) => return err400(format!("invalid batch: {error}")),
     };
     open_tp_decode(&app.state, &headers, "/v1/step", &batch_body);
     let calls = batch.items.iter().map(|item| {
@@ -1361,7 +1358,7 @@ pub(super) async fn handle_step_batch(
         async move {
             match body {
                 Ok(body) => handle_step(State(app), headers, Bytes::from(body)).await,
-                Err(error) => err400(format!("item batch inválido: {error}")),
+                Err(error) => err400(format!("invalid batch item: {error}")),
             }
         }
     });
@@ -1371,19 +1368,19 @@ pub(super) async fn handle_step_batch(
         if !response.status().is_success() {
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("item {} falhou no processamento do batch", original.item_id),
+                format!("item {} failed in the batch processing", original.item_id),
             )
                 .into_response();
         }
         let bytes =
             match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
                 Ok(bytes) => bytes,
-                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+                Err(error) => return err500(format!("invalid batch response: {error}")),
             };
         let decoded = match wire::decode_batch_items(&bytes) {
             Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
-            Ok(_) => return err500("resposta de item não contém exatamente um item"),
-            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+            Ok(_) => return err500("item response does not contain exactly one item"),
+            Err(error) => return err500(format!("invalid item response: {error}")),
         };
         items.push(wire::BatchPayloadItem {
             item_id: original.item_id.clone(),
@@ -1744,7 +1741,7 @@ pub(crate) async fn handle_tp_reduce(
         Some(v) => v.to_string(),
         None => {
             return err400(format!(
-                "falta o cabeçalho {}",
+                "header {} is missing",
                 crate::tp::TP_BARRIER_HEADER
             ))
         }
@@ -1755,11 +1752,11 @@ pub(crate) async fn handle_tp_reduce(
         .and_then(|v| v.parse().ok())
     {
         Some(v) => v,
-        None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_RANK_HEADER)),
+        None => return err400(format!("header {} is missing", crate::tp::TP_RANK_HEADER)),
     };
     if body.len() % 4 != 0 {
         return err400(format!(
-            "parcial de {} bytes não é múltiplo de 4",
+            "partial of {} bytes is not a multiple of 4",
             body.len()
         ));
     }
@@ -1781,7 +1778,7 @@ pub(crate) async fn handle_tp_reduce(
                 )
                     .into_response()
             }
-            Err(e) => err500(format!("barreira abandonada: {e}")),
+            Err(e) => err500(format!("barrier abandoned: {e}")),
         },
         Err(e) => err400(e),
     }
@@ -1802,7 +1799,7 @@ pub(super) fn replicate_session_call(
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível replicar sessão: mutex do estado envenenado");
+            warn!("could not replicate the session: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -1831,7 +1828,7 @@ pub(super) fn replicate_session_rewind(
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível replicar rewind: mutex do estado envenenado");
+            warn!("could not replicate the rewind: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -1886,7 +1883,7 @@ pub(super) async fn handle_slot(
     let Some(dir) = state.slot_dir.clone() else {
         return (
             StatusCode::BAD_REQUEST,
-            "snapshots de KV desligados neste peer (defina slot_save_path)",
+            "KV snapshots off on this peer (set slot_save_path)",
         )
             .into_response();
     };
@@ -1923,7 +1920,7 @@ pub(super) async fn handle_slot(
                 Err(error) => err400(error),
             }
         }
-        other => err400(format!("ação de snapshot desconhecida: {other}")),
+        other => err400(format!("unknown snapshot action: {other}")),
     }
 }
 
@@ -1937,7 +1934,7 @@ pub(super) async fn handle_cache_clear(State(app): State<InferenceAppState>) -> 
     };
     let (entries, bytes) = state.ram_cache.clear();
     drop(state);
-    info!("cache em RAM limpo: {entries} sessões, {bytes} bytes");
+    info!("RAM cache cleared: {entries} sessions, {bytes} bytes");
     Json(json!({ "cleared": true, "entries": entries, "bytes": bytes })).into_response()
 }
 
@@ -1951,7 +1948,7 @@ pub(super) fn replicate_slot_call(
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível replicar snapshot: mutex do estado envenenado");
+            warn!("could not replicate the snapshot: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -2046,13 +2043,13 @@ pub(super) async fn handle_rewind(
         .get(&req.session_id)
         .map(|session| session.prompt_len)
     else {
-        return Json(json!({ "rewound": false, "reason": "sessão desconhecida" })).into_response();
+        return Json(json!({ "rewound": false, "reason": "unknown session" })).into_response();
     };
     if req.n_tokens != prompt_len {
         return Json(json!({
             "rewound": false,
             "reason": format!(
-                "prompt do gateway não bate com o desta sessão: {} != {prompt_len}",
+                "gateway prompt does not match the one of this session: {} != {prompt_len}",
                 req.n_tokens
             ),
         }))
@@ -2061,7 +2058,7 @@ pub(super) async fn handle_rewind(
     let Some(retained) = state.retain_prompt(&req.session_id) else {
         return Json(json!({
             "rewound": false,
-            "reason": "sessão sem prompt para reter",
+            "reason": "session without a prompt to retain",
         }))
         .into_response();
     };
@@ -2154,7 +2151,7 @@ pub(super) fn open_tp_decode(
     }
     let tp = {
         let Ok(s) = lock_inference_state(state) else {
-            warn!("não foi possível abrir decode TP: mutex do estado envenenado");
+            warn!("could not open TP decode: state mutex poisoned");
             return;
         };
         s.tp.clone()
@@ -2203,11 +2200,11 @@ pub(super) fn resolve_exec_range(
     };
     let (exec_start, exec_end) = (exec_start as u32, exec_end as u32);
     if exec_end < exec_start {
-        return Err(format!("sub-faixa invertida: L{exec_start}-{exec_end}"));
+        return Err(format!("inverted sub-range: L{exec_start}-{exec_end}"));
     }
     if exec_start < slice_start || exec_end > slice_end {
         return Err(format!(
-            "sub-faixa L{exec_start}-{exec_end} sai da fatia carregada L{slice_start}-{slice_end}"
+            "sub-range L{exec_start}-{exec_end} leaves the loaded slice L{slice_start}-{slice_end}"
         ));
     }
     if exec_start > slice_start {
@@ -2217,9 +2214,7 @@ pub(super) fn resolve_exec_range(
         // fazer isso hoje. Recusar alto é o contrato; refazer L{slice_start}-
         // L{exec_start} em silêncio seria a resposta errada sem erro.
         return Err(format!(
-            "entrar no meio da faixa ainda não é possível: pediram começar em L{exec_start}, \
-             mas esta fatia começa em L{slice_start} e o motor sempre entra pelo primeiro bloco. \
-             Mande a sub-faixa a partir de L{slice_start}, ou dê esta parte a um peer que comece em L{exec_start}"
+            "entering in the middle of the range is not possible yet: the request starts at L{exec_start}, but this slice starts at L{slice_start} and the engine always enters through the first block. Send the sub-range starting at L{slice_start}, or give this part to a peer that starts at L{exec_start}"
         ));
     }
     if exec_end == slice_end {

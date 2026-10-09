@@ -112,7 +112,7 @@ pub(crate) fn adopt_transported_anchor(
         Ok(value) => value,
         Err(AnchorValidationError::InvalidDocument(error)) => return Err(error),
         Err(AnchorValidationError::FingerprintMismatch) => {
-            anyhow::bail!("a impressão digital conferida não corresponde à âncora desta cadeia")
+            anyhow::bail!("the checked fingerprint does not match the anchor of this chain")
         }
     };
     trust.adopt_anchor(document, &body.fingerprint)?;
@@ -208,18 +208,18 @@ pub(super) async fn install_trust_anchor(
         // Quem alcança o navegador escolheria quem administra a rede. A
         // exposição administrativa configurada não serve de trava aqui: ela
         // pode estar aberta à rede de propósito.
-        warn!("recusada instalação de âncora administrativa vinda de fora do loopback");
+        warn!("refused the installation of an administrative anchor coming from outside loopback");
         return refusal(
             StatusCode::FORBIDDEN,
             "not_loopback",
-            "a âncora administrativa só é instalada a partir desta máquina",
+            "the administrative anchor is only installed from this machine",
         );
     }
     if state.admin_trust.is_anchored() || state.admin_trust.anchor_file_exists() {
         return refusal(
             StatusCode::CONFLICT,
             "already_anchored",
-            "este nó já tem raiz de confiança; trocar a raiz é reancoragem manual na máquina",
+            "this node already has a trust root; changing the root is a manual re-anchoring on the machine",
         );
     }
     let (document, expected) = match validate_transported_anchor(&body) {
@@ -235,7 +235,7 @@ pub(super) async fn install_trust_anchor(
             return refusal(
                 StatusCode::BAD_REQUEST,
                 "fingerprint_mismatch",
-                "a impressão digital conferida não corresponde à âncora desta cadeia",
+                "the checked fingerprint does not match the anchor of this chain",
             );
         }
     };
@@ -248,7 +248,7 @@ pub(super) async fn install_trust_anchor(
                 .network
                 .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
             info!(
-                "âncora administrativa instalada pelo operador; impressão digital conferida {expected}"
+                "administrative anchor installed by the operator; checked fingerprint {expected}"
             );
             Json(json!({ "anchored": true, "fingerprint": expected })).into_response()
         }
@@ -265,7 +265,7 @@ pub(crate) async fn trust_share(State(state): State<GatewayState>) -> Response {
         return refusal(
             StatusCode::FORBIDDEN,
             "admin_authority_required",
-            "somente um administrador autorizado pode compartilhar a confiança",
+            "only an authorized administrator can share the trust",
         );
     }
 
@@ -285,15 +285,15 @@ pub(crate) async fn trust_share(State(state): State<GatewayState>) -> Response {
                 return refusal(
                     StatusCode::CONFLICT,
                     "trust_setup_metadata_unavailable",
-                    "não foi possível recuperar os dados iniciais da rede para a raiz de confiança",
+                    "could not recover the initial network data for the trust root",
                 )
             }
             Err(error) => {
-                warn!("não foi possível ler a configuração da rede para a raiz de confiança: {error:#}");
+                warn!("could not read the network configuration for the trust root: {error:#}");
                 return refusal(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "trust_setup_metadata_unavailable",
-                    "não foi possível ler os dados iniciais da rede para a raiz de confiança",
+                    "could not read the initial network data for the trust root",
                 );
             }
         };
@@ -304,11 +304,11 @@ pub(crate) async fn trust_share(State(state): State<GatewayState>) -> Response {
         ) {
             Ok(document) => document,
             Err(error) => {
-                warn!("não foi possível completar os metadados da raiz de confiança: {error:#}");
+                warn!("could not complete the trust root metadata: {error:#}");
                 return refusal(
                     StatusCode::CONFLICT,
                     "trust_setup_metadata_unavailable",
-                    "não foi possível completar os dados iniciais da rede na raiz de confiança",
+                    "could not complete the initial network data in the trust root",
                 );
             }
         }
@@ -321,7 +321,7 @@ pub(crate) async fn trust_share(State(state): State<GatewayState>) -> Response {
             return refusal(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "trust_document_unavailable",
-                &format!("não foi possível serializar a raiz de confiança: {error}"),
+                &format!("could not serialize the trust root: {error}"),
             )
         }
     };
@@ -369,11 +369,11 @@ mod tests {
             principal,
             &signing_key,
         )
-        .expect("cadeia raiz de teste");
+        .expect("test root chain");
         let document = trust.document();
         let fingerprint = crate::admin_trust::anchor_fingerprint(&document);
         (
-            serde_json::to_string(&document).expect("cadeia serializa"),
+            serde_json::to_string(&document).expect("chain serializes"),
             fingerprint,
         )
     }
@@ -457,7 +457,7 @@ mod tests {
             serde_json::from_str(body["document"].as_str().unwrap()).unwrap();
         let setup = document
             .setup
-            .expect("download deve carregar o setup da rede");
+            .expect("download must carry the network setup");
         assert_eq!(setup.public_name, "Rede do wizard");
         assert_eq!(setup.organization, "POM");
         assert_eq!(
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(body_of(response).await["reason"], "not_loopback");
         assert!(
             !state.admin_trust.is_anchored(),
-            "uma recusa não pode deixar autoridade instalada"
+            "a refusal cannot leave authority installed"
         );
     }
 
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(
             state.admin_trust.document().anchor,
             original_anchor,
-            "a âncora vigente não pode ser substituída pela interface"
+            "the current anchor cannot be replaced from the interface"
         );
     }
 
@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(body_of(response).await["reason"], "fingerprint_mismatch");
         assert!(
             !state.admin_trust.is_anchored(),
-            "impressão digital errada não pode fabricar autoridade"
+            "a wrong fingerprint cannot fabricate authority"
         );
     }
 
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(
             app(state.clone()).oneshot(refused).await.unwrap().status(),
             StatusCode::FORBIDDEN,
-            "sem âncora, o perfil admin não abre a superfície administrativa"
+            "without an anchor, the admin profile does not open the administrative surface"
         );
 
         let mut reached = HttpRequest::get("/api/ui/network/trust-anchor")

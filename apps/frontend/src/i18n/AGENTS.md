@@ -3,8 +3,7 @@
 Two-language UI localization (English and Brazilian Portuguese) for the pom
 panel. All visible strings live here as flat message keys; components consume
 them through `useI18n().t`. The same file also holds a module-level active
-locale used by non-React code (`api.ts`, `chatStore.ts`) and a shim that keeps
-the UI language contract while old node binaries still send Portuguese text.
+locale used by non-React code (`api.ts`, `chatStore.ts`).
 
 As traduções ficam em `messages.csv`, com as colunas `key,en,pt-BR`, uma linha
 por chave e as mensagens em ICU MessageFormat. `locales.ts` importa o CSV como
@@ -35,6 +34,15 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   são opções com perda sujeitas a capability.
   `deploy.visionUnavailable` orienta que a tela só oferece visão quando a
   identidade e as dimensões GGUF comprovam a associação do projetor.
+- The `deployStudio.*` group holds every label, tooltip and accessibility text of the
+  Deploy screen (`DeployModel`, `DeployNetworkCanvas` and the vision rows of
+  `DeploymentInspector`): the kind selector, the machine and Tensor Parallelism
+  panels, the per-machine range buttons, the VRAM projection warnings and the map
+  toolbar. These screens no longer carry hard-coded Portuguese. `common.whatIs`,
+  `common.warningFor` and `common.viewWarningFor` name the `InfoTip` and
+  `AlertTooltip` triggers; `chat.image*` and `chat.noCanvas2d` are the image
+  resize errors, `peer.routeUnavailable` and `plugins.screenExportMissing` are
+  read through `formatMessage(getActiveLocale(), ...)` outside React.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
   o aviso de miniaturização automática de imagens e a recusa rara quando o
   contexto não comporta nem a resolução mínima.
@@ -129,7 +137,7 @@ instalação e reinício.
 - `resolveLocale(savedLocale, browserLocales)` - the saved value wins if valid; otherwise any `pt*` browser locale maps to `pt-BR`, any `en*` to `en`, default `en`. Saves nothing; the provider does.
 - `getActiveLocale()` / `setActiveLocale(locale)` - module-level locale for code outside React (error strings in `api.ts`, default chat titles in `chatStore.ts`); the provider syncs it on mount.
 - `isLocale(value)` - type guard.
-- `localizeServerText(locale, text)` - maps known Portuguese strings a rolling-upgrade old binary might send ("pronto", "erro", "falhou", ...) to the UI language; heuristic regex detects untranslated Portuguese and falls back to a generic message rather than showing mixed language. As recusas de autoridade de implantação também usam as chaves `deploy.adminOnlyAdd` e `undeploy.adminOnly`, mantendo a mensagem do servidor clara em cada idioma. Antes do mapa fixo ele casa as frases que **carregam um nome de máquina** ("recusado por ksia", "cancelado por atena"): o nome não se traduz, o verbo sim, e o desfecho de uma transferência aparecia em português na tela em inglês.
+- Node-written text (errors, refusal reasons, job steps) is English at the source; there is no client-side translation of server text.
 
 The chat telemetry additions live in both locale blocks: execution RTT, the
 source-to-destination edge scope, machine capacity/configuration, effective

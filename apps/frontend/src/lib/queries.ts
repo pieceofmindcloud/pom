@@ -65,6 +65,7 @@ import type {
   DevelopmentPluginSources,
   PomCoreUpdateStatus,
 } from "./types";
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 /**
  * Answer `fallback` instead of failing when the node does not know the route.
@@ -420,7 +421,7 @@ export function usePeerRuntime(nodeId: string, enabled: boolean) {
         api.get<PeerRuntime>(`/api/ui/peer/${encodeURIComponent(nodeId)}/runtime`, {
           auth: false,
         }),
-        { loaded: false, reason: "rota indisponível neste nó" } as PeerRuntime,
+        { loaded: false, reason: formatMessage(getActiveLocale(), "peer.routeUnavailable") } as PeerRuntime,
       ),
     enabled,
     refetchInterval: 15_000,
@@ -438,7 +439,7 @@ export function usePeerRuntimes(nodeIds: string[], enabled: boolean, executionId
           api.get<PeerRuntime>(`/api/ui/peer/${encodeURIComponent(nodeId)}/runtime`, {
             auth: false,
           }),
-          { loaded: false, reason: "rota indisponível neste nó" } as PeerRuntime,
+          { loaded: false, reason: formatMessage(getActiveLocale(), "peer.routeUnavailable") } as PeerRuntime,
         ),
       enabled,
       retry: false,

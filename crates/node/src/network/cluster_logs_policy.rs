@@ -69,10 +69,10 @@ pub(crate) async fn fetch_from_principal_candidates(
             tunnel,
         )
         .await
-        .context("não deu para falar com o principal")?;
+        .context("could not reach the principal")?;
     let body: LogsReply = response
         .json()
-        .context("resposta da política de logs não parseou")?;
+        .context("logs policy response did not parse")?;
     Ok(body.logs_enabled)
 }
 
@@ -81,7 +81,7 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
         Ok(value) if value != local => PolicyOutcome::Adopt(value),
         Ok(_) => PolicyOutcome::Unchanged,
         Err(error) => {
-            warn!("busca da política de logs falhou, mantendo o valor local ({local}): {error}");
+            warn!("logs policy fetch failed, keeping the local value ({local}): {error}");
             PolicyOutcome::Unchanged
         }
     }
@@ -111,7 +111,7 @@ pub(crate) fn spawn_ratchet(
             let candidates =
                 net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(announced));
             if candidates.is_empty() {
-                warn!("principal {principal} não anuncia porta de gateway; política de logs não pôde ser confirmada");
+                warn!("principal {principal} does not announce a gateway port; logs policy could not be confirmed");
                 continue;
             }
             let (local, connection_key) = {
@@ -139,14 +139,14 @@ pub(crate) fn spawn_ratchet(
                     let mut cfg = auth.write().await;
                     cfg.cluster_logs_enabled = value;
                     if let Err(error) = cfg.save() {
-                        warn!("política de logs confirmada mas não gravada: {error}");
+                        warn!("logs policy confirmed but not written: {error}");
                     }
                 }
                 net.set_cluster_logs_enabled(value);
                 logs.set_enabled(value);
                 info!(
-                    "política de logs do cluster adotada do principal: {}",
-                    if value { "ligada" } else { "desligada" }
+                    "cluster logs policy adopted from the principal: {}",
+                    if value { "on" } else { "off" }
                 );
             }
         }

@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { HelpCircle, Laptop, Monitor, Server } from "lucide-react";
 import type { SystemLoad } from "../lib/types";
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 /**
  * What kind of machine this is, from what the node reports about itself
@@ -39,7 +40,7 @@ export function gpuDisplayName(
 }
 
 export function machineKind(system?: SystemLoad | null) {
-  if (!system) return { label: "Desconhecida", icon: HelpCircle, accent: "faint" as const };
+  if (!system) return { label: formatMessage(getActiveLocale(), "machine.kindUnknown"), icon: HelpCircle, accent: "faint" as const };
   const os = system.os.toLowerCase();
   if (system.gpu_kind === "nvidia" || system.gpu_kind === "amd" || system.gpu_kind === "mixed") {
     // Numa máquina mista o rótulo conta quantas placas há, em vez de eleger

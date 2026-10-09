@@ -93,7 +93,7 @@ impl GeoDatabase {
         let mut text = String::new();
         flate2::read::GzDecoder::new(compressed)
             .read_to_string(&mut text)
-            .map_err(|error| format!("descompactar a base de cidades: {error}"))?;
+            .map_err(|error| format!("decompress the city database: {error}"))?;
         Self::parse(&text)
     }
 
@@ -101,12 +101,12 @@ impl GeoDatabase {
         let mut records = CsvRecords::new(text);
         let header = records
             .next()
-            .ok_or_else(|| "a base de cidades está vazia".to_string())?;
+            .ok_or_else(|| "the city database is empty".to_string())?;
         let column = |name: &str| {
             header
                 .iter()
                 .position(|field| field == name)
-                .ok_or_else(|| format!("a base de cidades não tem a coluna {name}"))
+                .ok_or_else(|| format!("the city database does not have the column {name}"))
         };
         let (id, name, state_name, country_code, country_name, latitude, longitude) = (
             column("id")?,
@@ -171,7 +171,7 @@ impl GeoDatabase {
             });
         }
         if cities.is_empty() {
-            return Err("a base de cidades não tem nenhuma cidade válida".into());
+            return Err("the city database has no valid city".into());
         }
         for country in &mut countries {
             country.cities.sort_by(|left, right| {
@@ -398,16 +398,16 @@ pub fn apply_location(settings: &mut NetworkSettings) -> Result<(), String> {
     };
     let city = database()?
         .city(city_id)
-        .ok_or_else(|| "a cidade escolhida não existe na base de cidades".to_string())?;
+        .ok_or_else(|| "the chosen city does not exist in the city database".to_string())?;
     let pin = settings.location.take();
     if let Some(pin) = &pin {
         if !valid_coordinate(pin.latitude, pin.longitude) {
-            return Err("as coordenadas da rede são inválidas".into());
+            return Err("the network coordinates are invalid".into());
         }
         let distance = distance_km(pin.latitude, pin.longitude, city.latitude, city.longitude);
         if distance > MAX_PIN_DISTANCE_KM {
             return Err(format!(
-                "o ponto escolhido fica a {distance:.0} km de {}; escolha a cidade mais próxima dele",
+                "the chosen point is {distance:.0} km from {}; choose the city closest to it",
                 city.name
             ));
         }

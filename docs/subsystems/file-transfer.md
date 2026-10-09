@@ -13,7 +13,7 @@ Where the file lands depends on what it is. A **part** of a slicing goes to
 manifest `<model>-<short hash of the original>.pom` written in the same folder
 before the bytes, and is checked against the hash that was requested. A file
 that is not part of any manifest - a whole model - lands in
-`<shard_dir>/recebidos/` ("received") and only takes its final name when the
+`<shard_dir>/received/` ("received") and only takes its final name when the
 MD5 matches.
 
 When receiving a v1 manifest, the peer merges by `pom_id`: local parts are
@@ -69,7 +69,7 @@ the other side answers**. `spawn_download`:
 
 1. Registers the job right away (`bytes_total` 0, indeterminate bar, detail
    "checking the file at the source"). The destination directory - the model
-   folder for a part; `<shard_dir>/recebidos/` for a loose file - is the only
+   folder for a part; `<shard_dir>/received/` for a loose file - is the only
    thing that has to succeed immediately.
 2. In a background task, `fetch_manifest` asks for size + MD5 at
    `/api/transfer/manifest` (`MANIFEST_TIMEOUT` = 30 min - a digest is a read

@@ -265,7 +265,7 @@ impl PkarrNode {
         let peer_id = peer_id_from_uri(key)?;
         let packet = self.client.resolve(&pk).await?;
         let record = parse_signed_packet(&packet)?;
-        debug!("pkarr: {key} resolvido: {record:?}");
+        debug!("pkarr: {key} resolved: {record:?}");
         Some(ResolvedPeer { peer_id, record })
     }
 

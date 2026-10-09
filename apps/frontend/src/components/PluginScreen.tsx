@@ -11,6 +11,7 @@ import { installPluginHost } from "../lib/pluginHost";
 import { pluginAssetUrl, type ResolvedPluginRoute } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
 import { Panel, PanelHeader } from "./ui";
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 const loaded = new Map<string, Promise<ComponentType>>();
 
@@ -41,7 +42,7 @@ export function loadPluginScreen(
     pending = import(/* @vite-ignore */ url).then((module: Record<string, unknown>) => {
       const component = module[exportName];
       if (typeof component !== "function") {
-        throw new Error(`o módulo da tela não exporta o componente "${exportName}"`);
+        throw new Error(formatMessage(getActiveLocale(), "plugins.screenExportMissing", { name: exportName }));
       }
       return component as ComponentType;
     });

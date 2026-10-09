@@ -288,9 +288,9 @@ mod tests {
                 .map(|i| i.session_id.as_str())
                 .collect::<Vec<_>>(),
             ["live"],
-            "só a continuação da sessão viva entra"
+            "only the continuation of the live session gets in"
         );
-        assert_eq!(q.len(), 2, "os dois novos ficam na fila");
+        assert_eq!(q.len(), 2, "the two new ones stay in the queue");
 
         // Abre um slot: o próximo da fila entra, o outro continua esperando.
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 1);
@@ -301,7 +301,7 @@ mod tests {
                 .map(|i| i.session_id.as_str())
                 .collect::<Vec<_>>(),
             ["wait-1"],
-            "FIFO: wait-1 antes de wait-2"
+            "FIFO: wait-1 before wait-2"
         );
         assert_eq!(q.len(), 1);
     }
@@ -318,12 +318,12 @@ mod tests {
         // Nenhum slot livre: a sessão retida do agente é cache quente, não
         // capacidade, então `new_session_slots` devolveu zero.
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 0);
-        assert!(batch.items.is_empty(), "o pedido pequeno não é admitido");
-        assert_eq!(q.len(), 1, "e continua na fila, sem ser recusado");
+        assert!(batch.items.is_empty(), "the small request is not admitted");
+        assert_eq!(q.len(), 1, "and it stays in the queue, without being refused");
 
         // A espera é observável, que é o relógio da carência de reclamação.
         let waited = q.oldest_new_session_wait(Instant::now(), |_| false);
-        assert!(waited.is_some(), "a espera do prefill novo é medida");
+        assert!(waited.is_some(), "the wait of the new prefill is measured");
 
         // Uma sessão já viva não é contada como espera de sessão nova.
         assert!(q
@@ -345,7 +345,7 @@ mod tests {
         assert!(
             q.oldest_new_session_wait(Instant::now(), |_| false)
                 .is_none(),
-            "uma requisição de pipeline não pode armar o timer do pedido avulso"
+            "a pipeline request cannot arm the standalone request timer"
         );
     }
 

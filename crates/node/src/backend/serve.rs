@@ -291,7 +291,7 @@ pub async fn serve_with_quic(
             if let Err(error) = &result {
                 warn!(
                     port,
-                    "endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}"
+                    "HTTP/3 endpoint unavailable, keeping the TCP fallback: {error}"
                 );
             }
             result
@@ -306,14 +306,14 @@ pub async fn serve_with_quic(
 
     let reason = loop {
         let (stream, peer) = tokio::select! {
-            _ = &mut shutdown => break "desligamento pedido",
+            _ = &mut shutdown => break "shutdown requested",
             // Conexões já encerradas saem do conjunto aqui; sem isto o
             // `JoinSet` cresceria por toda a vida do servidor.
             Some(_) = conns.join_next(), if !conns.is_empty() => continue,
             accepted = listener.accept() => match accepted {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("accept falhou: {e}");
+                    warn!("accept failed: {e}");
                     continue;
                 }
             },
@@ -329,7 +329,7 @@ pub async fn serve_with_quic(
 
         conns.spawn(async move {
             if let Err(e) = handle_conn(stream, peer, app, acceptor, tls).await {
-                debug!("conexão de {peer} encerrada: {e}");
+                debug!("connection from {peer} closed: {e}");
             }
         });
     };
@@ -337,13 +337,13 @@ pub async fn serve_with_quic(
     // Prazo para quem está no meio de uma resposta; depois dele, aborta. Quem
     // está parada em keep-alive não termina sozinha nunca, e é justamente ela
     // que segurava a memória.
-    debug!("{reason}: drenando {} conexões", conns.len());
+    debug!("{reason}: draining {} connections", conns.len());
     let drain = async { while conns.join_next().await.is_some() {} };
     if tokio::time::timeout(DRAIN_DEADLINE, drain)
         .await
         .is_err()
     {
-        warn!("conexões ainda vivas depois de {DRAIN_DEADLINE:?}; encerrando");
+        warn!("connections still alive after {DRAIN_DEADLINE:?}; closing");
         conns.shutdown().await;
     }
     let _ = quic_shutdown_tx.send(());
@@ -351,11 +351,11 @@ pub async fn serve_with_quic(
         match tokio::time::timeout(QUIC_SHUTDOWN_DEADLINE, &mut task).await {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(error))) => {
-                warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}")
+                warn!("HTTP/3 endpoint unavailable, keeping the TCP fallback: {error}")
             }
-            Ok(Err(error)) => warn!("task HTTP/3 terminou de forma inesperada: {error}"),
+            Ok(Err(error)) => warn!("HTTP/3 task ended unexpectedly: {error}"),
             Err(_) => {
-                warn!("endpoint HTTP/3 não encerrou em {QUIC_SHUTDOWN_DEADLINE:?}; abortando task");
+                warn!("HTTP/3 endpoint did not close in {QUIC_SHUTDOWN_DEADLINE:?}; aborting the task");
                 task.abort();
                 let _ = task.await;
             }
@@ -386,13 +386,13 @@ async fn handle_conn(
     if !is_tls && !plain_allowed(peer, strict) {
         let policy = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
         if policy == PlainPolicy::Refuse {
-            warn!("recusada conexão em texto claro de {peer}: o cluster está em TLS");
+            warn!("refused plain text connection from {peer}: the cluster is on TLS");
             return Ok(());
         }
         // Porta que também serve gente: em vez de fechar na cara do operador,
         // manda o navegador refazer em https. Ver `plain_action` para o que
         // continua sendo recusado.
-        debug!("redirecionando para https a conexão em claro de {peer}");
+        debug!("redirecting the plain connection from {peer} to https");
         let svc = hyper::service::service_fn(redirect_to_https);
         return Builder::new(TokioExecutor::new())
             .serve_connection(TokioIo::new(stream), svc)
@@ -427,7 +427,7 @@ async fn handle_conn(
         (true, None) => {
             // Cliente falou TLS com um nó que não tem certificado. Não há o que
             // servir, e deixar a conexão pendurada esconderia o motivo.
-            warn!("{peer} tentou TLS mas este nó não tem TLS configurado");
+            warn!("{peer} tried TLS but this node has no TLS configured");
         }
         (false, _) => {
             Builder::new(TokioExecutor::new())
@@ -483,9 +483,9 @@ async fn redirect_to_https(
     let body = if location.is_some() {
         String::new()
     } else {
-        "este cluster exige TLS entre nós; refaça a chamada em https\n".to_string()
+        "this cluster requires TLS between nodes; repeat the call over https\n".to_string()
     };
-    Ok(response.body(body).expect("resposta é construível"))
+    Ok(response.body(body).expect("response is constructible"))
 }
 
 #[cfg(test)]
@@ -529,7 +529,7 @@ mod integration {
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
             .await
-            .expect("o handshake tinha que fechar");
+            .expect("the handshake had to complete");
         assert!(r.status().is_success());
     }
 
@@ -701,7 +701,7 @@ mod integration {
 
         tokio::time::timeout(Duration::from_secs(2), barrier.all_started.notified())
             .await
-            .expect("os dois peers deveriam aceitar a requisição QUIC");
+            .expect("both peers should accept the QUIC request");
 
         let shutdown = tokio::time::timeout(Duration::from_secs(5), async {
             first_stop.send(()).unwrap();
@@ -715,7 +715,7 @@ mod integration {
         second_request.abort();
         assert!(
             shutdown.is_ok(),
-            "peers ociosos não podem esperar indefinidamente pelo shutdown QUIC"
+            "idle peers cannot wait indefinitely for the QUIC shutdown"
         );
     }
 
@@ -772,7 +772,7 @@ mod integration {
         }
         assert!(
             finished.is_ok(),
-            "o shutdown simultâneo dos dois peers não pode perder o sinal QUIC"
+            "the simultaneous shutdown of both peers cannot lose the QUIC signal"
         );
     }
 
@@ -789,7 +789,7 @@ mod integration {
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
             .await;
-        assert!(r.is_err(), "o handshake tinha que falhar, veio {r:?}");
+        assert!(r.is_err(), "the handshake had to fail, got {r:?}");
     }
 
     /// A virada não é simultânea: o mesmo servidor atende texto claro enquanto
@@ -844,7 +844,7 @@ mod integration {
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
             .await
-            .expect("o navegador tinha que fechar o handshake");
+            .expect("the browser had to complete the handshake");
         assert!(r.status().is_success());
     }
 
@@ -858,7 +858,7 @@ mod integration {
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
             .await
-            .expect("o peer tinha que fechar o handshake com o cert do pinning");
+            .expect("the peer had to complete the handshake with the pinning cert");
         assert!(r.status().is_success());
     }
 
@@ -872,7 +872,7 @@ mod integration {
             .get(format!("https://127.0.0.1:{}/health", addr.port()))
             .send()
             .await
-            .expect("TLS tem que passar no modo estrito");
+            .expect("TLS must go through in strict mode");
         assert!(r.status().is_success());
     }
 }
@@ -1045,7 +1045,7 @@ mod tests {
         // Com folga sobre o `DRAIN_DEADLINE`, e muito abaixo do "para sempre"
         // que era o comportamento antigo.
         let output = tokio::time::timeout(DRAIN_DEADLINE * 3, server).await;
-        assert!(output.is_ok(), "o serve não encerrou com uma conexão parada");
+        assert!(output.is_ok(), "serve did not stop with a stalled connection");
         assert!(output.unwrap().unwrap().is_ok());
     }
 }

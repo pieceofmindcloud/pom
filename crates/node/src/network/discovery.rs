@@ -192,7 +192,7 @@ async fn ensure_tunnel_peer_address(
             .into_iter()
             .find(|peer| peer.libp2p_peer_id.as_deref() == Some(peer_id_text.as_str()));
         let Some(peer) = peer else {
-            return Err(format!("nenhum anúncio vivo para o PeerId {peer_id}"));
+            return Err(format!("no live announce for PeerId {peer_id}"));
         };
         peer.libp2p_dialable_addrs()
     } else {
@@ -200,7 +200,7 @@ async fn ensure_tunnel_peer_address(
     };
     let addresses = tunnel_peer_multiaddrs(peer_id, &advertised);
     if addresses.is_empty() {
-        return Err(format!("o PeerId {peer_id} não tem endereço discável"));
+        return Err(format!("PeerId {peer_id} has no dialable address"));
     }
     for address in addresses {
         swarm.add_peer_address(peer_id, address);
@@ -210,7 +210,7 @@ async fn ensure_tunnel_peer_address(
         // completes. `AlreadyDialing` is harmless; the important part is that
         // the address book is populated before `send_request` runs.
         if let Err(error) = swarm.dial(peer_id) {
-            debug!("libp2p: rediscagem do peer {peer_id} não iniciou: {error}");
+            debug!("libp2p: redial of peer {peer_id} did not start: {error}");
         }
     }
     Ok(())
@@ -271,7 +271,7 @@ fn publish_swarm_addrs(swarm: &Swarm<DiscBehaviour>, network: &Network) {
 
     if network.set_libp2p_addrs(addrs.clone()) {
         info!(
-            "libp2p: anunciando {} multiaddress(es): {:?}",
+            "libp2p: announcing {} multiaddress(es): {:?}",
             addrs.len(),
             addrs
         );
@@ -327,7 +327,7 @@ impl RelayPolicy {
             let ids = self
                 .listeners
                 .get_mut(&peer)
-                .expect("dono encontrado acima");
+                .expect("owner found above");
             ids.retain(|id| *id != listener);
             if ids.is_empty() {
                 self.listeners.remove(&peer);
@@ -440,18 +440,18 @@ async fn reserve_circuit(
     let addresses = relay_reservation_addrs(peer_id, relay_peer_addrs, &announced, dialed);
     if addresses.is_empty() {
         relays.listeners.remove(&peer_id);
-        debug!("libp2p: relé {peer_id} sem endereço discável para reservar circuito");
+        debug!("libp2p: relay {peer_id} has no dialable address to reserve a circuit");
         return;
     }
     for address in addresses {
         let circuit = address.with(libp2p::multiaddr::Protocol::P2pCircuit);
         match swarm.listen_on(circuit.clone()) {
             Ok(listener) => {
-                info!("libp2p: reservando circuito em {circuit}");
+                info!("libp2p: reserving a circuit at {circuit}");
                 relays.listeners.entry(peer_id).or_default().push(listener);
             }
             Err(error) => {
-                debug!("libp2p: reserva de circuito em {circuit} não iniciou: {error}")
+                debug!("libp2p: circuit reservation at {circuit} did not start: {error}")
             }
         }
     }
@@ -855,7 +855,7 @@ impl Discovery {
                         .await
                         && !remote_audit_log.try_ingest_remote_ordered(event)
                     {
-                        warn!("auditoria recebida não entrou no plugin nem no fallback local");
+                        warn!("received audit entered neither the plugin nor the local fallback");
                     }
                 }
             }
@@ -972,7 +972,7 @@ impl Discovery {
                         // rotas, a entrega) segue para a próxima via.
                         if dial_backoff.blocked(&peer_id) {
                             let _ = reply.send(Err(infer_tunnel::TunnelDeliveryError::before_request(
-                                "peer em espera depois de discagens que falharam",
+                                "peer on hold after dials that failed",
                             )));
                             continue;
                         }
@@ -996,7 +996,7 @@ impl Discovery {
                             continue;
                         }
                         if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
-                            debug!("cluster-logs: peer {peer_id} indisponível: {error}");
+                            debug!("cluster-logs: peer {peer_id} unavailable: {error}");
                             continue;
                         }
                     }
@@ -1036,7 +1036,7 @@ impl Discovery {
                     let Some(AuditOutbound { peer_id, addr_candidates, event }) = out else { break };
                     if !swarm.is_connected(&peer_id) {
                         if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
-                            debug!("request-audit: peer {peer_id} indisponível: {error}");
+                            debug!("request-audit: peer {peer_id} unavailable: {error}");
                             continue;
                         }
                     }
@@ -1085,7 +1085,7 @@ async fn handle_event(
                 return;
             }
             let Some(source) = message.source else {
-                warn!("libp2p: descartei Announce sem peer de origem assinado");
+                warn!("libp2p: dropped an Announce without a signed source peer");
                 return;
             };
             if let Ok(P2PMessage::Announce {
@@ -1128,7 +1128,7 @@ async fn handle_event(
             {
                 if libp2p_peer_id.as_deref() != Some(source.to_string().as_str()) {
                     warn!(
-                        "libp2p: descartei Announce de {} com PeerId declarado divergente",
+                        "libp2p: dropped an Announce from {} with a mismatching declared PeerId",
                         source
                     );
                     return;
@@ -1209,14 +1209,14 @@ async fn handle_event(
                     Some(true) => {}
                     Some(false) => {
                         debug!(
-                            "libp2p: descartei Announce de {} sem prova de pertencimento",
+                            "libp2p: dropped an Announce from {} without proof of membership",
                             crate::network::short(&node_id)
                         );
                         return;
                     }
                     None => {
                         debug!(
-                            "libp2p: Announce de {} aguarda a sonda de admissão",
+                            "libp2p: Announce from {} waits for the admission probe",
                             crate::network::short(&node_id)
                         );
                         network.admit_in_background(peer);
@@ -1313,7 +1313,7 @@ async fn handle_event(
                         .remove_address(&peer_id, address);
                 }
                 debug!(
-                    "identify: ignorando {ignored_addresses} listen address(es) de {peer_id}; usando apenas Announce"
+                    "identify: ignoring {ignored_addresses} listen address(es) of {peer_id}; using only the Announce"
                 );
             }
             // Quem oferece o protocolo hop é relé, esteja ou não na lista
@@ -1358,17 +1358,17 @@ async fn handle_event(
         }
 
         SwarmEvent::ExpiredListenAddr { address, .. } => {
-            info!("libp2p: listener expirou em {address}");
+            info!("libp2p: listener expired at {address}");
             publish_swarm_addrs(swarm, network);
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
-            info!("libp2p: endereço externo confirmado {address}");
+            info!("libp2p: external address confirmed {address}");
             publish_swarm_addrs(swarm, network);
         }
 
         SwarmEvent::ExternalAddrExpired { address } => {
-            info!("libp2p: endereço externo expirou {address}");
+            info!("libp2p: external address expired {address}");
             publish_swarm_addrs(swarm, network);
         }
 
@@ -1422,7 +1422,7 @@ async fn handle_event(
             // vai nos lotes de logs do cluster, e uma linha por discagem
             // alimentaria o próprio laço que a espera existe para cortar.
             if failures.is_power_of_two() {
-                info!("libp2p: discagem para {peer_id} falhou ({failures}ª seguida): {error}");
+                info!("libp2p: dial to {peer_id} failed ({failures} in a row): {error}");
             }
         }
 
@@ -1485,7 +1485,7 @@ async fn handle_event(
                 autonat::NatStatus::Unknown => {}
             }
             if let autonat::NatStatus::Public(address) = new {
-                info!("libp2p: endereço externo confirmado {address}");
+                info!("libp2p: external address confirmed {address}");
                 swarm.add_external_address(address);
                 publish_swarm_addrs(swarm, network);
             }
@@ -1542,7 +1542,7 @@ async fn handle_event(
                                     .ok_or((503u16, "no gateway on this node".to_string()))
                             } else {
                                 warn!(
-                                    "infer-tunnel: {} pediu a rota {} pelo gateway; fora da lista",
+                                    "infer-tunnel: {} asked for route {} through the gateway; not on the list",
                                     peer, request.path
                                 );
                                 Err((403u16, "route not carried by the tunnel".to_string()))
@@ -1646,7 +1646,7 @@ async fn handle_event(
                     .send_response(channel, response);
             }
             request_response::Event::InboundFailure { peer, error, .. } => {
-                debug!("network-lobby: pedido de {peer} falhou: {error:?}");
+                debug!("network-lobby: request from {peer} failed: {error:?}");
             }
             _ => {}
         },
@@ -1726,7 +1726,7 @@ async fn handle_event(
                 }
             }
             request_response::Event::InboundFailure { peer, error, .. } => {
-                debug!("network-chat: pedido de {peer} falhou: {error:?}");
+                debug!("network-chat: request from {peer} failed: {error:?}");
             }
             request_response::Event::ResponseSent { .. } => {}
         },
@@ -1742,7 +1742,7 @@ async fn handle_event(
                 } => {
                     let accepted = logs.try_ingest_remote(request);
                     if !accepted {
-                        debug!("cluster-logs: lote recusado de {peer}");
+                        debug!("cluster-logs: batch refused from {peer}");
                     }
                     let _ = swarm
                         .behaviour_mut()
@@ -1752,10 +1752,10 @@ async fn handle_event(
                 request_response::Message::Response { .. } => {}
             },
             request_response::Event::OutboundFailure { peer, error, .. } => {
-                debug!("cluster-logs: envio para {peer} falhou: {error:?}");
+                debug!("cluster-logs: send to {peer} failed: {error:?}");
             }
             request_response::Event::InboundFailure { peer, error, .. } => {
-                debug!("cluster-logs: lote recebido de {peer} falhou: {error:?}");
+                debug!("cluster-logs: batch received from {peer} failed: {error:?}");
             }
             request_response::Event::ResponseSent { .. } => {}
         },
@@ -1778,7 +1778,7 @@ async fn handle_event(
                         None => false,
                     };
                     if !accepted {
-                        debug!("request-audit: evento recusado de {peer}");
+                        debug!("request-audit: event refused from {peer}");
                     }
                     let _ = swarm
                         .behaviour_mut()
@@ -1788,10 +1788,10 @@ async fn handle_event(
                 request_response::Message::Response { .. } => {}
             },
             request_response::Event::OutboundFailure { peer, error, .. } => {
-                debug!("request-audit: envio para {peer} falhou: {error:?}");
+                debug!("request-audit: send to {peer} failed: {error:?}");
             }
             request_response::Event::InboundFailure { peer, error, .. } => {
-                debug!("request-audit: evento recebido de {peer} falhou: {error:?}");
+                debug!("request-audit: event received from {peer} failed: {error:?}");
             }
             request_response::Event::ResponseSent { .. } => {}
         },
@@ -2210,7 +2210,7 @@ async fn relay_chat(
                 ensure_tunnel_peer_address(swarm, network, peer_id, &addresses).await
             {
                 debug!(
-                    "network-chat: peer {} indisponível: {}",
+                    "network-chat: peer {} unavailable: {}",
                     peer.node_id, error
                 );
                 continue;
@@ -2534,7 +2534,7 @@ mod tests {
     fn the_libp2p_default_id_collapses_every_announce_into_one() {
         let a = libp2p_default_message_id(&gossip_msg(br#"{"type":"Announce","t":1}"#));
         let b = libp2p_default_message_id(&gossip_msg(br#"{"type":"Announce","t":2}"#));
-        assert_eq!(a, b, "é este o defeito que `announce_message_id` corrige");
+        assert_eq!(a, b, "this is the defect that `announce_message_id` fixes");
         // O id que o captain viu no log, hexa de "15R0".
         assert_eq!(a.to_string(), "31355230");
     }

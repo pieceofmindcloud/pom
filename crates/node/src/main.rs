@@ -291,7 +291,7 @@ enum Command {
 #[derive(Parser, Debug)]
 #[command(
     name = "pom",
-    about = "Inferência distribuída de LLM entre máquinas, sem servidor central",
+    about = "Distributed LLM inference across machines, with no central server",
     long_about = "Runs a node in a distributed LLM inference network.\n\
                   Models are deployed from the web UI served on --gateway-port;\n\
                   each node loads its slice and coordinates with peers to cover\n\
@@ -519,7 +519,7 @@ fn main() -> Result<()> {
         .init();
 
     let pom_dev_mode = initialize_pom_dev_mode();
-    info!("POM_DEV_MODE habilitado: {pom_dev_mode}");
+    info!("POM_DEV_MODE enabled: {pom_dev_mode}");
 
     // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
     // que o `sysmon` mede e as funções de estado da coletiva TP que o `llm`
@@ -590,7 +590,7 @@ fn run_command(command: &Command) -> Result<()> {
     match command {
         Command::Undeploy => {
             lastslice::force_disable()?;
-            info!("retomada automática de implantação bloqueada");
+            info!("automatic deployment resume blocked");
             Ok(())
         }
         Command::AdminAnchor {
@@ -619,7 +619,7 @@ fn anchor_admin(
     let destination = config::admin_trust_path();
     if destination.exists() && !replace {
         bail!(
-            "a cadeia administrativa já existe em {}; use --replace somente para uma reancoragem manual explícita",
+            "the administrative chain already exists in {}; use --replace only for an explicit manual re-anchoring",
             destination.display()
         );
     }
@@ -627,7 +627,7 @@ fn anchor_admin(
     let (document, local_root) = if let Some(source) = from_file {
         let source_store = crate::admin_trust::AdminTrust::load(source).with_context(|| {
             format!(
-                "não foi possível ler a cadeia transportada em {}",
+                "could not read the transported chain in {}",
                 source.display()
             )
         })?;
@@ -635,7 +635,7 @@ fn anchor_admin(
         if let Some(expected_cluster) = cluster_id {
             if expected_cluster != document.anchor.cluster_id {
                 bail!(
-                    "o cluster da cadeia transportada é {}, não {}",
+                    "the cluster of the transported chain is {}, not {}",
                     document.anchor.cluster_id,
                     expected_cluster
                 );
@@ -645,7 +645,7 @@ fn anchor_admin(
     } else {
         let cluster_id = cluster_id
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("--cluster-id é obrigatório ao criar a raiz local"))?;
+            .ok_or_else(|| anyhow::anyhow!("--cluster-id is required when creating the local root"))?;
         let (_signing_key, principal) = crate::admin_trust::local_authority_identity()?;
         let anchor =
             crate::admin_trust::TrustAnchor::for_principal(cluster_id.to_string(), principal);
@@ -668,16 +668,16 @@ fn anchor_admin(
     };
 
     let expected = crate::admin_trust::anchor_fingerprint(&document);
-    println!("impressão digital da autoridade: {expected}");
+    println!("authority fingerprint: {expected}");
     // A mesma conferência que a interface faz. Duas seriam duas políticas.
     if !fingerprint.is_some_and(|typed| crate::admin_trust::fingerprint_matches(typed, &expected)) {
         bail!(
-            "a impressão digital não foi confirmada; confira a linha acima e execute novamente com --fingerprint {expected} --confirm"
+            "the fingerprint was not confirmed; check the line above and run again with --fingerprint {expected} --confirm"
         );
     }
     if !confirm {
         bail!(
-            "a impressão digital precisa de confirmação explícita; execute novamente com --confirm"
+            "the fingerprint needs explicit confirmation; run again with --confirm"
         );
     }
 
@@ -704,7 +704,7 @@ fn anchor_admin(
         crate::admin_trust::AdminTrust::install_document(&destination, document)?;
     }
     println!(
-        "âncora administrativa instalada em {}",
+        "administrative anchor installed in {}",
         destination.display()
     );
     Ok(())
@@ -787,21 +787,21 @@ async fn async_main(
     }
 
     // ── Load existing config ─────────────────────────────────────────────────
-    let mut app_config = existing_config.expect("config já carregada antes do modo completo");
+    let mut app_config = existing_config.expect("config already loaded before the full mode");
     if app_config.connection_key.trim().is_empty() {
         app_config.connection_key = crate::webui::fresh_connection_key();
         app_config.save()?;
         info!("Generated a local admin credential for the configured node");
     }
     for (dir, error) in app_config.create_default_storage_dirs() {
-        warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+        warn!("could not create the default folder {}: {error}", dir.display());
     }
     log_capture.set_min_level(app_config.cluster_logs_min_level);
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver);
     let audit = reqlog::AuditLog::new(database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
-        warn!("não foi possível guardar os detalhes da rede no banco: {error:#}");
+        warn!("could not store the network details in the database: {error:#}");
     }
     app_config.thermal = database
         .thermal_policy()?
@@ -809,7 +809,7 @@ async fn async_main(
     app_config
         .thermal
         .validate()
-        .context("validar política térmica persistida")?;
+        .context("validate the persisted thermal policy")?;
     app_config.huggingface_token = database.huggingface_token()?;
     config::validate_gateway_port(app_config.gateway_port)?;
     info!("Profile: {}", app_config.profile);
@@ -822,12 +822,12 @@ async fn async_main(
         match sysmon::apply_gpu_selection(app_config.gpus.as_deref(), &detected) {
             _ if app_config.gpus.is_none() => {
                 info!(
-                    "GPUs: todas as {} disponíveis (pom.json não restringe)",
+                    "GPUs: all {} available (pom.json does not restrict)",
                     detected.len()
                 );
             }
             chosen if chosen.is_empty() => {
-                info!("GPUs: nenhuma - inferência em CPU (pom.json traz uma lista vazia)");
+                info!("GPUs: none - CPU inference (pom.json carries an empty list)");
             }
             chosen => info!("GPUs: {}", chosen.join(", ")),
         }
@@ -952,7 +952,7 @@ fn force_setup_mode() -> anyhow::Result<()> {
         .filter(|path| path.exists())
         .collect();
     if present.is_empty() {
-        info!("--setup: nenhuma configuração a guardar; subindo no wizard");
+        info!("--setup: no configuration to set aside; starting in the wizard");
         return Ok(());
     }
     let backup = config::project_root()
@@ -964,11 +964,11 @@ fn force_setup_mode() -> anyhow::Result<()> {
             continue;
         };
         std::fs::rename(path, backup.join(name)).map_err(|error| {
-            anyhow::anyhow!("--setup: não deu para guardar {}: {error}", path.display())
+            anyhow::anyhow!("--setup: could not set aside {}: {error}", path.display())
         })?;
     }
     warn!(
-        "--setup: configuração guardada em {} ({} arquivo(s)); para voltar, pare o nó e mova-os de volta",
+        "--setup: configuration set aside in {} ({} file(s)); to go back, stop the node and move them back",
         backup.display(),
         present.len()
     );
@@ -1063,7 +1063,7 @@ async fn start_setup_mode(
         tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], setup_p2p_port)))
             .await
             .with_context(|| {
-                format!("não foi possível abrir a descoberta local na porta {setup_p2p_port}")
+                format!("could not open local discovery on port {setup_p2p_port}")
             })?;
     setup_socket.set_broadcast(true)?;
     let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
@@ -1434,13 +1434,13 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     }
     if args.local_auto_discovery {
         if let Err(error) = net.set_local_auto_discovery(true).await {
-            warn!("descoberta local não pôde ser habilitada na inicialização: {error:#}");
+            warn!("local discovery could not be enabled at startup: {error:#}");
         }
     }
 
     if args.no_discovery {
         net.detach().await;
-        info!("🚫 --no-discovery: nó começa fora da rede, sem anunciar nem procurar peers");
+        info!("🚫 --no-discovery: the node starts outside the network, without announcing or looking for peers");
     }
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
@@ -1622,8 +1622,8 @@ async fn start_node(
     match database.revoke_superseded_node_keys(&node_id) {
         Ok(0) => {}
         // A validação lê o banco, não o retrato em `api_keys`: nada a recarregar.
-        Ok(count) => info!("{count} chave(s) interna(s) substituída(s) revogada(s)"),
-        Err(error) => warn!("não foi possível revogar chaves internas substituídas: {error:#}"),
+        Ok(count) => info!("{count} replaced internal key(s) revoked"),
+        Err(error) => warn!("could not revoke replaced internal keys: {error:#}"),
     }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
     plugin_engine::install(plugins.clone());
@@ -1694,11 +1694,7 @@ async fn start_node(
             .is_none()
     {
         warn!(
-            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node. \
-             Para ancorar o primeiro principal nesta máquina: `pom admin-anchor --cluster-id <nome>`, \
-             confira a impressão digital exibida e repita com `--fingerprint <valor> --confirm`. \
-             Para um nó que já tem principal no cluster, copie {} do admin por um canal seu e rode \
-             `pom admin-anchor --from <arquivo> --fingerprint <valor> --confirm`",
+            "admin profile without a valid administrative grant; the effective capability stays node. To anchor the first principal on this machine: `pom admin-anchor --cluster-id <name>`, check the fingerprint shown and repeat with `--fingerprint <value> --confirm`. For a node whose cluster already has a principal, copy {} from the admin through a channel of your own and run `pom admin-anchor --from <file> --fingerprint <value> --confirm`",
             config::admin_trust_filename()
         );
     }
@@ -1759,7 +1755,7 @@ async fn start_node(
     let quic_config = match serve::quic_server_config(&identity) {
         Ok(config) => Some(config),
         Err(error) => {
-            warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}");
+            warn!("HTTP/3 endpoint unavailable, keeping the TCP fallback: {error}");
             None
         }
     };
@@ -1767,7 +1763,7 @@ async fn start_node(
         match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
             Ok(t) => Some(t),
             Err(e) => {
-                warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
+                warn!("could not derive the certificate of this node, TLS unavailable: {e}");
                 None
             }
         };
@@ -1875,7 +1871,7 @@ async fn start_node(
     // de a tentativa ser persistida novamente, porque um crash nativo pode
     // acontecer entre a leitura e o início do carregamento.
     if lastslice::auto_resume_disabled() {
-        warn!("retomada automática bloqueada por comando undeploy");
+        warn!("automatic resume blocked by the undeploy command");
     } else {
         match lastslice::inspect() {
             lastslice::LastSlice::Serving(cfg) => {
@@ -1885,20 +1881,20 @@ async fn start_node(
                     Ok(attempt) if lastslice::should_resume(attempt) => {
                         match node_runtime.apply_after_restart(cfg).await {
                             Ok(()) => info!(
-                                "↩️  fatia restaurada após reinício: {label} {a}-{b} (tentativa {attempt})"
+                                "↩️  slice restored after restart: {label} {a}-{b} (attempt {attempt})"
                             ),
-                            Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                            Err(e) => warn!("could not restore the recorded slice: {e}"),
                         }
                     }
                     Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
-                    Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                    Err(e) => warn!("could not restore the recorded slice: {e}"),
                 }
             }
             lastslice::LastSlice::Idle(cfg) => {
                 let label = cfg.model_label.clone();
                 let (a, b) = (cfg.start_layer, cfg.end_layer);
                 node_runtime.restore_idle(cfg).await;
-                info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
+                info!("↩️  idle slice restored after restart: {label} {a}-{b}");
             }
             lastslice::LastSlice::Pending { cfg, attempts } => {
                 if attempts >= lastslice::MAX_AUTOMATIC_ATTEMPTS {
@@ -1909,14 +1905,14 @@ async fn start_node(
                             match node_runtime.apply_after_restart(cfg).await {
                                 Ok(()) => {
                                     info!(
-                                        "↩️  retomando implantação pendente na tentativa {attempt}"
+                                        "↩️  resuming the pending deployment on attempt {attempt}"
                                     )
                                 }
-                                Err(e) => warn!("não deu para retomar a implantação pendente: {e}"),
+                                Err(e) => warn!("could not resume the pending deployment: {e}"),
                             }
                         }
                         Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
-                        Err(e) => warn!("não deu para persistir a retomada da implantação: {e}"),
+                        Err(e) => warn!("could not persist the deployment resume: {e}"),
                     }
                 }
             }
@@ -1942,7 +1938,7 @@ fn application_log_filter() -> EnvFilter {
         .add_directive(
             format!("{MAINLINE_SOCKET_TARGET}=error")
                 .parse()
-                .expect("diretiva de log Mainline válida"),
+                .expect("valid Mainline log directive"),
         )
 }
 
@@ -1983,7 +1979,7 @@ fn windows_diagnostic_log_writer() -> std::sync::Mutex<WindowsDiagnosticLogWrite
         Ok(file) => WindowsDiagnosticLogWriter::File(file),
         Err(error) => {
             eprintln!(
-                "não foi possível abrir o log Windows em {}: {error}",
+                "could not open the Windows log in {}: {error}",
                 path.display()
             );
             WindowsDiagnosticLogWriter::Stderr(std::io::stderr())
@@ -2003,27 +1999,27 @@ mod main_tests {
 
         assert!(
             main_source.contains("#![cfg_attr(windows, windows_subsystem = \"windows\")]"),
-            "o executável Windows não pode alocar um console próprio"
+            "the Windows executable cannot allocate its own console"
         );
         assert!(
             shell_source.contains("WebViewBuilder"),
-            "o shell Windows precisa criar um WebView nativo"
+            "the Windows shell must create a native WebView"
         );
         assert!(
             shell_source.contains("TrayIconBuilder"),
-            "o shell Windows precisa instalar um ícone na bandeja"
+            "the Windows shell must install a tray icon"
         );
         assert!(
             shell_source.contains("MenuEvent::set_event_handler"),
-            "o shell Windows precisa encaminhar os cliques do menu ao loop nativo"
+            "the Windows shell must forward the menu clicks to the native loop"
         );
         assert!(
             shell_source.contains("WindowAction::HideToTray"),
-            "fechar a janela deve mantê-la disponível na bandeja"
+            "closing the window must keep it available in the tray"
         );
         assert!(
             shell_source.contains("WindowAction::Quit"),
-            "o menu da bandeja precisa ter uma saída terminal"
+            "the tray menu must have a terminal exit"
         );
     }
 
@@ -2094,10 +2090,10 @@ mod main_tests {
             let (_, suffix) = ARG_ENV
                 .iter()
                 .find(|(arg_id, _)| *arg_id == id)
-                .unwrap_or_else(|| panic!("--{id} sem variável de ambiente em ARG_ENV"));
-            let env = arg.get_env().expect("variável aplicada por cli_command");
+                .unwrap_or_else(|| panic!("--{id} without an environment variable in ARG_ENV"));
+            let env = arg.get_env().expect("variable applied by cli_command");
             assert_eq!(env.to_str(), Some(brand::env_var(suffix).as_str()));
-            assert!(names.insert(env.to_owned()), "variável repetida: {env:?}");
+            assert!(names.insert(env.to_owned()), "repeated variable: {env:?}");
         }
     }
 
@@ -2138,14 +2134,14 @@ mod main_tests {
         let source = include_str!("main.rs");
         let gateway = source
             .find("Bind the gateway before restoring a persisted slice")
-            .expect("o arranque precisa iniciar o gateway");
+            .expect("the startup must start the gateway");
         let restore = source[gateway..]
             .find("match lastslice::inspect()")
             .map(|offset| gateway + offset)
-            .expect("o arranque precisa tratar a fatia persistida");
+            .expect("the startup must handle the persisted slice");
         assert!(
             gateway < restore,
-            "a restauração da fatia não pode atrasar o bind do gateway"
+            "restoring the slice cannot delay the gateway bind"
         );
     }
 
@@ -2161,7 +2157,7 @@ mod main_tests {
     #[test]
     fn runtime_build_commit_overrides_the_compiled_fallback() {
         assert_eq!(
-            build_commit_from(Some(" 97ec1e4 "), "desconhecido"),
+            build_commit_from(Some(" 97ec1e4 "), "unknown"),
             "97ec1e4"
         );
         assert_eq!(build_commit_from(Some("  "), "2a456c8"), "2a456c8");
@@ -2208,7 +2204,7 @@ mod main_tests {
             application_log_filter()
                 .to_string()
                 .contains("mainline::rpc::socket=error"),
-            "timeouts de leitura do socket DHT devem ser silenciosos no log da aplicação"
+            "DHT socket read timeouts must be silent in the application log"
         );
     }
 }

@@ -181,7 +181,7 @@ fn read_cache_token() -> Result<Option<String>, HfError> {
         Ok(token) => Ok(clean_token(Some(token))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(HfError::Io {
-            message: format!("não foi possível ler a credencial do Hugging Face: {error}"),
+            message: format!("could not read the Hugging Face credential: {error}"),
         }),
     }
 }
@@ -267,7 +267,7 @@ impl HuggingFaceProvider {
                 env!("CARGO_PKG_VERSION")
             ))
             .build()
-            .expect("cliente HTTP do Hugging Face deve ser criado");
+            .expect("the Hugging Face HTTP client must be created");
         Self {
             client,
             endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -305,13 +305,13 @@ impl HuggingFaceProvider {
 
     fn url(&self, segments: &[String]) -> Result<Url, HfError> {
         let mut url = Url::parse(&self.endpoint).map_err(|error| HfError::HfInvalidResponse {
-            message: format!("endpoint do Hugging Face inválido: {error}"),
+            message: format!("invalid Hugging Face endpoint: {error}"),
         })?;
         {
             let mut path = url
                 .path_segments_mut()
                 .map_err(|_| HfError::HfInvalidResponse {
-                    message: "endpoint do Hugging Face não aceita segmentos de caminho".into(),
+                    message: "the Hugging Face endpoint does not accept path segments".into(),
                 })?;
             for segment in segments {
                 path.push(segment);
@@ -367,7 +367,7 @@ impl HuggingFaceProvider {
             .send()
             .await
             .map_err(|_| HfError::HfInvalidResponse {
-                message: format!("{operation}: não foi possível conectar ao Hugging Face"),
+                message: format!("{operation}: could not connect to Hugging Face"),
             })?;
         let status = response.status();
         if !status.is_success() {
@@ -377,7 +377,7 @@ impl HuggingFaceProvider {
             .json()
             .await
             .map_err(|_| HfError::HfInvalidResponse {
-                message: format!("{operation}: resposta JSON inválida do Hugging Face"),
+                message: format!("{operation}: invalid JSON response from Hugging Face"),
             })
     }
 
@@ -386,7 +386,7 @@ impl HuggingFaceProvider {
         url.query_pairs_mut()
             .append_pair("search", query)
             .append_pair("limit", "100");
-        let value = self.request_json(url, "busca").await?;
+        let value = self.request_json(url, "search").await?;
         let items = array_values(&value, &["models", "items"]);
         items.into_iter().map(parse_model_summary).collect()
     }
@@ -399,7 +399,7 @@ impl HuggingFaceProvider {
         let value = self
             .request_json(
                 self.model_url(repo_id, revision, true)?,
-                "detalhes do modelo",
+                "model details",
             )
             .await?;
         parse_model_info_value(&value, repo_id)
@@ -416,7 +416,7 @@ impl HuggingFaceProvider {
             .send()
             .await
             .map_err(|_| HfError::HfDownloadFailed {
-                message: format!("{operation}: não foi possível consultar o arquivo remoto"),
+                message: format!("{operation}: could not query the remote file"),
             })?;
         if matches!(
             response.status(),
@@ -428,7 +428,7 @@ impl HuggingFaceProvider {
                 .send()
                 .await
                 .map_err(|_| HfError::HfDownloadFailed {
-                    message: format!("{operation}: não foi possível consultar o arquivo remoto"),
+                    message: format!("{operation}: could not query the remote file"),
                 })?;
             if !response.status().is_success() {
                 return Err(http_error(
@@ -488,7 +488,7 @@ impl HuggingFaceProvider {
         if let (Some(expected), Some(actual)) = (file.size_bytes, remote.size_bytes) {
             if expected != actual {
                 return Err(HfError::HfDownloadFailed {
-                    message: "o tamanho remoto mudou antes do download".into(),
+                    message: "the remote size changed before the download".into(),
                 });
             }
         }
@@ -499,7 +499,7 @@ impl HuggingFaceProvider {
         fs::create_dir_all(partial_root)
             .await
             .map_err(|error| HfError::Io {
-                message: format!("não foi possível preparar o cache do download: {error}"),
+                message: format!("could not prepare the download cache: {error}"),
             })?;
         let metadata = PartialMetadata {
             repo_id: repo_id.to_string(),
@@ -529,7 +529,7 @@ impl HuggingFaceProvider {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => {
                 return Err(HfError::Io {
-                    message: format!("não foi possível consultar o download parcial: {error}"),
+                    message: format!("could not query the partial download: {error}"),
                 })
             }
         };
@@ -582,11 +582,11 @@ impl HuggingFaceProvider {
                 .and_then(|value| value.to_str().ok())
                 .and_then(content_range_start)
                 .ok_or_else(|| HfError::HfDownloadFailed {
-                    message: "o servidor não confirmou a faixa retomada".into(),
+                    message: "the server did not confirm the resumed range".into(),
                 })?;
             if start != offset {
                 return Err(HfError::HfDownloadFailed {
-                    message: "o servidor retornou uma faixa inesperada".into(),
+                    message: "the server returned an unexpected range".into(),
                 });
             }
         }
@@ -606,7 +606,7 @@ impl HuggingFaceProvider {
                 .await
         }
         .map_err(|error| HfError::Io {
-            message: format!("não foi possível abrir o download parcial: {error}"),
+            message: format!("could not open the partial download: {error}"),
         })?;
         let mut stream = response.bytes_stream();
         let mut downloaded = offset;
@@ -622,13 +622,13 @@ impl HuggingFaceProvider {
             };
             let Some(item) = item else { break };
             let chunk = item.map_err(|_| HfError::HfDownloadFailed {
-                message: "a transferência foi interrompida".into(),
+                message: "the transfer was interrupted".into(),
             })?;
             output
                 .write_all(&chunk)
                 .await
                 .map_err(|error| HfError::Io {
-                    message: format!("não foi possível gravar o download: {error}"),
+                    message: format!("could not write the download: {error}"),
                 })?;
             downloaded = downloaded.saturating_add(chunk.len() as u64);
             emit_progress(
@@ -641,7 +641,7 @@ impl HuggingFaceProvider {
             );
         }
         output.flush().await.map_err(|error| HfError::Io {
-            message: format!("não foi possível concluir o arquivo baixado: {error}"),
+            message: format!("could not complete the downloaded file: {error}"),
         })?;
         drop(output);
 
@@ -650,17 +650,17 @@ impl HuggingFaceProvider {
             tokio::task::spawn_blocking(move || crate::pom::hash_file(&partial_for_hash))
                 .await
                 .map_err(|error| HfError::Io {
-                    message: format!("worker de integridade falhou: {error}"),
+                    message: format!("integrity worker failed: {error}"),
                 })?
                 .map_err(|error| HfError::Io {
-                    message: format!("não foi possível verificar o arquivo baixado: {error}"),
+                    message: format!("could not verify the downloaded file: {error}"),
                 })?;
         if let Some(expected) = metadata.size_bytes {
             if expected != size_bytes {
                 remove_file_if_present(&partial).await;
                 remove_file_if_present(&metadata_path).await;
                 return Err(HfError::HfDownloadFailed {
-                    message: "o tamanho do arquivo baixado não confere".into(),
+                    message: "the size of the downloaded file does not match".into(),
                 });
             }
         }
@@ -669,7 +669,7 @@ impl HuggingFaceProvider {
                 remove_file_if_present(&partial).await;
                 remove_file_if_present(&metadata_path).await;
                 return Err(HfError::HfDownloadFailed {
-                    message: "a integridade do arquivo baixado não confere".into(),
+                    message: "the integrity of the downloaded file does not match".into(),
                 });
             }
         }
@@ -677,20 +677,20 @@ impl HuggingFaceProvider {
         let final_path = destination.join(&file.filename);
         if fs::metadata(&final_path).await.is_ok() {
             return Err(HfError::Io {
-                message: "o arquivo de destino já existe".into(),
+                message: "the destination file already exists".into(),
             });
         }
         if let Some(parent) = final_path.parent() {
             fs::create_dir_all(parent)
                 .await
                 .map_err(|error| HfError::Io {
-                    message: format!("não foi possível preparar o destino do modelo: {error}"),
+                    message: format!("could not prepare the model destination: {error}"),
                 })?;
         }
         fs::rename(&partial, &final_path)
             .await
             .map_err(|error| HfError::Io {
-                message: format!("não foi possível finalizar o arquivo baixado: {error}"),
+                message: format!("could not finalize the downloaded file: {error}"),
             })?;
         remove_file_if_present(&metadata_path).await;
         Ok(final_path)
@@ -716,7 +716,7 @@ impl HuggingFaceProvider {
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(HfError::Cancelled),
             response = request.send() => response.map_err(|_| HfError::HfDownloadFailed {
-                message: "não foi possível iniciar o download do Hugging Face".into(),
+                message: "could not start the Hugging Face download".into(),
             })?,
         };
         if !response.status().is_success() {
@@ -803,7 +803,7 @@ impl ModelProvider for HuggingFaceProvider {
             .or_else(|| options.cache_dir.clone())
             .ok_or_else(|| HfError::InvalidInput {
                 field: "local_dir".into(),
-                message: "o destino local é obrigatório para um download HTTP".into(),
+                message: "the local destination is required for an HTTP download".into(),
             })?;
         validate_directory(&destination, "local_dir")?;
         let revision = options
@@ -900,7 +900,7 @@ impl ModelProvider for HuggingFaceProvider {
                         revision = %revision,
                         status = "error",
                         error_type = error_type(&error),
-                        "download de modelo falhou"
+                        "model download failed"
                     );
                     return Err(error);
                 }
@@ -946,7 +946,7 @@ impl ModelProvider for HuggingFaceProvider {
             download_duration_ms = duration_ms,
             download_bytes = total_bytes,
             status = "ok",
-            "download de modelo concluído"
+            "model download completed"
         );
         Ok(DownloadResult {
             repo_id,
@@ -976,7 +976,7 @@ impl ModelProvider for HuggingFaceProvider {
         let value = self
             .request_json(
                 self.url(&["api".into(), "whoami-v2".into()])?,
-                "autenticação",
+                "authentication",
             )
             .await?;
         let username = value
@@ -985,7 +985,7 @@ impl ModelProvider for HuggingFaceProvider {
             .or_else(|| value.get("username").and_then(Value::as_str))
             .map(str::to_string)
             .ok_or_else(|| HfError::HfInvalidResponse {
-                message: "autenticação não retornou um usuário".into(),
+                message: "authentication returned no user".into(),
             })?;
         Ok(HfCliStatus {
             installed: true,
@@ -1052,10 +1052,10 @@ fn http_error(status: StatusCode, authenticated: bool, operation: &str, download
         StatusCode::NOT_FOUND => HfError::HfRepositoryNotFound,
         StatusCode::TOO_MANY_REQUESTS => HfError::HfRateLimited,
         _ if download => HfError::HfDownloadFailed {
-            message: format!("{operation}: o servidor retornou HTTP {}", status.as_u16()),
+            message: format!("{operation}: the server returned HTTP {}", status.as_u16()),
         },
         _ => HfError::HfInvalidResponse {
-            message: format!("{operation}: o servidor retornou HTTP {}", status.as_u16()),
+            message: format!("{operation}: the server returned HTTP {}", status.as_u16()),
         },
     }
 }
@@ -1063,9 +1063,9 @@ fn http_error(status: StatusCode, authenticated: bool, operation: &str, download
 fn parse_model_summary(value: &Value) -> Result<ModelSummary, HfError> {
     let object = value
         .as_object()
-        .ok_or_else(|| invalid_json("modelo não é objeto"))?;
+        .ok_or_else(|| invalid_json("model is not an object"))?;
     Ok(ModelSummary {
-        repo_id: required_string(object, &["id", "modelId", "repo_id"], "modelo sem id")?,
+        repo_id: required_string(object, &["id", "modelId", "repo_id"], "model without an id")?,
         author: string_field(object, &["author", "owner"]),
         description: string_field(object, &["description"]),
         last_modified: string_field(object, &["lastModified", "last_modified"]),
@@ -1080,7 +1080,7 @@ fn parse_model_summary(value: &Value) -> Result<ModelSummary, HfError> {
 fn parse_model_info_value(value: &Value, fallback_repo_id: &str) -> Result<ModelInfo, HfError> {
     let object = value
         .as_object()
-        .ok_or_else(|| invalid_json("informação do modelo não é objeto"))?;
+        .ok_or_else(|| invalid_json("model information is not an object"))?;
     let repo_id = string_field(object, &["id", "modelId", "repo_id"])
         .unwrap_or_else(|| fallback_repo_id.to_string());
     let files = object
@@ -1108,17 +1108,17 @@ fn parse_model_info_value(value: &Value, fallback_repo_id: &str) -> Result<Model
 fn parse_model_files_value(value: &Value) -> Result<Vec<ModelFile>, HfError> {
     let items = value
         .as_array()
-        .ok_or_else(|| invalid_json("lista de arquivos não é uma matriz"))?;
+        .ok_or_else(|| invalid_json("file list is not an array"))?;
     items
         .iter()
         .map(|item| {
             let object = item
                 .as_object()
-                .ok_or_else(|| invalid_json("arquivo não é objeto"))?;
+                .ok_or_else(|| invalid_json("file is not an object"))?;
             let filename = required_string(
                 object,
                 &["path", "rfilename", "filename", "name"],
-                "arquivo sem nome",
+                "file without a name",
             )?;
             validate_filename(&filename)?;
             let lfs = object.get("lfs").and_then(Value::as_object);
@@ -1349,10 +1349,10 @@ fn partial_key(repo_id: &str, revision: &str, filename: &str) -> String {
 
 async fn write_partial_metadata(path: &Path, metadata: &PartialMetadata) -> Result<(), HfError> {
     let bytes = serde_json::to_vec(metadata).map_err(|error| HfError::Io {
-        message: format!("não foi possível serializar o estado do download: {error}"),
+        message: format!("could not serialize the download state: {error}"),
     })?;
     fs::write(path, bytes).await.map_err(|error| HfError::Io {
-        message: format!("não foi possível persistir o estado do download: {error}"),
+        message: format!("could not persist the download state: {error}"),
     })
 }
 
@@ -1544,7 +1544,7 @@ mod tests {
                 serde_json::json!([{
                     "id": "owner/model",
                     "author": "owner",
-                    "description": "modelo de teste",
+                    "description": "test model",
                     "downloads": 7,
                     "likes": 2,
                     "tags": ["gguf"]
@@ -1566,7 +1566,7 @@ mod tests {
                 StatusCode::OK,
                 serde_json::json!({
                     "id": "owner/model",
-                    "description": "modelo de teste",
+                    "description": "test model",
                     "cardData": {"license": "apache-2.0"},
                     "siblings": [{
                         "rfilename": "model.gguf",

@@ -1657,7 +1657,7 @@ impl Network {
         broadcast_addr: SocketAddr,
     ) -> Result<Self> {
         if !broadcast_addr.ip().is_loopback() {
-            return Err(anyhow::anyhow!("o testkit UDP só aceita destinos loopback"));
+            return Err(anyhow::anyhow!("the UDP testkit only accepts loopback destinations"));
         }
         let socket = UdpSocket::bind("127.0.0.1:0").await?;
         let bind_addr = socket.local_addr()?;
@@ -1797,16 +1797,16 @@ impl Network {
             return Ok(());
         }
         let Some(admission) = self.admission.as_ref() else {
-            anyhow::bail!("a descoberta local exige a admissão do nó");
+            anyhow::bail!("local discovery requires the admission of the node");
         };
         if self.profile() != crate::profile::NodeProfile::Admin {
-            anyhow::bail!("somente o administrador pode habilitar a descoberta local");
+            anyhow::bail!("only the administrator can enable local discovery");
         }
         let cfg = admission.auth.read().await;
         let trust = admission.trust.document();
         if trust.setup.is_none() {
             anyhow::bail!(
-                "a descoberta local exige os dados iniciais da rede no documento de confiança"
+                "local discovery requires the initial network data in the trust document"
             );
         }
         let document = serde_json::to_string_pretty(&trust)?;
@@ -1914,7 +1914,7 @@ impl Network {
     pub fn set_advertise_addr(&self, raw: Option<&str>) {
         let normalized = raw.and_then(|r| advertised_addr(r, self.bind_addr.port()));
         if let Some(ref a) = normalized {
-            info!("Anunciando o endereço fixo {a} (em vez do endereço de origem)");
+            info!("Announcing the fixed address {a} (instead of the source address)");
         }
         *self.advertise_addr.write().expect("advertise_addr lock") = normalized;
     }
@@ -2036,7 +2036,7 @@ impl Network {
         }
         let mut guard = self.observed_addr.write().expect("observed_addr lock");
         if guard.as_deref() != Some(host_port) {
-            info!("📡 Endereço público observado por um peer: {host_port}");
+            info!("📡 Public address observed by a peer: {host_port}");
         }
         *guard = Some(host_port.to_string());
     }
@@ -2696,7 +2696,7 @@ impl Network {
     pub async fn detach(&self) {
         self.detached.store(true, Ordering::Relaxed);
         let forgotten = { self.peers.write().await.drain().count() };
-        info!("🔌 Nó fora da rede — {forgotten} peers esquecidos");
+        info!("🔌 Node outside the network — {forgotten} peers forgotten");
     }
 
     /// Rejoin: start announcing again and go looking for the bootstrap nodes.
@@ -2704,7 +2704,7 @@ impl Network {
         self.detached.store(false, Ordering::Relaxed);
         self.network_settings_sync_needed
             .store(true, Ordering::Release);
-        info!("🔌 Nó voltando para a rede");
+        info!("🔌 Node returning to the network");
         self.bootstrap_discovery().await?;
         self.announce(assignment).await
     }
@@ -2869,7 +2869,7 @@ impl Network {
         }
 
         info!(
-            "🔎 Reencontrando {}: nenhum endereço conhecido responde",
+            "🔎 Rediscovering {}: no known address answers",
             short(node_id)
         );
 
@@ -3206,7 +3206,7 @@ impl Network {
                 self.remember_public_discovery_peer(&peer).await;
                 if !self.admit_peer(&peer).await {
                     debug!(
-                        "Announce de {} descartado: peer sem prova de pertencimento",
+                        "Announce from {} dropped: peer without proof of membership",
                         short(&peer.node_id)
                     );
                     return;
@@ -3340,7 +3340,7 @@ impl Network {
                     self.remember_public_discovery_peer(&peer).await;
                     if !self.admit_peer(&peer).await {
                         debug!(
-                            "PeerList descartou {}: peer sem prova de pertencimento",
+                            "PeerList dropped {}: peer without proof of membership",
                             short(&peer.node_id)
                         );
                         continue;
@@ -3633,7 +3633,7 @@ impl Network {
             },
             Err(error) => {
                 debug!(
-                    "admissão de {} pelo túnel não concluiu: {error}",
+                    "admission of {} through the tunnel did not complete: {error}",
                     short(&peer.node_id)
                 );
                 AdmissionProbe::Unreachable
@@ -3676,7 +3676,7 @@ impl Network {
         let entry = admission_verdict(probe, previous_proof, now);
         if probe == AdmissionProbe::Unreachable && entry.allowed {
             debug!(
-                "admissão de {}: sem resposta, mantido pela prova anterior",
+                "admission of {}: no answer, kept by the previous proof",
                 short(&peer.node_id)
             );
         }
@@ -4011,9 +4011,9 @@ impl Network {
                 pending.remove(&peer.node_id);
             }
             debug!(
-                "admissão de {} concluída fora do swarm: {}",
+                "admission of {} completed outside the swarm: {}",
                 short(&peer.node_id),
-                if allowed { "admitido" } else { "recusado" }
+                if allowed { "admitted" } else { "refused" }
             );
         });
     }
@@ -4060,7 +4060,7 @@ impl Network {
     pub(crate) async fn insert_admitted_peer(&self, mut peer: PeerInfo) {
         if peer.dialable_addr().is_none() {
             debug!(
-                "ignorando peer {} sem endereço UDP discável",
+                "ignoring peer {} without a dialable UDP address",
                 short(&peer.node_id)
             );
             return;
@@ -4099,7 +4099,7 @@ impl Network {
         self.remember_public_discovery_peer(&peer).await;
         if !self.admit_peer(&peer).await {
             debug!(
-                "peer {} recusado pela catraca de admissão",
+                "peer {} refused by the admission gate",
                 short(&peer.node_id)
             );
             return;
@@ -4195,7 +4195,7 @@ mod tests {
         for assignment in [None, Some(&asgn)] {
             let gossip: serde_json::Value = serde_json::from_slice(
                 &net.gossip_announce_bytes(assignment)
-                    .expect("o gossipsub publica sempre, com ou sem assignment"),
+                    .expect("gossipsub always publishes, with or without an assignment"),
             )
             .unwrap();
             let udp: serde_json::Value =
@@ -4215,7 +4215,7 @@ mod tests {
                 "relay/v2-direct",
                 "speculate/v1-lookup",
             ] {
-                assert!(caps.iter().any(|c| c == cap), "faltou {cap} em {caps:?}");
+                assert!(caps.iter().any(|c| c == cap), "missing {cap} in {caps:?}");
             }
             assert_eq!(gossip["profile"], "admin");
             // Os dois anúncios (UDP e gossipsub) têm que carregar a flag: se só
@@ -4292,7 +4292,7 @@ mod tests {
     async fn secondary_authority_is_not_mistaken_for_the_primary() {
         let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
             .await
-            .expect("socket UDP em porta efêmera");
+            .expect("UDP socket on an ephemeral port");
         let (probe, mut received) = tokio::sync::mpsc::unbounded_channel();
         net.set_policy_principal_pubkey("primary-key");
         net.set_cluster_logs_probe(probe);
@@ -4307,7 +4307,7 @@ mod tests {
     async fn admin_peers_returns_all_live_admin_destinations() {
         let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
             .await
-            .expect("socket UDP em porta efêmera");
+            .expect("UDP socket on an ephemeral port");
         let mut first = dummy_peer("admin-a", "127.0.0.1:8081");
         first.pubkey = "authority-a".into();
         first.profile = crate::profile::NodeProfile::Admin;
@@ -4385,7 +4385,7 @@ mod tests {
             .insert(legacy_field.clone(), serde_json::json!(8_192));
 
         let result: Result<RuntimeCapacity, _> = serde_json::from_value(value);
-        let error = result.expect_err("campo removido não pode ser ignorado no wire");
+        let error = result.expect_err("a removed field cannot be ignored on the wire");
         assert!(error.to_string().contains(&legacy_field));
     }
 
@@ -4887,7 +4887,7 @@ mod tests {
         for count in [0usize, 1, 2, 3, 5, 12] {
             let chunks = peer_list_chunks(vec![peer.clone(); count]);
             let sent: usize = chunks.iter().map(|c| c.len()).sum();
-            assert_eq!(sent, count, "nenhum peer pode sumir no fatiamento");
+            assert_eq!(sent, count, "no peer can disappear in the slicing");
             for chunk in &chunks {
                 let bytes = serde_json::to_vec(&P2PMessage::PeerList {
                     peers: chunk.clone(),
@@ -4896,7 +4896,7 @@ mod tests {
                 .len();
                 assert!(
                     bytes <= MAX_DATAGRAM_PAYLOAD || chunk.len() == 1,
-                    "datagrama de {bytes} bytes com {} peers passa do orcamento",
+                    "datagram of {bytes} bytes with {} peers exceeds the budget",
                     chunk.len()
                 );
             }
@@ -4935,7 +4935,7 @@ mod tests {
         .await;
 
         let peers = net.peers.read().await;
-        let peer = peers.get("peer").expect("o peer antigo continua conhecido");
+        let peer = peers.get("peer").expect("the old peer stays known");
         assert_eq!(peer.end_layer, 28);
         assert_eq!(peer.total_layers, 44);
     }
@@ -5020,12 +5020,12 @@ mod tests {
         let stored = net.peers.read().await["peer"].clone();
         assert!(
             !stored.addr_candidates.iter().any(|c| c == dead),
-            "o endereco morto voltou pelo gossip: {:?}",
+            "the dead address came back through gossip: {:?}",
             stored.addr_candidates
         );
         assert!(
             stored.addr_candidates.iter().any(|c| c == alive),
-            "o endereco atual tem de ficar: {:?}",
+            "the current address must stay: {:?}",
             stored.addr_candidates
         );
     }
@@ -5128,7 +5128,7 @@ mod tests {
         .await;
 
         let peers = net.peers.read().await;
-        let peer = peers.get("peer").expect("o anúncio deve criar o peer");
+        let peer = peers.get("peer").expect("the announce must create the peer");
         assert_eq!(peer.addr_candidates, vec![stale]);
     }
 
@@ -5151,7 +5151,7 @@ mod tests {
                 "http://10.0.0.5:8080".to_string(),
                 "http://[2804:f30::1]:8080".to_string(),
             ],
-            "o primeiro e fato conhecido, e nenhuma URL sai repetida"
+            "the first is a known fact, and no URL comes out repeated"
         );
         assert_eq!(
             peer.gateway_url(),
@@ -5169,12 +5169,12 @@ mod tests {
         table.invalidate("peer");
         assert!(
             table.is_failed("peer", "http://[2804:d55::9]:8080"),
-            "a rotacao nao pode apagar a prova de que o endereco antigo morreu"
+            "the rotation cannot erase the proof that the old address died"
         );
         table.forget("peer");
         assert!(
             !table.is_failed("peer", "http://[2804:d55::9]:8080"),
-            "quando o peer some de vez, a memoria dele vai junto"
+            "when the peer is gone for good, its memory goes along"
         );
     }
 
@@ -5266,7 +5266,7 @@ mod tests {
         let peer = peer_with_candidates(vec!["203.0.113.5:42777", "192.168.1.9:42777"]);
         assert_eq!(
             peer.addr, "192.168.1.9:42777",
-            "addr fica desatualizado de propósito neste teste"
+            "addr is left outdated on purpose in this test"
         );
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -5295,12 +5295,12 @@ mod tests {
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z"}"#;
         let msg: P2PMessage =
-            serde_json::from_str(old).expect("Announce antigo tem que parsear");
+            serde_json::from_str(old).expect("an old Announce must parse");
         match msg {
             P2PMessage::Announce {
                 addr_candidates, ..
             } => assert!(addr_candidates.is_empty()),
-            _ => panic!("esperava Announce"),
+            _ => panic!("expected Announce"),
         }
     }
 
@@ -5313,10 +5313,10 @@ mod tests {
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z"}"#;
         let msg: P2PMessage =
-            serde_json::from_str(old).expect("Announce sem libp2p_peer_id tem que parsear");
+            serde_json::from_str(old).expect("an Announce without libp2p_peer_id must parse");
         match msg {
             P2PMessage::Announce { libp2p_peer_id, .. } => assert_eq!(libp2p_peer_id, None),
-            _ => panic!("esperava Announce"),
+            _ => panic!("expected Announce"),
         }
     }
 
@@ -5329,13 +5329,13 @@ mod tests {
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z",
             "libp2p_peer_id":"12D3KooWAbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh"}"#;
-        let msg: P2PMessage = serde_json::from_str(with_id).expect("Announce tem que parsear");
+        let msg: P2PMessage = serde_json::from_str(with_id).expect("an Announce must parse");
         match &msg {
             P2PMessage::Announce { libp2p_peer_id, .. } => assert_eq!(
                 libp2p_peer_id.as_deref(),
                 Some("12D3KooWAbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh")
             ),
-            _ => panic!("esperava Announce"),
+            _ => panic!("expected Announce"),
         }
         let re_encoded = serde_json::to_string(&msg).unwrap();
         let re_decoded: P2PMessage = serde_json::from_str(&re_encoded).unwrap();
@@ -5344,7 +5344,7 @@ mod tests {
                 libp2p_peer_id.as_deref(),
                 Some("12D3KooWAbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh")
             ),
-            _ => panic!("esperava Announce"),
+            _ => panic!("expected Announce"),
         }
     }
 
@@ -5357,7 +5357,7 @@ mod tests {
             "start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "last_seen":"2026-08-13T00:00:00Z"}"#;
         let peer: PeerInfo =
-            serde_json::from_str(old).expect("PeerInfo sem libp2p_peer_id tem que parsear");
+            serde_json::from_str(old).expect("a PeerInfo without libp2p_peer_id must parse");
         assert_eq!(peer.libp2p_peer_id, None);
     }
 
@@ -5947,7 +5947,7 @@ mod tests {
 
         let kept = admission_verdict(AdmissionProbe::Unreachable, Some(recent), now);
         assert!(kept.allowed);
-        assert_eq!(kept.proven_at, Some(recent), "a folga não renova a prova");
+        assert_eq!(kept.proven_at, Some(recent), "the slack does not renew the proof");
         assert_eq!(kept.expires_at, now + REJECTED_ADMISSION_CACHE_TTL);
 
         assert!(!admission_verdict(AdmissionProbe::Unreachable, Some(stale), now).allowed);
@@ -5999,7 +5999,7 @@ mod tests {
         }
         assert!(
             network.admit_peer(&peer).await,
-            "sem resposta, a prova recente mantém o peer"
+            "without an answer, the recent proof keeps the peer"
         );
     }
 
@@ -6050,7 +6050,7 @@ mod tests {
             }
         })
         .await
-        .expect("a sonda em segundo plano deve concluir");
+        .expect("the background probe must complete");
         assert!(verdict);
         assert_eq!(network.peer_count().await, 0);
         tokio::time::timeout(StdDuration::from_secs(1), async {
@@ -6059,7 +6059,7 @@ mod tests {
             }
         })
         .await
-        .expect("a marca de sonda pendente deve sair");
+        .expect("the pending probe mark must go away");
 
         server.abort();
     }
@@ -6387,10 +6387,10 @@ mod tests {
         // Tique que cai numa varredura de descoberta.
         net.discovery_sweep(DISCOVERY_SWEEP_TICKS).await.unwrap();
 
-        let msg = recv_msg(&sock, 500).await.expect("nada chegou no peer");
+        let msg = recv_msg(&sock, 500).await.expect("nothing arrived at the peer");
         assert!(
             matches!(msg, P2PMessage::PeerRequest { .. }),
-            "esperava PeerRequest, veio {msg:?}"
+            "expected PeerRequest, got {msg:?}"
         );
     }
 
@@ -6423,10 +6423,10 @@ mod tests {
                 sweeps += 1;
                 assert!(
                     sent <= SWEEP_FANOUT,
-                    "varredura falou com {sent} peers, acima do limite {SWEEP_FANOUT}"
+                    "the sweep talked to {sent} peers, above the limit {SWEEP_FANOUT}"
                 );
             } else {
-                assert_eq!(sent, 0, "tique fora da varredura não deve perguntar nada");
+                assert_eq!(sent, 0, "a tick outside the sweep must ask nothing");
             }
         }
         assert_eq!(sweeps, 8);
@@ -6436,7 +6436,7 @@ mod tests {
                 asked.insert(id.clone());
             }
         }
-        assert_eq!(asked.len(), 8, "o rodízio tem que cobrir todos os peers");
+        assert_eq!(asked.len(), 8, "the rotation must cover all the peers");
     }
 
     /// Mesma guarda de `a_detached_node_neither_announces_nor_looks_for_bootstrap`,
@@ -6454,7 +6454,7 @@ mod tests {
         net.detach().await;
 
         assert_eq!(net.discovery_sweep(DISCOVERY_SWEEP_TICKS).await.unwrap(), 0);
-        assert!(recv_msg(&sock, 300).await.is_none(), "nó destacado falou");
+        assert!(recv_msg(&sock, 300).await.is_none(), "detached node spoke");
     }
 
     /// Um pânico no tratamento de um datagrama não pode matar a task que drena
@@ -6513,7 +6513,7 @@ mod tests {
             }
         })
         .await
-        .expect("o receive_loop não processou a mensagem depois do pânico");
+        .expect("receive_loop did not process the message after the panic");
 
         loop_task.abort();
     }
@@ -6547,7 +6547,7 @@ mod tests {
         let received =
             tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv_from(&mut buf))
                 .await
-                .expect("nada chegou de um remetente IPv4 no socket [::]")
+                .expect("nothing arrived from an IPv4 sender on the [::] socket")
                 .unwrap();
 
         assert_eq!(&buf[..received.0], b"oi");

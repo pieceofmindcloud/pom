@@ -499,7 +499,7 @@ export function DeploymentInspector({
   }) {
     if (capability?.state === "unsupported" && !alwaysVisible) return null;
     const unknown = capability?.state === "unknown";
-    const topologyWarning = capability?.reason.startsWith("controle visível");
+    const topologyWarning = capability?.reason.startsWith("control visible");
     const warning = capability?.warning;
     const alert =
       capability && (unknown || topologyWarning || warning)
@@ -741,9 +741,9 @@ export function DeploymentInspector({
                   />
                 </div>
               ) : vision.candidates.length > 1 ? (
-                <InspectorRow label="Modelo de visão" tip="Escolha o projetor compatível que será usado na cabeça da implantação.">
+                <InspectorRow label={t("deployStudio.visionModel")} tip={t("deployStudio.visionModelTip")}>
                   <Select
-                    aria-label="Projetor de visão"
+                    aria-label={t("deployStudio.visionProjector")}
                     value={vision.path ?? ""}
                     disabled={readOnly}
                     onChange={(event) => vision.onPathChange(event.target.value)}

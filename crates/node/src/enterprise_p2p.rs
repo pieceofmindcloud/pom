@@ -50,7 +50,7 @@ fn signing_bytes(proof: &PeerFingerprintProof) -> Vec<u8> {
         "pom_version": proof.pom_version,
         "public_key": proof.public_key,
     }))
-    .expect("prova Enterprise deve serializar")
+    .expect("Enterprise proof must serialize")
 }
 
 pub(crate) fn answer_challenge(
@@ -79,20 +79,20 @@ pub(crate) fn answer_challenge(
 #[cfg(test)]
 fn verify_proof(challenge: &PeerFingerprintChallenge, proof: &PeerFingerprintProof) -> Result<()> {
     if proof.protocol != PEER_PROTOCOL || proof.nonce != challenge.nonce {
-        anyhow::bail!("prova Enterprise fora do desafio atual");
+        anyhow::bail!("Enterprise proof outside the current challenge");
     }
-    let public_key = hex::decode(&proof.public_key).context("chave pública Enterprise inválida")?;
+    let public_key = hex::decode(&proof.public_key).context("invalid Enterprise public key")?;
     let public_key: [u8; 32] = public_key
         .try_into()
-        .map_err(|_| anyhow::anyhow!("chave pública Enterprise deve ter 32 bytes"))?;
-    let verifying_key = VerifyingKey::from_bytes(&public_key).context("chave pública inválida")?;
+        .map_err(|_| anyhow::anyhow!("Enterprise public key must be 32 bytes"))?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key).context("invalid public key")?;
     let signature = URL_SAFE_NO_PAD
         .decode(&proof.signature)
-        .context("assinatura Enterprise inválida")?;
-    let signature = Signature::from_slice(&signature).context("tamanho de assinatura inválido")?;
+        .context("invalid Enterprise signature")?;
+    let signature = Signature::from_slice(&signature).context("invalid signature size")?;
     verifying_key
         .verify(&signing_bytes(proof), &signature)
-        .context("assinatura do fingerprint Enterprise não confere")
+        .context("Enterprise fingerprint signature does not match")
 }
 
 #[cfg(test)]
@@ -117,7 +117,7 @@ mod tests {
         };
         let proof = answer_challenge(&challenge, &fingerprint, "0.1.0", &key);
 
-        verify_proof(&challenge, &proof).expect("prova válida");
+        verify_proof(&challenge, &proof).expect("valid proof");
         let json = serde_json::to_string(&proof).expect("JSON");
         assert!(!json.contains("license_key"));
         assert!(!json.contains("installation-secret"));

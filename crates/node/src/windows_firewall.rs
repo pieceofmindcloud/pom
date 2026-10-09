@@ -80,13 +80,13 @@ pub struct SetupFirewallCheck {
 pub fn desired_rules(p2p_port: u16) -> Result<Vec<FirewallRuleSpec>, String> {
     let inference = p2p_port
         .checked_add(1000)
-        .ok_or_else(|| "a porta QUIC de inferência ultrapassa 65535".to_string())?;
+        .ok_or_else(|| "the inference QUIC port exceeds 65535".to_string())?;
     let gateway = p2p_port
         .checked_add(2000)
-        .ok_or_else(|| "a porta QUIC do gateway ultrapassa 65535".to_string())?;
+        .ok_or_else(|| "the gateway QUIC port exceeds 65535".to_string())?;
     let libp2p = p2p_port
         .checked_add(10000)
-        .ok_or_else(|| "a porta TCP do libp2p ultrapassa 65535".to_string())?;
+        .ok_or_else(|| "the libp2p TCP port exceeds 65535".to_string())?;
     Ok(vec![
         FirewallRuleSpec {
             kind: FirewallRuleKind::Discovery,
@@ -149,14 +149,14 @@ pub fn spawn_startup_check(database: Arc<PomDb>, p2p_port: u16) {
     tokio::spawn(async move {
         let result = tokio::task::spawn_blocking(move || startup_check(&database, p2p_port)).await;
         match result {
-            Ok(Ok(())) => tracing::debug!(p2p_port, "verificação do firewall do Windows concluída"),
+            Ok(Ok(())) => tracing::debug!(p2p_port, "Windows firewall check completed"),
             Ok(Err(error)) => tracing::warn!(
                 p2p_port,
-                "não foi possível verificar o firewall do Windows: {error:#}"
+                "could not check the Windows firewall: {error:#}"
             ),
             Err(error) => tracing::warn!(
                 p2p_port,
-                "verificação do firewall do Windows cancelada: {error}"
+                "Windows firewall check cancelled: {error}"
             ),
         }
     });
@@ -178,14 +178,14 @@ pub async fn retry(_auth: ConnectionAuth, State(state): State<GatewayState>) -> 
         Ok(Err(error)) => {
             tracing::warn!(
                 p2p_port = port,
-                "permissão do firewall recusada ou falhou: {error:#}"
+                "firewall permission refused or failed: {error:#}"
             );
             Json(status_for(&state.database, port)).into_response()
         }
         Err(error) => {
             tracing::warn!(
                 p2p_port = port,
-                "pedido de permissão do firewall cancelado: {error}"
+                "firewall permission request cancelled: {error}"
             );
             Json(status_for(&state.database, port)).into_response()
         }
@@ -277,7 +277,7 @@ fn request_elevation(database: &PomDb, p2p_port: u16) -> Result<()> {
     #[cfg(windows)]
     let result = launch_elevated_helper(p2p_port);
     #[cfg(not(windows))]
-    let result: Result<()> = Err(anyhow!("o firewall automático só existe no Windows"));
+    let result: Result<()> = Err(anyhow!("the automatic firewall only exists on Windows"));
 
     match result {
         Ok(()) => database.save_windows_firewall_setup(&SetupRecord {
@@ -329,7 +329,7 @@ mod platform {
         fn new() -> Result<Self> {
             unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
                 .ok()
-                .map_err(|error| anyhow!("inicializar COM do firewall: {error}"))?;
+                .map_err(|error| anyhow!("initialize the firewall COM: {error}"))?;
             Ok(Self)
         }
     }
@@ -343,9 +343,9 @@ mod platform {
         let _com = ComGuard::new()?;
         let policy: INetFwPolicy2 =
             unsafe { CoCreateInstance(&CLSID_NET_FW_POLICY2, None, CLSCTX_INPROC_SERVER) }
-                .map_err(|error| anyhow!("abrir política do Windows Firewall: {error}"))?;
+                .map_err(|error| anyhow!("open the Windows Firewall policy: {error}"))?;
         let rules = unsafe { policy.Rules() }
-            .map_err(|error| anyhow!("abrir regras do Windows Firewall: {error}"))?;
+            .map_err(|error| anyhow!("open the Windows Firewall rules: {error}"))?;
         let executable = std::env::current_exe()?.to_string_lossy().into_owned();
         for spec in desired_rules(port).map_err(|error| anyhow!(error))? {
             let name = rule_name(&spec);
@@ -353,13 +353,13 @@ mod platform {
                 Ok(rule) => rule,
                 Err(_) => {
                     unsafe { CoCreateInstance(&CLSID_NET_FW_RULE, None, CLSCTX_INPROC_SERVER) }
-                        .map_err(|error| anyhow!("criar regra {name}: {error}"))?
+                        .map_err(|error| anyhow!("create rule {name}: {error}"))?
                 }
             };
             configure_rule(&rule, &spec, &executable)?;
             if unsafe { rules.Item(&BSTR::from(name.as_str())) }.is_err() {
                 unsafe { rules.Add(&rule) }
-                    .map_err(|error| anyhow!("adicionar regra {name}: {error}"))?;
+                    .map_err(|error| anyhow!("add rule {name}: {error}"))?;
             }
         }
         Ok(())
@@ -367,7 +367,7 @@ mod platform {
 
     fn configure_rule(rule: &INetFwRule, spec: &FirewallRuleSpec, executable: &str) -> Result<()> {
         let name = BSTR::from(rule_name(spec));
-        let description = BSTR::from("Portas POM para descoberta, QUIC e libp2p");
+        let description = BSTR::from("POM ports for discovery, QUIC and libp2p");
         let application = BSTR::from(executable);
         let port = BSTR::from(spec.port.to_string());
         unsafe {
@@ -391,9 +391,9 @@ mod platform {
         let _com = ComGuard::new()?;
         let policy: INetFwPolicy2 =
             unsafe { CoCreateInstance(&CLSID_NET_FW_POLICY2, None, CLSCTX_INPROC_SERVER) }
-                .map_err(|error| anyhow!("abrir política do Windows Firewall: {error}"))?;
+                .map_err(|error| anyhow!("open the Windows Firewall policy: {error}"))?;
         let rules = unsafe { policy.Rules() }
-            .map_err(|error| anyhow!("abrir regras do Windows Firewall: {error}"))?;
+            .map_err(|error| anyhow!("open the Windows Firewall rules: {error}"))?;
         let rule = unsafe { rules.Item(&BSTR::from(rule_name(spec))) };
         let Ok(rule) = rule else { return Ok(false) };
         let expected_protocol = match spec.protocol {
@@ -423,21 +423,21 @@ mod platform {
             ..Default::default()
         };
         unsafe { ShellExecuteExW(&mut info) }
-            .map_err(|error| anyhow!("solicitar elevação UAC: {error}"))?;
+            .map_err(|error| anyhow!("request UAC elevation: {error}"))?;
         let process = info.hProcess;
         if process.is_invalid() {
-            return Err(anyhow!("o Windows não retornou o processo elevado"));
+            return Err(anyhow!("Windows did not return the elevated process"));
         }
         unsafe { WaitForSingleObject(process, INFINITE) };
         let mut exit_code = 1;
         unsafe { GetExitCodeProcess(process, &mut exit_code) }
-            .map_err(|error| anyhow!("ler resultado do helper elevado: {error}"))?;
+            .map_err(|error| anyhow!("read the result of the elevated helper: {error}"))?;
         unsafe { CloseHandle(process) }
-            .map_err(|error| anyhow!("fechar helper elevado: {error}"))?;
+            .map_err(|error| anyhow!("close the elevated helper: {error}"))?;
         if exit_code == 0 {
             Ok(())
         } else {
-            Err(anyhow!("helper elevado terminou com código {exit_code}"))
+            Err(anyhow!("elevated helper ended with code {exit_code}"))
         }
     }
 

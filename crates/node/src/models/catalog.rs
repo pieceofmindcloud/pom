@@ -320,17 +320,17 @@ impl SidecarLink {
     /// or vision "embedded", which no GGUF provides.
     pub fn validate(&self) -> Result<(), String> {
         if self.model_key.trim().is_empty() {
-            return Err("vínculo sem modelo".into());
+            return Err("link without a model".into());
         }
         match self.mode {
             SidecarMode::File
                 if self.file_name.as_deref().is_none_or(|name| name.trim().is_empty())
                     || self.size_bytes.is_none() =>
             {
-                Err("vínculo de arquivo sem nome ou tamanho".into())
+                Err("file link without a name or size".into())
             }
             SidecarMode::Embedded if self.kind == SidecarKind::Mmproj => {
-                Err("a visão não vem embutida no GGUF; escolha um projetor".into())
+                Err("vision is not embedded in the GGUF; choose a projector".into())
             }
             _ => Ok(()),
         }
@@ -616,7 +616,7 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             debug!(
                 path = %root.display(),
                 error = %error,
-                "ignorando diretório ilegível durante a descoberta de modelos"
+                "ignoring an unreadable directory during model discovery"
             );
             return;
         }
@@ -628,7 +628,7 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
                 debug!(
                     path = %root.display(),
                     error = %error,
-                    "ignorando entrada ilegível durante a descoberta de modelos"
+                    "ignoring an unreadable entry during model discovery"
                 );
                 continue;
             }
@@ -640,7 +640,7 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
                 debug!(
                     path = %path.display(),
                     error = %error,
-                    "ignorando entrada cujo tipo não pôde ser lido durante a descoberta de modelos"
+                    "ignoring an entry whose type could not be read during model discovery"
                 );
                 continue;
             }
@@ -822,7 +822,7 @@ fn describe(
         path: path.to_string_lossy().into_owned(),
         mmproj_path: None,
         mmproj_candidates: Vec::new(),
-        mmproj_reason: Some("aguardando leitura dos metadados GGUF para validar o projetor".into()),
+        mmproj_reason: Some("waiting for the GGUF metadata to be read to validate the projector".into()),
         identity_names: Vec::new(),
         size_bytes,
         multipart: false,
@@ -864,10 +864,10 @@ struct ProjectorResolution {
 /// Quantization is never used to select a projector, and no payload hash is read.
 fn resolve_mmproj_sibling(model: &Path, model_info: &GgufInfo) -> ProjectorResolution {
     let Some(parent) = model.parent() else {
-        return no_projector("o modelo não tem diretório pai para procurar projetores");
+        return no_projector("the model has no parent directory to look for projectors");
     };
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return no_projector("não foi possível ler o diretório do modelo para procurar projetores");
+        return no_projector("could not read the model directory to look for projectors");
     };
     let mut projectors = Vec::new();
     let mut sibling_models = Vec::new();
@@ -899,7 +899,7 @@ fn resolve_mmproj_sibling(model: &Path, model_info: &GgufInfo) -> ProjectorResol
         }
     }
     if projectors.is_empty() {
-        return no_projector("nenhum projetor GGUF foi encontrado neste diretório");
+        return no_projector("no GGUF projector was found in this directory");
     }
 
     let model_name = model
@@ -999,24 +999,24 @@ fn resolve_mmproj_sibling(model: &Path, model_info: &GgufInfo) -> ProjectorResol
     }
     if let Some((model_dim, projector_dim)) = identity_dimension_mismatches.first() {
         return no_projector(&format!(
-            "projetor identificado para este modelo tem dimensão incompatível: o modelo exige embedding_length={}, mas o mmproj declara clip.vision.projection_dim={}; use o projetor compatível",
-            model_dim.map_or_else(|| "desconhecido".into(), |value| value.to_string()),
-            projector_dim.map_or_else(|| "desconhecida".into(), |value| value.to_string()),
+            "the projector identified for this model has an incompatible dimension: the model requires embedding_length={}, but the mmproj declares clip.vision.projection_dim={}; use the compatible projector",
+            model_dim.map_or_else(|| "unknown".into(), |value| value.to_string()),
+            projector_dim.map_or_else(|| "unknown".into(), |value| value.to_string()),
         ));
     }
     no_projector(
-        "não foi possível provar a associação do projetor; confirme general.name/base_model nos GGUF ou dimensões únicas compatíveis, e separe modelos ambíguos",
+        "could not prove the projector association; confirm general.name/base_model in the GGUFs or unique compatible dimensions, and separate ambiguous models",
     )
 }
 
 pub(crate) fn find_verified_mmproj_sibling(model: &Path) -> Result<String, String> {
     let info = gguf::read_info(model)
-        .map_err(|error| format!("não foi possível ler o cabeçalho GGUF do modelo: {error:#}"))?;
+        .map_err(|error| format!("could not read the GGUF header of the model: {error:#}"))?;
     let resolution = resolve_mmproj_sibling(model, &info);
     resolution.path.ok_or_else(|| {
         resolution
             .reason
-            .unwrap_or_else(|| "não foi possível provar a associação do projetor".into())
+            .unwrap_or_else(|| "could not prove the projector association".into())
     })
 }
 
@@ -1117,16 +1117,16 @@ fn identity_tokens(value: &str) -> Vec<String> {
 /// catches stale configurations before the inference server is touched.
 pub(crate) fn validate_mmproj_pair(model: &Path, projector: &Path) -> anyhow::Result<()> {
     let model_info = gguf::read_info(model)
-        .map_err(|error| anyhow::anyhow!("não foi possível ler o GGUF do modelo: {error:#}"))?;
+        .map_err(|error| anyhow::anyhow!("could not read the model GGUF: {error:#}"))?;
     let projector_info = gguf::read_info(projector)
-        .map_err(|error| anyhow::anyhow!("não foi possível ler o GGUF mmproj: {error:#}"))?;
+        .map_err(|error| anyhow::anyhow!("could not read the mmproj GGUF: {error:#}"))?;
     anyhow::ensure!(
         projector_info.architecture.as_deref() == Some("clip")
             || projector.file_name().is_some_and(|name| name
                 .to_string_lossy()
                 .to_ascii_lowercase()
                 .contains("mmproj")),
-        "o arquivo configurado não se identifica como projetor multimodal GGUF"
+        "the configured file does not identify itself as a GGUF multimodal projector"
     );
     let dimensions_match = if let (Some(model_dim), Some(projector_dim)) = (
         model_info.embedding_length,
@@ -1134,7 +1134,7 @@ pub(crate) fn validate_mmproj_pair(model: &Path, projector: &Path) -> anyhow::Re
     ) {
         anyhow::ensure!(
             model_dim == projector_dim,
-            "mmproj incompatível: o modelo exige embedding_length={model_dim}, mas o projetor declara clip.vision.projection_dim={projector_dim}"
+            "incompatible mmproj: the model requires embedding_length={model_dim}, but the projector declares clip.vision.projection_dim={projector_dim}"
         );
         true
     } else {
@@ -1147,7 +1147,7 @@ pub(crate) fn validate_mmproj_pair(model: &Path, projector: &Path) -> anyhow::Re
             || (dimensions_match
                 && (!has_identity_evidence(&model_info.identity_names)
                     || !has_identity_evidence(&projector_info.identity_names))),
-        "não foi possível provar que este mmproj pertence ao modelo; associe metadados general.name/base_model compatíveis e dimensões GGUF iguais"
+        "could not prove that this mmproj belongs to the model; associate compatible general.name/base_model metadata and equal GGUF dimensions"
     );
     Ok(())
 }
@@ -1253,7 +1253,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     let path = PathBuf::from(&model.path);
     let Some(meta) = std::fs::metadata(&path).ok() else {
         model.metadata_identity = None;
-        model.metadata_error = Some(format!("arquivo não encontrado: {}", path.display()));
+        model.metadata_error = Some(format!("file not found: {}", path.display()));
         return EnrichResult::Failed;
     };
     let identity = metadata_identity(&path, &meta);
@@ -1261,7 +1261,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     model.size_bytes = meta.len();
     if model.size_bytes < 1024 {
         model.metadata_error = Some(format!(
-            "arquivo GGUF pequeno demais: {} bytes",
+            "GGUF file too small: {} bytes",
             model.size_bytes
         ));
         return EnrichResult::Failed;
@@ -1273,7 +1273,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     let info = match cached_info(&path, model.size_bytes, file_mtime_fingerprint(&meta)) {
         Ok(info) => info,
         Err(error) => {
-            model.metadata_error = Some(format!("não foi possível ler o cabeçalho GGUF: {error}"));
+            model.metadata_error = Some(format!("could not read the GGUF header: {error}"));
             return EnrichResult::Failed;
         }
     };
@@ -1295,14 +1295,14 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
             model.multipart = true;
             model.multipart_parts.clear();
             model.multipart_error = Some(format!(
-                "GGUF multipart declara split.count={split_count}, mas o conjunto não pôde ser lido: {error}. Coloque todas as partes no mesmo diretório e selecione a primeira parte."
+                "multipart GGUF declares split.count={split_count}, but the set could not be read: {error}. Put all the parts in the same directory and select the first part."
             ));
             // The first physical file is not the model size. Zero makes the UI
             // refuse to present a false byte count until the set is complete.
             model.size_bytes = 0;
         } else {
             model.metadata_error = Some(format!(
-                "não foi possível descrever a fonte GGUF: {error:#}"
+                "could not describe the GGUF source: {error:#}"
             ));
             return EnrichResult::Failed;
         }
@@ -1340,8 +1340,8 @@ pub(crate) fn enrich_selected(model: &mut DiscoveredModel) -> Result<(), String>
         EnrichResult::Failed => Err(model
             .metadata_error
             .clone()
-            .unwrap_or_else(|| "não foi possível ler os metadados do GGUF".to_string())),
-        EnrichResult::Drop => Err("o arquivo não é um modelo GGUF implantável".to_string()),
+            .unwrap_or_else(|| "could not read the GGUF metadata".to_string())),
+        EnrichResult::Drop => Err("the file is not a deployable GGUF model".to_string()),
     }
 }
 
@@ -1595,7 +1595,7 @@ fn collect_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             debug!(
                 path = %root.display(),
                 error = %error,
-                "ignorando diretório ilegível durante a descoberta de manifests"
+                "ignoring an unreadable directory during manifest discovery"
             );
             return;
         }
@@ -1607,7 +1607,7 @@ fn collect_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
                 debug!(
                     path = %root.display(),
                     error = %error,
-                    "ignorando entrada ilegível durante a descoberta de manifests"
+                    "ignoring an unreadable entry during manifest discovery"
                 );
                 continue;
             }
@@ -1621,7 +1621,7 @@ fn collect_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
                 debug!(
                     path = %path.display(),
                     error = %error,
-                    "ignorando entrada cujo tipo não pôde ser lido durante a descoberta de manifests"
+                    "ignoring an entry whose type could not be read during manifest discovery"
                 );
             }
         }
@@ -1689,7 +1689,7 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
             debug!(
                 path = %shard_dir.display(),
                 error = %error,
-                "ignorando pasta de fatias ilegível durante a descoberta de manifests"
+                "ignoring an unreadable slices folder during manifest discovery"
             );
             return index;
         }
@@ -1701,7 +1701,7 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
                 debug!(
                     path = %shard_dir.display(),
                     error = %error,
-                    "ignorando entrada ilegível durante a indexação de fatias"
+                    "ignoring an unreadable entry during slice indexing"
                 );
                 continue;
             }
@@ -1917,20 +1917,20 @@ fn build_shard_sets_without_source_hash(models: &[DiscoveredModel]) -> Vec<Shard
                     (
                         None,
                         Vec::new(),
-                        Some("nenhum modelo inteiro com o rótulo do manifesto foi encontrado; selecione um mmproj compatível na implantação".into()),
+                        Some("no whole model with the manifest label was found; select a compatible mmproj in the deployment".into()),
                     )
                 } else {
                     (
                         None,
                         Vec::new(),
-                        Some("nenhum projetor compatível foi encontrado para o rótulo do manifesto; selecione um mmproj compatível na implantação".into()),
+                        Some("no compatible projector was found for the manifest label; select a compatible mmproj in the deployment".into()),
                     )
                 }
             } else {
                 (
                     None,
                     Vec::new(),
-                    Some("as fatias não têm identidade de manifesto suficiente para sugerir um projetor".into()),
+                    Some("the slices do not have enough manifest identity to suggest a projector".into()),
                 )
             };
 
@@ -2336,7 +2336,7 @@ pub(crate) mod tests {
         assert_eq!(
             catalog.models.len(),
             2,
-            "projetores não são modelos listáveis"
+            "projectors are not listable models"
         );
         assert_eq!(
             model(&ornith).mmproj_path.as_deref(),
@@ -2444,7 +2444,7 @@ pub(crate) mod tests {
         assert!(discovered
             .mmproj_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("provar") || reason.contains("ambíguo")));
+            .is_some_and(|reason| reason.contains("prove") || reason.contains("ambiguous")));
 
         std::fs::remove_dir_all(root).ok();
     }
@@ -2477,7 +2477,7 @@ pub(crate) mod tests {
         assert!(discovered
             .mmproj_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("dimensão incompatível")));
+            .is_some_and(|reason| reason.contains("incompatible dimension")));
         assert!(validate_mmproj_pair(&model, &models.join("mmproj-model-F16.gguf")).is_err());
 
         std::fs::remove_dir_all(root).ok();
@@ -2527,7 +2527,7 @@ pub(crate) mod tests {
         assert_eq!(
             catalog.models.len(),
             1,
-            "o sidecar de rascunho não é um modelo"
+            "the draft sidecar is not a model"
         );
         assert_eq!(catalog.models[0].path, model.to_string_lossy());
 
@@ -2797,12 +2797,12 @@ pub(crate) mod tests {
         assert_eq!(
             detect_source(&plain),
             ModelSource::Folder,
-            "uma pasta qualquer de .gguf não é uma biblioteca de ninguém"
+            "any folder of .gguf files is nobody's library"
         );
         assert_eq!(
             detect_source(&base.join("vazio-mas-ollama/.ollama/models")),
             ModelSource::Ollama,
-            "um store do Ollama ainda sem blobs continua sendo do Ollama"
+            "an Ollama store still without blobs is still Ollama's"
         );
 
         std::fs::remove_dir_all(&base).ok();
@@ -2816,7 +2816,7 @@ pub(crate) mod tests {
         let base = std::env::temp_dir().join(format!("pom-cat-dirs-{}", std::process::id()));
         let listed = base.join("listada");
         let unlisted = base.join("nao-listada");
-        let shards = base.join("fatias");
+        let shards = base.join("slices");
         for d in [&listed, &unlisted, &shards] {
             std::fs::create_dir_all(d).unwrap();
         }
@@ -3119,17 +3119,17 @@ mod part_naming_tests {
         let (_m, hashes) = sliced_model(&root);
 
         let cat = discover(&[], &root);
-        assert_eq!(cat.models.len(), 2, "as duas partes entram no catálogo");
+        assert_eq!(cat.models.len(), 2, "both parts enter the catalog");
 
         for m in &cat.models {
             assert!(
                 !crate::pom::is_sha256_hex(m.name.trim_end_matches(".gguf")),
-                "o nome não pode ser o hash: {}",
+                "the name cannot be the hash: {}",
                 m.name
             );
             assert!(
                 m.name.contains("qwen3:8b"),
-                "o rótulo do modelo: {}",
+                "the model label: {}",
                 m.name
             );
             // E o hash continua disponível, como informação lateral.
@@ -3137,7 +3137,7 @@ mod part_naming_tests {
                 .sha256
                 .as_deref()
                 .is_some_and(|h| hashes.contains(&h.to_string())));
-            assert!(m.is_shard(), "com manifesto, é fatia - não modelo inteiro");
+            assert!(m.is_shard(), "with a manifest, it is a slice - not a whole model");
             assert_eq!(m.total_layers, Some(32));
             assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
         }
@@ -3146,7 +3146,7 @@ mod part_naming_tests {
             .models
             .iter()
             .find(|m| m.shard_range == Some((0, 15)))
-            .expect("a faixa vem do manifesto");
+            .expect("the range comes from the manifest");
         assert!(first.name.contains("L0-15"), "{}", first.name);
 
         // E o conjunto se fecha, que é o que a tela de implantar precisa.
@@ -3188,16 +3188,16 @@ mod part_naming_tests {
             &[(0, 19, 20), (20, 31, 9)],
         );
 
-        assert_eq!(one.pom_id, other.pom_id, "a fonte é a identidade do modelo");
+        assert_eq!(one.pom_id, other.pom_id, "the source is the identity of the model");
         let one_folder = crate::pom::dir_for(&root, &one);
         let other_folder = crate::pom::dir_for(&root, &other);
-        assert_eq!(one_folder, other_folder, "um manifesto único por fonte");
+        assert_eq!(one_folder, other_folder, "a single manifest per source");
         assert!(one_folder.is_dir());
 
         // As quatro partes aparecem no mesmo manifesto, cada uma com sua faixa.
         let cat = discover(&[], &root);
         assert_eq!(cat.models.len(), 4);
-        assert_eq!(cat.shard_sets.len(), 1, "um conjunto por arquivo original");
+        assert_eq!(cat.shard_sets.len(), 1, "one set per original file");
         assert!(cat.shard_sets[0].complete);
         assert_eq!(cat.shard_sets[0].shards.len(), 4);
 

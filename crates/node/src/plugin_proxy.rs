@@ -77,12 +77,12 @@ pub(crate) struct Upstream {
 pub(crate) fn parse_upstream(value: &Value) -> Result<Upstream, String> {
     match value.get("status").and_then(Value::as_str) {
         Some("ready") => {}
-        Some("starting") => return Err("o plugin ainda está iniciando".into()),
+        Some("starting") => return Err("the plugin is still starting".into()),
         _ => {
             return Err(value
                 .get("error")
                 .and_then(Value::as_str)
-                .unwrap_or("o plugin não informou um servidor")
+                .unwrap_or("the plugin did not report a server")
                 .to_owned())
         }
     }
@@ -91,14 +91,14 @@ pub(crate) fn parse_upstream(value: &Value) -> Result<Upstream, String> {
         .and_then(Value::as_u64)
         .and_then(|port| u16::try_from(port).ok())
         .filter(|port| *port != 0)
-        .ok_or("porta do plugin inválida")?;
+        .ok_or("invalid plugin port")?;
     let token = value
         .get("token")
         .and_then(Value::as_str)
         .filter(|token| {
             (16..=512).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_graphic())
         })
-        .ok_or("token do plugin inválido")?;
+        .ok_or("invalid plugin token")?;
     Ok(Upstream {
         port,
         token: token.to_owned(),
@@ -193,7 +193,7 @@ fn client() -> &'static reqwest::Client {
             .no_proxy()
             .connect_timeout(std::time::Duration::from_secs(5))
             .build()
-            .expect("cliente HTTP do proxy de plugins")
+            .expect("plugin proxy HTTP client")
     })
 }
 
@@ -224,10 +224,10 @@ pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request)
     {
         Ok(reply) => reply,
         Err(error) => {
-            tracing::warn!(%error, "servidor do plugin não respondeu ao proxy");
+            tracing::warn!(%error, "plugin server did not answer the proxy");
             return refusal(
                 StatusCode::BAD_GATEWAY,
-                "o servidor do plugin não respondeu",
+                "the plugin server did not answer",
             );
         }
     };
@@ -241,7 +241,7 @@ pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request)
     }
     response
         .body(Body::from_stream(reply.bytes_stream()))
-        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "resposta inválida do plugin"))
+        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "invalid plugin response"))
 }
 
 /// Um upgrade (WebSocket) não cabe no cliente HTTP: o cabeçalho vai à mão pela
@@ -253,7 +253,7 @@ async fn forward_upgrade(
     mut request: Request,
 ) -> Response {
     let Some(protocol) = request.headers().get(header::UPGRADE).cloned() else {
-        return refusal(StatusCode::BAD_REQUEST, "upgrade sem protocolo");
+        return refusal(StatusCode::BAD_REQUEST, "upgrade without a protocol");
     };
     headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
     headers.insert(header::UPGRADE, protocol);
@@ -272,25 +272,25 @@ async fn forward_upgrade(
         Err(_) => {
             return refusal(
                 StatusCode::BAD_GATEWAY,
-                "o servidor do plugin não respondeu",
+                "the plugin server did not answer",
             )
         }
     };
     if stream.write_all(head.as_bytes()).await.is_err() {
         return refusal(
             StatusCode::BAD_GATEWAY,
-            "o servidor do plugin fechou a conexão",
+            "the plugin server closed the connection",
         );
     }
     let (status, reply_headers, leftover) = match read_response_head(&mut stream).await {
         Ok(reply) => reply,
         Err(error) => {
-            tracing::warn!(%error, "upgrade recusado pelo servidor do plugin");
-            return refusal(StatusCode::BAD_GATEWAY, "resposta inválida do plugin");
+            tracing::warn!(%error, "upgrade refused by the plugin server");
+            return refusal(StatusCode::BAD_GATEWAY, "invalid plugin response");
         }
     };
     if status != StatusCode::SWITCHING_PROTOCOLS {
-        return refusal(status, "o servidor do plugin recusou o upgrade");
+        return refusal(status, "the plugin server refused the upgrade");
     }
 
     let on_upgrade = hyper::upgrade::on(&mut request);
@@ -298,7 +298,7 @@ async fn forward_upgrade(
         let upgraded = match on_upgrade.await {
             Ok(upgraded) => upgraded,
             Err(error) => {
-                tracing::debug!(%error, "navegador desistiu do upgrade");
+                tracing::debug!(%error, "browser gave up on the upgrade");
                 return;
             }
         };
@@ -319,7 +319,7 @@ async fn forward_upgrade(
     }
     response
         .body(Body::empty())
-        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "resposta inválida do plugin"))
+        .unwrap_or_else(|_| refusal(StatusCode::BAD_GATEWAY, "invalid plugin response"))
 }
 
 /// Lê o cabeçalho de resposta HTTP/1.1 e devolve os bytes que vieram depois dele.
@@ -332,7 +332,7 @@ async fn read_response_head(
             break end;
         }
         if buffer.len() > MAX_UPGRADE_HEAD {
-            return Err("cabeçalho grande demais".into());
+            return Err("header too large".into());
         }
         let mut chunk = [0u8; 4096];
         let read = stream
@@ -340,18 +340,18 @@ async fn read_response_head(
             .await
             .map_err(|error| error.to_string())?;
         if read == 0 {
-            return Err("conexão fechada antes do cabeçalho".into());
+            return Err("connection closed before the header".into());
         }
         buffer.extend_from_slice(&chunk[..read]);
     };
-    let head = std::str::from_utf8(&buffer[..end]).map_err(|_| "cabeçalho não é UTF-8")?;
+    let head = std::str::from_utf8(&buffer[..end]).map_err(|_| "header is not UTF-8")?;
     let mut lines = head.split("\r\n");
     let status = lines
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .and_then(|code| StatusCode::from_u16(code).ok())
-        .ok_or("linha de status inválida")?;
+        .ok_or("invalid status line")?;
     let mut headers = HeaderMap::new();
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
@@ -377,7 +377,7 @@ pub(crate) async fn plugin_proxy(
         .iter()
         .find_map(|(name, value)| (name == "code").then(|| value.clone()))
     else {
-        return refusal(StatusCode::NOT_FOUND, "plugin não encontrado");
+        return refusal(StatusCode::NOT_FOUND, "plugin not found");
     };
     if INTERNAL_HEADERS
         .iter()
@@ -385,13 +385,13 @@ pub(crate) async fn plugin_proxy(
     {
         return refusal(
             StatusCode::FORBIDDEN,
-            "o proxy de plugins atende só o navegador",
+            "the plugin proxy serves only the browser",
         );
     }
     if !same_origin(request.headers()) {
         return refusal(
             StatusCode::FORBIDDEN,
-            "origem recusada pelo proxy de plugins",
+            "origin refused by the plugin proxy",
         );
     }
     let Some(reply) = state
@@ -399,7 +399,7 @@ pub(crate) async fn plugin_proxy(
         .query_audit(&code, "ui.upstream", json!({}))
         .await
     else {
-        return refusal(StatusCode::NOT_FOUND, "plugin inativo ou sem servidor");
+        return refusal(StatusCode::NOT_FOUND, "plugin inactive or without a server");
     };
     let upstream = match parse_upstream(&reply) {
         Ok(upstream) => upstream,
@@ -407,7 +407,7 @@ pub(crate) async fn plugin_proxy(
     };
     let prefix = proxy_prefix(&code);
     if request.method() == Method::CONNECT {
-        return refusal(StatusCode::METHOD_NOT_ALLOWED, "método não suportado");
+        return refusal(StatusCode::METHOD_NOT_ALLOWED, "method not supported");
     }
     forward(&upstream, &prefix, request).await
 }

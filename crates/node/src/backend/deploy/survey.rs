@@ -390,16 +390,16 @@ pub(super) fn selected_metadata_pending_reason(
 ) -> String {
     match (kind, missing.first()) {
         (DeployKind::Whole, _) => format!(
-            "a seleção de {group} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+            "the selection of {group} is still waiting for the GGUF metadata; wait for this selection to be read"
         ),
         (DeployKind::Shards, Some((start, end))) => format!(
-            "a seleção da fatia L{start}-{end} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+            "the selection of slice L{start}-{end} is still waiting for the GGUF metadata; wait for this selection to be read"
         ),
         (DeployKind::TensorParallel, Some((start, end))) => format!(
-            "a seleção tensor-parallel L{start}-{end} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+            "the tensor-parallel selection L{start}-{end} is still waiting for the GGUF metadata; wait for this selection to be read"
         ),
         (_, None) => format!(
-            "a seleção de {group} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+            "the selection of {group} is still waiting for the GGUF metadata; wait for this selection to be read"
         ),
     }
 }
@@ -434,7 +434,7 @@ pub(super) fn selected_metadata_pending_reason_for(
                     .collect::<Vec<_>>();
                 if !missing_ranks.is_empty() {
                     return Some(format!(
-                        "a seleção tensor-parallel de {group} ainda aguarda os metadados do GGUF dos ranks {}; aguarde a leitura desta seleção",
+                        "the tensor-parallel selection of {group} is still waiting for the GGUF metadata of ranks {}; wait for this selection to be read",
                         missing_ranks
                             .iter()
                             .map(u32::to_string)

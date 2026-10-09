@@ -118,17 +118,17 @@ mod undeploy_tests {
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
         let body = body_of(resp).await;
 
-        assert_eq!(body["released"], 1, "só a implantação escolhida sai do ar");
+        assert_eq!(body["released"], 1, "only the chosen deployment goes down");
         assert_eq!(
             body["results"].as_array().unwrap().len(),
             1,
-            "a outra implantação nem aparece no relatório"
+            "the other deployment does not even appear in the report"
         );
         assert_eq!(calls_a.load(Ordering::SeqCst), 1);
         assert_eq!(
             calls_b.load(Ordering::SeqCst),
             0,
-            "a máquina da outra implantação não pode ser tocada"
+            "the machine of the other deployment cannot be touched"
         );
     }
 
@@ -185,7 +185,7 @@ mod undeploy_tests {
         assert_eq!(body["failed"], 1);
 
         let results = body["results"].as_array().unwrap();
-        assert_eq!(results.len(), 2, "uma linha por máquina, sempre");
+        assert_eq!(results.len(), 2, "one row per machine, always");
         // Ordenado pela camada inicial: o relatório se lê na ordem do pipeline.
         assert_eq!(results[0]["hostname"], "ksia");
         assert_eq!(results[0]["released"], true);
@@ -195,7 +195,7 @@ mod undeploy_tests {
         assert_eq!(results[1]["released"], false);
         assert!(
             results[1]["error"].as_str().unwrap().contains("500"),
-            "o motivo tem que ser o que a máquina disse: {}",
+            "the reason must be what the machine said: {}",
             results[1]["error"]
         );
 
@@ -279,12 +279,12 @@ mod undeploy_tests {
             (
                 "/api/ui/deploy/node",
                 r#"{"group":"qwen35","target_node_id":"no-2","start_layer":0,"end_layer":15}"#,
-                "somente o administrador pode adicionar uma máquina à implantação",
+                "only the administrator can add a machine to the deployment",
             ),
             (
                 "/api/ui/undeploy",
                 r#"{"group":"qwen35"}"#,
-                "somente o administrador pode desimplantar a implantação",
+                "only the administrator can undeploy the deployment",
             ),
         ];
 
@@ -321,7 +321,7 @@ mod undeploy_tests {
         assert_eq!(add_response.status(), axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(
             body_of(add_response).await["error"],
-            "faixa de camadas invertida"
+            "inverted layer range"
         );
 
         let undeploy_request = Request::post("/api/ui/undeploy")
@@ -337,7 +337,7 @@ mod undeploy_tests {
         assert!(body_of(undeploy_response).await["error"]
             .as_str()
             .unwrap()
-            .contains("nenhuma"));
+            .contains("no machine"));
     }
 
     #[tokio::test]

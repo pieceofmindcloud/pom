@@ -475,7 +475,7 @@ impl ClusterLogs {
                 {
                     Ok(()) => {
                         if failing {
-                            tracing::info!(target: CLUSTER_LOGS_QUIET_TARGET, "o plugin de logs voltou a aceitar os logs de processo do cluster");
+                            tracing::info!(target: CLUSTER_LOGS_QUIET_TARGET, "the logs plugin accepts the cluster process logs again");
                         }
                         failing = false;
                     }
@@ -485,7 +485,7 @@ impl ClusterLogs {
                             tracing::warn!(
                                 target: CLUSTER_LOGS_QUIET_TARGET,
                                 %error,
-                                "o plugin de logs recusou os logs de processo do cluster; as linhas são descartadas até ele aceitar (um plugin anterior a esta versão não conhece o evento cluster_logs: atualize o plugin)"
+                                "the logs plugin refused the cluster process logs; the lines are discarded until it accepts them (a plugin older than this version does not know the cluster_logs event: update the plugin)"
                             );
                         }
                         failing = true;
@@ -827,8 +827,8 @@ mod tests {
 
     #[test]
     fn a_batch_preserves_the_arrival_order_and_the_deploy_id() {
-        let first = entry("chegou primeiro");
-        let second = entry("chegou depois");
+        let first = entry("arrived first");
+        let second = entry("arrived later");
         let batch = LogBatch {
             source_node_id: "node-a".into(),
             entries: vec![first.clone(), second.clone()],
@@ -846,7 +846,7 @@ mod tests {
         service.set_admin_receiver(true);
         assert!(service.try_ingest_remote(LogBatch {
             source_node_id: "node-a".into(),
-            entries: vec![entry("primeiro")],
+            entries: vec![entry("first")],
             dropped: 2,
         }));
         assert!(service.try_ingest_remote(LogBatch {
@@ -854,8 +854,8 @@ mod tests {
             entries: vec![entry("segundo")],
             dropped: 0,
         }));
-        let mut queue = service.plugin_queue.lock().unwrap().take().expect("fila do plugin");
-        assert_eq!(queue.recv().await.unwrap().entries[0].message, "primeiro");
+        let mut queue = service.plugin_queue.lock().unwrap().take().expect("plugin queue");
+        assert_eq!(queue.recv().await.unwrap().entries[0].message, "first");
         assert_eq!(queue.recv().await.unwrap().entries[0].message, "segundo");
     }
 
@@ -867,7 +867,7 @@ mod tests {
         capture.set_enabled(true);
         let subscriber = tracing_subscriber::registry().with(CaptureLayer::new(capture.clone()));
         tracing::subscriber::with_default(subscriber, || {
-            tracing::warn!(target: CLUSTER_LOGS_QUIET_TARGET, "o plugin recusou o lote");
+            tracing::warn!(target: CLUSTER_LOGS_QUIET_TARGET, "the plugin refused the batch");
             tracing::warn!(target: "cluster_logs_test", "linha comum");
         });
 
@@ -881,7 +881,7 @@ mod tests {
         let service = ClusterLogs::new(capture, receiver);
         assert!(!service.try_ingest_remote(LogBatch {
             source_node_id: "node-a".into(),
-            entries: vec![entry("recusado")],
+            entries: vec![entry("refused")],
             dropped: 1,
         }));
         assert_eq!(service.dropped.load(Ordering::Relaxed), 2);
@@ -921,7 +921,7 @@ mod tests {
         let mut pending = vec![entry("replicar")];
         flush_local(&logs, &network, &mut pending, &outbound).await;
 
-        let message = received.recv().await.expect("lote para admin secundário");
+        let message = received.recv().await.expect("batch for the secondary admin");
         assert_eq!(message.request.entries[0].message, "replicar");
         assert_eq!(message.request.source_node_id, "worker");
     }

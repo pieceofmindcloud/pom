@@ -1095,7 +1095,7 @@ faz o download autenticado do blob persistido.
   then `run_download` writes a `.part` next to its destination - the model's
   folder for a **part** (`<shard_dir>/<modelo>-<hash curto do original>/<sha256>.gguf`,
   `<modelo>-<hash curto do original>.pom` written first - pipeline and tensor
-  slicing of one model share the folder and manifest), `<shard_dir>/recebidos/`
+  slicing of one model share the folder and manifest), `<shard_dir>/received/`
   for anything that belongs to no manifest -
   resumes with `Range`, verifies the sha256 it asked for (a part) or the MD5
   (anything else) before the rename, and cancels symmetrically on both

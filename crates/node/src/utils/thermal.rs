@@ -47,19 +47,19 @@ impl ThermalPolicy {
 
     pub fn validate(self) -> anyhow::Result<()> {
         if !self.limit_c.is_finite() || self.limit_c < MIN_LIMIT_C || self.limit_c > 150.0 {
-            anyhow::bail!("o limite térmico precisa estar entre 70 e 150 °C");
+            anyhow::bail!("the thermal limit must be between 70 and 150 °C");
         }
         if !self.hysteresis_c.is_finite()
             || self.hysteresis_c <= 0.0
             || self.hysteresis_c >= self.limit_c
         {
-            anyhow::bail!("a margem térmica precisa ser maior que zero e menor que o limite");
+            anyhow::bail!("the thermal margin must be greater than zero and less than the limit");
         }
         if self.cooldown_secs == 0 {
-            anyhow::bail!("o tempo de resfriamento precisa ser maior que zero");
+            anyhow::bail!("the cooldown time must be greater than zero");
         }
         if self.cooldown_secs > MAX_COOLDOWN_SECS {
-            anyhow::bail!("o tempo de resfriamento não pode passar de 60 segundos");
+            anyhow::bail!("the cooldown time cannot exceed 60 seconds");
         }
         Ok(())
     }
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(
             machine.observe(&[Some(85.0)], now + Duration::from_secs(1)),
             ThermalAction::None,
-            "igual ao limite não passa do limite"
+            "equal to the limit does not exceed the limit"
         );
         assert_eq!(
             machine.observe(&[Some(85.1)], now + Duration::from_secs(2)),
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(
             machine.observe(&[Some(76.0), None], now + Duration::from_secs(60)),
             ThermalAction::None,
-            "GPU sem leitura não prova que é seguro religar"
+            "a GPU without a reading does not prove it is safe to turn back on"
         );
         assert_eq!(
             machine.observe(&[Some(76.0), Some(77.0)], now + Duration::from_secs(61)),
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(
             machine.observe(&[Some(76.0), Some(77.0)], now + Duration::from_secs(90)),
             ThermalAction::None,
-            "a primeira amostra segura inicia o cooldown"
+            "the first safe sample starts the cooldown"
         );
         assert_eq!(
             machine.observe(&[Some(76.0), Some(77.0)], now + Duration::from_secs(92)),
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(
             machine.observe(&[Some(76.0)], now + Duration::from_secs(50)),
             ThermalAction::None,
-            "o cooldown recomeça depois da leitura acima do limiar"
+            "the cooldown restarts after the reading above the threshold"
         );
         assert_eq!(
             machine.observe(&[Some(76.0)], now + Duration::from_secs(52)),

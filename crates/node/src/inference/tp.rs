@@ -348,7 +348,7 @@ pub fn reduce_count() -> u64 {
 }
 
 fn note_failure(reason: String) {
-    tracing::error!("coletiva TP falhou: {reason}");
+    tracing::error!("TP collective failed: {reason}");
     if let Ok(mut f) = TP_FAILURE.lock() {
         // A primeira falha é a que explica; as seguintes são consequência dela.
         if f.is_none() {
@@ -398,7 +398,7 @@ pub fn register_tp_reduce_with_urls(
     let runtime = tokio::runtime::Handle::try_current().ok();
     if runtime.is_none() {
         note_failure(
-            "coletiva TP registrada fora de um runtime Tokio; o callback não poderá aguardar a barreira"
+            "TP collective registered outside a Tokio runtime; the callback will not be able to wait for the barrier"
                 .to_string(),
         );
     }
@@ -415,11 +415,11 @@ pub fn register_tp_reduce_with_urls(
                 .use_preconfigured_tls(cfg)
                 .build()
                 .unwrap_or_else(|e| {
-                    note_failure(format!("cliente TLS da coletiva não subiu: {e}"));
+                    note_failure(format!("TLS client of the collective did not start: {e}"));
                     reqwest::Client::new()
                 }),
             Err(e) => {
-                note_failure(format!("certificado do primary {id} não pinou: {e}"));
+                note_failure(format!("certificate of the primary {id} did not pin: {e}"));
                 reqwest::Client::new()
             }
         },
@@ -427,8 +427,7 @@ pub fn register_tp_reduce_with_urls(
             // Grupo montado por uma versão que não propagava o id: o POST vai
             // ser recusado pelo certificado, e é melhor dizer isso agora.
             note_failure(
-                "cluster em TLS e o grupo TP não trouxe o node_id do primary: \
-                 refaça a implantação do grupo"
+                "cluster on TLS and the TP group did not bring the node_id of the primary: redo the deployment of the group"
                     .to_string(),
             );
             reqwest::Client::new()
@@ -499,7 +498,7 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
     let Some(barrier_id) = next_barrier_id() else {
         // Reduce fora de um decode conhecido: não há id que case com os outros
         // ranks, então a soma seria por acaso. Melhor falhar nomeando isso.
-        note_failure("reduce fora de um decode conhecido (begin_decode não foi chamado)".into());
+        note_failure("reduce outside a known decode (begin_decode was not called)".into());
         return;
     };
     if seq == 0 {
@@ -508,12 +507,12 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
         // exatamente o mesmo sintoma: texto errado, rápido, sem log.
         if state.rank == 0 {
             tracing::info!(
-                "coletiva TP ativa: primeiro reduce do rank 0 ({} valores) -> barreira local",
+                "TP collective active: first reduce of rank 0 ({} values) -> local barrier",
                 n
             );
         } else {
             tracing::info!(
-                "coletiva TP ativa: primeiro reduce do rank {} ({} valores) -> {}",
+                "TP collective active: first reduce of rank {} ({} values) -> {}",
                 state.rank,
                 n,
                 state.rank0_url
@@ -522,7 +521,7 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
     }
 
     let Some(runtime) = state.runtime.as_ref() else {
-        note_failure("coletiva TP sem runtime Tokio para aguardar o reduce".to_string());
+        note_failure("TP collective without a Tokio runtime to wait for the reduce".to_string());
         return;
     };
     let sum = runtime.block_on(post_reduce(
@@ -538,7 +537,7 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
         // Soma de tamanho errado é tão fatal quanto soma ausente: copiar
         // parcialmente deixaria metade do vetor reduzido e metade não.
         Ok(sum) => note_failure(format!(
-            "soma da coletiva veio com {} valores, esperado {n}",
+            "collective sum came with {} values, expected {n}",
             sum.len()
         )),
         // O buffer continua com a parcial deste rank. Não copiar nada e seguir
@@ -664,7 +663,7 @@ pub fn broadcast_to(
             .await;
             if let Err(e) = result {
                 note_failure(format!(
-                    "não deu para pôr o rank {} no decode {id}: {e}",
+                    "could not put rank {} in decode {id}: {e}",
                     &who[..12.min(who.len())]
                 ));
             }
@@ -683,11 +682,11 @@ fn peer_client_for(node_id: &str) -> Option<reqwest::Client> {
             .build()
             .ok()
             .or_else(|| {
-                note_failure(format!("cliente TLS para {node_id} não subiu"));
+                note_failure(format!("TLS client for {node_id} did not start"));
                 None
             }),
         Err(e) => {
-            note_failure(format!("certificado de {node_id} não pinou: {e}"));
+            note_failure(format!("certificate of {node_id} did not pin: {e}"));
             None
         }
     }
@@ -705,10 +704,10 @@ async fn post_reduce(
         let started = std::time::Instant::now();
         let receiver = barrier
             .contribute(barrier_id, state.rank, size, data)
-            .map_err(|error| format!("barreira local do primary recusou a parcial: {error}"))?;
+            .map_err(|error| format!("local barrier of the primary refused the partial: {error}"))?;
         let sum = receiver
             .await
-            .map_err(|_| "barreira local do primary foi encerrada".to_string())?;
+            .map_err(|_| "local barrier of the primary was closed".to_string())?;
         record_reduce(
             expected,
             request_bytes,
@@ -789,7 +788,7 @@ async fn post_reduce(
     let bytes = response.body;
     if bytes.len() != expected * 4 {
         return Err(format!(
-            "soma veio com {} bytes, esperado {}",
+            "sum came with {} bytes, expected {}",
             bytes.len(),
             expected * 4
         ));
@@ -829,7 +828,7 @@ mod tests {
         begin_decode("sessao-x:chunk-0");
         let rank1: Vec<String> = (0..3).map(|_| next_barrier_id().unwrap()).collect();
 
-        assert_eq!(rank0, rank1, "os ranks têm que concordar nos ids");
+        assert_eq!(rank0, rank1, "the ranks must agree on the ids");
         assert_eq!(rank0[0], "sessao-x:chunk-0#0");
         assert_eq!(rank0[2], "sessao-x:chunk-0#2");
 
@@ -861,21 +860,21 @@ mod tests {
         );
         begin_replica_decode("decode-do-grupo");
         let _ = next_barrier_id();
-        note_failure("falha do grupo antigo".into());
-        assert!(is_active(), "com grupo ligado, o nó é TP");
+        note_failure("failure of the old group".into());
+        assert!(is_active(), "with a group on, the node is TP");
 
         unregister_tp_reduce();
 
-        assert!(!is_active(), "sem grupo, o nó não é TP");
+        assert!(!is_active(), "without a group, the node is not TP");
         assert_eq!(reduce_count(), 0);
-        assert!(!is_replica(), "a marca de réplica não sobrevive");
+        assert!(!is_replica(), "the replica mark does not survive");
         assert!(
             next_barrier_id().is_none(),
-            "não há decode aberto depois de desligar"
+            "there is no open decode after turning off"
         );
         assert!(
             take_failure().is_none(),
-            "falha do grupo antigo não derruba a requisição do modelo novo"
+            "a failure of the old group does not bring down the request of the new model"
         );
     }
 
@@ -886,16 +885,16 @@ mod tests {
         let _guard = GLOBAL_STATE.lock();
         cleanup();
         begin_decode("normal");
-        assert!(!is_replica(), "rank 0 decide por si");
+        assert!(!is_replica(), "rank 0 decides for itself");
 
         begin_replica_decode("do-rank-0");
-        assert!(is_replica(), "quem recebeu o id do rank 0 é réplica");
+        assert!(is_replica(), "whoever received the id of rank 0 is a replica");
         assert_eq!(next_barrier_id().unwrap(), "do-rank-0#0");
 
         begin_decode("outro");
         assert!(
             !is_replica(),
-            "um decode próprio depois de uma réplica volta a ser próprio"
+            "an own decode after a replica is own again"
         );
     }
 
@@ -911,17 +910,17 @@ mod tests {
         cleanup();
         let _ = take_failure(); // limpa resíduo de outro teste
 
-        note_failure("certificado do primary não pinou".into());
-        note_failure("erro seguinte, consequência do primeiro".into());
+        note_failure("certificate of the primary did not pin".into());
+        note_failure("next error, a consequence of the first".into());
 
-        let reason = take_failure().expect("a falha tem que sobreviver até o decode");
+        let reason = take_failure().expect("the failure must survive until the decode");
         assert!(
-            reason.contains("certificado"),
-            "a primeira falha é a que explica: {reason}"
+            reason.contains("certificate"),
+            "the first failure is the one that explains: {reason}"
         );
         assert!(
             take_failure().is_none(),
-            "consumida uma vez: a requisição seguinte não herda a falha da anterior"
+            "consumed once: the next request does not inherit the failure of the previous one"
         );
     }
 
@@ -979,17 +978,17 @@ mod tests {
             true,
             None,
         );
-        let barrier_handle = set_local_barrier(barrier.clone(), 2).expect("estado do primary");
+        let barrier_handle = set_local_barrier(barrier.clone(), 2).expect("primary state");
 
-        let state = tp_state().expect("estado do primary");
+        let state = tp_state().expect("primary state");
         let worker = barrier
             .contribute("local-primary", 1, 2, vec![3.0])
-            .expect("contribuição do worker");
+            .expect("worker contribution");
         let primary = post_reduce(&state, "local-primary", vec![2.0], None);
         let (worker_sum, primary_sum) = tokio::join!(worker, primary);
 
-        assert_eq!(worker_sum.expect("soma do worker"), vec![5.0]);
-        assert_eq!(primary_sum.expect("soma do primary"), vec![5.0]);
+        assert_eq!(worker_sum.expect("worker sum"), vec![5.0]);
+        assert_eq!(primary_sum.expect("primary sum"), vec![5.0]);
         clear_local_barrier(barrier_handle);
         unregister_tp_reduce();
     }
@@ -1007,7 +1006,7 @@ mod tests {
             false,
             None,
         );
-        let barrier_handle = set_local_barrier(ReduceBarrier::new(), 1).expect("barreira");
+        let barrier_handle = set_local_barrier(ReduceBarrier::new(), 1).expect("barrier");
         begin_decode("blocking-thread");
 
         let values = std::thread::spawn(|| {
@@ -1022,7 +1021,7 @@ mod tests {
             values
         })
         .join()
-        .expect("callback não pode panicar");
+        .expect("the callback cannot panic");
 
         assert_eq!(values, [2.0, 3.0]);
         clear_local_barrier(barrier_handle);

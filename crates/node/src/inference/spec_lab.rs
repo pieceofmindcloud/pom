@@ -121,7 +121,7 @@ struct Incoming {
 }
 
 fn read(body: &Bytes) -> Incoming {
-    let (meta, _tensor) = wire::decode(body).expect("quadro válido");
+    let (meta, _tensor) = wire::decode(body).expect("valid frame");
     let declared: Option<Vec<crate::pipeline::PipelineStep>> = meta
         .get("next_hops")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -303,7 +303,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         // fingidos, sem motor nenhum, então a única fonte de rascunho que ela
         // pode exercer de verdade é o lookup.
         if crate::infer_server::should_draft(speculate.clone(), false) {
-            let spec = speculate.expect("should_draft implica speculate");
+            let spec = speculate.expect("should_draft implies speculate");
             // Histórico fabricado com um padrão que se repete, para
             // `find_draft` ter o que achar.
             let history: Vec<i32> = (0..24).map(|i| i % 4).collect();
@@ -537,7 +537,7 @@ async fn generate(direct: bool, max_tokens: u32, n_batch: u32) -> Seen {
             state,
             inference_token: "test-api-key".into(),
             model: "lab".into(),
-            prompt: "um prompt qualquer para a bancada".into(),
+            prompt: "some prompt for the bench".into(),
             images: Vec::new(),
             chat_template: true,
             thinking_enabled: true,
@@ -607,11 +607,11 @@ async fn generate(direct: bool, max_tokens: u32, n_batch: u32) -> Seen {
 async fn the_drafter_on_the_ring_generates_the_whole_text() {
     let seen = generate(false, 5, 512).await;
 
-    assert_eq!(seen.failed, None, "a geração não pode falhar");
+    assert_eq!(seen.failed, None, "the generation cannot fail");
     assert_eq!(seen.tokens, 5);
     assert!(!seen.partial);
     assert_eq!(seen.text, "ABCDE");
-    let timings = seen.timings.expect("a resposta deve trazer os tempos");
+    let timings = seen.timings.expect("the response must carry the times");
     assert_eq!(timings.generation_tokens, seen.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
     // A sub-millisecond fake prefill is intentionally unmeasurable at the
@@ -620,7 +620,7 @@ async fn the_drafter_on_the_ring_generates_the_whole_text() {
     assert!(timings.prefill_tokens > 0);
     assert!(
         seen.direct_steps.iter().all(|c| *c == 0),
-        "sem resposta direta negociada, nenhum passo pode sair por ali: {:?}",
+        "without a negotiated direct reply, no step can go out that way: {:?}",
         seen.direct_steps
     );
     assert!(seen.decode_calls.iter().all(|c| *c > 0));
@@ -635,14 +635,14 @@ async fn the_drafter_with_direct_reply_is_not_diverted_to_it() {
     assert_eq!(seen.tokens, 5);
     assert!(!seen.partial);
     assert_eq!(seen.text, "ABCDE");
-    let timings = seen.timings.expect("a resposta deve trazer os tempos");
+    let timings = seen.timings.expect("the response must carry the times");
     assert_eq!(timings.generation_tokens, seen.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
     // See the no-ring case above: this fake can complete below one millisecond.
     assert!(timings.prefill_tokens > 0);
     assert_eq!(
         seen.direct_steps[0], 0,
-        "toda rodada especulou, então nenhuma podia sair pelo caminho direto"
+        "every round speculated, so none could go out through the direct path"
     );
     assert!(seen.decode_calls.iter().all(|c| *c > 0));
 }
@@ -653,7 +653,7 @@ async fn a_one_token_response_keeps_the_rates_finite() {
 
     assert_eq!(seen.failed, None);
     assert_eq!(seen.tokens, 1);
-    let timings = seen.timings.expect("a resposta deve trazer os tempos");
+    let timings = seen.timings.expect("the response must carry the times");
     assert_eq!(timings.generation_tokens, 1);
     assert!(timings.total_tokens_per_sec.is_finite());
     assert!(timings.generation_tokens_per_sec.is_none_or(f64::is_finite));
@@ -666,8 +666,8 @@ async fn a_budget_above_n_batch_is_not_truncated() {
     for n_batch in [512, 8] {
         let seen = generate(false, 2048, n_batch).await;
 
-        assert_eq!(seen.failed, None, "a geração não pode falhar");
-        assert_eq!(seen.tokens, 2048, "n_batch={n_batch} não pode ser o teto");
+        assert_eq!(seen.failed, None, "the generation cannot fail");
+        assert_eq!(seen.tokens, 2048, "n_batch={n_batch} cannot be the cap");
         assert!(!seen.partial);
         assert_eq!(seen.step_calls, vec![2047, 2047]);
     }

@@ -94,7 +94,7 @@ mod leave_tests {
         // E este nó continua na rede: o pedido era sobre a outra máquina.
         assert!(
             !state.network.is_detached(),
-            "repassar não pode desligar quem repassou"
+            "forwarding cannot turn off whoever forwarded"
         );
     }
 
@@ -161,7 +161,7 @@ mod leave_tests {
             state.auth.write().await.profile = profile;
             assert!(
                 state.runtime.config().await.is_none(),
-                "o teste começa sem modelo"
+                "the test starts without a model"
             );
             let resp = leave_network(ConnectionAuth, State(state.clone()), None).await;
             assert_eq!(resp.status(), StatusCode::OK, "perfil={profile}");
@@ -169,7 +169,7 @@ mod leave_tests {
             assert_eq!(
                 state.runtime.status().await.state,
                 crate::runtime::ServerState::Disabled,
-                "sair não pode depender de um servidor Ready, perfil={profile}"
+                "leaving cannot depend on a Ready server, profile={profile}"
             );
         }
     }
@@ -208,7 +208,7 @@ mod catalog_under_tls_tests {
         assert_eq!(
             state.peer_http.cached_peers(),
             vec!["outro".to_string()],
-            "a consulta de catalogo saiu por um cliente sem pinning"
+            "the catalog query went out through a client without pinning"
         );
         state.peer_http.apply_cluster_policy(false);
     }
@@ -231,7 +231,7 @@ mod catalog_under_tls_tests {
                 .peer_http
                 .cached_peers()
                 .contains(&"outro".to_string()),
-            "o levantamento saiu por um cliente sem pinning: {:?}",
+            "the survey went out through a client without pinning: {:?}",
             state.peer_http.cached_peers()
         );
         state.peer_http.apply_cluster_policy(false);
@@ -260,7 +260,7 @@ mod tls_settings_tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert!(
             !state.auth.read().await.tls_required,
-            "403 não pode ter gravado nada"
+            "403 cannot have written anything"
         );
         assert!(!state.network.tls_enabled());
     }
@@ -286,7 +286,7 @@ mod tls_settings_tests {
         assert!(state.auth.read().await.tls_required);
         assert!(
             state.network.tls_enabled(),
-            "o anúncio precisa dizer a verdade"
+            "the announce must tell the truth"
         );
         assert!(state.peer_http.tls_enabled());
 
@@ -312,7 +312,7 @@ mod tls_settings_tests {
         state.auth.write().await.profile = crate::profile::NodeProfile::Node;
         let info = node_info(State(state.clone())).await;
         assert!(!info.0.tls_required);
-        assert!(!info.0.tls_authority, "nó comum não decide");
+        assert!(!info.0.tls_authority, "a regular node does not decide");
 
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         state.auth.write().await.tls_required = true;
@@ -440,7 +440,7 @@ mod network_chat_settings_tests {
         assert_eq!(body_of(response).await["network_chat_enabled"], true);
         assert!(
             !state.auth.read().await.network_chat_enabled,
-            "o secundário não grava a política localmente"
+            "the secondary does not write the policy locally"
         );
     }
 }

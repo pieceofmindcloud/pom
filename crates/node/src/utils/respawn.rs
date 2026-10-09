@@ -56,7 +56,7 @@ pub(crate) fn respawn_at(exe: &std::path::Path) -> std::io::Error {
     };
     if let Err(error) = writeln!(
         log,
-        "\n--- respawn solicitado pelo processo {} ---",
+        "\n--- respawn requested by process {} ---",
         std::process::id()
     ) {
         return error;
@@ -130,7 +130,7 @@ mod tests {
                 "--advertise-addr".to_string(),
                 "[2804:d55::1]:42777".to_string(),
             ],
-            "o argv0 é o executável e volta por current_exe, não pela lista"
+            "argv0 is the executable and comes back through current_exe, not through the list"
         );
     }
 

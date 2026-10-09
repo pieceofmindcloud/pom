@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(
             cache.snapshots().len(),
             2,
-            "a está em uso e não pode ser despejado"
+            "a is in use and cannot be evicted"
         );
         held.discard();
         cache.acquire(key(), "d", "s4".into()).commit("d".into(), 1);
@@ -703,7 +703,7 @@ mod tests {
         // Um ramo diverge cedo: só o prefixo do sistema casa.
         assert_eq!(
             idx.longest_prefix_match("m", &hops, "system\noutra coisa")
-                .expect("cai no prefixo do sistema")
+                .expect("falls on the system prefix")
                 .key_hash,
             "h_sys"
         );
@@ -727,7 +727,7 @@ mod tests {
             idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000),
             vec!["b"]
         );
-        assert_eq!(idx.stats().0, 1, "uma linhagem, um snapshot");
+        assert_eq!(idx.stats().0, 1, "one lineage, one snapshot");
 
         // Outra rota não é tocada.
         idx.record("m", &["outro".to_string()], "d", "sys\nu1", 3, 1_000);

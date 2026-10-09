@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   formatMessage,
-  localizeServerText,
   messageKeys,
   resolveLocale,
   SUPPORTED_LOCALES,
@@ -72,30 +71,3 @@ describe("formatMessage", () => {
  * nome seria pior que não traduzir; deixar em português numa tela em inglês
  * era o que acontecia com o desfecho de uma transferência.
  */
-describe("localizeServerText", () => {
-  it("translates the reason keeping the machine name", () => {
-    expect(localizeServerText("en", "recusado por ksia")).toBe("refused by ksia");
-    expect(localizeServerText("en", "cancelado por atena")).toBe("cancelled by atena");
-  });
-
-  it("in pt-BR the node text passes through untouched", () => {
-    expect(localizeServerText("pt-BR", "recusado por ksia")).toBe("recusado por ksia");
-  });
-
-  it("translates the step the node reports while asking for the digest", () => {
-    expect(localizeServerText("en", "conferindo o arquivo na origem")).toBe(
-      "checking the file at the source",
-    );
-  });
-
-  it("translates the deployment authority refusals", () => {
-    expect(localizeServerText(
-      "en",
-      "somente o administrador pode adicionar uma máquina à implantação",
-    )).toBe("Only the administrator can add a machine to a deployment.");
-    expect(localizeServerText(
-      "en",
-      "somente o administrador pode desimplantar a implantação",
-    )).toBe("Only the administrator can undeploy a deployment.");
-  });
-});

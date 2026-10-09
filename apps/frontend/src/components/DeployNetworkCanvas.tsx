@@ -225,7 +225,7 @@ function NodeCard({
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-fg">{machine.label}</h3>
             <p className="flex min-w-0 items-center gap-1 truncate text-[10px] text-faint">
-              <span className="truncate">{active ? "na implantação" : "disponível para o plano"}</span>
+              <span className="truncate">{active ? t("deployStudio.inDeployment") : t("deployStudio.availableForPlan")}</span>
               {machine.rtt_ms != null && <><span aria-hidden="true">·</span><span className="shrink-0">RTT {machine.rtt_ms.toFixed(1)} ms</span></>}
             </p>
           </div>
@@ -235,9 +235,9 @@ function NodeCard({
           {onTogglePrimary && (
             <button
               type="button"
-              aria-label={`${primaryNodeId === machine.node_id ? "Desmarcar" : "Marcar"} ${machine.label} como primary`}
+              aria-label={t(primaryNodeId === machine.node_id ? "deployStudio.unmarkPrimaryAria" : "deployStudio.markPrimaryAria", { machine: machine.label })}
               aria-pressed={primaryNodeId === machine.node_id}
-              title={primaryNodeId === machine.node_id ? "Desmarcar primary" : "Marcar como primary"}
+              title={primaryNodeId === machine.node_id ? t("deployStudio.unmarkPrimary") : t("deployStudio.markPrimary")}
               onClick={(event) => {
                 event.stopPropagation();
                 onTogglePrimary();
@@ -257,8 +257,8 @@ function NodeCard({
           )}
           <button
             type="button"
-            aria-label={`Remover ${machine.label} da implantação`}
-            title="Remover da implantação"
+            aria-label={t("deployStudio.removeMachineAria", { machine: machine.label })}
+            title={t("deployStudio.removeFromDeployment")}
             onClick={(event) => {
               event.stopPropagation();
               onRemovePeer();
@@ -276,7 +276,7 @@ function NodeCard({
           <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">
             {layerRange(row.start_layer, row.end_layer)}
           </Badge>
-        )) : <span className="font-mono text-[10px] text-faint">solte aqui para incluir</span>}
+        )) : <span className="font-mono text-[10px] text-faint">{t("deployStudio.dropToInclude")}</span>}
       </div>
       <div className="mt-3 space-y-2">
         {machine.capacity && machine.capacity.gpus.length > 0 ? (
@@ -292,21 +292,21 @@ function NodeCard({
                       : "text-faint",
                 )}
               >
-                GPU · projeção
-                {machine.capacity.fits && machine.capacity.degraded && " · aparada"}
+                {t("deployStudio.gpuProjection")}
+                {machine.capacity.fits && machine.capacity.degraded && ` · ${t("deployStudio.trimmed")}`}
               </span>
               {(!machine.capacity.fits || machine.capacity.degraded) && (
                 <AlertTooltip
-                  label={`projeção de VRAM de ${machine.label}`}
+                  label={t("deployStudio.vramProjectionOf", { machine: machine.label })}
                   message={
                     (!machine.capacity.fits
-                      ? `A projeção passa da VRAM ${machine.capacity.gpus.length > 1 ? "de uma das GPUs" : "da GPU"} de ${machine.label}. `
-                      : `Cabe em ${machine.label}, mas o "Ajustar à memória" apararia o pedido. `) +
+                      ? t(machine.capacity.gpus.length > 1 ? "deployStudio.projectionExceedsMany" : "deployStudio.projectionExceedsOne", { machine: machine.label }) + " "
+                      : t("deployStudio.fitsButTrimmed", { machine: machine.label }) + " ") +
                     (machine.capacity.note ? machine.capacity.note + ". " : "") +
                     machine.capacity.gpus
                       .map(
                         (g) =>
-                          `GPU ${g.index}: ${megabytes(g.vram_projected_mb)} de ${megabytes(g.vram_total_mb)}`,
+                          t("deployStudio.gpuProjectedOf", { index: g.index, projected: megabytes(g.vram_projected_mb), total: megabytes(g.vram_total_mb) }),
                       )
                       .join("; ")
                   }
@@ -339,9 +339,9 @@ function NodeCard({
             value={machine.gpu_used_pct ?? null}
             detail={
               machine.gpu_used_pct == null
-                ? "sem GPU"
+                ? t("deployStudio.noGpu")
                 : active
-                  ? `agora ${machine.gpu_used_pct.toFixed(0)}% · projeção após a cópia`
+                  ? t("deployStudio.nowProjection", { pct: machine.gpu_used_pct.toFixed(0) })
                   : `${machine.gpu_used_pct.toFixed(0)}% · ${megabytes(machine.gpu_free_mb)}`
             }
             tone={machine.gpu_used_pct != null && machine.gpu_used_pct >= 88 ? "amber" : "aqua"}
@@ -379,6 +379,7 @@ export function DeployNetworkCanvas({
   onTogglePrimary,
   pipelineCost,
 }: DeployNetworkCanvasProps) {
+  const { t } = useI18n();
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
@@ -500,19 +501,19 @@ export function DeployNetworkCanvas({
     >
       <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
         <div className="flex items-center gap-2 px-2">
-          <span className="eyebrow">Mapa da implantação</span>
-          <span className="font-mono text-[10px] text-muted">{machines.length} nós · {plan.total_layers ?? "-"} layers</span>
+          <span className="eyebrow">{t("deployStudio.mapTitle")}</span>
+          <span className="font-mono text-[10px] text-muted">{t("deployStudio.mapSummary", { nodes: machines.length, layers: plan.total_layers ?? "-" })}</span>
         </div>
         <span className="h-5 w-px bg-line" />
-        <Button size="sm" aria-label="Diminuir zoom" title="Diminuir zoom" onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))}><Minus className="h-4 w-4" /></Button>
-        <Button size="sm" aria-label="Aumentar zoom" title="Aumentar zoom" onClick={() => setZoom((value) => Math.min(1.25, value + 0.1))}><Plus className="h-4 w-4" /></Button>
-        <Button size="sm" aria-label="Ajustar ao canvas" title="Ajustar ao canvas" onClick={fit}>Fit</Button>
-        <Button size="sm" aria-label="Organizar máquinas" title="Organizar máquinas" onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
-        <Button size="sm" aria-label="Redefinir disposição" title="Redefinir disposição" onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("canvas.zoomOut")} title={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))}><Minus className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("canvas.zoomIn")} title={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + 0.1))}><Plus className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("deployStudio.fitCanvas")} title={t("deployStudio.fitCanvas")} onClick={fit}>Fit</Button>
+        <Button size="sm" aria-label={t("deployStudio.organizeMachines")} title={t("deployStudio.organizeMachines")} onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("deployStudio.resetLayout")} title={t("deployStudio.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
       </div>
 
       {machines.length === 0 ? (
-        <div className="flex h-full items-center justify-center text-sm text-muted">Solte uma máquina aqui para montar a topologia.</div>
+        <div className="flex h-full items-center justify-center text-sm text-muted">{t("deployStudio.dropMachine")}</div>
       ) : (
         <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
           <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">

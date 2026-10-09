@@ -173,7 +173,7 @@ mod tests {
             }
         })
         .await
-        .expect("a disponibilidade deveria ser atualizada em background");
+        .expect("the availability should be updated in the background");
         assert_eq!(requests.load(Ordering::SeqCst), 1);
 
         assert!(client.is_available().await);

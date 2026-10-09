@@ -614,14 +614,14 @@ pub(crate) const DEFAULT_ADMIN_PASSWORD: &str = "admin";
 /// password itself never needs to be persisted or returned to the browser.
 pub(crate) fn hash_admin_password(password: &str) -> anyhow::Result<String> {
     if password.is_empty() {
-        anyhow::bail!("a senha administrativa não pode ser vazia");
+        anyhow::bail!("the administrative password cannot be empty");
     }
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
         .map_err(|error| {
-            anyhow::anyhow!("não foi possível proteger a senha administrativa: {error}")
+            anyhow::anyhow!("could not protect the administrative password: {error}")
         })
 }
 
@@ -939,9 +939,9 @@ mod tests {
             cfg.admin_exposure = exposure;
             cfg.admin_access_token = configured_token
                 .filter(|password| !password.is_empty())
-                .map(|password| hash_admin_password(password).expect("hash de teste"));
+                .map(|password| hash_admin_password(password).expect("test hash"));
         }
-        let mut request = Request::builder().body(()).expect("requisição");
+        let mut request = Request::builder().body(()).expect("request");
         request
             .extensions_mut()
             .insert(crate::serve::PeerAddr(peer));
@@ -949,7 +949,7 @@ mod tests {
             request = Request::builder()
                 .header("x-pom-access-token", token)
                 .body(())
-                .expect("requisição com token");
+                .expect("request with token");
             request
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr(peer));
@@ -981,13 +981,13 @@ mod tests {
 
     #[test]
     fn admin_password_is_stored_as_an_argon2id_hash_and_only_verified() {
-        let password = "uma senha pessoal";
-        let hash = hash_admin_password(password).expect("hash da senha");
+        let password = "a personal password";
+        let hash = hash_admin_password(password).expect("password hash");
 
         assert!(hash.starts_with("$argon2id$"));
         assert!(!hash.contains(password));
         assert!(verify_admin_password(&hash, password));
-        assert!(!verify_admin_password(&hash, "senha incorreta"));
+        assert!(!verify_admin_password(&hash, "incorrect password"));
     }
 
     #[test]
@@ -1425,14 +1425,14 @@ mod tests {
             .header("authorization", "Bearer invalid")
             .header("x-api-key", "api-secret")
             .body(())
-            .expect("requisição");
+            .expect("request");
         let (mut parts, _) = request.into_parts();
         let auth =
             <ApiKeyAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
                 &mut parts, &state,
             )
             .await
-            .expect("a credencial secundária válida deve autenticar");
+            .expect("the valid secondary credential must authenticate");
 
         let caller = auth.into_caller();
         assert_eq!(caller.key_id, "claude-code-id");
@@ -1443,7 +1443,7 @@ mod tests {
         let request = Request::builder()
             .header("authorization", "Bearer api-secret")
             .body(())
-            .expect("requisição");
+            .expect("request");
         let (mut parts, _) = request.into_parts();
         assert!(matches!(
             <ApiKeyAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(

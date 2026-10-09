@@ -300,7 +300,7 @@ impl Deployment {
     pub fn set_active_version(&mut self, v: u32) -> Result<()> {
         if !self.versions.iter().any(|ver| ver.version == v) {
             let available: Vec<u32> = self.versions.iter().map(|ver| ver.version).collect();
-            bail!("versão {v} não existe (há {available:?})");
+            bail!("version {v} does not exist (available: {available:?})");
         }
         self.active_version = v;
         self.activated_at = chrono::Utc::now().to_rfc3339();
@@ -400,27 +400,27 @@ impl Deployment {
     pub fn validate(&self) -> Result<()> {
         if self.deployment_version > DEPLOYMENT_VERSION {
             bail!(
-                "registro versão {} é mais novo que esta build (suporta até {DEPLOYMENT_VERSION})",
+                "record version {} is newer than this build (supports up to {DEPLOYMENT_VERSION})",
                 self.deployment_version
             );
         }
         if !is_deploy_id(&self.deploy_id) {
-            bail!("deploy_id inválido: {:?}", self.deploy_id);
+            bail!("invalid deploy_id: {:?}", self.deploy_id);
         }
         if self.model.label.trim().is_empty() {
-            bail!("implantação sem rótulo de modelo");
+            bail!("deployment without a model label");
         }
         if self.nodes.is_empty()
             && self
                 .active()
                 .is_none_or(|version| !version.nodes.is_empty())
         {
-            bail!("implantação sem nós");
+            bail!("deployment without nodes");
         }
         for n in &self.nodes {
             if n.start_layer > n.end_layer {
                 bail!(
-                    "{} tem faixa invertida ({}-{})",
+                    "{} has an inverted range ({}-{})",
                     n.node_id,
                     n.start_layer,
                     n.end_layer
@@ -431,15 +431,15 @@ impl Deployment {
             let mut seen = HashSet::new();
             for v in &self.versions {
                 if v.version == 0 {
-                    bail!("versão 0 não é válida");
+                    bail!("version 0 is not valid");
                 }
                 if !seen.insert(v.version) {
-                    bail!("versão {} repetida", v.version);
+                    bail!("version {} repeated", v.version);
                 }
                 for n in &v.nodes {
                     if n.start_layer > n.end_layer {
                         bail!(
-                            "versão {}: {} tem faixa invertida ({}-{})",
+                            "version {}: {} has an inverted range ({}-{})",
                             v.version,
                             n.node_id,
                             n.start_layer,
@@ -450,7 +450,7 @@ impl Deployment {
             }
             if !seen.contains(&self.active_version) {
                 bail!(
-                    "active_version {} não está entre as versões {:?}",
+                    "active_version {} is not among the versions {:?}",
                     self.active_version,
                     seen
                 );
@@ -531,7 +531,7 @@ pub fn dir() -> PathBuf {
 #[allow(dead_code)]
 pub fn path_in(dir: &Path, deploy_id: &str) -> Result<PathBuf> {
     if !is_deploy_id(deploy_id) {
-        bail!("deploy_id inválido: {deploy_id:?}");
+        bail!("invalid deploy_id: {deploy_id:?}");
     }
     Ok(dir.join(format!("{deploy_id}.json")))
 }
@@ -543,20 +543,20 @@ pub fn path_in(dir: &Path, deploy_id: &str) -> Result<PathBuf> {
 #[allow(dead_code)]
 pub fn save_in(dir: &Path, d: &Deployment) -> Result<PathBuf> {
     d.validate()?;
-    std::fs::create_dir_all(dir).with_context(|| format!("criar {}", dir.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
 
     let destination = path_in(dir, &d.deploy_id)?;
     let temp = dir.join(format!(".{}.{}.tmp", d.deploy_id, std::process::id()));
-    let json = serde_json::to_vec_pretty(d).context("serializar implantação")?;
+    let json = serde_json::to_vec_pretty(d).context("serialize deployment")?;
     {
         let mut f =
-            std::fs::File::create(&temp).with_context(|| format!("criar {}", temp.display()))?;
+            std::fs::File::create(&temp).with_context(|| format!("create {}", temp.display()))?;
         f.write_all(&json)?;
         f.sync_all()?;
     }
     if let Err(e) = std::fs::rename(&temp, &destination) {
         let _ = std::fs::remove_file(&temp);
-        return Err(e).with_context(|| format!("renomear para {}", destination.display()));
+        return Err(e).with_context(|| format!("rename to {}", destination.display()));
     }
     Ok(destination)
 }
@@ -570,9 +570,9 @@ pub fn save(d: &Deployment) -> Result<PathBuf> {
 pub fn load(path: &Path) -> Result<Deployment> {
     let raw = std::fs::read(path).with_context(|| format!("ler {}", path.display()))?;
     let d: Deployment =
-        serde_json::from_slice(&raw).with_context(|| format!("interpretar {}", path.display()))?;
+        serde_json::from_slice(&raw).with_context(|| format!("parse {}", path.display()))?;
     d.validate()
-        .with_context(|| format!("registro inválido em {}", path.display()))?;
+        .with_context(|| format!("invalid record in {}", path.display()))?;
     Ok(d)
 }
 
@@ -593,7 +593,7 @@ pub fn load_dir(dir: &Path) -> Vec<Deployment> {
             Ok(d) => out.push(d),
             // Um registro quebrado não pode derrubar a listagem inteira: as
             // outras implantações seguem no ar e precisam aparecer.
-            Err(e) => tracing::warn!("ignorando registro {}: {e:#}", p.display()),
+            Err(e) => tracing::warn!("ignoring record {}: {e:#}", p.display()),
         }
     }
     out.sort_by(|a, b| a.deploy_id.cmp(&b.deploy_id));
@@ -665,9 +665,9 @@ mod tests {
     fn an_id_that_is_not_an_id_does_not_become_a_path() {
         assert!(!is_deploy_id("../../etc/passwd"));
         assert!(!is_deploy_id("d-../../x"));
-        assert!(!is_deploy_id("d-ABCDEF12"), "hex é minúsculo");
-        assert!(!is_deploy_id("d-123"), "curto demais");
-        assert!(!is_deploy_id("4f2a91c3"), "sem prefixo");
+        assert!(!is_deploy_id("d-ABCDEF12"), "hex is lowercase");
+        assert!(!is_deploy_id("d-123"), "too short");
+        assert!(!is_deploy_id("4f2a91c3"), "without a prefix");
         assert!(path_in(Path::new("/tmp/d"), "../x").is_err());
     }
 
@@ -686,7 +686,7 @@ mod tests {
         assert_eq!(
             active(&all, "qwen3:8b").unwrap().deploy_id,
             "d-bbbbbbbb",
-            "a ativa é a de ativação mais recente"
+            "the active one is the one with the most recent activation"
         );
         assert!(active(&all, "nao-existe").is_none());
     }
@@ -811,7 +811,7 @@ mod tests {
         let v = d.upsert_version(params_with_ctx(8192), d.nodes.clone(), "n1");
         assert_eq!(v, 1);
         assert_eq!(d.versions.len(), 1);
-        assert_ne!(d.activated_at, enabled_v1, "activated_at recarimbado");
+        assert_ne!(d.activated_at, enabled_v1, "activated_at restamped");
 
         // Params diferentes -> v2, ativa, nodes sincronizados.
         let nodes_v2 = vec![no("n1", 0, 31, 0, 1)];
@@ -844,7 +844,7 @@ mod tests {
         let mut d = deployment(
             "d-aaaaaaaa",
             "m",
-            vec![no("fatias", 0, 15, 0, 2), no("cauda", 16, 31, 1, 2)],
+            vec![no("slices", 0, 15, 0, 2), no("cauda", 16, 31, 1, 2)],
         );
         d.kind = DeploymentKind::Mixed;
         let whole = no("inteiro", 0, 31, 0, 1);

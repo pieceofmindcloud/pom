@@ -75,7 +75,7 @@ pub(super) fn clear_kv_cache_dir(dir: &std::path::Path) -> anyhow::Result<(usize
                 removed.1 += bytes;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => anyhow::bail!("apagar {}: {error}", path.display()),
+            Err(error) => anyhow::bail!("delete {}: {error}", path.display()),
         }
     }
     Ok(removed)
@@ -108,7 +108,7 @@ pub(super) async fn clear_kv_cache(
             .into_iter()
             .find(|peer| peer.node_id == target)
         else {
-            return bad_request("peer desconhecido");
+            return bad_request("unknown peer");
         };
         return match state
             .control_post_json(&peer, "/api/ui/kv-cache/clear", &json!({}), PEER_TIMEOUT)
@@ -117,11 +117,11 @@ pub(super) async fn clear_kv_cache(
             Ok(response) if response.status().is_success() => {
                 match response.json::<serde_json::Value>().await {
                     Ok(body) => Json(body).into_response(),
-                    Err(error) => bad_request(format!("resposta ilegível da máquina: {error}")),
+                    Err(error) => bad_request(format!("unreadable response from the machine: {error}")),
                 }
             }
-            Ok(response) => bad_request(format!("a máquina recusou: HTTP {}", response.status())),
-            Err(error) => bad_request(format!("máquina inacessível: {error}")),
+            Ok(response) => bad_request(format!("the machine refused: HTTP {}", response.status())),
+            Err(error) => bad_request(format!("machine unreachable: {error}")),
         };
     }
 
@@ -156,7 +156,7 @@ pub(super) async fn clear_kv_cache(
         bytes,
         ram_entries = ram.0,
         ram_bytes = ram.1,
-        "cache de KV limpo pela interface"
+        "KV cache cleared from the interface"
     );
     Json(json!({
         "cleared": true,
@@ -192,7 +192,7 @@ async fn clear_inference_ram_cache(state: &GatewayState) -> (u64, u64) {
     };
     if !response.status().is_success() {
         warn!(
-            "o servidor de inferência recusou limpar o cache em RAM: HTTP {}",
+            "the inference server refused to clear the RAM cache: HTTP {}",
             response.status()
         );
         return (0, 0);

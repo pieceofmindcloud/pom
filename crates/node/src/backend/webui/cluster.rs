@@ -166,7 +166,7 @@ pub(super) fn without_live_address(
         return PeerRead::rediscovering();
     }
     PeerRead::failed(format!(
-        "nenhum dos {known} endereços conhecidos respondeu, e a rede não devolveu um novo"
+        "none of the {known} known addresses answered, and the network did not return a new one"
     ))
 }
 
@@ -206,7 +206,7 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
 }
 
 pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]) -> String {
-    let mut peer_state = serde_json::to_value(peers).expect("peers da UI devem serializar");
+    let mut peer_state = serde_json::to_value(peers).expect("UI peers must serialize");
     if let Some(peers) = peer_state.as_array_mut() {
         for peer in peers {
             // Liveness is represented by presence in this list. The timestamp
@@ -291,7 +291,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     if !profile.allows(crate::profile::ProfileAction::ViewNetwork) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "este perfil não pode abrir a rede" })),
+            Json(json!({ "error": "this profile cannot open the network" })),
         )
             .into_response();
     }
@@ -360,7 +360,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 }
                 let http = match http {
                     Ok(c) => c,
-                    Err(e) => return PeerRead::failed(format!("sem cliente: {e}")),
+                    Err(e) => return PeerRead::failed(format!("no client: {e}")),
                 };
                 let usable = routes.usable(&node_id, &candidates);
                 if usable.is_empty() {
@@ -385,7 +385,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                         Ok(request) => request,
                         Err(error) => {
                             last_error =
-                                Some(format!("assinatura de controle indisponível: {error}"));
+                                Some(format!("control signature unavailable: {error}"));
                             continue;
                         }
                     };
@@ -400,7 +400,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                             // Resposta inválida não é endereço morto: o peer
                             // atendeu. Desacreditar o endereço aqui esconderia
                             // um defeito de payload atrás de uma busca de rota.
-                            Err(e) => last_error = Some(format!("resposta inválida: {e}")),
+                            Err(e) => last_error = Some(format!("invalid response: {e}")),
                         },
                         // O mesmo vale para um HTTP de erro: quem responde
                         // 401 ou 500 está vivo naquele endereço.
@@ -425,7 +425,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                     network.request_peer_addresses(&node_id).await;
                     return without_live_address(&network, &node_id, candidates.len());
                 }
-                PeerRead::failed(last_error.unwrap_or_else(|| "sem resposta".to_string()))
+                PeerRead::failed(last_error.unwrap_or_else(|| "no answer".to_string()))
             }
         })
         .collect();
@@ -922,7 +922,7 @@ pub(super) async fn peer_runtime(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "o perfil infer só pode ver a própria máquina" })),
+            Json(json!({ "error": "the infer profile can only see its own machine" })),
         )
             .into_response();
     }
@@ -933,13 +933,13 @@ pub(super) async fn peer_runtime(
         .into_iter()
         .find(|p| p.node_id == node_id)
     else {
-        return (StatusCode::NOT_FOUND, "máquina desconhecida").into_response();
+        return (StatusCode::NOT_FOUND, "unknown machine").into_response();
     };
 
     let Some(base) = peer.inference_url() else {
         // O peer existe e não serve inferência: não é erro de rede, é o
         // estado normal de uma máquina sem fatia implantada.
-        return Json(json!({ "loaded": false, "reason": "sem servidor de inferência" }))
+        return Json(json!({ "loaded": false, "reason": "no inference server" }))
             .into_response();
     };
 
@@ -948,7 +948,7 @@ pub(super) async fn peer_runtime(
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("sem cliente para {node_id}: {e}"),
+                format!("no client for {node_id}: {e}"),
             )
                 .into_response()
         }
@@ -958,7 +958,7 @@ pub(super) async fn peer_runtime(
     match tokio::time::timeout(PEER_TIMEOUT, http.get(&url).send()).await {
         Ok(Ok(r)) if r.status().is_success() => match r.json::<serde_json::Value>().await {
             Ok(v) => Json(json!({ "loaded": true, "health": v })).into_response(),
-            Err(e) => (StatusCode::BAD_GATEWAY, format!("resposta inválida: {e}")).into_response(),
+            Err(e) => (StatusCode::BAD_GATEWAY, format!("invalid response: {e}")).into_response(),
         },
         Ok(Ok(r)) => Json(json!({ "loaded": false, "reason": format!("HTTP {}", r.status()) }))
             .into_response(),
@@ -1018,7 +1018,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 {
                     Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
                         Ok(v) => (node_id, Some(v), None),
-                        Err(e) => (node_id, None, Some(format!("resposta inválida: {e}"))),
+                        Err(e) => (node_id, None, Some(format!("invalid response: {e}"))),
                     },
                     Ok(r) => (node_id, None, Some(format!("HTTP {}", r.status()))),
                     Err(e) => (node_id, None, Some(format!("{e:#}"))),

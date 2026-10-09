@@ -1134,7 +1134,7 @@ function ChatScreen() {
                       />
                     ) : (
                       <span
-                        aria-label={`Formato ${attachmentFormat(attachment)}`}
+                        aria-label={t("chat.attachmentFormatAria", { format: attachmentFormat(attachment) })}
                         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-aqua/30 bg-aqua/[0.08] px-1 text-center font-mono text-[0.58rem] font-semibold uppercase text-aqua"
                       >
                         {attachmentFormat(attachment)}
@@ -1160,7 +1160,7 @@ function ChatScreen() {
             )}
             <div
               role="group"
-              aria-label="Campo de mensagem"
+              aria-label={t("chat.messageFieldAria")}
               onDragEnter={handleDragEnter}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}

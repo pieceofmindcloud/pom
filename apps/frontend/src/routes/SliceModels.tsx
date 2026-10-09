@@ -40,7 +40,6 @@ import {
   type TpSlicePlan,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 import { SlicingJobsPanel } from "../components/SlicingJobsPanel";
 
 /** One row of the builder. Empty means "the rest of the model". */
@@ -78,7 +77,7 @@ function asPlan(value: unknown, invalidPlanMessage: string): SlicePlan {
 }
 
 export function SliceModels() {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const [params] = useSearchParams();
   const catalog = useLocalCatalog();
   const node = useNode();
@@ -722,7 +721,7 @@ export function SliceModels() {
                           className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${plan.blocked ? "text-rose" : "text-amber"}`}
                         />
                         <span className="text-[0.82rem] leading-relaxed text-muted">
-                          {localizeServerText(locale, w)}
+                          {w}
                         </span>
                       </li>
                     ))}

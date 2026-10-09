@@ -515,7 +515,7 @@ folder, often the folder of another quantization. Three pieces handle that.
   gets the projector, the tail gets the MTP draft. A target that already has a
   file with that name and size uses it; otherwise a holder is chosen, the copy
   joins `transfer_bytes` and the `pulls` of `lifecycle::run` (by path, landing
-  in the target's `recebidos/` folder), and a file nobody has blocks the plan
+  in the target's `received/` folder), and a file nobody has blocks the plan
   naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
   `mtp_draft_file`; the target resolves them on its own disk at apply time
   (`catalog::find_local_sidecar`), so a file copied a moment ago is found

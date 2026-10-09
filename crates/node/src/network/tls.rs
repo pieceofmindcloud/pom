@@ -38,9 +38,9 @@ pub fn node_certificate(id: &Identity) -> Result<NodeCertificate> {
     let pkcs8 = id
         .signing_key
         .to_pkcs8_der()
-        .context("a chave do nó não exportou como PKCS#8")?;
+        .context("the node key did not export as PKCS#8")?;
     let key_pair = KeyPair::try_from(pkcs8.as_bytes())
-        .map_err(|e| anyhow!("a chave do nó não serviu como par de chaves TLS: {e}"))?;
+        .map_err(|e| anyhow!("the node key did not work as a TLS key pair: {e}"))?;
 
     let node_id = id.node_id.0.clone();
     // O SAN é um nome DNS sintético com o node_id. Nunca é resolvido: existe só
@@ -48,14 +48,14 @@ pub fn node_certificate(id: &Identity) -> Result<NodeCertificate> {
     // porque põe a identidade num campo legível por `openssl x509 -text` na
     // hora de depurar.
     let mut params = CertificateParams::new(vec![format!("{node_id}.{}", crate::brand::slug())])
-        .map_err(|e| anyhow!("parâmetros do certificado inválidos: {e}"))?;
+        .map_err(|e| anyhow!("invalid certificate parameters: {e}"))?;
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, node_id);
     params.distinguished_name = dn;
 
     let cert = params
         .self_signed(&key_pair)
-        .map_err(|e| anyhow!("não deu para auto assinar o certificado: {e}"))?;
+        .map_err(|e| anyhow!("could not self-sign the certificate: {e}"))?;
 
     Ok(NodeCertificate {
         cert: cert.der().clone(),
@@ -70,11 +70,11 @@ pub fn node_certificate(id: &Identity) -> Result<NodeCertificate> {
 /// dia divergirem, o pinning passa a recusar todo mundo.
 pub fn node_id_of_cert(der: &[u8]) -> Result<String> {
     let (_, parsed) =
-        x509_parser::parse_x509_certificate(der).context("certificado do peer não parseou")?;
+        x509_parser::parse_x509_certificate(der).context("peer certificate did not parse")?;
     let bits = parsed.public_key().subject_public_key.data.as_ref();
     if bits.len() != 32 {
         return Err(anyhow!(
-            "chave do certificado tem {} bytes, esperava 32 (Ed25519)",
+            "certificate key has {} bytes, expected 32 (Ed25519)",
             bits.len()
         ));
     }
@@ -99,7 +99,7 @@ impl PinnedNodeId {
             Ok(())
         } else {
             Err(anyhow!(
-                "certificado é do nó {}, esperava {}",
+                "certificate belongs to node {}, expected {}",
                 &found[..12.min(found.len())],
                 &self.expected[..12.min(self.expected.len())]
             ))
@@ -200,21 +200,21 @@ pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
     names.dedup();
 
     let mut params = CertificateParams::new(names)
-        .map_err(|e| anyhow!("parâmetros do certificado de navegador inválidos: {e}"))?;
+        .map_err(|e| anyhow!("invalid browser certificate parameters: {e}"))?;
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, "pom");
     params.distinguished_name = dn;
 
     // Padrão do rcgen: ECDSA P-256.
-    let key_pair = KeyPair::generate().map_err(|e| anyhow!("chave do certificado web: {e}"))?;
+    let key_pair = KeyPair::generate().map_err(|e| anyhow!("web certificate key: {e}"))?;
     let cert = params
         .self_signed(&key_pair)
-        .map_err(|e| anyhow!("não deu para auto assinar o certificado web: {e}"))?;
+        .map_err(|e| anyhow!("could not self-sign the web certificate: {e}"))?;
 
     Ok(NodeCertificate {
         cert: cert.der().clone(),
         key: PrivateKeyDer::try_from(key_pair.serialize_der())
-            .map_err(|e| anyhow!("chave do certificado web inválida: {e}"))?,
+            .map_err(|e| anyhow!("invalid web certificate key: {e}"))?,
     })
 }
 
@@ -245,7 +245,7 @@ impl NodeCertResolver {
 
 fn certified(c: NodeCertificate) -> Result<rustls::sign::CertifiedKey> {
     let key = rustls::crypto::ring::sign::any_supported_type(&c.key)
-        .map_err(|e| anyhow!("rustls não soube assinar com esta chave: {e}"))?;
+        .map_err(|e| anyhow!("rustls could not sign with this key: {e}"))?;
     Ok(rustls::sign::CertifiedKey::new(vec![c.cert], key))
 }
 

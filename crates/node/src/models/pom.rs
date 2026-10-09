@@ -127,11 +127,11 @@ impl PomManifest {
     /// removida porque o peer remoto ainda não a conhece.
     pub fn merge_from(&mut self, incoming: PomManifest) -> Result<()> {
         if self.pom_version != POM_VERSION || incoming.pom_version != POM_VERSION {
-            bail!("merge exige o manifesto da versão {POM_VERSION}");
+            bail!("merge requires the manifest of version {POM_VERSION}");
         }
         if self.pom_id != incoming.pom_id {
             bail!(
-                "manifestos pertencem a modelos diferentes: {} e {}",
+                "manifests belong to different models: {} and {}",
                 &self.pom_id[..12.min(self.pom_id.len())],
                 &incoming.pom_id[..12.min(incoming.pom_id.len())]
             );
@@ -140,7 +140,7 @@ impl PomManifest {
         incoming.validate()?;
         if self.model.total_layers != incoming.model.total_layers {
             bail!(
-                "manifestos do modelo {} declaram totais de camadas diferentes: {} e {}",
+                "manifests of model {} declare different layer totals: {} and {}",
                 self.model.name,
                 self.model.total_layers,
                 incoming.model.total_layers
@@ -151,7 +151,7 @@ impl PomManifest {
             && self.model.quant != incoming.model.quant
         {
             bail!(
-                "manifestos do modelo {} declaram quantizações diferentes",
+                "manifests of model {} declare different quantizations",
                 self.model.name
             );
         }
@@ -200,23 +200,23 @@ impl PomManifest {
     pub fn validate(&self) -> Result<()> {
         if self.pom_version != POM_VERSION {
             bail!(
-                "manifesto versão {} não é a versão ativa {POM_VERSION}",
+                "manifest version {} is not the active version {POM_VERSION}",
                 self.pom_version
             );
         }
         if self.model.name.trim().is_empty() {
-            bail!("manifesto sem nome de modelo");
+            bail!("manifest without a model name");
         }
         if self.parts.is_empty() && self.tp_parts.is_empty() {
-            bail!("manifesto sem partes");
+            bail!("manifest without parts");
         }
         for p in self.parts.iter().chain(self.tp_parts.iter()) {
             if !is_sha256_hex(&p.sha256) {
-                bail!("parte com hash inválido: {:?}", p.sha256);
+                bail!("part with an invalid hash: {:?}", p.sha256);
             }
             if p.start_layer > p.end_layer {
                 bail!(
-                    "parte {} tem faixa invertida ({}-{})",
+                    "part {} has an inverted range ({}-{})",
                     &p.sha256[..12],
                     p.start_layer,
                     p.end_layer
@@ -224,18 +224,18 @@ impl PomManifest {
             }
         }
         if !is_sha256_hex(&self.pom_id) {
-            bail!("pom_id do GGUF original inválido: {:?}", self.pom_id);
+            bail!("invalid pom_id of the original GGUF: {:?}", self.pom_id);
         }
         if self.parts.iter().any(|p| p.tp.is_some()) {
-            bail!("parts não pode conter shards de Tensor Parallelism");
+            bail!("parts cannot contain Tensor Parallelism shards");
         }
         if self.tp_parts.iter().any(|p| p.tp.is_none()) {
-            bail!("tp_parts exige rank e tamanho do grupo TP");
+            bail!("tp_parts requires the rank and size of the TP group");
         }
         let expected = kind_for(&self.parts, &self.tp_parts);
         if self.kind != expected {
             bail!(
-                "kind do manifesto não confere com as partes: {:?}, esperado {:?}",
+                "manifest kind does not match the parts: {:?}, expected {:?}",
                 self.kind,
                 expected
             );
@@ -258,7 +258,7 @@ fn merge_parts(target: &mut Vec<PomPart>, incoming: Vec<PomPart>, field: &str) -
         if let Some(existing) = target.iter().find(|p| p.sha256 == part.sha256) {
             if existing != &part {
                 bail!(
-                    "{field} tem metadados diferentes para a parte {}",
+                    "{field} has different metadata for part {}",
                     &part.sha256[..12]
                 );
             }
@@ -305,7 +305,7 @@ pub fn is_sha256_hex(s: &str) -> bool {
 /// não precisem de exceção nenhuma; quem identifica é o radical.
 pub fn part_path(model_dir: &Path, sha256: &str) -> Result<PathBuf> {
     if !is_sha256_hex(sha256) {
-        bail!("hash de parte inválido: {sha256:?}");
+        bail!("invalid part hash: {sha256:?}");
     }
     Ok(model_dir.join(format!("{sha256}.gguf")))
 }
@@ -384,7 +384,7 @@ impl Drop for PomLock {
 
 fn acquire_pom_lock(shard_dir: &Path, source_sha256: &str) -> Result<PomLock> {
     std::fs::create_dir_all(shard_dir)
-        .with_context(|| format!("criar diretório de fatias {}", shard_dir.display()))?;
+        .with_context(|| format!("create the slices directory {}", shard_dir.display()))?;
     let path = shard_dir.join(format!(".pom-{source_sha256}.lock"));
     for _ in 0..500 {
         match std::fs::OpenOptions::new()
@@ -396,11 +396,11 @@ fn acquire_pom_lock(shard_dir: &Path, source_sha256: &str) -> Result<PomLock> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err(e) => return Err(e).with_context(|| format!("criar lock {}", path.display())),
+            Err(e) => return Err(e).with_context(|| format!("create lock {}", path.display())),
         }
     }
     bail!(
-        "tempo esgotado esperando o lock do manifesto {}",
+        "timed out waiting for the manifest lock {}",
         source_sha256
     )
 }
@@ -408,14 +408,14 @@ fn acquire_pom_lock(shard_dir: &Path, source_sha256: &str) -> Result<PomLock> {
 /// Mescla o manifesto no inventário local do mesmo modelo original.
 pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathBuf, PomManifest)> {
     if incoming.pom_version != POM_VERSION {
-        bail!("merge exige o manifesto da versão {POM_VERSION}");
+        bail!("merge requires the manifest of version {POM_VERSION}");
     }
     incoming.validate()?;
     let _lock = acquire_pom_lock(shard_dir, &incoming.pom_id)?;
     let destination = locate_source_dir(shard_dir, &incoming.pom_id)
         .unwrap_or_else(|| source_run_dir(shard_dir, &incoming.model.name, &incoming.pom_id));
     std::fs::create_dir_all(&destination)
-        .with_context(|| format!("criar diretório do modelo {}", destination.display()))?;
+        .with_context(|| format!("create the model directory {}", destination.display()))?;
 
     let existing = load_dir(&destination)
         .into_iter()
@@ -436,7 +436,7 @@ pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<Pa
     m.validate()?;
     let destination = locate_source_dir(shard_dir, &m.pom_id)
         .unwrap_or_else(|| source_run_dir(shard_dir, &m.model.name, &m.pom_id));
-    std::fs::create_dir_all(&destination).with_context(|| format!("criar {}", destination.display()))?;
+    std::fs::create_dir_all(&destination).with_context(|| format!("create {}", destination.display()))?;
 
     for part in m.parts.iter().chain(m.tp_parts.iter()) {
         let from = part_path(temp, &part.sha256)?;
@@ -451,7 +451,7 @@ pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<Pa
             continue;
         }
         std::fs::rename(&from, &to)
-            .with_context(|| format!("mover {} para {}", from.display(), to.display()))?;
+            .with_context(|| format!("move {} to {}", from.display(), to.display()))?;
     }
 
     let (destination, _) = merge_manifest(shard_dir, m)?;
@@ -463,7 +463,7 @@ pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<Pa
 
 /// Uma pasta de trabalho para uma rodada que ainda não tem nome.
 pub fn scratch_dir(shard_dir: &Path) -> PathBuf {
-    shard_dir.join(format!(".fatiando-{}", uuid::Uuid::new_v4().simple()))
+    shard_dir.join(format!(".slicing-{}", uuid::Uuid::new_v4().simple()))
 }
 
 /// Nome que pode virar pasta sem surpresa.
@@ -481,7 +481,7 @@ pub fn sanitize_name(name: &str) -> String {
         .collect();
     let clean = clean.trim_matches(['-', '.', '_']).to_string();
     if clean.is_empty() {
-        "modelo".to_string()
+        "model".to_string()
     } else {
         clean
     }
@@ -494,22 +494,22 @@ pub fn sanitize_name(name: &str) -> String {
 /// `.pom` truncado seria lido como "modelo sem partes".
 pub fn write_atomic(model_dir: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
-    std::fs::create_dir_all(model_dir).with_context(|| format!("criar {}", model_dir.display()))?;
+    std::fs::create_dir_all(model_dir).with_context(|| format!("create {}", model_dir.display()))?;
 
     let destination = manifest_path(model_dir, m);
     let temp = model_dir.join(format!(".{}.{}.tmp", m.pom_id, std::process::id()));
 
-    let json = serde_json::to_vec_pretty(m).context("serializar manifesto")?;
+    let json = serde_json::to_vec_pretty(m).context("serialize manifest")?;
     {
         let mut f =
-            std::fs::File::create(&temp).with_context(|| format!("criar {}", temp.display()))?;
+            std::fs::File::create(&temp).with_context(|| format!("create {}", temp.display()))?;
         f.write_all(&json)?;
         // Sem isto o rename pode chegar ao disco antes do conteúdo.
         f.sync_all()?;
     }
     if let Err(e) = std::fs::rename(&temp, &destination) {
         let _ = std::fs::remove_file(&temp);
-        return Err(e).with_context(|| format!("renomear para {}", destination.display()));
+        return Err(e).with_context(|| format!("rename to {}", destination.display()));
     }
     Ok(destination)
 }
@@ -518,9 +518,9 @@ pub fn write_atomic(model_dir: &Path, m: &PomManifest) -> Result<PathBuf> {
 pub fn load(path: &Path) -> Result<PomManifest> {
     let raw = std::fs::read(path).with_context(|| format!("ler {}", path.display()))?;
     let m: PomManifest =
-        serde_json::from_slice(&raw).with_context(|| format!("interpretar {}", path.display()))?;
+        serde_json::from_slice(&raw).with_context(|| format!("parse {}", path.display()))?;
     m.validate()
-        .with_context(|| format!("manifesto inválido em {}", path.display()))?;
+        .with_context(|| format!("invalid manifest in {}", path.display()))?;
     Ok(m)
 }
 
@@ -539,7 +539,7 @@ pub fn load_dir(model_dir: &Path) -> Vec<PomManifest> {
             Ok(m) => out.push(m),
             // Um manifesto quebrado não pode derrubar a varredura inteira: o
             // resto da pasta continua utilizável.
-            Err(e) => tracing::warn!("ignorando manifesto {}: {e:#}", p.display()),
+            Err(e) => tracing::warn!("ignoring manifest {}: {e:#}", p.display()),
         }
     }
     out
@@ -615,7 +615,7 @@ impl<W: Write> Write for HashingWriter<W> {
 /// tem o digest do [`HashingWriter`]. Usado para validar o que chegou pela rede
 /// e o que o operador largou na pasta na mão.
 pub fn hash_file(path: &Path) -> Result<(String, u64)> {
-    let mut f = std::fs::File::open(path).with_context(|| format!("abrir {}", path.display()))?;
+    let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 1024 * 1024];
     let mut total = 0u64;
@@ -848,7 +848,7 @@ mod tests {
             assert!(part_path(&destination, &p.sha256).unwrap().is_file());
         }
         assert_eq!(load_dir(&destination), vec![m]);
-        assert!(!work.exists(), "a pasta de trabalho não fica para trás");
+        assert!(!work.exists(), "the work folder is not left behind");
 
         std::fs::remove_dir_all(&root).ok();
     }

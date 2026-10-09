@@ -691,7 +691,7 @@ mod policy_tests {
                     "/api/ui/plugins/deepseek_harness/proxy/api/remote.mux"
                 ),
                 RouteScope::InferNodeAdmin,
-                "método={method}"
+                "method={method}"
             );
         }
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
@@ -856,7 +856,7 @@ mod policy_tests {
             assert_eq!(
                 route_scope(&method, "/admin/api-keys"),
                 RouteScope::InferNodeAdmin,
-                "método={method}"
+                "method={method}"
             );
         }
         assert_eq!(
@@ -874,7 +874,7 @@ mod policy_tests {
             let scope = route_scope(&Method::POST, path);
             assert_eq!(scope, RouteScope::InferNodeAdmin, "rota={path}");
             for profile in [Infer, Node, Admin] {
-                assert!(profile_can_access(profile, scope), "{profile} em {path}");
+                assert!(profile_can_access(profile, scope), "{profile} on {path}");
             }
         }
     }

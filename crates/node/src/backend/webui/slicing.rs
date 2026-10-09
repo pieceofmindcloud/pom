@@ -49,14 +49,14 @@ pub(super) fn tensor_slice_plan(
     tp_size: u32,
 ) -> anyhow::Result<TpSlicePlan> {
     if !(2..=64).contains(&tp_size) {
-        anyhow::bail!("escolha entre 2 e 64 ranks TP");
+        anyhow::bail!("choose between 2 and 64 TP ranks");
     }
     crate::splitter::validate_tensor_parallel(path, tp_size)?;
     let layout = crate::gguf::read_layout(path)?;
     let output_bytes = crate::splitter::estimate_tensor_parallel_output_bytes(path, tp_size)?;
     let total_layers = layout.layer_count();
     if total_layers == 0 {
-        anyhow::bail!("este arquivo não declara camadas");
+        anyhow::bail!("this file declares no layers");
     }
     Ok(TpSlicePlan {
         mode: SliceMode::TensorParallel,
@@ -160,7 +160,7 @@ pub(super) async fn layout_of(
 
     let meta = tokio::fs::metadata(path)
         .await
-        .map_err(|e| format!("modelo não encontrado nesta máquina: {e}"))?;
+        .map_err(|e| format!("model not found on this machine: {e}"))?;
     let mtime = meta
         .modified()
         .ok()
@@ -176,8 +176,8 @@ pub(super) async fn layout_of(
     let p = path.to_path_buf();
     let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&p)).await {
         Ok(Ok(l)) => Arc::new(l),
-        Ok(Err(e)) => return Err(format!("não foi possível ler o GGUF: {e}")),
-        Err(e) => return Err(format!("leitura do GGUF falhou: {e}")),
+        Ok(Err(e)) => return Err(format!("could not read the GGUF: {e}")),
+        Err(e) => return Err(format!("GGUF read failed: {e}")),
     };
     cache.lock().await.insert(key, layout.clone());
     Ok(layout)
@@ -200,7 +200,7 @@ pub(super) async fn tp_check(_auth: ConnectionAuth, Json(req): Json<TpCheckReque
     if !path.is_file() {
         return Json(json!({
             "ok": false,
-            "reason": format!("modelo não encontrado nesta máquina: {}", req.model_path),
+            "reason": format!("model not found on this machine: {}", req.model_path),
         }))
         .into_response();
     }
@@ -226,7 +226,7 @@ pub(super) fn valid_range_error(
     let total = layout.layer_count();
     if range.start_layer > range.end_layer {
         return Some(format!(
-            "faixa L{}-{} está invertida; escolha início entre L0 e L{} e um fim igual ou maior",
+            "range L{}-{} is inverted; choose a start between L0 and L{} and an end equal or greater",
             range.start_layer,
             range.end_layer,
             total.saturating_sub(1)
@@ -234,7 +234,7 @@ pub(super) fn valid_range_error(
     }
     if range.end_layer >= total {
         return Some(format!(
-            "faixa L{}-{} está fora do modelo de {} camadas; escolha entre L0 e L{}",
+            "range L{}-{} is outside the model of {} layers; choose between L0 and L{}",
             range.start_layer,
             range.end_layer,
             total,
@@ -248,14 +248,14 @@ pub(super) fn valid_range_error(
             .collect::<Vec<_>>()
             .join(", ");
         return Some(format!(
-            "a faixa L{}-{} começa no meio de um grupo arquitetural; inícios válidos: {}",
+            "range L{}-{} starts in the middle of an architectural group; valid starts: {}",
             range.start_layer, range.end_layer, starts
         ));
     }
     let snapped = layout.snap_end_layer(range.start_layer, range.end_layer, total);
     if snapped != range.end_layer {
         return Some(format!(
-            "a faixa L{}-{} termina no meio de um grupo arquitetural; para esse início, termine em L{} ou antes",
+            "range L{}-{} ends in the middle of an architectural group; for this start, end at L{} or before",
             range.start_layer, range.end_layer, snapped
         ));
     }
@@ -332,11 +332,11 @@ pub(super) fn disk_space_warning(
     let required_gib = required_bytes as f64 / 1_073_741_824.0;
     match status {
         "insufficient" => Some(format!(
-            "destino {} tem {:.1} GiB livres, mas o plano precisa de cerca de {:.1} GiB; o fatiamento pode falhar por falta de espaço",
+            "destination {} has {:.1} GiB free, but the plan needs about {:.1} GiB; the slicing may fail for lack of space",
             destination.display(), free_gib, required_gib
         )),
         "tight" => Some(format!(
-            "destino {} tem {:.1} GiB livres para cerca de {:.1} GiB de saída; a folga é apertada",
+            "destination {} has {:.1} GiB free for about {:.1} GiB of output; the margin is tight",
             destination.display(), free_gib, required_gib
         )),
         _ => None,
@@ -362,7 +362,7 @@ pub(super) async fn slice_plan(
     let destination = state.shard_dir().await;
     if matches!(req.mode, SliceMode::TensorParallel) {
         let Some(tp_size) = req.tp_size else {
-            return bad_request("informe o tamanho do grupo TP");
+            return bad_request("provide the size of the TP group");
         };
         return match tensor_slice_plan(std::path::Path::new(&req.model_path), tp_size) {
             Ok(mut plan) => {
@@ -391,7 +391,7 @@ pub(super) async fn slice_plan(
         Some(range) => single_range_plan(&layout, range),
         None => match req.equal_parts {
             Some(n) if (1..=64).contains(&n) => plan::plan_equal(&layout, n),
-            Some(_) => return bad_request("escolha entre 1 e 64 fatias"),
+            Some(_) => return bad_request("choose between 1 and 64 slices"),
             None => plan::plan_by_size(&layout, &req.slices),
         },
     };
@@ -428,15 +428,15 @@ pub(super) async fn slice_locally(
     let source = std::path::PathBuf::from(&req.model_path);
     if !source.is_file() {
         return bad_request(format!(
-            "modelo não encontrado nesta máquina: {}",
+            "model not found on this machine: {}",
             req.model_path
         ));
     }
     if matches!(req.mode, SliceMode::Pipeline) && req.range.is_none() && req.slices.is_empty() {
-        return bad_request("nenhuma fatia na lista");
+        return bad_request("no slice in the list");
     }
     if matches!(req.mode, SliceMode::Pipeline) && req.range.is_none() && req.slices.len() > 64 {
-        return bad_request("no máximo 64 fatias");
+        return bad_request("at most 64 slices");
     }
 
     let layout = match layout_of(&source).await {
@@ -446,10 +446,10 @@ pub(super) async fn slice_locally(
 
     if matches!(req.mode, SliceMode::TensorParallel) {
         if req.range.is_some() {
-            return bad_request("uma faixa específica só pode ser fatiada no modo pipeline");
+            return bad_request("a specific range can only be sliced in pipeline mode");
         }
         let Some(tp_size) = req.tp_size else {
-            return bad_request("informe o tamanho do grupo TP");
+            return bad_request("provide the size of the TP group");
         };
         if let Err(error) = tensor_slice_plan(&source, tp_size) {
             return bad_request(error.to_string());
@@ -484,8 +484,8 @@ pub(super) async fn slice_locally(
             new_job(
                 &id,
                 "slice",
-                format!("Fatiando {base_name} em {tp_size} shards TP"),
-                "preparando",
+                format!("Slicing {base_name} into {tp_size} TP shards"),
+                "preparing",
             ),
         );
         let job_id = id.clone();
@@ -496,7 +496,7 @@ pub(super) async fn slice_locally(
                 if let Some(warning) = destination_warning {
                     set_job_phase(
                         &job_id,
-                        "verificando espaço",
+                        "checking disk space",
                         &warning,
                         Some(destination.to_string_lossy().into_owned()),
                     )
@@ -522,7 +522,7 @@ pub(super) async fn slice_locally(
             match result {
                 Ok(manifest) => {
                     let msg = format!(
-                        "{} shards TP em {} · pom {}",
+                        "{} TP shards in {} · pom {}",
                         manifest.tp_parts.len(),
                         crate::pom::dir_for(&root, &manifest).display(),
                         crate::pom::short_id(&manifest.pom_id)
@@ -530,8 +530,8 @@ pub(super) async fn slice_locally(
                     set_job(&job_id, "done", "pronto", &msg).await;
                 }
                 Err(error) => {
-                    warn!("fatiamento TP falhou: {error:#}");
-                    set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+                    warn!("TP slicing failed: {error:#}");
+                    set_job(&job_id, "failed", "error", &format!("{error:#}")).await;
                 }
             }
         });
@@ -553,7 +553,7 @@ pub(super) async fn slice_locally(
                 .warnings
                 .first()
                 .cloned()
-                .unwrap_or_else(|| "há uma fatia impossível na lista".to_string()),
+                .unwrap_or_else(|| "there is an impossible slice in the list".to_string()),
         );
     }
 
@@ -579,7 +579,7 @@ pub(super) async fn slice_locally(
         .map(|r| (r.start_layer, r.end_layer))
         .collect();
     if ranges.is_empty() {
-        return bad_request("este arquivo não declara camadas — não há o que fatiar");
+        return bad_request("this file declares no layers — there is nothing to slice");
     }
     let base_name = req
         .name
@@ -593,14 +593,14 @@ pub(super) async fn slice_locally(
     let out_dir = crate::pom::scratch_dir(&shard_dir);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let title = format!(
-        "Fatiando {base_name} em {} {}",
+        "Slicing {base_name} into {} {}",
         ranges.len(),
-        if ranges.len() == 1 { "fatia" } else { "fatias" }
+        if ranges.len() == 1 { "slice" } else { "slices" }
     );
     jobs()
         .write()
         .await
-        .insert(id.clone(), new_job(&id, "slice", title, "preparando"));
+        .insert(id.clone(), new_job(&id, "slice", title, "preparing"));
 
     let job_id = id.clone();
     let label = req.name.clone().unwrap_or_else(|| base_name.clone());
@@ -611,7 +611,7 @@ pub(super) async fn slice_locally(
             if let Some(warning) = destination_warning {
                 set_job_phase(
                     &job_id,
-                    "verificando espaço",
+                    "checking disk space",
                     &warning,
                     Some(destination.to_string_lossy().into_owned()),
                 )
@@ -637,7 +637,7 @@ pub(super) async fn slice_locally(
         match result {
             Ok(m) => {
                 let msg = format!(
-                    "{} fatia{} em {} · pom {}",
+                    "{} slice{} in {} · pom {}",
                     m.parts.len(),
                     if m.parts.len() == 1 { "" } else { "s" },
                     crate::pom::dir_for(&root, &m).display(),
@@ -646,8 +646,8 @@ pub(super) async fn slice_locally(
                 set_job(&job_id, "done", "pronto", &msg).await;
             }
             Err(e) => {
-                warn!("fatiamento falhou: {e:#}");
-                set_job(&job_id, "failed", "erro", &format!("{e:#}")).await;
+                warn!("slicing failed: {e:#}");
+                set_job(&job_id, "failed", "error", &format!("{e:#}")).await;
             }
         }
     });
@@ -677,8 +677,8 @@ pub(super) async fn run_tp_slice(
     for rank in 0..tp_size {
         set_job_phase(
             job_id,
-            "empacotando cabeçalho",
-            &format!("preparando o shard TP rank {}/{}", rank + 1, tp_size),
+            "packing header",
+            &format!("preparing the TP shard rank {}/{}", rank + 1, tp_size),
             Some(source.to_string_lossy().into_owned()),
         )
         .await;
@@ -693,8 +693,8 @@ pub(super) async fn run_tp_slice(
 
         set_job_phase(
             job_id,
-            "verificando",
-            &format!("shard TP rank {} pronto; verificando e selando", rank + 1),
+            "verifying",
+            &format!("TP shard rank {} ready; verifying and sealing", rank + 1),
             Some(outcome.output_path.clone()),
         )
         .await;
@@ -730,7 +730,7 @@ pub(super) async fn run_tp_slice(
         shards,
     );
     let destination = crate::pom::finalize_run(&shard_dir, &scratch, &manifest)?;
-    info!("fatiamento TP guardado em {}", destination.display());
+    info!("TP slicing stored in {}", destination.display());
     invalidate_catalog(state.database.clone()).await;
     Ok(manifest)
 }
@@ -794,14 +794,14 @@ pub(super) async fn run_slice(
         // is most of the wall time. Saying which phase we are in beats a bar
         // that sits still with no explanation.
         let label = format!(
-            "fatia {}/{} · camadas {start}–{end} de {total_layers}",
+            "slice {}/{} · layers {start}–{end} of {total_layers}",
             index + 1,
             parts
         );
         set_job_phase(
             job_id,
-            "empacotando cabeçalho",
-            &format!("{label} · preparando os metadados da fatia"),
+            "packing header",
+            &format!("{label} · preparing the slice metadata"),
             Some(source.to_string_lossy().into_owned()),
         )
         .await;
@@ -813,8 +813,8 @@ pub(super) async fn run_slice(
             if let Some(existing) = existing_layer_slice(&shard_dir, &source_sha256, start, end) {
                 set_job_phase(
                     job_id,
-                    "verificando",
-                    &format!("{label} · fatia idêntica já existe; conferida por hash"),
+                    "verifying",
+                    &format!("{label} · an identical slice already exists; verified by hash"),
                     Some(existing.output_path.clone()),
                 )
                 .await;
@@ -833,10 +833,10 @@ pub(super) async fn run_slice(
                         let overall = overall_progress(index, parts, pct);
                         let announce = first_report
                             .swap(false, Ordering::Relaxed)
-                            .then(|| format!("{writing_label} · gravando"));
+                            .then(|| format!("{writing_label} · writing"));
                         tokio::spawn(async move {
                             if let Some(message) = announce {
-                                set_job(&id, "running", "escrevendo", &message).await;
+                                set_job(&id, "running", "writing", &message).await;
                             }
                             set_job_progress(&id, overall).await;
                         });
@@ -848,20 +848,20 @@ pub(super) async fn run_slice(
         set_job_progress(job_id, overall_progress(index + 1, parts, 0.0)).await;
         set_job_phase(
             job_id,
-            "verificando",
-            &format!("{label} · saída pronta; verificando e selando"),
+            "verifying",
+            &format!("{label} · output ready; verifying and sealing"),
             Some(outcome.output_path.clone()),
         )
         .await;
         info!(
-            "fatia {}/{parts} pronta: {} ({:.1} GB, {})",
+            "slice {}/{parts} ready: {} ({:.1} GB, {})",
             index + 1,
             outcome.output_path,
             outcome.bytes as f64 / 1_073_741_824.0,
             if outcome.reused {
-                "reaproveitada"
+                "reused"
             } else {
-                "gerada"
+                "generated"
             }
         );
         pieces.push(crate::pom::PomPart {
@@ -903,7 +903,7 @@ pub(super) async fn run_slice(
     // descoberta lá na frente, na implantação, de que o conjunto não fecha.
     if !manifesto.complete() {
         warn!(
-            "as fatias de {} não cobrem as {total_layers} camadas do modelo",
+            "the slices of {} do not cover the {total_layers} layers of the model",
             manifesto.model.name
         );
     }
@@ -912,7 +912,7 @@ pub(super) async fn run_slice(
     // `.pom` é selado lá por último: um manifesto na pasta é, por construção,
     // um fatiamento inteiro que existe em disco.
     let destination = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
-    info!("fatiamento guardado em {}", destination.display());
+    info!("slicing stored in {}", destination.display());
     invalidate_catalog(state.database.clone()).await;
 
     Ok(manifesto)
@@ -937,32 +937,32 @@ pub(crate) async fn materialize_slice_ranges(
     req: &SliceRangesRequest,
 ) -> Result<SliceRangesResponse, String> {
     if req.ranges.is_empty() || req.ranges.len() > 64 {
-        return Err("o fatiamento precisa de entre 1 e 64 faixas".to_string());
+        return Err("the slicing needs between 1 and 64 ranges".to_string());
     }
     if req.name.trim().is_empty() {
-        return Err("o fatiamento precisa do nome do modelo".to_string());
+        return Err("the slicing needs the model name".to_string());
     }
     let options = model_layer_options_local(state, &req.model_path).await?;
     let source = std::path::Path::new(&req.model_path)
         .canonicalize()
-        .map_err(|error| format!("não foi possível resolver o modelo inteiro: {error}"))?;
+        .map_err(|error| format!("could not resolve the whole model: {error}"))?;
     let layout = layout_of(&source).await?;
     if req.total_layers != options.total_layers {
         return Err(format!(
-            "o modelo declara {} camadas, mas a implantação pediu {}",
+            "the model declares {} layers, but the deployment asked for {}",
             options.total_layers, req.total_layers
         ));
     }
     for range in &req.ranges {
         if range.start_layer > range.end_layer || range.end_layer >= req.total_layers {
             return Err(format!(
-                "faixa L{}-{} fora do modelo de {} camadas",
+                "range L{}-{} outside the model of {} layers",
                 range.start_layer, range.end_layer, req.total_layers
             ));
         }
         if !layout.is_valid_slice_start(range.start_layer) {
             return Err(format!(
-                "a faixa L{}-{} começa fora de uma fronteira arquitetural real do modelo",
+                "range L{}-{} starts outside a real architectural boundary of the model",
                 range.start_layer, range.end_layer
             ));
         }
@@ -970,7 +970,7 @@ pub(crate) async fn materialize_slice_ranges(
             != range.end_layer
         {
             return Err(format!(
-                "a faixa L{}-{} não respeita as fronteiras arquiteturais reais do modelo",
+                "range L{}-{} does not respect the real architectural boundaries of the model",
                 range.start_layer, range.end_layer
             ));
         }
@@ -992,16 +992,16 @@ pub(crate) async fn materialize_slice_ranges(
         new_job(
             &job_id,
             "slice",
-            format!("Fatiando {} para a implantação", req.name),
-            "preparando",
+            format!("Slicing {} for the deployment", req.name),
+            "preparing",
         ),
     );
     let source_sha256 = match source_model_sha256_for_job(&source, &job_id).await {
         Ok(hash) => hash,
         Err(error) => {
-            set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+            set_job(&job_id, "failed", "error", &format!("{error:#}")).await;
             return Err(format!(
-                "não foi possível identificar o modelo inteiro: {error:#}"
+                "could not identify the whole model: {error:#}"
             ));
         }
     };
@@ -1027,9 +1027,9 @@ pub(crate) async fn materialize_slice_ranges(
     let manifest = match result {
         Ok(manifest) => manifest,
         Err(error) => {
-            set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+            set_job(&job_id, "failed", "error", &format!("{error:#}")).await;
             return Err(format!(
-                "não foi possível fatiar o modelo inteiro: {error:#}"
+                "could not slice the whole model: {error:#}"
             ));
         }
     };
@@ -1046,7 +1046,7 @@ pub(crate) async fn materialize_slice_ranges(
                     sha256: part.sha256.clone(),
                 })
                 .map_err(|error| {
-                    format!("não foi possível localizar a fatia materializada: {error}")
+                    format!("could not locate the materialized slice: {error}")
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1055,7 +1055,7 @@ pub(crate) async fn materialize_slice_ranges(
         "done",
         "pronto",
         &format!(
-            "{} fatia(s) materializada(s) para a implantação",
+            "{} slice(s) materialized for the deployment",
             slices.len()
         ),
     )

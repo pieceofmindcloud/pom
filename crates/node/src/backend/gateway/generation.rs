@@ -36,18 +36,18 @@ fn prefill_rebuild_reason(error: &anyhow::Error) -> Option<&'static str> {
         return Some(rebuild.reason);
     }
     if crate::relay::is_unknown_session_error(error) {
-        return Some("a sessão remota não existe mais");
+        return Some("the remote session no longer exists");
     }
     if crate::relay::is_delivery_ambiguous(error) {
-        return Some("a resposta se perdeu depois do envio e o peer pode ter processado o chunk");
+        return Some("the response was lost after sending and the peer may have processed the chunk");
     }
     if crate::relay::is_prefill_state_error(error) {
-        return Some("as posições do KV remoto não coincidem com o próximo chunk");
+        return Some("the remote KV positions do not match the next chunk");
     }
     if crate::relay::is_transport_relay_failure(error)
         && !crate::relay::is_pre_delivery_error(error)
     {
-        return Some("um hop downstream falhou depois que a cabeça aceitou o chunk");
+        return Some("a downstream hop failed after the head accepted the chunk");
     }
     None
 }
@@ -62,7 +62,7 @@ fn prefill_rebuild_reason(error: &anyhow::Error) -> Option<&'static str> {
 /// pendurado, e foi o que pôs o agente em recuo exponencial a repetir o mesmo
 /// pedido em produção a 2026-09-08.
 fn log_early_outcome(outcome: &str, reason: &str) {
-    warn!("⛔ requisição encerrada antes do plano ({outcome}): {reason}");
+    warn!("⛔ request ended before the plan ({outcome}): {reason}");
 }
 
 /// Wakes every idle step selected for this request at once and waits until
@@ -159,12 +159,12 @@ async fn wake_remote_peer(
                             .map(str::to_owned)
                     })
                     .unwrap_or_else(|| format!("HTTP {status}"));
-                anyhow::bail!("reload_model falhou para {node_id}: {reason}");
+                anyhow::bail!("reload_model failed for {node_id}: {reason}");
             }
             Err(error) => Some(format!("{error:#}")),
         };
         if let Some(reason) = transient {
-            debug!("reload_model para {node_id} ainda sem resposta: {reason}");
+            debug!("reload_model for {node_id} still unanswered: {reason}");
             if let Ok(mut slot) = last_error.lock() {
                 *slot = Some(format!("{node_id}: {reason}"));
             }
@@ -186,7 +186,7 @@ async fn reload_idle_pipeline_with_timeout(
     }
     let started = Instant::now();
     info!(
-        "⏰ pipeline ociosa: acordando {} peer(s) antes do prefill ({})",
+        "⏰ idle pipeline: waking {} peer(s) before the prefill ({})",
         idle.len(),
         idle.iter()
             .map(|peer| peer.node_id.chars().take(8).collect::<String>())
@@ -204,7 +204,7 @@ async fn reload_idle_pipeline_with_timeout(
                     .reload_from_idle()
                     .await
                     .map(|_| ())
-                    .map_err(|error| anyhow::anyhow!("reload_model falhou para {node_id}: {error}"));
+                    .map_err(|error| anyhow::anyhow!("reload_model failed for {node_id}: {error}"));
             }
             wake_remote_peer(state, peer, last_error).await
         }
@@ -217,13 +217,13 @@ async fn reload_idle_pipeline_with_timeout(
                 .lock()
                 .ok()
                 .and_then(|slot| slot.clone())
-                .map(|reason| format!(" (última falha: {reason})"))
+                .map(|reason| format!(" (last failure: {reason})"))
                 .unwrap_or_default();
-            anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}{detail}")
+            anyhow::anyhow!("reload_model of the pipeline exceeded {timeout:?}{detail}")
         })?;
     results?;
     info!(
-        "✅ pipeline acordada em {:.1}s",
+        "✅ pipeline woken in {:.1}s",
         started.elapsed().as_secs_f64()
     );
     Ok(true)
@@ -279,8 +279,8 @@ mod reload_tests {
     async fn spawn_gated_server(state: ReloadBarrier) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("porta de teste");
-        let port = listener.local_addr().expect("endereço de teste").port();
+            .expect("test port");
+        let port = listener.local_addr().expect("test address").port();
         let router = Router::new()
             .route("/api/internal/reload_model", post(gated_reload))
             .with_state(state);
@@ -293,8 +293,8 @@ mod reload_tests {
     async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>, Arc<AtomicBool>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("porta de teste");
-        let port = listener.local_addr().expect("endereço de teste").port();
+            .expect("test port");
+        let port = listener.local_addr().expect("test address").port();
         let reached = Arc::new(AtomicBool::new(false));
         let router = Router::new()
             .route("/api/internal/reload_model", post(hanging_reload))
@@ -353,13 +353,13 @@ mod reload_tests {
 
         tokio::time::timeout(Duration::from_secs(1), waiting_for_both)
             .await
-            .expect("os dois peers planejados devem receber o evento em paralelo");
+            .expect("both planned peers must receive the event in parallel");
         barrier.release.notify_waiters();
         tokio::time::timeout(Duration::from_secs(1), reload)
             .await
-            .expect("reload paralelo não pode ficar bloqueado")
-            .expect("task de reload")
-            .expect("ambos os peers devem confirmar o reload");
+            .expect("a parallel reload cannot stay blocked")
+            .expect("reload task")
+            .expect("both peers must confirm the reload");
 
         first_task.abort();
         second_task.abort();
@@ -394,8 +394,8 @@ mod reload_tests {
     async fn spawn_loading_server(peer: LoadingPeer) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("porta de teste");
-        let port = listener.local_addr().expect("endereço de teste").port();
+            .expect("test port");
+        let port = listener.local_addr().expect("test address").port();
         let router = Router::new()
             .route("/api/internal/reload_model", post(loading_reload))
             .with_state(peer);
@@ -424,8 +424,8 @@ mod reload_tests {
         let woke =
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
                 .await
-                .expect("o peer fica pronto na terceira resposta");
-        assert!(woke, "a pipeline estava ociosa e foi acordada");
+                .expect("the peer becomes ready on the third response");
+        assert!(woke, "the pipeline was idle and was woken");
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         server.abort();
     }
@@ -436,7 +436,7 @@ mod reload_tests {
         let (port, server) = spawn_loading_server(LoadingPeer {
             calls: calls.clone(),
             ready_at: 1,
-            refusal: Some("o modelo aguarda resfriamento"),
+            refusal: Some("the model is waiting for cooldown"),
         })
         .await;
         let mut peer = crate::gateway::testkit::peer("idle-hot", "hot", port);
@@ -447,9 +447,9 @@ mod reload_tests {
         let error =
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_secs(5))
                 .await
-                .expect_err("a recusa do peer encerra a espera");
-        assert!(error.to_string().contains("resfriamento"), "{error}");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "uma recusa não é repetida");
+                .expect_err("the peer refusal ends the wait");
+        assert!(error.to_string().contains("cooldown"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a refusal is not repeated");
         server.abort();
     }
 
@@ -476,14 +476,14 @@ mod reload_tests {
         let error =
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_millis(50))
                 .await
-                .expect_err("um peer preso deve devolver erro com timeout");
+                .expect_err("a stuck peer must return an error with a timeout");
         assert!(
             reached.load(Ordering::SeqCst),
-            "a requisição deve chegar ao peer preso"
+            "the request must reach the stuck peer"
         );
         assert!(
             !error.to_string().is_empty(),
-            "a recusa deve explicar a falha"
+            "the refusal must explain the failure"
         );
         server_task.abort();
     }
@@ -507,8 +507,8 @@ mod generation_pump_tests {
         drop(client_rx);
         let result = tokio::time::timeout(Duration::from_secs(1), pump)
             .await
-            .expect("a bomba deve observar a desconexão")
-            .expect("a bomba não deve entrar em panic");
+            .expect("the bomb must observe the disconnect")
+            .expect("the bomb must not panic");
 
         assert!(result.is_none());
         assert!(cancellation.is_cancelled());
@@ -530,25 +530,25 @@ mod generation_pump_tests {
             trace: Box::new(trace),
         });
         let partial_trace = crate::prefill::partial_trace(&transport_failure)
-            .expect("erro de transporte preserva trace parcial");
+            .expect("a transport error preserves the partial trace");
         let (client_tx, _client_rx) = mpsc::channel(1);
         let (inner_tx, inner_rx) = mpsc::channel(1);
         let cancellation = crate::prefill::Cancellation::new();
         inner_tx
             .send(GenEvent::FailedWithTelemetry {
-                error: "transporte falhou após progresso".into(),
+                error: "transport failed after progress".into(),
                 trace: Some(partial_trace),
             })
             .await
             .unwrap();
         let result = forward_generation_events(client_tx, inner_rx, cancellation)
             .await
-            .expect("falha terminal preservada");
+            .expect("terminal failure preserved");
         let GenEvent::FailedWithTelemetry {
             trace: Some(trace), ..
         } = result
         else {
-            panic!("o evento terminal deve preservar trace parcial")
+            panic!("the terminal event must preserve the partial trace")
         };
         let response_telemetry = audit_telemetry(None, Some(trace)).unwrap();
         assert_eq!(response_telemetry["model"], "test-model");
@@ -641,7 +641,7 @@ async fn plan_by_delivery_time(
     }
 
     info!(
-        "pipeline por tempo de entrega: {} ~{:.0} ms, resposta {} (prefill {:.0} ms, {:.1} ms/token, filas {:?}, prefixo {} tokens)",
+        "pipeline by delivery time: {} ~{:.0} ms, response {} (prefill {:.0} ms, {:.1} ms/token, queues {:?}, prefix {} tokens)",
         plan.hop_chain(),
         estimate.total_ms,
         estimate.return_mode.as_str(),
@@ -678,7 +678,7 @@ pub(super) async fn generate_stream_inner(
     } = input;
     let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
-        log_early_outcome("cancelado", "o cliente desistiu antes do início");
+        log_early_outcome("cancelado", "the client gave up before the start");
         return;
     }
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
@@ -686,7 +686,7 @@ pub(super) async fn generate_stream_inner(
     let validation_wall = wall_clock_ms();
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = prompt_budget_error(&cfg, &prompt) {
-            log_early_outcome("recusado", &error);
+            log_early_outcome("refused", &error);
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
@@ -817,9 +817,9 @@ pub(super) async fn generate_stream_inner(
         };
         let Some(plan) = planned else {
             let error = format!(
-                "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+                "No valid pipeline for model '{model}' (check the layer coverage 0..{total_layers})"
             );
-            log_early_outcome("recusado", &error);
+            log_early_outcome("refused", &error);
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         };
@@ -851,7 +851,7 @@ pub(super) async fn generate_stream_inner(
                     "pipeline_wake",
                 );
                 if cancellation.is_cancelled() {
-                    log_early_outcome("cancelado", "o cliente desistiu enquanto a pipeline acordava");
+                    log_early_outcome("cancelado", "the client gave up while the pipeline was waking");
                     return;
                 }
                 woke_idle = true;
@@ -878,14 +878,14 @@ pub(super) async fn generate_stream_inner(
     // pipeline: the plan said who serves this model. See `plugin_engine`.
     if let Some(code) = crate::plugin_engine::plugin_of_plan(&plan) {
         let refusal = if !images.is_empty() {
-            Some("este serviço de inferência não recebe imagens")
+            Some("this inference service does not accept images")
         } else if probe.as_ref().is_some_and(|probe| !probe.labels.is_empty()) {
-            Some("este serviço de inferência não responde decisões tipadas")
+            Some("this inference service does not answer typed decisions")
         } else {
             None
         };
         if let Some(error) = refusal {
-            log_early_outcome("recusado", error);
+            log_early_outcome("refused", error);
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
             return;
         }
@@ -922,7 +922,7 @@ pub(super) async fn generate_stream_inner(
     {
         let mmproj_path = state.runtime.config().await.and_then(|cfg| cfg.mmproj_path);
         if let Some(error) = crate::openai::image_vision_error(&images, mmproj_path.as_deref()) {
-            log_early_outcome("recusado", error);
+            log_early_outcome("refused", error);
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
             return;
         }
@@ -1002,13 +1002,13 @@ pub(super) async fn generate_stream_inner(
                         reuse_prefix = true;
                         disk.touch(&entry.key_hash);
                         info!(
-                            "♻️  prefixo restaurado do disco: {restored_tokens} tokens em {} hop(s)",
+                            "♻️  prefix restored from disk: {restored_tokens} tokens on {} hop(s)",
                             plan.steps.len()
                         );
                         disk_restore_hash = Some(entry.key_hash);
                     }
                     Err(error) => {
-                        warn!("restauração de prefixo do disco falhou ({error}); seguindo a frio");
+                        warn!("prefix restore from disk failed ({error}); continuing cold");
                         disk.forget(&entry.key_hash);
                     }
                 }
@@ -1073,11 +1073,11 @@ pub(super) async fn generate_stream_inner(
     let direct = match (direct, planned_return) {
         (Some(_), Some(crate::fastest::ReturnMode::Ring)) => {
             info!(
-                "resposta pelo anel ({})",
+                "response through the ring ({})",
                 if crate::fastest::forced_return_mode().is_some() {
-                    "imposta por POM_RETURN_MODE"
+                    "imposed by POM_RETURN_MODE"
                 } else {
-                    "escolhida no planejamento"
+                    "chosen in the planning"
                 }
             );
             None
@@ -1092,7 +1092,7 @@ pub(super) async fn generate_stream_inner(
                 &crate::route_plan::book().kind_map(crate::route_plan::Plane::Inference),
             ) {
                 Some(reason) => {
-                    info!("resposta pelo anel: {reason}");
+                    info!("response through the ring: {reason}");
                     None
                 }
                 None => Some(reply),
@@ -1102,7 +1102,7 @@ pub(super) async fn generate_stream_inner(
     };
 
     info!(
-        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",
+        "🔀 Pipeline planned: {} hops [{}] session={} max_tokens={} (leg {}) response={}",
         plan.steps.len(),
         plan.hop_chain(),
         &session_id[..8],
@@ -1207,7 +1207,7 @@ pub(super) async fn generate_stream_inner(
         mtp_enabled,
         mtp_k,
         pipeline_hops = plan.steps.len(),
-        "decisão de especulação MTP do pipeline"
+        "MTP speculation decision of the pipeline"
     );
 
     // Qual das duas especulações roda nesta requisição. O MTP vem primeiro
@@ -1288,13 +1288,12 @@ pub(super) async fn generate_stream_inner(
         if let Err(e) = &prefill_result {
             if crate::relay::is_frame_size_error(e) {
                 warn!(
-                    "prefill falhou por limite de frame ({e}); \
-                     não é recuperável repetindo o mesmo chunk"
+                    "prefill failed because of the frame limit ({e}); it is not recoverable by repeating the same chunk"
                 );
             } else if !crate::prefill::is_cancelled(e) {
                 if let Some(rp) = crate::prefill::resume_point(e) {
                     warn!(
-                        "prefill falhou antes de entregar o pedaço {} (posição {}, {e}); retomando nesse ponto e preservando o KV",
+                        "prefill failed before delivering chunk {} (position {}, {e}); resuming at that point and preserving the KV",
                         rp.from_chunk, rp.start_pos
                     );
                     prefill_result = prefill_attempt(reuse_prefix, Some(rp)).await;
@@ -1310,7 +1309,7 @@ pub(super) async fn generate_stream_inner(
                         crate::relay::is_unknown_session_error(e);
                     cold_recovery_attempted = true;
                     warn!(
-                        "prefill precisa de reconstrução fria ({reason}; {e}); limpando as sessões remotas uma vez"
+                        "prefill needs a cold rebuild ({reason}; {e}); clearing the remote sessions once"
                     );
                     prefill_result = prefill_attempt(false, None).await;
                     if let Some(trace) = prefill_result
@@ -1330,7 +1329,7 @@ pub(super) async fn generate_stream_inner(
                         unknown_session_recovery_attempted =
                             crate::relay::is_unknown_session_error(error);
                         warn!(
-                            "prefill retomado ainda exige reconstrução fria ({reason}; {error}); limpando as sessões remotas uma vez"
+                            "resumed prefill still requires a cold rebuild ({reason}; {error}); clearing the remote sessions once"
                         );
                         prefill_result = prefill_attempt(false, None).await;
                         if let Some(trace) = prefill_result
@@ -1373,7 +1372,7 @@ pub(super) async fn generate_stream_inner(
                     o.trace.prefix_reuse_status = Some("disk".to_owned());
                 }
                 info!(
-                    "📥 prompt de {} tokens em {} pedaço(s), {} do cache · {:.1}s até a primeira palavra",
+                    "📥 prompt of {} tokens in {} chunk(s), {} from the cache · {:.1}s to the first word",
                     o.prompt_tokens,
                     o.chunks,
                     o.cached_tokens,
@@ -1383,20 +1382,20 @@ pub(super) async fn generate_stream_inner(
                 o
             }
             Err(e) if crate::prefill::is_cancelled(&e) => {
-                info!("cliente desconectou durante o prefill; cancelando pipeline");
+                info!("client disconnected during the prefill; cancelling the pipeline");
                 return;
                 }
                 Err(e) => {
                 let message = if unknown_session_recovery_attempted
                     || crate::relay::is_unknown_session_error(&e)
                 {
-                    "Prefill falhou: um peer perdeu o estado da sessão; o sistema tentou reconstruir o contexto, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                    "Prefill failed: a peer lost the session state; the system tried to rebuild the context, but could not finish and the request was not executed. Try sending the message again when the cluster is stable.".to_string()
                 } else if cold_recovery_attempted {
-                    "Prefill falhou: uma falha de transporte deixou incerto se o peer processou o último chunk. O sistema tentou reconstruir o contexto uma vez, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                    "Prefill failed: a transport failure left it uncertain whether the peer processed the last chunk. The system tried to rebuild the context once, but could not finish and the request was not executed. Try sending the message again when the cluster is stable.".to_string()
                 } else {
-                    format!("Prefill falhou: {}", crate::prefill::failure_cause(&e))
+                    format!("Prefill failed: {}", crate::prefill::failure_cause(&e))
                 };
-                warn!("prefill falhou: {e:#}");
+                warn!("prefill failed: {e:#}");
                 let _ = tx
                     .send(GenEvent::FailedWithTelemetry {
                         error: message,
@@ -1449,7 +1448,7 @@ pub(super) async fn generate_stream_inner(
         note_leg_boundary(budget, tokens_generated, &mut legs);
         match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
             StopSend::Disconnected => {
-                info!("cliente desconectou logo após o prompt");
+                info!("client disconnected right after the prompt");
                 return;
             }
             StopSend::Stopped(stop_sequence) => {
@@ -1523,12 +1522,12 @@ pub(super) async fn generate_stream_inner(
             sliced_mtp_requested,
             sliced_mtp,
             plan_supports_mtp,
-            "caminho de decode do pipeline"
+            "decode path of the pipeline"
         );
         if mtp_enabled && plan.steps.len() >= 2 && !sliced_mtp_requested {
             info!(
                 reason = sliced_mtp_disable_reason(&plan),
-                "pipeline fatiado sem MTP: seguindo com a capacidade disponível"
+                "sliced pipeline without MTP: continuing with the available capability"
             );
         }
         let mut remote_stream = if remote_stream_capable {
@@ -1569,7 +1568,7 @@ pub(super) async fn generate_stream_inner(
                     Some(stream)
                 }
                 Err(error) => {
-                    warn!("transporte remoto por lotes falhou: {error}");
+                    warn!("batched remote transport failed: {error}");
                     let summary = summary_for(
                         &plan,
                         request_started,
@@ -1678,13 +1677,13 @@ pub(super) async fn generate_stream_inner(
                     Ok(step) => step,
                     Err(e) => {
                         let round = if speculating {
-                            "rodada especulativa"
+                            "speculative round"
                         } else {
-                            "rodada de decodificação"
+                            "decode round"
                         };
-                        warn!("Erro na {round} (token {tokens_generated}): {e}");
+                        warn!("Error in the {round} (token {tokens_generated}): {e}");
                         if tokens_generated > 0 {
-                            info!("devolvendo {tokens_generated} tokens parciais");
+                            info!("returning {tokens_generated} partial tokens");
                             let summary = summary_for(
                                 &plan,
                                 request_started,
@@ -1700,7 +1699,7 @@ pub(super) async fn generate_stream_inner(
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(format!(
-                                    "Pipeline falhou na {round}: {e}"
+                                    "Pipeline failed in the {round}: {e}"
                                 )))
                                 .await;
                         }
@@ -1720,11 +1719,11 @@ pub(super) async fn generate_stream_inner(
                                 let detail = step
                                     .speculation_disabled_detail
                                     .as_deref()
-                                    .unwrap_or("cauda não informou a causa da desativação");
+                                    .unwrap_or("the tail did not report the cause of the deactivation");
                                 info!(
                                     reason,
                                     detail,
-                                    "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
+                                    "sliced pipeline without an MTP draft: continuing without speculation"
                                 );
                                 speculating = false;
                             }
@@ -1742,11 +1741,11 @@ pub(super) async fn generate_stream_inner(
                                 let detail = step
                                     .speculation_disabled_detail
                                     .as_deref()
-                                    .unwrap_or("cauda não informou a causa da desativação");
+                                    .unwrap_or("the tail did not report the cause of the deactivation");
                                 info!(
                                     reason,
                                     detail,
-                                    "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
+                                    "sliced pipeline without an MTP draft: continuing without speculation"
                                 );
                                 speculating = false;
                             } else {
@@ -1757,7 +1756,7 @@ pub(super) async fn generate_stream_inner(
                         // A cabeça recusou rascunhar — hoje só acontece se
                         // ela é de uma versão anterior a este fix, ou se o
                         // rascunho por repetição não achou nada para propor.
-                        info!("nenhum hop rascunhou: seguindo sem especulação");
+                        info!("no hop drafted: continuing without speculation");
                         speculating = false;
                     }
                 }
@@ -1781,7 +1780,7 @@ pub(super) async fn generate_stream_inner(
                     note_leg_boundary(budget, tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
-                            info!("cliente desconectou após {tokens_generated} tokens");
+                            info!("client disconnected after {tokens_generated} tokens");
                             return;
                         }
                         StopSend::Stopped(stop_sequence) => {
@@ -1823,11 +1822,11 @@ pub(super) async fn generate_stream_inner(
                         None,
                     );
                     info!(
-                        "✅ Pipeline completo ({}): {} tokens em {:.1}s ({:.1} tok/s)",
+                        "✅ Pipeline complete ({}): {} tokens in {:.1}s ({:.1} tok/s)",
                         if speculating {
                             "especulativo"
                         } else {
-                            "sem especulação"
+                            "without speculation"
                         },
                         tokens_generated,
                         summary.timings.total_ms as f64 / 1000.0,
@@ -1866,9 +1865,7 @@ pub(super) async fn generate_stream_inner(
                         // confirmed rather than trust the cache further —
                         // same shape as the `Err(e)` branch above.
                         warn!(
-                            "rollback parcial recusado por algum hop após \
-                             {tokens_generated} tokens: encerrando a geração \
-                             em vez de arriscar cache contaminado"
+                            "partial rollback refused by some hop after {tokens_generated} tokens: ending the generation instead of risking a contaminated cache"
                         );
                         if tokens_generated > 0 {
                             let summary = summary_for(
@@ -1886,7 +1883,7 @@ pub(super) async fn generate_stream_inner(
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(
-                                    "rollback especulativo recusado pelo hop".to_string(),
+                                    "speculative rollback refused by the hop".to_string(),
                                 ))
                                 .await;
                         }
@@ -1927,7 +1924,7 @@ pub(super) async fn generate_stream_inner(
                     if step.accepted.is_empty() {
                         let _ = tx
                             .send(GenEvent::Failed(
-                                "Pipeline não devolveu token confirmado".to_string(),
+                                "Pipeline returned no confirmed token".to_string(),
                             ))
                             .await;
                         return;
@@ -1943,7 +1940,7 @@ pub(super) async fn generate_stream_inner(
                         match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                             StopSend::Disconnected => {
                                 // Client hung up; stop burning GPU time on a dead request.
-                                info!("cliente desconectou após {tokens_generated} tokens");
+                                info!("client disconnected after {tokens_generated} tokens");
                                 return;
                             }
                             StopSend::Stopped(stop_sequence) => {
@@ -1990,7 +1987,7 @@ pub(super) async fn generate_stream_inner(
                             None,
                         );
                         info!(
-                            "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
+                            "✅ Pipeline complete: {} tokens in {:.1}s ({:.1} tok/s)",
                             tokens_generated,
                             summary.timings.total_ms as f64 / 1000.0,
                             summary.timings.total_tokens_per_sec
@@ -2000,10 +1997,10 @@ pub(super) async fn generate_stream_inner(
                     }
                 }
                 Err(e) => {
-                    warn!("Erro no passo {tokens_generated} do pipeline: {e}");
+                    warn!("Error at step {tokens_generated} of the pipeline: {e}");
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
-                        info!("devolvendo {tokens_generated} tokens parciais");
+                        info!("returning {tokens_generated} partial tokens");
                         let summary = summary_for(
                             &plan,
                             request_started,
@@ -2019,7 +2016,7 @@ pub(super) async fn generate_stream_inner(
                     } else {
                         let _ = tx
                             .send(GenEvent::Failed(format!(
-                                "Pipeline falhou no passo {tokens_generated}: {e}"
+                                "Pipeline failed at step {tokens_generated}: {e}"
                             )))
                             .await;
                     }
@@ -2064,7 +2061,7 @@ pub(super) async fn generate_stream_inner(
                         {
                             disk.touch(&ancestor.key_hash);
                             debug!(
-                                "spill de prefixo pulado: +{} tokens desde {} (< {})",
+                                "prefix spill skipped: +{} tokens since {} (< {})",
                                 retained_tokens.saturating_sub(ancestor.cached_tokens),
                                 &ancestor.key_hash[..8.min(ancestor.key_hash.len())],
                                 crate::prefix_cache::SLOT_AUTO_MIN_GROWTH_TOKENS,
@@ -2085,13 +2082,13 @@ pub(super) async fn generate_stream_inner(
                                 erase_snapshot(&plan, &auto_slot_name(&stale), &clients).await;
                             }
                         }
-                        Err(error) => debug!("spill de prefixo em disco: {error}"),
+                        Err(error) => debug!("prefix spill to disk: {error}"),
                     }
                 });
             }
         } else {
             warn!(
-                "não foi possível preservar o prefixo da sessão {}; liberando KV",
+                "could not preserve the prefix of session {}; releasing the KV",
                 &session_id[..8.min(session_id.len())]
             );
         }
@@ -2213,7 +2210,7 @@ async fn post_session_lifecycle(
     }
     let result = post_session_lifecycle_direct(http, step, path, body, session_id, timeout).await;
     match (result, tunnel) {
-        (Err(direct), Some(tunnel)) if !direct.contains(" respondeu HTTP ") => {
+        (Err(direct), Some(tunnel)) if !direct.contains(" answered HTTP ") => {
             crate::relay::post_json_via_tunnel(http, tunnel, step, path, body, session_id, timeout)
                 .await
                 .map_err(|error| format!("{direct}; libp2p-tunnel: {error}"))
@@ -2235,7 +2232,7 @@ async fn post_session_lifecycle_direct(
     let candidates = inference_route_candidates(step);
     let payload = match serde_json::to_vec(body) {
         Ok(payload) => payload,
-        Err(error) => return Err(format!("corpo JSON inválido: {error}")),
+        Err(error) => return Err(format!("invalid JSON body: {error}")),
     };
     let mut last_error = None;
 
@@ -2261,19 +2258,19 @@ async fn post_session_lifecycle_direct(
                     );
                 }
                 Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
-                    last_error = Some(format!("quic: HTTP {} (sem rota HTTP/3)", response.status));
+                    last_error = Some(format!("quic: HTTP {} (no HTTP/3 route)", response.status));
                     break;
                 }
                 Ok(response) => {
                     return Err(format!(
-                        "{path} em {} respondeu HTTP {}",
+                        "{path} on {} answered HTTP {}",
                         step.node_id, response.status
                     ));
                 }
                 Err(error) => {
                     last_error = Some(format!("quic: {error}"));
                     warn!(
-                        "{path} por QUIC em {} falhou ({error}), tentando TCP",
+                        "{path} over QUIC on {} failed ({error}), trying TCP",
                         step.node_id
                     );
                 }
@@ -2282,7 +2279,7 @@ async fn post_session_lifecycle_direct(
     }
 
     let Ok(client) = http.for_peer(&step.node_id) else {
-        return Err(last_error.unwrap_or_else(|| "sem cliente para o peer".to_string()));
+        return Err(last_error.unwrap_or_else(|| "no client for the peer".to_string()));
     };
     for base in http.route_order(&route_key, &candidates) {
         let url = format!("{}{path}", base.trim_end_matches('/'));
@@ -2301,7 +2298,7 @@ async fn post_session_lifecycle_direct(
                 .is_some() =>
             {
                 http.remember_route_failure(&route_key, &base);
-                last_error = Some(format!("{base}: respondeu outro nó"));
+                last_error = Some(format!("{base}: another node answered"));
             }
             Ok(response) if response.status().is_success() => {
                 http.remember_route_success(&route_key, &base);
@@ -2321,7 +2318,7 @@ async fn post_session_lifecycle_direct(
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| "nenhum endereço anunciado".to_string()))
+    Err(last_error.unwrap_or_else(|| "no announced address".to_string()))
 }
 
 pub(super) async fn rewind_sessions(
@@ -2352,7 +2349,7 @@ pub(super) async fn rewind_sessions(
                         == Some(retained_tokens as u64) =>
             {
                 info!(
-                    "prefix rewind confirmado: peer={} session={} retained_tokens={} n_past={}",
+                    "prefix rewind confirmed: peer={} session={} retained_tokens={} n_past={}",
                     step.node_id,
                     &session_id[..8.min(session_id.len())],
                     retained_tokens,
@@ -2363,7 +2360,7 @@ pub(super) async fn rewind_sessions(
             }
             Ok(body) => {
                 warn!(
-                    "prefix rewind recusado: peer={} session={} retained_tokens={} resposta={}",
+                    "prefix rewind refused: peer={} session={} retained_tokens={} response={}",
                     step.node_id,
                     &session_id[..8.min(session_id.len())],
                     retained_tokens,
@@ -2373,7 +2370,7 @@ pub(super) async fn rewind_sessions(
             }
             Err(error) => {
                 warn!(
-                    "prefix rewind falhou: peer={} session={} retained_tokens={} erro={error}",
+                    "prefix rewind failed: peer={} session={} retained_tokens={} error={error}",
                     step.node_id,
                     &session_id[..8.min(session_id.len())],
                     retained_tokens,
@@ -2405,7 +2402,7 @@ pub(super) async fn release_sessions(
         )
         .await
         {
-            warn!("release de sessão em {} falhou: {error}", step.node_id);
+            warn!("session release on {} failed: {error}", step.node_id);
         }
     }
 }
@@ -2449,16 +2446,16 @@ pub(super) async fn rollback_sessions(
             Ok(body) if body.get("rolled_back").and_then(|v| v.as_bool()) == Some(true) => {}
             Ok(body) => {
                 warn!(
-                    "rollback de sessão em {} recusado: {}",
+                    "session rollback on {} refused: {}",
                     step.node_id,
                     body.get("reason")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("sem motivo informado")
+                        .unwrap_or("no reason given")
                 );
                 all_ok = false;
             }
             Err(error) => {
-                warn!("rollback de sessão em {} falhou: {error}", step.node_id);
+                warn!("session rollback on {} failed: {error}", step.node_id);
                 all_ok = false;
             }
         }
@@ -2486,8 +2483,7 @@ pub(super) fn plan_supports_slot_persist(plan: &PipelinePlan) -> Result<(), Stri
         .find(|step| !step.supports(crate::pipeline::CAP_SLOT_PERSIST))
     {
         return Err(format!(
-            "o hop {} (camadas {}-{}) não tem slot_save_path configurado; \
-             o snapshot exige a capability em todos os peers",
+            "hop {} (layers {}-{}) has no slot_save_path configured; the snapshot requires the capability on all peers",
             step.node_id, step.start_layer, step.end_layer
         ));
     }
@@ -2533,7 +2529,7 @@ pub(super) async fn slot_call_step(
             .await
             .map_err(|error| {
                 let error = error.to_string();
-                if error.contains(" respondeu HTTP ") {
+                if error.contains(" answered HTTP ") {
                     SlotCallError::Refused(format!(
                         "{} refused the snapshot: {error}",
                         step.node_id
@@ -2621,7 +2617,7 @@ async fn slot_call_direct(
                 payload
                     .as_str()
                     .or_else(|| payload.get("error").and_then(|v| v.as_str()))
-                    .unwrap_or("sem detalhe")
+                    .unwrap_or("no detail")
             )));
         }
         clients.remember_route_success(&route_key, &base);
@@ -2682,11 +2678,11 @@ pub(crate) async fn resolve_plan_for_model(
         .find(|p| p.model == model || p.deploy_id == model)
         .map(|p| p.total_layers)
         .filter(|n| *n > 0)
-        .ok_or_else(|| format!("nenhum peer serve o modelo '{model}'"))?;
+        .ok_or_else(|| format!("no peer serves the model '{model}'"))?;
     let deploy_id = peers.iter().find(|p| p.deploy_id == model).map(|_| model);
     crate::pipeline::plan_pipeline(&peers, model, deploy_id, total_layers, &state.loads)
         .await
-        .ok_or_else(|| format!("nenhum pipeline cobre 0..{total_layers} do modelo '{model}'"))
+        .ok_or_else(|| format!("no pipeline covers 0..{total_layers} of the model '{model}'"))
 }
 
 /// Grava um snapshot de KV de uma implantação: cada hop persiste a fatia dele
@@ -2717,7 +2713,7 @@ pub(crate) async fn snapshot_deployment(
             }
             Err(error) => {
                 warn!(
-                    "snapshot '{snapshot_name}' falhou em {}: {error}",
+                    "snapshot '{snapshot_name}' failed on {}: {error}",
                     step.node_id
                 );
                 for prev in &done {
@@ -2732,7 +2728,7 @@ pub(crate) async fn snapshot_deployment(
         }
     }
     info!(
-        "snapshot '{snapshot_name}' gravado em {} hop(s), {total_bytes} bytes",
+        "snapshot '{snapshot_name}' written on {} hop(s), {total_bytes} bytes",
         plan.steps.len()
     );
     Ok(total_bytes)
@@ -2762,14 +2758,14 @@ pub(crate) async fn restore_deployment(
                     .get("restored_tokens")
                     .and_then(|v| v.as_u64())
                     .map(|n| n as u32)
-                    .ok_or_else(|| format!("{} não informou restored_tokens", step.node_id))
+                    .ok_or_else(|| format!("{} did not report restored_tokens", step.node_id))
             });
         match result {
             Ok(tokens) => match agreed {
                 Some(prev) if prev != tokens => {
                     release_sessions(plan, new_session_id, clients).await;
                     return Err(format!(
-                        "hops divergiram na restauração: {} restaurou {tokens}, outro restaurou {prev}",
+                        "hops diverged in the restore: {} restored {tokens}, another restored {prev}",
                         step.node_id
                     ));
                 }
@@ -2777,7 +2773,7 @@ pub(crate) async fn restore_deployment(
             },
             Err(error) => {
                 warn!(
-                    "restore '{snapshot_name}' falhou em {}: {error}",
+                    "restore '{snapshot_name}' failed on {}: {error}",
                     step.node_id
                 );
                 release_sessions(plan, new_session_id, clients).await;
@@ -2786,7 +2782,7 @@ pub(crate) async fn restore_deployment(
         }
     }
     let tokens = agreed.unwrap_or(0);
-    info!("snapshot '{snapshot_name}' restaurado como sessão {new_session_id} ({tokens} tokens)");
+    info!("snapshot '{snapshot_name}' restored as session {new_session_id} ({tokens} tokens)");
     Ok(tokens)
 }
 
@@ -2803,7 +2799,7 @@ pub(crate) async fn erase_snapshot(
             "slot_name": slot_name_for_step(snapshot_name, &step.node_id),
         });
         if let Err(error) = slot_call_step(step, body, clients).await {
-            warn!("erase de '{snapshot_name}' em {}: {error}", step.node_id);
+            warn!("erase of '{snapshot_name}' on {}: {error}", step.node_id);
         }
     }
 }
@@ -2826,10 +2822,7 @@ pub fn prompt_budget_error_of(n_ctx: u32, max_new_tokens: u32, prompt: &str) -> 
     let estimated = estimate_tokens(prompt);
     (estimated > budget).then(|| {
         format!(
-            "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-             {budget}. Cada sessão recebe n_ctx ({n_ctx}) menos max_new_tokens \
-             ({max_new_tokens}). Aumente n_ctx em Configurar → ajustes avançados, \
-             reduza max_new_tokens, ou reduza o tamanho do prompt."
+            "Prompt too large: ~{estimated} tokens estimated against a limit of {budget}. Each session gets n_ctx ({n_ctx}) minus max_new_tokens ({max_new_tokens}). Increase n_ctx in Configure → advanced settings, reduce max_new_tokens, or reduce the prompt size."
         )
     })
 }
@@ -2839,8 +2832,7 @@ pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Op
     // O nó que tem o modelo em casa sabe mais: acrescenta por que `n_batch`
     // não é o limite, que é a confusão que o operador faz primeiro.
     Some(format!(
-        "{error} O prompt vai em pedaços de {} tokens, então n_batch ({}) não limita \
-         o prompt.",
+        "{error} The prompt goes in chunks of {} tokens, so n_batch ({}) does not limit the prompt.",
         prompt_chunk_tokens(cfg),
         cfg.n_batch,
     ))
@@ -2906,7 +2898,7 @@ mod audit_replication_tests {
                 None,
             )
             .await
-            .expect("rede isolada"),
+            .expect("isolated network"),
         );
         network.set_profile(crate::profile::NodeProfile::Admin);
 
@@ -2925,7 +2917,7 @@ mod audit_replication_tests {
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ));
-        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco isolado"));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("isolated database"));
         let audit = crate::reqlog::AuditLog::new(database);
         let (outbound, mut received) = mpsc::channel(8);
         audit.start_replication(network, outbound);
@@ -2972,8 +2964,8 @@ mod audit_replication_tests {
         while received_by_peer.values().map(Vec::len).sum::<usize>() < 4 {
             let delivery = tokio::time::timeout(Duration::from_secs(2), received.recv())
                 .await
-                .expect("fanout para os admins no prazo")
-                .expect("canal de replicação aberto");
+                .expect("fanout to the admins in time")
+                .expect("replication channel open");
             received_by_peer
                 .entry(delivery.peer_id)
                 .or_default()
@@ -3129,7 +3121,7 @@ pub fn spawn_logged_generation_with_stops(
                 Some(generated),
                 Some(started.elapsed().as_millis() as u64),
                 "abandoned",
-                Some("o cliente desconectou antes do fim".to_string()),
+                Some("the client disconnected before the end".to_string()),
             ),
         };
 
@@ -3228,7 +3220,7 @@ pub(crate) fn record_rejected(
             {
                 audit.replicate_event(complete_event);
             } else {
-                tracing::warn!(request_id = %id, "conclusão de auditoria não entrou no plugin");
+                tracing::warn!(request_id = %id, "audit completion did not enter the plugin");
             }
         } else {
             audit.ingest_local_event(begin_event);
@@ -3255,5 +3247,5 @@ pub async fn generate_blocking_with_stops(
             GenEvent::FailedWithTelemetry { error, .. } => return Err(error),
         }
     }
-    Err("geração terminou sem resposta".to_string())
+    Err("generation ended without a response".to_string())
 }

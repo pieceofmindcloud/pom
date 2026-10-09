@@ -179,14 +179,14 @@ where
             Ok(response) => match answered_by_other_node(response.headers(), &peer.node_id) {
                 None => return Ok(response),
                 Some(actual) => failures.push(format!(
-                    "{base}: respondeu o nó {}, não {}",
+                    "{base}: answered as node {}, not {}",
                     crate::network::short(&actual),
                     crate::network::short(&peer.node_id)
                 )),
             },
             Err(error) if single_use && !error.is_connect() => {
                 anyhow::bail!(
-                    "o gateway de {} recebeu o comando por {base} e não respondeu a tempo ({error}); o comando pode estar em execução e não foi reenviado",
+                    "the gateway of {} received the command through {base} and did not answer in time ({error}); the command may be running and was not resent",
                     crate::network::short(&peer.node_id)
                 );
             }
@@ -196,14 +196,14 @@ where
     if let Some(tunnel) = TunnelPeer::from_peer(peer) {
         match send_request_via_tunnel(&tunnel, build("http://tunnel.invalid")).await {
             Ok(response) => return Ok(response),
-            Err(error) => failures.push(format!("túnel libp2p: {error:#}")),
+            Err(error) => failures.push(format!("libp2p tunnel: {error:#}")),
         }
     }
     anyhow::bail!(
-        "o gateway de {} não respondeu: {}",
+        "the gateway of {} did not answer: {}",
         crate::network::short(&peer.node_id),
         if failures.is_empty() {
-            "nenhum endereço anunciado".to_string()
+            "no announced address".to_string()
         } else {
             failures.join(", ")
         }
@@ -282,7 +282,7 @@ pub(crate) async fn tunnel_gateway_call(
     timeout: std::time::Duration,
 ) -> Result<InternalResponse> {
     let Some(sender) = crate::infer_tunnel::tunnel_sender() else {
-        anyhow::bail!("o túnel libp2p não está disponível neste processo");
+        anyhow::bail!("the libp2p tunnel is not available in this process");
     };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     sender
@@ -293,11 +293,11 @@ pub(crate) async fn tunnel_gateway_call(
             reply: reply_tx,
         })
         .await
-        .map_err(|_| anyhow::anyhow!("a fila do túnel libp2p fechou"))?;
+        .map_err(|_| anyhow::anyhow!("the libp2p tunnel queue closed"))?;
     let response = tokio::time::timeout(timeout, reply_rx)
         .await
-        .map_err(|_| anyhow::anyhow!("o túnel libp2p não respondeu em {timeout:?}"))?
-        .map_err(|_| anyhow::anyhow!("o túnel libp2p descartou a resposta"))??;
+        .map_err(|_| anyhow::anyhow!("the libp2p tunnel did not answer in {timeout:?}"))?
+        .map_err(|_| anyhow::anyhow!("the libp2p tunnel dropped the response"))??;
     Ok(InternalResponse {
         status: response.status,
         body: response.body,
@@ -453,14 +453,14 @@ impl PeerClients {
                 .timeout(timeout)
                 .tcp_nodelay(true)
                 .build()
-                .expect("cliente HTTP sem TLS não pode falhar na construção"),
+                .expect("an HTTP client without TLS cannot fail to build"),
             internal_plain: with_liveness(reqwest::Client::builder())
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
                 .tcp_nodelay(true)
                 .default_headers(internal_node_headers())
                 .build()
-                .expect("cliente HTTP interno sem TLS não pode falhar na construção"),
+                .expect("an internal HTTP client without TLS cannot fail to build"),
             per_peer: Arc::new(RwLock::new(HashMap::new())),
             reply_routes: Arc::new(RwLock::new(HashMap::new())),
             tunnel_first: Arc::new(RwLock::new(std::collections::HashSet::new())),
@@ -657,7 +657,7 @@ impl PeerClients {
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true)
             .build()
-            .context("não deu para construir o cliente TLS da sonda")
+            .context("could not build the TLS client of the probe")
     }
 
     /// Cliente para falar com `node_id`, construído sob demanda.
@@ -733,14 +733,14 @@ impl PeerClients {
             .await
             {
                 Ok(response) if response.is_success() => return Ok(response),
-                Ok(response) => failures.push(format!("túnel libp2p: {}", response.status)),
-                Err(error) => failures.push(format!("túnel libp2p: {error}")),
+                Ok(response) => failures.push(format!("libp2p tunnel: {}", response.status)),
+                Err(error) => failures.push(format!("libp2p tunnel: {error}")),
             }
         }
         anyhow::bail!(
-            "nenhum candidato respondeu à rota interna {path}: {}",
+            "no candidate answered the internal route {path}: {}",
             if failures.is_empty() {
-                "nenhum endereço anunciado".to_string()
+                "no announced address".to_string()
             } else {
                 failures.join(", ")
             }
@@ -767,7 +767,7 @@ impl PeerClients {
             .default_headers(internal_node_headers())
             .use_preconfigured_tls(cfg)
             .build()
-            .context("não deu para construir o cliente TLS do peer")?;
+            .context("could not build the TLS client of the peer")?;
         if let Ok(mut m) = self.per_peer.write() {
             m.insert(node_id.to_string(), client.clone());
         }
@@ -829,7 +829,7 @@ impl PeerClients {
     pub(crate) fn remember_tunnel_win(&self, node_id: &str) {
         if let Ok(mut set) = self.tunnel_first.write() {
             if set.insert(node_id.to_string()) {
-                debug!("{node_id}: o caminho direto não responde; o túnel passa a ser o primeiro");
+                debug!("{node_id}: the direct path does not answer; the tunnel becomes the first choice");
             }
         }
     }
@@ -859,7 +859,7 @@ impl PeerClients {
     pub(crate) fn remember_direct_win(&self, node_id: &str) {
         if let Ok(mut set) = self.tunnel_first.write() {
             if set.remove(node_id) {
-                debug!("{node_id}: o caminho direto voltou; deixa de preferir o túnel");
+                debug!("{node_id}: the direct path is back; no longer preferring the tunnel");
             }
         }
     }
@@ -999,16 +999,16 @@ mod tests {
             client.get(format!("{base}/api/ui/node"))
         })
         .await
-        .expect("o segundo endereço é o peer");
+        .expect("the second address is the peer");
         assert_eq!(response.text().await.unwrap(), "alvo");
 
         let only_impostor = send_to_gateway_over(&peer, &[impostor], |base| {
             client.get(format!("{base}/api/ui/node"))
         })
         .await
-        .expect_err("só o impostor respondeu");
+        .expect_err("only the impostor answered");
         assert!(
-            only_impostor.to_string().contains("respondeu o nó"),
+            only_impostor.to_string().contains("answered as node"),
             "{only_impostor}"
         );
     }
@@ -1052,10 +1052,10 @@ mod tests {
                 .header(CONTROL_SIGNATURE_HEADER, "{}")
         })
         .await
-        .expect_err("o comando chegou e não respondeu a tempo");
-        assert!(error.to_string().contains("não foi reenviado"), "{error}");
+        .expect_err("the command arrived and did not answer in time");
+        assert!(error.to_string().contains("was not resent"), "{error}");
         assert_eq!(slow_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(fast_calls.load(Ordering::SeqCst), 0, "a cópia seria um replay");
+        assert_eq!(fast_calls.load(Ordering::SeqCst), 0, "the copy would be a replay");
 
         // A read consumes no nonce and still falls through to the next address.
         let response = send_to_gateway_over(&peer, &bases, |base| {
@@ -1065,7 +1065,7 @@ mod tests {
                 .header(CONTROL_SIGNATURE_HEADER, "{}")
         })
         .await
-        .expect("a leitura segue para o próximo endereço");
+        .expect("the read moves on to the next address");
         assert_eq!(response.text().await.unwrap(), "ok");
         assert_eq!(fast_calls.load(Ordering::SeqCst), 1);
     }
@@ -1106,12 +1106,12 @@ mod tests {
         assert_eq!(
             ordered.len(),
             candidates.len(),
-            "a memória de falhas reordena, não exclui: {ordered:?}"
+            "the failure memory reorders, it does not exclude: {ordered:?}"
         );
         for candidate in &candidates {
             assert!(
                 ordered.contains(candidate),
-                "{candidate} sumiu de {ordered:?}"
+                "{candidate} disappeared from {ordered:?}"
             );
         }
     }
@@ -1172,7 +1172,7 @@ mod tests {
         assert_eq!(
             c.route_order("reply:peer", &candidates),
             vec!["http://lento".to_string(), "http://outro".to_string()],
-            "uma falha só não manda o endereço para o fim"
+            "a single failure does not send the address to the end"
         );
 
         c.remember_route_failure("reply:peer", "http://lento");
@@ -1180,7 +1180,7 @@ mod tests {
         assert_eq!(
             c.route_order("reply:peer", &candidates),
             vec!["http://outro".to_string(), "http://lento".to_string()],
-            "três falhas seguidas mandam para o fim"
+            "three failures in a row send it to the end"
         );
 
         // E um sucesso zera a conta: a rota volta a ser a preferida.
@@ -1264,7 +1264,7 @@ mod tests {
         c.for_peer("bbbb").unwrap();
         assert!(
             c.cached_peers().is_empty(),
-            "sem TLS todo mundo usa o cliente compartilhado"
+            "without TLS everyone uses the shared client"
         );
     }
 

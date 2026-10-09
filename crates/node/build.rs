@@ -70,7 +70,7 @@ fn embed_windows_icon(root: &Path) {
     println!("cargo:rerun-if-changed={}", icon.display());
     if !icon.exists() {
         println!(
-            "cargo:warning=ícone do Windows não encontrado em {}",
+            "cargo:warning=Windows icon not found in {}",
             icon.display()
         );
         return;
@@ -79,7 +79,7 @@ fn embed_windows_icon(root: &Path) {
     res.set_icon(&icon.to_string_lossy());
     if let Err(e) = res.compile() {
         // Um ícone ausente não pode impedir alguém de compilar o nó.
-        println!("cargo:warning=não deu para embutir o ícone no executável: {e}");
+        println!("cargo:warning=could not embed the icon in the executable: {e}");
     }
 }
 
@@ -106,7 +106,7 @@ fn emit_build_id(root: &Path) {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "desconhecido".into());
+        .unwrap_or_else(|| "unknown".into());
 
     // A dirty tree is a build that matches no commit; saying so is the point.
     let dirty = Command::new("git")
@@ -121,7 +121,7 @@ fn emit_build_id(root: &Path) {
     println!(
         "cargo:rustc-env=POM_BUILD_COMMIT={}{}",
         commit,
-        if dirty { "-sujo" } else { "" }
+        if dirty { "-dirty" } else { "" }
     );
     // Without this the stamp freezes at whatever the first build saw. The paths
     // are resolved against the package directory, not the workspace, so they

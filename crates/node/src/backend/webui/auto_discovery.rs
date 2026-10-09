@@ -38,14 +38,14 @@ pub async fn save_auto_discovery(
                 Ok(None) => {
                     return (
                         StatusCode::CONFLICT,
-                        Json(json!({ "error": "não foi possível recuperar os dados iniciais da rede para a descoberta local" })),
+                        Json(json!({ "error": "could not recover the initial network data for local discovery" })),
                     )
                         .into_response()
                 }
                 Err(error) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("não foi possível ler os dados iniciais da rede: {error:#}") })),
+                        Json(json!({ "error": format!("could not read the initial network data: {error:#}") })),
                     )
                         .into_response()
                 }
@@ -57,7 +57,7 @@ pub async fn save_auto_discovery(
             ) {
                 return (
                     StatusCode::CONFLICT,
-                    Json(json!({ "error": format!("não foi possível completar os dados iniciais da rede: {error:#}") })),
+                    Json(json!({ "error": format!("could not complete the initial network data: {error:#}") })),
                 )
                     .into_response();
             }
@@ -65,7 +65,7 @@ pub async fn save_auto_discovery(
         if let Err(error) = state.network.set_local_auto_discovery(true).await {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("não foi possível habilitar a descoberta local: {error:#}") })),
+                Json(json!({ "error": format!("could not enable local discovery: {error:#}") })),
             )
                 .into_response();
         }
@@ -83,7 +83,7 @@ pub async fn save_auto_discovery(
         }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("a preferência não foi salva: {error:#}") })),
+            Json(json!({ "error": format!("the preference was not saved: {error:#}") })),
         )
             .into_response();
     }

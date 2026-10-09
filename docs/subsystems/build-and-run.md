@@ -377,7 +377,7 @@ still carry the previous name.
 
 The commit shown in `/api/ui/node` (`build_commit`) identifies a peer without
 a shell. `build.rs` compiles a fallback: `git rev-parse --short HEAD` + the
-suffix `-sujo` ("dirty") if `git status --porcelain` shows changes, or
+suffix `-dirty` if `git status --porcelain` shows changes, or
 `desconhecido` ("unknown") if git cannot be read. At runtime, `build_commit()`
 prefers `POM_BUILD_COMMIT` when it is not empty. Docker injects that variable in
 the final stage from the commit read on the host; it does not enter the build
@@ -563,7 +563,7 @@ loses offload on the first click.
   artifacts instead of copying them. A build can skip the cache with
   `KACHE_DISABLED=1`.
 - **`scripts/build-docker.sh`**: reads the commit **on the host**
-  (`git rev-parse --short HEAD`, suffix `-sujo` if the tree has changes),
+  (`git rev-parse --short HEAD`, suffix `-dirty` if the tree has changes),
   resolves the fork mode (published release by default or local source),
   prepares a temporary named context and exports `POM_BUILD_COMMIT`,
   `LLAMA_CPP_CACHE_KEY`, the release tag/repo and `POM_CUDA_ARCH_CACHE_KEY`

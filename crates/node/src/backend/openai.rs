@@ -133,14 +133,14 @@ impl Content {
             }
             if let Some(image) = part.image_url.as_ref() {
                 let Some((prefix, encoded)) = image.url.split_once(",") else {
-                    return Err("imagem deve ser um data URL base64".to_string());
+                    return Err("image must be a base64 data URL".to_string());
                 };
                 if !prefix.starts_with("data:image/") || !prefix.contains(";base64") {
-                    return Err("imagem deve ser um data URL base64".to_string());
+                    return Err("image must be a base64 data URL".to_string());
                 }
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
-                    .map_err(|error| format!("imagem base64 inválida: {error}"))?;
+                    .map_err(|error| format!("invalid base64 image: {error}"))?;
                 text.push_str("<__media__>");
                 images.push(bytes);
             }
@@ -427,7 +427,7 @@ pub(crate) fn image_vision_error(
     mmproj_path: Option<&str>,
 ) -> Option<&'static str> {
     if !images.is_empty() && mmproj_path.is_none() {
-        Some("este modelo não tem visão")
+        Some("this model has no vision")
     } else {
         None
     }
@@ -601,7 +601,7 @@ async fn get_model(
     } else {
         error_response(
             StatusCode::NOT_FOUND,
-            format!("modelo '{id}' não existe nesta rede"),
+            format!("model '{id}' does not exist on this network"),
         )
     }
 }
@@ -614,7 +614,7 @@ async fn chat_completions(
     Json(req): Json<ChatRequest>,
 ) -> Response {
     if req.messages.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "'messages' não pode ser vazio");
+        return error_response(StatusCode::BAD_REQUEST, "'messages' cannot be empty");
     }
     let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
 
@@ -872,8 +872,7 @@ pub(crate) async fn resolve_model(
         return Ok(requested);
     }
     Err(format!(
-        "modelo '{requested}' não existe ou não está carregado nesta rede; \
-         consulte GET /v1/models para os nomes servíveis"
+        "model '{requested}' does not exist or is not loaded on this network; see GET /v1/models for the servable names"
     ))
 }
 
@@ -1666,7 +1665,7 @@ mod tests {
     fn image_is_rejected_when_the_served_model_has_no_mmproj() {
         assert_eq!(
             image_vision_error(&[vec![0xFF, 0xD8]], None),
-            Some("este modelo não tem visão")
+            Some("this model has no vision")
         );
         assert_eq!(
             image_vision_error(&[vec![0xFF, 0xD8]], Some("mmproj.gguf")),
@@ -2095,7 +2094,7 @@ mod tests {
                             if chunk_index == 1 && meta["start_pos"] == 512 {
                                 return (
                                     StatusCode::BAD_REQUEST,
-                                    "chunk fora de ordem: recebi 1 (pos 512) mas a sessão está em 42",
+                                    "chunk out of order: received 1 (pos 512) but the session is at 42",
                                 )
                                     .into_response();
                             }
@@ -2174,7 +2173,7 @@ mod tests {
                 rag: Some(false),
                 rag_collection: None,
                 model: Some("whole-model".into()),
-                messages: vec![msg("user", "primeiro")],
+                messages: vec![msg("user", "first")],
                 stream: true,
                 max_tokens: Some(1),
                 max_completion_tokens: None,
@@ -2199,7 +2198,7 @@ mod tests {
                 rag_collection: None,
                 model: Some("whole-model".into()),
                 messages: vec![
-                    msg("user", "primeiro"),
+                    msg("user", "first"),
                     msg("assistant", "ok"),
                     msg("user", "segundo"),
                 ],
@@ -2230,7 +2229,7 @@ mod tests {
             !frames
                 .iter()
                 .any(|meta| { meta["chunk_index"] == 1 && meta["start_pos"] == 512 }),
-            "posição derivada do índice enviada ao peer: {frames:?}"
+            "position derived from the index sent to the peer: {frames:?}"
         );
     }
 
@@ -2320,9 +2319,9 @@ mod tests {
 
         assert!(
             p2.starts_with(&p1),
-            "turno 2 não continua o turno 1:\n{p1}\n---\n{p2}"
+            "turn 2 does not continue turn 1:\n{p1}\n---\n{p2}"
         );
-        assert!(p3.starts_with(&p2), "turno 3 não continua o turno 2");
+        assert!(p3.starts_with(&p2), "turn 3 does not continue turn 2");
         // E a chave do cache acompanha, que é o que `PrefixCache` consulta.
         let k1 = conversation_cache_key(&turn1, &[]);
         let k2 = conversation_cache_key(&turn2, &[]);
@@ -2350,7 +2349,7 @@ mod tests {
         assert_eq!(next_key, next_prompt);
         assert!(
             !next_key.starts_with(&first_key),
-            "o cache não pode declarar prefixo quando a renderização inseriu contexto no início"
+            "the cache cannot declare a prefix when the rendering inserted context at the start"
         );
     }
 
@@ -2369,7 +2368,7 @@ mod tests {
         let with_tool = conversation_cache_key(&messages, std::slice::from_ref(&tool));
         assert!(
             !with_tool.starts_with(&without_tool),
-            "a chave com ferramenta não pode continuar a sem"
+            "the key with a tool cannot continue the one without"
         );
     }
 
@@ -2865,7 +2864,7 @@ mod tests {
             Some(&summary),
             None,
         ))
-        .expect("JSON válido");
+        .expect("valid JSON");
 
         assert_eq!(payload["x_pom"]["tokens_per_sec"], 4.5);
         assert_eq!(payload["x_pom"]["tokens_generated"], 12);

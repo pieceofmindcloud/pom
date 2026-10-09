@@ -222,8 +222,7 @@ fn run(program: &str, args: &[&str]) -> String {
                 std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 tracing::warn!(
-                    "nao foi possivel executar `{program}` para listar as interfaces ({error}); \
-                     este no nao anunciara os proprios enderecos"
+                    "could not run `{program}` to list the interfaces ({error}); this node will not announce its own addresses"
                 );
             }
             String::new()
@@ -491,7 +490,7 @@ mod tests {
         }
         // As bordas de fora da /10 continuam publicas.
         for ip in ["100.63.255.255", "100.128.0.1"] {
-            assert!(!is_private_or_local(ip), "{ip} esta fora de 100.64/10");
+            assert!(!is_private_or_local(ip), "{ip} is outside 100.64/10");
         }
     }
 
@@ -520,7 +519,7 @@ mod tests {
             "::",
             "ff02::1",
         ] {
-            assert!(is_private_or_local(ip), "{ip} nao e endereco publico");
+            assert!(is_private_or_local(ip), "{ip} is not a public address");
         }
     }
 
@@ -540,11 +539,11 @@ mod tests {
         // enumeracao nao funcionasse, que e justamente o que ele deveria pegar.
         assert!(
             !found.is_empty(),
-            "a enumeracao nao achou endereco nenhum"
+            "the enumeration found no address at all"
         );
-        assert!(found.len() <= 4, "teto de 2 por familia: {found:?}");
+        assert!(found.len() <= 4, "cap of 2 per family: {found:?}");
         for ip in found {
-            assert!(!disposable(&ip), "{ip} nao deveria ter passado");
+            assert!(!disposable(&ip), "{ip} should not have passed");
         }
     }
 

@@ -291,7 +291,7 @@ pub fn reference_models() -> Vec<SetupModel> {
         repo_id: Some(repo_id.to_string()),
         path: None,
         size_gb: Some(size_gb),
-        quantization: Some("GGUF · referência".to_string()),
+        quantization: Some("GGUF · reference".to_string()),
         memory_gb: Some(memory_gb),
         installed: false,
         recommended: name.contains("3B") || name.contains("4B"),
@@ -349,7 +349,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
     if cluster_id.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "o nome público da rede é obrigatório" })),
+            Json(json!({ "error": "the public network name is required" })),
         )
             .into_response();
     }
@@ -372,7 +372,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
         Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("metadados da rede inválidos: {error:#}") })),
+                Json(json!({ "error": format!("invalid network metadata: {error:#}") })),
             )
                 .into_response();
         }
@@ -395,7 +395,7 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
         },
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível criar a raiz: {error:#}") })),
+            Json(json!({ "error": format!("could not create the root: {error:#}") })),
         )
             .into_response(),
     }
@@ -442,21 +442,21 @@ pub async fn start_setup_auto_discovery(
     if state.config.read().await.profile != crate::profile::NodeProfile::Admin {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente o administrador cria a espera local" })),
+            Json(json!({ "error": "only the administrator creates the local standby" })),
         )
             .into_response();
     }
     if request.trust_document.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "o documento de confiança é obrigatório" })),
+            Json(json!({ "error": "the trust document is required" })),
         )
             .into_response();
     }
     if let Err(error) = crate::admin_trust::parse_transported(&request.trust_document) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("raiz inválida: {error:#}") })),
+            Json(json!({ "error": format!("invalid root: {error:#}") })),
         )
             .into_response();
     }
@@ -468,7 +468,7 @@ pub async fn start_setup_auto_discovery(
         Ok(()) => get_setup_auto_discovery_status(State(state)).await.into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("não foi possível iniciar a descoberta local: {error:#}") })),
+            Json(json!({ "error": format!("could not start local discovery: {error:#}") })),
         )
             .into_response(),
     }
@@ -499,7 +499,7 @@ pub async fn search_setup_auto_discovery(
             .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível procurar admins locais: {error:#}") })),
+            Json(json!({ "error": format!("could not look for local admins: {error:#}") })),
         )
             .into_response(),
     }
@@ -626,10 +626,10 @@ pub async fn bootstrap_local_network(
     }
     config.save()?;
     for (dir, error) in config.create_default_storage_dirs() {
-        warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+        warn!("could not create the default folder {}: {error}", dir.display());
     }
     if let Err(error) = database.save_network_settings(&config.network) {
-        warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+        warn!("could not save the network details in the database: {error:#}");
     }
     Ok(config)
 }
@@ -695,7 +695,7 @@ pub async fn save_setup(
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "perfil inválido" })),
+                Json(json!({ "error": "invalid profile" })),
             )
                 .into_response();
         }
@@ -704,7 +704,7 @@ pub async fn save_setup(
     let trust_document = if req.trust_document.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "a raiz de confiança é obrigatória" })),
+            Json(json!({ "error": "the trust root is required" })),
         )
             .into_response();
     } else {
@@ -713,7 +713,7 @@ pub async fn save_setup(
             Err(error) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("raiz inválida: {error:#}") })),
+                    Json(json!({ "error": format!("invalid root: {error:#}") })),
                 )
                     .into_response();
             }
@@ -724,14 +724,14 @@ pub async fn save_setup(
         if trust_document.setup.is_none() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "a raiz administrativa precisa carregar os dados da rede" })),
+                Json(json!({ "error": "the administrative root must carry the network data" })),
             )
                 .into_response();
         }
         if req.cluster_id.trim().is_empty() || req.cluster_id.trim() != document_cluster_id {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "a raiz pertence a outra rede" })),
+                Json(json!({ "error": "the root belongs to another network" })),
             )
                 .into_response();
         }
@@ -741,7 +741,7 @@ pub async fn save_setup(
         ) {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("raiz não conferida: {error:#}") })),
+                Json(json!({ "error": format!("root not verified: {error:#}") })),
             )
                 .into_response();
         }
@@ -759,7 +759,7 @@ pub async fn save_setup(
             let Some(metadata) = trust_document.setup.as_ref() else {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "a raiz não contém as configurações iniciais da rede" })),
+                    Json(json!({ "error": "the root does not contain the initial network settings" })),
                 )
                     .into_response();
             };
@@ -795,7 +795,7 @@ pub async fn save_setup(
         Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("ingresso do diretório público inválido: {error:#}") })),
+                Json(json!({ "error": format!("invalid public directory ticket: {error:#}") })),
             )
                 .into_response();
         }
@@ -815,7 +815,7 @@ pub async fn save_setup(
             StatusCode::CONFLICT,
             Json(json!({
                 "reason": "connection_key_required",
-                "error": "redes privadas exigem a chave compartilhada da rede"
+                "error": "private networks require the shared network key"
             })),
         )
             .into_response();
@@ -837,14 +837,14 @@ pub async fn save_setup(
     {
         Ok(Ok(hash)) => hash,
         Ok(Err(error)) => return bad_request(error.to_string()),
-        Err(error) => return bad_request(format!("não foi possível proteger a senha: {error}")),
+        Err(error) => return bad_request(format!("could not protect the password: {error}")),
     };
 
     let expected = crate::admin_trust::anchor_fingerprint(&trust_document);
     if !crate::admin_trust::fingerprint_matches(&req.trust_fingerprint, &expected) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "a impressão digital da raiz não confere" })),
+            Json(json!({ "error": "the root fingerprint does not match" })),
         )
             .into_response();
     }
@@ -852,14 +852,14 @@ pub async fn save_setup(
     if path.exists() {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": "este nó já tem uma raiz de confiança; reancoragem é manual" })),
+            Json(json!({ "error": "this node already has a trust root; re-anchoring is manual" })),
         )
             .into_response();
     }
     if let Err(error) = crate::admin_trust::AdminTrust::install_document(path, trust_document) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar a raiz: {error:#}") })),
+            Json(json!({ "error": format!("could not save the root: {error:#}") })),
         )
             .into_response();
     }
@@ -910,7 +910,7 @@ pub async fn save_setup(
         if let Err(error) = policy.validate() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("limite térmico inválido: {error}") })),
+                Json(json!({ "error": format!("invalid thermal limit: {error}") })),
             )
                 .into_response();
         }
@@ -939,29 +939,29 @@ pub async fn save_setup(
     let save_result = cfg.save();
     if save_result.is_ok() {
         for (dir, error) in cfg.create_default_storage_dirs() {
-            warn!("não foi possível criar a pasta padrão {}: {error}", dir.display());
+            warn!("could not create the default folder {}: {error}", dir.display());
         }
     }
     drop(cfg);
     match save_result {
         Ok(()) => {
             if let Err(error) = state.database.save_network_settings(&network_for_db) {
-                warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+                warn!("could not save the network details in the database: {error:#}");
             }
             if let Err(error) = state
                 .database
                 .save_public_directory_settings(&public_directory)
             {
-                warn!("não foi possível salvar os ingressos do diretório público: {error:#}");
+                warn!("could not save the public directory tickets: {error:#}");
             }
             // Trigger restart: spawn a new instance and exit.
             // The new instance will find the config file and start in full mode.
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 let e = crate::respawn::respawn_self();
-                tracing::error!("respawn falhou, o nó segue no ar: {e}");
+                tracing::error!("respawn failed, the node stays up: {e}");
             });
-            Json(json!({"saved": true, "restart": true, "message": "Configuracao salva. Reiniciando..."})).into_response()
+            Json(json!({"saved": true, "restart": true, "message": "Configuration saved. Restarting..."})).into_response()
         }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1015,7 +1015,7 @@ pub(super) async fn delete_model(
         Err(_) => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": format!("arquivo não encontrado: {}", req.path) })),
+                Json(json!({ "error": format!("file not found: {}", req.path) })),
             )
                 .into_response()
         }
@@ -1043,7 +1043,7 @@ pub(super) async fn delete_model(
             warnings.push(json!({
                 "kind": "serving",
                 "message": format!(
-                    "este nó está servindo as camadas {}-{} deste arquivo; apagar tira o modelo do ar",
+                    "this node is serving layers {}-{} of this file; deleting takes the model offline",
                     cfg.start_layer, cfg.end_layer
                 ),
             }));
@@ -1064,14 +1064,14 @@ pub(super) async fn delete_model(
     for id in &in_flight {
         warnings.push(json!({
             "kind": "transfer",
-            "message": format!("há uma transferência em curso com este arquivo (job {id})"),
+            "message": format!("there is a transfer in progress with this file (job {id})"),
         }));
     }
 
     if is_ollama_blob(&path) {
         warnings.push(json!({
             "kind": "ollama_store",
-            "message": "este arquivo está dentro do store do Ollama; apagá-lo deixa o manifesto do Ollama órfão. O certo lá é `ollama rm`",
+            "message": "this file is inside the Ollama store; deleting it leaves the Ollama manifest orphaned. The right way there is `ollama rm`",
         }));
     }
 
@@ -1090,11 +1090,11 @@ pub(super) async fn delete_model(
     if let Err(e) = tokio::fs::remove_file(&path).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não deu para apagar: {e}") })),
+            Json(json!({ "error": format!("could not delete: {e}") })),
         )
             .into_response();
     }
-    info!("🗑️  apagado do disco: {}", path.display());
+    info!("🗑️  deleted from disk: {}", path.display());
     Json(json!({ "deleted": true, "path": target, "freed_bytes": size })).into_response()
 }
 

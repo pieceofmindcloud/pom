@@ -42,7 +42,7 @@ pub(crate) async fn handle_step(
     if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
         match wire::decode_batch(&body) {
             Ok(batch) => return handle_step_batch(app, headers, batch).await,
-            Err(error) => return err400(format!("quadro inválido: {error}")),
+            Err(error) => return err400(format!("invalid frame: {error}")),
         }
     }
     // See the matching guard in `handle_prefill`: a one-item batch must not
@@ -70,7 +70,7 @@ pub(crate) async fn handle_step(
     let (mut meta, tensor, inbound_wire_timing) =
         match wire::decode_inference_request_profiled(&body) {
             Ok(v) => v,
-            Err(e) => return err400(format!("quadro inválido: {e}")),
+            Err(e) => return err400(format!("invalid frame: {e}")),
         };
     meta["telemetry_source_peer_id"] = json!(app.load_node_id.clone());
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
@@ -79,7 +79,7 @@ pub(crate) async fn handle_step(
             Ok(dtype) => dtype,
             Err(error) => return err400(error),
         },
-        None => return err400("quadro sem dtype de estado oculto"),
+        None => return err400("frame without a hidden state dtype"),
     };
 
     let sid_key = match required_session_id(&meta) {
@@ -202,19 +202,19 @@ pub(crate) async fn handle_step(
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(axum::http::header::RETRY_AFTER, "1")],
-                format!("fila de inferência cheia (limite {limit})"),
+                format!("inference queue full (limit {limit})"),
             )
                 .into_response();
         }
         Err(SchedulerSubmitError::Closed) => {
-            return err500("scheduler de inferência encerrado");
+            return err500("inference scheduler shut down");
         }
     };
 
     let mut reply = match result {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
-            let code = if e.to_string().contains("desconhecida") {
+            let code = if e.to_string().contains("unknown") {
                 StatusCode::BAD_REQUEST
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -310,7 +310,7 @@ pub(crate) async fn handle_step(
             let failure = crate::relay::RelayFailure {
                 failed_node_id: hops[0].node_id.clone(),
                 kind: "protocol".into(),
-                message: "hop intermediário não produziu estado oculto".into(),
+                message: "intermediate hop produced no hidden state".into(),
             };
             tokio::spawn(async move {
                 crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
@@ -385,7 +385,7 @@ pub(crate) async fn handle_step(
             match rollback_session(&state, &sid_for_forward, accept_count, batch_width) {
                 Ok(true) => {}
                 Ok(false) | Err(_) => {
-                    return err500("rollback especulativo remoto recusado no hop");
+                    return err500("remote speculative rollback refused at the hop");
                 }
             }
         }
@@ -426,7 +426,7 @@ pub(super) async fn handle_link(
             if let Some(config) = &state.auth {
                 crate::auth::validate_internal_node_headers(config, &headers)
                     .await
-                    .map_err(|_| anyhow::anyhow!("credencial de peer inválida"))?;
+                    .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             }
             use crate::relay::InProcessInference;
             state.app.dispatch(&path, bytes).await
@@ -445,16 +445,16 @@ pub(crate) async fn handle_step_stream(
     app.request_activity.mark_now();
     let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
-        Err(error) => return err400(format!("quadro inválido: {error}")),
+        Err(error) => return err400(format!("invalid frame: {error}")),
     };
     if tensor.is_some() {
-        return err400("transporte remoto por lotes não aceita estado oculto");
+        return err400("batched remote transport does not accept a hidden state");
     }
     let Some(mut reply_to) = meta.get("reply_to").cloned() else {
-        return err400("transporte remoto por lotes sem reply_to");
+        return err400("batched remote transport without reply_to");
     };
     if reply_to.get("ticket").and_then(Value::as_str).is_none() {
-        return err400("transporte remoto por lotes sem ticket");
+        return err400("batched remote transport without a ticket");
     }
     // The callback is the only response path for this stream. Carry the
     // request identity alongside its ticket so profiling spans from the
@@ -469,11 +469,11 @@ pub(crate) async fn handle_step_stream(
         .and_then(Value::as_str)
         .and_then(|value| WireDtype::parse(value).ok())
     else {
-        return err400("quadro sem dtype de estado oculto");
+        return err400("frame without a hidden state dtype");
     };
     if required_session_id(&meta).is_err() || meta.get("token_id").and_then(Value::as_i64).is_none()
     {
-        return err400("transporte remoto por lotes sem sessão ou token inicial");
+        return err400("batched remote transport without a session or initial token");
     }
 
     let loads = app.loads.clone();
@@ -654,7 +654,7 @@ pub(super) async fn remote_stream_producer(
                 .unwrap_or_else(|error| error.to_string());
             let _ = sender
                 .send(RemoteStreamItem::Error(format!(
-                    "step remoto respondeu com erro: {body}"
+                    "remote step answered with an error: {body}"
                 )))
                 .await;
             return;
@@ -681,7 +681,7 @@ pub(super) async fn remote_stream_producer(
         if tensor.is_some() {
             let _ = sender
                 .send(RemoteStreamItem::Error(
-                    "step remoto devolveu estado oculto em vez de token".into(),
+                    "remote step returned a hidden state instead of a token".into(),
                 ))
                 .await;
             return;
@@ -776,7 +776,7 @@ pub(super) async fn remote_stream_producer(
                         .get("speculation_disabled_reason")
                         .and_then(Value::as_str)
                 })
-                .unwrap_or("nenhum detalhe foi devolvido pela cauda")
+                .unwrap_or("no detail was returned by the tail")
                 .to_owned()
         });
         if requested_mtp {
@@ -830,7 +830,7 @@ pub(super) async fn remote_stream_producer(
         let Some(token_id) = reply_meta.get("token_id").and_then(Value::as_u64) else {
             let _ = sender
                 .send(RemoteStreamItem::Error(
-                    "step remoto não devolveu token".into(),
+                    "remote step returned no token".into(),
                 ))
                 .await;
             return;
@@ -1135,13 +1135,12 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
             // agora sempre tem pelo menos uma tentativa a pagar.
             crate::direct::Delivery::Failed => {
                 warn!(
-                    "lote do stream remoto não chegou ao gateway; encerrando o stream com erro \
-                     explícito em vez de deixar o prazo vencer"
+                    "remote stream batch did not reach the gateway; closing the stream with an explicit error instead of letting the deadline expire"
                 );
                 let _ = deliver(
                     reply_to.clone(),
                     remote_stream_error_batch(json!(
-                        "o lote de decode não chegou ao gateway por nenhum endereço de retorno"
+                        "the decode batch did not reach the gateway through any return address"
                     )),
                 )
                 .await;
@@ -1190,7 +1189,7 @@ mod remote_stream_tests {
             run_remote_stream_tasks(producer, async {}),
         )
         .await
-        .expect("a entrega encerrada deve cancelar o produtor");
+        .expect("the closed delivery must cancel the producer");
         assert!(producer_dropped.load(Ordering::Acquire));
     }
 
@@ -1268,7 +1267,7 @@ mod remote_stream_tests {
         items_tx
             .send(token(7, "token", true))
             .await
-            .expect("token enfileirado");
+            .expect("token enqueued");
         drop(items_tx);
 
         emit_remote_stream_batches(
@@ -1422,7 +1421,7 @@ mod remote_stream_tests {
             &mut step_meta,
             None,
             Some(SPECULATION_REASON_MODEL_WITHOUT_MTP),
-            Some("MTP desligado nesta sessão: teste"),
+            Some("MTP off for this session: test"),
         ));
         assert!(step_meta.get("speculate").is_none());
         assert_eq!(
@@ -1431,7 +1430,7 @@ mod remote_stream_tests {
         );
         assert_eq!(
             step_meta["speculation_disabled_detail"],
-            "MTP desligado nesta sessão: teste"
+            "MTP off for this session: test"
         );
     }
 
@@ -1439,12 +1438,12 @@ mod remote_stream_tests {
     fn an_error_after_tokens_keeps_the_prefix_and_is_terminal() {
         let (batch, error, terminal) = remote_stream_batch(&[
             token(4, "prefixo", false),
-            RemoteStreamItem::Error("falha no peer seguinte".into()),
+            RemoteStreamItem::Error("failure at the next peer".into()),
         ]);
 
         assert_eq!(batch["accepted"][0]["text"], "prefixo");
         assert_eq!(batch["done"], false);
-        assert_eq!(error.as_deref(), Some("falha no peer seguinte"));
+        assert_eq!(error.as_deref(), Some("failure at the next peer"));
         assert!(terminal);
     }
 
@@ -1454,7 +1453,7 @@ mod remote_stream_tests {
         items_tx
             .send(token_state(0, "t0", false, false, true, Some(vec![8, 9])))
             .await
-            .expect("token enfileirado");
+            .expect("token enqueued");
         for id in 1..8 {
             items_tx
                 .send(token_state(
@@ -1466,7 +1465,7 @@ mod remote_stream_tests {
                     None,
                 ))
                 .await
-                .expect("token enfileirado");
+                .expect("token enqueued");
         }
         drop(items_tx);
 
@@ -1494,7 +1493,7 @@ mod remote_stream_tests {
         assert_eq!(batch["next_draft"], json!([8, 9]));
         assert!(
             deliveries_rx.try_recv().is_err(),
-            "oito tokens e o rascunho, um callback"
+            "eight tokens and the draft, one callback"
         );
     }
 
@@ -1509,7 +1508,7 @@ mod remote_stream_tests {
             token.ready_at = queued_at;
             token.enqueued_at = queued_at;
         }
-        items_tx.send(item).await.expect("token enfileirado");
+        items_tx.send(item).await.expect("token enqueued");
         drop(items_tx);
 
         let (deliveries_tx, mut deliveries_rx) = mpsc::channel(1);
@@ -1541,9 +1540,9 @@ mod remote_stream_tests {
 
         let (items_tx, items_rx) = mpsc::channel(4);
         items_tx
-            .send(token(7, "token antes da falha", true))
+            .send(token(7, "token before the failure", true))
             .await
-            .expect("token enfileirado");
+            .expect("token enqueued");
         drop(items_tx);
 
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -1572,16 +1571,16 @@ mod remote_stream_tests {
         let error_batch = deliveries_rx
             .recv()
             .await
-            .expect("a falha deve chegar como lote terminal");
+            .expect("the failure must arrive as a terminal batch");
         assert_eq!(
             error_batch["error"],
-            json!("o lote de decode não chegou ao gateway por nenhum endereço de retorno")
+            json!("the decode batch did not reach the gateway through any return address")
         );
         assert!(error_batch["accepted"].as_array().unwrap().is_empty());
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert!(
             started.elapsed() < Duration::from_secs(1),
-            "a falha do stream não pode esperar o deadline: {:?}",
+            "the stream failure cannot wait for the deadline: {:?}",
             started.elapsed()
         );
     }
@@ -1688,7 +1687,7 @@ pub(super) async fn relay_and_bubble(
                 // chain didn't relay when it should have; surviving loud
                 // rather than silently dropping the tensor.
                 warn!(
-                    "resposta de {} veio com tensor num retransmissão já borbulhada — descartando",
+                    "response from {} came with a tensor in an already bubbled relay — discarding",
                     next.node_id
                 );
             }

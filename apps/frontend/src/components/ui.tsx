@@ -12,7 +12,6 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 // ── Surfaces ─────────────────────────────────────────────────────────────────
 
@@ -387,6 +386,7 @@ export function AlertTooltip({
   message: string;
   compact?: boolean;
 }) {
+  const { t } = useI18n();
   const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
     usePositionedPopover();
   const tooltipId = `alert-tooltip-${useId().replaceAll(":", "")}`;
@@ -399,11 +399,11 @@ export function AlertTooltip({
       <button
         ref={triggerRef}
         type="button"
-        aria-label={`Ver aviso para ${label}`}
+        aria-label={t("common.viewWarningFor", { label })}
         aria-expanded={open}
         aria-controls={open ? tooltipId : undefined}
         aria-describedby={open ? tooltipId : undefined}
-        title={`Aviso para ${label}`}
+        title={t("common.warningFor", { label })}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={closeIfUnpinned}
         onFocus={() => setOpen(true)}
@@ -447,6 +447,7 @@ export function AlertTooltip({
  * painel.
  */
 export function InfoTip({ label, message }: { label: string; message: string }) {
+  const { t } = useI18n();
   const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
     usePositionedPopover();
   const tooltipId = `info-tip-${useId().replaceAll(":", "")}`;
@@ -459,7 +460,7 @@ export function InfoTip({ label, message }: { label: string; message: string }) 
       <button
         ref={triggerRef}
         type="button"
-        aria-label={`O que é ${label}`}
+        aria-label={t("common.whatIs", { label })}
         aria-expanded={open}
         aria-controls={open ? tooltipId : undefined}
         aria-describedby={open ? tooltipId : undefined}
@@ -737,14 +738,14 @@ export function ErrorState({
   error: unknown;
   onRetry?: () => void;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const message = error instanceof Error ? error.message : String(error);
   return (
     <div className="flex items-start gap-3 rounded-xl border border-rose/30 bg-rose/[0.07] px-4 py-3.5">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-fg">{title ?? t("common.loadFailed")}</p>
-        <p className="break-path mt-1 text-sm text-muted">{localizeServerText(locale, message)}</p>
+        <p className="break-path mt-1 text-sm text-muted">{message}</p>
       </div>
       {onRetry && (
         <Button size="sm" variant="ghost" onClick={onRetry}>

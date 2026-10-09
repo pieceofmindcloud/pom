@@ -388,7 +388,7 @@ impl TransferState {
     /// de novo.
     pub async fn cancel(&self, id: &str, by: &str) {
         self.cancelled.write().await.insert(id.to_string());
-        self.finish(id, TRANSFER_CANCELLED, format!("cancelado por {by}"))
+        self.finish(id, TRANSFER_CANCELLED, format!("cancelled by {by}"))
             .await;
     }
 }
@@ -421,24 +421,24 @@ pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
     use std::io::Read;
 
     if !path.is_file() {
-        return Err(format!("não é um arquivo: {}", path.display()));
+        return Err(format!("not a file: {}", path.display()));
     }
 
     if !has_gguf_name(path) {
         return Err(format!(
-            "só arquivos .gguf ou sem extensão podem ser transferidos: {}",
+            "only .gguf or extensionless files can be transferred: {}",
             path.display()
         ));
     }
 
     let mut head = [0u8; 4];
     let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("não deu para abrir {}: {e}", path.display()))?;
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
     file.read_exact(&mut head)
-        .map_err(|_| format!("{} é curto demais para ser um GGUF", path.display()))?;
+        .map_err(|_| format!("{} is too short to be a GGUF", path.display()))?;
     if &head != GGUF_MAGIC {
         return Err(format!(
-            "{} não é um GGUF (assinatura {head:02x?})",
+            "{} is not a GGUF (signature {head:02x?})",
             path.display()
         ));
     }
@@ -453,10 +453,10 @@ fn valid_transfer_filename(raw: &str) -> Result<&str, String> {
         || path.components().count() != 1
         || path.file_name().and_then(|name| name.to_str()) != Some(filename)
     {
-        return Err("a transferência aceita apenas o nome de um arquivo, sem caminho".to_string());
+        return Err("the transfer accepts only a file name, without a path".to_string());
     }
     if !has_gguf_name(path) {
-        return Err("só arquivos .gguf ou sem extensão podem ser transferidos".to_string());
+        return Err("only .gguf or extensionless files can be transferred".to_string());
     }
     Ok(filename)
 }
@@ -468,7 +468,7 @@ fn valid_transfer_filename(raw: &str) -> Result<&str, String> {
 fn safe_model_path(models_dir: &Path, requested: &str) -> Result<PathBuf, String> {
     let root = models_dir
         .canonicalize()
-        .map_err(|e| format!("models dir ilegível: {e}"))?;
+        .map_err(|e| format!("models dir unreadable: {e}"))?;
     let candidate = Path::new(requested);
     let full = if candidate.is_absolute() {
         candidate.to_path_buf()
@@ -477,9 +477,9 @@ fn safe_model_path(models_dir: &Path, requested: &str) -> Result<PathBuf, String
     };
     let full = full
         .canonicalize()
-        .map_err(|_| format!("arquivo não encontrado: {requested}"))?;
+        .map_err(|_| format!("file not found: {requested}"))?;
     if !full.starts_with(&root) {
-        return Err("caminho fora do diretório de modelos".to_string());
+        return Err("path outside the models directory".to_string());
     }
     Ok(full)
 }
@@ -499,7 +499,7 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
     } else if let Some(sha) = q.sha.as_deref() {
         let short = &sha[..12.min(sha.len())];
         let found = find_part(&state.shard_dir().await, sha)
-            .ok_or_else(|| format!("esta máquina não tem a parte {short}"))?;
+            .ok_or_else(|| format!("this machine does not have part {short}"))?;
         // Uma parte só é servível junto com o manifesto que a explica. Servir
         // os bytes e não ter o `.pom` para acompanhar entrega ao vizinho um
         // arquivo que ele não vai saber nomear - e o outro lado recusaria
@@ -514,7 +514,7 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
         });
         if !described {
             return Err(format!(
-                "a parte {short} está aqui mas sem manifesto; uma fatia não é servida sem o `.pom` que a descreve"
+                "part {short} is here but without a manifest; a slice is not served without the `.pom` that describes it"
             ));
         }
         found
@@ -522,7 +522,7 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
         let requested = q
             .path
             .as_deref()
-            .ok_or_else(|| "informe ?grant=, ?sha= ou ?path=".to_string())?;
+            .ok_or_else(|| "provide ?grant=, ?sha= or ?path=".to_string())?;
         match safe_model_path(&state.shard_dir().await, requested) {
             Ok(path) => path,
             // A projector or MTP draft a deployment copies to the head or the
@@ -537,7 +537,7 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
     ensure_gguf(&path)?;
     if let Ok(Some(count)) = crate::multipart::declared_split_count(&path) {
         return Err(format!(
-            "este arquivo pertence a um GGUF multipart com {count} partes; transfira o conjunto completo ou fatie-o pelo POM antes de distribuir"
+            "this file belongs to a multipart GGUF with {count} parts; transfer the complete set or slice it with POM before distributing"
         ));
     }
     Ok(path)
@@ -603,13 +603,13 @@ async fn grant_path(state: &GatewayState, id: &str) -> Result<PathBuf, String> {
         .await
         .get(id)
         .cloned()
-        .ok_or_else(|| "concessão desconhecida ou expirada".to_string())
+        .ok_or_else(|| "unknown or expired grant".to_string())
 }
 
 async fn file_digest(state: &GatewayState, path: &Path) -> Result<(u64, String), String> {
     let meta = tokio::fs::metadata(path)
         .await
-        .map_err(|e| format!("stat falhou: {e}"))?;
+        .map_err(|e| format!("stat failed: {e}"))?;
     let size = meta.len();
     let mtime = meta
         .modified()
@@ -700,7 +700,7 @@ async fn serve_pom(
     let Some(path) = find_part(&shard_dir, sha) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "esta máquina não tem esta parte" })),
+            Json(json!({ "error": "this machine does not have this part" })),
         )
             .into_response();
     };
@@ -716,7 +716,7 @@ async fn serve_pom(
         Some(m) => Json(m).into_response(),
         None => (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "a parte existe mas não há manifesto que a descreva" })),
+            Json(json!({ "error": "the part exists but there is no manifest describing it" })),
         )
             .into_response(),
     }
@@ -761,7 +761,7 @@ async fn download(
     };
 
     let Ok(meta) = tokio::fs::metadata(&path).await else {
-        return (StatusCode::NOT_FOUND, "arquivo não encontrado").into_response();
+        return (StatusCode::NOT_FOUND, "file not found").into_response();
     };
     let total = meta.len();
 
@@ -785,10 +785,10 @@ async fn download(
     };
 
     let Ok(mut file) = tokio::fs::File::open(&path).await else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "não deu para abrir").into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, "could not open").into_response();
     };
     if start > 0 && file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "seek falhou").into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, "seek failed").into_response();
     }
 
     // O lado que envia entra na própria lista de transferências. Ele é quem
@@ -808,7 +808,7 @@ async fn download(
         _ => None,
     };
     if known == Some(true) {
-        return (StatusCode::GONE, "transferência encerrada deste lado").into_response();
+        return (StatusCode::GONE, "transfer closed on this side").into_response();
     }
     if let Some(job_id) = q.job.as_deref().filter(|_| known.is_none()) {
         let peer_host = peer_label(&state, q.peer.as_deref()).await;
@@ -821,7 +821,7 @@ async fn download(
                 job_id,
                 path.file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("fatia.gguf"),
+                    .unwrap_or("slice.gguf"),
                 TRANSFER_SENDING,
                 &peer_host,
                 &path.to_string_lossy(),
@@ -871,7 +871,7 @@ async fn download(
 /// mandou. A tradução sai da tabela local: o pedido nunca traz o nome pronto.
 async fn peer_label(state: &GatewayState, node_id: Option<&str>) -> String {
     let Some(node_id) = node_id else {
-        return "desconhecido".to_string();
+        return "unknown".to_string();
     };
     let short = |id: &str| id[..12.min(id.len())].to_string();
     state
@@ -948,7 +948,7 @@ fn served_stream(
                 if finished {
                     state
                         .transfers
-                        .finish(&job_id, TRANSFER_DONE, "enviado por inteiro")
+                        .finish(&job_id, TRANSFER_DONE, "sent in full")
                         .await;
                 }
             }
@@ -1030,13 +1030,13 @@ async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<Off
                     Ok((folder, _)) => folder,
                     Err(e) => {
                         return Err(format!(
-                            "não deu para mesclar o manifesto de {}: {e:#}",
+                            "could not merge the manifest of {}: {e:#}",
                             m.model.label
                         ));
                     }
                 };
                 info!(
-                    "manifesto de {} guardado; a parte vai para {}",
+                    "manifest of {} stored; the part goes to {}",
                     m.model.label,
                     folder.display()
                 );
@@ -1048,7 +1048,7 @@ async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<Off
             }
         }
         return Err(format!(
-            "a oferta trouxe o manifesto de {} mas o arquivo não é parte dele",
+            "the offer brought the manifest of {} but the file is not a part of it",
             m.model.label
         ));
     }
@@ -1062,7 +1062,7 @@ async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<Off
         .is_some_and(crate::pom::is_sha256_hex)
     {
         return Err(format!(
-            "{} ofereceu uma fatia sem o `.pom` que a descreve",
+            "{} offered a slice without the `.pom` that describes it",
             offer.from_host
         ));
     }
@@ -1098,7 +1098,7 @@ async fn receive_offer(
         end_layer: req.end_layer,
     };
     info!(
-        "📥 oferta de fatia recebida: {} ({} bytes)",
+        "📥 slice offer received: {} ({} bytes)",
         offer.name, offer.size_bytes
     );
     let id = offer.id.clone();
@@ -1107,14 +1107,14 @@ async fn receive_offer(
     // environment: the sender has no way to ask for it. See `dev_auto_accept_env`.
     if dev_auto_accept() {
         warn!(
-            "⚙️  {} ligado — aceitando {} sem confirmação",
+            "⚙️  {} on — accepting {} without confirmation",
             dev_auto_accept_env(),
             offer.name
         );
         let target = match offer_target(&state, &offer).await {
             Ok(a) => a,
             Err(e) => {
-                warn!("aceite automático de {} recusado: {e}", offer.name);
+                warn!("automatic accept of {} refused: {e}", offer.name);
                 state.transfers.offers.write().await.push(offer);
                 return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
             }
@@ -1142,7 +1142,7 @@ async fn receive_offer(
             // start is a transfer the operator can still take by hand, and
             // swallowing it would lose the file with only a log line to say so.
             Err(e) => {
-                warn!("aceite automático de {} falhou: {e}", offer.name);
+                warn!("automatic accept of {} failed: {e}", offer.name);
                 state.transfers.offers.write().await.push(offer);
                 Json(json!({
                     "accepted_for_review": true,
@@ -1166,7 +1166,7 @@ async fn list_offers(
     let slice_offers = state.transfers.offers.read().await.clone();
     let mut offers = slice_offers
         .into_iter()
-        .map(|offer| serde_json::to_value(offer).expect("oferta de fatia serializável"))
+        .map(|offer| serde_json::to_value(offer).expect("slice offer is serializable"))
         .collect::<Vec<_>>();
     if let Some(offer) = state.admin_trust.pending_transfer() {
         if offer.successor == state.authority_principal {
@@ -1242,22 +1242,22 @@ async fn receive_answer(
         let Some(o) = record.get(&req.grant) else {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": "oferta desconhecida" })),
+                Json(json!({ "error": "unknown offer" })),
             )
                 .into_response();
         };
         if !req.from_node_id.is_empty() && req.from_node_id != o.to_node_id {
             warn!(
-                "veredito sobre {} veio de {} e não de {}",
+                "verdict about {} came from {} and not from {}",
                 o.name, req.from_node_id, o.to_node_id
             );
             return (
                 StatusCode::FORBIDDEN,
-                Json(json!({ "error": "esta oferta não foi feita a este nó" })),
+                Json(json!({ "error": "this offer was not made to this node" })),
             )
                 .into_response();
         }
-        record.remove(&req.grant).expect("acabou de ser lida")
+        record.remove(&req.grant).expect("was just read")
     };
 
     if req.accepted {
@@ -1269,7 +1269,7 @@ async fn receive_answer(
         let job_id = req
             .job_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-        info!("👍 {} aceitou {}", offer.to_host, offer.name);
+        info!("👍 {} accepted {}", offer.to_host, offer.name);
         state
             .transfers
             .start_job(
@@ -1282,7 +1282,7 @@ async fn receive_answer(
                 offer.slice.as_ref(),
             )
             .await;
-        set_detail(&state, &job_id, "aceito; aguardando o início do envio").await;
+        set_detail(&state, &job_id, "accepted; waiting for the send to start").await;
         return Json(json!({ "noted": true, "job_id": job_id })).into_response();
     }
 
@@ -1291,7 +1291,7 @@ async fn receive_answer(
     let job_id = req
         .job_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-    info!("👎 {} recusou {}", offer.to_host, offer.name);
+    info!("👎 {} refused {}", offer.to_host, offer.name);
     state
         .transfers
         .start_job(
@@ -1310,8 +1310,8 @@ async fn receive_answer(
         .map(str::trim)
         .filter(|r| !r.is_empty())
     {
-        Some(r) => format!("recusado por {}: {r}", offer.to_host),
-        None => format!("recusado por {}", offer.to_host),
+        Some(r) => format!("refused by {}: {r}", offer.to_host),
+        None => format!("refused by {}", offer.to_host),
     };
     state
         .transfers
@@ -1344,7 +1344,7 @@ fn notify_offerer(
         let client = match state.peer_http.for_peer(&from_node_id) {
             Ok(c) => c,
             Err(e) => {
-                warn!("sem cliente para avisar {from_host} do veredito: {e}");
+                warn!("no client to tell {from_host} the verdict: {e}");
                 return;
             }
         };
@@ -1366,10 +1366,10 @@ fn notify_offerer(
         match request {
             Ok(request) => match request.send().await {
                 Ok(r) if r.status().is_success() => {}
-                Ok(r) => warn!("{from_host} respondeu {} ao veredito", r.status()),
-                Err(e) => warn!("não deu para avisar {from_host} do veredito: {e}"),
+                Ok(r) => warn!("{from_host} answered {} to the verdict", r.status()),
+                Err(e) => warn!("could not tell {from_host} the verdict: {e}"),
             },
-            Err(e) => warn!("não deu para assinar o veredito para {from_host}: {e}"),
+            Err(e) => warn!("could not sign the verdict for {from_host}: {e}"),
         }
     });
 }
@@ -1387,7 +1387,7 @@ async fn reject_offer(
         return (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "a transferência de principal só termina com aceitação assinada ou com uma nova época"
+                "error": "the principal transfer only ends with a signed acceptance or with a new epoch"
             })),
         )
             .into_response();
@@ -1424,7 +1424,7 @@ async fn accept_offer(
             None => {
                 return (
                     StatusCode::NOT_FOUND,
-                    Json(json!({ "error": "oferta não existe" })),
+                    Json(json!({ "error": "offer does not exist" })),
                 )
                     .into_response()
             }
@@ -1502,7 +1502,7 @@ async fn start_pull(
     let Some(peer) = peers.iter().find(|p| p.node_id == req.node_id) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "peer desconhecido" })),
+            Json(json!({ "error": "unknown peer" })),
         )
             .into_response();
     };
@@ -1511,7 +1511,7 @@ async fn start_pull(
     let Some(base) = state.gateway_base(peer) else {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "peer não anuncia porta de gateway" })),
+            Json(json!({ "error": "peer does not announce a gateway port" })),
         )
             .into_response();
     };
@@ -1528,7 +1528,7 @@ async fn start_pull(
     // que o outro lado expõe, com o digest que ele declarar.
     let target = match req.sha256.as_deref() {
         Some(sha) if crate::pom::is_sha256_hex(sha) => {
-            let model = req.model.as_deref().unwrap_or("partes");
+            let model = req.model.as_deref().unwrap_or("parts");
             OfferTarget::Part {
                 sha256: sha.to_string(),
                 // A pasta depende do id da rodada, que vem no manifesto que o
@@ -1540,7 +1540,7 @@ async fn start_pull(
         Some(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "sha256 inválido" })),
+                Json(json!({ "error": "invalid sha256" })),
             )
                 .into_response();
         }
@@ -1606,7 +1606,7 @@ async fn cancel_job(
         .map(|j| j.peer_host.clone());
 
     state.transfers.cancel(&id, &by).await;
-    info!("🛑 transferência {id} cancelada por {by}");
+    info!("🛑 transfer {id} cancelled by {by}");
 
     // Avisar é o que separa "cancelado" de "caiu a rede" na tela do outro lado.
     // Se o aviso não chegar, o cancelamento local continua valendo e o outro
@@ -1627,7 +1627,7 @@ async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host:
         .iter()
         .find(|p| p.hostname == peer_host || p.node_id.starts_with(peer_host))
     else {
-        warn!("não deu para avisar {peer_host} do cancelamento de {id}: peer desconhecido");
+        warn!("could not tell {peer_host} about the cancellation of {id}: unknown peer");
         return;
     };
     let body = json!({ "by": by, "from_peer": true });
@@ -1640,7 +1640,7 @@ async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host:
         )
         .await;
     if let Err(e) = sent {
-        warn!("aviso de cancelamento não chegou em {peer_host}: {e}");
+        warn!("cancellation notice did not reach {peer_host}: {e}");
     }
 }
 
@@ -1664,7 +1664,7 @@ async fn catalog_send_path(state: &GatewayState, filename: &str) -> Result<PathB
     let catalog =
         tokio::task::spawn_blocking(move || crate::catalog::discover(&model_dirs, &shard_dir))
             .await
-            .map_err(|e| format!("falha ao consultar o catálogo local: {e}"))?;
+            .map_err(|e| format!("failed to query the local catalog: {e}"))?;
     let matches: Vec<PathBuf> = catalog
         .models
         .into_iter()
@@ -1677,10 +1677,10 @@ async fn catalog_send_path(state: &GatewayState, filename: &str) -> Result<PathB
         .map(|model| PathBuf::from(model.path))
         .collect();
     match matches.as_slice() {
-        [] => Err(format!("arquivo não encontrado no catálogo local: {filename}")),
+        [] => Err(format!("file not found in the local catalog: {filename}")),
         [path] => local_send_path(path.to_string_lossy().as_ref()),
         _ => Err(format!(
-            "há mais de um arquivo chamado {filename} no catálogo local; renomeie um deles antes de transferir"
+            "there is more than one file named {filename} in the local catalog; rename one of them before transferring"
         )),
     }
 }
@@ -1689,9 +1689,9 @@ async fn catalog_send_path(state: &GatewayState, filename: &str) -> Result<PathB
 fn local_send_path(requested: &str) -> Result<PathBuf, String> {
     let full = Path::new(requested)
         .canonicalize()
-        .map_err(|_| format!("arquivo não encontrado: {requested}"))?;
+        .map_err(|_| format!("file not found: {requested}"))?;
     if !full.is_file() {
-        return Err(format!("não é um arquivo: {requested}"));
+        return Err(format!("not a file: {requested}"));
     }
     ensure_gguf(&full)?;
     Ok(full)
@@ -1749,7 +1749,7 @@ async fn send_to_peer(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": format!(
-                    "o arquivo escolhido pertence a um GGUF multipart com {count} partes; mantenha o conjunto junto ou fatie-o pelo POM antes de transferir"
+                    "the chosen file belongs to a multipart GGUF with {count} parts; keep the set together or slice it with POM before transferring"
                 )
             })),
         )
@@ -1761,7 +1761,7 @@ async fn send_to_peer(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("stat falhou: {e}") })),
+                Json(json!({ "error": format!("stat failed: {e}") })),
             )
                 .into_response()
         }
@@ -1771,7 +1771,7 @@ async fn send_to_peer(
     let Some(peer) = peers.iter().find(|p| p.node_id == req.to_node_id) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "peer desconhecido" })),
+            Json(json!({ "error": "unknown peer" })),
         )
             .into_response();
     };
@@ -1783,7 +1783,7 @@ async fn send_to_peer(
     let Some(peer_base) = state.gateway_base(peer) else {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "peer não anuncia porta de gateway" })),
+            Json(json!({ "error": "peer does not announce a gateway port" })),
         )
             .into_response();
     };
@@ -1813,7 +1813,7 @@ async fn send_to_peer(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": format!(
-                    "a parte {} não tem manifesto nesta máquina; uma fatia não viaja sem o `.pom` que a descreve",
+                    "part {} has no manifest on this machine; a slice does not travel without the `.pom` that describes it",
                     &sha[..12]
                 )
             })),
@@ -1898,17 +1898,17 @@ async fn send_to_peer(
         .await
     {
         Ok(r) if r.status().is_success() => {
-            info!("📤 fatia {name} oferecida a {}", peer.node_id);
+            info!("📤 slice {name} offered to {}", peer.node_id);
             Json(json!({ "offered": true })).into_response()
         }
         Ok(r) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("peer respondeu {}", r.status()) })),
+            Json(json!({ "error": format!("peer answered {}", r.status()) })),
         )
             .into_response(),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("não deu para oferecer: {e:#}") })),
+            Json(json!({ "error": format!("could not offer: {e:#}") })),
         )
             .into_response(),
     }
@@ -2073,7 +2073,7 @@ async fn spawn_download(
             };
             (
                 loc,
-                state.shard_dir().await.join("recebidos"),
+                state.shard_dir().await.join("received"),
                 name.clone(),
                 None,
             )
@@ -2104,8 +2104,7 @@ async fn spawn_download(
                         .await
                         .ok_or_else(|| {
                             format!(
-                                "{from_host} não tem o manifesto da parte {} ({model_hint}); \
-                                 uma parte não viaja sem o `.pom` que a descreve",
+                                "{from_host} does not have the manifest of part {} ({model_hint}); a part does not travel without the `.pom` that describes it",
                                 &sha256[..12]
                             )
                         })?;
@@ -2116,7 +2115,7 @@ async fn spawn_download(
                         .any(|p| &p.sha256 == sha256)
                     {
                         return Err(format!(
-                            "o manifesto que {from_host} mandou não descreve a parte {}",
+                            "the manifest {from_host} sent does not describe part {}",
                             &sha256[..12]
                         ));
                     }
@@ -2127,7 +2126,7 @@ async fn spawn_download(
                         .map(|(path, _)| path)
                         .map_err(|e| {
                             format!(
-                                "não deu para mesclar o manifesto de {}: {e:#}",
+                                "could not merge the manifest of {}: {e:#}",
                                 m.model.label
                             )
                         })?;
@@ -2157,7 +2156,7 @@ async fn spawn_download(
     // transferência nenhuma para pôr na lista.
     tokio::fs::create_dir_all(&dir)
         .await
-        .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
     // **O `.pom` já está no lugar, e é dele que sai o nome da tela.** Quem
     // chegou por oferta trouxe o manifesto junto e ele acabou de ser mesclado
@@ -2181,7 +2180,7 @@ async fn spawn_download(
             slice.as_ref(),
         )
         .await;
-    set_detail(&state, &job_id, "conferindo o arquivo na origem").await;
+    set_detail(&state, &job_id, "checking the file at the source").await;
 
     let task_state = state.clone();
     let task_job_id = job_id.clone();
@@ -2226,7 +2225,7 @@ async fn spawn_download(
         .await;
 
         if let Err(e) = outcome {
-            warn!("transferência de {name} falhou: {e}");
+            warn!("transfer of {name} failed: {e}");
             // A partial file must never look like a usable slice.
             let _ = tokio::fs::remove_file(&part).await;
             // `finish` respeita o estado terminal que já estiver lá: `cancel`
@@ -2285,9 +2284,9 @@ async fn tunnel_peer(
     let peer = peers
         .iter()
         .find(|peer| peer.node_id == peer_id)
-        .ok_or_else(|| "a origem não está na rede".to_string())?;
+        .ok_or_else(|| "the source is not on the network".to_string())?;
     let tunnel = crate::peer_client::TunnelPeer::from_peer(peer)
-        .ok_or_else(|| "a origem não anuncia o túnel libp2p".to_string())?;
+        .ok_or_else(|| "the source does not announce the libp2p tunnel".to_string())?;
     Ok((tunnel, peer.libp2p_peer_id.clone().unwrap_or_default()))
 }
 
@@ -2352,7 +2351,7 @@ async fn download_over_tunnel(
     use crate::infer_tunnel::{TRANSFER_CHUNK_BYTES, TRANSFER_ROUTE_REFUSED_STATUS};
 
     let (_, libp2p_peer) = tunnel_peer(state, peer_id).await?;
-    let no_route = "sem rota direta até a origem: o único caminho passa por um relé público, que não transporta arquivos";
+    let no_route = "no direct route to the source: the only path goes through a public relay, which does not carry files";
     let waited = Instant::now();
     loop {
         let (allowed, _) = state.network.transfer_links(&libp2p_peer).await;
@@ -2364,7 +2363,7 @@ async fn download_over_tunnel(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    info!("{}: sem endereço direto, trazendo pelo túnel libp2p", part.display());
+    info!("{}: no direct address, bringing it through the libp2p tunnel", part.display());
 
     let mut done = already;
     let started = Instant::now();
@@ -2372,7 +2371,7 @@ async fn download_over_tunnel(
     while done < total {
         if state.transfers.is_cancelled(job_id).await {
             let _ = tokio::fs::remove_file(part).await;
-            return Err("cancelado".to_string());
+            return Err("cancelled".to_string());
         }
         let last = (done + TRANSFER_CHUNK_BYTES).min(total) - 1;
         let mut refusals = 0usize;
@@ -2399,12 +2398,12 @@ async fn download_over_tunnel(
             let body = resp.bytes().await.map_err(|e| e.to_string())?;
             if !status.is_success() {
                 let text = String::from_utf8_lossy(&body);
-                return Err(format!("peer respondeu {status}: {}", text.trim()));
+                return Err(format!("peer answered {status}: {}", text.trim()));
             }
             break body;
         };
         if piece.len() as u64 != last - done + 1 {
-            return Err("a origem interrompeu a transferência".to_string());
+            return Err("the source interrupted the transfer".to_string());
         }
         file.write_all(&piece).await.map_err(|e| e.to_string())?;
         done += piece.len() as u64;
@@ -2450,7 +2449,7 @@ async fn fetch_manifest(
             "/api/transfer/manifest",
         )
         .await
-        .map_err(|e| format!("não foi possível assinar a consulta em {from_host}: {e}"))?;
+        .map_err(|e| format!("could not sign the query on {from_host}: {e}"))?;
     let resp = match request.send().await {
         Ok(resp) => resp,
         // No direct address connects: the question is small and goes through
@@ -2464,8 +2463,8 @@ async fn fetch_manifest(
             MANIFEST_TIMEOUT,
         )
         .await
-        .map_err(|tunnel| format!("não deu para falar com {from_host}: {error}; {tunnel}"))?,
-        Err(e) => return Err(format!("não deu para falar com {from_host}: {e}")),
+        .map_err(|tunnel| format!("could not reach {from_host}: {error}; {tunnel}"))?,
+        Err(e) => return Err(format!("could not reach {from_host}: {e}")),
     };
 
     // Conferir o status ANTES de tentar ler JSON. Um erro do gateway costuma
@@ -2479,21 +2478,21 @@ async fn fetch_manifest(
         let body = resp.text().await.unwrap_or_default();
         let body = body.trim();
         return Err(if body.is_empty() {
-            format!("{from_host} recusou o manifesto: HTTP {status}")
+            format!("{from_host} refused the manifest: HTTP {status}")
         } else {
-            format!("{from_host} recusou o manifesto (HTTP {status}): {body}")
+            format!("{from_host} refused the manifest (HTTP {status}): {body}")
         });
     }
 
     let manifest: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| format!("manifesto inválido de {from_host}: {e}"))?;
+        .map_err(|e| format!("invalid manifest from {from_host}: {e}"))?;
 
     let total = manifest["size_bytes"].as_u64().unwrap_or(0);
     let md5 = manifest["md5"].as_str().unwrap_or_default().to_string();
     if total == 0 || md5.is_empty() {
-        return Err(format!("{from_host} não soube descrever {name}"));
+        return Err(format!("{from_host} could not describe {name}"));
     }
 
     // Refusing here beats filling the disk and failing halfway.
@@ -2501,7 +2500,7 @@ async fn fetch_manifest(
     let needed_mb = total / 1_048_576 + DISK_HEADROOM_MB;
     if free_mb > 0 && free_mb < needed_mb {
         return Err(format!(
-            "espaço insuficiente: {name} precisa de ~{needed_mb} MB (com folga) e só há {free_mb} MB livres"
+            "not enough space: {name} needs ~{needed_mb} MB (with slack) and only {free_mb} MB are free"
         ));
     }
 
@@ -2549,7 +2548,7 @@ async fn run_download(
         .await
         .map_err(|e| e.to_string())?;
     if already > 0 {
-        info!("retomando {} a partir de {} bytes", dest.display(), already);
+        info!("resuming {} from {} bytes", dest.display(), already);
         req = req.header(header::RANGE, format!("bytes={already}-"));
     }
 
@@ -2558,7 +2557,7 @@ async fn run_download(
     let direct = match req.send().await {
         Ok(resp) => Some(resp),
         Err(error) if error.is_connect() => {
-            info!("{}: nenhum endereço direto conectou ({error})", dest.display());
+            info!("{}: no direct address connected ({error})", dest.display());
             None
         }
         Err(e) => return Err(e.to_string()),
@@ -2571,9 +2570,9 @@ async fn run_download(
             let body = direct.expect("checked above").text().await.unwrap_or_default();
             let body = body.trim();
             return Err(if body.is_empty() {
-                format!("peer respondeu {status}")
+                format!("peer answered {status}")
             } else {
-                format!("peer respondeu {status}: {body}")
+                format!("peer answered {status}: {body}")
             });
         }
     }
@@ -2607,7 +2606,7 @@ async fn run_download(
             // Cancelar é desistir: o parcial sai do disco. Guardá-lo ocuparia
             // gigabytes que a tela não mostra.
             let _ = tokio::fs::remove_file(part).await;
-            return Err("cancelado".to_string());
+            return Err("cancelled".to_string());
         }
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
@@ -2668,7 +2667,7 @@ async fn finish_download(
             // pedido. O arquivo parcial some no tratamento de erro de
             // `spawn_download`, e nada com este nome chega ao disco bom.
             return Err(format!(
-                "sha256 não confere (pedido {}, obtido {})",
+                "sha256 does not match (requested {}, got {})",
                 &expected[..12],
                 &got[..12]
             ));
@@ -2694,7 +2693,7 @@ async fn finish_download(
 
         if got != expected_md5 {
             return Err(format!(
-                "MD5 não confere (esperado {expected_md5}, obtido {got})"
+                "MD5 does not match (expected {expected_md5}, got {got})"
             ));
         }
     }
@@ -2727,10 +2726,10 @@ async fn finish_download(
         .finish(
             job_id,
             TRANSFER_DONE,
-            format!("MD5 conferido · {}", dest.display()),
+            format!("MD5 verified · {}", dest.display()),
         )
         .await;
-    info!("✅ fatia recebida e verificada: {}", dest.display());
+    info!("✅ slice received and verified: {}", dest.display());
     Ok(())
 }
 
@@ -2746,7 +2745,7 @@ mod tests {
     fn auto_accept_stays_shut_unless_explicitly_opened() {
         assert!(
             !auto_accept_set(None),
-            "sem a variável, ninguém aceita nada"
+            "without the variable, nobody accepts anything"
         );
         assert!(!auto_accept_set(Some("")));
         assert!(!auto_accept_set(Some("  ")));
@@ -2783,13 +2782,13 @@ mod tests {
             .await;
 
         let jobs = transfers.jobs.read().await;
-        let job = jobs.get("job-1").expect("job registrado");
+        let job = jobs.get("job-1").expect("job registered");
         assert_eq!(job.direction, TRANSFER_SENDING);
         assert_eq!(job.peer_host, "ksia");
         assert_eq!(job.bytes_total, 4_096);
         assert_eq!(job.state, TRANSFER_RUNNING);
         assert_eq!(job.path, "/models/fatia_0_15.gguf");
-        assert!(job.finished_at.is_none(), "ainda não terminou");
+        assert!(job.finished_at.is_none(), "not finished yet");
         // E a tela tem o que mostrar além do nome do arquivo.
         assert_eq!(job.model_label.as_deref(), Some("qwen3:8b"));
         assert_eq!((job.start_layer, job.end_layer), (Some(0), Some(15)));
@@ -2827,13 +2826,13 @@ mod tests {
             }],
         );
 
-        let f = slice_label(&m, &sha).expect("o manifesto descreve esta parte");
+        let f = slice_label(&m, &sha).expect("the manifest describes this part");
         assert_eq!(f.model_label, "qwen3:8b");
         assert_eq!((f.start_layer, f.end_layer), (16, 31));
 
         assert!(
             slice_label(&m, &other).is_none(),
-            "parte que o manifesto não descreve não ganha rótulo inventado"
+            "a part the manifest does not describe gets no invented label"
         );
     }
 
@@ -2859,16 +2858,16 @@ mod tests {
             .await;
 
         transfers
-            .finish("job-1", TRANSFER_DONE, "MD5 conferido")
+            .finish("job-1", TRANSFER_DONE, "MD5 verified")
             .await;
 
         let jobs = transfers.jobs.read().await;
         let job = jobs.get("job-1").unwrap();
         assert_eq!(job.state, TRANSFER_DONE);
-        assert_eq!(job.detail, "MD5 conferido");
+        assert_eq!(job.detail, "MD5 verified");
         assert!(
             job.finished_at.is_some(),
-            "sem a hora o sino não sabe que isto acabou de acontecer"
+            "without the time the bell does not know this just happened"
         );
     }
 
@@ -2896,18 +2895,18 @@ mod tests {
             let jobs = transfers.jobs.read().await;
             jobs.get("job-1").unwrap().finished_at.clone()
         };
-        assert!(when.is_some(), "cancelar também carimba a hora");
+        assert!(when.is_some(), "cancelling also stamps the time");
 
         transfers
-            .finish("job-1", TRANSFER_FAILED, "conexão morreu")
+            .finish("job-1", TRANSFER_FAILED, "connection died")
             .await;
         transfers.finish("job-1", TRANSFER_DONE, "enviado").await;
 
         let jobs = transfers.jobs.read().await;
         let job = jobs.get("job-1").unwrap();
-        assert_eq!(job.state, TRANSFER_CANCELLED, "a decisão de alguém venceu");
+        assert_eq!(job.state, TRANSFER_CANCELLED, "someone's decision won");
         assert!(job.detail.contains("atena"), "detail: {}", job.detail);
-        assert_eq!(job.finished_at, when, "e a hora é a do cancelamento");
+        assert_eq!(job.finished_at, when, "and the time is that of the cancellation");
     }
 
     /// Cancelar é idempotente e não depende de o job existir: o aviso do outro
@@ -2990,7 +2989,7 @@ mod tests {
         std::fs::write(&tiny, b"GG").unwrap();
         assert!(ensure_gguf(&tiny).is_err());
 
-        assert!(ensure_gguf(&dir).is_err(), "diretório não é arquivo");
+        assert!(ensure_gguf(&dir).is_err(), "a directory is not a file");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3199,20 +3198,20 @@ mod offer_latency_tests {
         assert_eq!(
             normalize_scheme("http://ksia:8080"),
             "https://ksia:8080",
-            "oferta antiga em http tem que ser promovida"
+            "an old offer over http must be promoted"
         );
         assert_eq!(normalize_scheme("https://ksia:8080"), "https://ksia:8080");
         assert_eq!(
             normalize_scheme("http://[2804:d55::1]:8080"),
             "https://[2804:d55::1]:8080",
-            "IPv6 entre colchetes sobrevive"
+            "bracketed IPv6 survives"
         );
 
         crate::peer_client::set_tls_enabled(false);
         assert_eq!(
             normalize_scheme("https://ksia:8080"),
             "http://ksia:8080",
-            "cluster em claro rebaixa a oferta"
+            "a plain cluster downgrades the offer"
         );
 
         crate::peer_client::set_tls_enabled(false);
@@ -3252,10 +3251,10 @@ mod offer_latency_tests {
         )
         .await;
         let elapsed = started.elapsed();
-        assert_eq!(resp.status(), StatusCode::OK, "a oferta tem que ser aceita");
+        assert_eq!(resp.status(), StatusCode::OK, "the offer must be accepted");
 
         let offers = seen.read().await;
-        assert_eq!(offers.len(), 1, "o peer tem que ter recebido a oferta");
+        assert_eq!(offers.len(), 1, "the peer must have received the offer");
         let offer = &offers[0];
         assert_eq!(offer["name"], "fatia_0_15.gguf");
         assert_eq!(offer["size_bytes"], 24 * 1024 * 1024);
@@ -3271,14 +3270,14 @@ mod offer_latency_tests {
         // bater na porta do vizinho.
         assert!(
             state.transfers.digests.read().await.is_empty(),
-            "a oferta não pode hashear o arquivo: é o que fazia o sino do outro lado demorar"
+            "the offer cannot hash the file: that is what made the bell on the other side slow"
         );
 
         // Cinturão e suspensórios: com o hash fora do caminho, o convite sai em
         // milissegundos mesmo aqui, onde o arquivo é pequeno.
         assert!(
             elapsed < Duration::from_secs(2),
-            "oferta demorou {elapsed:?}; ela não pode depender do tamanho do arquivo"
+            "offer took {elapsed:?}; it cannot depend on the file size"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -3377,17 +3376,17 @@ mod offer_latency_tests {
             "peer-b".into(),
         )
         .await
-        .expect("aceitar registra a transferência na hora");
+        .expect("accepting registers the transfer right away");
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "aceitar esperou o manifesto: {:?}",
+            "accepting waited for the manifest: {:?}",
             started.elapsed()
         );
 
         // E o trabalho existe de verdade: o job está na lista, com o outro lado
         // já sendo consultado em segundo plano.
         let jobs = state.transfers.jobs.read().await;
-        assert!(jobs.contains_key(&job_id), "o job tem que aparecer na tela");
+        assert!(jobs.contains_key(&job_id), "the job must show up on the screen");
         drop(jobs);
         for _ in 0..50 {
             if slow_hits.load(Ordering::SeqCst) > 0 {
@@ -3398,7 +3397,7 @@ mod offer_latency_tests {
         assert_eq!(
             slow_hits.load(Ordering::SeqCst),
             1,
-            "o manifesto tem que ter sido pedido em segundo plano"
+            "the manifest must have been requested in the background"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -3428,11 +3427,11 @@ mod ipv6_tests {
         let out = local_ip_for("http://[::1]:8090");
         assert!(
             out.starts_with('[') && out.ends_with(']'),
-            "esperado bracketed, veio {out}"
+            "expected bracketed, got {out}"
         );
         assert!(
             format!("http://{out}:8090").parse::<reqwest::Url>().is_ok(),
-            "o endereco tem que formar uma URL valida: {out}"
+            "the address must form a valid URL: {out}"
         );
     }
 }
@@ -3510,7 +3509,7 @@ mod part_fetch_tests {
         assert_eq!(
             resp.status(),
             StatusCode::BAD_REQUEST,
-            "sem manifesto, o pull é recusado"
+            "without a manifest, the pull is refused"
         );
 
         // E nada foi escrito: nem pasta de rodada inventada, nem quarentena.
@@ -3755,24 +3754,24 @@ mod pom_travels_tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        assert!(destination.is_file(), "a parte cai na pasta do modelo");
+        assert!(destination.is_file(), "the part lands in the model folder");
         // E **nada** na raiz da pasta de fatias, que era onde ela ia parar.
         assert!(!dest_disk.join("recebidos").exists());
         assert!(!dest_disk.join(format!("{sha}.gguf")).exists());
 
         // O manifesto chegou junto, e é ele que dá nome à fatia no catálogo.
         let manifestos = pom::load_dir(&folder);
-        assert_eq!(manifestos.len(), 1, "o `.pom` veio com a parte");
+        assert_eq!(manifestos.len(), 1, "the `.pom` came with the part");
         assert_eq!(manifestos[0].pom_id, manifesto.pom_id);
 
         let cat = crate::catalog::discover(&[], &dest_disk);
         assert_eq!(cat.models.len(), 1);
         assert!(
             cat.models[0].name.contains("qwen3:8b") && cat.models[0].name.contains("L0-7"),
-            "a fatia se apresenta pelo modelo e pelas camadas: {}",
+            "the slice presents itself by the model and the layers: {}",
             cat.models[0].name
         );
-        assert!(cat.models[0].is_shard(), "e como fatia, não modelo inteiro");
+        assert!(cat.models[0].is_shard(), "and as a slice, not a whole model");
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -3801,10 +3800,10 @@ mod pom_travels_tests {
         let cat = crate::catalog::discover(&[], &root);
         assert_eq!(cat.models.len(), 1);
         let m = &cat.models[0];
-        assert_eq!(m.name, "qwen3.5-9b.gguf", "aparece pelo nome, não por hash");
-        assert!(!m.is_shard(), "e como modelo inteiro, não como fatia");
+        assert_eq!(m.name, "qwen3.5-9b.gguf", "it appears by name, not by hash");
+        assert!(!m.is_shard(), "and as a whole model, not as a slice");
         assert!(m.sha256.is_none());
-        assert!(cat.shard_sets.is_empty(), "não forma conjunto de fatias");
+        assert!(cat.shard_sets.is_empty(), "it does not form a slice set");
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -3822,7 +3821,7 @@ mod pom_travels_tests {
 
         let found = manifest_for(&state, &path)
             .await
-            .expect("o manifesto da parte está ao lado dela");
+            .expect("the manifest of the part is next to it");
         assert_eq!(found.pom_id, manifesto.pom_id);
 
         // Um arquivo que não é parte de manifesto nenhum vai sozinho.
@@ -3905,7 +3904,7 @@ mod pom_travels_tests {
         let target = offer_target(&state, &offer).await.unwrap();
         let destination = match target {
             OfferTarget::Part { model_dir, .. } => model_dir.unwrap(),
-            OfferTarget::Standalone { .. } => panic!("a oferta com manifesto é uma parte"),
+            OfferTarget::Standalone { .. } => panic!("the offer with a manifest is a part"),
         };
         assert_eq!(destination, model_dir);
         let manifestos = pom::load_dir(&destination);
@@ -4014,7 +4013,7 @@ mod verdict_tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("o job {job_id} nunca terminou");
+        panic!("job {job_id} never finished");
     }
 
     /// Aceitar avisa quem ofereceu, e o envio fecha sozinho quando o último
@@ -4053,14 +4052,14 @@ mod verdict_tests {
             }),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::OK, "a oferta tem que sair");
+        assert_eq!(resp.status(), StatusCode::OK, "the offer must go out");
 
         // O remetente guardou a oferta para saber nomear o veredito.
         assert_eq!(atena.transfers.offered.read().await.len(), 1);
 
         let offer_id = {
             let offers = ksia.transfers.offers.read().await;
-            assert_eq!(offers.len(), 1, "a oferta chegou no destino");
+            assert_eq!(offers.len(), 1, "the offer arrived at the destination");
             offers[0].id.clone()
         };
 
@@ -4078,7 +4077,7 @@ mod verdict_tests {
                 .keys()
                 .next()
                 .cloned()
-                .expect("o receptor registrou o job");
+                .expect("the receiver registered the job");
             until_done(&ksia, &id).await
         };
         assert_eq!(received.state, TRANSFER_DONE);
@@ -4087,20 +4086,20 @@ mod verdict_tests {
         let sent = until_done(&atena, &received.id).await;
         assert_eq!(
             sent.direction, TRANSFER_SENDING,
-            "o mesmo id existe nos dois lados, com direções opostas"
+            "the same id exists on both sides, with opposite directions"
         );
         assert_eq!(
             sent.state, TRANSFER_DONE,
-            "o envio ficava `running` para sempre: nada o fechava"
+            "the send stayed `running` forever: nothing closed it"
         );
-        assert_eq!(sent.peer_host, "ksia", "e a tela diz para quem foi");
+        assert_eq!(sent.peer_host, "ksia", "and the screen says who it went to");
         assert!(
             sent.finished_at.is_some(),
-            "sem a hora o sino não mostra o desfecho"
+            "without the time the bell does not show the outcome"
         );
         assert_eq!(
             sent.bytes_done, sent.bytes_total,
-            "e o número final é o arquivo inteiro, não o último relato de 500 ms"
+            "and the final number is the whole file, not the last 500 ms report"
         );
 
         // Respondida, a oferta sai do registro do remetente.
@@ -4113,12 +4112,12 @@ mod verdict_tests {
             assert_eq!(
                 job.model_label.as_deref(),
                 Some("qwen3:8b"),
-                "{who}: a tela precisa do modelo, não do hash"
+                "{who}: the screen needs the model, not the hash"
             );
             assert_eq!(
                 (job.start_layer, job.end_layer),
                 (Some(0), Some(7)),
-                "{who}: e da faixa de camadas"
+                "{who}: and the layer range"
             );
             // O hash continua disponível, como identificação secundária: é ele
             // que nomeia o arquivo em disco.
@@ -4179,15 +4178,15 @@ mod verdict_tests {
             drop(jobs);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let refusal = refusal.expect("a recusa tem que virar aviso no remetente");
+        let refusal = refusal.expect("the refusal must become a notice at the sender");
         assert_eq!(refusal.direction, TRANSFER_SENDING);
         assert_eq!(
             refusal.state, TRANSFER_CANCELLED,
-            "recusa é decisão de alguém, não falha"
+            "a refusal is someone's decision, not a failure"
         );
         assert!(
             refusal.detail.contains("ksia"),
-            "a tela precisa dizer quem recusou: {}",
+            "the screen must say who refused: {}",
             refusal.detail
         );
         assert!(refusal.finished_at.is_some());
@@ -4255,7 +4254,7 @@ mod verdict_tests {
         assert_eq!(
             state.transfers.offered.read().await.len(),
             1,
-            "e a oferta continua de pé, esperando quem de direito"
+            "and the offer still stands, waiting for the right party"
         );
     }
 }
@@ -4291,7 +4290,7 @@ mod offer_etag_tests {
 
         let first = list_offers(ConnectionAuth, HeaderMap::new(), State(state.clone())).await;
         assert_eq!(first.status(), StatusCode::OK);
-        let etag = first.headers().get(ETAG).cloned().expect("ETag da oferta");
+        let etag = first.headers().get(ETAG).cloned().expect("offer ETag");
         assert!(body_of(first).await.get("disk_free_mb").is_none());
 
         let mut headers = HeaderMap::new();

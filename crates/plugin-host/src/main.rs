@@ -35,7 +35,7 @@ pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read) -> io::Result<T> 
     if size == 0 || size > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("tamanho do frame excede o limite de {MAX_FRAME_BYTES} bytes"),
+            format!("frame size exceeds the limit of {MAX_FRAME_BYTES} bytes"),
         ));
     }
     let mut body = vec![0_u8; size];
@@ -49,11 +49,11 @@ pub fn write_frame<T: Serialize>(writer: &mut impl Write, value: &T) -> io::Resu
     if body.is_empty() || body.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("tamanho do frame excede o limite de {MAX_FRAME_BYTES} bytes"),
+            format!("frame size exceeds the limit of {MAX_FRAME_BYTES} bytes"),
         ));
     }
     let size = u32::try_from(body.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame grande demais"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
     writer.write_all(&size.to_be_bytes())?;
     writer.write_all(&body)?;
     writer.flush()
@@ -63,13 +63,13 @@ pub fn validate_plugin_path(path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "o caminho do plugin deve ser absoluto",
+            "the plugin path must be absolute",
         ));
     }
     if !path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "o arquivo do plugin não existe",
+            "the plugin file does not exist",
         ));
     }
     Ok(())
@@ -92,7 +92,7 @@ pub fn plugin_entry_symbol(plugin_code: &str) -> io::Result<Vec<u8>> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "plugin_code inválido para o entrypoint do plugin",
+            "invalid plugin_code for the plugin entrypoint",
         ));
     }
     let mut symbol = format!("pom_{plugin_code}_plugin_v1").into_bytes();
@@ -108,20 +108,20 @@ pub fn validate_artifact(
     if manifest.plugin_abi != PLUGIN_ABI_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "ABI do manifest incompatível",
+            "manifest ABI incompatible",
         ));
     }
     if manifest.signature.trim().is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "manifest sem assinatura",
+            "manifest without a signature",
         ));
     }
     let metadata = std::fs::metadata(path)?;
     if metadata.len() != manifest.size {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "tamanho do plugin divergente",
+            "plugin size mismatch",
         ));
     }
     let mut file = File::open(path)?;
@@ -135,7 +135,7 @@ pub fn validate_artifact(
     if actual != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "hash do plugin divergente",
+            "plugin hash mismatch",
         ));
     }
     Ok(())
@@ -145,7 +145,7 @@ pub fn validate_api(api: &PluginApiV1) -> io::Result<()> {
     if api.abi_version != PLUGIN_ABI_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "ABI do plugin incompatível",
+            "plugin ABI incompatible",
         ));
     }
     if api.plugin_version.is_null()
@@ -157,7 +157,7 @@ pub fn validate_api(api: &PluginApiV1) -> io::Result<()> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "ABI do plugin não fornece todas as funções obrigatórias",
+            "plugin ABI does not provide all the required functions",
         ));
     }
     Ok(())
@@ -182,12 +182,12 @@ impl LoadedPlugin {
         if api_ptr.is_null() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "plugin retornou ABI nula",
+                "plugin returned a null ABI",
             ));
         }
         validate_api(&*api_ptr)?;
         let api: &'static PluginApiV1 = &*api_ptr;
-        let create = api.create.expect("validate_api garantiu create");
+        let create = api.create.expect("validate_api guaranteed create");
         let handle = create(
             enterprise_protocol::abi::HostCallbacks { log: None },
             ByteSlice {
@@ -198,7 +198,7 @@ impl LoadedPlugin {
         if handle.is_null() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "plugin recusou configuração",
+                "plugin refused the configuration",
             ));
         }
         Ok(Self {
@@ -218,7 +218,7 @@ impl LoadedPlugin {
     }
 
     pub fn ingest(&self, event: &[u8]) -> io::Result<()> {
-        let ingest = self.api.ingest.expect("validate_api garantiu ingest");
+        let ingest = self.api.ingest.expect("validate_api guaranteed ingest");
         let status = unsafe {
             ingest(
                 self.handle,
@@ -231,12 +231,12 @@ impl LoadedPlugin {
         if status == 0 {
             Ok(())
         } else {
-            Err(io::Error::other(format!("plugin retornou status {status}")))
+            Err(io::Error::other(format!("plugin returned status {status}")))
         }
     }
 
     pub fn query(&self, request: &[u8]) -> io::Result<Vec<u8>> {
-        let query = self.api.query.expect("validate_api garantiu query");
+        let query = self.api.query.expect("validate_api guaranteed query");
         let buffer = unsafe {
             query(
                 self.handle,
@@ -252,7 +252,7 @@ impl LoadedPlugin {
             }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "resposta do plugin excede o limite do IPC",
+                "plugin response exceeds the IPC limit",
             ));
         }
         let result = if buffer.len == 0 {
@@ -263,7 +263,7 @@ impl LoadedPlugin {
             }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "plugin retornou buffer nulo com tamanho positivo",
+                "plugin returned a null buffer with a positive size",
             ));
         } else {
             unsafe { std::slice::from_raw_parts(buffer.ptr, buffer.len).to_vec() }
@@ -336,7 +336,7 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
         ),
         "ready" => {
             let Some(plugin) = plugin else {
-                return error_response(request, "nenhum plugin carregado");
+                return error_response(request, "no plugin loaded");
             };
             match plugin.version() {
                 Ok(version) => response(
@@ -349,7 +349,7 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
         "shutdown" => response(request, serde_json::json!({ "status": "shutting_down" })),
         "ingest" => {
             let Some(plugin) = plugin else {
-                return error_response(request, "nenhum plugin carregado");
+                return error_response(request, "no plugin loaded");
             };
             let event = request.payload.to_string();
             match plugin.ingest(event.as_bytes()) {
@@ -359,7 +359,7 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
         }
         "query" => {
             let Some(plugin) = plugin else {
-                return error_response(request, "nenhum plugin carregado");
+                return error_response(request, "no plugin loaded");
             };
             let query = request.payload.to_string();
             match plugin.query(query.as_bytes()) {
@@ -370,7 +370,7 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
                 Err(error) => error_response(request, error.to_string()),
             }
         }
-        _ => error_response(request, "método IPC desconhecido"),
+        _ => error_response(request, "unknown IPC method"),
     }
 }
 
@@ -380,14 +380,14 @@ fn run() -> io::Result<()> {
         (None, None, None) => None,
         (Some(path), Some(plugin_code), None) => {
             let plugin_code = plugin_code.into_string().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "plugin_code não é UTF-8")
+                io::Error::new(io::ErrorKind::InvalidInput, "plugin_code is not UTF-8")
             })?;
             Some(unsafe { LoadedPlugin::load(&PathBuf::from(path), &plugin_code, b"{}") }?)
         }
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "uso: pom-plugin-host [caminho absoluto] [plugin_code]",
+                "usage: pom-plugin-host [absolute path] [plugin_code]",
             ))
         }
     };
@@ -458,7 +458,7 @@ mod tests {
 
         let error = read_frame::<IpcRequest>(&mut Cursor::new(bytes)).expect_err("oversized frame");
 
-        assert!(error.to_string().contains("limite"));
+        assert!(error.to_string().contains("limit"));
     }
 
     #[test]
@@ -466,7 +466,7 @@ mod tests {
         let error =
             validate_plugin_path(std::path::Path::new("enterprise.so")).expect_err("relative path");
 
-        assert!(error.to_string().contains("absoluto"));
+        assert!(error.to_string().contains("absolute"));
     }
 
     #[test]

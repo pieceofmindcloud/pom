@@ -261,17 +261,17 @@ impl LocalDiscoveryRuntime {
         let trust_document = trust_document.into();
         let connection_key = connection_key.into();
         if trust_document.len() > MAX_TRUST_DOCUMENT_BYTES {
-            bail!("o documento de confiança excede o limite da transferência local");
+            bail!("the trust document exceeds the local transfer limit");
         }
         if !connection_key.is_empty() && trust_document.contains(&connection_key) {
-            bail!("a chave de conexão não pode aparecer no documento de confiança");
+            bail!("the connection key cannot appear in the trust document");
         }
         let secret_payload = serde_json::to_vec(&SecretPayload {
             trust_document: trust_document.clone(),
             connection_key: connection_key.clone(),
         })?;
         if secret_payload.len() > MAX_SECRET_PAYLOAD_BYTES {
-            bail!("o material da descoberta local excede o limite da transferência");
+            bail!("the local discovery material exceeds the transfer limit");
         }
         let _ = secret_chunk_count(secret_payload.len())?;
         let mut state = self.state.lock().await;
@@ -849,11 +849,11 @@ fn proof_for(key: &[u8; 32], transcript: &[u8]) -> String {
 
 fn secret_chunk_count(payload_len: usize) -> Result<u16> {
     let ciphertext_len = payload_len.checked_add(16).ok_or_else(|| {
-        anyhow::anyhow!("o material da descoberta local excede o limite da transferência")
+        anyhow::anyhow!("the local discovery material exceeds the transfer limit")
     })?;
     let chunk_count = (ciphertext_len + MAX_SECRET_CHUNK_BYTES - 1) / MAX_SECRET_CHUNK_BYTES;
     if chunk_count == 0 || chunk_count > MAX_SECRET_CHUNKS {
-        bail!("o material da descoberta local excede o limite da transferência");
+        bail!("the local discovery material exceeds the transfer limit");
     }
     Ok(u16::try_from(chunk_count)?)
 }

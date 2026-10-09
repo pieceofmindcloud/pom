@@ -70,7 +70,7 @@ struct R<'a> {
 impl<'a> R<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         if self.pos + n > self.data.len() {
-            bail!("GGUF truncado em byte {}", self.pos);
+            bail!("GGUF truncated at byte {}", self.pos);
         }
         let s = &self.data[self.pos..self.pos + n];
         self.pos += n;
@@ -85,7 +85,7 @@ impl<'a> R<'a> {
     fn string(&mut self) -> Result<String> {
         let len = self.u64()? as usize;
         if len > 64 << 20 {
-            bail!("string GGUF implausível: {len} bytes");
+            bail!("implausible GGUF string: {len} bytes");
         }
         let b = self.take(len)?;
         Ok(std::str::from_utf8(b).unwrap_or("").to_owned())
@@ -119,7 +119,7 @@ impl<'a> R<'a> {
                     }
                 }
             }
-            other => bail!("tipo GGUF desconhecido {other}"),
+            other => bail!("unknown GGUF type {other}"),
         }
         Ok(())
     }
@@ -131,7 +131,7 @@ impl<'a> R<'a> {
                 .checked_mul(size as u64)
                 .ok_or_else(|| anyhow::anyhow!("overflow no array GGUF"))?;
             self.take(
-                usize::try_from(bytes).map_err(|_| anyhow::anyhow!("array GGUF grande demais"))?,
+                usize::try_from(bytes).map_err(|_| anyhow::anyhow!("GGUF array too large"))?,
             )?;
         } else {
             for _ in 0..count {
@@ -250,14 +250,14 @@ fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -
             .map(|&value| {
                 i32::try_from(value)
                     .map(i32::to_le_bytes)
-                    .map_err(|_| anyhow::anyhow!("array '{}' excede i32", key))
+                    .map_err(|_| anyhow::anyhow!("array '{}' exceeds i32", key))
             })
             .collect::<Result<Vec<[u8; 4]>>>()?
             .into_iter()
             .flatten()
             .collect(),
         other => bail!(
-            "array '{}' tem tipo {}; esperado inteiro u32 ou i32",
+            "array '{}' has type {}; expected a u32 or i32 integer",
             key,
             other
         ),
@@ -267,7 +267,7 @@ fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -
 
 fn encode_kv_array(key: &str, element_type: u32, payload: &[u8]) -> Vec<u8> {
     let element_size = scalar_size(element_type)
-        .expect("arrays de metadata reconstruídos precisam de elementos escalares");
+        .expect("rebuilt metadata arrays need scalar elements");
     assert_eq!(payload.len() % element_size, 0);
     let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + payload.len());
     let kb = key.as_bytes();
@@ -324,16 +324,16 @@ fn source_scalar_u32(mm: &[u8], entry: &KvSource) -> Option<u32> {
 fn source_u32_array(mm: &[u8], entry: &KvSource) -> Result<Vec<u32>> {
     let array = entry
         .array
-        .ok_or_else(|| anyhow::anyhow!("metadata '{}' não é um array", entry.key))?;
+        .ok_or_else(|| anyhow::anyhow!("metadata '{}' is not an array", entry.key))?;
     let element_size = scalar_size(array.element_type).ok_or_else(|| {
         anyhow::anyhow!(
-            "metadata '{}' tem elementos aninhados, esperado um array inteiro",
+            "metadata '{}' has nested elements, expected an integer array",
             entry.key
         )
     })?;
     let mut values = Vec::with_capacity(
         usize::try_from(array.count)
-            .map_err(|_| anyhow::anyhow!("array '{}' grande demais", entry.key))?,
+            .map_err(|_| anyhow::anyhow!("array '{}' too large", entry.key))?,
     );
     for index in 0..array.count {
         let byte_offset = usize::try_from(index)
@@ -347,19 +347,19 @@ fn source_u32_array(mm: &[u8], entry: &KvSource) -> Result<Vec<u32>> {
         let value = match array.element_type {
             T_U32 => u32::from_le_bytes(
                 mm.get(start..start + 4)
-                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?
+                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncated", entry.key))?
                     .try_into()
                     .unwrap(),
             ),
             T_I32 => u32::try_from(i32::from_le_bytes(
                 mm.get(start..start + 4)
-                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?
+                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncated", entry.key))?
                     .try_into()
                     .unwrap(),
             ))
-            .map_err(|_| anyhow::anyhow!("array '{}' contém valor negativo", entry.key))?,
+            .map_err(|_| anyhow::anyhow!("array '{}' contains a negative value", entry.key))?,
             _ => bail!(
-                "array '{}' tem tipo {}; esperado inteiro u32 ou i32",
+                "array '{}' has type {}; expected a u32 or i32 integer",
                 entry.key,
                 array.element_type
             ),
@@ -386,16 +386,16 @@ fn source_string(mm: &[u8], entry: &KvSource) -> Option<String> {
 fn encode_array_slice(mm: &[u8], entry: &KvSource, start: u32, count: u32) -> Result<Vec<u8>> {
     let array = entry
         .array
-        .ok_or_else(|| anyhow::anyhow!("array GGUF ausente para '{}'", entry.key))?;
+        .ok_or_else(|| anyhow::anyhow!("GGUF array missing for '{}'", entry.key))?;
     let element_size = scalar_size(array.element_type).ok_or_else(|| {
         anyhow::anyhow!(
-            "array GGUF '{}' tem elementos aninhados; comprimento {} não pode ser fatiado",
+            "GGUF array '{}' has nested elements; length {} cannot be sliced",
             entry.key,
             array.count
         )
     })?;
-    let start = usize::try_from(start).map_err(|_| anyhow::anyhow!("índice de array inválido"))?;
-    let count = usize::try_from(count).map_err(|_| anyhow::anyhow!("array GGUF grande demais"))?;
+    let start = usize::try_from(start).map_err(|_| anyhow::anyhow!("invalid array index"))?;
+    let count = usize::try_from(count).map_err(|_| anyhow::anyhow!("GGUF array too large"))?;
     let byte_start = start
         .checked_mul(element_size)
         .and_then(|offset| array.payload_start.checked_add(offset))
@@ -407,11 +407,11 @@ fn encode_array_slice(mm: &[u8], entry: &KvSource, start: u32, count: u32) -> Re
         .checked_add(byte_len)
         .ok_or_else(|| anyhow::anyhow!("overflow no array '{}'", entry.key))?;
     if byte_end > array.payload_end {
-        bail!("array '{}' truncado", entry.key);
+        bail!("array '{}' truncated", entry.key);
     }
     let source = mm
         .get(byte_start..byte_end)
-        .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?;
+        .ok_or_else(|| anyhow::anyhow!("array '{}' truncated", entry.key))?;
 
     let key = entry.key.as_bytes();
     let mut encoded = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + source.len());
@@ -432,10 +432,10 @@ fn layer_slice_bounds(
 ) -> Result<(usize, usize)> {
     let end_layer = start_layer
         .checked_add(layer_count)
-        .ok_or_else(|| anyhow::anyhow!("overflow no intervalo de camadas"))?;
+        .ok_or_else(|| anyhow::anyhow!("overflow in the layer range"))?;
     if start_layer >= original_block_count || end_layer > original_block_count {
         bail!(
-            "intervalo de camadas {}..{} fora da contagem original {}",
+            "layer range {}..{} outside the original count {}",
             start_layer,
             end_layer.saturating_sub(1),
             original_block_count
@@ -443,7 +443,7 @@ fn layer_slice_bounds(
     }
     if array_count < original_block_count as u64 {
         bail!(
-            "array por camada tem comprimento {array_count}; esperado pelo menos {original_block_count}"
+            "per-layer array has length {array_count}; expected at least {original_block_count}"
         );
     }
     Ok((start_layer as usize, end_layer as usize))
@@ -615,7 +615,7 @@ pub fn validate_slice_source(
         .collect();
     crate::gguf::validate_slice_tensors(&architecture, &tensor_names, is_last)?;
     if start_layer > end_layer {
-        bail!("intervalo de camadas inválido L{start_layer}-{end_layer}");
+        bail!("invalid layer range L{start_layer}-{end_layer}");
     }
     Ok(())
 }
@@ -640,7 +640,7 @@ pub fn split(
     let n_split = end_layer - start_layer + 1;
 
     info!(
-        "✂️  fatiando camadas {start_layer}–{end_layer} de {}",
+        "✂️  slicing layers {start_layer}–{end_layer} of {}",
         src.display()
     );
 
@@ -648,23 +648,23 @@ pub fn split(
     let mm = source
         .parts()
         .first()
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .map();
 
     let mut r = R { data: mm, pos: 0 };
 
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
     // ── Parse KV section ─────────────────────────────────────────────────────
@@ -728,7 +728,7 @@ pub fn split(
     if let Some(original) = original_block_count {
         if let Some(&layer) = qwen4exp_ple_layers.iter().find(|&&layer| layer >= original) {
             bail!(
-                "qwen4exp.ple.layers contém a camada {layer}, mas a origem declara apenas {original} blocos"
+                "qwen4exp.ple.layers contains layer {layer}, but the source declares only {original} blocks"
             );
         }
     }
@@ -743,7 +743,7 @@ pub fn split(
         && !qwen4exp_ple_layers.is_empty()
         && !tensor_names.contains("per_layer_token_embd.weight")
     {
-        bail!("a origem qwen4exp declara PLE, mas não contém per_layer_token_embd.weight");
+        bail!("the qwen4exp source declares PLE, but does not contain per_layer_token_embd.weight");
     }
 
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
@@ -761,7 +761,7 @@ pub fn split(
             Some(crate::gguf::LayerCountSemantics::FromStart) => {
                 let original = source_scalar_u32(mm, entry).ok_or_else(|| {
                     anyhow::anyhow!(
-                        "metadata '{key}' conta camadas desde o início, mas não é um inteiro escalar não negativo que caiba em u32"
+                        "metadata '{key}' counts layers from the start, but is not a non-negative scalar integer that fits in u32"
                     )
                 })?;
                 let local = original.saturating_sub(start_layer).min(n_split);
@@ -814,7 +814,7 @@ pub fn split(
             if !is_global_array(key, &arch) && !crate::gguf::is_structural_array(key, &arch) {
                 let original = original_block_count.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
+                        "metadata array '{}' has length {}, but the GGUF does not declare the original block count",
                         key,
                         array.count
                     )
@@ -833,7 +833,7 @@ pub fn split(
                 }
                 if array.count != 1 {
                     bail!(
-                        "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
+                        "metadata array '{}' has length {}; expected 1 or at least {} (original block count)",
                         key,
                         array.count,
                         original
@@ -915,13 +915,12 @@ pub fn split(
         .collect();
 
     if selected.is_empty() {
-        bail!("nenhum tensor selecionado para camadas {start_layer}–{end_layer}");
+        bail!("no tensor selected for layers {start_layer}–{end_layer}");
     }
     for t in &selected {
         if t.byte_size == 0 {
             bail!(
-                "tamanho desconhecido para o tensor '{}' (tipo ggml {}): \
-                fatiar produziria uma fatia corrompida",
+                "unknown size for tensor '{}' (ggml type {}): slicing would produce a corrupted slice",
                 t.name,
                 t.dtype
             );
@@ -993,10 +992,10 @@ pub fn split(
 
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("criar diretório {}", parent.display()))?;
+            .with_context(|| format!("create directory {}", parent.display()))?;
     }
 
-    let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
+    let dst_file = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
     // O hash por fora do buffer: assim ele vê exatamente a sequência de bytes
     // que o `BufWriter` entrega ao arquivo, uma vez cada.
     let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
@@ -1051,16 +1050,16 @@ pub fn split(
             }
             TensorOut::Real(rec) => {
                 let part = source.parts().get(rec.part_index).ok_or_else(|| {
-                    anyhow::anyhow!("parte {} ausente para '{}'", rec.part_index, rec.name)
+                    anyhow::anyhow!("part {} missing for '{}'", rec.part_index, rec.name)
                 })?;
                 let start = part
                     .data_start()
                     .checked_add(rec.src_offset as usize)
-                    .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+                    .ok_or_else(|| anyhow::anyhow!("tensor offset outside the file"))?;
                 let tensor_bytes = part
                     .map()
                     .get(start..start + size as usize)
-                    .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", rec.name))?;
+                    .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncated", rec.name))?;
                 let mut pos = 0usize;
                 while pos < tensor_bytes.len() {
                     let n = CHUNK.min(tensor_bytes.len() - pos);
@@ -1086,7 +1085,7 @@ pub fn split(
     let (sha256, final_size) = w.finish();
 
     info!(
-        "fatia pronta: {} ({:.0} MB, sha256 {})",
+        "slice ready: {} ({:.0} MB, sha256 {})",
         dst.display(),
         final_size as f64 / (1024.0 * 1024.0),
         &sha256[..12]
@@ -1182,29 +1181,29 @@ fn tp_role(name: &str) -> TpRole {
 /// função ser a fonte da decisão.
 pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
     if tp_size < 2 {
-        bail!("tp_size precisa ser >= 2");
+        bail!("tp_size must be >= 2");
     }
 
     let source = crate::multipart::GgufSource::open(src)?;
     let mm = source
         .parts()
         .first()
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
     // Os hiperparâmetros que o shard reescreve têm que dividir por `tp_size`,
@@ -1224,10 +1223,10 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         let full = match vtype {
             T_U32 => u32::from_le_bytes(r.take(4)?.try_into().unwrap()),
             T_U64 => r.u64()? as u32,
-            _ => bail!("'{key}' não é inteiro no GGUF; não dá para dividir por {tp_size}"),
+            _ => bail!("'{key}' is not an integer in the GGUF; it cannot be divided by {tp_size}"),
         };
         if full % tp_size != 0 {
-            bail!("'{key}' = {full} não divide por {tp_size} ranks");
+            bail!("'{key}' = {full} is not divisible by {tp_size} ranks");
         }
     }
 
@@ -1252,14 +1251,14 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         .map(|t| t.src_offset);
     if let Some(out) = tensors.iter().find(|t| t.name == "output.weight") {
         if embd_offset == Some(out.src_offset) {
-            bail!("output.weight empatado com token_embd.weight não é suportado no shard (v1)");
+            bail!("output.weight tied to token_embd.weight is not supported in the shard (v1)");
         }
     }
 
     for t in &tensors {
         if t.byte_size == 0 {
             bail!(
-                "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
+                "unknown size for tensor '{}' (ggml type {})",
                 t.name,
                 t.dtype
             );
@@ -1267,29 +1266,29 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         let role = tp_role(&t.name);
         match role {
             TpRole::Unsupported => {
-                bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
+                bail!("tensor '{}' is not shardable on path C (v1)", t.name);
             }
             TpRole::Shared => {}
             TpRole::Column | TpRole::Row => {
                 if t.dims.len() < 2 {
-                    bail!("tensor '{}' 1D não pode ser {role:?}", t.name);
+                    bail!("1D tensor '{}' cannot be {role:?}", t.name);
                 }
                 let ne0 = t.dims[0];
                 let ne1 = t.dims[1];
                 if t.byte_size % ne1 != 0 {
-                    bail!("tensor '{}' tem tamanho não alinhado a ne[1]={ne1}", t.name);
+                    bail!("tensor '{}' has a size not aligned to ne[1]={ne1}", t.name);
                 }
                 let row_stride = t.byte_size / ne1;
                 match role {
                     TpRole::Column => {
                         if ne1 % tp_size as u64 != 0 {
-                            bail!("ne[1]={ne1} de '{}' não divide por {tp_size}", t.name);
+                            bail!("ne[1]={ne1} of '{}' is not divisible by {tp_size}", t.name);
                         }
                     }
                     TpRole::Row => {
                         if row_stride % tp_size as u64 != 0 {
                             bail!(
-                                "ne[0]={ne0} de '{}' (tipo ggml {}) não divide por {tp_size} em limite de bloco",
+                                "ne[0]={ne0} of '{}' (ggml type {}) is not divisible by {tp_size} on a block boundary",
                                 t.name,
                                 t.dtype
                             );
@@ -1318,7 +1317,7 @@ pub fn estimate_tensor_parallel_output_bytes(src: &Path, tp_size: u32) -> Result
         .parts()
         .first()
         .map(|part| part.data_start() as u64)
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .saturating_add(1 << 20);
     let payload_per_rank = source.tensors().iter().try_fold(0u64, |sum, tensor| {
         let bytes = match tp_role(&tensor.name) {
@@ -1326,18 +1325,18 @@ pub fn estimate_tensor_parallel_output_bytes(src: &Path, tp_size: u32) -> Result
             TpRole::Column | TpRole::Row => tensor.byte_size / u64::from(tp_size),
             TpRole::Unsupported => {
                 return Err(anyhow::anyhow!(
-                    "tensor '{}' não é shardável no caminho C (v1)",
+                    "tensor '{}' is not shardable on path C (v1)",
                     tensor.name
                 ));
             }
         };
         sum.checked_add(align_up(bytes))
-            .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+            .ok_or_else(|| anyhow::anyhow!("overflow while estimating the TP output"))
     })?;
     payload_per_rank
         .checked_add(header_budget)
         .and_then(|per_rank| per_rank.checked_mul(u64::from(tp_size)))
-        .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+        .ok_or_else(|| anyhow::anyhow!("overflow while estimating the TP output"))
 }
 
 /// Shard de um modelo GGUF por tensor parallelism.
@@ -1359,10 +1358,10 @@ pub fn shard_tensor_parallel(
     on_progress: impl Fn(f64),
 ) -> Result<WrittenSlice> {
     if tp_size < 2 {
-        bail!("tp_size precisa ser >= 2");
+        bail!("tp_size must be >= 2");
     }
     if tp_rank >= tp_size {
-        bail!("tp_rank {tp_rank} fora de um grupo de {tp_size}");
+        bail!("tp_rank {tp_rank} outside a group of {tp_size}");
     }
     // A decisão "este modelo dá para partir" é uma só: o dry-run acima é a
     // porta de entrada, e as checagens abaixo (redundantes depois dele) ficam
@@ -1373,22 +1372,22 @@ pub fn shard_tensor_parallel(
     let mm = source
         .parts()
         .first()
-        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
         .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
     // KV: passa tudo como está, menos as chaves pom.* (re-adicionadas abaixo) e
@@ -1428,11 +1427,11 @@ pub fn shard_tensor_parallel(
                     // Tipo inesperado para um hiperparâmetro numérico: recusar é
                     // a única saída honesta. Passar adiante produziria um shard
                     // que carrega e responde errado.
-                    bail!("'{key}' não é inteiro no GGUF; não dá para dividir por {tp_size}");
+                    bail!("'{key}' is not an integer in the GGUF; it cannot be divided by {tp_size}");
                 }
             };
             if full % tp_size != 0 {
-                bail!("'{key}' = {full} não divide por {tp_size} ranks");
+                bail!("'{key}' = {full} is not divisible by {tp_size} ranks");
             }
             kv_out.push(KvOut::Encoded(encode_kv_u32(&key, full / tp_size)));
             continue;
@@ -1490,7 +1489,7 @@ pub fn shard_tensor_parallel(
         .map(|t| t.src_offset);
     if let Some(out) = all_tensors.iter().find(|t| t.name == "output.weight") {
         if embd_offset == Some(out.src_offset) {
-            bail!("output.weight empatado com token_embd.weight não é suportado no shard (v1)");
+            bail!("output.weight tied to token_embd.weight is not supported in the shard (v1)");
         }
     }
 
@@ -1513,7 +1512,7 @@ pub fn shard_tensor_parallel(
     for t in ordered_tensors {
         if t.byte_size == 0 {
             bail!(
-                "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
+                "unknown size for tensor '{}' (ggml type {})",
                 t.name,
                 t.dtype
             );
@@ -1521,7 +1520,7 @@ pub fn shard_tensor_parallel(
         let role = tp_role(&t.name);
         match role {
             TpRole::Unsupported => {
-                bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
+                bail!("tensor '{}' is not shardable on path C (v1)", t.name);
             }
             TpRole::Shared => out_tensors.push(OutT {
                 name: t.name.clone(),
@@ -1535,19 +1534,19 @@ pub fn shard_tensor_parallel(
             }),
             TpRole::Column | TpRole::Row => {
                 if t.dims.len() < 2 {
-                    bail!("tensor '{}' 1D não pode ser {role:?}", t.name);
+                    bail!("1D tensor '{}' cannot be {role:?}", t.name);
                 }
                 let ne0 = t.dims[0];
                 let ne1 = t.dims[1];
                 if t.byte_size % ne1 != 0 {
-                    bail!("tensor '{}' tem tamanho não alinhado a ne[1]={ne1}", t.name);
+                    bail!("tensor '{}' has a size not aligned to ne[1]={ne1}", t.name);
                 }
                 let row_stride = t.byte_size / ne1; // bytes por linha completa
                 let mut dims = t.dims.clone();
                 let segs: Vec<Seg> = match role {
                     TpRole::Column => {
                         if ne1 % tp_size as u64 != 0 {
-                            bail!("ne[1]={ne1} de '{}' não divide por {tp_size}", t.name);
+                            bail!("ne[1]={ne1} of '{}' is not divisible by {tp_size}", t.name);
                         }
                         let new_ne1 = ne1 / tp_size as u64;
                         dims[1] = new_ne1;
@@ -1561,7 +1560,7 @@ pub fn shard_tensor_parallel(
                     TpRole::Row => {
                         if row_stride % tp_size as u64 != 0 {
                             bail!(
-                                "ne[0]={ne0} de '{}' (tipo ggml {}) não divide por {tp_size} em limite de bloco",
+                                "ne[0]={ne0} of '{}' (ggml type {}) is not divisible by {tp_size} on a block boundary",
                                 t.name,
                                 t.dtype
                             );
@@ -1620,9 +1619,9 @@ pub fn shard_tensor_parallel(
 
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("criar diretório {}", parent.display()))?;
+            .with_context(|| format!("create directory {}", parent.display()))?;
     }
-    let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
+    let dst_file = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
     let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
@@ -1654,16 +1653,16 @@ pub fn shard_tensor_parallel(
         let size = t.segs.iter().map(|s| s.len as u64).sum::<u64>();
         for seg in &t.segs {
             let part = source.parts().get(seg.part_index).ok_or_else(|| {
-                anyhow::anyhow!("parte {} ausente ao escrever '{}'", seg.part_index, t.name)
+                anyhow::anyhow!("part {} missing while writing '{}'", seg.part_index, t.name)
             })?;
             let start = part
                 .data_start()
                 .checked_add(seg.src)
-                .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+                .ok_or_else(|| anyhow::anyhow!("tensor offset outside the file"))?;
             let bytes = part
                 .map()
                 .get(start..start + seg.len)
-                .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", t.name))?;
+                .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncated", t.name))?;
             let mut pos = 0usize;
             while pos < bytes.len() {
                 let n = CHUNK.min(bytes.len() - pos);
@@ -1685,7 +1684,7 @@ pub fn shard_tensor_parallel(
     let (sha256, final_size) = w.finish();
 
     info!(
-        "shard de tensor pronto: {} ({:.0} MB, sha256 {})",
+        "tensor shard ready: {} ({:.0} MB, sha256 {})",
         dst.display(),
         final_size as f64 / (1024.0 * 1024.0),
         &sha256[..12]
@@ -1791,16 +1790,16 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
 
     let magic = r.u32()?;
     if magic != GGUF_MAGIC {
-        bail!("não é um arquivo GGUF (magic={magic:#x})");
+        bail!("not a GGUF file (magic={magic:#x})");
     }
     let version = r.u32()?;
     if version != 2 && version != 3 {
-        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
     }
     let n_tensors = r.u64()? as usize;
     let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
-        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+        bail!("implausible GGUF header ({n_tensors} tensors, {n_kv} kv)");
     }
 
     let mut arch = "llama".to_string();
@@ -1851,7 +1850,7 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
         let name = r.string()?;
         let n_dims = r.u32()? as usize;
         if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
+            bail!("implausible rank {n_dims} for tensor '{name}'");
         }
         let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
         let dtype = r.u32()?;
@@ -1923,11 +1922,11 @@ fn merge_layer_array(
             .end_layer
             .checked_sub(part.start_layer)
             .and_then(|count| count.checked_add(1))
-            .ok_or_else(|| anyhow::anyhow!("overflow ao contar camadas da fatia {index}"))?;
+            .ok_or_else(|| anyhow::anyhow!("overflow while counting the layers of slice {index}"))?;
         if let Some(block_count) = parsed[index].block_count {
             if block_count != local_count {
                 bail!(
-                    "a fatia L{}-{} declara {} blocos, esperado {}",
+                    "slice L{}-{} declares {} blocks, expected {}",
                     part.start_layer,
                     part.end_layer,
                     block_count,
@@ -1940,14 +1939,14 @@ fn merge_layer_array(
             .kv
             .iter()
             .find(|entry| entry.key == key)
-            .ok_or_else(|| anyhow::anyhow!("metadata '{}' ausente na fatia {}", key, index + 1))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata '{}' missing in slice {}", key, index + 1))?;
         let array = entry.array.ok_or_else(|| {
-            anyhow::anyhow!("metadata '{}' não é array na fatia {}", key, index + 1)
+            anyhow::anyhow!("metadata '{}' is not an array in slice {}", key, index + 1)
         })?;
         if let Some(previous) = element_type {
             if previous != array.element_type {
                 bail!(
-                    "metadata '{}' muda o tipo de elemento entre fatias ({} e {})",
+                    "metadata '{}' changes the element type between slices ({} and {})",
                     key,
                     previous,
                     array.element_type
@@ -1959,17 +1958,17 @@ fn merge_layer_array(
 
         if array.count == 1 {
             if !layer_payload.is_empty() || suffix.is_some() {
-                bail!("metadata '{}' mistura array broadcast e por camada", key);
+                bail!("metadata '{}' mixes broadcast and per-layer arrays", key);
             }
             broadcast = true;
             continue;
         }
         if broadcast {
-            bail!("metadata '{}' mistura array broadcast e por camada", key);
+            bail!("metadata '{}' mixes broadcast and per-layer arrays", key);
         }
         let element_size = scalar_size(array.element_type).ok_or_else(|| {
             anyhow::anyhow!(
-                "array metadata '{}' tem elementos aninhados e não pode ser reconstruído",
+                "metadata array '{}' has nested elements and cannot be rebuilt",
                 key
             )
         })?;
@@ -1979,7 +1978,7 @@ fn merge_layer_array(
             .ok_or_else(|| anyhow::anyhow!("overflow no array metadata '{}'", key))?;
         if array.count < u64::from(local_count) {
             bail!(
-                "array metadata '{}' tem comprimento {}; esperado pelo menos {} na fatia",
+                "metadata array '{}' has length {}; expected at least {} in the slice",
                 key,
                 array.count,
                 local_count
@@ -1987,19 +1986,19 @@ fn merge_layer_array(
         }
         let payload = mmaps[index]
             .get(array.payload_start..array.payload_end)
-            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata array '{}' truncated", key))?;
         let layer = payload
             .get(..layer_bytes)
-            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata array '{}' truncated", key))?;
         layer_payload.extend_from_slice(layer);
 
         let tail = payload
             .get(layer_bytes..)
-            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+            .ok_or_else(|| anyhow::anyhow!("metadata array '{}' truncated", key))?;
         if !tail.is_empty() {
             match &suffix {
                 Some(previous) if previous != tail => {
-                    bail!("o sufixo de metadata '{}' diverge entre fatias", key)
+                    bail!("the metadata suffix '{}' differs between slices", key)
                 }
                 Some(_) => {}
                 None => suffix = Some(tail.to_vec()),
@@ -2011,7 +2010,7 @@ fn merge_layer_array(
         return Ok(None);
     }
     let element_type =
-        element_type.ok_or_else(|| anyhow::anyhow!("metadata '{}' sem entradas", key))?;
+        element_type.ok_or_else(|| anyhow::anyhow!("metadata '{}' without entries", key))?;
     if let Some(suffix) = suffix {
         layer_payload.extend_from_slice(&suffix);
     }
@@ -2029,12 +2028,12 @@ fn merge_layer_array(
 /// Returns the byte size of the output file.
 pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Result<WrittenSlice> {
     if parts.len() < 2 {
-        bail!("juntar menos de duas fatias não faz sentido");
+        bail!("merging fewer than two slices makes no sense");
     }
     for w in parts.windows(2) {
         if w[1].start_layer != w[0].end_layer + 1 {
             bail!(
-                "as fatias L{}-{} e L{}-{} não são vizinhas",
+                "slices L{}-{} and L{}-{} are not neighbors",
                 w[0].start_layer,
                 w[0].end_layer,
                 w[1].start_layer,
@@ -2047,7 +2046,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     let mut parsed: Vec<MergedSrc> = Vec::with_capacity(parts.len());
     for p in parts {
         let src_file =
-            File::open(&p.path).with_context(|| format!("abrir {}", p.path.display()))?;
+            File::open(&p.path).with_context(|| format!("open {}", p.path.display()))?;
         let mm = unsafe { Mmap::map(&src_file) }
             .with_context(|| format!("mmap {}", p.path.display()))?;
         parsed.push(parse_merged_src(&mm)?);
@@ -2058,7 +2057,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     for (i, p) in parsed.iter().enumerate().skip(1) {
         if p.arch != arch {
             bail!(
-                "as fatias não são do mesmo modelo: a arquitetura da primeira é {arch} e a da {}ª é {}",
+                "the slices are not from the same model: the architecture of the first is {arch} and that of number {} is {}",
                 i + 1,
                 p.arch
             );
@@ -2093,7 +2092,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
                     .iter()
                     .find(|candidate| candidate.key == *key)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("metadata '{}' ausente na fatia {}", key, index + 1)
+                        anyhow::anyhow!("metadata '{}' missing in slice {}", key, index + 1)
                     })?;
                 let source_value = merged_scalar_u32(
                     mmaps[index].as_ref(),
@@ -2102,7 +2101,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
                 )
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "metadata '{}' não é um inteiro escalar válido na fatia {}",
+                        "metadata '{}' is not a valid scalar integer in slice {}",
                         key,
                         index + 1
                     )
@@ -2172,8 +2171,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
             }
             if t.byte_size == 0 {
                 bail!(
-                    "tamanho desconhecido para o tensor '{}' (tipo ggml {}): juntar \
-                     produziria um arquivo corrompido",
+                    "unknown size for tensor '{}' (ggml type {}): merging would produce a corrupted file",
                     t.name,
                     t.dtype
                 );
@@ -2195,7 +2193,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     }
 
     if out.is_empty() {
-        bail!("nenhum tensor para juntar");
+        bail!("no tensor to merge");
     }
 
     // Same ground-truth recomputation as `split`, over the merged file's own
@@ -2238,9 +2236,9 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
 
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("criar diretório {}", parent.display()))?;
+            .with_context(|| format!("create directory {}", parent.display()))?;
     }
-    let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
+    let dst_file = File::create(dst).with_context(|| format!("create {}", dst.display()))?;
     let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
@@ -2297,7 +2295,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     let (sha256, final_size) = w.finish();
 
     info!(
-        "fatias juntadas: {} ({:.0} MB, sha256 {})",
+        "slices merged: {} ({:.0} MB, sha256 {})",
         dst.display(),
         final_size as f64 / (1024.0 * 1024.0),
         &sha256[..12]
@@ -3211,7 +3209,7 @@ mod tests {
             .tensors()
             .iter()
             .find(|tensor| tensor.name == name)
-            .unwrap_or_else(|| panic!("tensor {name} não encontrado"));
+            .unwrap_or_else(|| panic!("tensor {name} not found"));
         let part = &source.parts()[tensor.part_index];
         let start = part.data_start() + tensor.offset as usize;
         part.map()[start..start + tensor.byte_size as usize].to_vec()
@@ -3222,7 +3220,7 @@ mod tests {
             .tensors
             .iter()
             .find(|t| t.name == name)
-            .unwrap_or_else(|| panic!("tensor {name} não encontrado"));
+            .unwrap_or_else(|| panic!("tensor {name} not found"));
         &mm[p.data_start + t.src_offset as usize
             ..p.data_start + t.src_offset as usize + t.byte_size as usize]
     }
@@ -3432,7 +3430,7 @@ mod tests {
         assert_eq!(
             kv_u32(&mm, "llama.block_count"),
             Some(4),
-            "o total é a união das duas faixas"
+            "the total is the union of the two ranges"
         );
         assert_eq!(p.original_block_count, Some(4));
 
@@ -3452,7 +3450,7 @@ mod tests {
                 "output_norm.weight",
                 "output.weight",
             ],
-            "cada bloco volta ao seu lugar e a duplicata some"
+            "each block returns to its place and the duplicate disappears"
         );
 
         // The second slice's blocks carry their own data, not the first's:
@@ -3502,7 +3500,7 @@ mod tests {
             |_| {},
         )
         .unwrap_err();
-        assert!(err.to_string().contains("não são vizinhas"), "{err}");
+        assert!(err.to_string().contains("are not neighbors"), "{err}");
     }
 
     #[test]
@@ -3520,8 +3518,7 @@ mod tests {
         assert_eq!(
             kv_u32(&std::fs::read(&mid).unwrap(), "qwen35.nextn_predict_layers"),
             Some(0),
-            "fatia intermediária não tem o bloco nextn (MTP): mantê-lo em 1 faria \
-             o llama.cpp exigir 'blk.2.nextn.eh_proj.weight' e abortar o load"
+            "an intermediate slice does not have the nextn block (MTP): keeping it at 1 would make llama.cpp require 'blk.2.nextn.eh_proj.weight' and abort the load"
         );
         assert_eq!(
             kv_u32(
@@ -3529,7 +3526,7 @@ mod tests {
                 "qwen35.nextn_predict_layers"
             ),
             Some(1),
-            "a fatia final carrega o bloco nextn e preserva o valor original"
+            "the final slice carries the nextn block and preserves the original value"
         );
     }
 
@@ -3570,7 +3567,7 @@ mod tests {
                 "qwen35.nextn_predict_layers"
             ),
             Some(1),
-            "a metadata relativa ao fim deve vir da fatia final"
+            "the end-relative metadata must come from the final slice"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3648,8 +3645,7 @@ mod tests {
         assert_eq!(
             kv_u32(&head_bytes, "qwen35.nextn_predict_layers"),
             Some(0),
-            "a fatia 0-23 não tem o bloco nextn: declarar 1 faz o llama.cpp \
-             exigir 'blk.23.nextn.eh_proj.weight' e abortar o load"
+            "slice 0-23 does not have the nextn block: declaring 1 makes llama.cpp require 'blk.23.nextn.eh_proj.weight' and abort the load"
         );
         assert_eq!(kv_u32(&head_bytes, "qwen35.block_count"), Some(24));
         let head_src = parse_merged_src(&head_bytes).unwrap();
@@ -3661,13 +3657,13 @@ mod tests {
             .collect();
         assert!(
             head_nextn.is_empty(),
-            "a fatia 0-23 não deveria levar tensor nextn nenhum, levou {head_nextn:?}"
+            "slice 0-23 should carry no nextn tensor at all, it carried {head_nextn:?}"
         );
 
         assert_eq!(
             kv_u32(&tail_bytes, "qwen35.nextn_predict_layers"),
             Some(1),
-            "a fatia final carrega o bloco nextn de verdade e preserva a marca"
+            "the final slice really carries the nextn block and preserves the mark"
         );
         assert_eq!(kv_u32(&tail_bytes, "qwen35.block_count"), Some(41));
         let tail_src = parse_merged_src(&tail_bytes).unwrap();
@@ -3679,7 +3675,7 @@ mod tests {
             .collect();
         assert!(
             tail_nextn.contains(&"blk.40.nextn.eh_proj.weight"),
-            "o bloco nextn do blk.64 original tem que virar blk.40 na fatia 24-64, veio {tail_nextn:?}"
+            "the nextn block of the original blk.64 must become blk.40 in slice 24-64, got {tail_nextn:?}"
         );
     }
 
@@ -3707,7 +3703,7 @@ mod tests {
         // that failed in production); 36,37,38 are recurrent. Local j =
         // global - 35.
         let flags = kv_u32_array(&tail_bytes, "qwen35.attention.recurrent_layers")
-            .expect("fatia híbrida precisa do array explícito de camadas recorrentes");
+            .expect("a hybrid slice needs the explicit array of recurrent layers");
         assert_eq!(&flags[..4], &[0, 1, 1, 1], "{flags:?}");
 
         let tail_src = parse_merged_src(&tail_bytes).unwrap();
@@ -3715,15 +3711,13 @@ mod tests {
             tail_src.tensors.iter().map(|t| t.name.as_str()).collect();
         assert!(
             !names.contains("blk.0.ssm_conv1d.weight"),
-            "o bloco local 0 (original 35) é full-attention e não deveria ter ssm_conv1d — \
-             é exatamente o tensor que o llama.cpp exigia erroneamente antes deste fix \
-             (deduzido pela fórmula sobre o índice LOCAL em vez do original 35)"
+            "local block 0 (original 35) is full-attention and should not have ssm_conv1d — it is exactly the tensor llama.cpp wrongly required before this fix (deduced by the formula over the LOCAL index instead of the original 35)"
         );
         assert!(
             names.contains("blk.1.ssm_conv1d.weight")
                 && names.contains("blk.2.ssm_conv1d.weight")
                 && names.contains("blk.3.ssm_conv1d.weight"),
-            "os blocos locais 1-3 (originais 36-38) são recorrentes e têm o tensor: {names:?}"
+            "local blocks 1-3 (originals 36-38) are recurrent and have the tensor: {names:?}"
         );
     }
 
@@ -3742,7 +3736,7 @@ mod tests {
         assert_eq!(
             kv_u32_array(&bytes, "llama.attention.recurrent_layers"),
             None,
-            "modelo sem ssm_conv1d não deve ganhar essa chave"
+            "a model without ssm_conv1d must not gain this key"
         );
     }
 
@@ -3766,7 +3760,7 @@ mod tests {
             .map(|tensor| tensor.name.as_str())
             .collect();
         for required in crate::gguf::required_output_tensors("deepseek4") {
-            assert!(names.contains(required), "faltou {required}: {names:?}");
+            assert!(names.contains(required), "missing {required}: {names:?}");
         }
         for copied in [
             "token_embd.weight",
@@ -3778,7 +3772,7 @@ mod tests {
             assert_eq!(
                 tensor_data(&source_bytes, &source, copied),
                 tensor_data(&output_bytes, &parsed, copied),
-                "a fatia intermediária deve copiar os bytes reais de {copied}"
+                "the intermediate slice must copy the real bytes of {copied}"
             );
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -3806,7 +3800,7 @@ mod tests {
             "output_hc_base.weight",
             "output_hc_scale.weight",
         ] {
-            assert!(names.contains(required), "faltou {required}: {names:?}");
+            assert!(names.contains(required), "missing {required}: {names:?}");
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3831,7 +3825,7 @@ mod tests {
             assert_eq!(
                 kv_u32(&prefix_bytes, key),
                 Some(2),
-                "a contagem desde o início deve ser limitada ao tamanho da fatia: {key}"
+                "the count from the start must be limited to the slice size: {key}"
             );
         }
 
@@ -3841,7 +3835,7 @@ mod tests {
         assert_eq!(
             layout.slice_bytes(2, 3, true),
             std::fs::metadata(&output).unwrap().len(),
-            "a estimativa precisa acompanhar a reserialização da metadata rebased"
+            "the estimate must follow the reserialization of the rebased metadata"
         );
         for key in [
             "deepseek4.hash_layer_count",
@@ -3851,7 +3845,7 @@ mod tests {
             assert_eq!(
                 kv_u32(&bytes, key),
                 Some(1),
-                "a contagem relativa ao início precisa ser local para a fatia: {key}"
+                "the count relative to the start must be local to the slice: {key}"
             );
         }
 
@@ -3918,9 +3912,9 @@ mod tests {
             "output_hc_base.weight",
             "output_hc_scale.weight",
         ] {
-            assert!(message.contains(required), "faltou {required}: {message}");
+            assert!(message.contains(required), "missing {required}: {message}");
         }
-        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        assert!(!output.exists(), "a preflight refusal does not create the output");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3942,9 +3936,9 @@ mod tests {
             "output_hc_base.weight",
             "output_hc_scale.weight",
         ] {
-            assert!(message.contains(required), "faltou {required}: {message}");
+            assert!(message.contains(required), "missing {required}: {message}");
         }
-        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        assert!(!output.exists(), "a preflight refusal does not create the output");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -4020,7 +4014,7 @@ mod tests {
                 found = true;
             }
         }
-        assert!(found, "tensor {name} não encontrado no shard");
+        assert!(found, "tensor {name} not found in the shard");
         let data_start = align_up(r.pos as u64) as usize;
         // Tamanho real vem das dims (o modelo de teste é f32), não do delta de
         // offset: o delta inclui o padding de alinhamento entre tensores.
@@ -4112,7 +4106,7 @@ mod tests {
 
         // Linha de verdade: entrada já particionada pelos Column do bloco.
         let (dims, _) = read_shard_tensor(&out, "blk.0.ffn_down.weight");
-        assert_eq!(dims[0], 2, "ffn_down continua cortada por ne[0]");
+        assert_eq!(dims[0], 2, "ffn_down is still cut by ne[0]");
     }
 
     /// O cabeçalho do shard tem que descrever o tensor que o shard contém.
@@ -4161,12 +4155,12 @@ mod tests {
         let error = validate_tensor_parallel(&whole, 4).unwrap_err().to_string();
         assert!(
             error.contains("head_count_kv") && error.contains("4"),
-            "a recusa tem que nomear a chave e o tamanho: {error}"
+            "the refusal must name the key and the size: {error}"
         );
 
         let out = dir.join("rank0.gguf");
         assert!(shard_tensor_parallel(&whole, &out, 4, 0, |_| {}).is_err());
-        assert!(!out.exists(), "recusa não deve deixar arquivo pela metade");
+        assert!(!out.exists(), "a refusal must not leave a half-written file");
     }
 
     #[test]
@@ -4179,7 +4173,7 @@ mod tests {
 
         assert!(shard_tensor_parallel(&whole, &out, 1, 0, |_| {}).is_err());
         assert!(shard_tensor_parallel(&whole, &out, 2, 2, |_| {}).is_err());
-        assert!(!out.exists(), "recusa não deve deixar arquivo pela metade");
+        assert!(!out.exists(), "a refusal must not leave a half-written file");
     }
 
     #[test]
@@ -4424,10 +4418,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requer o GGUF real Gemma4 e vários GB livres em disco/RAM"]
+    #[ignore = "requires the real Gemma4 GGUF and several GB free on disk/RAM"]
     fn real_gemma4_slice_truncates_layer_metadata_and_loads() {
         let source = std::env::var_os("POM_REAL_GEMMA_GGUF")
-            .expect("POM_REAL_GEMMA_GGUF deve apontar para o GGUF real");
+            .expect("POM_REAL_GEMMA_GGUF must point to the real GGUF");
         let source = Path::new(&source);
         let dir = std::env::temp_dir().join(format!("pom-gemma4-slice-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -4448,16 +4442,16 @@ mod tests {
         let model = unsafe {
             llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params)
         };
-        assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
+        assert!(!model.is_null(), "the real Gemma4 slice should load");
         unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    #[ignore = "requer o GGUF real DeepSeek4 e vários GB livres em disco/RAM"]
+    #[ignore = "requires the real DeepSeek4 GGUF and several GB free on disk/RAM"]
     fn real_deepseek4_intermediate_slice_copies_heads_and_loads() {
         let source = std::env::var_os("POM_REAL_DEEPSEEK4_GGUF")
-            .expect("POM_REAL_DEEPSEEK4_GGUF deve apontar para o GGUF real");
+            .expect("POM_REAL_DEEPSEEK4_GGUF must point to the real GGUF");
         let source = Path::new(&source);
         let dir = std::env::temp_dir().join(format!("pom-deepseek4-slice-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -4466,11 +4460,11 @@ mod tests {
         let layout = crate::gguf::read_layout(source).unwrap();
         assert!(
             layout.layer_count() > 28,
-            "o GGUF real precisa da camada 28"
+            "the real GGUF needs layer 28"
         );
         assert!(
             layout.required_head_bytes() > 0,
-            "a cabeça DeepSeek4 deve estar na fonte"
+            "the DeepSeek4 head must be in the source"
         );
         split(source, &out, 15, 28, false, false, |_| {}).unwrap();
 
@@ -4483,7 +4477,7 @@ mod tests {
         };
         assert!(
             !model.is_null(),
-            "uma fatia intermediária DeepSeek4 deveria carregar"
+            "an intermediate DeepSeek4 slice should load"
         );
         unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
@@ -4527,7 +4521,7 @@ mod tests {
         let path = dir.join("unknown.gguf");
         std::fs::write(&path, bytes).unwrap();
         let error = crate::gguf::read_layout(&path).unwrap_err().to_string();
-        assert!(error.contains("dtype GGML 99") && error.contains("token_embd.weight"));
+        assert!(error.contains("GGML dtype 99") && error.contains("token_embd.weight"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -4543,14 +4537,14 @@ mod tests {
         let layout_error = crate::gguf::read_layout(&whole).unwrap_err().to_string();
         assert!(
             layout_error.contains("llama.future_layer_metadata")
-                && layout_error.contains("comprimento 3")
+                && layout_error.contains("length 3")
         );
         let split_error = split(&whole, &out, 0, 0, true, true, |_| {})
             .unwrap_err()
             .to_string();
         assert!(
             split_error.contains("llama.future_layer_metadata")
-                && split_error.contains("comprimento 3")
+                && split_error.contains("length 3")
         );
         let _ = std::fs::remove_dir_all(dir);
     }

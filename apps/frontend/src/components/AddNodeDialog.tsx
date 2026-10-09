@@ -11,7 +11,6 @@ import { addNodeOptions, api } from "../lib/api";
 import type { AddNodeOption, AddNodeOptionsResponse, CacheTypesResponse, KvCacheType } from "../lib/types";
 import { Confirm } from "./Confirm";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 export interface AddNodePeer {
   node_id: string;
@@ -109,7 +108,7 @@ export function AddNodeDialog({
       })
       .catch((reason) => {
         if (!controller.signal.aborted) {
-          setError(localizeServerText(locale, reason instanceof Error ? reason.message : String(reason)));
+          setError(reason instanceof Error ? reason.message : String(reason));
         }
       })
       .finally(() => {
@@ -156,7 +155,7 @@ export function AddNodeDialog({
       onDone?.(result.overlapping_layers ?? []);
       onClose();
     } catch (reason) {
-      setError(localizeServerText(locale, reason instanceof Error ? reason.message : String(reason)));
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
     }

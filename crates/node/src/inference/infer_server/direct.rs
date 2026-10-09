@@ -139,7 +139,7 @@ pub(crate) async fn forward_direct_ordered(
                 }
             });
             warn!(
-                "repasse direto para {} falhou: {} - avisando o gateway",
+                "direct forward to {} failed: {} - notifying the gateway",
                 failure.failed_node_id, failure.message
             );
             crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
@@ -411,7 +411,7 @@ mod speculative_tests {
             Some(SPECULATION_REASON_TAIL_WITHOUT_NEXTN)
         );
         assert_eq!(
-            mtp_tail_speculation_reason(false, Some("falha de alocação")),
+            mtp_tail_speculation_reason(false, Some("allocation failure")),
             Some(SPECULATION_REASON_MTP_RUNTIME_DISABLED)
         );
         assert_eq!(mtp_tail_speculation_reason(true, None), None);
@@ -441,7 +441,7 @@ mod speculative_tests {
     #[test]
     fn a_frame_without_a_draft_source_still_means_lookup() {
         let spec =
-            Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}})).expect("k e m bastam");
+            Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}})).expect("k and m are enough");
         assert_eq!(spec.source, DraftSource::Lookup);
         assert_eq!((spec.k, spec.m), (4, 3));
     }
@@ -449,7 +449,7 @@ mod speculative_tests {
     #[test]
     fn a_frame_asking_for_mtp_says_so() {
         let spec = Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 0, "source": "mtp"}}))
-            .expect("quadro completo");
+            .expect("complete frame");
         assert_eq!(spec.source, DraftSource::Mtp);
     }
 

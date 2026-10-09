@@ -32,7 +32,7 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 ## build.rs
 
 - `build.rs` carimba o fallback `POM_BUILD_COMMIT` no binário:
-  `git rev-parse --short HEAD` + sufixo `-sujo` se `git status --porcelain`
+  `git rev-parse --short HEAD` + sufixo `-dirty` se `git status --porcelain`
   mostrar mudanças → `desconhecido`. `build_commit()` prefere a variável de
   runtime `POM_BUILD_COMMIT` quando não vazia. No Docker, o commit do host é
   exportado só no estágio runtime para não invalidar Cargo.

@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 # stage, avoiding any invalidation of Cargo or frontend build layers.
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo desconhecido)
 if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-  commit="${commit}-sujo"
+  commit="${commit}-dirty"
 fi
 export POM_BUILD_COMMIT="$commit"
 echo "build commit: $POM_BUILD_COMMIT"

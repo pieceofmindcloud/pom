@@ -581,7 +581,7 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     let (mut meta, _tensor) = match crate::wire::decode(&body) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("quadro inválido: {e}")).into_response()
+            return (StatusCode::BAD_REQUEST, format!("invalid frame: {e}")).into_response()
         }
     };
     let Some(ticket) = meta
@@ -589,7 +589,7 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
         .and_then(|v| v.as_str())
         .map(str::to_string)
     else {
-        return (StatusCode::BAD_REQUEST, "resultado sem ticket").into_response();
+        return (StatusCode::BAD_REQUEST, "result without a ticket").into_response();
     };
     if meta
         .get("transport_update")
@@ -597,20 +597,20 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
         .unwrap_or(false)
     {
         let Some(hop_index) = meta.get("hop_index").and_then(Value::as_u64) else {
-            return (StatusCode::BAD_REQUEST, "telemetria sem índice de hop").into_response();
+            return (StatusCode::BAD_REQUEST, "telemetry without a hop index").into_response();
         };
         if inbox.record_transport(&ticket, hop_index as usize, meta) {
             return (StatusCode::OK, "ok").into_response();
         }
-        return (StatusCode::GONE, "ticket desconhecido").into_response();
+        return (StatusCode::GONE, "unknown ticket").into_response();
     }
     // Os bytes que atravessaram a rede na volta. Só quem recebeu sabe.
     meta["result_bytes"] = json!(body.len());
     if inbox.deliver(&ticket, meta) {
         (StatusCode::OK, "ok").into_response()
     } else {
-        debug!("resultado direto para ticket desconhecido (o gateway já desistiu)");
-        (StatusCode::GONE, "ticket desconhecido").into_response()
+        debug!("direct result for an unknown ticket (the gateway already gave up)");
+        (StatusCode::GONE, "unknown ticket").into_response()
     }
 }
 
@@ -621,7 +621,7 @@ pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Res
     let (mut meta, _tensor) = match crate::wire::decode(&body) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("quadro inválido: {e}")).into_response()
+            return (StatusCode::BAD_REQUEST, format!("invalid frame: {e}")).into_response()
         }
     };
     let Some(ticket) = meta
@@ -629,13 +629,13 @@ pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Res
         .and_then(|v| v.as_str())
         .map(str::to_string)
     else {
-        return (StatusCode::BAD_REQUEST, "lote sem ticket").into_response();
+        return (StatusCode::BAD_REQUEST, "batch without a ticket").into_response();
     };
     meta["stream_batch_bytes"] = json!(body.len());
     if inbox.deliver_stream(&ticket, meta).await {
         (StatusCode::OK, "ok").into_response()
     } else {
-        (StatusCode::GONE, "stream desconhecido").into_response()
+        (StatusCode::GONE, "unknown stream").into_response()
     }
 }
 
@@ -672,7 +672,7 @@ where
                         }
                     });
                 }
-                return got.map_err(|_| anyhow!("resultado direto perdido antes de chegar"));
+                return got.map_err(|_| anyhow!("direct result lost before arriving"));
             }
             sent = &mut ack, if !acked => {
                 acked = true;
@@ -697,7 +697,7 @@ where
             }
             _ = &mut deadline => {
                 return Err(anyhow!(
-                    "nenhum hop entregou o resultado em {:?} (cadeia despachada em {head_label})",
+                    "no hop delivered the result in {:?} (chain dispatched at {head_label})",
                     deadline_duration
                 ));
             }
@@ -769,13 +769,13 @@ pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Respo
     let (header, mut items) = match crate::wire::decode_batch_items(&body) {
         Ok(value) => value,
         Err(error) => {
-            return (StatusCode::BAD_REQUEST, format!("quadro inválido: {error}")).into_response()
+            return (StatusCode::BAD_REQUEST, format!("invalid frame: {error}")).into_response()
         }
     };
     if header.kind != REMOTE_STREAM_RESULT_PATH || items.len() != 1 {
         return (
             StatusCode::BAD_REQUEST,
-            "quadro de retorno remoto deve conter um item",
+            "remote return frame must contain one item",
         )
             .into_response();
     }
@@ -785,13 +785,13 @@ pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Respo
         .and_then(Value::as_str)
         .map(str::to_owned)
     else {
-        return (StatusCode::BAD_REQUEST, "lote sem ticket").into_response();
+        return (StatusCode::BAD_REQUEST, "batch without a ticket").into_response();
     };
     meta["stream_batch_bytes"] = json!(body.len());
     if inbox.deliver_stream(&ticket, meta).await {
         (StatusCode::OK, "ok").into_response()
     } else {
-        (StatusCode::GONE, "stream desconhecido").into_response()
+        (StatusCode::GONE, "unknown stream").into_response()
     }
 }
 
@@ -831,7 +831,7 @@ impl RemoteStreamDelivery {
             }
             if status.transport_failed() {
                 self.persistent_failure = Some(format!(
-                    "{link_transport}: ACK assíncrono do callback falhou; usando {link_transport}"
+                    "{link_transport}: async ACK of the callback failed; using {link_transport}"
                 ));
                 self.callback_status = None;
             }
@@ -841,7 +841,7 @@ impl RemoteStreamDelivery {
             .and_then(Value::as_str)
             .filter(|session_id| !session_id.trim().is_empty())
         else {
-            warn!("callback de remote-stream sem session_id; recusando identidade sintética");
+            warn!("remote-stream callback without session_id; refusing a synthetic identity");
             return Delivery::Failed;
         };
         let frame_id = meta
@@ -890,7 +890,7 @@ impl RemoteStreamDelivery {
         if self.persistent_failure.is_none() && use_link {
             let reason = match (node_id, urls.is_empty()) {
                 (None, _) => Some(format!("{link_transport}: reply_to sem node_id")),
-                (Some(_), true) => Some(format!("{link_transport}: reply_to sem endereço")),
+                (Some(_), true) => Some(format!("{link_transport}: reply_to without an address")),
                 (Some(node_id), false) => {
                     let mut link_meta = meta.clone();
                     link_meta["ticket"] =
@@ -931,7 +931,7 @@ impl RemoteStreamDelivery {
                             }
                             Err(error) => Some(format!("{link_transport}: {error}")),
                         },
-                        Err(error) => Some(format!("{link_transport}: frame inválido: {error}")),
+                        Err(error) => Some(format!("{link_transport}: invalid frame: {error}")),
                     }
                 }
             };
@@ -948,7 +948,7 @@ impl RemoteStreamDelivery {
         fallback_meta["remote_stream_transport_fallback"] = json!(true);
         fallback_meta["remote_stream_transport_fallback_reason"] =
             json!(self.persistent_failure.clone().unwrap_or_else(|| {
-                format!("{fallback_transport}: canal persistente indisponível")
+                format!("{fallback_transport}: persistent channel unavailable")
             }));
         deliver_stream_batch(&self.http, &self.reply_to, fallback_meta).await
     }
@@ -976,7 +976,7 @@ async fn deliver_meta_at(
     meta: Value,
 ) -> Delivery {
     let Some(ticket) = reply_to.get("ticket").and_then(|v| v.as_str()) else {
-        warn!("reply_to sem ticket — resultado direto descartado");
+        warn!("reply_to without a ticket — direct result discarded");
         return Delivery::Failed;
     };
     let mut base_meta = meta;
@@ -1004,7 +1004,7 @@ async fn deliver_meta_at(
         Some(id) => match http.for_peer(id) {
             Ok(c) => c,
             Err(e) => {
-                warn!("sem cliente para entregar o resultado a {id}: {e}");
+                warn!("no client to deliver the result to {id}: {e}");
                 return Delivery::Failed;
             }
         },
@@ -1051,7 +1051,7 @@ async fn deliver_meta_at(
             let body = match encode_delivery_body(&attempt_meta) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    warn!("resultado direto não pôde ser codificado: {error}");
+                    warn!("direct result could not be encoded: {error}");
                     return Delivery::Failed;
                 }
             };
@@ -1075,20 +1075,20 @@ async fn deliver_meta_at(
                     return Delivery::Accepted;
                 }
                 Ok(response) if response.status == StatusCode::GONE => {
-                    debug!("gateway já havia desistido do quadro entregue em {target}");
+                    debug!("the gateway had already given up on the frame delivered at {target}");
                     return Delivery::GatewayGone;
                 }
                 Ok(response) => {
                     quic_failed = true;
                     debug!(
-                        "{target} respondeu {} via QUIC; tentando TCP",
+                        "{target} answered {} over QUIC; trying TCP",
                         response.status
                     );
                 }
                 Err(error) => {
                     quic_failed = true;
                     last = format!("{target} via QUIC: {error}");
-                    debug!("fallback QUIC para entrega direta: {last}");
+                    debug!("QUIC fallback for direct delivery: {last}");
                 }
             }
         }
@@ -1104,7 +1104,7 @@ async fn deliver_meta_at(
         let body = match encode_delivery_body(&attempt_meta) {
             Ok(bytes) => bytes,
             Err(error) => {
-                warn!("resultado direto não pôde ser codificado: {error}");
+                warn!("direct result could not be encoded: {error}");
                 return Delivery::Failed;
             }
         };
@@ -1121,10 +1121,10 @@ async fn deliver_meta_at(
             // `410` é resposta, não falha de rota: o gateway desistiu deste
             // quadro. Tentar o próximo endereço só acharia o mesmo inbox.
             Ok(r) if r.status() == StatusCode::GONE => {
-                debug!("gateway já havia desistido do quadro entregue em {target}");
+                debug!("the gateway had already given up on the frame delivered at {target}");
                 return Delivery::GatewayGone;
             }
-            Ok(r) => last = format!("{target} respondeu {}", r.status()),
+            Ok(r) => last = format!("{target} answered {}", r.status()),
             Err(e) => {
                 http.remember_route_failure(&route_key, &url);
                 last = format!("{target}: {e}");
@@ -1145,9 +1145,9 @@ async fn deliver_meta_at(
     // `reply_to` não trazer endereço nenhum - e isso se diz com todas as
     // letras, não com um parêntese vazio.
     if last.is_empty() {
-        last = "o reply_to não trouxe endereço de retorno".to_string();
+        last = "the reply_to brought no return address".to_string();
     }
-    warn!("resultado direto não chegou ao gateway ({last})");
+    warn!("direct result did not reach the gateway ({last})");
     Delivery::Failed
 }
 
@@ -1197,11 +1197,11 @@ async fn deliver_pinned(
                     Ok(r) if r.status().is_success() => Some(Delivery::Accepted),
                     Ok(r) if r.status() == StatusCode::GONE => Some(Delivery::GatewayGone),
                     Ok(r) => {
-                        debug!("rota fixada {target} respondeu {}", r.status());
+                        debug!("pinned route {target} answered {}", r.status());
                         None
                     }
                     Err(error) => {
-                        debug!("rota fixada {target} falhou: {error}");
+                        debug!("pinned route {target} failed: {error}");
                         None
                     }
                 }
@@ -1227,11 +1227,11 @@ async fn deliver_pinned(
                         Some(Delivery::GatewayGone)
                     }
                     Ok(response) => {
-                        debug!("rota QUIC fixada respondeu {}", response.status);
+                        debug!("pinned QUIC route answered {}", response.status);
                         None
                     }
                     Err(error) => {
-                        debug!("rota QUIC fixada falhou: {error}");
+                        debug!("pinned QUIC route failed: {error}");
                         None
                     }
                 }
@@ -1288,7 +1288,7 @@ async fn deliver_via_tunnel(
     let body = match encode_delivery_body(&attempt_meta) {
         Ok(bytes) => bytes,
         Err(error) => {
-            warn!("resultado direto não pôde ser codificado para o túnel: {error}");
+            warn!("direct result could not be encoded for the tunnel: {error}");
             return None;
         }
     };
@@ -1307,22 +1307,22 @@ async fn deliver_via_tunnel(
     .await
     {
         Ok(response) if response.is_success() => {
-            debug!("resultado direto entregue pelo túnel libp2p ({direct_error})");
+            debug!("direct result delivered through the libp2p tunnel ({direct_error})");
             Some(Delivery::Accepted)
         }
         Ok(response) if response.status == StatusCode::GONE.as_u16() => {
-            debug!("gateway já havia desistido do quadro entregue pelo túnel");
+            debug!("the gateway had already given up on the frame delivered through the tunnel");
             Some(Delivery::GatewayGone)
         }
         Ok(response) => {
             warn!(
-                "túnel libp2p respondeu {} ao resultado direto",
+                "libp2p tunnel answered {} to the direct result",
                 response.status
             );
             None
         }
         Err(error) => {
-            warn!("resultado direto não chegou pelo túnel libp2p: {error}");
+            warn!("direct result did not arrive through the libp2p tunnel: {error}");
             None
         }
     }
@@ -1499,7 +1499,7 @@ mod tests {
                     crate::link::serve(body, |_path, _body| async move {
                         Ok(Response::builder()
                             .status(StatusCode::GONE)
-                            .body(axum::body::Body::from("stream desconhecido"))
+                            .body(axum::body::Body::from("unknown stream"))
                             .unwrap())
                     })
                 }),
@@ -1538,7 +1538,7 @@ mod tests {
             }
         })
         .await
-        .expect("o ACK 410 deve chegar ao emissor");
+        .expect("the 410 ACK must reach the emitter");
 
         assert_eq!(
             delivery
@@ -1619,7 +1619,7 @@ mod tests {
         // O orçamento é o teto de uma tentativa, não um número mágico.
         assert!(
             started.elapsed() < DELIVERY_TIMEOUT * 2,
-            "a rota morta voltou a ser paga: {:?}",
+            "the dead route was paid again: {:?}",
             started.elapsed()
         );
     }
@@ -1670,7 +1670,7 @@ mod tests {
         assert_eq!(
             deliver_stream_batch(&http, &reply_to, json!({"index": 1})).await,
             Delivery::Accepted,
-            "com o único endereço em quarentena a entrega ainda tem de ser paga"
+            "with the only address in quarantine the delivery must still be paid"
         );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
@@ -1714,7 +1714,7 @@ mod tests {
         assert_eq!(
             deliver_stream_batch(&http, &reply_to, json!({"index": 1})).await,
             Delivery::Accepted,
-            "uma entrega lenta ainda deve chegar ao gateway"
+            "a slow delivery must still reach the gateway"
         );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(http.route_failure_streak(route_key, &url), 0);
@@ -1764,9 +1764,9 @@ mod tests {
         assert_eq!(inbox.outstanding(), 1);
 
         assert!(inbox.deliver(&ticket.id().to_string(), json!({"token_id": 7})));
-        assert_eq!(inbox.outstanding(), 0, "entregar consome o ticket");
+        assert_eq!(inbox.outstanding(), 0, "delivering consumes the ticket");
 
-        let got = (&mut ticket.rx).await.expect("resultado");
+        let got = (&mut ticket.rx).await.expect("result");
         assert_eq!(got["token_id"], 7);
     }
 
@@ -1777,7 +1777,7 @@ mod tests {
         let id = ticket.id().to_string();
 
         assert!(inbox.deliver(&id, json!({"token_id": 7})));
-        let got = (&mut ticket.rx).await.expect("resultado");
+        let got = (&mut ticket.rx).await.expect("result");
         assert_eq!(got["transport_trace_complete"], false);
         assert!(got["transport_traversals"].as_array().unwrap().is_empty());
         assert!(inbox.record_transport(
@@ -1790,7 +1790,7 @@ mod tests {
             0,
             json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
         ));
-        let snapshot = inbox.trace_snapshot(&id).expect("snapshot atualizado");
+        let snapshot = inbox.trace_snapshot(&id).expect("snapshot updated");
         assert_eq!(snapshot["transport_trace_complete"], true);
         assert_eq!(snapshot["transport_traversals"][0]["hop_index"], 0);
         assert_eq!(snapshot["transport_traversals"][1]["hop_index"], 1);
@@ -1855,16 +1855,16 @@ mod tests {
             },
         )
         .await
-        .expect("resultado direto");
+        .expect("direct result");
         assert_eq!(got["token_id"], 7);
         assert_eq!(got["transport_trace_complete"], false);
 
         tokio::time::timeout(Duration::from_secs(1), notify.notified())
             .await
-            .expect("ACK tardio processado");
+            .expect("late ACK processed");
         let snapshot = inbox
             .trace_snapshot(&ticket_id)
-            .expect("snapshot atualizado");
+            .expect("snapshot updated");
         assert_eq!(snapshot["transport_trace_complete"], true);
         assert_eq!(snapshot["transport_traversals"][0]["round_trip_ms"], 17);
     }
@@ -1898,7 +1898,7 @@ mod tests {
         ));
         assert!(inbox.deliver(&id, json!({"token_id": 7})));
 
-        let got = (&mut ticket.rx).await.expect("resultado");
+        let got = (&mut ticket.rx).await.expect("result");
         assert_eq!(got["transport_trace_complete"], true);
         assert_eq!(got["transport_traversals"][0]["hop_index"], 0);
         assert_eq!(got["transport_traversals"][1]["hop_index"], 1);
@@ -1916,8 +1916,8 @@ mod tests {
 
         let mut pending = Box::pin(inbox.deliver_stream(&id, json!({"index": 99})));
         tokio::select! {
-            result = &mut pending => panic!("a fila cheia não pode aceitar outro lote: {result}"),
-            got = ticket.recv() => assert_eq!(got.expect("primeiro lote")["index"], 0),
+            result = &mut pending => panic!("the full queue cannot accept another batch: {result}"),
+            got = ticket.recv() => assert_eq!(got.expect("first batch")["index"], 0),
         }
         assert!(pending.await);
     }
@@ -1930,7 +1930,7 @@ mod tests {
 
         assert!(inbox.deliver_stream(&id, json!({"done": true})).await);
         assert_eq!(inbox.stream_outstanding(), 0);
-        assert_eq!(ticket.recv().await.expect("lote terminal")["done"], true);
+        assert_eq!(ticket.recv().await.expect("terminal batch")["done"], true);
     }
 
     #[tokio::test]
@@ -1958,11 +1958,11 @@ mod tests {
             None,
             crate::wire::WireDtype::F16,
         )
-        .expect("batch codificável");
+        .expect("encodable batch");
 
         let response = handle_remote_stream_result(&inbox, Bytes::from(body)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        let received = ticket.recv().await.expect("batch recebido");
+        let received = ticket.recv().await.expect("batch received");
         assert_eq!(received["accepted"][0]["token_id"], 4);
         assert_eq!(
             received["stream_batch_bytes"].as_u64().unwrap_or(0) > 0,
@@ -1989,11 +1989,11 @@ mod tests {
                 dtype: crate::wire::WireDtype::F16,
             }],
         )
-        .expect("frame persistente codificável");
+        .expect("encodable persistent frame");
 
         let response = handle_remote_stream_link(&inbox, Bytes::from(body)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        let received = ticket.recv().await.expect("frame recebido");
+        let received = ticket.recv().await.expect("frame received");
         assert_eq!(received["accepted"][0]["token_id"], 4);
         assert_eq!(
             received["stream_batch_bytes"].as_u64().unwrap_or(0) > 0,
@@ -2026,7 +2026,7 @@ mod tests {
         let _next = inbox.register();
 
         assert!(!inbox.deliver(&delayed, json!({"token_id": 1})));
-        assert_eq!(inbox.outstanding(), 1, "o ticket seguinte fica intacto");
+        assert_eq!(inbox.outstanding(), 1, "the next ticket stays intact");
     }
 
     #[test]
@@ -2068,11 +2068,11 @@ mod tests {
         );
         assert!(
             urls.is_empty(),
-            "loopback não alcança outra máquina: {urls:?}"
+            "loopback does not reach another machine: {urls:?}"
         );
         assert!(
             DirectReply::new(ReplyInbox::new(), urls, "n1".into()).is_none(),
-            "sem endereço utilizável o plano tem que cair no anel"
+            "without a usable address the plan must fall to the ring"
         );
 
         // O loopback que o operador fixou é outra história: numa máquina só,
@@ -2097,7 +2097,7 @@ mod tests {
             vec!["http://192.168.100.210:8080".to_string()],
             "n1".into(),
         )
-        .expect("endereço presente")
+        .expect("address present")
         .with_libp2p(
             Some("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN".to_string()),
             vec!["/ip4/203.0.113.7/udp/52777/quic-v1".to_string()],
@@ -2122,7 +2122,7 @@ mod tests {
         let reply_to = json!({ "ticket": "t1", "urls": [] });
 
         assert!(
-            deliver_via_tunnel(&reply_to, RELAY_RESULT_PATH, &json!({}), "sem rota")
+            deliver_via_tunnel(&reply_to, RELAY_RESULT_PATH, &json!({}), "no route")
                 .await
                 .is_none()
         );

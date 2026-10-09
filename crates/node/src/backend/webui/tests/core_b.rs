@@ -20,7 +20,7 @@ mod node_name_tests {
 
         assert_eq!(
             body["hostname"], "atena",
-            "o catálogo tem que dizer o nome do nó, não o hostname do SO"
+            "the catalog must state the node name, not the OS hostname"
         );
     }
 
@@ -53,11 +53,11 @@ mod node_name_tests {
             .unwrap()
             .iter()
             .find(|p| p["node_id"] == "outro")
-            .expect("o peer entra na lista mesmo sem responder");
-        assert!(!other["error"].is_null(), "e a falha continua reportada");
+            .expect("the peer enters the list even without answering");
+        assert!(!other["error"].is_null(), "and the failure is still reported");
         assert_eq!(
             other["hostname"], "ksia",
-            "sem nome a tela cai no node_id, que é um prefixo hexadecimal"
+            "without a name the screen falls back to the node_id, which is a hexadecimal prefix"
         );
     }
 }
@@ -117,7 +117,7 @@ mod peer_runtime_tests {
         assert_eq!(r.status(), StatusCode::OK);
         let body = body_of(r).await;
         assert_eq!(body["loaded"], false);
-        assert!(body["reason"].is_string(), "a tela precisa do motivo");
+        assert!(body["reason"].is_string(), "the screen needs the reason");
     }
 
     /// O `/health` do peer chega inteiro, sem passar por um tipo intermediário:
@@ -160,7 +160,7 @@ mod state_transport_tests {
 
         assert_ne!(
             before, after,
-            "uma mudança visível precisa invalidar a versão"
+            "a visible change must invalidate the version"
         );
     }
 
@@ -169,7 +169,7 @@ mod state_transport_tests {
         let first = etag_for_json(&json!({ "offers": [] }));
         let second = etag_for_json(&json!({ "offers": [] }));
 
-        assert_eq!(first, second, "o mesmo retrato precisa manter a versão");
+        assert_eq!(first, second, "the same snapshot must keep the version");
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod state_transport_tests {
                 .await
                 .unwrap()
                 .is_empty(),
-            "304 não pode remandar o JSON"
+            "304 cannot resend the JSON"
         );
     }
 }
@@ -828,7 +828,7 @@ mod capacity_preview_tests {
         assert!(fits);
         assert!(
             note.is_some(),
-            "a divisão analítica precisa ser identificada"
+            "the analytic split must be identified"
         );
     }
 
@@ -873,12 +873,12 @@ mod capacity_preview_tests {
     #[test]
     fn preview_admission_is_bounded_without_waiting() {
         let permits: Vec<_> = (0..CAPACITY_PREVIEW_MAX_IN_FLIGHT)
-            .map(|_| try_capacity_preview_slot().expect("a vaga deveria estar disponível"))
+            .map(|_| try_capacity_preview_slot().expect("the slot should be available"))
             .collect();
 
         assert!(
             try_capacity_preview_slot().is_none(),
-            "uma prévia excedente precisa ser recusada sem formar fila"
+            "an excess preview must be refused without forming a queue"
         );
 
         drop(permits);

@@ -177,7 +177,7 @@ pub(super) fn expected_prefill_pos(
         Some(position) => Ok(position),
         None if chunk_index == 0 => Ok(session_n_past),
         None => bail!(
-            "chunk {chunk_index} sem start_pos absoluto; não é seguro derivar a posição do índice"
+            "chunk {chunk_index} without an absolute start_pos; it is not safe to derive the position from the index"
         ),
     }
 }
@@ -354,7 +354,7 @@ mod prefix_rule_tests {
     #[test]
     fn a_partially_ingested_prompt_is_not_offered_as_a_prefix() {
         let d = plan_prefix_reuse(&[10, 11, 12, 13], 2, &[10, 11, 12, 13, 20]);
-        assert!(!d.reused, "o retido tem 4 tokens mas só 2 estão no KV");
+        assert!(!d.reused, "the retained has 4 tokens but only 2 are in the KV");
     }
 
     #[test]
@@ -374,11 +374,11 @@ mod prefix_rule_tests {
         for g in &generations {
             assert!(
                 !prompts.contains(g),
-                "sequência {g} servindo aos dois papéis"
+                "sequence {g} serving both roles"
             );
             assert!(
                 *g < budget,
-                "sequência {g} fora do orçamento do contexto"
+                "sequence {g} outside the context budget"
             );
         }
     }
@@ -605,11 +605,11 @@ mod retention_accounting_tests {
         assert_eq!(session.n_past, 5);
         assert_eq!(
             session.prompt_cells, 10,
-            "sem poda, a contagem física fica presa no rabicho"
+            "without pruning, the physical count stays stuck on the trailing bytes"
         );
         assert!(
             !session.positions_match_cells(),
-            "o portão de reuso tem que recusar um estado fisicamente inconsistente"
+            "the reuse gate must refuse a physically inconsistent state"
         );
     }
 
@@ -664,12 +664,12 @@ mod retention_accounting_tests {
 
         assert!(
             decision.reused,
-            "o segundo pedido com o mesmo prefixo tem que acertar"
+            "the second request with the same prefix must hit"
         );
         assert_eq!(decision.cached_tokens, 2);
         assert!(
             decision.matched_tokens > 0,
-            "prefix_match_tokens tem que ser > 0 no segundo pedido, não 0 como no relatório"
+            "prefix_match_tokens must be > 0 on the second request, not 0 as in the report"
         );
         assert_eq!(decision.matched_tokens, 2);
     }
@@ -718,19 +718,19 @@ pub(super) struct SlotSidecar {
 pub(super) fn sanitize_slot_name(name: &str) -> Result<&str> {
     let name = name.trim();
     if name.is_empty() {
-        bail!("nome de snapshot vazio");
+        bail!("empty snapshot name");
     }
     if name.len() > 200 {
-        bail!("nome de snapshot longo demais (máx 200)");
+        bail!("snapshot name too long (max 200)");
     }
     if name.starts_with('.') {
-        bail!("nome de snapshot não pode começar com '.'");
+        bail!("snapshot name cannot start with '.'");
     }
     if !name
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     {
-        bail!("nome de snapshot só aceita letras, dígitos, '.', '_' e '-'");
+        bail!("snapshot name only accepts letters, digits, '.', '_' and '-'");
     }
     Ok(name)
 }
@@ -753,7 +753,7 @@ pub(super) fn erase_slot(dir: &std::path::Path, name: &str) -> Result<bool> {
         match std::fs::remove_file(&path) {
             Ok(()) => removed = true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(anyhow::anyhow!("apagar {}: {error}", path.display())),
+            Err(error) => return Err(anyhow::anyhow!("delete {}: {error}", path.display())),
         }
     }
     Ok(removed)
@@ -810,7 +810,7 @@ mod slot_name_tests {
             "a b",
             "sÿm",
         ] {
-            assert!(sanitize_slot_name(bad).is_err(), "esperava recusar {bad:?}");
+            assert!(sanitize_slot_name(bad).is_err(), "expected to refuse {bad:?}");
         }
     }
 }
@@ -822,14 +822,14 @@ mod slot_count_tests {
     #[test]
     fn slot_count_uses_only_directory_entries() {
         let dir = std::env::temp_dir().join(format!("pom-slot-count-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&dir).expect("diretório temporário");
+        std::fs::create_dir(&dir).expect("temporary directory");
         std::fs::write(dir.join("quebrado.json"), b"conteudo que nao e json")
-            .expect("sidecar corrompido");
-        std::fs::write(dir.join("prefix-auto-index.json"), b"indice").expect("índice automático");
-        std::fs::write(dir.join("nao-e-slot.txt"), b"outro arquivo").expect("arquivo extra");
+            .expect("corrupted sidecar");
+        std::fs::write(dir.join("prefix-auto-index.json"), b"indice").expect("automatic index");
+        std::fs::write(dir.join("nao-e-slot.txt"), b"outro arquivo").expect("extra file");
 
         let count = count_slot_entries(&dir);
-        std::fs::remove_dir_all(&dir).expect("limpeza do diretório temporário");
+        std::fs::remove_dir_all(&dir).expect("cleanup of the temporary directory");
 
         assert_eq!(count, 1);
     }
@@ -980,10 +980,10 @@ mod prefix_decision_tests {
         tokio::task::yield_now().await;
         first.finish(false, false);
         let error = match second.await.unwrap() {
-            Ok(_) => panic!("o chunk seguinte não pode ultrapassar uma falha"),
+            Ok(_) => panic!("the next chunk cannot overtake a failure"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("repasse direto falhou"));
+        assert!(error.to_string().contains("direct forward failed"));
     }
 
     #[test]

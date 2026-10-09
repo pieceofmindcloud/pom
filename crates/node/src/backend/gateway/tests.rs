@@ -302,7 +302,7 @@ mod tests {
                     .await
                     .unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(body["error"], "perfil sem autorização para esta rota");
+                assert_eq!(body["error"], "profile not authorized for this route");
             }
         }
     }
@@ -752,12 +752,12 @@ mod tests {
                 if allowed.contains(&profile) {
                     assert!(
                         !refused_by_profile(status),
-                        "{profile} devia alcançar {method} {path}, veio {status}"
+                        "{profile} should reach {method} {path}, got {status}"
                     );
                 } else {
                     assert!(
                         refused_by_profile(status),
-                        "{profile} não devia alcançar {method} {path}, veio {status}"
+                        "{profile} should not reach {method} {path}, got {status}"
                     );
                 }
             }
@@ -850,7 +850,7 @@ mod tests {
                     "candidatos={addr_candidates:?}"
                 );
             }
-            other => panic!("esperava Announce, veio {other:?}"),
+            other => panic!("expected Announce, got {other:?}"),
         }
     }
 
@@ -1024,7 +1024,7 @@ mod tests {
             crate::network::P2PMessage::Announce { relay, .. } => {
                 assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false }));
             }
-            other => panic!("esperava Announce, veio {other:?}"),
+            other => panic!("expected Announce, got {other:?}"),
         }
     }
 
@@ -1101,7 +1101,7 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(
                 body["error"],
-                "só um administrador tira outra máquina da rede"
+                "only an administrator removes another machine from the network"
             );
         }
     }
@@ -1244,7 +1244,7 @@ mod tests {
                 .await
                 .unwrap();
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"], "perfil sem autorização para esta rota");
+            assert_eq!(body["error"], "profile not authorized for this route");
             assert_eq!(body["path"], refused_path);
             assert_eq!(body["profile"], profile.to_string());
         }
@@ -1389,7 +1389,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let error = ensure_gateway_port_available(port, None)
             .await
-            .expect_err("a porta ocupada precisa falhar");
+            .expect_err("the busy port must fail");
         assert!(error.to_string().contains(&port.to_string()));
     }
 
@@ -1479,7 +1479,7 @@ mod tests {
     fn api_generate_max_tokens_rejects_zero_instead_of_silently_clamping() {
         assert_eq!(
             resolve_request_max_tokens(Some(0)),
-            Err("max_tokens deve ser maior que zero".into())
+            Err("max_tokens must be greater than zero".into())
         );
     }
 
@@ -1696,12 +1696,12 @@ mod tests {
     fn prompt_over_capacity_is_rejected_without_local_runtime_config() {
         let prompt = "a".repeat(30_289);
         let error = prompt_budget_error_of(7_000, 200, &prompt)
-            .expect("um prompt acima da capacidade do peer precisa ser recusado");
+            .expect("a prompt above the peer capacity must be refused");
 
-        assert!(error.contains("Prompt grande demais"));
+        assert!(error.contains("Prompt too large"));
         assert!(error.contains("~10097"));
-        assert!(error.contains("limite de 6800"));
-        assert!(error.contains("Aumente n_ctx"));
+        assert!(error.contains("limit of 6800"));
+        assert!(error.contains("Increase n_ctx"));
     }
 
     /// Reprodução do defeito de 2026-09-08 na ksia, ponta a ponta: um gateway
@@ -1721,7 +1721,7 @@ mod tests {
         let state = testkit::state_with("gateway", vec![peer]).await;
         assert!(
             state.runtime.config().await.is_none(),
-            "este gateway não pode ter modelo local, senão o teste cobre o caminho antigo"
+            "this gateway cannot have a local model, otherwise the test covers the old path"
         );
 
         let error = crate::gateway::generate_blocking_with_stops(
@@ -1745,13 +1745,13 @@ mod tests {
             },
         )
         .await
-        .expect_err("um prompt acima da capacidade do peer precisa ser recusado");
+        .expect_err("a prompt above the peer capacity must be refused");
 
         assert!(
-            error.contains("Prompt grande demais"),
-            "a recusa precisa ser a mensagem acionável, e não uma falha de transporte: {error}"
+            error.contains("Prompt too large"),
+            "the refusal must be the actionable message, and not a transport failure: {error}"
         );
-        assert!(error.contains("Aumente n_ctx"), "{error}");
+        assert!(error.contains("Increase n_ctx"), "{error}");
     }
 
     #[test]
@@ -1837,8 +1837,8 @@ mod budget_tests {
         let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.deployment, Some(1_000));
-        assert_eq!(limit.effective, 4_000, "o cliente recebe o que pediu");
-        assert_eq!(limit.leg, 1_000, "uma geração de backend continua em 1000");
+        assert_eq!(limit.effective, 4_000, "the client receives what it asked for");
+        assert_eq!(limit.leg, 1_000, "one backend generation stays at 1000");
         assert!(!limit.was_clamped());
         assert!(limit.continuation_possible());
         assert_eq!(limit.effective.div_ceil(limit.leg), 4, "quatro pernas");
@@ -1853,7 +1853,7 @@ mod budget_tests {
         let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000);
         assert_eq!(limit.context_available, Some(1_000));
         assert_eq!(limit.effective, 1_000);
-        assert_eq!(limit.leg, 1_000, "a perna nunca passa do total");
+        assert_eq!(limit.leg, 1_000, "the leg never exceeds the total");
         assert!(!limit.continuation_possible());
         assert!(limit.was_clamped());
     }
@@ -1880,7 +1880,7 @@ mod budget_tests {
     fn output_limit_contract_has_no_removed_absolute_capacity_field() {
         let limit = output_token_limit(32_000, Some(32_000), Some(100_000), 0);
         let value = serde_json::to_value(limit).unwrap();
-        let fields = value.as_object().expect("limites de saída serializados");
+        let fields = value.as_object().expect("serialized output limits");
         let legacy_field = ["absolute", "max", "tokens"].join("_");
 
         assert_eq!(fields.len(), 5);
@@ -1895,7 +1895,7 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("todo o contexto"));
+            .contains("whole available context"));
     }
 
     #[test]
@@ -1919,7 +1919,7 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("todos os peers da pipeline planejada"));
+            .contains("all the peers of the planned pipeline"));
     }
 
     #[tokio::test]
@@ -1941,7 +1941,7 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("pipeline planejada"));
+            .contains("planned pipeline"));
     }
 
     #[tokio::test]
@@ -2054,7 +2054,7 @@ mod budget_tests {
         for tokens in 1..=100u32 {
             note_leg_boundary(budget, tokens, &mut legs);
         }
-        assert_eq!(legs, 1, "acabar o total não abre perna nenhuma");
+        assert_eq!(legs, 1, "finishing the total opens no leg");
     }
 
     fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
@@ -2300,7 +2300,7 @@ mod remote_stream_selection_tests {
             4,
             crate::prefill::DraftSource::Mtp,
         )
-        .expect("um plano fatiado com MTP deve pedir MTP no stream remoto");
+        .expect("a sliced plan with MTP must ask for MTP in the remote stream");
         assert_eq!(sliced.source, crate::infer_server::DraftSource::Mtp);
         assert_eq!(sliced.k, 4);
     }
@@ -2345,7 +2345,7 @@ mod remote_stream_selection_tests {
             4,
             crate::prefill::DraftSource::Mtp,
         )
-        .expect("MTP do modelo inteiro não depende de draft fatiado");
+        .expect("whole model MTP does not depend on a sliced draft");
         assert_eq!(speculate.source, crate::infer_server::DraftSource::Mtp);
     }
 
@@ -2530,7 +2530,7 @@ mod peer_visibility_tests {
         assert_eq!(reachable[0].node_id, "healthy");
         assert!(
             in_quarantine < Duration::from_millis(25),
-            "peer em quarentena voltou a ser sondado: {in_quarantine:?}"
+            "peer in quarantine was probed again: {in_quarantine:?}"
         );
     }
 
@@ -2633,7 +2633,7 @@ mod peer_visibility_tests {
         .await;
         assert!(
             plan.is_some(),
-            "a cobertura confirmada pelo health deve planejar"
+            "the coverage confirmed by health must plan"
         );
     }
 
@@ -2655,7 +2655,7 @@ mod peer_visibility_tests {
         let local = peers
             .iter()
             .find(|peer| peer.node_id == "self")
-            .expect("o gateway sempre inclui o peer local");
+            .expect("the gateway always includes the local peer");
         assert_eq!(local.deploy_id, "deployment-42");
     }
 }
@@ -2727,7 +2727,7 @@ mod replicated_admin_logs_tests {
             .cluster_logs
             .list(Some("deploy-1"), Some(10))
             .await
-            .expect("logs locais");
+            .expect("local logs");
         let requests = state
             .audit
             .list(crate::reqlog::AuditQuery::default())
@@ -2759,7 +2759,7 @@ mod replicated_admin_logs_tests {
             let mut request = Request::get(path)
                 .header("authorization", "Bearer chave")
                 .body(axum::body::Body::empty())
-                .expect("requisição de teste");
+                .expect("test request");
             request
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
@@ -3007,7 +3007,7 @@ mod replicated_admin_logs_tests {
         let state = testkit::state_with("private-node", vec![]).await;
         state.auth.write().await.network.visibility = crate::config::NetworkVisibility::Private;
         let trust_document = serde_json::to_string(&state.admin_trust.document())
-            .expect("documento de teste deve serializar");
+            .expect("test document must serialize");
         let network = crate::public_directory::PublicDirectoryNetwork {
             cluster_id: "test-cluster".into(),
             name: "Rede federada".into(),
@@ -3035,7 +3035,7 @@ mod replicated_admin_logs_tests {
             crate::public_directory::current_time_secs().unwrap(),
             network.clone(),
         )
-        .expect("registro de teste deve ser assinado");
+        .expect("test record must be signed");
         let attacker = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
         let forged = crate::public_directory::SignedPublicDirectoryRecord::sign(
             &attacker,
@@ -3043,7 +3043,7 @@ mod replicated_admin_logs_tests {
             crate::public_directory::current_time_secs().unwrap(),
             network,
         )
-        .expect("registro forjado deve ter uma prova de trabalho válida");
+        .expect("forged record must have a valid proof of work");
         let response = accept_public_directory_record(State(state.clone()), Json(forged)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(state
@@ -3184,13 +3184,13 @@ pub(crate) mod testkit {
             primary.clone(),
             &primary_signing_key,
         )
-        .expect("concessão raiz de teste");
+        .expect("test root grant");
         let grant = admin_trust
             .signed_secondary_grant(&primary_signing_key, secondary.clone(), &primary.node_id)
-            .expect("concessão secundária de teste");
+            .expect("test secondary grant");
         admin_trust
             .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Node)
-            .expect("aplicação da concessão secundária de teste");
+            .expect("application of the test secondary grant");
 
         state
             .network
@@ -3232,7 +3232,7 @@ pub(crate) mod testkit {
                 None,
             )
             .await
-            .expect("socket UDP em porta efêmera")
+            .expect("UDP socket on an ephemeral port")
             .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
         );
         {
@@ -3247,7 +3247,7 @@ pub(crate) mod testkit {
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ));
-        let database = Arc::new(crate::db::PomDb::open(&database_path).expect("banco de teste"));
+        let database = Arc::new(crate::db::PomDb::open(&database_path).expect("test database"));
         let (capture, receiver) =
             crate::cluster_logs::LogCapture::new(crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
         let cluster_logs = crate::cluster_logs::ClusterLogs::new(capture, receiver);
@@ -3262,7 +3262,7 @@ pub(crate) mod testkit {
             authority_principal.clone(),
             &authority_signing_key,
         )
-        .expect("concessão raiz de teste");
+        .expect("test root grant");
         let auth = Arc::new(RwLock::new(Config {
             gpus: None,
             thermal: Default::default(),
@@ -3457,7 +3457,7 @@ pub(crate) mod testkit {
         state.gateway_port = port;
         let net = Network::testkit("eu".into(), "pk".into(), vec![], None, None, Some(port))
             .await
-            .expect("socket UDP em porta efêmera");
+            .expect("UDP socket on an ephemeral port");
         // Primeiro da lista de `self_reply_hosts`, então a cauda acerta na
         // primeira tentativa em vez de esperar o timeout de um IP de LAN.
         net.set_advertise_addr(Some("127.0.0.1:42777"));
@@ -3473,7 +3473,7 @@ pub(crate) mod testkit {
     pub(crate) async fn body_of(response: axum::response::Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
             .await
-            .expect("corpo legível");
-        serde_json::from_slice(&bytes).expect("corpo JSON")
+            .expect("readable body");
+        serde_json::from_slice(&bytes).expect("JSON body")
     }
 }

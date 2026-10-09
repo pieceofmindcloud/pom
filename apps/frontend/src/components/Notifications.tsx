@@ -61,7 +61,6 @@ import {
 } from "../lib/pluginInbox";
 import { pluginDisplayName } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 
 /** What an admin needs to decide on a candidate, in one line. */
 function admissionDetail(record: AdmissionRecord, t: (key: string, values?: Record<string, string | number>) => string): string {
@@ -504,8 +503,8 @@ export function Notifications() {
                 <Row
                   key={j.id}
                   icon={<Scissors className="h-3.5 w-3.5" />}
-                  title={localizeServerText(locale, j.title ?? j.step)}
-                  detail={j.message ? localizeServerText(locale, j.message) : undefined}
+                  title={j.title ?? j.step}
+                  detail={j.message ? j.message : undefined}
                   progress={j.progress}
                   footer={
                     <span className="font-mono text-[0.7rem] text-faint">
@@ -534,7 +533,7 @@ export function Notifications() {
                       // O motivo importa quando deu errado, e a etapa enquanto
                       // corre. Num `done` o detalhe é o caminho de destino —
                       // ruído para um resumo, e a tela de Transferências o tem.
-                      job.state === "done" ? "" : localizeServerText(locale, job.detail),
+                      job.state === "done" ? "" : job.detail,
                     ]
                       .filter(Boolean)
                       .join(" · ")}

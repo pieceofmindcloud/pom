@@ -303,7 +303,7 @@ impl PipelinePlan {
         for step in &self.steps {
             if !step.supports(capability) {
                 return Err(anyhow::anyhow!(
-                    "o formato {} do estado oculto não foi negociado: o peer {} não anuncia {}",
+                    "hidden state format {} was not negotiated: peer {} does not announce {}",
                     dtype.as_str(),
                     step.node_id,
                     capability
@@ -515,7 +515,7 @@ pub async fn plan_pipeline_with_rtt_from_head(
             "Pipeline plan failed: No alive peers for model '{}'{} with inference_port",
             model_name,
             deploy_id
-                .map(|d| format!(" (implantação {d})"))
+                .map(|d| format!(" (deployment {d})"))
                 .unwrap_or_default()
         );
         return None;
@@ -767,7 +767,7 @@ mod ipv6_tests {
         let tracker = LoadTracker::new();
         let plan = plan_pipeline(&[worker, primary], "qwen35", None, 32, &tracker)
             .await
-            .expect("plano");
+            .expect("plan");
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].node_id, "primary");
     }
@@ -805,7 +805,7 @@ mod ipv6_tests {
         // Pedindo uma implantação, só as máquinas dela entram.
         let plan = plan_pipeline(&all, "qwen35", Some("d-aaaaaaaa"), 32, &tracker)
             .await
-            .expect("a implantação A cobre o modelo inteiro");
+            .expect("deployment A covers the whole model");
         assert_eq!(plan.steps.len(), 2);
         assert!(
             plan
@@ -813,7 +813,7 @@ mod ipv6_tests {
                 .iter()
                 .all(|s| s.inference_url.contains("10.0.0.1")
                     || s.inference_url.contains("10.0.0.2")),
-            "nenhum hop pode vir da implantação B: {:?}",
+            "no hop can come from deployment B: {:?}",
             plan
                 .steps
                 .iter()
@@ -844,7 +844,7 @@ mod ipv6_tests {
                     .unwrap_or("")
             })
             .collect();
-        assert_eq!(ids.len(), 1, "um pipeline, uma implantação: {ids:?}");
+        assert_eq!(ids.len(), 1, "one pipeline, one deployment: {ids:?}");
     }
 
     /// Dois modelos **distintos** carregados ao mesmo tempo, cada um na sua
@@ -872,7 +872,7 @@ mod ipv6_tests {
 
         let plan_a = plan_pipeline(&all, "modelo-a", None, 32, &tracker)
             .await
-            .expect("modelo-a cobre 0..31 em dois hops");
+            .expect("modelo-a covers 0..31 in two hops");
         assert_eq!(plan_a.steps.len(), 2);
         assert!(plan_a
             .steps
@@ -881,7 +881,7 @@ mod ipv6_tests {
 
         let plan_b = plan_pipeline(&all, "modelo-b", None, 32, &tracker)
             .await
-            .expect("modelo-b cobre 0..31 num hop só");
+            .expect("modelo-b covers 0..31 in a single hop");
         assert_eq!(plan_b.steps.len(), 1);
         assert_eq!(plan_b.steps[0].node_id, "b1");
 
@@ -914,7 +914,7 @@ mod ipv6_tests {
 
         let plan = plan_pipeline(&[new, old], "qwen35", None, 32, &LoadTracker::new())
             .await
-            .expect("os dois juntos cobrem o modelo");
+            .expect("the two together cover the model");
         assert_eq!(plan.steps.len(), 2);
     }
 
@@ -935,7 +935,7 @@ mod ipv6_tests {
             &LoadTracker::new(),
         )
         .await
-        .expect("a cobertura contígua existe");
+        .expect("the contiguous coverage exists");
 
         assert_eq!(
             plan.steps
@@ -969,7 +969,7 @@ mod ipv6_tests {
             &rtts,
         )
         .await
-        .expect("as duas entradas cobrem o mesmo ramo");
+        .expect("both entries cover the same branch");
 
         assert_eq!(plan.steps[0].node_id, "fast-entry");
     }
@@ -997,7 +997,7 @@ mod ipv6_tests {
             Some("requested-head"),
         )
         .await
-        .expect("a cabeça escolhida ainda cobre a pipeline");
+        .expect("the chosen head still covers the pipeline");
 
         assert_eq!(plan.steps[0].node_id, "requested-head");
         assert_eq!(plan.steps[1].node_id, "tail");
@@ -1025,7 +1025,7 @@ mod ipv6_tests {
         let plan =
             plan_pipeline_with_rtt(&[busy, quiet, tail], "qwen35", None, 16, &tracker, &rtts)
                 .await
-                .expect("as duas entradas cobrem o mesmo ramo");
+                .expect("both entries cover the same branch");
 
         assert_eq!(plan.steps[0].node_id, "quiet-entry");
         drop(busy_requests);
@@ -1057,8 +1057,8 @@ mod ipv6_tests {
             .validate_wire_dtype(crate::wire::WireDtype::F8)
             .unwrap_err();
         let error = error.to_string();
-        assert!(error.contains("old-peer"), "erro inesperado: {error}");
-        assert!(error.contains("f8"), "erro inesperado: {error}");
+        assert!(error.contains("old-peer"), "unexpected error: {error}");
+        assert!(error.contains("f8"), "unexpected error: {error}");
     }
 
     #[test]
@@ -1240,7 +1240,7 @@ mod ipv6_tests {
         assert_eq!(
             resolve_step_url(&step, &table, &mut pinned),
             "http://healthy:8181",
-            "uma falha real deve tirar o endereço da sessão seguinte"
+            "a real failure must remove the address from the next session"
         );
     }
 
@@ -1281,23 +1281,23 @@ mod ipv6_tests {
 
         assert!(
             plan_of(vec![step(with_mtp)]).supports_mtp(),
-            "uma máquina só"
+            "a single machine"
         );
         assert!(
             plan_of(vec![step(batch_only), step(with_mtp)]).supports_mtp(),
-            "a cauda tem o bloco — é ela quem rascunha, o gateway leva o rascunho à cabeça"
+            "the tail has the block — it is the one that drafts, the gateway takes the draft to the head"
         );
         assert!(
             !plan_of(vec![step(with_mtp), step(batch_only)]).supports_mtp(),
-            "a cauda sem o bloco não pode rascunhar"
+            "the tail without the block cannot draft"
         );
         assert!(
             !plan_of(vec![step(with_mtp), step(&[])]).supports_mtp(),
-            "um hop que não decodifica lote quebra a rodada inteira"
+            "a hop that does not decode a batch breaks the whole round"
         );
         assert!(
             !plan_of(vec![step(batch_only), step(old)]).supports_mtp(),
-            "um peer velho no anel não entende o speculate novo — a cap nova é exigida em todos"
+            "an old peer on the ring does not understand the new speculate — the new cap is required on all"
         );
         assert!(!plan_of(vec![]).supports_mtp());
     }
@@ -1375,13 +1375,13 @@ mod ipv6_tests {
         let tracker = LoadTracker::new();
         let plan = plan_pipeline(&peers, "qwen35", None, 32, &tracker)
             .await
-            .expect("plano");
+            .expect("plan");
         assert_eq!(
             plan.steps[0].inference_url,
             "http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8181"
         );
         let url = format!("{}/v1/prefill", plan.steps[0].inference_url);
-        assert!(url.parse::<reqwest::Url>().is_ok(), "URL invalida: {url}");
+        assert!(url.parse::<reqwest::Url>().is_ok(), "invalid URL: {url}");
     }
 
     #[tokio::test]
@@ -1391,7 +1391,7 @@ mod ipv6_tests {
         let tracker = LoadTracker::new();
         let plan = plan_pipeline(&peers, "qwen35", None, 32, &tracker)
             .await
-            .expect("plano");
+            .expect("plan");
         assert_eq!(plan.steps[0].inference_url, "http://192.168.100.138:8181");
     }
 
@@ -1412,7 +1412,7 @@ mod ipv6_tests {
             &rtts,
         )
         .await
-        .expect("plano");
+        .expect("plan");
 
         assert_eq!(plan.steps[0].node_id, "fast");
     }
@@ -1470,7 +1470,7 @@ mod ipv6_tests {
 
         let plan = plan_pipeline(&[first, second], "qwen35", None, 32, &LoadTracker::new())
             .await
-            .expect("plano");
+            .expect("plan");
 
         assert_eq!(
             plan.edges,

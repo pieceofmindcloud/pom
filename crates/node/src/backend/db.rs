@@ -112,21 +112,21 @@ pub struct NetworkChatMessageRecord {
 impl ChatSessionRecord {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.id.trim().is_empty() || self.title.trim().is_empty() {
-            anyhow::bail!("conversa sem identidade ou título");
+            anyhow::bail!("conversation without identity or title");
         }
         if self.updated_at.trim().is_empty() {
-            anyhow::bail!("conversa sem data de atualização");
+            anyhow::bail!("conversation without an update date");
         }
         let mut ids = HashSet::new();
         for message in &self.messages {
             if message.id.trim().is_empty() || !ids.insert(&message.id) {
-                anyhow::bail!("mensagem sem identidade ou repetida");
+                anyhow::bail!("message without identity or repeated");
             }
             if !matches!(message.role.as_str(), "user" | "assistant" | "event") {
-                anyhow::bail!("papel de mensagem inválido");
+                anyhow::bail!("invalid message role");
             }
             if message.at.trim().is_empty() {
-                anyhow::bail!("mensagem sem data");
+                anyhow::bail!("message without a date");
             }
         }
         Ok(())
@@ -156,10 +156,10 @@ impl PomDb {
             .filter(|parent| !parent.as_os_str().is_empty())
         {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("criar diretório do banco {}", parent.display()))?;
+                .with_context(|| format!("create the database directory {}", parent.display()))?;
         }
         let connection = Connection::open(&path)
-            .with_context(|| format!("abrir banco local {}", path.display()))?;
+            .with_context(|| format!("open the local database {}", path.display()))?;
         secure_database_permissions(&path)?;
         configure_connection(&connection)?;
         ensure_schema(&connection)?;
@@ -183,7 +183,7 @@ impl PomDb {
         self.inner
             .connection
             .lock()
-            .map_err(|_| anyhow::anyhow!("mutex da conexão do banco local envenenado"))
+            .map_err(|_| anyhow::anyhow!("local database connection mutex poisoned"))
     }
 
     fn with_read<T>(
@@ -192,7 +192,7 @@ impl PomDb {
         action: impl FnOnce(&Connection) -> Result<T>,
     ) -> Result<T> {
         let connection = self.lock_connection()?;
-        action(&connection).with_context(|| format!("operação de banco não concluída: {operation}"))
+        action(&connection).with_context(|| format!("database operation not completed: {operation}"))
     }
 
     pub(crate) fn with_write<T>(
@@ -204,17 +204,17 @@ impl PomDb {
             .inner
             .write_lock
             .lock()
-            .map_err(|_| anyhow::anyhow!("mutex de escrita do banco local envenenado"))?;
+            .map_err(|_| anyhow::anyhow!("local database write mutex poisoned"))?;
         let mut connection = self.lock_connection()?;
         action(&mut connection)
-            .with_context(|| format!("operação de banco não concluída: {operation}"))
+            .with_context(|| format!("database operation not completed: {operation}"))
     }
 
     pub fn save_deployment(&self, deployment: &Deployment) -> Result<()> {
         deployment.validate()?;
-        self.with_write("salvar implantação", |connection| {
+        self.with_write("save deployment", |connection| {
             let tx = connection.unchecked_transaction()?;
-            let payload = serde_json::to_string(deployment).context("serializar implantação")?;
+            let payload = serde_json::to_string(deployment).context("serialize deployment")?;
             tx.execute(
                 "INSERT INTO deployments (
                     deploy_id, payload_json, kind, model_label, created_at, activated_at,
@@ -247,7 +247,7 @@ impl PomDb {
     }
 
     pub fn deployment(&self, deploy_id: &str) -> Result<Option<Deployment>> {
-        self.with_read("ler implantação", |connection| {
+        self.with_read("read deployment", |connection| {
             let payload = connection
                 .query_row(
                     "SELECT payload_json FROM deployments WHERE deploy_id = ? AND active = 1",
@@ -258,13 +258,13 @@ impl PomDb {
             payload
                 .map(|payload| {
                     let mut deployment: Deployment = serde_json::from_str(&payload)
-                        .with_context(|| format!("interpretar implantação {deploy_id}"))?;
+                        .with_context(|| format!("parse deployment {deploy_id}"))?;
                     // Um registro v1 chega sem `versions`; sintetiza a v1 antes
                     // de qualquer leitor ver o registro.
                     deployment.ensure_versions();
                     deployment
                         .validate()
-                        .with_context(|| format!("validar implantação {deploy_id}"))?;
+                        .with_context(|| format!("validate deployment {deploy_id}"))?;
                     Ok(deployment)
                 })
                 .transpose()
@@ -272,7 +272,7 @@ impl PomDb {
     }
 
     pub fn deployments(&self) -> Result<Vec<Deployment>> {
-        self.with_read("ler implantações", |connection| {
+        self.with_read("read deployments", |connection| {
             let mut statement = connection.prepare(
                 "SELECT deploy_id, payload_json FROM deployments
                  WHERE active = 1 ORDER BY deploy_id",
@@ -284,11 +284,11 @@ impl PomDb {
             for row in rows {
                 let (deploy_id, payload) = row?;
                 let mut deployment: Deployment = serde_json::from_str(&payload)
-                    .with_context(|| format!("interpretar implantação {deploy_id}"))?;
+                    .with_context(|| format!("parse deployment {deploy_id}"))?;
                 deployment.ensure_versions();
                 deployment
                     .validate()
-                    .with_context(|| format!("validar implantação {deploy_id}"))?;
+                    .with_context(|| format!("validate deployment {deploy_id}"))?;
                 deployments.push(deployment);
             }
             Ok(deployments)
@@ -297,7 +297,7 @@ impl PomDb {
 
     /// Mark a deployment removed without deleting its record or its tombstone.
     pub fn remove_deployment(&self, deploy_id: &str) -> Result<bool> {
-        self.with_write("remover implantação", |connection| {
+        self.with_write("remove deployment", |connection| {
             let tx = connection.unchecked_transaction()?;
             let changed = tx.execute(
                 "UPDATE deployments SET active = 0,
@@ -317,9 +317,9 @@ impl PomDb {
 
     pub fn insert_api_key(&self, key: &ApiKey) -> Result<()> {
         if key.id.trim().is_empty() || key.key_hash.trim().is_empty() {
-            anyhow::bail!("API key sem identidade ou hash");
+            anyhow::bail!("API key without identity or hash");
         }
-        self.with_write("salvar chave de API", |connection| {
+        self.with_write("save API key", |connection| {
             connection.execute(
                 "INSERT INTO api_keys
                     (id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at)
@@ -359,13 +359,13 @@ impl PomDb {
     }
 
     pub fn api_keys(&self) -> Result<Vec<ApiKey>> {
-        self.with_read("ler chaves de API", |connection| {
+        self.with_read("read API keys", |connection| {
             let mut statement = connection.prepare(&format!(
                 "SELECT {API_KEY_COLUMNS} FROM api_keys ORDER BY created_at, id"
             ))?;
             let rows = statement.query_map([], api_key_from_row)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("ler API keys do banco local")
+                .context("read API keys from the local database")
         })
     }
 
@@ -374,7 +374,7 @@ impl PomDb {
     /// later setup cannot accidentally resurrect a network-owned secret from
     /// the database.
     pub fn clear_api_keys(&self) -> Result<()> {
-        self.with_write("limpar chaves de API locais", |connection| {
+        self.with_write("clear local API keys", |connection| {
             let tx = connection.unchecked_transaction()?;
             tx.execute("DELETE FROM api_key_revocations", [])?;
             tx.execute("DELETE FROM api_keys", [])?;
@@ -397,7 +397,7 @@ impl PomDb {
     }
 
     pub fn api_key_for_hash(&self, key_hash: &str) -> Result<Option<ApiKey>> {
-        self.with_read("consultar chave de API", |connection| {
+        self.with_read("look up API key", |connection| {
             connection
                 .query_row(
                     &format!(
@@ -407,12 +407,12 @@ impl PomDb {
                     api_key_from_row,
                 )
                 .optional()
-                .context("consultar API key no banco local")
+                .context("look up the API key in the local database")
         })
     }
 
     pub fn active_api_key_named(&self, label: &str, node_id: &str) -> Result<Option<ApiKey>> {
-        self.with_read("consultar chave nomeada de API", |connection| {
+        self.with_read("look up named API key", |connection| {
             connection
                 .query_row(
                     &format!(
@@ -424,7 +424,7 @@ impl PomDb {
                     api_key_from_row,
                 )
                 .optional()
-                .context("consultar chave nomeada de API")
+                .context("look up named API key")
         })
     }
 
@@ -433,7 +433,7 @@ impl PomDb {
     /// place as the Hugging Face token: it is this node's client credential,
     /// not a row of the key registry, which holds only hashes.
     pub fn node_api_key(&self) -> Result<Option<(String, String)>> {
-        self.with_read("ler chave de API do nó", |connection| {
+        self.with_read("read the node API key", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_text FROM local_secrets WHERE secret_key = ?",
@@ -444,7 +444,7 @@ impl PomDb {
                 .flatten();
             let Some(value) = value else { return Ok(None) };
             let parsed: serde_json::Value =
-                serde_json::from_str(&value).context("interpretar chave de API do nó")?;
+                serde_json::from_str(&value).context("parse the node API key")?;
             Ok(parsed["id"]
                 .as_str()
                 .zip(parsed["secret"].as_str())
@@ -454,7 +454,7 @@ impl PomDb {
 
     pub fn save_node_api_key(&self, id: &str, secret: &str) -> Result<()> {
         let value = serde_json::json!({ "id": id, "secret": secret }).to_string();
-        self.with_write("salvar chave de API do nó", |connection| {
+        self.with_write("save the node API key", |connection| {
             connection.execute(
                 "INSERT INTO local_secrets (secret_key, value_text) VALUES (?, ?)
                  ON CONFLICT(secret_key) DO UPDATE SET value_text = excluded.value_text",
@@ -469,7 +469,7 @@ impl PomDb {
     /// secret itself (matched by hash).
     pub fn revoke_api_key(&self, key_or_id: &str, revoked_by: &str) -> Result<bool> {
         let presented_hash = crate::auth::api_key_hash(key_or_id);
-        self.with_write("revogar chave de API", |connection| {
+        self.with_write("revoke API key", |connection| {
             let tx = connection.unchecked_transaction()?;
             let key = tx
                 .query_row(
@@ -503,7 +503,7 @@ impl PomDb {
     /// whenever its local secret stops matching, and the old secret is gone at
     /// that point, so every older active row is an orphan nobody can use.
     pub fn revoke_superseded_node_keys(&self, revoked_by: &str) -> Result<usize> {
-        let superseded = self.with_read("procurar chaves internas substituídas", |connection| {
+        let superseded = self.with_read("look for replaced internal keys", |connection| {
             let mut statement = connection.prepare(
                 "SELECT older.id FROM api_keys AS older
                  WHERE older.active = 1
@@ -519,7 +519,7 @@ impl PomDb {
             )?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("procurar chaves internas substituídas")
+                .context("look for replaced internal keys")
         })?;
         let mut revoked = 0;
         for id in superseded {
@@ -531,7 +531,7 @@ impl PomDb {
     }
 
     pub fn api_key_revocations(&self) -> Result<Vec<(String, String, String)>> {
-        self.with_read("ler histórico de revogações", |connection| {
+        self.with_read("read the revocation history", |connection| {
             let mut statement = connection.prepare(
                 "SELECT key_id, revoked_by, revoked_at FROM api_key_revocations
                  ORDER BY revoked_at, id",
@@ -539,14 +539,14 @@ impl PomDb {
             let rows =
                 statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("ler histórico de revogações")
+                .context("read the revocation history")
         })
     }
 
     /// Revoke every active key from an origin. The update and audit inserts
     /// are one transaction, so retries are safe and cannot duplicate history.
     pub fn revoke_api_keys_by_origin(&self, origin: &str, revoked_by: &str) -> Result<usize> {
-        self.with_write("revogar chaves da origem", |connection| {
+        self.with_write("revoke the keys of the origin", |connection| {
             let tx = connection.unchecked_transaction()?;
             let ids = {
                 let mut statement = tx.prepare(
@@ -580,7 +580,7 @@ impl PomDb {
     /// Every model -> sidecar link. Authoritative on the principal; elsewhere
     /// the last copy read from it, used when the principal does not answer.
     pub fn model_sidecar_links(&self) -> Result<Vec<crate::catalog::SidecarLink>> {
-        self.with_read("ler vínculos de visão e MTP", |connection| {
+        self.with_read("read vision and MTP links", |connection| {
             let mut statement = connection.prepare(
                 "SELECT model_key, kind, mode, file_name, size_bytes, updated_at, updated_by
                  FROM model_sidecar_links ORDER BY model_key, kind",
@@ -602,9 +602,9 @@ impl PomDb {
                 links.push(crate::catalog::SidecarLink {
                     model_key,
                     kind: serde_json::from_value(serde_json::Value::String(kind))
-                        .context("tipo de vínculo inválido")?,
+                        .context("invalid link type")?,
                     mode: serde_json::from_value(serde_json::Value::String(mode))
-                        .context("modo de vínculo inválido")?,
+                        .context("invalid link mode")?,
                     file_name,
                     size_bytes: size_bytes.and_then(|size| u64::try_from(size).ok()),
                     updated_at,
@@ -620,7 +620,7 @@ impl PomDb {
         link.validate().map_err(anyhow::Error::msg)?;
         let kind = serde_json::to_value(link.kind)?.as_str().unwrap_or_default().to_string();
         let mode = serde_json::to_value(link.mode)?.as_str().unwrap_or_default().to_string();
-        self.with_write("salvar vínculo de visão ou MTP", |connection| {
+        self.with_write("save vision or MTP link", |connection| {
             connection.execute(
                 "INSERT INTO model_sidecar_links
                     (model_key, kind, mode, file_name, size_bytes, updated_at, updated_by)
@@ -647,7 +647,7 @@ impl PomDb {
 
     /// Replace the local copy with the principal's full list.
     pub fn replace_model_sidecar_links(&self, links: &[crate::catalog::SidecarLink]) -> Result<()> {
-        self.with_write("espelhar vínculos de visão e MTP", |connection| {
+        self.with_write("mirror vision and MTP links", |connection| {
             let tx = connection.unchecked_transaction()?;
             tx.execute("DELETE FROM model_sidecar_links", [])?;
             tx.commit()?;
@@ -660,7 +660,7 @@ impl PomDb {
     }
 
     pub fn thermal_policy(&self) -> Result<Option<ThermalPolicy>> {
-        self.with_read("ler política térmica", |connection| {
+        self.with_read("read thermal policy", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = 'thermal_policy'",
@@ -669,18 +669,18 @@ impl PomDb {
                 )
                 .optional()?;
             value
-                .map(|value| serde_json::from_str(&value).context("interpretar política térmica"))
+                .map(|value| serde_json::from_str(&value).context("parse thermal policy"))
                 .transpose()
         })
     }
 
     pub fn save_thermal_policy(&self, policy: ThermalPolicy) -> Result<()> {
-        policy.validate().context("validar política térmica")?;
+        policy.validate().context("validate thermal policy")?;
         self.save_setting("thermal_policy", &policy)
     }
 
     pub fn network_settings(&self) -> Result<Option<NetworkSettings>> {
-        self.with_read("ler detalhes da rede", |connection| {
+        self.with_read("read network details", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = 'network_settings'",
@@ -689,7 +689,7 @@ impl PomDb {
                 )
                 .optional()?;
             value
-                .map(|value| serde_json::from_str(&value).context("interpretar detalhes da rede"))
+                .map(|value| serde_json::from_str(&value).context("parse network details"))
                 .transpose()
         })
     }
@@ -699,7 +699,7 @@ impl PomDb {
     }
 
     pub fn windows_firewall_setup(&self) -> Result<Option<crate::windows_firewall::SetupRecord>> {
-        self.with_read("ler estado do firewall do Windows", |connection| {
+        self.with_read("read the Windows firewall state", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = 'windows_firewall_setup'",
@@ -710,7 +710,7 @@ impl PomDb {
             value
                 .map(|value| {
                     serde_json::from_str(&value)
-                        .context("interpretar estado do firewall do Windows")
+                        .context("parse the Windows firewall state")
                 })
                 .transpose()
         })
@@ -726,7 +726,7 @@ impl PomDb {
     pub(crate) fn public_directory_settings(
         &self,
     ) -> Result<Option<crate::public_directory::PublicDirectorySettings>> {
-        self.with_read("ler ingressos do diretório público", |connection| {
+        self.with_read("read public directory tickets", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = 'public_directory_settings'",
@@ -737,7 +737,7 @@ impl PomDb {
             value
                 .map(|value| {
                     serde_json::from_str(&value)
-                        .context("interpretar ingressos do diretório público")
+                        .context("parse public directory tickets")
                 })
                 .transpose()
         })
@@ -753,7 +753,7 @@ impl PomDb {
     pub(crate) fn public_directory_records(
         &self,
     ) -> Result<Vec<crate::public_directory::SignedPublicDirectoryRecord>> {
-        self.with_read("ler cache do diretório público", |connection| {
+        self.with_read("read public directory cache", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = 'public_directory_records'",
@@ -763,7 +763,7 @@ impl PomDb {
                 .optional()?;
             value
                 .map(|value| {
-                    serde_json::from_str(&value).context("interpretar cache do diretório público")
+                    serde_json::from_str(&value).context("parse public directory cache")
                 })
                 .transpose()
                 .map(|records| records.unwrap_or_default())
@@ -778,7 +778,7 @@ impl PomDb {
     }
 
     pub fn public_network_geo_cache(&self) -> Result<Vec<PublicNetworkGeoCacheEntry>> {
-        self.with_read("ler índice geo de redes públicas", |connection| {
+        self.with_read("read the geo index of public networks", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = 'public_network_geo_cache'",
@@ -788,7 +788,7 @@ impl PomDb {
                 .optional()?;
             value
                 .map(|value| {
-                    serde_json::from_str(&value).context("interpretar índice geo de redes públicas")
+                    serde_json::from_str(&value).context("parse the geo index of public networks")
                 })
                 .transpose()
                 .map(|entries| entries.unwrap_or_default())
@@ -901,7 +901,7 @@ impl PomDb {
 
     /// A JSON list kept in `local_settings`; missing or unreadable is empty.
     fn read_setting<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Vec<T>> {
-        self.with_read("ler configuração local", |connection| {
+        self.with_read("read local configuration", |connection| {
             let value = connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = ?",
@@ -925,7 +925,7 @@ impl PomDb {
     /// Read the stored credential without logging, formatting or returning it
     /// from an HTTP handler. The database file is restricted to its owner.
     pub fn huggingface_token(&self) -> Result<Option<String>> {
-        self.with_read("ler credencial do Hugging Face", |connection| {
+        self.with_read("read the Hugging Face credential", |connection| {
             connection
                 .query_row(
                     "SELECT value_text FROM local_secrets WHERE secret_key = 'huggingface_token'",
@@ -934,12 +934,12 @@ impl PomDb {
                 )
                 .optional()
                 .map(|value| value.flatten())
-                .context("ler credencial do Hugging Face")
+                .context("read the Hugging Face credential")
         })
     }
 
     pub fn save_huggingface_token(&self, token: Option<&str>) -> Result<()> {
-        self.with_write("salvar credencial do Hugging Face", |connection| {
+        self.with_write("save the Hugging Face credential", |connection| {
             match token.map(str::trim).filter(|token| !token.is_empty()) {
                 Some(token) => {
                     connection.execute(
@@ -964,7 +964,7 @@ impl PomDb {
     /// conversation can be read without keeping a large opaque JSON document.
     pub fn save_chat_session(&self, session: &ChatSessionRecord) -> Result<()> {
         session.validate()?;
-        self.with_write("salvar conversa", |connection| {
+        self.with_write("save conversation", |connection| {
             let tx = connection.unchecked_transaction()?;
             tx.execute(
                 "INSERT INTO chat_conversations (
@@ -1022,7 +1022,7 @@ impl PomDb {
     }
 
     pub fn chat_sessions(&self) -> Result<Vec<ChatSessionRecord>> {
-        self.with_read("ler conversas", |connection| {
+        self.with_read("read conversations", |connection| {
             let mut statement = connection.prepare(
                 "SELECT id, title, titled, model, model_at_start, updated_at
              FROM chat_conversations ORDER BY updated_at DESC, id DESC",
@@ -1055,13 +1055,13 @@ impl PomDb {
     }
 
     pub fn delete_chat_session(&self, id: &str) -> Result<bool> {
-        self.with_write("excluir conversa", |connection| {
+        self.with_write("delete conversation", |connection| {
             Ok(connection.execute("DELETE FROM chat_conversations WHERE id = ?", params![id])? > 0)
         })
     }
 
     pub fn clear_chat_sessions(&self) -> Result<()> {
-        self.with_write("limpar conversas", |connection| {
+        self.with_write("clear conversations", |connection| {
             connection.execute("DELETE FROM chat_conversations", [])?;
             Ok(())
         })
@@ -1071,7 +1071,7 @@ impl PomDb {
     pub fn append_network_chat(&self, action: &crate::network_chat::ChatAction) -> Result<bool> {
         action
             .validate()
-            .map_err(|error| anyhow::anyhow!("ação de chat inválida: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("invalid chat action: {error}"))?;
         let (
             message_id,
             room_id,
@@ -1125,16 +1125,16 @@ impl PomDb {
                 sent_at.to_rfc3339(),
             ),
             crate::network_chat::ChatAction::Typing { .. } => {
-                anyhow::bail!("digitação não é persistente")
+                anyhow::bail!("typing is not persistent")
             }
             crate::network_chat::ChatAction::PluginNotice { .. } => {
-                anyhow::bail!("aviso de plugin não é persistente")
+                anyhow::bail!("plugin notice is not persistent")
             }
             crate::network_chat::ChatAction::LobbyPresence { .. } => {
-                anyhow::bail!("presença do lobby não é persistente")
+                anyhow::bail!("lobby presence is not persistent")
             }
         };
-        self.with_write("salvar mensagem do Chat da rede", |connection| {
+        self.with_write("save network Chat message", |connection| {
             let changed = connection.execute(
                 "INSERT OR IGNORE INTO network_chat_messages (
                     message_id, room_id, sender_node_id, recipient_node_id, kind,
@@ -1163,7 +1163,7 @@ impl PomDb {
         limit: usize,
     ) -> Result<Vec<NetworkChatMessageRecord>> {
         let limit = limit.clamp(1, 500) as i64;
-        self.with_read("ler histórico do Chat da rede", |connection| {
+        self.with_read("read network Chat history", |connection| {
             let mut statement = connection.prepare(
                 "SELECT received_seq, message_id, room_id, sender_node_id,
                         recipient_node_id, kind, text, file_name, mime_type,
@@ -1196,7 +1196,7 @@ impl PomDb {
     }
 
     pub fn network_chat_file(&self, message_id: &str) -> Result<Option<(Vec<u8>, String)>> {
-        self.with_read("ler arquivo do Chat da rede", |connection| {
+        self.with_read("read network Chat archive", |connection| {
             connection
                 .query_row(
                     "SELECT file_data, mime_type
@@ -1212,12 +1212,12 @@ impl PomDb {
                     },
                 )
                 .optional()
-                .context("consultar arquivo do Chat da rede")
+                .context("query network Chat archive")
         })
     }
 
     fn save_setting<T: serde::Serialize + ?Sized>(&self, key: &str, value: &T) -> Result<()> {
-        self.with_write("salvar configuração local", |connection| {
+        self.with_write("save local configuration", |connection| {
             connection.execute(
                 "INSERT INTO local_settings (setting_key, value_json) VALUES (?, ?)
                  ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json",
@@ -1228,7 +1228,7 @@ impl PomDb {
     }
 
     pub(crate) fn local_setting_json(&self, key: &str) -> Result<Option<String>> {
-        self.with_read("ler configuração local", |connection| {
+        self.with_read("read local configuration", |connection| {
             connection
                 .query_row(
                     "SELECT value_json FROM local_settings WHERE setting_key = ?",
@@ -1236,12 +1236,12 @@ impl PomDb {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()
-                .context("ler configuração local")
+                .context("read local configuration")
         })
     }
 
     pub(crate) fn local_setting_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        self.with_read("listar chaves de configuração local", |connection| {
+        self.with_read("list local configuration keys", |connection| {
             let mut statement = connection.prepare(
                 "SELECT setting_key FROM local_settings
                  WHERE substr(setting_key, 1, length(?1)) = ?1
@@ -1249,7 +1249,7 @@ impl PomDb {
             )?;
             let rows = statement.query_map(params![prefix], |row| row.get::<_, String>(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()
-                .context("listar chaves de configuração local")
+                .context("list local configuration keys")
         })
     }
 
@@ -1262,7 +1262,7 @@ impl PomDb {
     }
 
     pub(crate) fn delete_local_setting(&self, key: &str) -> Result<bool> {
-        self.with_write("remover configuração local", |connection| {
+        self.with_write("remove local configuration", |connection| {
             Ok(connection.execute(
                 "DELETE FROM local_settings WHERE setting_key = ?",
                 params![key],
@@ -1272,7 +1272,7 @@ impl PomDb {
 
     /// Record the current catalog while retaining rows for files that vanished.
     pub fn record_catalog(&self, catalog: &Catalog) -> Result<()> {
-        self.with_write("registrar catálogo", |connection| {
+        self.with_write("record catalog", |connection| {
             let tx = connection.unchecked_transaction()?;
             let now = chrono::Utc::now().to_rfc3339();
             let mut seen_models = HashSet::new();
@@ -1381,14 +1381,14 @@ impl PomDb {
     }
 
     pub fn model_history(&self) -> Result<Vec<(String, bool)>> {
-        self.with_read("ler histórico de modelos", |connection| {
+        self.with_read("read model history", |connection| {
             let mut statement = connection
                 .prepare("SELECT model_id, present FROM model_history ORDER BY model_id")?;
             let rows = statement.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("ler histórico de modelos")
+                .context("read model history")
         })
     }
 
@@ -1396,7 +1396,7 @@ impl PomDb {
         &self,
         model_id: &str,
     ) -> Result<Vec<(String, bool, Option<u32>, Option<u32>, u64)>> {
-        self.with_read("ler histórico de fatias", |connection| {
+        self.with_read("read slice history", |connection| {
             let mut statement = connection.prepare(
                 "SELECT slice_id, present, start_layer, end_layer, bytes
                  FROM model_slices WHERE model_id = ? ORDER BY start_layer, end_layer, slice_id",
@@ -1411,29 +1411,29 @@ impl PomDb {
                 ))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("ler histórico de fatias")
+                .context("read slice history")
         })
     }
 
     #[cfg(test)]
     fn table_names(&self) -> Result<Vec<String>> {
-        self.with_read("ler tabelas do banco", |connection| {
+        self.with_read("read the database tables", |connection| {
             let mut statement = connection.prepare(
                 "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')
                  UNION ALL SELECT name FROM sqlite_temp_master WHERE type = 'table'",
             )?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("ler tabelas do banco")
+                .context("read the database tables")
         })
     }
 
     #[cfg(test)]
     fn journal_mode(&self) -> Result<String> {
-        self.with_read("ler modo de journal", |connection| {
+        self.with_read("read the journal mode", |connection| {
             connection
                 .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
-                .context("ler modo de journal")
+                .context("read the journal mode")
         })
     }
 
@@ -1470,14 +1470,14 @@ impl PomDb {
         started: std::sync::mpsc::Sender<()>,
         duration: std::time::Duration,
     ) -> Result<()> {
-        self.with_write("teste de escrita presa", |connection| {
+        self.with_write("stuck write test", |connection| {
             let transaction = connection.unchecked_transaction()?;
             transaction.execute(
                 "INSERT INTO api_keys (id, key_hash, label, node_id, origin_node_id, active, created_at)
                  VALUES ('held-write', 'held-hash', 'held', '', '', 1, 'held')",
                 [],
             )?;
-            started.send(()).expect("sinalizar escrita presa");
+            started.send(()).expect("signal a stuck write");
             std::thread::sleep(duration);
             transaction.commit()?;
             Ok(())
@@ -1549,13 +1549,13 @@ fn optional_json_string(value: Option<&JsonValue>) -> Result<Option<String>> {
     value
         .map(serde_json::to_string)
         .transpose()
-        .context("serializar metadados da conversa")
+        .context("serialize the conversation metadata")
 }
 
 fn parse_optional_json(value: Option<String>, field: &str) -> Result<Option<JsonValue>> {
     value
         .map(|value| {
-            serde_json::from_str(&value).with_context(|| format!("interpretar {field} da conversa"))
+            serde_json::from_str(&value).with_context(|| format!("parse {field} of the conversation"))
         })
         .transpose()
 }
@@ -1837,9 +1837,9 @@ fn migrate_api_key_secrets(connection: &Connection) -> Result<()> {
     tx.commit()?;
     connection
         .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
-        .context("reescrever o banco sem os segredos antigos")?;
+        .context("rewrite the database without the old secrets")?;
     tracing::info!(
-        "API keys migradas para hash: {} chave(s), tracking ids preservados",
+        "API keys migrated to hash: {} key(s), tracking ids preserved",
         secrets.len()
     );
     Ok(())
@@ -1850,11 +1850,11 @@ fn restrict_permissions(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         let mut permissions = std::fs::metadata(path)
-            .with_context(|| format!("ler permissões do banco {}", path.display()))?
+            .with_context(|| format!("read the permissions of the database {}", path.display()))?
             .permissions();
         permissions.set_mode(0o600);
         std::fs::set_permissions(path, permissions)
-            .with_context(|| format!("restringir permissões do banco {}", path.display()))?;
+            .with_context(|| format!("restrict the permissions of the database {}", path.display()))?;
     }
     Ok(())
 }
@@ -1974,7 +1974,7 @@ mod tests {
     fn creates_missing_database_with_the_complete_schema() {
         let root = temporary_path("schema");
         let path = root.join("volume").join(DATABASE_FILENAME);
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
 
         assert!(path.is_file());
         assert_eq!(db.path(), path);
@@ -1996,7 +1996,7 @@ mod tests {
         ] {
             assert!(
                 tables.contains(&table.to_string()),
-                "tabela ausente: {table}"
+                "table missing: {table}"
             );
         }
         assert_eq!(db.journal_mode().expect("ler journal"), "wal");
@@ -2007,26 +2007,26 @@ mod tests {
     #[test]
     fn concurrent_connections_can_write_without_losing_rows() {
         let path = temporary_path("concurrent");
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
         let mut workers = Vec::new();
         for index in 0..8 {
             let db = db.clone();
             workers.push(std::thread::spawn(move || {
                 db.insert_test_marker(&format!("marker-{index}"))
-                    .expect("gravar marcador");
+                    .expect("write marker");
             }));
         }
         for worker in workers {
-            worker.join().expect("thread de escrita");
+            worker.join().expect("write thread");
         }
-        assert_eq!(db.test_marker_count().expect("contar marcadores"), 8);
+        assert_eq!(db.test_marker_count().expect("count markers"), 8);
         remove_database(&path);
     }
 
     #[test]
     fn sustained_parallel_writes_do_not_hit_sqlite_busy() {
         let path = temporary_path("concurrent-stress");
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
         let mut workers = Vec::new();
         for worker_id in 0..32 {
             let db = db.clone();
@@ -2045,17 +2045,17 @@ mod tests {
 
         let errors = workers
             .into_iter()
-            .flat_map(|worker| worker.join().expect("thread de escrita"))
+            .flat_map(|worker| worker.join().expect("write thread"))
             .collect::<Vec<_>>();
-        assert!(errors.is_empty(), "falhas de escrita: {errors:?}");
-        assert_eq!(db.test_marker_count().expect("contar marcadores"), 16_000);
+        assert!(errors.is_empty(), "write failures: {errors:?}");
+        assert_eq!(db.test_marker_count().expect("count markers"), 16_000);
         remove_database(&path);
     }
 
     #[test]
     fn a_write_waits_for_another_write_instead_of_being_lost_to_busy() {
         let path = temporary_path("serialized-write");
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
         let holder_db = db.clone();
         let holder = std::thread::spawn(move || {
@@ -2063,32 +2063,32 @@ mod tests {
         });
         started_receiver
             .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("a escrita presa iniciou");
+            .expect("the stuck write started");
 
         let reader_db = db.clone();
         let reader = std::thread::spawn(move || reader_db.deployments());
         let writer_db = db.clone();
         let writer = std::thread::spawn(move || writer_db.insert_test_marker("after-held"));
-        let reader_result = reader.join().expect("thread da leitura");
-        let writer_result = writer.join().expect("thread da segunda escrita");
+        let reader_result = reader.join().expect("read thread");
+        let writer_result = writer.join().expect("second write thread");
         holder
             .join()
-            .expect("thread da escrita presa")
-            .expect("commit da escrita presa");
-        reader_result.expect("a leitura não pode falhar");
-        writer_result.expect("a segunda escrita não pode ser perdida");
-        assert_eq!(db.test_marker_count().expect("contar marcadores"), 2);
+            .expect("stuck write thread")
+            .expect("stuck write commit");
+        reader_result.expect("the read cannot fail");
+        writer_result.expect("the second write cannot be lost");
+        assert_eq!(db.test_marker_count().expect("count markers"), 2);
         remove_database(&path);
     }
 
     #[test]
     fn configures_connection_and_schema_only_once() {
         let path = temporary_path("setup-once");
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
 
         for index in 0..20 {
             db.insert_test_marker(&format!("setup-{index}"))
-                .expect("gravar marcador");
+                .expect("write marker");
         }
 
         assert_eq!(db.setup_count(), 1);
@@ -2098,7 +2098,7 @@ mod tests {
     #[test]
     fn revoked_key_is_inactive_and_revocation_history_survives_reopen() {
         let path = temporary_path("revocation");
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
         db.insert_api_key(&ApiKey {
             id: "key-1".into(),
             key_hash: crate::auth::api_key_hash("sk-secret"),
@@ -2115,7 +2115,7 @@ mod tests {
         assert!(db.api_key_for_token("sk-secret").unwrap().is_none());
         drop(db);
 
-        let reopened = PomDb::open(&path).expect("reabrir banco");
+        let reopened = PomDb::open(&path).expect("reopen the database");
         assert!(reopened.api_key_for_token("sk-secret").unwrap().is_none());
         let key = ApiKey {
             id: "key-1".into(),
@@ -2139,7 +2139,7 @@ mod tests {
     #[test]
     fn revoking_an_origin_is_idempotent_and_does_not_touch_other_origins() {
         let path = temporary_path("revoke-origin");
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
         for (id, origin) in [("a-1", "node-a"), ("a-2", "node-a"), ("b-1", "node-b")] {
             db.insert_api_key(&ApiKey {
                 id: id.into(),
@@ -2306,15 +2306,15 @@ mod tests {
         assert_eq!(deployment.versions.len(), 2);
         assert_eq!(deployment.active_version, 2);
 
-        let db = PomDb::open(&path).expect("abrir banco novo");
-        db.save_deployment(&deployment).expect("salvar implantação");
+        let db = PomDb::open(&path).expect("open a new database");
+        db.save_deployment(&deployment).expect("save deployment");
         drop(db);
 
-        let reopened = PomDb::open(&path).expect("reabrir banco");
+        let reopened = PomDb::open(&path).expect("reopen the database");
         let loaded = reopened
             .deployment("d-4f2a91c3")
-            .expect("ler implantação")
-            .expect("implantação existe");
+            .expect("read deployment")
+            .expect("deployment exists");
         assert_eq!(loaded, deployment);
         assert_eq!(loaded.versions.len(), 2);
         assert_eq!(loaded.active_version, 2);
@@ -2412,7 +2412,7 @@ mod tests {
 
         db.record_catalog(&catalog).unwrap();
         let identity = db
-            .with_read("ler identidade de teste", |connection| {
+            .with_read("read test identity", |connection| {
                 Ok(connection.query_row(
                     "SELECT identity_kind, identity FROM model_history",
                     [],
@@ -2471,7 +2471,7 @@ mod tests {
     #[test]
     fn revokes_superseded_node_keys_and_keeps_the_newest() {
         let path = temporary_path("superseded");
-        let db = PomDb::open(&path).expect("abrir banco novo");
+        let db = PomDb::open(&path).expect("open a new database");
         let key = |id: &str, label: &str, node: &str, created: &str| ApiKey {
             id: id.into(),
             key_hash: crate::auth::api_key_hash(id),
@@ -2543,16 +2543,16 @@ mod tests {
                 .unwrap();
         }
 
-        let db = PomDb::open(&path).expect("abrir e migrar");
+        let db = PomDb::open(&path).expect("open and migrate");
         let key = db
             .api_key_for_token(secret)
             .unwrap()
-            .expect("mesmo token vale");
+            .expect("the same token works");
         assert_eq!(key.id, "produto-x");
         assert_eq!(key.key_hash, crate::auth::api_key_hash(secret));
         assert_eq!(key.key_hint, "sk-0b5d7…3d2e");
         drop(db);
-        let reopened = PomDb::open(&path).expect("reabrir já migrado");
+        let reopened = PomDb::open(&path).expect("reopen already migrated");
         assert_eq!(reopened.api_keys().unwrap().len(), 1);
         drop(reopened);
 
@@ -2565,7 +2565,7 @@ mod tests {
                     !bytes
                         .windows(secret.len())
                         .any(|window| window == secret.as_bytes()),
-                    "segredo em texto puro sobrou em {file:?}"
+                    "plain text secret left in {file:?}"
                 );
             }
         }

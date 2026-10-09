@@ -58,13 +58,13 @@ pub(crate) async fn fetch_from_principal(
             tunnel,
         )
         .await
-        .context("não deu para falar com o principal para confirmar QUIC")?;
+        .context("could not reach the principal to confirm QUIC")?;
     let body: QuicReply = resp
         .json()
-        .context("resposta da política QUIC não parseou")?;
+        .context("QUIC policy response did not parse")?;
     info!(
         quic_enabled = body.quic_enabled,
-        announced_tls, "política QUIC confirmada pelo principal"
+        announced_tls, "QUIC policy confirmed by the principal"
     );
     Ok(body.quic_enabled)
 }
@@ -74,7 +74,7 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
         Ok(value) if value != local => PolicyOutcome::Adopt(value),
         Ok(_) => PolicyOutcome::Unchanged,
         Err(error) => {
-            warn!("busca da política QUIC falhou, mantendo o valor local ({local}): {error}");
+            warn!("QUIC policy fetch failed, keeping the local value ({local}): {error}");
             PolicyOutcome::Unchanged
         }
     }
@@ -98,7 +98,7 @@ pub fn spawn_ratchet(
                 continue;
             };
             if peer.gateway_port.is_none() {
-                warn!("principal {principal} não anuncia porta de gateway; política QUIC não pôde ser confirmada");
+                warn!("principal {principal} does not announce a gateway port; QUIC policy could not be confirmed");
                 continue;
             }
             let bases = net.order_gateway_bases(
@@ -126,14 +126,14 @@ pub fn spawn_ratchet(
                     let mut cfg = auth.write().await;
                     cfg.quic_enabled = value;
                     if let Err(error) = cfg.save() {
-                        warn!("política QUIC confirmada mas não gravada: {error}");
+                        warn!("QUIC policy confirmed but not written: {error}");
                     }
                 }
                 clients.set_quic(value);
                 crate::peer_client::set_quic_enabled(value);
                 info!(
                     quic_enabled = value,
-                    "política QUIC do cluster adotada do principal"
+                    "cluster QUIC policy adopted from the principal"
                 );
             }
         }

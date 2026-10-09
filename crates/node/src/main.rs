@@ -984,9 +984,11 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     setup_pending: true,
     local_auto_discovery: false,
     tls_required: false,
-    quic_enabled: false,
+    // On from the start: a new network uses QUIC between its nodes and has
+    // its Chat, and the principal can turn either off in the preferences.
+    quic_enabled: true,
     cluster_logs_enabled: false,
-    network_chat_enabled: false,
+    network_chat_enabled: true,
     cluster_logs_min_level: Default::default(),
     // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
     // depois que a `pom.json` existir.

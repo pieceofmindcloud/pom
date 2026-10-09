@@ -173,10 +173,11 @@ mod tests {
     }
 
     #[test]
-    fn default_off_e_falha_preservam_o_valor_local() {
+    fn on_by_default_and_a_failed_fetch_keeps_the_local_value() {
         let cfg: crate::config::Config =
             serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
-        assert!(!cfg.quic_enabled);
+        assert!(cfg.quic_enabled);
+        assert!(cfg.network_chat_enabled);
         assert_eq!(
             adopt_or_keep(false, Err(anyhow::anyhow!("offline"))),
             PolicyOutcome::Unchanged

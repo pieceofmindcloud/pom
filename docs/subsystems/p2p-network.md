@@ -1276,7 +1276,8 @@ operator can flip it as often as they want.
 
 ### 5.1 Optional QUIC for inference
 
-`Config.quic_enabled` is a network-wide preference, off by default and only
+`Config.quic_enabled` is a network-wide preference, on by default (a new
+network starts with it, and a config without the field reads as on) and only
 editable by the principal at `POST /api/ui/network/quic`. The announcement
 carries `quic` only as a trigger: the peer confirms the value at
 `GET /api/cluster/quic`, authenticated by the `connection_key`, exactly like
@@ -1408,7 +1409,9 @@ strips the secret and carries `relayed: true`; a node that is not the principal
 does not accept that frame as an origin. A file stays within the protocol's
 frame limit and is not stored outside each node's local database.
 
-`network_chat_enabled` in the `Announce` is a trigger, never a value. The
+`network_chat_enabled` is on by default, like `quic_enabled`: a new network
+starts with its Chat, and the principal can turn it off. In the `Announce` it
+is a trigger, never a value. The
 `POST /api/ui/network/chat` switch writes the authoritative configuration on the
 real principal, whose `pubkey` comes from `AdminTrust`, and updates
 the announced atomic copy. When the UI is on a secondary admin, the same route

@@ -210,6 +210,10 @@ on (`public` or `private`). It does not need the network Chat: the Chat only
 adds the conversation to the lobby. `NetworkSettings.access_policy` says who
 decides a request: `authorized` (an admin), `auto_approve` (the principal
 approves every request on arrival) or `local_only`.
+`Config.quic_enabled` and `Config.network_chat_enabled` are on by default:
+`main.rs::blank_config` starts a new network with both, and a config
+without the fields reads them as on. Members still adopt the principal's
+value through the authenticated read.
 `NetworkSettings.visibility` is what the interface calls discovery: `local`
 announces nothing (the node runs detached and publishes no pkarr record),
 `private` announces without being listed, `public` is listed.

@@ -277,6 +277,24 @@ describe("Deployments", () => {
     expect(screen.queryByText("Reimplantar com novos parâmetros")).toBeNull();
   });
 
+  it("mostra o motor do plugin e as configurações dele, não os números do llama.cpp", async () => {
+    const strata = row("d-strata01", { serving: true, isDefault: true, kind: "whole" });
+    for (const target of [...strata.deployment.versions!.map((v) => v.params), strata.deployment.nodes[0].config]) {
+      Object.assign(target, { inference_service: "strata", engine_settings: { "sampling.top_k": 20 } });
+    }
+    listDeployments.mockResolvedValue({ node_id: "eu", deployments: [strata] });
+
+    mount();
+    await waitFor(() => expect(screen.getByText("d-strata01")).toBeTruthy());
+    // Sem o serviço anunciado no cluster, o motor aparece pelo código do plugin.
+    expect(screen.getByText("strata")).toBeTruthy();
+
+    click(screen.getByRole("button", { name: "Ver versões" }));
+    const summary = screen.getByText(/ctx 8192/);
+    expect(summary.textContent).toBe("strata · ctx 8192 · sess 1 · sampling.top_k=20");
+    expect(summary.textContent).not.toContain("batch");
+  });
+
   it("expande uma linha e reimplanta uma versão pelo número", async () => {
     listDeployments.mockResolvedValue({
       node_id: "eu",

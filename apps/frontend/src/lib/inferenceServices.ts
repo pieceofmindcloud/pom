@@ -26,7 +26,16 @@ export interface InferenceServiceEntry {
 
 const USABLE: PluginService["status"][] = ["ready", "starting", "installing"];
 
+/** The services a deployment on them can run now; see `inferenceServiceCatalog`. */
 export function inferenceServicesOf(peers: PeerView[] | undefined): InferenceServiceEntry[] {
+  // A service no machine can run now is not offered: the deploy screen then
+  // shows no engine choice at all and deploys on llama.cpp.
+  return inferenceServiceCatalog(peers).filter((entry) => entry.nodeIds.length > 0);
+}
+
+/** Every inference service the cluster announces, usable now or not: what a
+ *  deployment made with one of them is shown with (name and settings). */
+export function inferenceServiceCatalog(peers: PeerView[] | undefined): InferenceServiceEntry[] {
   const byCode = new Map<string, InferenceServiceEntry>();
   for (const peer of peers ?? []) {
     for (const service of peer.node?.plugin_services ?? []) {
@@ -50,13 +59,23 @@ export function inferenceServicesOf(peers: PeerView[] | undefined): InferenceSer
       byCode.set(service.plugin_code, entry);
     }
   }
-  // A service no machine can run now is not offered: the deploy screen then
-  // shows no engine choice at all and deploys on llama.cpp.
-  return [...byCode.values()].filter((entry) => entry.nodeIds.length > 0).sort((a, b) => a.name.localeCompare(b.name));
+  return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Whether a whole model can run on the service: its architecture is one the
  *  engine declares. A model whose header gave no architecture is not offered. */
 export function serviceRunsModel(service: InferenceServiceEntry, architecture: string | null): boolean {
   return architecture != null && service.architectures.includes(architecture);
+}
+
+/** The engine a deployment's parameters name, for showing it: the plugin's
+ *  name and settings when the cluster announces it, its code otherwise;
+ *  `null` for POM's own engine (llama.cpp). */
+export function engineOfParams(
+  inferenceService: string | null | undefined,
+  catalog: InferenceServiceEntry[],
+): { code: string; name: string; settings: EngineSetting[] } | null {
+  if (!inferenceService) return null;
+  const entry = catalog.find((service) => service.code === inferenceService);
+  return { code: inferenceService, name: entry?.name ?? inferenceService, settings: entry?.settings ?? [] };
 }

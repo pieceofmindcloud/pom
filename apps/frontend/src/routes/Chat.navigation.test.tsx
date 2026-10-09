@@ -97,7 +97,7 @@ vi.mock("../lib/queries", () => ({
   useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),
   useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
-  useServableModels: () => ({ data: [{ id: "qwen" }] }),
+  useServableModels: () => ({ data: [{ id: "qwen" }], refetch: async () => ({ data: [{ id: "qwen" }] }) }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: (nodeIds: string[]) => {

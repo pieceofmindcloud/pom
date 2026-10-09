@@ -74,7 +74,10 @@ vi.mock("../lib/queries", () => ({
   useChatCapabilities: () => ({
     data: { vision: "supported", coverage: "complete", thinking: "unsupported" },
   }),
-  useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
+  useServableModels: () => ({
+    data: [{ id: "qwen", context_length: 4 }],
+    refetch: async () => ({ data: [{ id: "qwen", context_length: 4 }] }),
+  }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
   useChatTelemetryNetwork: (_nodeIds: string[], enabled: boolean, _messageId?: string) => {
     const [data, setData] = useState<unknown>(undefined);

@@ -23,6 +23,11 @@ const headQuery = vi.hoisted(() => ({
 }));
 
 const thinkingScenario = vi.hoisted(() => ({ enabled: true }));
+/** What the chat's `/v1/models` copy holds, and what reading it again answers. */
+const modelsScenario = vi.hoisted(() => ({
+  listed: [{ id: "qwen", context_length: 4, max_tokens: 3 }] as Array<Record<string, unknown>>,
+  fresh: [{ id: "qwen", context_length: 4, max_tokens: 3 }] as Array<Record<string, unknown>>,
+}));
 const ragScenario = vi.hoisted(() => ({ available: false, collections: [] as string[] }));
 
 const imageResizeScenario = vi.hoisted(() => ({
@@ -73,7 +78,10 @@ vi.mock("../lib/queries", () => ({
       rag_collections: ragScenario.collections,
     },
   }),
-  useServableModels: () => ({ data: [{ id: "qwen", context_length: 4, max_tokens: 3 }] }),
+  useServableModels: () => ({
+    data: modelsScenario.listed,
+    refetch: async () => ({ data: modelsScenario.fresh }),
+  }),
   useInferenceHeads: () => headQuery,
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: () => [],
@@ -242,6 +250,20 @@ describe("Chat", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     // /v1/models diz 3; o max_new_tokens da implantação (64) é só a perna.
     await waitFor(() => expect(streamScenario.lastBody?.max_tokens).toBe(3));
+  });
+
+  it("lê de novo a lista de modelos quando a cópia é de antes do modelo ser servido", async () => {
+    modelsScenario.listed = [];
+    modelsScenario.fresh = [{ id: "qwen", context_length: 4, max_tokens: 3 }];
+    try {
+      mountChat();
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
+      fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+      // Sem isso o pedido saía sem max_tokens e o gateway usava 512.
+      await waitFor(() => expect(streamScenario.lastBody?.max_tokens).toBe(3));
+    } finally {
+      modelsScenario.listed = [{ id: "qwen", context_length: 4, max_tokens: 3 }];
+    }
   });
 
   it("envia o toggle Think por inferência e mantém a escolha na conversa", async () => {

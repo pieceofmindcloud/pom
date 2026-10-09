@@ -968,16 +968,21 @@ function ChatScreen() {
     autoFollow.current = true;
     window.requestAnimationFrame(grow);
 
+    // The answer's whole budget is the model's output capacity (`/v1/models`);
+    // the deployment's `max_new_tokens` is only the size of one backend leg,
+    // and as the total it cut a reasoning model off before it answered. A list
+    // read before the model was served (it refreshes every 30 s) is read
+    // again: sent with no budget, the request got the gateway's 512.
+    const capacityOf = (list: typeof models.data) => list?.find((entry) => entry.id === model)?.max_tokens ?? undefined;
+    const maxTokens =
+      capacityOf(models.data) ?? capacityOf((await models.refetch()).data) ?? node.data?.config?.max_new_tokens;
+
     startStream({
       session: live,
       history,
       replyId: reply.id,
       model,
-      // The answer's whole budget is the model's output capacity (`/v1/models`);
-      // the deployment's `max_new_tokens` is only the size of one backend leg,
-      // and as the total it cut a reasoning model off before it answered.
-      maxTokens:
-        models.data?.find((entry) => entry.id === model)?.max_tokens ?? node.data?.config?.max_new_tokens,
+      maxTokens,
       inferenceHead: selectedInferenceHead ?? undefined,
       thinkingEnabled,
       ragEnabled: ragAvailable ? ragEnabled : undefined,

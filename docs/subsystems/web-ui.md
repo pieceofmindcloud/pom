@@ -284,7 +284,17 @@ local-only notice. Routes:
   section "Local rebuild in development".
 - `/documentacao` -> Documentation (full screen; see its own section below)
 - `/redes-publicas` -> PublicNetworks, a full-bleed catalog of public networks
-  discovered through the pkarr layer. The table groups by country/city and sorts
+  discovered through the pkarr layer. Two kinds of rows stay at the top
+  whatever the filters and the order (`GET /api/ui/networks/pinned`): the
+  network this machine is in, tagged "Your network", shown even when it is
+  not public; then the private networks added on this machine, tagged
+  "Private - added here" with an amber band. "Add network" in the header
+  imports one from a JSON file holding its trust document
+  (`POST /api/ui/networks/custom`), and an added row can be removed from the
+  list. Every row has an export button that saves its trust document as
+  `<name>-trust.json`, the file another machine imports. An added network is
+  joined like a public one, through its lobby; its admin must have discovery
+  on "Hidden", the network Chat on and the lobby switch set. The table groups by country/city and sorts
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust

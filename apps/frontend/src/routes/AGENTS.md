@@ -87,6 +87,15 @@ Per-file list:
   Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
   confirmation as Forget network in `NetworkSettings.tsx`); the principal
   (`authority_level === "primary"` from `useNode`) gets no action there.
+  Pinned rows come from `GET /api/ui/networks/pinned` and stay on top,
+  outside the filters and the sort: this machine's network (`kind` "own",
+  whatever its visibility, the directory's copy dropped) and the networks
+  imported here ("custom", amber band and badge). "Add network" reads a JSON
+  file and posts its text to `/api/ui/networks/custom`; a custom row has a
+  remove button behind a confirmation (`api.del`). Every row has an export
+  button (`exportTrustDocument`) that downloads `trust_document` as
+  `<name>-trust.json`. A node that does not serve the pinned route just shows
+  the directory.
   The screen is titled "Networks". For a network this node is not in, the one
   action opens the lobby window (`LobbyChat`), where admission is requested;
   without `lobby_chat` the button is disabled ("No lobby"). The old path that
@@ -112,7 +121,9 @@ Per-file list:
   members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
   `lib/types.ts`); unchecking all of them advertises the network as closed.
   "Lobby chat" (`lobby_chat`) lets machines that are not members talk to the
-  network; the checkbox is disabled unless the network is public. The leave
+  network; the checkbox is disabled only with discovery off. Discovery offers
+  "Hidden" (`private`) again: no relay lists the network, and another machine
+  reaches it by importing its trust document on the Networks screen. The leave
   action ("Return to my own network", `POST /api/ui/network/leave`) is not
   drawn on the machine's own network (`NodeInfo.own_network` with no
   `standby_network`): that network is inherent to the machine. An admin also

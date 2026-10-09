@@ -80,6 +80,12 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/network-chat/lobby",
             get(lobby_fetch).post(lobby_post),
         )
+        .route("/api/ui/networks/pinned", get(pinned_networks))
+        .route("/api/ui/networks/custom", post(import_custom_network))
+        .route(
+            "/api/ui/networks/custom/:fingerprint",
+            delete(remove_custom_network),
+        )
         .route("/api/ui/network-chat/lobby/info", get(lobby_info))
         .route("/api/ui/network-chat/lobby/latency", get(lobby_latency))
         .route("/api/ui/network-chat/lobby/admission", post(lobby_admission))

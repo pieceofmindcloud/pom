@@ -472,10 +472,10 @@ function NetworkInfoPanel({
           <Field label={t("network.visibility")}>
             <Select value={draft.visibility} onChange={(event) => update({ visibility: event.target.value as NetworkSettingsData["visibility"] })}>
               <option value="local">{t("network.visibilityLocal")}</option>
-              {/* Discovery is on or off. "On, not listed" announces the
-                  network but no relay lists it, so nobody can find it to ask
-                  for admission; it stays selectable only where already set. */}
-              {draft.visibility === "private" && <option value="private">{t("network.visibilityPrivate")}</option>}
+              {/* Hidden: announced, but no relay lists it. Another machine
+                  reaches it by importing its trust document on the Networks
+                  screen. */}
+              <option value="private">{t("network.visibilityPrivate")}</option>
               <option value="public">{t("network.visibilityPublic")}</option>
             </Select>
           </Field>
@@ -508,7 +508,7 @@ function NetworkInfoPanel({
               <input
                 type="checkbox"
                 checked={Boolean(draft.lobby_chat)}
-                disabled={!publicNetwork}
+                disabled={draft.visibility === "local"}
                 onChange={(event) => update({ lobby_chat: event.target.checked })}
               />
               {t("network.lobbyChatEnable")}
@@ -543,7 +543,7 @@ function NetworkInfoPanel({
           <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>
           <KeyValue label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(draft.accepted_enrollments, t)}</span></KeyValue>
           <KeyValue label={t("network.publicStats")}><span>{t(draft.public_stats && publicNetwork ? "network.publicStatsOn" : "network.publicStatsOff")}</span></KeyValue>
-          <KeyValue label={t("network.lobbyChat")}><span>{t(draft.lobby_chat && publicNetwork ? "network.lobbyChatOn" : "network.lobbyChatOff")}</span></KeyValue>
+          <KeyValue label={t("network.lobbyChat")}><span>{t(draft.lobby_chat && draft.visibility !== "local" ? "network.lobbyChatOn" : "network.lobbyChatOff")}</span></KeyValue>
           <KeyValue label={t("location.title")}><span className="break-words">{placeLabel(draft) || t("network.notProvided")}</span></KeyValue>
           {draft.location && <KeyValue label={t("network.location")}><span>{t("network.locationCoordinates", { latitude: draft.location.latitude, longitude: draft.location.longitude })}</span></KeyValue>}
         </dl>

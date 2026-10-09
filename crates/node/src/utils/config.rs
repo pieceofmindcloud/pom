@@ -178,8 +178,8 @@ pub struct NetworkSettings {
     pub accepted_enrollments: AcceptedEnrollments,
     /// Opens the `lobby` room of the network Chat to machines that are not
     /// members, so an admin can talk to a candidate before admitting it
-    /// (`network/network_lobby.rs`). Only takes effect on a public network
-    /// with the network Chat on.
+    /// (`network/network_lobby.rs`). Only takes effect with discovery on
+    /// (public or hidden) and the network Chat on.
     #[serde(default)]
     pub lobby_chat: bool,
     /// Publishes the served models, the node count and the total VRAM to

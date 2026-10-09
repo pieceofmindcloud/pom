@@ -94,6 +94,20 @@ last):
   networks it hears through gossip even when its own network is not public.
   On every node that route also merges what its relays answer to `Directory`,
   which is the only source for a node with discovery off.
+- **Pinned networks**: `GET /api/ui/networks/pinned` (every profile, behind
+  the operator session) answers `{own, custom}`: the network this node is in
+  whatever its visibility, and the networks imported on this machine. Each
+  entry is `{network, visibility}`, `network` in the shape of
+  `/api/public/networks` with `discovered_via: "custom"` for an imported one.
+  `POST /api/ui/networks/custom` takes `{trust_document}` (the JSON text of a
+  trust document), validates its signatures and stores it in `pom.db`; a
+  refusal carries `reason`: `invalid_document` (400), `own_network` or
+  `too_many` (409, at most 64). Importing a known network again replaces its
+  copy. `DELETE /api/ui/networks/custom/:fingerprint` forgets one (404 when
+  unknown). Importing joins nothing and never touches the trust root:
+  admission is still asked through the lobby. An imported entry only knows
+  what the document signs (name at creation, organization, access policy,
+  relay keys), and is assumed to have its lobby open.
 - **Published stats of another network**: `GET
   /api/ui/network-chat/lobby/info?key=pk:...` asks that network's principal for `{models, node_count,
   vram_total_mb}` and answers `{accepted, error, info}`. `info: null` with

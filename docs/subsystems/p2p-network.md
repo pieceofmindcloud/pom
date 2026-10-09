@@ -1443,11 +1443,14 @@ version policy).
 
 ### 6.1 Lobby: talking to a network before joining it
 
-A public network can open the `lobby` room of its Chat to machines that are
+A network can open the `lobby` room of its Chat to machines that are
 **not** members, so an admin can talk to a candidate before admitting it. The
 code is `network/network_lobby.rs`; the switch is `network.lobby_chat`, off by
-default, and it only takes effect on a public network with the network Chat on
-(`NetworkChat::lobby_enabled`). The public directory record and
+default, and it only takes effect with discovery on (`public` or `private`,
+never `local`) and the network Chat on (`NetworkChat::lobby_enabled`). A
+`private` network is listed by no relay: a candidate reaches its lobby by the
+principal's key, taken from the trust document its admin exported and the
+candidate imported on the Networks screen (`webui/networks.rs`). The public directory record and
 `PublicNetworkView` carry `lobby_chat` so the directory only offers the chat
 where it will be answered.
 

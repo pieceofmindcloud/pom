@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { CircleCheck, CircleHelp, CircleX, Gauge, Globe2, LoaderCircle, LocateFixed, LogOut, MessageCircle, RefreshCw, ShieldCheck, Waypoints } from "lucide-react";
+import { CircleCheck, CircleHelp, CircleX, Download, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogOut, MessageCircle, Plus, RefreshCw, ShieldCheck, Trash2, Waypoints } from "lucide-react";
 import { Confirm, Modal } from "../components/Confirm";
 import { LobbyChat } from "../components/LobbyChat";
 import { Markdown } from "../components/Markdown";
-import { Button, ErrorState, PageHeader, Select, Skeleton } from "../components/ui";
+import { Badge, Button, ErrorState, PageHeader, Select, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
 import { networkStats, type NetworkStats } from "../lib/networkStats";
 import { usePublicLatencies, type PublicLatency } from "../lib/publicLatency";
@@ -48,6 +48,24 @@ interface PublicNetwork {
   directory_replicas?: string[];
 }
 
+type Visibility = "local" | "private" | "public";
+
+/** A network the node keeps at the top of the list, with how it is announced. */
+interface PinnedNetwork {
+  network: PublicNetwork;
+  visibility: Visibility;
+}
+
+interface PinnedNetworks {
+  /** The network this machine is in, whatever its visibility. */
+  own: PinnedNetwork | null;
+  /** Networks imported from a trust document on this machine. */
+  custom: PinnedNetwork[];
+}
+
+/** Where a row comes from: this machine's network, an imported one, or the directory. */
+type RowKind = "own" | "custom" | "public";
+
 interface ViewerLocation {
   latitude: number;
   longitude: number;
@@ -64,6 +82,11 @@ export function PublicNetworks() {
   const node = useNode();
   const [networks, setNetworks] = useState<PublicNetwork[] | null>(null);
   const [localNetwork, setLocalNetwork] = useState<PublicNetwork | null>(null);
+  const [pinned, setPinned] = useState<PinnedNetworks | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<PublicNetwork | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const importInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<unknown>(null);
   const [refreshing, setRefreshing] = useState(false);
   const networkInfo = useNetworkInfo(Boolean(node.data));
@@ -80,6 +103,42 @@ export function PublicNetworks() {
   const [cityFilter, setCityFilter] = useState("");
   const [reachabilityRefreshKey, setReachabilityRefreshKey] = useState(0);
 
+  /** This machine's own network and the imported ones; an older node has neither. */
+  function loadPinned() {
+    return api.get<PinnedNetworks>("/api/ui/networks/pinned")
+      .then(setPinned)
+      .catch(() => setPinned(null));
+  }
+
+  async function importNetwork(file: File | undefined) {
+    if (!file) return;
+    setImporting(true);
+    try {
+      const imported = await api.post<PinnedNetwork>("/api/ui/networks/custom", { trust_document: await file.text() });
+      await loadPinned();
+      toast.success(t("publicNetworks.importDone"), imported.network.name || imported.network.cluster_id);
+    } catch (reason) {
+      toast.fromError(t("publicNetworks.importFailed"), reason);
+    } finally {
+      setImporting(false);
+      if (importInput.current) importInput.current.value = "";
+    }
+  }
+
+  async function removeCustom() {
+    if (!removeTarget) return;
+    setRemoving(true);
+    try {
+      await api.del(`/api/ui/networks/custom/${encodeURIComponent(removeTarget.fingerprint)}`);
+      await loadPinned();
+    } catch (reason) {
+      toast.fromError(t("publicNetworks.removeFailed"), reason);
+    } finally {
+      setRemoving(false);
+      setRemoveTarget(null);
+    }
+  }
+
   async function load() {
     setRefreshing(true);
     setError(null);
@@ -87,6 +146,7 @@ export function PublicNetworks() {
     try {
       const discovered = await api.get<PublicNetwork[]>("/api/public/networks", { auth: false });
       setNetworks(discovered);
+      void loadPinned();
       void api.get<PublicNetwork>("/api/public/network", { auth: false })
         .then(setLocalNetwork)
         .catch(() => setLocalNetwork(null));
@@ -151,6 +211,15 @@ export function PublicNetworks() {
     [countryFilter, networks],
   );
   const selectedCity = cityOptions.includes(cityFilter) ? cityFilter : "";
+  /*
+   * Two kinds of rows stay at the top whatever the filters and the order:
+   * the network this machine is in, then the ones imported here. The
+   * directory's copy of either is dropped so no network shows twice.
+   */
+  const ownNetwork = pinned?.own?.network ?? localNetwork;
+  const ownFingerprint = ownNetwork?.fingerprint;
+  const customNetworks = (pinned?.custom ?? []).filter((entry) => entry.network.fingerprint !== ownFingerprint);
+  const pinnedFingerprints = new Set([ownFingerprint, ...customNetworks.map((entry) => entry.network.fingerprint)].filter(Boolean));
   const radiusKm = viewerLocation ? withinKm : 0;
   const filteredNetworks = useMemo(
     () => (networks ?? []).filter((network) => {
@@ -165,7 +234,7 @@ export function PublicNetworks() {
   // Measuring dials every listed network, so it waits for the operator to ask.
   const measuring = latencyAsked || sortOrder === "latency";
   const latencies = usePublicLatencies(
-    (networks ?? []).filter((network) => network.fingerprint !== localNetwork?.fingerprint).map((network) => network.publisher_key),
+    [...(pinned?.custom ?? []).map((entry) => entry.network), ...(networks ?? [])].filter((network) => network.fingerprint !== ownFingerprint).map((network) => network.publisher_key),
     measuring,
     reachabilityRefreshKey,
   );
@@ -185,15 +254,21 @@ export function PublicNetworks() {
       if (sortOrder === "latency") {
         return sorted.sort(by((network) => {
           // This node's own network is as close as a network gets.
-          if (network.fingerprint === localNetwork?.fingerprint) return 0;
+          if (network.fingerprint === ownFingerprint) return 0;
           const latency = latencies[network.publisher_key];
           return typeof latency === "number" ? latency : null;
         }));
       }
       return sorted.sort(by((network) => distanceKm(network.location, viewerLocation)));
     },
-    [filteredNetworks, latencies, localNetwork?.fingerprint, sortOrder, viewerLocation?.latitude, viewerLocation?.longitude],
+    [filteredNetworks, latencies, ownFingerprint, sortOrder, viewerLocation?.latitude, viewerLocation?.longitude],
   );
+  const rows: { network: PublicNetwork; kind: RowKind; visibility: Visibility }[] = [
+    ...(ownNetwork ? [{ network: ownNetwork, kind: "own" as const, visibility: pinned?.own?.visibility ?? "public" as const }] : []),
+    ...customNetworks.map((entry) => ({ network: entry.network, kind: "custom" as const, visibility: entry.visibility })),
+    ...orderedNetworks.filter((network) => !pinnedFingerprints.has(network.fingerprint)).map((network) => ({ network, kind: "public" as const, visibility: "public" as const })),
+  ];
+  const detailsVisibility = rows.find((row) => row.network.fingerprint === detailsTarget?.fingerprint)?.visibility ?? "public";
   const metrics = networkStats(cluster.data);
   /*
    * The row of the network this node already belongs to never offers Join.
@@ -221,7 +296,11 @@ export function PublicNetworks() {
         title={t("publicNetworks.title")}
         subtitle={t("publicNetworks.subtitle")}
         className="!mb-0 border-b border-line bg-surface/75 px-3 py-3 sm:px-4"
-        actions={<Button size="sm" loading={refreshing} onClick={() => void load()} icon={<RefreshCw className="h-3.5 w-3.5" />}>{t("publicNetworks.refresh")}</Button>}
+        actions={<div className="flex items-center gap-2">
+          <input ref={importInput} type="file" accept=".json,application/json" className="hidden" data-testid="network-import-file" onChange={(event) => void importNetwork(event.target.files?.[0])} />
+          <Button size="sm" variant="primary" loading={importing} title={t("publicNetworks.addDetail")} onClick={() => importInput.current?.click()} icon={<Plus className="h-3.5 w-3.5" />}>{t("publicNetworks.add")}</Button>
+          <Button size="sm" loading={refreshing} onClick={() => void load()} icon={<RefreshCw className="h-3.5 w-3.5" />}>{t("publicNetworks.refresh")}</Button>
+        </div>}
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-y border-line bg-surface/35">
         <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-line bg-raised/60 px-4 py-3 sm:px-5">
@@ -263,17 +342,29 @@ export function PublicNetworks() {
             <Button size="sm" disabled={measuring} onClick={() => setLatencyAsked(true)} icon={<Gauge className="h-3.5 w-3.5" />}>{t("publicNetworks.measureLatency")}</Button>
           </div>
         </div>
-        {error ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={error} onRetry={() => void load()} /></div> : networks === null ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : filteredNetworks.length === 0 ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(networks.length === 0 ? "publicNetworks.emptyTitle" : "publicNetworks.noMatches")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(networks.length === 0 ? "publicNetworks.emptyDetail" : "publicNetworks.noMatchesDetail")}</p></div> : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1200px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "reach", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{orderedNetworks.map((network) => { const isLocal = localNetwork?.fingerprint === network.fingerprint; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={!isLocal ? "none" : isPrincipal ? "principal" : "member"} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => setChatTarget(network)} onDetails={() => setDetailsTarget(network)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table></div>}
+        {error ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={error} onRetry={() => void load()} /></div> : networks === null ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : rows.length === 0 ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(networks.length === 0 ? "publicNetworks.emptyTitle" : "publicNetworks.noMatches")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(networks.length === 0 ? "publicNetworks.emptyDetail" : "publicNetworks.noMatchesDetail")}</p></div> : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1200px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "reach", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{rows.map(({ network, kind }) => { const isLocal = kind === "own"; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} onExport={() => exportTrustDocument(network)} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={!isLocal ? "none" : isPrincipal ? "principal" : "member"} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => setChatTarget(network)} onDetails={() => setDetailsTarget(network)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table></div>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 px-1 py-3 text-xs leading-relaxed text-faint"><span data-testid="distance-origin">{t(browserLocation ? "publicNetworks.distanceFromBrowser" : ownLocation ? "publicNetworks.distanceFromNetwork" : "publicNetworks.distanceFromNone")}</span><span>{t("publicNetworks.locationNote")}</span><span className="flex items-center gap-2"><ShieldCheck className="h-3.5 w-3.5 shrink-0" />{t("publicNetworks.securityNote")}</span></div>
       <Confirm open={leaveConfirm} title={t("network.forgetNetworkTitle")} description={t("network.forgetNetworkDescription")} confirmLabel={t("network.leave")} tone="danger" busy={leaving} onConfirm={() => void leave()} onCancel={() => !leaving && setLeaveConfirm(false)} />
       <LobbyChat network={chatTarget && { name: chatTarget.name || chatTarget.cluster_id, publisher_key: chatTarget.publisher_key, accepted_enrollments: chatTarget.accepted_enrollments }} endpoint="/api/ui/network-chat/lobby" onClose={() => setChatTarget(null)} />
-      <PublicNetworkDetails network={detailsTarget} onClose={() => setDetailsTarget(null)} t={t} />
+      <Confirm open={removeTarget !== null} title={t("publicNetworks.removeTitle")} description={t("publicNetworks.removeDescription", { name: removeTarget?.name || removeTarget?.cluster_id || "" })} confirmLabel={t("publicNetworks.remove")} tone="danger" busy={removing} onConfirm={() => void removeCustom()} onCancel={() => !removing && setRemoveTarget(null)} />
+      <PublicNetworkDetails network={detailsTarget} visibility={detailsVisibility} onClose={() => setDetailsTarget(null)} t={t} />
     </div>
   );
 }
 
-function NetworkRow({ network, distance, latency, stats: localStats, membership, leaving, onLeave, onChat, onDetails, t, refreshKey }: { network: PublicNetwork; distance: number | null; latency: PublicLatency | undefined; stats: NetworkStats | null; membership: "none" | "member" | "principal"; leaving: boolean; onLeave: () => void; onChat: () => void; onDetails: () => void; t: (key: string, values?: Record<string, string | number>) => string; refreshKey: number }) {
+/** Saves a network's trust document as the file another node imports. */
+function exportTrustDocument(network: PublicNetwork) {
+  const name = (network.name || network.cluster_id).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "network";
+  const url = URL.createObjectURL(new Blob([network.trust_document], { type: "application/json;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${name}-trust.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function NetworkRow({ network, kind, onExport, onRemove, distance, latency, stats: localStats, membership, leaving, onLeave, onChat, onDetails, t, refreshKey }: { network: PublicNetwork; kind: RowKind; onExport: () => void; onRemove: () => void; distance: number | null; latency: PublicLatency | undefined; stats: NetworkStats | null; membership: "none" | "member" | "principal"; leaving: boolean; onLeave: () => void; onChat: () => void; onDetails: () => void; t: (key: string, values?: Record<string, string | number>) => string; refreshKey: number }) {
   const unavailable = t("publicNetworks.unavailable");
   const location = placeOf(network) || unavailable;
   const reachability = usePublicLocator(network.publisher_key, refreshKey);
@@ -294,10 +385,10 @@ function NetworkRow({ network, distance, latency, stats: localStats, membership,
           : unavailable;
   const models = stats?.models.length ? stats.models.join(", ") : unavailable;
   const closed = network.accepted_enrollments?.length === 0;
-  return <tr className="align-top transition-colors hover:bg-raised/45"><td className="max-w-[15rem] px-4 py-3.5"><button type="button" className="group text-left" onClick={onDetails} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t((network.location?.accuracy_m ?? 0) >= 1000 ? "publicNetworks.distanceApproximate" : "publicNetworks.distance", { value: distance.toFixed(0) })}</span>}<p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[16rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="whitespace-nowrap px-4 py-3.5 font-mono text-muted" data-testid={`public-network-latency-${network.fingerprint}`}>{latencyText}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><div className="flex flex-wrap items-center gap-2">{membership === "none" ? <Button size="sm" variant="primary" data-guide={network.lobby_chat && !closed ? "network-join" : undefined} disabled={!network.lobby_chat} title={!network.lobby_chat ? t("publicNetworks.noLobbyDetail") : closed ? t("publicNetworks.closedDetail") : undefined} onClick={(event) => { event.stopPropagation(); onChat(); }} icon={<MessageCircle className="h-3.5 w-3.5" />}>{t(!network.lobby_chat ? "publicNetworks.noLobby" : closed ? "publicNetworks.chat" : "publicNetworks.join")}</Button> : membership === "member" ? <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={(event) => { event.stopPropagation(); onLeave(); }} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button> : null}</div></td></tr>;
+  return <tr data-testid={`network-row-${network.fingerprint}`} data-network-kind={kind} className={kind === "custom" ? "align-top bg-amber/[0.05] shadow-[inset_3px_0_0_rgb(var(--amber)/0.7)] transition-colors hover:bg-amber/[0.09]" : kind === "own" ? "align-top bg-aqua/[0.05] shadow-[inset_3px_0_0_rgb(var(--aqua)/0.7)] transition-colors hover:bg-aqua/[0.09]" : "align-top transition-colors hover:bg-raised/45"}><td className="max-w-[15rem] px-4 py-3.5">{kind !== "public" && <div className="mb-1.5">{kind === "own" ? <Badge tone="aqua"><House className="h-3 w-3" />{t("publicNetworks.kindOwn")}</Badge> : <Badge tone="amber"><Lock className="h-3 w-3" />{t("publicNetworks.kindCustom")}</Badge>}</div>}<button type="button" className="group text-left" onClick={onDetails} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t((network.location?.accuracy_m ?? 0) >= 1000 ? "publicNetworks.distanceApproximate" : "publicNetworks.distance", { value: distance.toFixed(0) })}</span>}<p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[16rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="whitespace-nowrap px-4 py-3.5 font-mono text-muted" data-testid={`public-network-latency-${network.fingerprint}`}>{latencyText}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><div className="flex flex-wrap items-center gap-2">{membership === "none" ? <Button size="sm" variant="primary" data-guide={network.lobby_chat && !closed ? "network-join" : undefined} disabled={!network.lobby_chat} title={!network.lobby_chat ? t("publicNetworks.noLobbyDetail") : closed ? t("publicNetworks.closedDetail") : undefined} onClick={(event) => { event.stopPropagation(); onChat(); }} icon={<MessageCircle className="h-3.5 w-3.5" />}>{t(!network.lobby_chat ? "publicNetworks.noLobby" : closed ? "publicNetworks.chat" : "publicNetworks.join")}</Button> : membership === "member" ? <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={(event) => { event.stopPropagation(); onLeave(); }} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button> : null}<Button size="sm" variant="ghost" aria-label={t("publicNetworks.exportTrust", { name: network.name || network.cluster_id })} title={t("publicNetworks.exportTrustDetail")} disabled={!network.trust_document} onClick={(event) => { event.stopPropagation(); onExport(); }} icon={<Download className="h-3.5 w-3.5" />} />{kind === "custom" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.removeNamed", { name: network.name || network.cluster_id })} title={t("publicNetworks.remove")} onClick={(event) => { event.stopPropagation(); onRemove(); }} icon={<Trash2 className="h-3.5 w-3.5" />} />}</div></td></tr>;
 }
 
-function PublicNetworkDetails({ network, onClose, t }: { network: PublicNetwork | null; onClose: () => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+function PublicNetworkDetails({ network, visibility, onClose, t }: { network: PublicNetwork | null; visibility: Visibility; onClose: () => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   const unavailable = t("publicNetworks.unavailable");
   const value = (text: string) => text || unavailable;
   const location = network?.location ? `${network.location.latitude}, ${network.location.longitude}` : unavailable;
@@ -307,7 +398,7 @@ function PublicNetworkDetails({ network, onClose, t }: { network: PublicNetwork 
       <div className="space-y-5">
         <div className="grid gap-4 sm:grid-cols-2">
           <DetailBlock label={t("network.organization")}><span>{value(network.organization)}</span></DetailBlock>
-          <DetailBlock label={t("network.visibility")}><span>{t("network.visibilityPublic")}</span></DetailBlock>
+          <DetailBlock label={t("network.visibility")}><span>{t(visibility === "private" ? "network.visibilityPrivate" : visibility === "local" ? "network.visibilityLocal" : "network.visibilityPublic")}</span></DetailBlock>
           <DetailBlock label={t("network.accessPolicy")}><span>{accessPolicyLabel(network.access_policy, t)}</span></DetailBlock>
           <DetailBlock label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(network.accepted_enrollments, t)}</span></DetailBlock>
           <DetailBlock label={t("publicNetworks.place")}><span>{value(placeOf(network))}</span></DetailBlock>

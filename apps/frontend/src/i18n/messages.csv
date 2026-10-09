@@ -1416,7 +1416,7 @@ network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
 network.lobbyChat,Lobby chat,Chat de lobby
 network.lobbyChatEnable,Accept messages from machines that are not members,Aceitar mensagens de máquinas que não são membros
-network.lobbyChatHint,Lets a machine that has not joined talk to this network before being admitted. Members see its messages and declared hardware in the Lobby room of the network chat. Needs a public network with the network chat on.,Permite que uma máquina que ainda não entrou converse com esta rede antes de ser admitida. Os membros veem as mensagens e o hardware declarado na sala Lobby do chat da rede. Exige rede pública com o chat da rede ligado.
+network.lobbyChatHint,Lets a machine that has not joined talk to this network before being admitted. Members see its messages and declared hardware in the Lobby room of the network chat. Needs discovery on (public or hidden) and the network chat on.,Permite que uma máquina que ainda não entrou converse com esta rede antes de ser admitida. Os membros veem as mensagens e o hardware declarado na sala Lobby do chat da rede. Exige descoberta ligada (pública ou oculta) e o chat da rede ligado.
 network.lobbyChatOff,Closed,Fechado
 network.lobbyChatOn,Open,Aberto
 network.location,Location,Localização
@@ -1599,7 +1599,7 @@ network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
 network.visibility,Discovery,Descoberta
 network.visibilityLocal,Off - this machine only,Desligada - só esta máquina
-network.visibilityPrivate,Hidden - announced but not listed (nobody can find it),Oculta - anunciada mas não listada (ninguém a encontra)
+network.visibilityPrivate,Hidden - not listed; joined by importing its trust document,Oculta - não listada; entra-se importando o documento de confiança
 network.visibilityPublic,On - other machines can find it and ask to join,Ligada - outras máquinas a encontram e pedem para entrar
 networkChat.attach,Attach a file,Anexar arquivo
 networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
@@ -1925,6 +1925,8 @@ profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
 publicNetworks.action,Action,Ação
+publicNetworks.add,Add network,Adicionar rede
+publicNetworks.addDetail,"Add a private network from its trust document, a JSON file its administrator exports.","Adicione uma rede privada a partir do documento de confiança, um arquivo JSON que o administrador dela exporta."
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.browserLocationDenied,The browser did not share its location.,O navegador não compartilhou a localização.
@@ -1947,14 +1949,20 @@ publicNetworks.distanceFromNetwork,Distances are measured from your network's lo
 publicNetworks.distanceFromNone,"To see distances, set your network's location or use the browser's.","Para ver distâncias, defina a localização da sua rede ou use a do navegador."
 publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
 publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
+publicNetworks.exportTrust,Export the trust document of {name},Exportar o documento de confiança de {name}
+publicNetworks.exportTrustDetail,Export the trust document so another machine can add this network,Exportar o documento de confiança para que outra máquina adicione esta rede
 publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
+publicNetworks.importDone,Network added,Rede adicionada
+publicNetworks.importFailed,Could not add the network,Não foi possível adicionar a rede
 publicNetworks.join,Talk and ask to join,Conversar e pedir para entrar
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
 publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
 publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
+publicNetworks.kindCustom,Private · added here,Privada · adicionada aqui
+publicNetworks.kindOwn,Your network,Sua rede
 publicNetworks.latency,Average latency,Latência média
 publicNetworks.latencyChecking,measuring...,medindo...
 publicNetworks.latencyFailed,no answer,sem resposta
@@ -1981,12 +1989,17 @@ publicNetworks.reachUnknown,Could not check,Não foi possível verificar
 publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
 publicNetworks.relayHints,Dedicated relays,Relés dedicados
+publicNetworks.remove,Remove from the list,Remover da lista
+publicNetworks.removeDescription,"{name} leaves this machine's list. Nothing changes on that network, and its trust document can be imported again.","{name} sai da lista desta máquina. Nada muda naquela rede, e o documento de confiança pode ser importado de novo."
+publicNetworks.removeFailed,Could not remove the network,Não foi possível remover a rede
+publicNetworks.removeNamed,Remove {name} from the list,Remover {name} da lista
+publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede da lista?
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
 publicNetworks.sort,Sort by,Ordenar por
 publicNetworks.sortDistance,Closest first,Mais próximas primeiro
 publicNetworks.sortLatency,Lowest latency first,Menor latência primeiro
 publicNetworks.sortName,Name,Nome
-publicNetworks.subtitle,Networks you can talk to and ask to join. The list comes from the relays this node knows.,Redes com as quais você pode conversar e pedir para entrar. A lista vem dos relés que este nó conhece.
+publicNetworks.subtitle,"Networks you can talk to and ask to join. Public ones come from the relays this node knows; a private one is added from its trust document.","Redes com as quais você pode conversar e pedir para entrar. As públicas vêm dos relés que este nó conhece; uma privada é adicionada pelo documento de confiança."
 publicNetworks.title,Networks,Redes
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida

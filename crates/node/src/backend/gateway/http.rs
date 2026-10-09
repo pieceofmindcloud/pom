@@ -670,11 +670,19 @@ pub(super) async fn accept_public_directory_record(
 }
 
 async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView> {
-    let (visibility, configured_network) = {
-        let config = state.auth.read().await;
-        (config.network.visibility, config.network.clone())
-    };
-    if visibility != crate::config::NetworkVisibility::Public || !state.admin_trust.is_anchored() {
+    let visibility = state.auth.read().await.network.visibility;
+    if visibility != crate::config::NetworkVisibility::Public {
+        return None;
+    }
+    local_network_view(state).await
+}
+
+/// The network this node is in, whatever its visibility, in the shape the
+/// listings use. Only the operator's own screen may show it: what goes out to
+/// other machines is [`local_public_network`].
+pub(crate) async fn local_network_view(state: &GatewayState) -> Option<PublicNetworkView> {
+    let configured_network = state.auth.read().await.network.clone();
+    if !state.admin_trust.is_anchored() {
         return None;
     }
     let network = state
@@ -776,7 +784,7 @@ fn listed_publishers() -> &'static std::sync::Mutex<std::collections::HashMap<St
 /// locate route answers for every row of the screen. A node on its own local
 /// network hears no announce: its list comes from the relays and is stored
 /// nowhere else.
-pub(super) fn remember_listed_publishers(networks: &[PublicNetworkView]) {
+pub(crate) fn remember_listed_publishers(networks: &[PublicNetworkView]) {
     let now = Instant::now();
     let mut listed = listed_publishers().lock().expect("listed publishers lock");
     listed.retain(|_, seen| now.duration_since(*seen) < LISTED_PUBLISHER_TTL);

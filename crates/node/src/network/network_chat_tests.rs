@@ -252,10 +252,13 @@ async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() 
         .unwrap_err();
     assert_eq!(error.to_string(), "lobby_presence_not_allowed");
 
-    // The lobby is off until the network is public and the switch is set.
+    // The lobby is off until discovery is on and the switch is set. A hidden
+    // network answers too: it is reached by whoever holds its trust document.
     assert!(!chat.lobby_enabled().await);
     auth.write().await.network.lobby_chat = true;
     assert!(!chat.lobby_enabled().await);
+    auth.write().await.network.visibility = crate::config::NetworkVisibility::Private;
+    assert!(chat.lobby_enabled().await);
     auth.write().await.network.visibility = crate::config::NetworkVisibility::Public;
     assert!(chat.lobby_enabled().await);
     chat.set_enabled(false);

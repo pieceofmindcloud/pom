@@ -206,7 +206,8 @@ never affected.
 
 `NetworkSettings.lobby_chat` opens the lobby room of the network Chat to
 machines that are not members (`network/network_lobby.rs`). It is off by
-default and only takes effect on a public network with the network Chat on.
+default and only takes effect with discovery on (`public` or `private`) and
+the network Chat on.
 `NetworkSettings.visibility` is what the interface calls discovery: `local`
 announces nothing (the node runs detached and publishes no pkarr record),
 `private` announces without being listed, `public` is listed.

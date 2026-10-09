@@ -7,6 +7,8 @@ x-node: &node
     # The Rust build fetches pom-plugin-llama.cpp (private) over SSH with the host agent.
     ssh:
       - default
+    secrets:
+      - pom_gh_token
     additional_contexts:
       llama-fork: ${POM_LLAMA_CPP_SOURCE_CONTEXT:-./llama.cpp}
     args:
@@ -26,6 +28,9 @@ x-node: &node
       POM_CUDA_ARCHITECTURES: ${POM_CUDA_ARCHITECTURES:-86;120}
       POM_CUDA_ARCH_CACHE_KEY: ${POM_CUDA_ARCH_CACHE_KEY:-86-120}
       RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-stable}
+      # Tag of a published pom-plugin-llama.cpp release (e.g. v0.1.0). Empty = fetch the
+      # locked commit over SSH. The release needs POM_GH_TOKEN (the pom_gh_token secret).
+      POM_PLUGIN_LLAMA_RELEASE: ${POM_PLUGIN_LLAMA_RELEASE:-}
   image: pom:latest
   network_mode: host
   restart: always
@@ -42,6 +47,10 @@ x-node: &node
     # NVIDIA Vulkan ICD and can make the Vulkan backend enumerate that GPU.
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     POM_SLOT_PERSIST_PREFIX_CACHE: 1
+
+secrets:
+  pom_gh_token:
+    environment: POM_GH_TOKEN
 
 services:
   node-gpu:

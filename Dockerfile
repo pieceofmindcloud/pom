@@ -119,6 +119,24 @@ RUN set -eu; \
 # pinned in Cargo.toml). Its build reads this copied tree through LLAMA_SOURCE.
 COPY --from=llama-fork . /build/llama.cpp/
 
+# ── 1b. the llama engine from a published release ─────────────────────────────
+# POM_PLUGIN_LLAMA_RELEASE (a tag of pom-plugin-llama.cpp, e.g. v0.1.0) makes the
+# build use that release's source archive instead of fetching the locked commit
+# over SSH. The archive is downloaded with the token of the `pom_gh_token` secret
+# (optional, only needed here). The layer depends on the tag alone, so it is
+# reused across builds of the same release. Its files keep the archive's mtimes,
+# so Cargo's fingerprints stay valid while the release does not change.
+ARG POM_PLUGIN_LLAMA_RELEASE=""
+RUN --mount=type=secret,id=pom_gh_token,required=false \
+    if [ -n "$POM_PLUGIN_LLAMA_RELEASE" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/* && \
+      GH_TOKEN="$(cat /run/secrets/pom_gh_token)" gh release download "$POM_PLUGIN_LLAMA_RELEASE" \
+        -R pieceofmindcloud/pom-plugin-llama.cpp -p 'pom-plugin-llama.cpp-*.tar.gz' -D /tmp/engine && \
+      mkdir -p /build/pom-plugin-llama.cpp && \
+      tar -xzf /tmp/engine/pom-plugin-llama.cpp-*.tar.gz --strip-components=1 -C /build/pom-plugin-llama.cpp && \
+      rm -rf /tmp/engine; \
+    fi
+
 # ── 2. the backend ────────────────────────────────────────────────────────────
 # `brand.json` and `assets/` are inputs of the Rust build, not only of the
 # interface: `crates/brand` embeds the first with `include_str!` and
@@ -127,6 +145,14 @@ COPY Cargo.toml Cargo.lock brand.json ./
 COPY .cargo/ .cargo/
 COPY assets/ assets/
 COPY crates/ crates/
+# With a release, point both git dependencies at the extracted archive (only in
+# this image's copy of the manifests; the repository keeps the git pins).
+RUN if [ -n "$POM_PLUGIN_LLAMA_RELEASE" ]; then \
+      sed -i -E 's#^llama-cpp-sys-2 = \{ git = "[^"]*", rev = "[0-9a-f]+" \}#llama-cpp-sys-2 = { path = "/build/pom-plugin-llama.cpp/vendor/llama-cpp-sys-2" }#' Cargo.toml && \
+      sed -i -E 's#^llama-engine = \{ git = "[^"]*", rev = "[0-9a-f]+" \}#llama-engine = { path = "/build/pom-plugin-llama.cpp/crates/llama-engine" }#' crates/node/Cargo.toml && \
+      grep -q 'path = "/build/pom-plugin-llama.cpp' Cargo.toml && \
+      grep -q 'path = "/build/pom-plugin-llama.cpp' crates/node/Cargo.toml; \
+    fi
 
 # Fork cache identity passed from the host by scripts/build-docker.sh: the
 # release tag in prebuilt mode, or the local commit plus source delta in source

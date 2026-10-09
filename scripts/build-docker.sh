@@ -24,6 +24,19 @@ export POM_LLAMA_CPP_MODE="$mode"
 export POM_LLAMA_CPP_RELEASE_REPOSITORY=${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pieceofmindcloud/llama.cpp}
 export POM_LLAMA_CPP_REF=${POM_LLAMA_CPP_REF:-pom-tensor-parallel}
 
+# POM_PLUGIN_LLAMA_RELEASE=latest takes the newest published release of the engine
+# when the build starts. The resolved tag is what the Docker layers see, so a new
+# release rebuilds the engine layer and the same release reuses the cache.
+if [ "${POM_PLUGIN_LLAMA_RELEASE:-}" = latest ]; then
+  if ! POM_PLUGIN_LLAMA_RELEASE=$(gh release view --repo pieceofmindcloud/pom-plugin-llama.cpp \
+      --json tagName -q .tagName); then
+    echo "não foi possível resolver o último release de pom-plugin-llama.cpp (gh release view)." >&2
+    exit 1
+  fi
+  export POM_PLUGIN_LLAMA_RELEASE
+  echo "motor: pom-plugin-llama.cpp@${POM_PLUGIN_LLAMA_RELEASE} (latest)"
+fi
+
 llama_docker_context=$(mktemp -d "${TMPDIR:-/tmp}/pom-llama-context.XXXXXX")
 trap 'rm -rf "$llama_docker_context"' EXIT
 if [ "$mode" = source ]; then

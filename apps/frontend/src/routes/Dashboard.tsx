@@ -18,6 +18,7 @@ import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../components/ui";
 import { canSeePeerDetails } from "../lib/access";
+import { engineOfParams, inferenceServiceCatalog } from "../lib/inferenceServices";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
 import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
@@ -175,6 +176,9 @@ export function Dashboard() {
   const activeVersion = activeDeployment?.versions.find(
     (version) => version.version === activeDeployment.active_version,
   ) ?? activeDeployment?.versions.at(-1);
+  // A plugin's engine (Strata, ...) shows its own section, not llama.cpp's numbers.
+  const engineCatalog = useMemo(() => inferenceServiceCatalog(cluster.data?.peers), [cluster.data]);
+  const activeEngine = engineOfParams(activeVersion?.params.inference_service, engineCatalog);
   const activeDeployId =
     activeDeployment?.deploy_id
     ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
@@ -348,7 +352,7 @@ export function Dashboard() {
         {isPrincipal && logsPluginActive && <DeploymentLogDock />}
       </div>
 
-      {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div><DeploymentInspector value={activeVersion.params} readOnly showInferenceMode pomDesenv={node.data?.pom_desenv === true} showHiddenStateDtype={activeVersion.params.hidden_state_dtype != null} /></aside>}
+      {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div><DeploymentInspector value={activeVersion.params} readOnly showInferenceMode pomDesenv={node.data?.pom_desenv === true} showHiddenStateDtype={activeVersion.params.hidden_state_dtype != null} inferenceService={activeEngine ?? undefined} /></aside>}
     </div>
 
     {isAdmin && (

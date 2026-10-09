@@ -87,7 +87,7 @@ export interface SystemLoad {
 export type ServerState = "disabled" | "starting" | "ready" | "idle" | "failed" | "thermal";
 
 /** Motor que o backend afirma ter executado, sem inferência da interface. */
-export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
+export type ExecutionEngine = "llama.cpp" | "moe" | "plugin" | "unknown";
 
 export interface RuntimeStatus {
   state: ServerState;

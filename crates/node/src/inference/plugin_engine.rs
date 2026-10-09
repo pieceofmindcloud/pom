@@ -483,6 +483,63 @@ async fn open_stream(
     ))
 }
 
+/// The trace of a generation a plugin engine ran: every stage of the plan is
+/// a hop the plugin executed. The engine reports the request as a whole (its
+/// `done`), not per hop, so every stage counts the same prompt call and decode
+/// rounds, and the engine's own prompt and decode times go to the last stage,
+/// which serves the request.
+pub(crate) fn engine_trace(
+    trace_id: String,
+    model: &str,
+    plan: &crate::pipeline::PipelinePlan,
+    code: &str,
+    done: &Value,
+    generated: u32,
+) -> crate::prefill::RequestTrace {
+    let steps: Vec<(&str, u32, u32)> = plan
+        .steps
+        .iter()
+        .map(|step| (step.node_id.as_str(), step.start_layer, step.end_layer))
+        .collect();
+    let mut trace = crate::prefill::RequestTrace::new_with_trace_id(trace_id, model, &steps);
+    let timings = &done["timings"];
+    let proposed = timings["draft_n"].as_u64().unwrap_or(0);
+    let accepted = timings["draft_n_accepted"]
+        .as_u64()
+        .unwrap_or(0)
+        .min(proposed);
+    // A decode round yields one token plus the drafts it accepted; the first
+    // token comes from the prompt.
+    let rounds = u64::from(generated)
+        .saturating_sub(accepted)
+        .saturating_sub(1)
+        .max(u64::from(generated > 0));
+    let path = format!("plugin/{code}");
+    let last = trace.hops.len().saturating_sub(1);
+    for (index, hop) in trace.hops.iter_mut().enumerate() {
+        for phase in [&mut hop.prefill, &mut hop.decode] {
+            phase.executed_engine = crate::executor::ExecutionEngine::Plugin;
+            phase.executed_engines = vec![crate::executor::ExecutionEngine::Plugin];
+            phase.selected_path = Some(path.clone());
+        }
+        hop.prefill.calls = 1;
+        hop.prefill.reported_spans = 1;
+        hop.decode.calls = rounds.min(u64::from(u32::MAX)) as u32;
+        hop.decode.reported_spans = rounds;
+        if index == last {
+            hop.decode.node_decode_ms = timings["predicted_ms"].as_f64().unwrap_or(0.0);
+        }
+    }
+    for _ in 0..rounds {
+        trace.note_decode_round();
+    }
+    trace.mtp_draft_tokens_proposed = proposed;
+    trace.mtp_draft_tokens_accepted = accepted;
+    trace.mtp_draft_tokens_rejected = proposed - accepted;
+    trace.mtp_acceptance_rate = (proposed > 0).then(|| accepted as f64 / proposed as f64);
+    trace
+}
+
 fn finish_reason(finish: &str) -> &'static str {
     match finish {
         "length" => "length",
@@ -588,15 +645,19 @@ pub(crate) async fn generate(
                 // The same record a one-hop llama.cpp pipeline leaves: the
                 // request audit, the statistics and the logs the admins
                 // receive read the source and this trace, whatever the engine.
-                let mut trace = crate::prefill::RequestTrace::new_with_trace_id(
+                let mut trace = engine_trace(
                     trace_id
                         .clone()
                         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
                     model,
-                    &[(node_id, step.start_layer, step.end_layer)],
+                    plan,
+                    code,
+                    done,
+                    generated,
                 );
                 trace.input_tokens = prompt_tokens;
                 trace.cached_tokens = cached_tokens;
+                trace.prefix_match_tokens = cached_tokens;
                 trace.prefill_ms = prefill_ms;
                 trace.server_ttft_ms = Some(ttft_ms);
                 trace.engine_ttft_ms = engine_prefill_ms;
@@ -622,7 +683,7 @@ pub(crate) async fn generate(
                     timings,
                     partial: false,
                     finish_reason: Some(finish_reason(finish).to_owned()),
-                    stop_sequence: None,
+                    stop_sequence: done["stop_sequence"].as_str().map(str::to_owned),
                     legs: 1,
                     trace: Some(trace),
                 };
@@ -829,6 +890,46 @@ mod tests {
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_split_generation_is_traced_on_every_stage_with_its_rounds_and_drafts() {
+        let caps = vec![capability("strata")];
+        let plan = crate::pipeline::plan_from_steps(vec![
+            step("ksia", 0, 26, &caps),
+            step("salem", 27, 47, &caps),
+        ]);
+        let done = serde_json::json!({"timings": {"draft_n": 310, "draft_n_accepted": 259, "predicted_ms": 11102.0}});
+        let mut trace = engine_trace("t".into(), "m", &plan, "strata", &done, 427);
+        trace.output_tokens = 427;
+        trace.set_generated_tokens(427);
+        trace.complete = true;
+        trace.refresh_telemetry(12_000);
+        assert_eq!(trace.hops.len(), 2);
+        assert!(trace.telemetry.missing_peers.is_empty());
+        assert_eq!(trace.telemetry.reported_peers, 2);
+        assert_eq!(trace.telemetry.status, "complete");
+        assert_eq!(trace.telemetry.completeness_percent, 100.0);
+        // 427 tokens: the prompt's first, then 167 rounds with their 259 accepted drafts
+        assert_eq!(trace.hops[0].decode.reported_spans, 167);
+        assert_eq!(trace.hops[1].decode.node_decode_ms, 11102.0);
+        assert_eq!(trace.hops[0].decode.node_decode_ms, 0.0);
+        assert_eq!(
+            trace.hops[1].prefill.executed_engine,
+            crate::executor::ExecutionEngine::Plugin
+        );
+        assert_eq!(
+            trace.hops[0].prefill.selected_path.as_deref(),
+            Some("plugin/strata")
+        );
+        assert_eq!(
+            (
+                trace.mtp_draft_tokens_proposed,
+                trace.mtp_draft_tokens_accepted
+            ),
+            (310, 259)
+        );
+        assert_eq!(trace.mtp_draft_tokens_rejected, 51);
     }
 
     #[test]

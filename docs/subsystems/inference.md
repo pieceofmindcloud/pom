@@ -2475,13 +2475,20 @@ runs it through that plugin or fails.
   numeric sampling fields (`temperature`, `top_p`, `top_k`, `min_p`,
   `presence_penalty`, `frequency_penalty`). The generation route answers one
   JSON object per line - `{"t"}` text, `{"p"}` prompt progress, `{"done"}`
-  with finish, prompt, completion and cached tokens, or `{"error"}` - and the
-  text becomes `GenEvent::Token`; reasoning comes back inside `<think>` tags,
-  as a llama.cpp pipeline returns it. The summary is the one a one-hop
-  pipeline leaves: `source` is `pipeline:<node>` and its `RequestTrace` carries
-  the real prompt, cached and generated tokens and the engine's prompt time,
-  so the request audit, the statistics and the process log the admins receive
-  are the same whatever the engine. The target node logs every change of the
+  with finish, prompt, completion and cached tokens, the engine's llama.cpp-style
+  `timings` (with the MTP drafts, `draft_n` and `draft_n_accepted`) and the
+  `stop_sequence` that ended it, or `{"error"}` - and the text becomes
+  `GenEvent::Token`; reasoning comes back inside `<think>` tags and tool calls
+  in the model's own template form, as a llama.cpp pipeline returns them, so
+  the gateway's tool-call parser reads them. The summary is the one a
+  pipeline leaves: `source` is `pipeline:<chain>` and its `RequestTrace`
+  (`plugin_engine::engine_trace`) has a hop per stage, each executed by the
+  `plugin` engine on path `plugin/<code>`, with the request's prompt call and
+  decode rounds (generated tokens less the accepted drafts), the MTP draft
+  counts, and the engine's prompt and decode times on the last stage. The
+  engine reports the request as a whole, so the earlier stages carry no time
+  of their own. The request audit, the statistics and the process log the
+  admins receive are the same whatever the engine. The target node logs every change of the
   engine's state, and the plugin's own output reaches the node's log through
   the plugin host's stderr. Images and typed
   decisions (`/v1/systemone` labels) are refused for this class; the retain

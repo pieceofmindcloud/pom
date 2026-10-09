@@ -19,6 +19,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { FirstRunGuide } from "./components/FirstRunGuide";
+import { FirstRunWizard, useFirstRunWizard } from "./components/FirstRunWizard";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import pomMark from "./assets/pom-mark-dark.png";
@@ -301,6 +302,13 @@ export default function App() {
       location.pathname === "/transferencias/enviar");
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
+  // A machine on its first run names itself and its network before the panel
+  // opens. Asked only past the gate, where the guide route answers.
+  const wizard = useFirstRunWizard(
+    profile === "admin" &&
+      !isEmbeddedChat &&
+      (adminSurface.data === "available" || (adminSurface.data === "requires-password" && adminReady)),
+  );
 
   /*
    * A sessão administrativa pode morrer com a aba aberta: ela vive na memória
@@ -337,6 +345,15 @@ export default function App() {
             <Chat />
           </div>
         </Suspense>
+      </ErrorBoundary>
+    );
+  }
+
+  if (wizard.loading) return <div className="h-full bg-ink" />;
+  if (wizard.step) {
+    return (
+      <ErrorBoundary>
+        <FirstRunWizard step={wizard.step} />
       </ErrorBoundary>
     );
   }

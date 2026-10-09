@@ -203,8 +203,18 @@ Per-file list:
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
+- `FirstRunWizard.tsx` - The wizard of a machine's first run, rendered by
+  `App.tsx` in place of the whole shell while the current guide step is one
+  of `WIZARD_STEPS` (`useFirstRunWizard`, `admin` profile only): the machine
+  name (pre-filled with the hostname), the network name (with the warning
+  that it is advertised if the network goes public) and a last screen that
+  hands over to the hints. Both name screens have a "Random" button
+  (`lib/randomName.ts`). Each screen saves through the route its settings
+  screen uses, then reports the step; "Back" is local. It reuses the
+  `.pom-login*` / `.pom-setup*` shell. Tests in `FirstRunWizard.test.tsx`.
 - `FirstRunGuide.tsx` - The hints of a machine's first run, mounted once in
-  the shell (`App.tsx`, `admin` profile only). Shows one balloon for the
+  the shell (`App.tsx`, `admin` profile only), for the steps after the
+  wizard. Shows one balloon for the
   current step of `lib/guide.ts`: beside the menu entry that leads to the
   step (`[data-guide-nav="<path>"]`, else `[data-guide-section="<labelKey>"]`,
   both set by `Sidebar.tsx`), or under a control on the step's own screen

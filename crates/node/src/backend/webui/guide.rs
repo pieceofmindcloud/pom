@@ -1,5 +1,5 @@
-//! The first run guide: which hint the interface shows a machine that has
-//! just created its local network.
+//! The first run guide: which wizard screen or hint the interface shows a
+//! machine that has just created its local network.
 //!
 //! The node only keeps the progress (`Config::first_run_guide`), so the hints
 //! follow the machine and not the browser. The interface decides where each
@@ -9,10 +9,13 @@
 
 use super::*;
 
-/// The steps, in the order the interface walks them.
-pub(crate) const GUIDE_STEPS: [&str; 6] = [
-    "network_name",
+/// The steps, in the order the interface walks them. The first three are the
+/// first run wizard, shown on a screen of its own before the panel opens; the
+/// rest are hints on the panel.
+pub(crate) const GUIDE_STEPS: [&str; 7] = [
     "machine_name",
+    "network_name",
+    "bootstrap",
     "download_model",
     "deploy_model",
     "chat",

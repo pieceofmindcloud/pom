@@ -7,8 +7,9 @@ import { api } from "./api";
  * the browser (`webui/guide.rs`).
  */
 export type GuideStepId =
-  | "network_name"
   | "machine_name"
+  | "network_name"
+  | "bootstrap"
   | "download_model"
   | "deploy_model"
   | "chat"
@@ -22,6 +23,17 @@ export interface GuideState {
   active: boolean;
   steps: GuideStepId[];
   done: GuideStepId[];
+}
+
+/**
+ * The steps the first run wizard takes, on a screen of its own before the
+ * panel opens. The hints only cover what comes after them.
+ */
+export const WIZARD_STEPS = ["machine_name", "network_name", "bootstrap"] as const;
+export type WizardStepId = (typeof WIZARD_STEPS)[number];
+
+export function isWizardStep(step: GuideStepId | null): step is WizardStepId {
+  return step !== null && (WIZARD_STEPS as readonly string[]).includes(step);
 }
 
 export const guideKey = ["first-run-guide"] as const;

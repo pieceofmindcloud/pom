@@ -370,8 +370,10 @@ the normal `NAV` projection.
 
 ### First access wizard
 
-**The wizard is deprecated and unreachable.** A node without a network
-creates a local one and opens the panel, and that is the only way to start.
+**This wizard is deprecated and unreachable.** It is not the first run wizard
+("First run wizard and guide" below), which runs on a configured node. A node
+without a network creates a local one and serves the interface, and that is
+the only way to start.
 `App.tsx` neither imports nor routes `routes/Setup.tsx` or
 `routes/SetupWizard.tsx`, the shell probe has no "setup" answer, and the node
 never starts the `/api/setup/*` router (`http-api.md`, "Setup routes are not
@@ -1549,35 +1551,61 @@ is also available to a node profile without administrative authority and does
 not depend on a loaded model or a Ready state: the handler stops the runtime,
 clears the deployment journal and unannounces the machine before answering.
 
-## First run guide
+## First run wizard and guide
 
-A machine that starts with no configuration creates its local network and
-opens the panel with nothing explained, so the interface walks its operator
-through the first things to do, one hint at a time
-(`components/FirstRunGuide.tsx`):
+A machine that starts with no configuration creates its local network, and
+its operator is walked through the first things to do: a wizard on a screen
+of its own, then hints on the panel. Both are one list of steps kept by the
+node (`GUIDE_STEPS` in `webui/guide.rs`), and only the `admin` profile sees
+them.
 
-1. **Name the network** - Network information, the "Public name" field. Done
-   when the network details are saved.
-2. **Name the machine** - My machine, the "Machine name" field. Done when the
-   name is saved.
-3. **Download a small model** - Find HF models. The guide fills the search
+### The wizard
+
+`components/FirstRunWizard.tsx` replaces the whole shell, past the access
+gate, while the current step is one of its three (`useFirstRunWizard` in
+`App.tsx`). It asks nothing about the kind of network: the network is the
+machine's own, and joining another one comes later, from the Networks screen.
+
+1. **Machine name** (`machine_name`) - one field, pre-filled with the name the
+   machine goes by (the system hostname until it is given one). Saved with
+   `POST /api/ui/network/node-name`.
+2. **Network name** (`network_name`) - one field, pre-filled with the name the
+   network was created with, and a warning that the name is advertised to
+   everyone if the network is made public. Saved with
+   `POST /api/ui/network/settings`, the rest of the settings untouched.
+3. **Follow the instructions** (`bootstrap`) - no field: it says that hints on
+   the screen point at what to do next, and its button opens the panel.
+
+Both name fields have a "Random" button that fills in a random name of two
+words and a number (`lib/randomName.ts`). An empty name is not accepted, a
+failed save keeps the operator on the screen with the error, and "Back" only
+changes the screen shown. A reload resumes at the first step not done. The
+wizard draws on the `.pom-login*` / `.pom-setup*` shell of the access gate,
+with the language switch in the corner.
+
+### The hints
+
+After the wizard the panel opens and the interface points at the next things
+to do, one hint at a time (`components/FirstRunGuide.tsx`):
+
+1. **Download a small model** - Find HF models. The guide fills the search
    with `Qwen/Qwen2.5-0.5B-Instruct-GGUF` (`GUIDE_MODEL_REPO` in
    `lib/guide.ts`) once, on arrival, and the balloon follows the clicks: the
    result row, a file in the details window (Q4_K_M when listed), then the
    confirmation. While the download runs the balloon moves to the corner and
    says to wait. Done when a download of that repository finishes or the
    local catalog holds a file of that model.
-4. **Deploy the model** - Deploy to network: "Whole model", then this machine
+2. **Deploy the model** - Deploy to network: "Whole model", then this machine
    in the peer strip, then the Deploy button once it is enabled (and a "loading"
    text while the job runs). Done when the
    cluster reports an active model.
-5. **Send a first prompt** - Chat, the message field. Done when an answer
+3. **Send a first prompt** - Chat, the message field. Done when an answer
    finishes streaming.
-6. **Join another network** - the Networks screen, pointing at the first Join
+4. **Join another network** - the Networks screen, pointing at the first Join
    button. Joining ends the guide; so does "Finish", because staying on the
    machine's own network is a valid choice.
 
-Steps 3 to 5 have no save to report them, so the guide watches the node for
+The first three have no save to report them, so the guide watches the node for
 their outcome while each is the current step (`DownloadWatcher`,
 `DeployWatcher`, `ChatWatcher`). A machine that already has the model, a
 deployment or an answer passes the step at once. The download needs the
@@ -1603,18 +1631,17 @@ the startup that created the configuration from nothing sets it; a machine
 that left a network and got a fresh local one is not new, and
 `Config::prepare_for_setup` (joining or leaving a network) drops it. When the
 last step is done or the operator hides the guide the field is removed and
-the guide never comes back. The screens report a step through
-`useGuideActions().complete(...)` after their own save succeeded (`lib/guide.ts`,
-`GET|POST /api/ui/guide`). Only the `admin` profile sees it.
+the guide never comes back, and neither does the wizard. A step is reported
+through `useGuideActions().complete(...)` (`lib/guide.ts`,
+`GET|POST /api/ui/guide`).
 
 ## A machine has a single name
 
 `node_name` in `pom.json` is how the operator names the machine, and it is the
 name the node announces to peers (`Network::hostname()`). The operator sets it
 on the My machine screen ("Machine name", `POST /api/ui/network/node-name`),
-with no restart: the next announce carries it. That screen is the only place
-left to do it, because a network created at first run never shows the setup
-wizard. Without a `node_name` the machine goes by the system hostname. Every
+with no restart: the next announce carries it. The first run wizard asks for
+it through the same route. Without a `node_name` the machine goes by the system hostname. Every
 screen reads that
 name; the "Send to..." selector of `/fatias` used to read `sysmon`, the
 operating system's raw hostname, and was the only place in the app that called

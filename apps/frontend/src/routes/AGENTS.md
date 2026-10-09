@@ -8,10 +8,8 @@ cluster state in the browser. All copy goes through the i18n provider
 strings through `localizeServerText` (`../i18n/locales.ts`), which the backend
 writes as translation keys.
 
-`NetworkSettings.tsx` and `MyMachine.tsx` report their step of the first run
-guide after a successful save (`useGuideActions().complete`), and they and
-`PublicNetworks.tsx` carry the `data-guide` attribute the balloon points at
-(`components/FirstRunGuide.tsx`). So do `RemoteModels.tsx` (search field,
+`PublicNetworks.tsx` carries the `data-guide` attribute the first run guide's
+balloon points at (`components/FirstRunGuide.tsx`). So do `RemoteModels.tsx` (search field,
 result rows by `data-guide-repo`), `DeployModel.tsx` ("Whole model", the peer
 strip, the Deploy button while enabled) and `Chat.tsx` (the message field);
 those three steps report nothing, the guide watches for their outcome.

@@ -46,7 +46,6 @@ import { NETWORK_GEO, placeLabel } from "../lib/geo";
 import { networkStats } from "../lib/networkStats";
 import { admissionsApi, useAdmissions } from "../lib/admissions";
 import { useToast } from "../lib/toast";
-import { useGuideActions } from "../lib/guide";
 import { ENROLLMENT_ROLES } from "../lib/types";
 import type { AdminNode, ClusterView, EnrollmentRole, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -70,7 +69,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const networkEditable = networkInfo.data?.can_edit ?? isAdmin;
   const nodes = useAdminNodes(participantsOnly && node.data !== undefined && !isInfer);
   const toast = useToast();
-  const guide = useGuideActions();
   const invalidate = useInvalidate();
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
@@ -94,7 +92,6 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
       const saved = await api.post<NetworkInfoView>("/api/ui/network/settings", networkDraft);
       setNetworkDraft(saved.network);
       toast.success(t("network.infoSaved"), t("network.infoSavedDetail"));
-      void guide.complete("network_name");
       invalidate();
     } catch (e) {
       toast.fromError(t("network.infoSaveFailed"), e);
@@ -455,7 +452,7 @@ function NetworkInfoPanel({
       {editable ? (
         <div className="grid min-w-0 gap-4 px-5 py-5 md:grid-cols-2">
           <Field label={t("network.publicName")} hint={publicNetwork ? t("network.publicNameRequired") : undefined}>
-            <Input data-guide="network-name" required={publicNetwork} value={draft.public_name} onChange={(event) => update({ public_name: event.target.value })} />
+            <Input required={publicNetwork} value={draft.public_name} onChange={(event) => update({ public_name: event.target.value })} />
           </Field>
           <Field label={t("network.organization")}>
             <Input value={draft.organization} onChange={(event) => update({ organization: event.target.value })} />

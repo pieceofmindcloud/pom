@@ -116,6 +116,11 @@ vi.mock("../components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,
   LogoMark: () => <div aria-hidden="true" />,
 }));
+// The first run wizard asks the node which step is due; this shell has none.
+vi.mock("../components/FirstRunWizard", () => ({
+  FirstRunWizard: () => null,
+  useFirstRunWizard: () => ({ loading: false, step: null }),
+}));
 vi.mock("./Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 
 import App from "../App";

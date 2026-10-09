@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useI18n } from "../i18n/provider";
 import { useOptionalChatSessionController } from "../lib/chatStore";
-import { currentGuideStep, GUIDE_MODEL_REPO, useGuide, useGuideActions, type GuideStepId } from "../lib/guide";
+import { currentGuideStep, GUIDE_MODEL_REPO, isWizardStep, useGuide, useGuideActions, type GuideStepId, type WizardStepId } from "../lib/guide";
 import { useCluster, useLocalCatalog, useModelDownloads } from "../lib/queries";
 
 interface StepTarget {
@@ -29,9 +29,10 @@ const REPO = GUIDE_MODEL_REPO.toLowerCase();
 /** What a file of the guide's model is called, whatever its quantization. */
 const MODEL_FILE = /qwen2\.5-0\.5b-instruct/i;
 
-const PLAN: Record<GuideStepId, StepPlan> = {
-  network_name: { path: "/config/rede", section: "nav.network", targets: [{ selector: '[data-guide="network-name"]' }] },
-  machine_name: { path: "/config/minha-maquina", section: "nav.network", targets: [{ selector: '[data-guide="machine-name"]' }] },
+/** The steps that get a hint: the names are asked by the wizard before them. */
+type HintStepId = Exclude<GuideStepId, WizardStepId>;
+
+const PLAN: Record<HintStepId, StepPlan> = {
   download_model: {
     path: "/modelos/remotos",
     section: "nav.models",
@@ -58,9 +59,7 @@ const PLAN: Record<GuideStepId, StepPlan> = {
 };
 
 /** The message keys of each step: `guide.<name>Title`, `Go` and `Here`. */
-const MESSAGES: Record<GuideStepId, string> = {
-  network_name: "network",
-  machine_name: "machine",
+const MESSAGES: Record<HintStepId, string> = {
   download_model: "download",
   deploy_model: "deploy",
   chat: "chat",
@@ -161,7 +160,9 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
   const navigate = useNavigate();
   const guide = useGuide(enabled);
   const actions = useGuideActions();
-  const step = enabled ? currentGuideStep(guide.data) : null;
+  const current = enabled ? currentGuideStep(guide.data) : null;
+  // While the wizard is on screen there is nothing to point at.
+  const step = isWizardStep(current) ? null : current;
   const plan = step ? PLAN[step] : null;
   const onScreen = plan ? location.pathname === plan.path : false;
   const [anchor, setAnchor] = useState<Anchor | null>(null);
@@ -216,8 +217,9 @@ export function FirstRunGuide({ enabled = true }: { enabled?: boolean }) {
 
   if (!step || !plan || !guide.data) return null;
 
-  const index = guide.data.steps.indexOf(step);
-  const total = guide.data.steps.length;
+  const hinted = guide.data.steps.filter((id) => !isWizardStep(id));
+  const index = hinted.indexOf(step);
+  const total = hinted.length;
   const last = index === total - 1;
   const body = t(
     waiting ? "guide.downloadWait" : onScreen && anchor?.hint ? `guide.${anchor.hint}` : `guide.${MESSAGES[step]}${onScreen ? "Here" : "Go"}`,

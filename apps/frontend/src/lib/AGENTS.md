@@ -622,6 +622,13 @@ would go.
   `complete` after its own save succeeded. Both are no-ops once the guide
   ended and never throw, so they cannot disturb the save that triggered them.
   `GUIDE_MODEL_REPO` is the model the guide has a new machine download.
+  `WIZARD_STEPS` and `isWizardStep` name the steps taken by the first run
+  wizard (`components/FirstRunWizard.tsx`) instead of a hint.
+
+### randomName.ts
+- `randomSlug()` - a random name of two words and a two digit number
+  (`quiet-harbor-42`), offered by the first run wizard for the machine and
+  the network.
 
 ### chatScroll.ts
 - `isNearBottom(metrics, threshold = 32)` - decides whether streaming keeps the chat pinned to the bottom.

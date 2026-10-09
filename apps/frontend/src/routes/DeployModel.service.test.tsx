@@ -37,6 +37,8 @@ const CLUSTER = {
   ],
 };
 
+/** What the cluster query answers; a test may swap it before mounting. */
+let cluster: unknown = CLUSTER;
 const post = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
@@ -50,7 +52,7 @@ vi.mock("../lib/api", () => ({
             : undefined,
     ),
     getConditional: vi.fn((url: string) =>
-      Promise.resolve(url === "/api/ui/cluster" ? CLUSTER : url === "/api/ui/jobs" ? { jobs: [] } : undefined),
+      Promise.resolve(url === "/api/ui/cluster" ? cluster : url === "/api/ui/jobs" ? { jobs: [] } : undefined),
     ),
     post: (...args: unknown[]) => post(...args),
   },
@@ -157,14 +159,31 @@ function model(name: string, architecture: string) {
   };
 }
 
-function mount() {
+function sliceSet(group: string, architecture: string) {
+  const shard = (start: number, end: number) => ({
+    ...model(`${group}-${start}`, architecture),
+    shard_range: [start, end],
+    shard_group: group,
+  });
+  return {
+    model_label: group,
+    pom_id: group,
+    group,
+    total_layers: 48,
+    total_layers_inferred: false,
+    shards: [shard(0, 23), shard(24, 47)],
+    complete: true,
+  };
+}
+
+function mount(shardSets: unknown[] = []) {
   post.mockImplementation((url: string, body: { group?: string }) =>
     Promise.resolve(url === "/api/ui/deploy" ? { job_id: "j1" } : wholePlan(body.group ?? "")),
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchInterval: false } } });
   client.setQueryData(keys.jobs, { jobs: [] });
   client.setQueryData(keys.node, { connection_key: "", pom_desenv: false });
-  client.setQueryData(keys.cluster, CLUSTER);
+  client.setQueryData(keys.cluster, cluster);
   client.setQueryData(keys.clusterModels, {
     peers: [
       {
@@ -172,7 +191,7 @@ function mount() {
         hostname: "ksia",
         is_self: false,
         models: [model("llama-3-8b", "llama"), model("qwen3.8-flash-next", "qwen4exp")],
-        shard_sets: [],
+        shard_sets: shardSets,
         complete: true,
       },
     ],
@@ -192,6 +211,34 @@ describe("DeployModel · serviço de inferência de plugin", () => {
   beforeEach(() => {
     post.mockReset();
     localStorage.clear();
+    cluster = CLUSTER;
+  });
+
+  it("com o motor que roda fatias, oferece só as fatias da arquitetura dele", async () => {
+    cluster = {
+      peers: CLUSTER.peers.map((peer) => ({
+        ...peer,
+        node: {
+          plugin_services: peer.node.plugin_services.map((service) => ({ ...service, stages: true })),
+        },
+      })),
+    };
+    mount([sliceSet("llama-3-70b", "llama"), sliceSet("qwen3.8-flash-next", "qwen4exp")]);
+    const model = (await screen.findByRole("combobox", { name: "Modelo técnico" })) as HTMLSelectElement;
+    await waitFor(() => expect(model.options.length).toBe(2));
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Serviço de inferência" }), { target: { value: "strata" } });
+    await waitFor(() =>
+      expect([...model.options].map((option) => option.value)).toEqual(["qwen3.8-flash-next"]),
+    );
+    expect(screen.getByRole("radio", { name: "Fatias" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("sem serviço de inferência de plugin, não há escolha de motor", async () => {
+    cluster = { peers: [{ node_id: "ksia", node: { plugin_services: [] } }] };
+    mount();
+    await screen.findByRole("combobox", { name: "Modelo técnico" });
+    expect(screen.queryByRole("combobox", { name: "Serviço de inferência" })).toBeNull();
   });
   afterEach(cleanup);
 

@@ -33,6 +33,14 @@ describe("inferenceServicesOf", () => {
     expect(services[0].nodeIds).toEqual(["a", "b"]);
   });
 
+  it("does not offer a service no machine can run now", () => {
+    expect(
+      inferenceServicesOf([
+        peer("a", [{ plugin_code: "strata", id: "strata", kind: "inference", name: "Strata", status: "error" }]),
+      ]),
+    ).toEqual([]);
+  });
+
   it("is empty without peers", () => {
     expect(inferenceServicesOf(undefined)).toEqual([]);
   });

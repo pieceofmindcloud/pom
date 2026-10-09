@@ -50,7 +50,9 @@ export function inferenceServicesOf(peers: PeerView[] | undefined): InferenceSer
       byCode.set(service.plugin_code, entry);
     }
   }
-  return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name));
+  // A service no machine can run now is not offered: the deploy screen then
+  // shows no engine choice at all and deploys on llama.cpp.
+  return [...byCode.values()].filter((entry) => entry.nodeIds.length > 0).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Whether a whole model can run on the service: its architecture is one the

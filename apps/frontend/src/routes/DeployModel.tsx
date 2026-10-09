@@ -355,10 +355,11 @@ export function DeployModel() {
     setCacheTypesLoaded(true);
   }, [cacheTypes.data, cacheTypesLoaded]);
   /** Every slicing round anyone in the cluster holds, named once. */
-  const groups = useMemo(() => {
+  const allGroups = useMemo(() => {
     const seen = new Map<string, {
       key: string;
       label: string;
+      architecture: string | null;
       pomId: string;
       mmprojPath: string | null;
       mmprojCandidates: string[];
@@ -376,6 +377,7 @@ export function DeployModel() {
             existing.mmprojCandidates.push(set.mmproj_path);
           }
           if (!existing.mmprojReason && set.mmproj_reason) existing.mmprojReason = set.mmproj_reason;
+          existing.architecture ??= set.shards.find((shard) => shard.architecture)?.architecture ?? null;
         } else {
           const mmprojCandidates = [...(set.mmproj_candidates ?? [])];
           if (set.mmproj_path && !mmprojCandidates.includes(set.mmproj_path)) {
@@ -384,6 +386,7 @@ export function DeployModel() {
           seen.set(set.group, {
             key: set.group,
             label: set.model_label || set.group,
+            architecture: set.shards.find((shard) => shard.architecture)?.architecture ?? null,
             pomId: set.pom_id ?? "",
             mmprojPath: set.mmproj_path ?? null,
             mmprojCandidates,
@@ -398,9 +401,9 @@ export function DeployModel() {
   /** Only disambiguate repeated model labels in the picker. */
   const duplicateGroupLabels = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const item of groups) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+    for (const item of allGroups) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
     return counts;
-  }, [groups]);
+  }, [allGroups]);
 
   /** Whole-model inference services plugins offer (Strata, ...). */
   const inferenceServices = useMemo(
@@ -417,6 +420,12 @@ export function DeployModel() {
   const wholes = useMemo(
     () => (service ? allWholes.filter((entry) => serviceRunsModel(service, entry.architecture)) : allWholes),
     [allWholes, service],
+  );
+  /** The slicing rounds on offer - with an inference service, only those of
+   *  the architectures its engine runs. */
+  const groups = useMemo(
+    () => (service ? allGroups.filter((entry) => serviceRunsModel(service, entry.architecture)) : allGroups),
+    [allGroups, service],
   );
   const tensorGroups = useMemo(
     () => tensorParallelModelsOf(cluster.data?.peers),
@@ -1263,33 +1272,34 @@ export function DeployModel() {
                 </button>
               ))}
             </div>
-            {inferenceServices.length > 0 && (
-              <Select
-                aria-label={t("deploy.inferenceService")}
-                title={t("deploy.inferenceServiceHint")}
-                name="inference_service"
-                value={serviceCode}
-                onChange={(event) => {
-                  const next = inferenceServices.find((entry) => entry.code === event.target.value);
-                  // A service that runs slices keeps the slices on screen; any other one runs a whole model.
-                  const whole = next != null && !(next.stages && kind === "shards");
-                  if (next != null && !whole) setPickedKind("shards");
-                  setServiceCode(event.target.value);
-                  setWholeName("");
-                  setSelection(whole ? [] : null);
-                  setSettled(whole ? [] : null);
-                  setPreferredNodeIds([]);
-                  setJobId(null);
-                }}
-                className="h-9 w-auto text-[0.78rem]"
-              >
-                <option value="">{t("deploy.inferenceServiceLlama")}</option>
-                {inferenceServices.map((entry) => (
-                  <option key={entry.code} value={entry.code}>{entry.name}</option>
-                ))}
-              </Select>
-            )}
             <div className="flex min-w-[15rem] flex-1 gap-2">
+              {inferenceServices.length > 0 && (
+                <Select
+                  aria-label={t("deploy.inferenceService")}
+                  title={t("deploy.inferenceServiceHint")}
+                  name="inference_service"
+                  value={serviceCode}
+                  onChange={(event) => {
+                    const next = inferenceServices.find((entry) => entry.code === event.target.value);
+                    // A service that runs slices keeps the slices on screen; any other one runs a whole model.
+                    const whole = next != null && !(next.stages && kind === "shards");
+                    if (next != null && !whole) setPickedKind("shards");
+                    setServiceCode(event.target.value);
+                    setWholeName("");
+                    setGroup("");
+                    setSelection(whole ? [] : null);
+                    setSettled(whole ? [] : null);
+                    setPreferredNodeIds([]);
+                    setJobId(null);
+                  }}
+                  className="h-9 !w-[7.5rem] shrink-0 text-[0.78rem]"
+                >
+                  <option value="">{t("deploy.inferenceServiceLlama")}</option>
+                  {inferenceServices.map((entry) => (
+                    <option key={entry.code} value={entry.code}>{entry.name}</option>
+                  ))}
+                </Select>
+              )}
               <Select
                 aria-label="Modelo técnico"
                 name="model"

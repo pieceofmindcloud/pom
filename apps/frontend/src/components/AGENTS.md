@@ -205,12 +205,13 @@ Per-file list:
   a failure cannot look like an eternal spinner; partial outputs are shown.
 - `FirstRunWizard.tsx` - The wizard of a machine's first run, rendered by
   `App.tsx` in place of the whole shell while the current guide step is one
-  of `WIZARD_STEPS` (`useFirstRunWizard`, `admin` profile only): the machine
-  name (pre-filled with the hostname), the network name (with the warning
-  that it is advertised if the network goes public) and a last screen that
-  hands over to the hints. Both name screens have a "Random" button
-  (`lib/randomName.ts`). Each screen saves through the route its settings
-  screen uses, then reports the step; "Back" is local. It reuses the
+  of `WIZARD_STEPS` (`useFirstRunWizard`, `admin` profile only): one screen
+  with the machine name (pre-filled with the hostname) and the network name
+  (with the warning that it is advertised if the network goes public), and a
+  last screen that hands over to the hints. Each name field has its own
+  "Random" button (`lib/randomName.ts`). The names screen saves each name
+  through the route its settings screen uses, then reports the one `names`
+  step; "Back" is local. It reuses the
   `.pom-login*` / `.pom-setup*` shell. Tests in `FirstRunWizard.test.tsx`.
 - `FirstRunGuide.tsx` - The hints of a machine's first run, mounted once in
   the shell (`App.tsx`, `admin` profile only), for the steps after the

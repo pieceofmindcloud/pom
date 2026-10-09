@@ -953,19 +953,18 @@ firstWizard.continue,Continue,Continuar
 firstWizard.failed,Could not save: {error},Não foi possível salvar: {error}
 firstWizard.guideDetail,"This machine now runs a network of its own. Next, hints on the screen point at what to click, one at a time: download a small model, deploy it and send a first message. Follow the instructions on screen.","Esta máquina agora tem uma rede própria. A seguir, dicas na tela apontam onde clicar, uma de cada vez: baixar um modelo pequeno, implantá-lo e enviar uma primeira mensagem. Siga as instruções na tela."
 firstWizard.guideTitle,Follow the instructions on screen,Siga as instruções na tela
-firstWizard.machineDetail,This is how other machines see this one. You can change it later.,É assim que as outras máquinas veem esta. Você pode mudar depois.
+firstWizard.machineDetail,How other machines see this one.,Como as outras máquinas veem esta.
 firstWizard.machineLabel,Machine name,Nome da máquina
-firstWizard.machineTitle,Name this machine,Dê um nome a esta máquina
-firstWizard.networkDetail,Every machine starts with a network of its own. Give yours a name.,Toda máquina começa com uma rede própria. Dê um nome à sua.
+firstWizard.namesDetail,Every machine starts with a network of its own. Name both; you can change them later.,Toda máquina começa com uma rede própria. Dê um nome às duas; você pode mudar depois.
+firstWizard.namesTitle,Name this machine and its network,Dê um nome a esta máquina e à rede dela
+firstWizard.networkDetail,The network this machine has just created.,A rede que esta máquina acabou de criar.
 firstWizard.networkLabel,Network name,Nome da rede
-firstWizard.networkTitle,Name your network,Dê um nome à sua rede
 firstWizard.networkWarning,"If you decide to make this network public, this name is advertised to everyone.","Se você decidir tornar esta rede pública, este nome será anunciado a todos."
 firstWizard.random,Random,Aleatório
 firstWizard.randomTitle,Generate a random name,Gerar um nome aleatório
 firstWizard.start,Start,Começar
 firstWizard.stepGuide,Hints,Dicas
-firstWizard.stepMachine,Machine,Máquina
-firstWizard.stepNetwork,Network,Rede
+firstWizard.stepNames,Names,Nomes
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil

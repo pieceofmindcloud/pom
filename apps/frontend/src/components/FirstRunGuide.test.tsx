@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FirstRunGuide } from "./FirstRunGuide";
 import { LocaleProvider } from "../i18n/provider";
 
-const WIZARD = ["machine_name", "network_name", "bootstrap"];
+const WIZARD = ["names", "bootstrap"];
 const STEPS = [...WIZARD, "download_model", "deploy_model", "chat", "join"];
 
 function serve(done: string[], active = true, models: Array<{ name: string; path: string }> = []) {

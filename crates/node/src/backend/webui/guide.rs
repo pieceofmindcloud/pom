@@ -9,12 +9,11 @@
 
 use super::*;
 
-/// The steps, in the order the interface walks them. The first three are the
+/// The steps, in the order the interface walks them. The first two are the
 /// first run wizard, shown on a screen of its own before the panel opens; the
 /// rest are hints on the panel.
-pub(crate) const GUIDE_STEPS: [&str; 7] = [
-    "machine_name",
-    "network_name",
+pub(crate) const GUIDE_STEPS: [&str; 6] = [
+    "names",
     "bootstrap",
     "download_model",
     "deploy_model",

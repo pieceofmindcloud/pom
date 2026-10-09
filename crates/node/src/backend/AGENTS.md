@@ -1228,7 +1228,7 @@ faz o download autenticado do blob persistido.
   `webui/guide.rs` keeps the first run guide's progress
   (`Config::first_run_guide`) behind `GET|POST /api/ui/guide`:
   `advance_guide` marks a step done, ends the guide with the last one or on
-  dismissal, and refuses an unknown step. The first three steps are the
+  dismissal, and refuses an unknown step. The first two steps (`names`, `bootstrap`) are the
   first run wizard and the rest are hints; what each shows is the
   interface's business (`docs/subsystems/web-ui.md`, "First run wizard and guide").
   `webui/setup.rs::bootstrap_local_network` is what a node without a network

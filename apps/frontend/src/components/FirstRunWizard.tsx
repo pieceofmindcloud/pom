@@ -14,8 +14,7 @@ import pomMark from "../assets/pom-mark-dark.png";
 const NAME_MAX = 64;
 
 const STEP_LABEL: Record<WizardStepId, string> = {
-  machine_name: "firstWizard.stepMachine",
-  network_name: "firstWizard.stepNetwork",
+  names: "firstWizard.stepNames",
   bootstrap: "firstWizard.stepGuide",
 };
 
@@ -31,10 +30,11 @@ export function useFirstRunWizard(enabled: boolean): { loading: boolean; step: W
 
 /**
  * The first run wizard: a machine that has just created its own network asks
- * for the machine's name, then the network's, and hands over to the hints
- * (`FirstRunGuide`). There is nothing to choose about the network: it is the
- * machine's own, and joining another one comes later, from the Networks
- * screen. Each screen saves through the route its settings screen uses.
+ * for the machine's name and the network's on one screen, and hands over to
+ * the hints (`FirstRunGuide`). There is nothing to choose about the network:
+ * it is the machine's own, and joining another one comes later, from the
+ * Networks screen. Each name saves through the route its settings screen
+ * uses.
  */
 export function FirstRunWizard({ step }: { step: WizardStepId }) {
   const { t } = useI18n();
@@ -95,45 +95,27 @@ export function FirstRunWizard({ step }: { step: WizardStepId }) {
   let body: ReactNode;
   let submit: () => void;
   let ready: boolean;
-  if (stage === "machine_name") {
-    ready = machine.length > 0;
+  if (stage === "names") {
+    ready = machine.length > 0 && networkTrimmed.length > 0 && network !== null;
+    // The machine first: a network save that fails leaves nothing half named
+    // that the operator cannot see, both fields stay on the screen.
     submit = () =>
       void run(async () => {
         await api.post("/api/ui/network/node-name", { node_name: machine });
-      }, "machine_name");
-    body = (
-      <NameScreen
-        testId="wizard-machine-name"
-        title={t("firstWizard.machineTitle")}
-        detail={t("firstWizard.machineDetail")}
-        label={t("firstWizard.machineLabel")}
-        value={machineName ?? ""}
-        onChange={setMachineName}
-        t={t}
-      />
-    );
-  } else if (stage === "network_name") {
-    ready = networkTrimmed.length > 0 && network !== null;
-    submit = () =>
-      void run(async () => {
         const saved = await api.post<NetworkInfoView>("/api/ui/network/settings", { ...network, public_name: networkTrimmed });
         setNetwork(saved.network);
-      }, "network_name");
+      }, "names");
     body = (
-      <NameScreen
-        testId="wizard-network-name"
-        title={t("firstWizard.networkTitle")}
-        detail={t("firstWizard.networkDetail")}
-        label={t("firstWizard.networkLabel")}
-        value={networkName ?? ""}
-        onChange={setNetworkName}
-        t={t}
-      >
+      <>
+        <h1 className="font-display text-xl font-semibold text-fg">{t("firstWizard.namesTitle")}</h1>
+        <p className="mt-2 text-sm leading-relaxed text-muted">{t("firstWizard.namesDetail")}</p>
+        <NameField testId="wizard-machine-name" label={t("firstWizard.machineLabel")} hint={t("firstWizard.machineDetail")} value={machineName ?? ""} onChange={setMachineName} autoFocus t={t} />
+        <NameField testId="wizard-network-name" label={t("firstWizard.networkLabel")} hint={t("firstWizard.networkDetail")} value={networkName ?? ""} onChange={setNetworkName} t={t} />
         <p className="mt-4 flex items-start gap-2 rounded-xl border border-amber/40 bg-amber/10 px-3 py-2.5 text-xs leading-relaxed text-amber" role="note">
           <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span>{t("firstWizard.networkWarning")}</span>
         </p>
-      </NameScreen>
+      </>
     );
   } else {
     ready = true;
@@ -199,20 +181,17 @@ export function FirstRunWizard({ step }: { step: WizardStepId }) {
   );
 }
 
-function NameScreen({ testId, title, detail, label, value, onChange, children, t }: {
+function NameField({ testId, label, hint, value, onChange, autoFocus, t }: {
   testId: string;
-  title: string;
-  detail: string;
   label: string;
+  hint: string;
   value: string;
   onChange: (value: string) => void;
-  children?: ReactNode;
+  autoFocus?: boolean;
   t: (key: string) => string;
 }) {
   return (
     <>
-      <h1 className="font-display text-xl font-semibold text-fg">{title}</h1>
-      <p className="mt-2 text-sm leading-relaxed text-muted">{detail}</p>
       <label className="mt-5 block text-xs font-semibold uppercase tracking-wider text-muted" htmlFor={testId}>
         {label}
       </label>
@@ -223,17 +202,17 @@ function NameScreen({ testId, title, detail, label, value, onChange, children, t
           className="pom-login-input min-w-0 flex-1 !text-left"
           value={value}
           maxLength={NAME_MAX}
-          autoFocus
+          autoFocus={autoFocus}
           autoComplete="off"
           spellCheck={false}
           onChange={(event) => onChange(event.target.value)}
         />
-        <button type="button" className="pom-setup-ghost shrink-0" title={t("firstWizard.randomTitle")} onClick={() => onChange(randomSlug())}>
+        <button type="button" className="pom-setup-ghost shrink-0" title={t("firstWizard.randomTitle")} aria-label={`${label}: ${t("firstWizard.randomTitle")}`} onClick={() => onChange(randomSlug())}>
           <Dices className="h-4 w-4" />
           {t("firstWizard.random")}
         </button>
       </div>
-      {children}
+      <p className="mt-1.5 text-xs leading-relaxed text-faint">{hint}</p>
     </>
   );
 }

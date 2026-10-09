@@ -943,8 +943,8 @@ stays in the trace), `chat/history` (authenticated GET/POST/DELETE for the
 durable conversation history), `dev/update` + `dev/restart`,
 `guide` (the first run guide, open to every profile: GET answers `{active,
 steps, done}`; POST takes `{done: "<step>"}` for a step done or skipped, or
-`{dismiss: true}`, and answers the new state. The steps are `machine_name`,
-`network_name` and `bootstrap` (the first run wizard), then `download_model`,
+`{dismiss: true}`, and answers the new state. The steps are `names`
+and `bootstrap` (the first run wizard), then `download_model`,
 `deploy_model`, `chat` and `join` (the hints); the progress is `first_run_guide` in `pom.json`,
 removed when the last step is done or the guide is dismissed, after which
 both calls answer `active: false`. An unknown step is 400),

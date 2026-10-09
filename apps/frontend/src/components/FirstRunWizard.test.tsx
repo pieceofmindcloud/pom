@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * The first run wizard asks the machine's name, then the network's, and
- * hands over to the hints. Each screen saves through the node before the
- * next one shows.
+ * The first run wizard asks the machine's name and the network's on one
+ * screen, and hands over to the hints. The names are saved through the node
+ * before the next screen shows.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FirstRunWizard, useFirstRunWizard } from "./FirstRunWizard";
 import { LocaleProvider } from "../i18n/provider";
 
-const STEPS = ["machine_name", "network_name", "bootstrap", "download_model", "deploy_model", "chat", "join"];
+const STEPS = ["names", "bootstrap", "download_model", "deploy_model", "chat", "join"];
 const NETWORK = { public_name: "lab-host", visibility: "local", organization: "" };
 
 vi.mock("../lib/queries", () => ({
@@ -71,19 +71,24 @@ afterEach(() => {
 });
 
 describe("FirstRunWizard", () => {
-  it("walks the machine name, the network name and the handover to the hints", async () => {
+  it("asks both names on one screen and hands over to the hints", async () => {
     const fetchMock = serve();
     mount();
     const machine = (await screen.findByTestId("wizard-machine-name")) as HTMLInputElement;
+    const network = screen.getByTestId("wizard-network-name") as HTMLInputElement;
     await waitFor(() => expect(machine.value).toBe("lab-host"));
-    fireEvent.change(machine, { target: { value: "  workbench  " } });
-    fireEvent.click(screen.getByText("Continue"));
-
-    const network = (await screen.findByTestId("wizard-network-name")) as HTMLInputElement;
-    expect(network.value).toBe("lab-host");
+    await waitFor(() => expect(network.value).toBe("lab-host"));
     expect(screen.getByRole("note").textContent).toContain("advertised to everyone");
-    fireEvent.click(screen.getByText("Random"));
+
+    // Each field has its own random button.
+    const [randomMachine, randomNetwork] = screen.getAllByText("Random");
+    fireEvent.click(randomMachine);
+    expect(machine.value).toMatch(/^[a-z]+-[a-z]+-\d{2}$/);
+    expect(network.value).toBe("lab-host");
+    fireEvent.click(randomNetwork);
     expect(network.value).toMatch(/^[a-z]+-[a-z]+-\d{2}$/);
+
+    fireEvent.change(machine, { target: { value: "  workbench  " } });
     fireEvent.change(network, { target: { value: "home-lab" } });
     fireEvent.click(screen.getByText("Continue"));
 
@@ -93,32 +98,36 @@ describe("FirstRunWizard", () => {
 
     expect(posts(fetchMock)).toEqual([
       ["/api/ui/network/node-name", { node_name: "workbench" }],
-      ["/api/ui/guide", { done: "machine_name" }],
       ["/api/ui/network/settings", { ...NETWORK, public_name: "home-lab" }],
-      ["/api/ui/guide", { done: "network_name" }],
+      ["/api/ui/guide", { done: "names" }],
       ["/api/ui/guide", { done: "bootstrap" }],
     ]);
   });
 
   it("resumes where the operator stopped and lets them go back", async () => {
-    serve(["machine_name"]);
+    serve(["names"]);
     mount();
-    await screen.findByTestId("wizard-network-name");
+    await screen.findByText("Follow the instructions on screen");
     fireEvent.click(screen.getByText("Back"));
     await screen.findByTestId("wizard-machine-name");
+    expect(screen.getByTestId("wizard-network-name")).toBeTruthy();
   });
 
   it("stays on the screen when the save fails, and refuses an empty name", async () => {
-    const fetchMock = serve([], "/api/ui/network/node-name");
+    const fetchMock = serve([], "/api/ui/network/settings");
     mount();
     const machine = (await screen.findByTestId("wizard-machine-name")) as HTMLInputElement;
-    await waitFor(() => expect(machine.value).toBe("lab-host"));
+    const network = screen.getByTestId("wizard-network-name") as HTMLInputElement;
+    await waitFor(() => expect(network.value).toBe("lab-host"));
     fireEvent.click(screen.getByText("Continue"));
     expect((await screen.findByRole("alert")).textContent).toContain("Could not save");
-    expect(screen.queryByTestId("wizard-network-name")).toBeNull();
+    expect(screen.getByTestId("wizard-network-name")).toBeTruthy();
     expect(posts(fetchMock).some(([url]) => url === "/api/ui/guide")).toBe(false);
 
-    fireEvent.change(machine, { target: { value: "   " } });
+    fireEvent.change(network, { target: { value: "   " } });
+    expect((screen.getByText("Continue") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(network, { target: { value: "home-lab" } });
+    fireEvent.change(machine, { target: { value: "" } });
     expect((screen.getByText("Continue") as HTMLButtonElement).disabled).toBe(true);
   });
 });

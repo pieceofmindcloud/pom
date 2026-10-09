@@ -1571,22 +1571,22 @@ them.
 ### The wizard
 
 `components/FirstRunWizard.tsx` replaces the whole shell, past the access
-gate, while the current step is one of its three (`useFirstRunWizard` in
+gate, while the current step is one of its two (`useFirstRunWizard` in
 `App.tsx`). It asks nothing about the kind of network: the network is the
 machine's own, and joining another one comes later, from the Networks screen.
 
-1. **Machine name** (`machine_name`) - one field, pre-filled with the name the
-   machine goes by (the system hostname until it is given one). Saved with
-   `POST /api/ui/network/node-name`.
-2. **Network name** (`network_name`) - one field, pre-filled with the name the
-   network was created with, and a warning that the name is advertised to
-   everyone if the network is made public. Saved with
-   `POST /api/ui/network/settings`, the rest of the settings untouched.
-3. **Follow the instructions** (`bootstrap`) - no field: it says that hints on
+1. **Names** (`names`) - two fields on one screen. The machine name is
+   pre-filled with the name the machine goes by (the system hostname until
+   it is given one) and saved with `POST /api/ui/network/node-name`. The
+   network name is pre-filled with the name the network was created with,
+   under a warning that it is advertised to everyone if the network is made
+   public, and saved with `POST /api/ui/network/settings`, the rest of the
+   settings untouched. The step is reported only after both saves.
+2. **Follow the instructions** (`bootstrap`) - no field: it says that hints on
    the screen point at what to do next, and its button opens the panel.
 
-Both name fields have a "Random" button that fills in a random name of two
-words and a number (`lib/randomName.ts`). An empty name is not accepted, a
+Each name field has its own "Random" button that fills in a random name of two
+words and a number (`lib/randomName.ts`). Neither name may be empty, a
 failed save keeps the operator on the screen with the error, and "Back" only
 changes the screen shown. A reload resumes at the first step not done. The
 wizard draws on the `.pom-login*` / `.pom-setup*` shell of the access gate,

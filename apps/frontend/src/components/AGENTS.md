@@ -60,6 +60,9 @@ Per-file list:
   repeating the bar's markup six times; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
   screen nobody asked to change is its own risk.
+  `Tabs` is the one tab row (POM-JEV's folder tabs, theme tokens `--tab-*` in
+  `index.css`, classes `pom-tab*`); every `role="tablist"` in the panel uses it
+  (`fill` spreads the tabs over the row), and plugins get it as `ui.Tabs`.
 - `AlertTooltip` (ui.tsx) - `compact` deixa o ícone do tamanho do `[i]`, sem
   moldura, para caber na coluna de ícones do `DeploymentInspector`; `Meter` e
   `KeyValue` ganharam `compact` pelo mesmo motivo no card de máquina. É o aviso

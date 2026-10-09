@@ -70,6 +70,7 @@ import {
   Input,
   Select,
   Skeleton,
+  Tabs,
 } from "../components/ui";
 import type {
   DeployKind,
@@ -1442,27 +1443,21 @@ export function DeployModel() {
 
           {inspectorOpen ? <>
             <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45">
-            <div role="tablist" aria-label="Propriedades da implantação" className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur-sm">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={inspectorTab === "global"}
-                onClick={() => setInspectorTab("global")}
-                className={`flex-1 border-b-2 px-2 py-2 text-[0.65rem] font-semibold ${inspectorTab === "global" ? "border-iris text-iris" : "border-transparent text-muted hover:text-fg"}`}
-              >
-                Globais
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={inspectorTab === "machine"}
-                disabled={!inspectedNodeId}
-                onClick={() => setInspectorTab("machine")}
-                className={`flex-1 border-b-2 px-2 py-2 text-[0.65rem] font-semibold ${inspectorTab === "machine" ? "border-aqua text-aqua" : "border-transparent text-muted hover:text-fg"} disabled:cursor-not-allowed disabled:opacity-40`}
-              >
-                Máquina: {liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}
-              </button>
-            </div>
+            <Tabs
+              fill
+              label="Propriedades da implantação"
+              className="sticky top-0 z-10"
+              value={inspectorTab}
+              onChange={setInspectorTab}
+              items={[
+                { value: "global", label: "Globais" },
+                {
+                  value: "machine",
+                  label: `Máquina: ${liveMachines.find((machine) => machine.node_id === inspectedNodeId)?.label ?? "-"}`,
+                  disabled: !inspectedNodeId,
+                },
+              ]}
+            />
 
             {inspectorTab === "global" ? <>
             <DeploymentInspector

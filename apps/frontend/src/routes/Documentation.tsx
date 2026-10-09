@@ -33,7 +33,7 @@ import { ArrowLeft, BookOpen, ChevronRight, FileText, Layers, Search, X } from "
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Markdown } from "../components/Markdown";
-import { Empty, Input, Panel } from "../components/ui";
+import { Empty, Input, Panel, Tabs } from "../components/ui";
 import { GuideView } from "../guides/Guide";
 import { guidesFor } from "../guides/content";
 import { useI18n } from "../i18n/provider";
@@ -344,32 +344,16 @@ function CrateGroups({
 /** The two audiences, switched at the top of the navigation column. */
 function TabSwitch({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const { t } = useI18n();
-  const options: { id: Tab; label: string; icon: typeof BookOpen }[] = [
-    { id: "guias", label: t("docs.tab.guides"), icon: BookOpen },
-    { id: "referencia", label: t("docs.tab.reference"), icon: Layers },
-  ];
   return (
-    <div role="tablist" className="flex items-center gap-1 rounded-lg border border-line bg-raised p-1">
-      {options.map((o) => {
-        const active = tab === o.id;
-        const Icon = o.icon;
-        return (
-          <button
-            key={o.id}
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(o.id)}
-            className={clsx(
-              "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
-              active ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25" : "text-muted hover:text-fg",
-            )}
-          >
-            <Icon className="h-3.5 w-3.5" />
-            {o.label}
-          </button>
-        );
-      })}
-    </div>
+    <Tabs
+      fill
+      value={tab}
+      onChange={onChange}
+      items={[
+        { value: "guias", label: t("docs.tab.guides"), icon: <BookOpen /> },
+        { value: "referencia", label: t("docs.tab.reference"), icon: <Layers /> },
+      ]}
+    />
   );
 }
 

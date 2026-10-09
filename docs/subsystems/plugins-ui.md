@@ -143,8 +143,12 @@ compatibly. Version 2 added `context()` (current language and theme), `events`,
 Version 3 added `TelemetryLine` (the basic one-line telemetry) and the
 `chat.telemetry` slot; the detailed telemetry view left the POM, so
 `ExecutionTelemetry` is kept only for bundles built against version 2 and now
-renders that basic line. The plugin's CSS uses the same color tokens (CSS
-variables) as POM.
+renders that basic line. Version 4 added `plugin(code).rpc`. Version 5 added
+`ui.Tabs`, the panel's tab row: folder tabs over the content below, the chosen
+one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
+(`--tab-bar`, `--tab-ink`, `--tab-ink-on`, `--tab-line`, `--tab-card`,
+`--tab-accent`, `--tab-icon`, full colours in both themes). The plugin's CSS
+uses the same color tokens (CSS variables) as POM.
 
 ## Plugin RPC
 

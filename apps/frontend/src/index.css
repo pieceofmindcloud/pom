@@ -37,6 +37,15 @@
   --plugin-buy-hover: 0 84 77;
   --plugin-buy-fg: 255 255 255;
 
+  /* Tabs (`ui.Tabs`), the POM-JEV look: full colours, not channels. */
+  --tab-bar: #f8f6f7;
+  --tab-ink: #6d6775;
+  --tab-ink-on: #18151b;
+  --tab-line: rgba(24, 21, 27, .12);
+  --tab-card: rgba(255, 255, 255, .78);
+  --tab-accent: #0b8279;
+  --tab-icon: #123f8f;
+
   color-scheme: light;
 }
 
@@ -60,6 +69,14 @@
   --plugin-buy-bg: 67 224 200;
   --plugin-buy-hover: 91 239 216;
   --plugin-buy-fg: 9 10 16;
+
+  --tab-bar: #0b0a0f;
+  --tab-ink: #8f8a99;
+  --tab-ink-on: #f4f2f7;
+  --tab-line: rgba(255, 255, 255, .14);
+  --tab-card: rgba(255, 255, 255, .045);
+  --tab-accent: #2fdcc8;
+  --tab-icon: #4f9bff;
 
   color-scheme: dark;
 }
@@ -113,6 +130,45 @@ body {
 }
 
 @layer components {
+  /* ui.Tabs */
+  .pom-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 2px;
+    padding: 6px 12px 0;
+    border-bottom: 1px solid var(--tab-line);
+    background: var(--tab-bar);
+  }
+  .pom-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    color: var(--tab-ink);
+    background: transparent;
+    font-size: 12.5px;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .pom-tab:hover:not(:disabled) { color: var(--tab-ink-on); }
+  .pom-tab:disabled { cursor: not-allowed; opacity: .4; }
+  .pom-tab:focus-visible { outline: 2px solid var(--tab-icon); outline-offset: -2px; }
+  .pom-tab-on {
+    margin-bottom: -1px;
+    color: var(--tab-ink-on);
+    border-color: var(--tab-line);
+    background: var(--tab-card);
+    box-shadow: inset 0 2px 0 var(--tab-accent);
+  }
+  .pom-tab-icon { display: inline-flex; color: var(--tab-icon); }
+  .pom-tab-icon svg { width: 14px; height: 14px; }
+  .pom-tabs-fill .pom-tab { flex: 1 1 0; justify-content: center; min-width: 0; }
+
   .panel {
     @apply rounded-xl border border-line bg-surface shadow-panel;
   }

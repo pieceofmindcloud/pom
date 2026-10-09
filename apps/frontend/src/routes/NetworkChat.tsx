@@ -1,7 +1,7 @@
 import { Download, FileUp, Send, Users, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LobbyHardwareCard } from "../components/LobbyHardwareCard";
-import { Button, Empty, Input, PageHeader } from "../components/ui";
+import { Button, Empty, Input, PageHeader, Tabs } from "../components/ui";
 import { downloadNetworkChatFile, postNetworkChat } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
@@ -343,21 +343,19 @@ export function NetworkChat() {
         className="!mb-0 shrink-0 border-b border-line bg-surface/75 px-3 py-3 sm:px-4"
       />
       {snapshot?.lobbyEnabled && (
-        <div role="tablist" aria-label={t("lobby.rooms")} className="flex shrink-0 gap-1 border-b border-line bg-surface/50 px-3 py-2 sm:px-4">
-          {(["network", "lobby"] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              role="tab"
-              aria-selected={room === option}
-              onClick={() => setRoom(option)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${room === option ? "bg-iris/15 text-fg" : "text-muted hover:bg-line/40 hover:text-fg"}`}
-            >
-              {t(option === "lobby" ? "lobby.roomLobby" : "lobby.roomNetwork")}
-              {option === "lobby" && lobbyGuests.length > 0 && <span className="ml-1.5 rounded-full bg-aqua/20 px-1.5 py-0.5 text-[0.62rem] text-aqua">{lobbyGuests.length}</span>}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          label={t("lobby.rooms")}
+          value={room}
+          onChange={setRoom}
+          items={[
+            { value: "network", label: t("lobby.roomNetwork") },
+            {
+              value: "lobby",
+              label: t("lobby.roomLobby"),
+              badge: lobbyGuests.length > 0 && <span className="rounded-full bg-aqua/20 px-1.5 py-0.5 text-[0.62rem] text-aqua">{lobbyGuests.length}</span>,
+            },
+          ]}
+        />
       )}
       <div className={`grid min-h-0 flex-1 ${inLobby ? "lg:grid-cols-[minmax(0,1fr)_18rem]" : "lg:grid-cols-[minmax(0,1fr)_15rem]"}`}>
         <div className="flex min-h-0 flex-col">

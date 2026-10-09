@@ -256,6 +256,31 @@ so read-only source binds are supported; the installed artifact must canonicaliz
 inside that build directory. There is no shell command and no build argument
 taken from the request.
 
+A plugin whose build needs more than `cargo` (a UI bundle, a runtime archive)
+declares it in its manifest, and the rebuild runs those steps after
+`cargo metadata` and before `cargo build`:
+
+```json
+"development": {
+  "rebuild": [
+    { "run": ["scripts/dev-ui.sh"] },
+    { "run": ["scripts/dev-runtime.sh", "--quick"], "os": ["linux", "macos"] }
+  ]
+}
+```
+
+`run` is a script inside the source (relative, no `..`, at most 8 steps of 16
+plain-string arguments) and its arguments; `os` (`linux`, `macos`, `windows`)
+limits a step to those systems. A `.sh` script runs through `bash`, anything
+else as a program, in the source directory, with no input and 20 minutes at
+most. The source mount is read-only, so the steps write to
+`POM_PLUGIN_OUT_DIR` (`<build directory>/pom-prepare`); they also get
+`POM_PLUGIN_PLATFORM` (`linux-x86_64`, `macos-aarch64`, ...) and
+`POM_PLUGIN_SOURCE_DIR`, and `cargo build` gets the same three variables, so
+the plugin's `build.rs` embeds what the steps produced. Their output goes to
+`pom-prepare/rebuild.log`, never to the response; a failed step stops the
+rebuild with stage `prepare` and its exit code.
+
 The local build can install a plugin even when it has never been installed or activated. It writes a separate development-install record, starts only that plugin's isolated host, and grants no licensed features or license state. If a licensed or GitHub installation already exists, the local artifact replaces its running binary without changing that entitlement. The operation never activates or renews a license, calls GitHub or the license server, changes the release selection or restarts the POM process. The response exposes success or the step/exit code, never the compiler's stderr. The GitHub release install flow stays independent and unchanged.
 
 ## Node context (`host.configure`)

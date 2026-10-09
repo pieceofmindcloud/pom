@@ -986,7 +986,9 @@ node) and use `ConnectionAuth`:
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds the local plugin without requiring an existing
   activation. These two routes stay AdminOnly. The server validates the paths,
-  only uses fixed Cargo commands and does not return the build's stdout/stderr.
+  only uses fixed Cargo commands plus the rebuild steps the plugin's manifest
+  declares (`development.rebuild`, scripts inside the source; see
+  `plugins-ui.md`) and does not return the build's stdout/stderr.
   A development-only install has no licensed features; rebuilding an existing
   licensed or GitHub install preserves that install's entitlement and never
   activates a license.

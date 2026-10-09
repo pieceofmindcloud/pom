@@ -308,7 +308,7 @@ export interface DevelopmentPluginRebuildResult {
 
 export interface DevelopmentPluginError {
   code: string;
-  stage?: "inspect" | "metadata" | "compile" | "install";
+  stage?: "inspect" | "metadata" | "prepare" | "compile" | "install";
   exit_code?: number | null;
 }
 

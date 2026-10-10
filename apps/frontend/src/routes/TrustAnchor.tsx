@@ -17,6 +17,7 @@
  */
 import { Check, Copy, Download, Fingerprint, Laptop, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
+import { copyText } from "../lib/clipboard";
 import {
   Badge,
   Button,
@@ -66,13 +67,10 @@ function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(fingerprint);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* sem área de transferência: o valor continua legível e selecionável */
-    }
+    // Sem área de transferência o valor continua legível e selecionável.
+    if (!(await copyText(fingerprint))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
   }
 
   return (
@@ -197,13 +195,10 @@ export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
   const canSubmit = chain.trim().length > 0 && fingerprint.trim().length > 0 && fingerprintConfirmed && !fingerprintPending && !installing;
 
   async function copySharedValue(kind: "document" | "key", value: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setTrustCopied(kind);
-      window.setTimeout(() => setTrustCopied(null), 1800);
-    } catch {
-      // O valor permanece selecionável quando a área de transferência não existe.
-    }
+    // O valor permanece selecionável quando a cópia falha.
+    if (!(await copyText(value))) return;
+    setTrustCopied(kind);
+    window.setTimeout(() => setTrustCopied(null), 1800);
   }
 
   function downloadSharedValue(value: string, filename: string) {

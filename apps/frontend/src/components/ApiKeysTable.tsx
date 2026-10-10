@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { Confirm, Modal } from "./Confirm";
 import { Badge, Button, Empty, ErrorState, Field, Input, Mono, PageHeader, Select, Skeleton } from "./ui";
 import { api } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { since } from "../lib/format";
 import { useApiKeys, useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
@@ -22,9 +23,11 @@ function IssuedSecret({ issued, onDone }: { issued: IssuedApiKey | null; onDone:
   const [copied, setCopied] = useState(false);
   const copy = () => {
     if (!issued) return;
-    void navigator.clipboard.writeText(issued.key);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    void copyText(issued.key).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    });
   };
   return <Modal open={issued !== null} title={t("keys.issuedTitle")} onClose={() => undefined} footer={<Button variant="primary" onClick={() => { setCopied(false); onDone(); }}>{t("keys.issuedDone")}</Button>}>
     {issued && <div className="space-y-3">

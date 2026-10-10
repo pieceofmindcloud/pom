@@ -16,6 +16,7 @@ import {
   Skeleton,
 } from "../components/ui";
 import { isNearBottom } from "../lib/chatScroll";
+import { copyText } from "../lib/clipboard";
 import { clock } from "../lib/format";
 import { useClusterLogs, useDeployments, useEnterpriseStatus } from "../lib/queries";
 import { useI18n } from "../i18n/provider";
@@ -77,12 +78,8 @@ export function DeploymentLogs() {
   }
 
   async function copyLogs() {
-    try {
-      await navigator.clipboard.writeText(entries.slice(-500).map(logLineText).join("\n"));
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
+    const copied = await copyText(entries.slice(-500).map(logLineText).join("\n"));
+    setCopyState(copied ? "copied" : "failed");
   }
 
   function selectDeployment(value: string) {

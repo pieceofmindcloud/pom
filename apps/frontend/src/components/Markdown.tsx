@@ -11,15 +11,18 @@ import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { copyText } from "../lib/clipboard";
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       onClick={() => {
-        void navigator.clipboard.writeText(text);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1600);
+        void copyText(text).then((ok) => {
+          if (!ok) return;
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1600);
+        });
       }}
       className="absolute right-2 top-2 flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-[0.7rem] text-muted opacity-0 transition-opacity duration-150 hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
     >

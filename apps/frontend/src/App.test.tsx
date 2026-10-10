@@ -387,11 +387,11 @@ describe("profile guard per route", () => {
     expect(password.getAttribute("autocomplete")).toBe("current-password");
     expect(screen.queryByRole("navigation")).toBeNull();
 
-    // As bandeiras trocam o idioma da própria tela de login.
-    expect(screen.getByRole("button", { name: "Português (Brasil)" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    // O seletor mostra a bandeira do idioma atual e troca pelo submenu.
+    fireEvent.click(screen.getByRole("button", { name: "Idioma: Português (Brasil)" }));
+    fireEvent.click(screen.getByRole("option", { name: "English" }));
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "English" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Language: English" })).toBeTruthy();
   });
 
   it("keeps the local screen self-contained and in both languages", () => {

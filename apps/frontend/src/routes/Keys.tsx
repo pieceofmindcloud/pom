@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Confirm } from "../components/Confirm";
+import { copyText } from "../lib/clipboard";
 import {
   Button,
   ErrorState,
@@ -53,9 +54,11 @@ function Secret({ value, label }: { value: string; label: string }) {
         variant="ghost"
         aria-label={t("keys.copy", { label })}
         onClick={() => {
-          void navigator.clipboard.writeText(value);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1600);
+          void copyText(value).then((ok) => {
+            if (!ok) return;
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1600);
+          });
         }}
         icon={
           copied ? (

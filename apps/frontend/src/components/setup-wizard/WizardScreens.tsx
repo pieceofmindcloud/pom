@@ -22,6 +22,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useI18n } from "../../i18n/provider";
+import { copyText } from "../../lib/clipboard";
 import { Badge, Button, Field, Input, Panel, PanelHeader, Select } from "../ui";
 import {
   CapabilityList,
@@ -158,7 +159,13 @@ export function InviteScreen({ onContinue }: Pick<ScreenProps, "onContinue">) {
   const { t } = useI18n();
   const [code, setCode] = useState("POM-7K92-XA31");
   const [copied, setCopied] = useState(false);
-  function copy() { if (navigator.clipboard) void navigator.clipboard.writeText(`POM invite: ${code}`); setCopied(true); window.setTimeout(() => setCopied(false), 1600); }
+  function copy() {
+    void copyText(`POM invite: ${code}`).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    });
+  }
   return <ScreenFrame eyebrow={t("wizard.inviteEyebrow")} title={t("wizard.inviteTitle")} subtitle={t("wizard.inviteSubtitle")}><div className="grid gap-5 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]"><Panel className="flex min-h-[250px] items-center justify-center"><div className="flex flex-col items-center gap-4"><div className="grid h-40 w-40 grid-cols-9 gap-1 rounded-lg border border-line bg-white p-3">{Array.from({ length: 81 }, (_, index) => <span key={index} className={`${(index * 17 + index % 5) % 7 < 3 || index < 9 || index % 9 < 2 ? "bg-slate-900" : "bg-white"}`} />)}</div><div className="flex items-center gap-2 text-xs text-muted"><QrCode className="h-3.5 w-3.5" />{t("wizard.qrMock")}</div></div></Panel><Panel><PanelHeader title={t("wizard.inviteCodeTitle")} subtitle={t("wizard.inviteCodeSubtitle")} /><div className="px-5 py-5"><code className="block rounded-lg border border-line bg-ink px-4 py-3 text-center font-mono text-lg tracking-[0.12em] text-fg">{code}</code><div className="mt-4 flex flex-wrap gap-2"><Button size="sm" variant="outline" icon={copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} onClick={copy}>{copied ? t("wizard.copied") : t("wizard.copyInvite")}</Button><Button size="sm" variant="ghost" icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => setCode("POM-4M18-ZB74")}>{t("wizard.newCode")}</Button></div><p className="mt-5 text-xs leading-relaxed text-faint">{t("wizard.inviteLinkMock")}</p></div></Panel></div><ScreenActions><ContinueButton onClick={onContinue} /></ScreenActions></ScreenFrame>;
 }
 

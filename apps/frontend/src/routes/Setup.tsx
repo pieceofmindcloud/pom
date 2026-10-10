@@ -24,6 +24,7 @@ import { Field, Input } from "../components/ui";
 import { BrandLanguageSwitch } from "../components/BrandLanguageSwitch";
 import { LobbyChat } from "../components/LobbyChat";
 import { LocationEditor } from "../components/LocationEditor";
+import { copyText } from "../lib/clipboard";
 import { SETUP_GEO, type LocationPrecision } from "../lib/geo";
 import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 import pomMark from "../assets/pom-mark-dark.png";
@@ -642,13 +643,10 @@ export function InviteScreen({ setup, anchor, t }: { setup: SetupState; anchor: 
 function SecretCard({ label, value, t }: { label: string; value: string; t: Translate }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      // O conteúdo continua selecionável.
-    }
+    // Sem `copyText` o botão não copiava em HTTP; o conteúdo continua selecionável se falhar.
+    if (!(await copyText(value))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
   }
   return (
     <div className="pom-setup-secret" data-testid="connection-secret">
@@ -675,13 +673,10 @@ function TrustActions({ anchor, t }: { anchor: AnchorPreview; t: Translate }) {
     URL.revokeObjectURL(url);
   }
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(anchor.document);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      // O download continua disponível.
-    }
+    // Se a cópia falhar, o download continua disponível ao lado.
+    if (!(await copyText(anchor.document))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
   }
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="trust-actions">

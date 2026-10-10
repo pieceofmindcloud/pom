@@ -34,6 +34,7 @@ import { TelemetryLine } from "../components/TelemetryLine";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
 import { Badge, Button, Empty } from "../components/ui";
 import { isNearBottom } from "../lib/chatScroll";
+import { copyText } from "../lib/clipboard";
 import {
   CHAT_TELEMETRY_SLOT,
   type ChatTelemetryEnvironment,
@@ -174,14 +175,10 @@ export function ChatError({ message }: { message: string }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
-    if (!navigator.clipboard) return;
-    try {
-      await navigator.clipboard.writeText(message);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      // The message remains selectable when the browser denies clipboard access.
-    }
+    // The message remains selectable when the copy fails.
+    if (!(await copyText(message))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
   };
 
   return (

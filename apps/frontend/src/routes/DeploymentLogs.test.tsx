@@ -210,6 +210,8 @@ describe("DeploymentLogs", () => {
 
   it("copies the last 500 lines and confirms the action", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
+    // Contexto seguro (HTTPS/localhost): o caminho que usa a API do navegador.
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },

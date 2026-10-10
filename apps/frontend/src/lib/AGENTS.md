@@ -36,6 +36,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `getRandomValues` quando disponível e mantém um fallback para ids não
   secretos em navegadores antigos.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
+- `clipboard.ts` - `copyText(text)`: every copy button goes through it. It uses `navigator.clipboard` only in a secure context (HTTPS or localhost) and falls back to a hidden `<textarea>` + `document.execCommand("copy")`, so copying works when the UI is opened over plain HTTP. Never call `navigator.clipboard` directly.
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
   synced; keeps the initial model mark, attachment structure and private request

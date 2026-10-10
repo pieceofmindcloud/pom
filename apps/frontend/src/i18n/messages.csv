@@ -2021,6 +2021,9 @@ publicNetworks.removeDescription,"{name} leaves this machine's list. Nothing cha
 publicNetworks.removeFailed,Could not remove the network,Não foi possível remover a rede
 publicNetworks.removeNamed,Remove {name} from the list,Remover {name} da lista
 publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede da lista?
+publicNetworks.roleAccepted,Accepting,Aceitando
+publicNetworks.roleAcceptedNamed,Accepting {role},Aceitando {role}
+publicNetworks.roleNotAccepted,Not accepting,Não aceita
 publicNetworks.search,Search,Buscar
 publicNetworks.searchPlaceholder,"Name, organization, city...","Nome, organização, cidade..."
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
@@ -2039,6 +2042,44 @@ publicNetworks.vram,Total VRAM,VRAM total
 publicNetworks.within,Distance,Distância
 publicNetworks.withinAny,Any distance,Qualquer distância
 publicNetworks.withinKm,Within {value} km,Até {value} km
+quickSetup.accessAuthorizedDetail,Each request waits for you to approve it in the notifications bell.,Cada pedido espera a sua aprovação no sino de notificações.
+quickSetup.action,Quick setup,Configuração rápida
+quickSetup.descriptionHint,What the network is for and what it offers.,Para que serve a rede e o que ela oferece.
+quickSetup.discoveryHidden,Hidden,Oculta
+quickSetup.discoveryHiddenDetail,Not listed. Only machines that import its trust document can ask to join.,Não é listada. Só máquinas que importam o documento de confiança dela podem pedir para entrar.
+quickSetup.discoveryOff,Off,Desligada
+quickSetup.discoveryOffDetail,This machine only. Nobody can find the network or ask to join.,Só esta máquina. Ninguém encontra a rede nem pede para entrar.
+quickSetup.discoveryPublic,Public,Pública
+quickSetup.discoveryPublicDetail,Listed in the public directory: other machines find it and ask to join.,Listada no diretório público: outras máquinas a encontram e pedem para entrar.
+quickSetup.heading.access,Who can join,Quem pode entrar
+quickSetup.heading.discovery,How should other machines find this network?,Como outras máquinas devem encontrar esta rede?
+quickSetup.heading.info,Tell people about your network,Conte sobre a sua rede
+quickSetup.heading.location,Where is the network?,Onde fica a rede?
+quickSetup.heading.review,Review and publish,Revise e publique
+quickSetup.lead.access,Choose how requests are answered and which roles a new machine can ask for. Current members are not affected.,Escolha como os pedidos são respondidos e com que papéis uma máquina nova pode pedir para entrar. Os membros atuais não são afetados.
+quickSetup.lead.discovery,"A new installation starts with discovery off. Turn it on to list the network in the public directory, where other machines can find it and ask to join.","Uma instalação nova começa com a descoberta desligada. Ligue para listar a rede no diretório público, onde outras máquinas a encontram e pedem para entrar."
+quickSetup.lead.info,This is what others read in the directory before asking to join. Description and rules accept Markdown.,É o que os outros leem no diretório antes de pedir para entrar. Descrição e regras aceitam Markdown.
+quickSetup.lead.location,"The directory sorts networks by distance. Only an approximate point is published, never the exact one unless you choose it.","O diretório ordena as redes pela distância. Só um ponto aproximado é publicado, nunca o exato, a não ser que você escolha."
+quickSetup.lead.review,Check the choices below. You can change any of them later in Network settings.,Confira as escolhas abaixo. Você pode mudar qualquer uma depois nas configurações da rede.
+quickSetup.nameRequired,Give the network a public name to continue,Dê um nome público à rede para continuar
+quickSetup.optional,Optional,Opcional
+quickSetup.progress,Setup steps,Etapas da configuração
+quickSetup.publish,Publish network,Publicar rede
+quickSetup.publishNote,Publishing sends these details to the relays; it can take a minute for other machines to see the network.,Publicar envia estes dados aos relés; pode levar um minuto até outras máquinas verem a rede.
+quickSetup.published,Network published,Rede publicada
+quickSetup.publishedDetail,Other machines can now find it in the public directory.,Outras máquinas já podem encontrá-la no diretório público.
+quickSetup.recommended,Recommended,Recomendado
+quickSetup.role.infer,Use the network's models,Usam os modelos da rede
+quickSetup.role.node,Hold and serve model slices,Guardam e servem fatias de modelos
+quickSetup.rulesHint,What members agree to when they join.,O que os membros aceitam ao entrar.
+quickSetup.save,Save,Salvar
+quickSetup.saveNote,The network will not be listed in the public directory.,A rede não será listada no diretório público.
+quickSetup.step.access,Who can join,Quem pode entrar
+quickSetup.step.discovery,Discovery,Descoberta
+quickSetup.step.info,Information,Informações
+quickSetup.step.location,Location,Localização
+quickSetup.step.review,Review,Revisão
+quickSetup.title,Publish your network,Publicar sua rede
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada

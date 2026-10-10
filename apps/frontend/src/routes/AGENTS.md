@@ -79,28 +79,37 @@ Per-file list:
   order, which reorders the current page.
   Clicking a row selects it (iris band, `aria-selected`) and opens
   `NetworkSidePanel` on the right, in the inspector's look and small print:
-  the name, the enrollment state (`network-enrollment-state`), description,
-  channels and rules (long rules folded), only the fields the owner filled,
+  the name, the enrollment state (`network-enrollment-state`, one line per
+  role with its icon from `ENROLLMENT_ICONS`), description,
+  channels and rules (always open), only the fields the owner filled,
   nothing the row already shows. Its footer (`network-panel-actions`) holds
-  the actions: "Ask to join" and "Lobby" for another network (closed ones only
-  get the lobby), "Leave network" for a member, "More details", the trust
-  document export and, for an imported network, remove. "More details" opens
+  the actions: "Quick setup" (see below), "Ask to join" and "Lobby" for
+  another network (closed ones only get the lobby), "Leave network" for a
+  member, "More details", the trust document export (own network only) and,
+  for an imported network, remove. "More details" opens
   `PublicNetworkDetails`, a `Modal size="full"` with every field, technical
   ones (fingerprint, publisher key, relays, trust document) included.
-  A lobby opens in place of the list (`LobbyChat layout="page"`, "Back to
-  networks"), not as a window; open lobbies are kept in a tab strip
-  ("Networks" plus one closable tab per lobby) and stay mounted and polling
-  while hidden, so the operator can talk in several at once. "Ask to join"
-  opens the lobby with the focus on the admission request.
+  A lobby opens in place of the list and the page header (`LobbyChat
+  layout="page"`, "Back to networks" at the top left), also for a network
+  whose Chat is off (request side only); only a lobby that answers
+  `lobby_disabled` falls back to a window (`onUnavailable`). Open lobbies are
+  kept in a tab strip over the list ("Networks" plus one closable tab per
+  lobby, and a switcher in the lobby header with two or more) and stay
+  mounted and polling while hidden, so the operator can talk in several at
+  once. "Ask to join" opens the lobby with the focus on the admission request.
+  The principal of a network whose discovery is off or hidden gets "Quick
+  setup" (`../components/NetworkQuickSetup.tsx`) in the header, on its row
+  and in the panel.
   The action column depends on membership: the network this node is in never
   offers Join. A member gets "Leave network" (`POST /api/ui/network/leave`);
   the principal (`authority_level === "primary"`) gets no action there.
   Pinned rows come from `GET /api/ui/networks/pinned` and stay on top of every
-  page, outside the search, the filters and the order: this machine's network
+  page, outside the order but filtered here by the same search (accents
+  folded), country, city and radius: this machine's network
   ("own") and the networks imported here ("custom", amber band). The node
   leaves both out of the known list. "Add network" reads a JSON file and posts
-  its text to `/api/ui/networks/custom`; every row exports `trust_document` as
-  `<name>-trust.json`. A network with an empty `accepted_enrollments` is
+  its text to `/api/ui/networks/custom`; only the own network's row exports
+  `trust_document` as `<name>-trust.json`. A network with an empty `accepted_enrollments` is
   marked closed and can still be talked to. A network with `public_stats`
   that this node is not in gets its nodes, VRAM and models from
   `usePublicStats` (`../lib/publicStats`).

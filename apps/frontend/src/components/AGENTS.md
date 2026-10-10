@@ -497,13 +497,24 @@ Per-file list:
   over `retry_at`), and the request form comes back when the wait is over.
   `layout="page"` fills the hosting screen instead of a window, with a back
   button (`backLabel`) in place of Close; the Networks screen uses it to keep
-  several lobbies open in tabs. `focusAdmission` puts the focus on the role
-  picker once the request form shows, and `onMessagesClosed` tells a page
-  lobby that the network's Chat is off, so the screen reopens it as a window.
-  When the network answers `messages_closed` (its Chat is off) the
-  conversation column is not rendered: the window is only the hardware card
-  and the request panel (`lobby-request`).
+  several lobbies open in tabs; `headerActions` adds controls at the right of
+  that header. `focusAdmission` puts the focus on the role picker once the
+  request form shows, and `onUnavailable` tells a page lobby that the
+  network's lobby is off (`lobby_disabled`), so the screen reopens it as a
+  window. When the network answers `messages_closed` (its Chat is off) the
+  conversation column is not rendered: the window, or the full-screen page
+  centered, is only the hardware card and the request panel (`lobby-request`).
   Test: `LobbyChat.test.tsx`.
+- `NetworkQuickSetup.tsx` - step-by-step window that publishes this
+  machine's own network from the Networks screen: discovery (public, hidden,
+  off; public suggested), name/organization/description/rules/channels, who
+  can join and the accepted roles, the location (`LocationEditor`, public
+  only) and a review. `quickSetupSteps` drops the steps a visibility does not
+  need. It saves the whole `NetworkSettings` through
+  `POST /api/ui/network/settings`, the same route as Network settings, and
+  the node stays the authority. Also exports `ENROLLMENT_ICONS`, the icon of
+  each enrollment role used across the Networks screen. Tested through
+  `../routes/PublicNetworks.test.tsx`.
 - `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
   OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens
   with, without live usage, because nobody measures a non-member. Used by

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronLeft, ChevronRight, CircleCheck, CircleHelp, CircleX, Download, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogIn, LogOut, Maximize2, MessageCircle, Plus, RefreshCw, Search, ShieldCheck, Trash2, Waypoints, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleCheck, CircleHelp, CircleX, Download, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogIn, LogOut, Maximize2, MessageCircle, Plus, RefreshCw, Search, ShieldCheck, Trash2, WandSparkles, Waypoints, X } from "lucide-react";
 import { Confirm, Modal } from "../components/Confirm";
 import { LobbyChat } from "../components/LobbyChat";
 import { Markdown } from "../components/Markdown";
+import { ENROLLMENT_ICONS, NetworkQuickSetup } from "../components/NetworkQuickSetup";
 import { Badge, Button, ErrorState, Input, PageHeader, Select, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
 import { since } from "../lib/format";
@@ -11,9 +12,10 @@ import { networkStats, type NetworkStats } from "../lib/networkStats";
 import { usePublicLatencies, type PublicLatency } from "../lib/publicLatency";
 import { usePublicLocator, type PublicLocator } from "../lib/publicLocator";
 import { usePublicStats } from "../lib/publicStats";
-import { useCluster, useNetworkInfo, useNode } from "../lib/queries";
+import { useCluster, useInvalidate, useNetworkInfo, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
+import { ENROLLMENT_ROLES } from "../lib/types";
 import type { EnrollmentRole } from "../lib/types";
 
 interface PublicNetwork {
@@ -146,7 +148,7 @@ export function PublicNetworks() {
   /** Lobbies kept open, each a full-screen tab; `activeLobby` is the one shown. */
   const [lobbies, setLobbies] = useState<OpenLobby[]>([]);
   const [activeLobby, setActiveLobby] = useState<string | null>(null);
-  /** A lobby without conversation: only the request, in a window over the list. */
+  /** A network whose lobby does not answer: only the request, in a window over the list. */
   const [requestLobby, setRequestLobby] = useState<PublicNetwork | null>(null);
   const [leaveConfirm, setLeaveConfirm] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -156,6 +158,8 @@ export function PublicNetworks() {
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const [reachabilityRefreshKey, setReachabilityRefreshKey] = useState(0);
+  const [quickSetupOpen, setQuickSetupOpen] = useState(false);
+  const invalidate = useInvalidate();
 
   /** This machine's own network and the imported ones; an older node has neither. */
   function loadPinned() {
@@ -301,11 +305,30 @@ export function PublicNetworks() {
    */
   const ownNetwork = pinned?.own?.network ?? localNetwork;
   const ownFingerprint = ownNetwork?.fingerprint;
-  const customNetworks = (pinned?.custom ?? []).filter((entry) => entry.network.fingerprint !== ownFingerprint);
-  const pinnedFingerprints = new Set([ownFingerprint, ...customNetworks.map((entry) => entry.network.fingerprint)].filter(Boolean));
+  const allCustomNetworks = (pinned?.custom ?? []).filter((entry) => entry.network.fingerprint !== ownFingerprint);
+  const pinnedFingerprints = new Set([ownFingerprint, ...allCustomNetworks.map((entry) => entry.network.fingerprint)].filter(Boolean));
+  /*
+   * The node searches and filters only the list; the pinned rows are filtered
+   * here by the same rules, or a search would always leave them on screen
+   * and look like it did nothing.
+   */
+  const pinnedMatches = (network: PublicNetwork) => {
+    const words = foldText(searchQuery).split(/\s+/).filter(Boolean);
+    const text = foldText([network.name, network.cluster_id, network.organization, network.description, network.city, network.state ?? "", network.country_name, network.country_code].join(" "));
+    if (!words.every((word) => text.includes(word))) return false;
+    if (countryFilter && (network.country_code || network.country_name) !== countryFilter) return false;
+    if (cityFilter && network.city !== cityFilter) return false;
+    if (radiusKm) {
+      const distance = distanceKm(network.location, viewerLocation);
+      if (distance === null || distance > radiusKm) return false;
+    }
+    return true;
+  };
+  const ownShown = ownNetwork && pinnedMatches(ownNetwork) ? ownNetwork : null;
+  const customNetworks = allCustomNetworks.filter((entry) => pinnedMatches(entry.network));
   const pageNetworks = useMemo(
     () => (known?.networks ?? []).filter((entry) => !pinnedFingerprints.has(entry.network.fingerprint)),
-    [known, ownFingerprint, customNetworks.map((entry) => entry.network.fingerprint).join(",")],
+    [known, ownFingerprint, allCustomNetworks.map((entry) => entry.network.fingerprint).join(",")],
   );
   // Measuring dials every listed network, so it waits for the operator to ask.
   const measuring = latencyAsked || sortOrder === "latency";
@@ -331,7 +354,7 @@ export function PublicNetworks() {
     });
   }, [latencies, pageNetworks, sortOrder]);
   const rows: Row[] = [
-    ...(ownNetwork ? [{ network: ownNetwork, kind: "own" as const, visibility: pinned?.own?.visibility ?? "public" as const }] : []),
+    ...(ownShown ? [{ network: ownShown, kind: "own" as const, visibility: pinned?.own?.visibility ?? "public" as const }] : []),
     ...customNetworks.map((entry) => ({ network: entry.network, kind: "custom" as const, visibility: entry.visibility })),
     ...orderedPage.map((entry) => ({ network: entry.network, kind: "public" as const, visibility: "public" as const, lastSeenAt: entry.last_seen_at })),
   ];
@@ -344,6 +367,12 @@ export function PublicNetworks() {
    * network is published under its key and leaving would orphan it.
    */
   const isPrincipal = node.data?.authority_level === "primary";
+  /*
+   * Quick setup is for the principal of a network that is not published yet:
+   * discovery off or hidden is how a new installation starts.
+   */
+  const ownSettings = networkInfo.data?.network ?? null;
+  const canQuickSetup = isPrincipal && Boolean(networkInfo.data?.can_edit) && ownSettings !== null && ownSettings.visibility !== "public";
   const membershipOf = (kind: RowKind): Membership => kind !== "own" ? "none" : isPrincipal ? "principal" : "member";
   const total = known?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -357,18 +386,14 @@ export function PublicNetworks() {
    * operator goes back, so several conversations can run at once.
    */
   function openLobby(network: PublicNetwork, focusAdmission: boolean) {
-    if (!network.lobby_chat) {
-      setRequestLobby(network);
-      return;
-    }
     setLobbies((open) => open.some((entry) => entry.network.fingerprint === network.fingerprint)
       ? open.map((entry) => entry.network.fingerprint === network.fingerprint ? { network, focusAdmission: entry.focusAdmission || focusAdmission } : entry)
       : [...open, { network, focusAdmission }]);
     setActiveLobby(network.fingerprint);
   }
 
-  /** The lobby said its Chat is off after all: there is nothing to talk in, so it becomes the request window. */
-  function lobbyHasNoChat(network: PublicNetwork) {
+  /** The network's lobby is off: there is nothing to fill a screen with, so the request goes in a window. */
+  function lobbyUnavailable(network: PublicNetwork) {
     closeLobby(network.fingerprint);
     setRequestLobby(network);
   }
@@ -391,27 +416,37 @@ export function PublicNetworks() {
     }
   }
 
+  /** The other open lobbies, reachable from inside a lobby without going back to the list. */
+  const lobbySwitcher = (
+    <div className="flex min-w-0 items-center gap-1 overflow-x-auto" aria-label={t("publicNetworks.openLobbies")}>
+      {lobbies.map(({ network }) => (
+        <button key={network.fingerprint} type="button" aria-pressed={activeLobby === network.fingerprint} onClick={() => setActiveLobby(network.fingerprint)} className={`flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs ${activeLobby === network.fingerprint ? "bg-iris/15 text-fg" : "text-muted hover:text-fg"}`}><MessageCircle className="h-3.5 w-3.5" />{network.name || network.cluster_id}</button>
+      ))}
+    </div>
+  );
+
   const body = knownError && !known
     ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={knownError} onRetry={() => setKnownVersion((value) => value + 1)} /></div>
     : known === null || (rows.length === 0 && refreshing && !filtering)
       ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>
       : rows.length === 0
         ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(filtering ? "publicNetworks.noMatches" : "publicNetworks.emptyTitle")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(filtering ? "publicNetworks.noMatchesDetail" : "publicNetworks.emptyDetail")}</p></div>
-        : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1200px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "reach", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{rows.map((row) => { const { network, kind } = row; const isLocal = kind === "own"; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} selected={selectedRow?.network.fingerprint === network.fingerprint} cachedSince={kind === "public" && liveFingerprints && !liveFingerprints.has(network.fingerprint) ? row.lastSeenAt : undefined} onExport={() => exportTrustDocument(network)} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={membershipOf(kind)} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => openLobby(network, network.accepted_enrollments?.length !== 0)} onSelect={() => setSelected(row)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table></div>;
+        : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1200px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "reach", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{rows.map((row) => { const { network, kind } = row; const isLocal = kind === "own"; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} selected={selectedRow?.network.fingerprint === network.fingerprint} cachedSince={kind === "public" && liveFingerprints && !liveFingerprints.has(network.fingerprint) ? row.lastSeenAt : undefined} onExport={() => exportTrustDocument(network)} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={membershipOf(kind)} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => openLobby(network, network.accepted_enrollments?.length !== 0)} onQuickSetup={isLocal && canQuickSetup ? () => setQuickSetupOpen(true) : undefined} onSelect={() => setSelected(row)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table></div>;
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
-      <PageHeader
+      {!activeLobby && <PageHeader
         title={t("publicNetworks.title")}
         subtitle={t("publicNetworks.subtitle")}
         className="!mb-0 border-b border-line bg-surface/75 px-3 py-3 sm:px-4"
         actions={<div className="flex items-center gap-2">
           <input ref={importInput} type="file" accept=".json,application/json" className="hidden" data-testid="network-import-file" onChange={(event) => void importNetwork(event.target.files?.[0])} />
           <Button size="sm" variant="primary" loading={importing} title={t("publicNetworks.addDetail")} onClick={() => importInput.current?.click()} icon={<Plus className="h-3.5 w-3.5" />}>{t("publicNetworks.add")}</Button>
+          {canQuickSetup && <Button size="sm" variant="primary" onClick={() => setQuickSetupOpen(true)} icon={<WandSparkles className="h-3.5 w-3.5" />}>{t("quickSetup.action")}</Button>}
           <Button size="sm" loading={refreshing} onClick={() => void refreshLive()} icon={<RefreshCw className="h-3.5 w-3.5" />}>{t("publicNetworks.refresh")}</Button>
         </div>}
-      />
-      {lobbies.length > 0 && (
+      />}
+      {lobbies.length > 0 && !activeLobby && (
         <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-surface/60 px-2 py-1" role="tablist" aria-label={t("publicNetworks.openLobbies")}>
           <button type="button" role="tab" aria-selected={activeLobby === null} onClick={() => setActiveLobby(null)} className={`flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${activeLobby === null ? "bg-iris/15 text-fg" : "text-muted hover:text-fg"}`}><Globe2 className="h-3.5 w-3.5" />{t("publicNetworks.title")}</button>
           {lobbies.map(({ network }) => {
@@ -428,7 +463,7 @@ export function PublicNetworks() {
       )}
       {lobbies.map(({ network, focusAdmission }) => (
         <div key={network.fingerprint} className={activeLobby === network.fingerprint ? "min-h-0 flex-1 bg-surface/35" : "hidden"}>
-          <LobbyChat layout="page" backLabel={t("publicNetworks.backToNetworks")} focusAdmission={focusAdmission} network={{ name: network.name || network.cluster_id, publisher_key: network.publisher_key, accepted_enrollments: network.accepted_enrollments }} endpoint="/api/ui/network-chat/lobby" onClose={() => setActiveLobby(null)} onMessagesClosed={() => lobbyHasNoChat(network)} />
+          <LobbyChat layout="page" backLabel={t("publicNetworks.backToNetworks")} headerActions={lobbies.length > 1 ? lobbySwitcher : undefined} focusAdmission={focusAdmission} network={{ name: network.name || network.cluster_id, publisher_key: network.publisher_key, accepted_enrollments: network.accepted_enrollments }} endpoint="/api/ui/network-chat/lobby" onClose={() => setActiveLobby(null)} onUnavailable={() => lobbyUnavailable(network)} />
         </div>
       ))}
       <div className={activeLobby ? "hidden" : "flex min-h-0 flex-1 overflow-hidden border-y border-line bg-surface/35"}>
@@ -505,6 +540,7 @@ export function PublicNetworks() {
             onLeave={() => setLeaveConfirm(true)}
             onExport={() => exportTrustDocument(selectedRow.network)}
             onRemove={() => setRemoveTarget(selectedRow.network)}
+            onQuickSetup={selectedRow.kind === "own" && canQuickSetup ? () => setQuickSetupOpen(true) : undefined}
             t={t}
           />
         )}
@@ -513,6 +549,19 @@ export function PublicNetworks() {
       <Confirm open={leaveConfirm} title={t("network.forgetNetworkTitle")} description={t("network.forgetNetworkDescription")} confirmLabel={t("network.leave")} tone="danger" busy={leaving} onConfirm={() => void leave()} onCancel={() => !leaving && setLeaveConfirm(false)} />
       <LobbyChat network={requestLobby && { name: requestLobby.name || requestLobby.cluster_id, publisher_key: requestLobby.publisher_key, accepted_enrollments: requestLobby.accepted_enrollments }} focusAdmission endpoint="/api/ui/network-chat/lobby" onClose={() => setRequestLobby(null)} />
       <Confirm open={removeTarget !== null} title={t("publicNetworks.removeTitle")} description={t("publicNetworks.removeDescription", { name: removeTarget?.name || removeTarget?.cluster_id || "" })} confirmLabel={t("publicNetworks.remove")} tone="danger" busy={removing} onConfirm={() => void removeCustom()} onCancel={() => !removing && setRemoveTarget(null)} />
+      <NetworkQuickSetup
+        open={quickSetupOpen}
+        network={ownSettings}
+        onClose={() => setQuickSetupOpen(false)}
+        onSaved={(saved) => {
+          setQuickSetupOpen(false);
+          toast.success(t(saved.network.visibility === "public" ? "quickSetup.published" : "network.infoSaved"), t(saved.network.visibility === "public" ? "quickSetup.publishedDetail" : "network.infoSavedDetail"));
+          invalidate();
+          void networkInfo.refetch();
+          void refreshLive();
+        }}
+        t={t}
+      />
       <PublicNetworkDetails network={detailsOpen ? selectedRow?.network ?? null : null} visibility={selectedRow?.visibility ?? "public"} onClose={() => setDetailsOpen(false)} t={t} />
     </div>
   );
@@ -529,7 +578,7 @@ function exportTrustDocument(network: PublicNetwork) {
   URL.revokeObjectURL(url);
 }
 
-function NetworkRow({ network, kind, selected, cachedSince, onExport, onRemove, distance, latency, stats: localStats, membership, leaving, onLeave, onChat, onSelect, t, refreshKey }: { network: PublicNetwork; kind: RowKind; selected: boolean; cachedSince: number | undefined; onExport: () => void; onRemove: () => void; distance: number | null; latency: PublicLatency | undefined; stats: NetworkStats | null; membership: Membership; leaving: boolean; onLeave: () => void; onChat: () => void; onSelect: () => void; t: T; refreshKey: number }) {
+function NetworkRow({ network, kind, selected, cachedSince, onExport, onRemove, distance, latency, stats: localStats, membership, leaving, onLeave, onChat, onQuickSetup, onSelect, t, refreshKey }: { network: PublicNetwork; kind: RowKind; selected: boolean; cachedSince: number | undefined; onExport: () => void; onRemove: () => void; distance: number | null; latency: PublicLatency | undefined; stats: NetworkStats | null; membership: Membership; leaving: boolean; onLeave: () => void; onChat: () => void; onQuickSetup?: () => void; onSelect: () => void; t: T; refreshKey: number }) {
   const unavailable = t("publicNetworks.unavailable");
   const location = placeOf(network) || unavailable;
   const reachability = usePublicLocator(network.publisher_key, refreshKey);
@@ -557,7 +606,7 @@ function NetworkRow({ network, kind, selected, cachedSince, onExport, onRemove, 
     : kind === "own"
       ? "bg-aqua/[0.05] shadow-[inset_3px_0_0_rgb(var(--aqua)/0.7)] hover:bg-aqua/[0.09]"
       : "hover:bg-raised/45";
-  return <tr data-testid={`network-row-${network.fingerprint}`} data-network-kind={kind} aria-selected={selected} onClick={onSelect} className={`cursor-pointer align-top transition-colors ${tone}`}><td className="max-w-[15rem] px-4 py-3.5">{kind !== "public" && <div className="mb-1.5">{kind === "own" ? <Badge tone="aqua"><House className="h-3 w-3" />{t("publicNetworks.kindOwn")}</Badge> : <Badge tone="amber"><Lock className="h-3 w-3" />{t("publicNetworks.kindCustom")}</Badge>}</div>}<button type="button" className="group text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t((network.location?.accuracy_m ?? 0) >= 1000 ? "publicNetworks.distanceApproximate" : "publicNetworks.distance", { value: distance.toFixed(0) })}</span>}{closed && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-rose">{t("publicNetworks.closedShort")}</span>}{cachedSince !== undefined && <p className="mt-1 text-[0.62rem] text-faint" data-testid={`network-cached-${network.fingerprint}`} title={t("publicNetworks.cachedDetail")}>{t("publicNetworks.cached", { when: since(new Date(cachedSince * 1000).toISOString()) })}</p>}</button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[16rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="whitespace-nowrap px-4 py-3.5 font-mono text-muted" data-testid={`public-network-latency-${network.fingerprint}`}>{latencyText}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><div className="flex flex-wrap items-center gap-2"><MembershipAction network={network} membership={membership} leaving={leaving} onChat={onChat} onLeave={onLeave} t={t} /><Button size="sm" variant="ghost" aria-label={t("publicNetworks.exportTrust", { name: network.name || network.cluster_id })} title={t("publicNetworks.exportTrustDetail")} disabled={!network.trust_document} onClick={(event) => { event.stopPropagation(); onExport(); }} icon={<Download className="h-3.5 w-3.5" />} />{kind === "custom" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.removeNamed", { name: network.name || network.cluster_id })} title={t("publicNetworks.remove")} onClick={(event) => { event.stopPropagation(); onRemove(); }} icon={<Trash2 className="h-3.5 w-3.5" />} />}</div></td></tr>;
+  return <tr data-testid={`network-row-${network.fingerprint}`} data-network-kind={kind} aria-selected={selected} onClick={onSelect} className={`cursor-pointer align-top transition-colors ${tone}`}><td className="max-w-[15rem] px-4 py-3.5">{kind !== "public" && <div className="mb-1.5">{kind === "own" ? <Badge tone="aqua"><House className="h-3 w-3" />{t("publicNetworks.kindOwn")}</Badge> : <Badge tone="amber"><Lock className="h-3 w-3" />{t("publicNetworks.kindCustom")}</Badge>}</div>}<button type="button" className="group text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t((network.location?.accuracy_m ?? 0) >= 1000 ? "publicNetworks.distanceApproximate" : "publicNetworks.distance", { value: distance.toFixed(0) })}</span>}{closed ? <span className="ml-2 whitespace-nowrap text-[0.65rem] text-rose">{t("publicNetworks.closedShort")}</span> : kind !== "own" && <EnrollmentIcons roles={network.accepted_enrollments} t={t} />}{cachedSince !== undefined && <p className="mt-1 text-[0.62rem] text-faint" data-testid={`network-cached-${network.fingerprint}`} title={t("publicNetworks.cachedDetail")}>{t("publicNetworks.cached", { when: since(new Date(cachedSince * 1000).toISOString()) })}</p>}</button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[16rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="whitespace-nowrap px-4 py-3.5 font-mono text-muted" data-testid={`public-network-latency-${network.fingerprint}`}>{latencyText}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><div className="flex flex-wrap items-center gap-2">{onQuickSetup && <Button size="sm" variant="primary" data-testid="network-quick-setup-row" onClick={(event) => { event.stopPropagation(); onQuickSetup(); }} icon={<WandSparkles className="h-3.5 w-3.5" />}>{t("quickSetup.action")}</Button>}<MembershipAction network={network} membership={membership} leaving={leaving} onChat={onChat} onLeave={onLeave} t={t} />{kind === "own" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.exportTrust", { name: network.name || network.cluster_id })} title={t("publicNetworks.exportTrustDetail")} disabled={!network.trust_document} onClick={(event) => { event.stopPropagation(); onExport(); }} icon={<Download className="h-3.5 w-3.5" />} />}{kind === "custom" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.removeNamed", { name: network.name || network.cluster_id })} title={t("publicNetworks.remove")} onClick={(event) => { event.stopPropagation(); onRemove(); }} icon={<Trash2 className="h-3.5 w-3.5" />} />}</div></td></tr>;
 }
 
 /** Join (or just talk, when closed) for another network; Leave for a member of this one; nothing for its principal. */
@@ -570,9 +619,6 @@ function MembershipAction({ network, membership, leaving, onChat, onLeave, t }: 
   return null;
 }
 
-/** Rules longer than this start folded in the side panel. */
-const LONG_RULES = 280;
-
 /**
  * The side panel of the selected network, drawn like the Dashboard's property
  * inspector. The row already shows organization, place, reach and stats, so
@@ -581,7 +627,7 @@ const LONG_RULES = 280;
  * keys, fingerprints and relays to the full view. A field the owner left
  * empty is not drawn. Every action for the network sits at the bottom.
  */
-function NetworkSidePanel({ row, membership, leaving, onClose, onExpand, onLobby, onLeave, onExport, onRemove, t }: { row: Row; membership: Membership; leaving: boolean; onClose: () => void; onExpand: () => void; onLobby: (focusAdmission: boolean) => void; onLeave: () => void; onExport: () => void; onRemove: () => void; t: T }) {
+function NetworkSidePanel({ row, membership, leaving, onClose, onExpand, onLobby, onLeave, onExport, onRemove, onQuickSetup, t }: { row: Row; membership: Membership; leaving: boolean; onClose: () => void; onExpand: () => void; onLobby: (focusAdmission: boolean) => void; onLeave: () => void; onExport: () => void; onRemove: () => void; onQuickSetup?: () => void; t: T }) {
   const { network, kind } = row;
   const name = network.name || network.cluster_id;
   const closed = network.accepted_enrollments?.length === 0;
@@ -597,15 +643,26 @@ function NetworkSidePanel({ row, membership, leaving, onClose, onExpand, onLobby
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain px-3 py-3 text-[0.72rem] leading-relaxed">
         <div className={`rounded-md border px-2 py-1.5 ${closed ? "border-rose/30 bg-rose/[0.06] text-rose" : "border-lime/30 bg-lime/[0.06] text-lime"}`} data-testid="network-enrollment-state">
           <p className="font-semibold">{t(closed ? "publicNetworks.enrollmentClosed" : "publicNetworks.enrollmentOpen")}</p>
-          {!closed && <p className="text-[0.66rem] text-muted">{acceptedEnrollmentsLabel(network.accepted_enrollments, t)}</p>}
+          <ul className="mt-1 space-y-0.5" data-testid="network-enrollment-roles">
+            {ENROLLMENT_ROLES.map((role) => {
+              const Icon = ENROLLMENT_ICONS[role];
+              const accepted = !network.accepted_enrollments || network.accepted_enrollments.includes(role);
+              return (
+                <li key={role} data-role={role} data-accepted={accepted} className={`flex items-center gap-1.5 text-[0.68rem] ${accepted ? "text-fg" : "text-faint line-through"}`}>
+                  <Icon className={`h-3.5 w-3.5 shrink-0 ${accepted ? "text-lime" : "text-faint"}`} aria-hidden="true" />
+                  <span>{t(`network.enrollment.${role}`)}</span>
+                  <span className={`ml-auto ${accepted ? "text-lime" : "text-rose"}`}>{t(accepted ? "publicNetworks.roleAccepted" : "publicNetworks.roleNotAccepted")}</span>
+                </li>
+              );
+            })}
+          </ul>
         </div>
         {network.description && <PanelField label={t("network.description")}><Markdown compact>{network.description}</Markdown></PanelField>}
         {network.channels && <PanelField label={t("network.channels")}><Markdown compact>{network.channels}</Markdown></PanelField>}
-        {network.rules && (network.rules.length > LONG_RULES
-          ? <details className="group"><summary className="eyebrow cursor-pointer select-none">{t("network.rules")}</summary><div className="mt-1"><Markdown compact>{network.rules}</Markdown></div></details>
-          : <PanelField label={t("network.rules")}><Markdown compact>{network.rules}</Markdown></PanelField>)}
+        {network.rules && <PanelField label={t("network.rules")}><Markdown compact>{network.rules}</Markdown></PanelField>}
       </div>
       <div className="shrink-0 space-y-2 border-t border-line bg-raised/60 px-3 py-2.5" data-testid="network-panel-actions">
+        {onQuickSetup && <Button size="sm" variant="primary" className="w-full" onClick={onQuickSetup} icon={<WandSparkles className="h-3.5 w-3.5" />}>{t("quickSetup.action")}</Button>}
         {membership === "none" && (
           <div className="flex flex-wrap gap-2">
             {(!closed || !network.lobby_chat) && <Button size="sm" variant="primary" disabled={closed} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={() => onLobby(true)} icon={<LogIn className="h-3.5 w-3.5" />}>{t("publicNetworks.askToJoin")}</Button>}
@@ -615,7 +672,7 @@ function NetworkSidePanel({ row, membership, leaving, onClose, onExpand, onLobby
         {membership === "member" && <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={onLeave} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button>}
         <div className="flex flex-wrap gap-1">
           <Button size="sm" variant="ghost" onClick={onExpand} icon={<Maximize2 className="h-3.5 w-3.5" />}>{t("publicNetworks.moreDetails")}</Button>
-          <Button size="sm" variant="ghost" disabled={!network.trust_document} title={t("publicNetworks.exportTrustDetail")} onClick={onExport} icon={<Download className="h-3.5 w-3.5" />}>{t("publicNetworks.exportShort")}</Button>
+          {kind === "own" && <Button size="sm" variant="ghost" disabled={!network.trust_document} title={t("publicNetworks.exportTrustDetail")} onClick={onExport} icon={<Download className="h-3.5 w-3.5" />}>{t("publicNetworks.exportShort")}</Button>}
           {kind === "custom" && <Button size="sm" variant="ghost" onClick={onRemove} icon={<Trash2 className="h-3.5 w-3.5" />}>{t("publicNetworks.remove")}</Button>}
         </div>
       </div>
@@ -709,6 +766,24 @@ function ReachabilityIndicator({ id, status, t }: { id: string; status: PublicLo
         ? "text-[0.68rem] text-faint"
         : "text-[0.68rem] text-amber";
   return <div data-testid={`public-network-reachability-${id}`} data-reachability={status} className="flex min-w-0 items-start gap-2" title={label}><span className="mt-0.5">{content}</span><span className={textClass}>{label}</span></div>;
+}
+
+/** The roles a network takes, as icons next to its name; the names are in the tooltip. */
+function EnrollmentIcons({ roles, t }: { roles: EnrollmentRole[] | undefined; t: T }) {
+  return (
+    <span className="ml-2 inline-flex items-center gap-1 align-middle" data-testid="network-enrollment-icons">
+      {ENROLLMENT_ROLES.filter((role) => !roles || roles.includes(role)).map((role) => {
+        const Icon = ENROLLMENT_ICONS[role];
+        const label = t("publicNetworks.roleAcceptedNamed", { role: t(`network.enrollment.${role}`) });
+        return <Icon key={role} className="h-3 w-3 text-lime" aria-label={label}><title>{label}</title></Icon>;
+      })}
+    </span>
+  );
+}
+
+/** Lower case without accents, like the node folds its search text. */
+function foldText(text: string): string {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
 /** "City, State, Country", as the node resolved it from the coordinates. */

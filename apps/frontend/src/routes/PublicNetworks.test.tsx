@@ -78,6 +78,7 @@ vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: undefined }),
   useNode: () => mocks.node,
   useNetworkInfo: () => mocks.networkInfo,
+  useInvalidate: () => () => undefined,
 }));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ fromError: vi.fn(), success: vi.fn(), warning: mocks.warning }),
@@ -333,6 +334,11 @@ describe("PublicNetworks", () => {
     const panel = await screen.findByRole("complementary", { name: "Rede Rede Curitiba" });
     expect(within(panel).getByRole("heading", { name: "Rede para colaborar" })).toBeTruthy();
     expect(within(panel).getByText("Aceitando novos membros")).toBeTruthy();
+    // Each role keeps its name beside an icon and its own state.
+    const roles = within(panel).getByTestId("network-enrollment-roles");
+    expect(roles.querySelector('[data-role="node"]')?.textContent).toContain("Nós da rede");
+    expect(roles.querySelector('[data-role="node"] svg')).toBeTruthy();
+    expect(roles.querySelector('[data-role="infer"]')?.textContent).toContain("Nós de inferência");
     expect(within(panel).getByRole("link", { name: "Discord" })).toBeTruthy();
     expect(within(panel).getByText("Respeite os peers")).toBeTruthy();
     // What the row already shows is not repeated.
@@ -341,6 +347,8 @@ describe("PublicNetworks", () => {
     const actions = within(panel).getByTestId("network-panel-actions");
     expect(within(actions).getByRole("button", { name: "Pedir para entrar" })).toBeTruthy();
     expect(within(actions).getByRole("button", { name: "Lobby" })).toBeTruthy();
+    // Another network's trust document is not offered for download.
+    expect(within(actions).queryByRole("button", { name: "Documento de confiança" })).toBeNull();
     expect(screen.getByTestId("network-row-fingerprint-curitiba").getAttribute("aria-selected")).toBe("true");
     // Keys and fingerprints are for the full view, not for reading at a glance.
     expect(within(panel).queryByText("fingerprint-curitiba")).toBeNull();
@@ -355,6 +363,105 @@ describe("PublicNetworks", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Fechar" }));
     fireEvent.click(within(panel).getByRole("button", { name: "Fechar painel" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Rede Rede Curitiba" })).toBeNull());
+  });
+
+  it("shows long rules open in the side panel", async () => {
+    const rules = `- ${"Respeite os peers e compartilhe a VRAM. ".repeat(12)}`;
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([{ ...networks[0], rules }]);
+      return Promise.reject(new Error("no local network"));
+    });
+    render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
+
+    fireEvent.click(await screen.findByText("Rede Curitiba"));
+    const panel = await screen.findByRole("complementary", { name: "Rede Rede Curitiba" });
+    expect(panel.querySelector("details")).toBeNull();
+    expect(within(panel).getByText(/Respeite os peers e compartilhe a VRAM/)).toBeTruthy();
+  });
+
+  it("offers the principal a quick setup of its network while discovery is off, and publishes it", async () => {
+    const own = { ...networks[2], fingerprint: "fingerprint-own", name: "Minha rede", publisher_key: "pk:own", trust_document: "{}" };
+    mocks.node.data = { authority_level: "primary" };
+    mocks.networkInfo.data = {
+      can_edit: true,
+      network: { public_name: "Minha rede", organization: "", description: "", rules: "", channels: "", country_code: "", country_name: "", city: "", geo_label: "", visibility: "local", access_policy: "local_only", accepted_enrollments: [], public_stats: false, location: null },
+    } as never;
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([]);
+      if (path === "/api/ui/networks/pinned") return Promise.resolve({ own: { network: own, visibility: "local" }, custom: [] });
+      return Promise.reject(new Error("no local network"));
+    });
+    mocks.post.mockImplementation((_path: string, body: unknown) => Promise.resolve({ can_edit: true, network: body }));
+    render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
+
+    fireEvent.click(await screen.findByTestId("network-quick-setup-row"));
+    const wizard = await screen.findByTestId("network-quick-setup");
+    // Publishing is the suggestion.
+    expect(within(wizard).getByRole("radio", { name: /Pública/ }).getAttribute("aria-checked")).toBe("true");
+    // Hidden needs neither the place nor the stats.
+    fireEvent.click(within(wizard).getByRole("radio", { name: /Oculta/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    fireEvent.change(within(wizard).getByLabelText(/^Descrição/), { target: { value: "Rede da casa" } });
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    expect(within(wizard).getByRole("radio", { name: /Aprovados por um administrador/ }).getAttribute("aria-checked")).toBe("true");
+    expect(within(wizard).queryByText(/Publicar modelos servidos/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    expect(within(wizard).getByTestId("quick-setup-review").textContent).toContain("Oculta");
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/settings", expect.objectContaining({
+      visibility: "private",
+      access_policy: "authorized",
+      accepted_enrollments: ["node", "infer"],
+      description: "Rede da casa",
+    })));
+    await waitFor(() => expect(screen.queryByTestId("network-quick-setup")).toBeNull());
+  });
+
+  it("asks for the name and the place before publishing a public network", async () => {
+    const own = { ...networks[2], fingerprint: "fingerprint-own", name: "", publisher_key: "pk:own" };
+    mocks.node.data = { authority_level: "primary" };
+    mocks.networkInfo.data = {
+      can_edit: true,
+      network: { public_name: "", organization: "", description: "", rules: "", channels: "", country_code: "", country_name: "", city: "", geo_label: "", visibility: "private", access_policy: "authorized", accepted_enrollments: ["node"], public_stats: false, location: null },
+    } as never;
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([]);
+      if (path === "/api/ui/networks/pinned") return Promise.resolve({ own: { network: own, visibility: "private" }, custom: [] });
+      return Promise.reject(new Error("no local network"));
+    });
+    render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Configuração rápida", hidden: false }));
+    const wizard = await screen.findByTestId("network-quick-setup");
+    // A hidden network keeps its choice; going public is one click.
+    expect(within(wizard).getByRole("radio", { name: /Oculta/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(within(wizard).getByRole("radio", { name: /Pública/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    const next = screen.getByRole("button", { name: "Próxima" }) as HTMLButtonElement;
+    expect(next.disabled).toBe(true);
+    fireEvent.change(within(wizard).getByLabelText(/^Nome público/), { target: { value: "Rede Sul" } });
+    expect(next.disabled).toBe(false);
+    fireEvent.click(next);
+    // The role kept from before stays the only one.
+    expect((within(wizard).getByRole("checkbox", { name: /Nós de inferência/ }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    expect(within(wizard).getByTestId("location-editor")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Próxima" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers no quick setup on a published network or to a member that is not its principal", async () => {
+    const own = { ...networks[2], fingerprint: "fingerprint-own", name: "Minha rede", publisher_key: "pk:own" };
+    mocks.node.data = { authority_level: "secondary" };
+    mocks.networkInfo.data = { can_edit: false, network: { visibility: "local", accepted_enrollments: [] } } as never;
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([]);
+      if (path === "/api/ui/networks/pinned") return Promise.resolve({ own: { network: own, visibility: "local" }, custom: [] });
+      return Promise.reject(new Error("no local network"));
+    });
+    render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
+    await screen.findByText("Minha rede");
+    expect(screen.queryByRole("button", { name: "Configuração rápida" })).toBeNull();
   });
 
   it("says in the side panel when a network is closed to new members", async () => {
@@ -372,7 +479,7 @@ describe("PublicNetworks", () => {
     expect(within(panel).queryByText("Indisponível")).toBeNull();
   });
 
-  it("pages the known networks and searches them on the node, keeping this machine's network on top", async () => {
+  it("pages the known networks and searches them on the node, and the search also filters this machine's network", async () => {
     const many = Array.from({ length: 30 }, (_, index) => ({ ...networks[2], cluster_id: `rede-${index}`, name: `Rede ${String(index).padStart(2, "0")}`, fingerprint: `fingerprint-${index}`, publisher_key: `pk:${index}` }));
     const own = { ...networks[0], fingerprint: "fingerprint-own", name: "Minha rede", publisher_key: "pk:own" };
     mocks.get.mockImplementation((path: string) => {
@@ -395,10 +502,14 @@ describe("PublicNetworks", () => {
     expect(screen.getAllByTestId(/^network-row-/)[0].getAttribute("data-network-kind")).toBe("own");
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), { target: { value: "rede 07" } });
-    await waitFor(() => expect(screen.getAllByTestId(/^network-row-/).map((row) => row.getAttribute("data-testid"))).toEqual(["network-row-fingerprint-own", "network-row-fingerprint-7"]));
+    await waitFor(() => expect(screen.getAllByTestId(/^network-row-/).map((row) => row.getAttribute("data-testid"))).toEqual(["network-row-fingerprint-7"]));
     // A new search starts again from the first page.
     expect(mocks.knownRequests.some((path) => path.includes("q=rede+07") && path.includes("page=1&"))).toBe(true);
     expect(screen.getByTestId("public-networks-pagination").textContent).toContain("1-1 of 1 networks");
+
+    // A search that matches this machine's network, accents folded, keeps it.
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), { target: { value: "MINHA" } });
+    await waitFor(() => expect(screen.getAllByTestId(/^network-row-/).map((row) => row.getAttribute("data-testid"))).toEqual(["network-row-fingerprint-own"]));
   });
 
   it("lists the networks the node heard of before and marks the ones the live search did not find", async () => {
@@ -447,7 +558,7 @@ describe("PublicNetworks", () => {
     expect(within(other).getByRole("button", { name: "Conversar e pedir para entrar" })).toBeTruthy();
   });
 
-  it("only asks to join, in a window, a network whose lobby has no conversation", async () => {
+  it("asks to join a network whose lobby has no conversation in a full screen, and in a window only when its lobby is off", async () => {
     mocks.get.mockImplementation((path: string) => {
       if (path === "/api/public/networks") return Promise.resolve([{ ...networks[0], lobby_chat: false }, { ...networks[1], lobby_chat: false, accepted_enrollments: [] }]);
       if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
@@ -465,10 +576,28 @@ describe("PublicNetworks", () => {
     expect((within(closed).getByRole("button", { name: "Pedir para entrar" }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(within(row).getByRole("button", { name: "Pedir para entrar" }));
+    // The lobby fills the screen with the request side only.
+    const lobby = await screen.findByRole("region", { name: "Lobby de Rede Curitiba" });
+    await within(lobby).findByTestId("lobby-admission");
+    expect(within(lobby).queryByTestId("lobby-messages")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(within(lobby).getByRole("button", { name: "Voltar para redes" }));
+    await waitFor(() => expect(screen.getByText("Rede São Paulo").closest("div.hidden")).toBeNull());
+  });
+
+  it("falls back to a window when the network's lobby is off", async () => {
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([{ ...networks[0], lobby_chat: false }]);
+      if (path.startsWith("/api/public/networks/locate?")) return Promise.resolve({ reachability: "direct", relays: 0 });
+      if (path.startsWith("/api/ui/network-chat/lobby?")) return Promise.resolve({ accepted: false, error: "lobby_disabled" });
+      return Promise.reject(new Error("no local network"));
+    });
+    render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
+
+    const row = (await screen.findByText("Rede Curitiba")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Pedir para entrar" }));
     await screen.findByRole("dialog");
-    // A window over the list, not a lobby tab in its place.
-    expect(screen.getByText("Rede São Paulo")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Voltar para redes" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Lobby de Rede Curitiba" })).toBeNull();
   });
 
   it("asks for admission through the lobby, which every listed network has", async () => {
@@ -575,23 +704,29 @@ describe("PublicNetworks", () => {
     expect(within(customRow).getByText("Private · added here")).toBeTruthy();
     expect(within(customRow).getByRole("button", { name: "Talk and ask to join" })).toBeTruthy();
 
-    // Pinned rows stay whatever the filter hides.
+    // Pinned rows follow the same filters as the list.
     fireEvent.change(screen.getByLabelText("Country"), { target: { value: "PT" } });
     await waitFor(() => expect(screen.queryByText("Rede Curitiba")).toBeNull());
+    // The own network is in Portugal like the filter; the imported one is not.
     expect(screen.getByText("Minha rede")).toBeTruthy();
-    expect(screen.getByText("Rede privada")).toBeTruthy();
+    expect(screen.queryByText("Rede privada")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Country"), { target: { value: "" } });
+    await screen.findByText("Rede privada");
 
-    // Every row exports its trust document as a file.
+    // Only this machine's own network exports its trust document: that is
+    // the one worth handing to another machine.
+    expect(within(screen.getByTestId("network-row-fingerprint-custom")).queryByRole("button", { name: "Export the trust document of Rede privada" })).toBeNull();
     const blobs: Blob[] = [];
     vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: (blob: Blob) => { blobs.push(blob); return "blob:x"; }, revokeObjectURL: () => {} }));
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    fireEvent.click(within(customRow).getByRole("button", { name: "Export the trust document of Rede privada" }));
+    fireEvent.click(within(screen.getByTestId("network-row-fingerprint-own")).getByRole("button", { name: "Export the trust document of Minha rede" }));
     expect(click).toHaveBeenCalledTimes(1);
     // jsdom's Blob cannot be read back; its size is the document's.
-    expect(blobs[0].size).toBe("{\"custom\":true}".length);
+    expect(blobs[0].size).toBe("{\"own\":true}".length);
     click.mockRestore();
 
-    fireEvent.click(within(customRow).getByRole("button", { name: "Remove Rede privada from the list" }));
+    // The filter remounted the row.
+    fireEvent.click(within(screen.getByTestId("network-row-fingerprint-custom")).getByRole("button", { name: "Remove Rede privada from the list" }));
     fireEvent.click(await screen.findByRole("button", { name: "Remove from the list" }));
     await waitFor(() => expect(screen.queryByText("Rede privada")).toBeNull());
     expect(mocks.del).toHaveBeenCalledWith("/api/ui/networks/custom/fingerprint-custom");
@@ -645,15 +780,18 @@ describe("PublicNetworks", () => {
     const tabs = screen.getByRole("tablist", { name: "Lobbies abertos" });
     expect(within(tabs).getByRole("tab", { name: "Rede Curitiba" })).toBeTruthy();
 
-    // A second lobby opens beside the first.
+    // A second lobby opens beside the first, and the lobby header switches between them.
     const row = screen.getByTestId("network-row-fingerprint-lisboa");
     fireEvent.click(within(row).getByRole("button", { name: "Conversar e pedir para entrar" }));
-    await screen.findByRole("region", { name: "Lobby de Rede Lisboa" });
-    expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Redes", "Rede Curitiba", "Rede Lisboa"]);
+    const second = await screen.findByRole("region", { name: "Lobby de Rede Lisboa" });
     await waitFor(() => expect(mocks.get).toHaveBeenCalledWith("/api/ui/network-chat/lobby?key=pk%3Alisboa", { auth: true }));
+    expect(within(second).getByRole("button", { name: "Rede Curitiba" })).toBeTruthy();
+    fireEvent.click(within(second).getByRole("button", { name: "Voltar para redes" }));
+    const strip = await screen.findByRole("tablist", { name: "Lobbies abertos" });
+    expect(within(strip).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Redes", "Rede Curitiba", "Rede Lisboa"]);
 
-    fireEvent.click(within(tabs).getByRole("button", { name: "Fechar o lobby de Rede Lisboa" }));
+    fireEvent.click(within(strip).getByRole("button", { name: "Fechar o lobby de Rede Lisboa" }));
     expect(screen.queryByRole("region", { name: "Lobby de Rede Lisboa" })).toBeNull();
-    expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Redes", "Rede Curitiba"]);
+    expect(within(strip).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Redes", "Rede Curitiba"]);
   });
 });

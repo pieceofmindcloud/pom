@@ -1,5 +1,6 @@
 import { ArrowLeft, Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Confirm, Modal } from "./Confirm";
 import { LobbyHardwareCard } from "./LobbyHardwareCard";
 import { Button, Input, Select } from "./ui";
@@ -47,7 +48,7 @@ function errorKey(code: string | null | undefined): string {
  * again every few seconds while the window is open, and that same request is
  * what keeps this machine listed in the lobby.
  */
-export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLabel, focusAdmission = false, onMessagesClosed }: {
+export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLabel, headerActions, focusAdmission = false, onUnavailable }: {
   network: { name: string; publisher_key: string; accepted_enrollments?: EnrollmentRole[] } | null;
   endpoint: LobbyEndpoint;
   onClose: () => void;
@@ -59,14 +60,17 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   layout?: "modal" | "page";
   /** The back button's text in `page` layout. */
   backLabel?: string;
+  /** Drawn at the right of the `page` header, e.g. the other open lobbies. */
+  headerActions?: ReactNode;
   /** Opened to ask for admission: the role picker takes the focus once it shows. */
   focusAdmission?: boolean;
   /**
-   * In `page` layout, called when the network answers that its Chat is off:
-   * with no conversation a full screen has nothing to fill, and the host
-   * shows the request in a window instead.
+   * In `page` layout, called when the network answers that its lobby is off:
+   * there is nothing to show in a full screen, and the host falls back to a
+   * window. A lobby whose Chat is off still fills the screen with the
+   * request side.
    */
-  onMessagesClosed?: () => void;
+  onUnavailable?: () => void;
 }) {
   const { t } = useI18n();
   const [exchange, setExchange] = useState<LobbyExchange | null>(null);
@@ -120,8 +124,8 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   const closed = exchange?.messages_closed === true;
   const latest = messages[messages.length - 1]?.message_id;
   useEffect(() => {
-    if (page && closed) onMessagesClosed?.();
-  }, [closed, onMessagesClosed, page]);
+    if (page && !exchange && failure === "lobby.errorDisabled") onUnavailable?.();
+  }, [exchange, failure, onUnavailable, page]);
   useEffect(() => {
     const element = messagesRef.current;
     if (element && autoFollow.current) element.scrollTop = element.scrollHeight;
@@ -196,7 +200,7 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   const content = (
     <>
       <div className={page
-        ? `grid h-full min-h-0 min-w-0 gap-4 ${closed ? "" : "md:grid-cols-[minmax(0,1fr)_18rem]"}`
+        ? `grid h-full min-h-0 min-w-0 gap-4 ${closed ? "content-start overflow-y-auto py-2" : "md:grid-cols-[minmax(0,1fr)_18rem]"}`
         : closed ? "min-w-0" : "grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]"}>
         {!closed && <div className={page ? "flex min-h-0 min-w-0 flex-col" : "flex min-w-0 flex-col"}>
           <p className="mb-3 text-xs leading-relaxed text-muted">{t("lobby.detail")}</p>
@@ -237,7 +241,7 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
             </Button>
           </div>
         </div>}
-        <div className={page ? "min-h-0 min-w-0 overflow-y-auto" : "min-w-0"} data-testid="lobby-request">
+        <div className={page ? `min-h-0 min-w-0 overflow-y-auto ${closed ? "mx-auto w-full max-w-lg rounded-xl border border-line bg-raised/50 p-4 sm:p-5" : ""}` : "min-w-0"} data-testid="lobby-request">
           <p className="eyebrow mb-2">{t("lobby.yourCard")}</p>
           {exchange ? <LobbyHardwareCard nodeId={exchange.node_id} card={exchange.card} self /> : <p className="text-xs text-faint">{t("lobby.connecting")}</p>}
           <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t(closed ? "lobby.cardNoteRequest" : "lobby.cardNote")}</p>
@@ -290,7 +294,8 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
       <section aria-label={title} className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lobby-page">
         <div className="flex shrink-0 items-center gap-3 border-b border-line bg-raised/60 px-3 py-2 sm:px-4">
           <Button size="sm" variant="ghost" onClick={onClose} icon={<ArrowLeft className="h-3.5 w-3.5" />}>{backLabel ?? t("common.close")}</Button>
-          <h2 className="min-w-0 truncate font-display text-sm font-semibold text-fg">{title}</h2>
+          <h2 className="min-w-0 flex-1 truncate font-display text-sm font-semibold text-fg">{title}</h2>
+          {headerActions}
         </div>
         <div className="min-h-0 flex-1 overflow-hidden p-3 text-sm leading-relaxed text-muted sm:p-4">{content}</div>
       </section>

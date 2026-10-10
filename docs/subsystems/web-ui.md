@@ -295,27 +295,36 @@ local-only notice. Routes:
   node; latency is measured in the browser and reorders the page. Clicking a
   row selects it (iris band) and opens a side panel drawn like the
   Dashboard's property inspector, in small print: the network's name, whether
-  it takes new members, description, channels (links) and rules - nothing the
-  row already shows, and no keys or fingerprints - with the network's actions
-  at the bottom (ask to join, lobby, leave, more details, trust document,
-  remove). "More details" opens a near full-screen window with every field,
+  it takes new members (each role, network node and inference node, with its
+  icon, name and state), description, channels (links) and rules (always
+  open) - nothing the row already shows, and no keys or fingerprints - with
+  the network's actions at the bottom (quick setup, ask to join, lobby,
+  leave, more details, trust document, remove). "More details" opens a near full-screen window with every field,
   technical ones included. A network whose record says `lobby_chat` (its
-  Chat is on) offers "Talk and ask to join" and a "Lobby" button: the lobby
-  (`LobbyChat` with `layout="page"`) replaces the list on the same screen,
-  with "Back to networks"; open lobbies stay in a tab strip and keep polling,
-  so several conversations run at once. Without `lobby_chat` there is nothing
-  to talk in: the button is "Ask to join" and opens the lobby as a window with
-  only the hardware card and the request, and a page lobby whose exchange
-  reports `messages_closed` turns into that window. Two
-  kinds of rows stay at the top of every page whatever the search, the
-  filters and the order (`GET /api/ui/networks/pinned`): the
+  Chat is on) offers "Talk and ask to join" and a "Lobby" button. Every lobby
+  (`LobbyChat` with `layout="page"`) replaces the list and the page header on
+  the same screen, with "Back to networks" at its top left; open lobbies stay
+  in a tab strip over the list (and in the lobby header when more than one is
+  open) and keep polling, so several conversations run at once. Without
+  `lobby_chat` there is nothing to talk in: the button is "Ask to join" and
+  the full-screen lobby shows only the hardware card and the request. Only a
+  network whose lobby answers `lobby_disabled` falls back to a window. Two
+  kinds of rows stay at the top of every page whatever the order, filtered
+  client-side by the same search, country, city and distance as the list
+  (`GET /api/ui/networks/pinned`): the
   network this machine is in, tagged "Your network", shown even when it is
   not public; then the private networks added on this machine, tagged
   "Private - added here" with an amber band. "Add network" in the header
   imports one from a JSON file holding its trust document
   (`POST /api/ui/networks/custom`), and an added row can be removed from the
-  list. Every row has an export button that saves its trust document as
-  `<name>-trust.json`, the file another machine imports. An added network is
+  list. Only the row of this machine's own network exports its trust
+  document as `<name>-trust.json`, the file another machine imports; another
+  network's document is not offered for download. While the own network's
+  discovery is off or hidden, its principal (`authority_level: primary` and
+  `can_edit`) gets "Quick setup" in the header, on the row and in the side
+  panel: `components/NetworkQuickSetup.tsx`, a step-by-step window
+  (discovery, information, who can join and accepted roles, location, review)
+  that saves through `POST /api/ui/network/settings` like Network settings. An added network is
   joined like a public one, through its lobby; its admin only needs discovery
   on "Hidden", since the lobby follows discovery. The network Chat is not
   needed to ask for admission; without it the lobby window shows no

@@ -73,7 +73,11 @@ vi.mock("../lib/guide", () => ({
 }));
 vi.mock("../lib/api", () => ({
   api: {
-    get: vi.fn(async (path: string) => path.includes("trust-share") ? queryMocks.trustShare : queryMocks.networkInfo.data),
+    get: vi.fn(async (path: string) => path.includes("trust-share")
+      ? queryMocks.trustShare
+      : path.endsWith("/network/relay")
+        ? { everyone: false, cluster: true, transfers: true, fixed: { everyone: false, no_cluster: false, no_transfers: false }, reachable: true, serving: true }
+        : queryMocks.networkInfo.data),
     post: vi.fn(async (path: string, body: unknown) => path.endsWith("/settings") ? { network: body, can_edit: true } : undefined),
   },
 }));
@@ -239,7 +243,7 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 
-  it("asks the quick setup's questions in its order, and only those that apply to the discovery", () => {
+  it("asks the quick setup's questions in its order, and only those that apply to the discovery", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -251,7 +255,9 @@ describe("NetworkSettings", () => {
 
     const sections = () => screen.getAllByTestId(/^network-section-/).map((section) => section.getAttribute("data-testid"));
     // Hidden: no place, since only the public directory places a network.
-    expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-access"]);
+    // This machine's relay closes the form once the node answered.
+    await screen.findByTestId("network-section-relay");
+    expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-access", "network-section-relay"]);
     expect(screen.getByRole("radio", { name: /Oculta/ }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("radio", { name: /Aprovados por um administrador/ }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByText("Aceitando novos membros")).toBeTruthy();
@@ -261,10 +267,10 @@ describe("NetworkSettings", () => {
     expect(screen.getByRole("radio", { name: /Qualquer um sem aprovação/ }).textContent).toContain("sem um administrador olhar");
 
     fireEvent.click(screen.getByRole("radio", { name: /Pública/ }));
-    expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-access", "network-section-location"]);
+    expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-access", "network-section-location", "network-section-relay"]);
     expect(screen.getByText("Rótulo de descoberta")).toBeTruthy();
     fireEvent.click(screen.getByRole("radio", { name: /Desligada/ }));
-    expect(sections()).toEqual(["network-section-discovery", "network-section-info"]);
+    expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-relay"]);
     expect(screen.queryByText("Aceitando novos membros")).toBeNull();
   });
 

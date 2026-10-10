@@ -2057,11 +2057,13 @@ quickSetup.heading.access,Who can join,Quem pode entrar
 quickSetup.heading.discovery,How should other machines find this network?,Como outras máquinas devem encontrar esta rede?
 quickSetup.heading.info,Tell people about your network,Conte sobre a sua rede
 quickSetup.heading.location,Where is the network?,Onde fica a rede?
+quickSetup.heading.relay,Help the community: relay traffic,Ajude a comunidade: sirva de relé
 quickSetup.heading.review,Review and publish,Revise e publique
 quickSetup.lead.access,Choose how requests are answered and which roles a new machine can ask for. Current members are not affected.,Escolha como os pedidos são respondidos e com que papéis uma máquina nova pode pedir para entrar. Os membros atuais não são afetados.
 quickSetup.lead.discovery,"A new installation starts with discovery off. Turn it on to list the network in the public directory, where other machines can find it and ask to join.","Uma instalação nova começa com a descoberta desligada. Ligue para listar a rede no diretório público, onde outras máquinas a encontram e pedem para entrar."
 quickSetup.lead.info,This is what others read in the directory before asking to join. Description and rules accept Markdown.,É o que os outros leem no diretório antes de pedir para entrar. Descrição e regras aceitam Markdown.
 quickSetup.lead.location,"The directory sorts networks by distance. Only an approximate point is published, never the exact one unless you choose it.","O diretório ordena as redes pela distância. Só um ponto aproximado é publicado, nunca o exato, a não ser que você escolha."
+quickSetup.lead.relay,"A setting of this machine, not of the network. Machines behind a router reach each other through relays: every machine that relays for any network makes the distributed network stronger for everyone.","Uma configuração desta máquina, não da rede. Máquinas atrás de um roteador se alcançam por relés: cada máquina que serve de relé para qualquer rede deixa a rede distribuída mais forte para todos."
 quickSetup.lead.review,Check the choices below. You can change any of them later in Network settings.,Confira as escolhas abaixo. Você pode mudar qualquer uma depois nas configurações da rede.
 quickSetup.nameRequired,Give the network a public name to continue,Dê um nome público à rede para continuar
 quickSetup.optional,Optional,Opcional
@@ -2071,6 +2073,8 @@ quickSetup.publishNote,Publishing sends these details to the relays; it can take
 quickSetup.published,Network published,Rede publicada
 quickSetup.publishedDetail,Other machines can now find it in the public directory.,Outras máquinas já podem encontrá-la no diretório público.
 quickSetup.recommended,Recommended,Recomendado
+quickSetup.relayFailedDetail,The network was saved; set the relay again in Network settings.,A rede foi salva; ajuste o relé de novo nas configurações da rede.
+quickSetup.relayLive,"Applied to this machine as soon as it changes, without the Save button.","Aplicado a esta máquina assim que muda, sem o botão Salvar."
 quickSetup.role.infer,Use the network's models,Usam os modelos da rede
 quickSetup.role.node,Hold and serve model slices,Guardam e servem fatias de modelos
 quickSetup.rulesHint,What members agree to when they join.,O que os membros aceitam ao entrar.
@@ -2080,6 +2084,7 @@ quickSetup.step.access,Who can join,Quem pode entrar
 quickSetup.step.discovery,Discovery,Descoberta
 quickSetup.step.info,Information,Informações
 quickSetup.step.location,Location,Localização
+quickSetup.step.relay,Relay,Relé
 quickSetup.step.review,Review,Revisão
 quickSetup.title,Publish your network,Publicar sua rede
 release.alone,Release anyway,Liberar mesmo assim

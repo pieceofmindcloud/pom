@@ -553,8 +553,9 @@ export function PublicNetworks() {
         open={quickSetupOpen}
         network={ownSettings}
         onClose={() => setQuickSetupOpen(false)}
-        onSaved={(saved) => {
+        onSaved={(saved, relayFailed) => {
           setQuickSetupOpen(false);
+          if (relayFailed) toast.warning(t("network.relaySaveFailed"), t("quickSetup.relayFailedDetail"));
           toast.success(t(saved.network.visibility === "public" ? "quickSetup.published" : "network.infoSaved"), t(saved.network.visibility === "public" ? "quickSetup.publishedDetail" : "network.infoSavedDetail"));
           invalidate();
           void networkInfo.refetch();

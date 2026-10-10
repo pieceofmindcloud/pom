@@ -418,6 +418,42 @@ describe("PublicNetworks", () => {
     await waitFor(() => expect(screen.queryByTestId("network-quick-setup")).toBeNull());
   });
 
+  it("suggests relaying for any network in the quick setup and saves the relay after the network", async () => {
+    const own = { ...networks[2], fingerprint: "fingerprint-own", name: "Minha rede", publisher_key: "pk:own" };
+    mocks.node.data = { authority_level: "primary" };
+    mocks.networkInfo.data = {
+      can_edit: true,
+      network: { public_name: "Minha rede", organization: "", description: "", rules: "", channels: "", country_code: "", country_name: "", city: "", geo_label: "", visibility: "local", access_policy: "local_only", accepted_enrollments: [], public_stats: false, location: null },
+    } as never;
+    const relay = { everyone: false, cluster: true, transfers: true, fixed: { everyone: false, no_cluster: false, no_transfers: false }, reachable: true, serving: true };
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([]);
+      if (path === "/api/ui/networks/pinned") return Promise.resolve({ own: { network: own, visibility: "local" }, custom: [] });
+      if (path === "/api/ui/network/relay") return Promise.resolve(relay);
+      return Promise.reject(new Error("no local network"));
+    });
+    mocks.post.mockImplementation((path: string, body: unknown) => Promise.resolve(path === "/api/ui/network/relay" ? { ...relay, ...(body as object) } : { can_edit: true, network: body }));
+    render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
+
+    fireEvent.click(await screen.findByTestId("network-quick-setup-row"));
+    const wizard = await screen.findByTestId("network-quick-setup");
+    fireEvent.click(within(wizard).getByRole("radio", { name: /Desligada/ }));
+    await waitFor(() => expect(within(wizard).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["1Descoberta", "2Informações", "3Relé", "4Revisão"]));
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    // Relaying for any network is the suggestion, with the recommendation.
+    const everyone = within(wizard).getByTestId("relay-everyone") as HTMLInputElement;
+    expect(everyone.checked).toBe(true);
+    expect(everyone.closest("label")!.textContent).toContain("Recomendado");
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    expect(within(wizard).getByTestId("quick-setup-review").textContent).toContain("Servindo de relé para qualquer rede");
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/relay", { everyone: true, cluster: true, transfers: true }));
+    const order = mocks.post.mock.calls.map(([path]) => path);
+    expect(order.indexOf("/api/ui/network/settings")).toBeLessThan(order.indexOf("/api/ui/network/relay"));
+  });
+
   it("asks for the name and the place before publishing a public network", async () => {
     const own = { ...networks[2], fingerprint: "fingerprint-own", name: "", publisher_key: "pk:own" };
     mocks.node.data = { authority_level: "primary" };

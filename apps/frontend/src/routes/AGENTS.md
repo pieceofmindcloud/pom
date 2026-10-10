@@ -124,7 +124,10 @@ Per-file list:
   Networks screen's quick setup, in the same order and drawing, with the
   components `../components/NetworkQuickSetup.tsx` exports (`SetupSection`,
   `DiscoveryChoices`, `InfoFields`, `AccessFields` with `full`, then
-  `LocationEditor`): discovery, information, who can join, location. It
+  `LocationEditor`): discovery, information, who can join, location, and
+  last this machine's relay (`RelayOptions` with `section`, saved at once,
+  not by the Save button). Who cannot edit the network gets the relay as a
+  panel below the read-only block. It
   includes "Accepting new members", one card per `EnrollmentRole`
   (`ENROLLMENT_ROLES` in `lib/types.ts`) with its icon; unchecking all of them
   advertises the network as closed.
@@ -245,9 +248,7 @@ Per-file list:
   mostra o endereço efetivo usado pelos peers). Between the two sits "Machine
   name" (`POST /api/ui/network/node-name`): the field holds the configured
   `node_name` and, while empty, shows the hostname in use as its placeholder.
-  Below them it mounts
-  `../components/RelayOptions.tsx`, the relay options of this machine.
-  `Sair da rede` aqui é diferente
+  The relay options moved to `NetworkSettings.tsx`. `Sair da rede` aqui é diferente
   de `Esquecer rede` em `NetworkSettings.tsx`: um desliga a máquina do cluster,
   o outro apaga a configuração local e reinicia no setup.
 

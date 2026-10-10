@@ -21,6 +21,7 @@ import { formatClusterVersion } from "../lib/clusterVersion";
 import { MachineIcon } from "../components/MachineIcon";
 import { Markdown } from "../components/Markdown";
 import { AccessFields, DiscoveryChoices, InfoFields, SetupSection } from "../components/NetworkQuickSetup";
+import { RelayOptions } from "../components/RelayOptions";
 import {
   Badge,
   Button,
@@ -190,6 +191,10 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
             t={t}
           />
         )}
+
+        {/* Whoever cannot edit the network still decides how this machine
+            relays; the editor draws it as the form's last question. */}
+        {networkDraft && !networkEditable && <RelayOptions />}
 
         {isAdmin && <AdmittedMachines t={t} />}
 
@@ -460,6 +465,8 @@ function NetworkInfoPanel({
               <div className="mt-4 min-w-0"><KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue></div>
             </SetupSection>
           )}
+          {/* This machine's own setting, applied as soon as it changes. */}
+          <RelayOptions section={(content) => <SetupSection step="relay" number={2 + (discoverable ? 1 : 0) + (publicNetwork ? 1 : 0) + 1} t={t}>{content}</SetupSection>} />
         </div>
       ) : (
         <dl className="grid min-w-0 gap-x-6 gap-y-4 px-5 py-5 sm:grid-cols-2">

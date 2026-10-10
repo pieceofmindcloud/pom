@@ -7,13 +7,16 @@
  * it, who may join and where it is - one step at a time, and saves through the
  * same `POST /api/ui/network/settings` the settings screen uses. The node
  * stays the authority: it validates the place and refuses a caller that is
- * not the principal.
+ * not the principal. Its relay step is this machine's own setting
+ * (`/api/ui/network/relay`), asked here to encourage relaying for any
+ * network; it is saved after the network, and only when it changed.
  */
 import { BrainCircuit, Check, ChevronLeft, ChevronRight, EyeOff, Globe2, Monitor, MapPin, Rocket, Server, ShieldAlert, ShieldQuestion, Users, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Modal } from "./Confirm";
 import { LocationEditor } from "./LocationEditor";
+import { RelayChoices, relayStateKey, useRelayStatus, type RelayChoice, type RelayStatus } from "./RelayOptions";
 import { Button, Field, Input } from "./ui";
 import { api } from "../lib/api";
 import { NETWORK_GEO, placeLabel } from "../lib/geo";
@@ -21,7 +24,7 @@ import { ENROLLMENT_ROLES } from "../lib/types";
 import type { EnrollmentRole, NetworkInfoView, NetworkSettings } from "../lib/types";
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
-type Step = "discovery" | "info" | "access" | "location" | "review";
+type Step = "discovery" | "info" | "access" | "location" | "relay" | "review";
 type Update = (patch: Partial<NetworkSettings>) => void;
 
 /** The icon of each discovery choice, the same on the Networks screen and in Network settings. */
@@ -44,11 +47,26 @@ export const ENROLLMENT_ICONS: Record<EnrollmentRole, typeof Server> = {
   infer: BrainCircuit,
 };
 
-/** The steps a draft goes through: a network nobody can reach skips who may join and where it is. */
-export function quickSetupSteps(visibility: NetworkSettings["visibility"]): Step[] {
-  if (visibility === "local") return ["discovery", "info", "review"];
-  if (visibility === "private") return ["discovery", "info", "access", "review"];
-  return ["discovery", "info", "access", "location", "review"];
+/**
+ * The steps a draft goes through: a network nobody can reach skips who may
+ * join and where it is. The relay step needs the node's relay report.
+ */
+export function quickSetupSteps(visibility: NetworkSettings["visibility"], relay = true): Step[] {
+  const steps: Step[] = visibility === "local"
+    ? ["discovery", "info"]
+    : visibility === "private"
+      ? ["discovery", "info", "access"]
+      : ["discovery", "info", "access", "location"];
+  return [...steps, ...(relay ? ["relay" as const] : []), "review"];
+}
+
+/** The wizard's suggestion: relaying for any network, unless the command line fixed it. */
+function suggestedRelay(status: RelayStatus): RelayChoice {
+  return {
+    everyone: status.fixed.everyone ? status.everyone : true,
+    cluster: status.cluster,
+    transfers: status.transfers,
+  };
 }
 
 export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
@@ -56,13 +74,16 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
   /** The settings as the node has them now; the window starts from them. */
   network: NetworkSettings | null;
   onClose: () => void;
-  onSaved: (saved: NetworkInfoView) => void;
+  /** `relayFailed`: the network was saved but this machine's relay choice was not. */
+  onSaved: (saved: NetworkInfoView, relayFailed: boolean) => void;
   t: Translate;
 }) {
   const [draft, setDraft] = useState<NetworkSettings | null>(null);
   const [step, setStep] = useState<Step>("discovery");
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [relayStatus] = useRelayStatus(open);
+  const [relay, setRelay] = useState<RelayChoice | null>(null);
 
   // Every opening starts over from what the node has, suggesting the public
   // directory: publishing is what this window is for.
@@ -78,9 +99,13 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
     setFailure(null);
   }, [open, network]);
 
+  useEffect(() => {
+    setRelay(open && relayStatus ? suggestedRelay(relayStatus) : null);
+  }, [open, relayStatus]);
+
   if (!open || !draft) return null;
   const update = (patch: Partial<NetworkSettings>) => setDraft({ ...draft, ...patch });
-  const steps = quickSetupSteps(draft.visibility);
+  const steps = quickSetupSteps(draft.visibility, Boolean(relayStatus && relay));
   const index = Math.max(0, steps.indexOf(step));
   const last = index === steps.length - 1;
   const publicNetwork = draft.visibility === "public";
@@ -96,7 +121,16 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
     setFailure(null);
     try {
       const saved = await api.post<NetworkInfoView>("/api/ui/network/settings", draft);
-      onSaved(saved);
+      let relayFailed = false;
+      if (relayStatus && relay && (["everyone", "cluster", "transfers"] as const).some((option) => relay[option] !== relayStatus[option])) {
+        try {
+          await api.post<RelayStatus>("/api/ui/network/relay", relay);
+        } catch {
+          // The network is saved either way; the relay can be set in Network settings.
+          relayFailed = true;
+        }
+      }
+      onSaved(saved, relayFailed);
     } catch (reason) {
       setFailure(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -135,6 +169,7 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
         {step === "info" && <InfoFields draft={draft} update={update} t={t} autoFocus />}
         {step === "access" && <AccessFields draft={draft} update={update} t={t} />}
         {step === "location" && <LocationEditor value={draft} source={NETWORK_GEO} required t={t} onChange={(place) => update(place)} />}
+        {step === "relay" && relayStatus && relay && <RelayChoices value={relay} status={relayStatus} onChange={(option, checked) => setRelay({ ...relay, [option]: checked })} t={t} />}
         {step === "review" && (
           <dl className="grid gap-x-6 gap-y-3 rounded-lg border border-line bg-raised/40 p-4 sm:grid-cols-2" data-testid="quick-setup-review">
             <Summary label={t("network.visibility")}>{t(VISIBILITY_LABELS[draft.visibility])}</Summary>
@@ -150,6 +185,7 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
             )}
             {publicNetwork && <Summary label={t("location.title")}><span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5 text-faint" />{placeLabel(draft) || t("network.notProvided")}</span></Summary>}
             {publicNetwork && <Summary label={t("network.publicStats")}>{t(draft.public_stats ? "network.publicStatsOn" : "network.publicStatsOff")}</Summary>}
+            {relayStatus && relay && <Summary label={t("network.relayTitle")}>{t(relayStateKey({ ...relayStatus, ...relay }))}</Summary>}
           </dl>
         )}
         {step === "review" && <p className="text-xs text-faint">{t(publicNetwork ? "quickSetup.publishNote" : "quickSetup.saveNote")}</p>}

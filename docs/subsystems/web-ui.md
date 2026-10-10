@@ -332,8 +332,10 @@ local-only notice. Routes:
   needed to ask for admission; without it the lobby window shows no
   conversation, only the hardware card and the request panel. Network
   settings asks the quick setup's questions in its order and drawing
-  (discovery, information, who can join, location), with plain text fields
-  and no Markdown preview. "Who can join" and "Accepting new members" appear
+  (discovery, information, who can join, location, then this machine's relay,
+  saved at once), with plain text fields and no Markdown preview. The quick
+  setup also has the relay step, suggesting "Relay for any network" to
+  strengthen the distributed network; it is saved after the network. "Who can join" and "Accepting new members" appear
   only with discovery on or hidden; "Who can join" has "Anyone without
   approval" (`auto_approve`), which admits every request on arrival and
   carries its warning in the choice. The location (city, pin, geographic

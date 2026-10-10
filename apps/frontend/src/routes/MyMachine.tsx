@@ -5,7 +5,6 @@
  */
 import { LogIn, LogOut, Radio, Save } from "lucide-react";
 import { useEffect, useState } from "react";
-import { RelayOptions } from "../components/RelayOptions";
 import { Button, Field, Footnote, Input, KeyValue, Mono, PageHeader, Panel, PanelHeader } from "../components/ui";
 import { api } from "../lib/api";
 import { useInvalidate, useNode } from "../lib/queries";
@@ -199,7 +198,6 @@ export function MyMachine() {
           </div>
         </Panel>
 
-        <RelayOptions />
       </div>
     </>
   );

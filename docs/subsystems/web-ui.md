@@ -1092,8 +1092,8 @@ besides the turns:
   The sets follow the wait: `wake` while `chat/capabilities` reports
   `asleep` - a machine of the pipeline unloaded its model for idleness or is
   loading it again - then `pieces`, `assemble` and `long` as the seconds pass.
-- The single file field reads `GET /api/ui/chat/capabilities`, which aggregates
-  the active head and the coverage without reusing the topology the `infer`
+- The single file field reads `GET /api/ui/chat/capabilities?model=<chosen>`,
+  which aggregates the chosen model's head and coverage without reusing the topology the `infer`
   profile cannot query. It accepts any file type, button and drag and drop.
   Images require `vision: supported`; `unsupported` keeps the model without
   vision and `unavailable` says the read was refused or could not finish,
@@ -1114,7 +1114,14 @@ besides the turns:
   tokens (one per stream delta that added to the reasoning,
   `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
   The text opens only on a click.
-- An empty conversation opens like other chat tools: no title card, only the
+- While the network serves no model, the Chat draws no composer and no RAG
+  menu: an empty conversation shows `components/MissingPiece.tsx`, three
+  puzzle pieces in the brand colours locking together around an empty,
+  pulsing slot, with "One piece is missing" and, for a profile that may open
+  `/deploy`, a "Deploy a model" link (otherwise it asks for an
+  administrator); a conversation with turns keeps them and puts that line in
+  place of the composer.
+- An empty conversation opens like other chat tools: no title bar, only the
   POM mark (`components/ChatHero.tsx`, the site's mark for the active theme,
   rising from below after a short pause; the line and the nodes follow it),
   a line that opens "P O M" into PIECE OF MIND, PLACE OF MIND, POWER OF

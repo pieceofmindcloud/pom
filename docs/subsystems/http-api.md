@@ -1108,7 +1108,11 @@ choice. A missing field keeps the default on; `false` reaches the prefill
 metadata up to the deployment's head, which combines it with the global
 `no_thinking` before applying the template. The hub, ring and direct reply
 relays keep the field together with the existing metadata.
-`GET /api/ui/chat/capabilities` publishes `thinking: "supported"`,
+`GET /api/ui/chat/capabilities?model=<label>` answers for the model the Chat
+chose (a `@<deploy_id>` suffix is ignored) and, without `model`, for the model
+the network serves (`displayed_model`), never only for the one this node
+loads: a coordinating node loads none, and its Chat read
+`coverage: unavailable` for a model served elsewhere. It publishes `thinking: "supported"`,
 `"unsupported"` or `"unavailable"` for the UI, based on the global
 configuration of the active model's head. Its `asleep` flag is true while a
 machine of the active pipeline has its model unloaded for idleness or is

@@ -393,12 +393,20 @@ const unavailableChatCapabilities: ChatCapabilities = {
  * it. Keep that uncertainty explicit so the composer never invents a missing
  * model or missing vision support.
  */
-export function useChatCapabilities() {
+/**
+ * What the Chat can do with `model` (vision, thinking, coverage). Without a
+ * model the node answers for the one the network serves, never only for the
+ * one it loads itself: a coordinating node loads none.
+ */
+export function useChatCapabilities(model = "") {
   return useQuery({
-    queryKey: keys.chatCapabilities,
+    queryKey: [...keys.chatCapabilities, model],
     queryFn: () =>
       api
-        .getConditional<ChatCapabilities>("/api/ui/chat/capabilities", { auth: false })
+        .getConditional<ChatCapabilities>(
+          model ? `/api/ui/chat/capabilities?model=${encodeURIComponent(model)}` : "/api/ui/chat/capabilities",
+          { auth: false },
+        )
         .catch(() => unavailableChatCapabilities),
     refetchInterval: 5000,
     staleTime: 2000,

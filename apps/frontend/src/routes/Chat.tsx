@@ -28,6 +28,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
 import { ChatHero } from "../components/ChatHero";
+import { MissingPiece } from "../components/MissingPiece";
+import { Link } from "react-router-dom";
+import { canAccessRoute } from "../lib/access";
 import { ChatWaitingLine } from "../components/ChatWaitingLine";
 import { PluginSlot, usePluginSlot } from "../components/PluginSlot";
 import { TelemetryLine } from "../components/TelemetryLine";
@@ -625,7 +628,6 @@ function ChatScreen() {
   } = useChatSessionController();
   const models = useServableModels();
   const cluster = useCluster();
-  const chatCapabilities = useChatCapabilities();
   const node = useNode();
   const toast = useToast();
 
@@ -755,6 +757,7 @@ function ChatScreen() {
   const model = session.model && available.includes(session.model)
     ? session.model
     : available[0] ?? node.data?.active_model ?? cluster.data?.active_model ?? "";
+  const chatCapabilities = useChatCapabilities(model);
   const streaming = streamingSessionId === session.id;
   const headQuery = useInferenceHeads(model, Boolean(model));
   const selectedInferenceHead = headQuery.data?.candidates.some(
@@ -1109,6 +1112,7 @@ function ChatScreen() {
   }
 
   const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
+  const canDeploy = canAccessRoute("/deploy", profile);
   const firstTraceModel = session.messages.find((message) => message.trace?.model)?.trace?.model;
   const modelAtStart = session.modelAtStart ?? firstTraceModel ?? session.model ?? model;
 
@@ -1334,6 +1338,8 @@ function ChatScreen() {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* An empty conversation has no title to show: the opening screen is the page. */}
+        {!empty && (
         <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 sm:px-6">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <TitleField
@@ -1363,18 +1369,26 @@ function ChatScreen() {
             )}
           </div>
         </div>
+        )}
 
         {empty ? (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8 sm:px-6" data-testid="chat-empty">
-            <ChatHero>
-              {noModel && (
-                <div className="mt-5 max-w-md text-sm">
-                  <p className="font-medium text-fg">{t("chat.noModel")}</p>
-                  <p className="mt-1 text-muted">{t("chat.noModelDetail")}</p>
-                </div>
-              )}
-            </ChatHero>
-            {composerBox}
+            {noModel ? (
+              // Nothing to talk to: no composer, no RAG, only what is missing.
+              <MissingPiece title={t("chat.noModel")} detail={t(canDeploy ? "chat.noModelDetail" : "chat.noModelAskAdmin")}>
+                {canDeploy && (
+                  <Link to="/deploy" className="mt-4 inline-flex items-center gap-2 rounded-full bg-iris px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-iris/85">
+                    <Boxes className="h-4 w-4" />
+                    {t("chat.noModelDeploy")}
+                  </Link>
+                )}
+              </MissingPiece>
+            ) : (
+              <>
+                <ChatHero />
+                {composerBox}
+              </>
+            )}
           </div>
         ) : (
           <>
@@ -1414,7 +1428,9 @@ function ChatScreen() {
         </div>
 
         <div className="shrink-0 border-t border-line bg-surface/80 px-4 py-3 backdrop-blur-md sm:px-6">
-          {composerBox}
+          {noModel ? (
+            <p className="mx-auto w-full max-w-3xl text-center text-sm text-muted" data-testid="chat-no-model-bar">{t("chat.noModel")}</p>
+          ) : composerBox}
         </div>
           </>
         )}

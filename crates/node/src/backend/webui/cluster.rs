@@ -679,8 +679,28 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
 /// read `/api/ui/cluster`: infer is intentionally local-only there, and a
 /// denied or reduced topology must never become an empty model or incomplete
 /// coverage in the composer.
-pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl IntoResponse {
-    let active_model = state.active_model().await;
+#[derive(Debug, Default, Deserialize)]
+pub struct ChatCapabilitiesQuery {
+    /// The model chosen in the Chat; a `@<deploy_id>` suffix is ignored.
+    #[serde(default)]
+    pub model: String,
+}
+
+/// What the Chat can do with a model: vision, thinking and layer coverage.
+/// It answers for the model the Chat chose, or, without one, for the model
+/// the network serves. Reading the model this node loads was wrong on a node
+/// that only coordinates: it loads nothing, so a model served elsewhere came
+/// back with `coverage: unavailable`.
+pub(super) async fn chat_capabilities(
+    State(state): State<GatewayState>,
+    Query(query): Query<ChatCapabilitiesQuery>,
+) -> impl IntoResponse {
+    let requested = crate::deployment::split_selector(query.model.trim()).0.to_string();
+    let active_model = if requested.is_empty() {
+        state.displayed_model().await
+    } else {
+        requested
+    };
     let peers = state.all_peers().await;
     let local_id = state.network.node_id.clone();
     let local_config = state.runtime.config().await;

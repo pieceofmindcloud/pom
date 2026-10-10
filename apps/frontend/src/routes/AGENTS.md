@@ -253,6 +253,9 @@ Per-file list:
   o outro apaga a configuração local e reinicia no setup.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
+  with no title bar on an empty conversation, `../components/MissingPiece`
+  and no composer or RAG while the network serves no model, capabilities
+  asked for the chosen model (`useChatCapabilities(model)`), otherwise
   opening an empty conversation on `../components/ChatHero` with the composer
   centred (one `layoutId` element that moves to the bottom bar on the first
   message; the conversation list and its New chat are not drawn while no

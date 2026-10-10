@@ -297,6 +297,10 @@ Per-file list:
   token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
   the "starting our engines" set while the deployment wakes from idle. It is
   not drawn while the model is thinking, which has its own line.
+- `MissingPiece.tsx` - the Chat's screen while the network serves no model:
+  an SVG 2x2 puzzle whose three pieces (`piecePath`, knobs that agree on
+  shared edges) fly in and lock, leaving the bottom-right slot empty and
+  pulsing with a "?", over a title, a detail and the caller's action.
 - `ChatHero.tsx` - the Chat's opening screen over an empty conversation: the
   site's POM mark for the active theme (`assets/pom-mark-dark.png` /
   `pom-mark-light.png`), which rises from below after a pause and then

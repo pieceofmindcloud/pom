@@ -1414,8 +1414,9 @@ head's candidates; with no match, the plan refuses naming the file.
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve
 `mmproj_reason`; o caminho também é validado contra o GGUF antes de o runtime
 iniciar, inclusive em configurações antigas.
-O Chat consulta `GET /api/ui/chat/capabilities`, uma rota comum que agrega o
-modelo ativo, a cobertura, o `mmproj_path` e o `no_thinking` da cabeça da
+O Chat consulta `GET /api/ui/chat/capabilities?model=<rótulo>`, uma rota comum
+que agrega, para o modelo escolhido no Chat (sem `model`, o que a rede serve,
+`displayed_model`; nunca só o que este nó carrega), a cobertura, o `mmproj_path` e o `no_thinking` da cabeça da
 implantação sem expor topologia ao perfil `infer`. A resposta usa `supported`,
 `unsupported` ou `unavailable` para visão, thinking e cobertura completa,
 incompleta ou indisponível; recusa de autorização nunca é convertida em vazio.

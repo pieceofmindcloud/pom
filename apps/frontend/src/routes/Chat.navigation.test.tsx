@@ -86,6 +86,7 @@ const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
 const chatScenario = vi.hoisted(() => ({
   cluster: null as unknown,
   capabilities: null as unknown,
+  models: [{ id: "qwen" }] as { id: string }[],
 }));
 
 /**
@@ -103,7 +104,7 @@ vi.mock("../lib/queries", () => ({
   useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),
   useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
-  useServableModels: () => ({ data: [{ id: "qwen" }] }),
+  useServableModels: () => ({ data: chatScenario.models }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: (nodeIds: string[]) => {
@@ -157,9 +158,40 @@ afterEach(() => {
   loop.tripped = false;
   chatScenario.cluster = null;
   chatScenario.capabilities = null;
+  chatScenario.models = [{ id: "qwen" }];
 });
 
 describe("navigation after the chat", () => {
+  it("opens an empty conversation without a title bar", async () => {
+    mount();
+    await screen.findByTestId("chat-empty");
+    expect(screen.queryByRole("heading", { name: "Chat", level: 1 })).toBeNull();
+    expect(screen.queryByText("cobertura indisponível")).toBeNull();
+  });
+
+  it("shows the missing puzzle piece, and no composer or RAG, while the network serves no model", async () => {
+    chatScenario.models = [];
+    chatScenario.capabilities = { vision: "unavailable", coverage: "unavailable", rag: "supported", rag_collections: ["docs"] };
+    mount("admin");
+
+    const missing = await screen.findByTestId("chat-missing-piece");
+    expect(missing.textContent).toContain("Falta uma peça: a rede não está servindo nenhum modelo");
+    expect(screen.getAllByTestId("puzzle-piece")).toHaveLength(3);
+    expect(screen.getByTestId("missing-piece-slot")).toBeTruthy();
+    // An administrator is sent to deploy one.
+    expect(screen.getByRole("link", { name: "Implantar um modelo" }).getAttribute("href")).toContain("/deploy");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /RAG/i })).toBeNull();
+  });
+
+  it("asks a machine that cannot deploy to call an administrator", async () => {
+    chatScenario.models = [];
+    mount("infer");
+    const missing = await screen.findByTestId("chat-missing-piece");
+    expect(missing.textContent).toContain("Peça a um administrador");
+    expect(screen.queryByRole("link", { name: "Implantar um modelo" })).toBeNull();
+  });
+
   it("switches screen when the menu is clicked after a response", async () => {
     mount();
 
@@ -295,6 +327,10 @@ describe("navigation after the chat", () => {
         peers: [],
       };
       chatScenario.capabilities = { vision: "unavailable", coverage: "unavailable" };
+      // The title bar, where coverage shows, belongs to a conversation with turns.
+      window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+        { id: "c1", title: "Conversa", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
+      ]));
 
       mount("infer");
 

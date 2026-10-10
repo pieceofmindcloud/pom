@@ -328,18 +328,46 @@ mod profile_network_tests {
             }));
         state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
 
-        let body = body_of(chat_capabilities(State(state.clone())).await.into_response()).await;
+        let body = body_of(chat_capabilities(State(state.clone()), Query(Default::default())).await.into_response()).await;
         assert_eq!(body["vision"], "supported");
         assert_eq!(body["coverage"], "complete");
         assert_eq!(body["thinking"], "supported");
 
         config.no_thinking = true;
         state.runtime.seed_config_for_test(config).await;
-        let body = body_of(chat_capabilities(State(state.clone())).await.into_response()).await;
+        let body = body_of(chat_capabilities(State(state.clone()), Query(Default::default())).await.into_response()).await;
         assert_eq!(body["thinking"], "unsupported");
 
         let cluster_body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
         assert_eq!(cluster_body["peers"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn chat_capabilities_answer_for_a_model_served_elsewhere_on_a_node_that_serves_nothing() {
+        // The Ksia case: the browser's node only coordinates and loads nothing,
+        // while another machine serves the whole model.
+        let mut remote = peer("outro", "salem", 1);
+        remote.model = "qwen".into();
+        remote.start_layer = 0;
+        remote.end_layer = 15;
+        remote.total_layers = 16;
+        remote.runtime_capacity = Some(crate::network::RuntimeCapacity {
+            n_ctx: 8_192,
+            max_new_tokens: 256,
+        });
+        let state = state_with("eu", vec![remote]).await;
+        let ask = |model: &str| ChatCapabilitiesQuery { model: model.into() };
+
+        let body = body_of(chat_capabilities(State(state.clone()), Query(ask(""))).await.into_response()).await;
+        assert_eq!(body["active_model"], "qwen");
+        assert_eq!(body["coverage"], "complete");
+
+        let body = body_of(chat_capabilities(State(state.clone()), Query(ask("qwen@d-4b521593"))).await.into_response()).await;
+        assert_eq!(body["active_model"], "qwen");
+        assert_eq!(body["coverage"], "complete");
+
+        let body = body_of(chat_capabilities(State(state), Query(ask("other"))).await.into_response()).await;
+        assert_eq!(body["coverage"], "unavailable");
     }
 
     #[tokio::test]
@@ -353,7 +381,7 @@ mod profile_network_tests {
         let mut state = state_with("eu", vec![remote]).await;
         state.default_model = "qwen".into();
 
-        let body = body_of(chat_capabilities(State(state)).await.into_response()).await;
+        let body = body_of(chat_capabilities(State(state), Query(Default::default())).await.into_response()).await;
         assert_eq!(body["coverage"], "unavailable");
     }
 
@@ -395,7 +423,7 @@ mod profile_network_tests {
         let mut state = state_with("eu", vec![head, tail]).await;
         state.default_model = "qwen".into();
 
-        let body = body_of(chat_capabilities(State(state)).await.into_response()).await;
+        let body = body_of(chat_capabilities(State(state), Query(Default::default())).await.into_response()).await;
         assert_eq!(body["vision"], "supported");
         assert_eq!(body["coverage"], "complete");
         assert_eq!(body["thinking"], "supported");

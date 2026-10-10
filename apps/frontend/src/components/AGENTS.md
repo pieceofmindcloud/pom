@@ -170,11 +170,13 @@ Per-file list:
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and child flyouts on hover, focus or
-  click. Keep the minimized navigation `overflow-visible` without
-  `overflow-y-auto`: CSS computes the visible x-axis to auto when the other
-  axis scrolls, clipping the flyout; increasing its z-index cannot escape that
-  clip. The scrollable expanded nav uses `overscroll-y-contain` so reaching its
-  end cannot move the document. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
+  click. The admin/node nav is a `ScrollableNav` in both states: when the items
+  do not fit the window it scrolls, with up/down chevrons shown only on the side
+  that still hides items (`ResizeObserver` on the scroller and its content, a
+  window `resize` fallback). The flyouts of the minimized state are `fixed` and
+  anchored to their icon on enter/focus/click, clamped to the window bottom: an
+  `overflow` ancestor clips an `absolute` flyout, but not a `fixed` one. Keep
+  the scroller `overscroll-y-contain` so reaching its end cannot move the document. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
   the accessible expand/collapse button: only an explicit click or touch toggles it.
   In the mobile drawer it remains a passive lockup. The menu below it keeps a
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
@@ -183,11 +185,14 @@ Per-file list:
   `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
   there now, beside the controls: the bare hash in mono, no "build" label in
   front of it, with the explanation in a `title` tooltip; o hash fica oculto
-  para `infer`. `SidebarUtilityControls` shows language as **flags**
-  (`brand.flags[locale]`, from `brand.json`) rather than "EN"/"PT-BR", since a
-  text label only helps someone who already knows what the code means and the
-  target here is whoever opened the panel in the wrong language - the language
-  name stays in `aria-label`/`title`, because a flag is not a language to a
+  para `infer`. `SidebarUtilityControls` shows language as **one flag**, the current locale
+  (`brand.flags[locale]`, from `brand.json`), rather than "EN"/"PT-BR" or a row
+  of both flags: a click opens a submenu (`LanguageFlags.tsx`, `useLanguageMenu`)
+  with the options, and picking one switches the language and closes it. The
+  login gate and first-run wizard reuse the same menu in pill form
+  (`BrandLanguageSwitch.tsx`). A text label only helps someone who already knows
+  what the code means and the target here is whoever opened the panel in the
+  wrong language - the language name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
   currently renders no TLS icon in the Sidebar. Para `infer`, o rodapé também renderiza documentação e
   API keys, enquanto a coluna principal é substituída por `ChatSessionList` e

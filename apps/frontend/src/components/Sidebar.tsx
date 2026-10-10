@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, Moon, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronUp, Moon, Sun } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
 import { ChatSessionList } from "./ChatSessionList";
@@ -77,6 +77,81 @@ function NavigationIcon({
       onError={() => setImageFailed(true)}
       className={clsx(className, "object-contain")}
     />
+  );
+}
+
+/** Quanto cada clique na seta rola, em pixels. */
+const SCROLL_STEP = 120;
+
+function ScrollEdgeButton({ direction, onClick }: { direction: "up" | "down"; onClick: () => void }) {
+  const { t } = useI18n();
+  const label = t(direction === "up" ? "sidebar.scrollUp" : "sidebar.scrollDown");
+  const Chevron = direction === "up" ? ChevronUp : ChevronDown;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className="flex h-5 w-full shrink-0 items-center justify-center text-faint transition-colors hover:text-fg"
+    >
+      <Chevron className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  );
+}
+
+/**
+ * Menu rolável: quando os itens não cabem na altura da janela, aparecem setas
+ * no topo e no pé para rolar. Só são desenhadas as setas do lado em que ainda
+ * há itens escondidos.
+ */
+export function ScrollableNav({ className, children }: { className?: string; children: ReactNode }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ up: false, down: false });
+
+  const measure = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const up = scroller.scrollTop > 1;
+    const down = scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1;
+    setEdges((previous) => (previous.up === up && previous.down === down ? previous : { up, down }));
+  }, []);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return;
+    measure();
+    // A altura da janela muda o que cabe; a do conteúdo muda quando uma seção abre.
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(scroller);
+    observer?.observe(content);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure]);
+
+  const scrollBy = (delta: number) => {
+    scrollerRef.current?.scrollBy({ top: delta, behavior: "smooth" });
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {edges.up && <ScrollEdgeButton direction="up" onClick={() => scrollBy(-SCROLL_STEP)} />}
+      <div
+        ref={scrollerRef}
+        onScroll={measure}
+        className={clsx("min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain", className)}
+      >
+        <div ref={contentRef} className="flex flex-col gap-1">
+          {children}
+        </div>
+      </div>
+      {edges.down && <ScrollEdgeButton direction="down" onClick={() => scrollBy(SCROLL_STEP)} />}
+    </div>
   );
 }
 
@@ -271,6 +346,24 @@ function CollapsedSection({
   const label = t(section.labelKey);
   const Icon = section.icon;
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const flyoutRef = useRef<HTMLDivElement>(null);
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+
+  // O submenu é `fixed` e ancorado ao ícone, para não ser cortado pela área
+  // rolável do menu (um `overflow` faria o mesmo com um `absolute`).
+  const anchorFlyout = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) setAnchor({ top: rect.top, left: rect.right });
+  };
+
+  useLayoutEffect(() => {
+    const flyout = flyoutRef.current;
+    if (!flyout || !anchor) return;
+    // Desce a partir do ícone, mas não passa do pé da janela.
+    const overflow = anchor.top + flyout.offsetHeight - (window.innerHeight - 8);
+    flyout.style.top = `${Math.max(8, anchor.top - Math.max(0, overflow))}px`;
+  }, [anchor]);
 
   if (section.to) {
     return (
@@ -302,15 +395,19 @@ function CollapsedSection({
   }
 
   return (
-    <div className="group relative">
+    <div className="group relative" onMouseEnter={anchorFlyout} onFocus={anchorFlyout}>
       <button
+        ref={triggerRef}
         type="button"
         aria-label={label}
         title={label}
         aria-haspopup="menu"
         aria-expanded={open}
         data-guide-section={section.labelKey}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          anchorFlyout();
+          setOpen((value) => !value);
+        }}
         className={clsx(
           "flex h-10 w-full items-center justify-center rounded-lg transition-colors duration-150",
           holdsPath ? "bg-iris/12 text-iris ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
@@ -322,11 +419,15 @@ function CollapsedSection({
           className="h-[1.05rem] w-[1.05rem]"
         />
       </button>
-      <div className={clsx(
-        "pointer-events-none absolute left-full top-0 z-50 pl-2 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-        open ? "pointer-events-auto opacity-100" : "opacity-0",
-      )}>
-        <div className="w-56 rounded-xl border border-line-strong bg-surface p-2 shadow-2xl shadow-black/30">
+      <div
+        ref={flyoutRef}
+        style={anchor ? { top: anchor.top, left: anchor.left } : undefined}
+        className={clsx(
+          "pointer-events-none fixed z-50 pl-2 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+          open ? "pointer-events-auto opacity-100" : "opacity-0",
+        )}
+      >
+        <div className="max-h-[calc(100vh-16px)] w-56 overflow-y-auto rounded-xl border border-line-strong bg-surface p-2 shadow-2xl shadow-black/30">
           <p className="px-2.5 py-2 font-mono text-[0.68rem] uppercase tracking-[0.16em] text-faint">
             {label}
           </p>
@@ -534,22 +635,18 @@ export function SidebarContent({
       {profile === "infer" ? (
         <InferenceMainMenu onNavigate={onNavigate} collapsed={collapsed} unreadCount={unreadCount} />
       ) : (
-        /* O menu existente permanece intocado para administrador e node. */
-        <nav
-          className={clsx(
-            "flex min-h-0 flex-1 flex-col gap-1 pb-4 pt-[5px] overscroll-y-contain",
-            collapsed ? "overflow-visible px-2" : "overflow-y-auto overflow-x-hidden px-3",
-          )}
-        >
-          {navForProfile(profile).map((s) => (
-            <Section
-              key={s.labelKey}
-              section={s}
-              onNavigate={onNavigate}
-              collapsed={collapsed}
-              badge={s.to === "/network-chat" ? unreadCount : undefined}
-            />
-          ))}
+        <nav className="flex min-h-0 flex-1 flex-col">
+          <ScrollableNav className={clsx("pb-4 pt-[5px]", collapsed ? "px-2" : "px-3")}>
+            {navForProfile(profile).map((s) => (
+              <Section
+                key={s.labelKey}
+                section={s}
+                onNavigate={onNavigate}
+                collapsed={collapsed}
+                badge={s.to === "/network-chat" ? unreadCount : undefined}
+              />
+            ))}
+          </ScrollableNav>
         </nav>
       )}
       <SidebarUtilityControls collapsed={collapsed} />

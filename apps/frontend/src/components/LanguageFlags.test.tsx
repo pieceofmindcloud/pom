@@ -8,19 +8,24 @@ import { LanguageFlags } from "./LanguageFlags";
 afterEach(() => cleanup());
 
 describe("LanguageFlags", () => {
-  it("uses the shared flag buttons instead of a language combobox", () => {
+  it("shows only the current language flag and opens the options on click", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <LanguageFlags />
       </LocaleProvider>,
     );
 
-    const group = screen.getByRole("group", { name: "Idioma" });
-    expect(group).toBeTruthy();
-    expect(screen.queryByRole("combobox")).toBeNull();
-    expect(screen.getByRole("button", { name: "Português (Brasil)" }).getAttribute("aria-pressed")).toBe("true");
+    const trigger = screen.getByRole("button", { name: "Idioma: Português (Brasil)" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getAllByRole("button")).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "English" }));
-    expect(screen.getByRole("button", { name: "English" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("option", { name: "Português (Brasil)" }).getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.click(screen.getByRole("option", { name: "English" }));
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "Language: English" })).toBeTruthy();
   });
 });

@@ -62,10 +62,10 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
 
     expect(screen.getByRole("complementary").className).toContain("w-[68px]");
-    const navigation = screen.getByRole("navigation");
-    expect(navigation.className).toContain("overflow-visible");
-    expect(navigation.className).toContain("overscroll-y-contain");
-    expect(navigation.className).not.toContain("overflow-y-auto");
+    // O menu rola por dentro mesmo recolhido; os submenus são `fixed`, então não são cortados.
+    const scroller = screen.getByRole("navigation").querySelector(".overflow-y-auto") as HTMLElement;
+    expect(scroller.className).toContain("overscroll-y-contain");
+    expect(scroller.className).toContain("overflow-x-hidden");
     expect(screen.getByRole("button", { name: "Modelos" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Fatiar modelos" })).toBeTruthy();
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
@@ -202,7 +202,8 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    const controls = screen.getByRole("group", { name: "Idioma" });
+    // O seletor de idioma é uma bandeira com submenu; o TLS fica no mesmo grupo.
+    const controls = screen.getByRole("button", { name: /^(Idioma|Language):/ }).parentElement as HTMLElement;
     expect(within(controls).queryByTestId("tls-indicator")).toBeNull();
   });
 

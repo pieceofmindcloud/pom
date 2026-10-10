@@ -15,8 +15,12 @@ vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: sidebarNodeData }),
 }));
 
+const lobby = vi.hoisted(() => ({ enabledOnNetwork: true, unread: 3 }));
+
 vi.mock("../lib/networkChatUnread", () => ({
-  useNetworkChatUnread: () => ({ unreadCount: 2 }),
+  useNetworkChatUnread: () => ({ unreadCount: 2, snapshot: { lobbyEnabled: lobby.enabledOnNetwork } }),
+  // The real hook asks the lobby only when enabled; so does the fake.
+  useLobbyUnread: (enabled: boolean) => (enabled ? lobby.unread : 0),
 }));
 
 vi.mock("../lib/theme", () => ({
@@ -43,6 +47,7 @@ describe("Sidebar", () => {
   afterEach(() => {
     cleanup();
     sidebarNodeData = null;
+    lobby.enabledOnNetwork = true;
     vi.useRealTimers();
     window.localStorage.clear();
   });
@@ -187,6 +192,35 @@ describe("Sidebar", () => {
     expect(screen.getByText("Histórico")).toBeTruthy();
     expect(screen.getByText("Logs")).toBeTruthy();
     expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
+  });
+
+  it("shows an administrator the lobby's new messages beside the network chat's", () => {
+    sidebarNodeData = fakeNode({ authority_level: "primary" });
+    const view = () => render(
+      <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="admin">
+            <Sidebar />
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    view();
+    const badge = screen.getByTestId("network-chat-lobby-unread");
+    expect(badge.textContent).toBe("3");
+    expect(badge.getAttribute("aria-label")).toBe("3 mensagens novas no lobby");
+    expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
+    cleanup();
+
+    // No admin grant, or the lobby off: nothing to answer, no badge.
+    sidebarNodeData = fakeNode({ authority_level: null });
+    view();
+    expect(screen.queryByTestId("network-chat-lobby-unread")).toBeNull();
+    cleanup();
+    sidebarNodeData = fakeNode({ authority_level: "primary" });
+    lobby.enabledOnNetwork = false;
+    view();
+    expect(screen.queryByTestId("network-chat-lobby-unread")).toBeNull();
   });
 
   it("hides the TLS indicator from the flags", () => {

@@ -2,8 +2,11 @@
 import { describe, expect, it } from "vitest";
 import {
   countUnreadNetworkChatMessages,
+  markLobbyRead,
+  markNetworkChatRead,
   type NetworkChatReadMarker,
 } from "./networkChatUnread";
+import { storageKey } from "./brand";
 import type { NetworkChatEvent } from "./types";
 
 function message(
@@ -61,5 +64,12 @@ describe("network chat unread state", () => {
     };
 
     expect(countUnreadNetworkChatMessages(messages, "local", marker)).toBe(2);
+  });
+
+  it("keeps the lobby's read marker apart from the members' room", () => {
+    markNetworkChatRead([message("n1", "peer", "2026-09-11T12:00:00.000Z")]);
+    markLobbyRead([message("l1", "guest", "2026-09-11T12:05:00.000Z")]);
+    expect(JSON.parse(localStorage.getItem(storageKey("network-chat.read"))!).messageId).toBe("n1");
+    expect(JSON.parse(localStorage.getItem(storageKey("network-chat.lobby.read"))!).messageId).toBe("l1");
   });
 });

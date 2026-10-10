@@ -196,6 +196,11 @@ Per-file list:
   área rolável, para uma lista longa não empurrar nenhuma ação para fora.
   A entrada `Chat da rede` mostra o contador de mensagens recebidas desde o
   último marcador local de leitura; abrir a tela do chat atualiza esse marcador.
+  For an administrator (`authority_level` set) on a network with the lobby on,
+  an amber badge beside it (`LobbyBadge`, `network-chat-lobby-unread`) counts
+  the lobby messages since the lobby room was last open here
+  (`useLobbyUnread`, its own read marker in `lib/networkChatUnread.ts`; the
+  room is polled only in that case).
   Como esse menu é visto de toda rota, escolher uma conversa ou começar uma
   nova também **navega para `/chat`**: sem isso, o clique feito das
   configurações ou da documentação só trocava a sessão ativa e deixava a tela

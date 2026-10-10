@@ -9,7 +9,7 @@ import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
 import { useOptionalChatSessionController } from "../lib/chatStore";
-import { useNetworkChatUnread } from "../lib/networkChatUnread";
+import { useLobbyUnread, useNetworkChatUnread } from "../lib/networkChatUnread";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 import { TlsChip } from "./TlsIndicator";
@@ -229,7 +229,31 @@ function leafHoldsPath(leaf: NonNullable<NavSection["children"]>[number], pathna
     || (leaf.children ?? []).some((child) => leafHoldsPath(child, pathname));
 }
 
-function UnreadBadge({ count, compact = false }: { count: number; compact?: boolean }) {
+/**
+ * New messages in the lobby, where machines that are not members talk and ask
+ * to join. Amber, beside the members' room count, so an administrator tells
+ * the two apart at a glance.
+ */
+function LobbyBadge({ count, compact = false }: { count: number; compact?: boolean }) {
+  const { t } = useI18n();
+  if (count < 1) return null;
+  const label = t("networkChat.lobbyUnread", { count });
+  return (
+    <span
+      data-testid="network-chat-lobby-unread"
+      aria-label={label}
+      title={label}
+      className={clsx(
+        "shrink-0 rounded-full bg-amber px-1.5 text-center text-[0.65rem] font-semibold text-ink",
+        compact ? "absolute -bottom-1 -right-1 min-w-4 leading-4" : "min-w-5 leading-5",
+      )}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+function UnreadBadge({ count, compact = false, inline = false }: { count: number; compact?: boolean; inline?: boolean }) {
   const { t } = useI18n();
   if (count < 1) return null;
   return (
@@ -238,7 +262,7 @@ function UnreadBadge({ count, compact = false }: { count: number; compact?: bool
       aria-label={t("networkChat.unread", { count })}
       className={clsx(
         "shrink-0 rounded-full bg-iris px-1.5 text-center text-[0.65rem] font-semibold leading-5 text-ink",
-        compact ? "absolute -right-1 -top-1 min-w-4 leading-4" : "ml-auto min-w-5",
+        compact ? "absolute -right-1 -top-1 min-w-4 leading-4" : inline ? "min-w-5" : "ml-auto min-w-5",
       )}
     >
       {count > 99 ? "99+" : count}
@@ -335,10 +359,12 @@ function CollapsedSection({
   section,
   onNavigate,
   badge,
+  lobbyBadge,
 }: {
   section: NavSection;
   onNavigate?: () => void;
   badge?: number;
+  lobbyBadge?: number;
 }) {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -388,6 +414,8 @@ function CollapsedSection({
               className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")}
             />
             <UnreadBadge count={badge ?? 0} compact />
+            {/* Both on a collapsed icon: the lobby takes the other corner. */}
+            <LobbyBadge count={lobbyBadge ?? 0} compact />
           </span>
         )}
       </NavLink>
@@ -447,11 +475,14 @@ function Section({
   onNavigate,
   collapsed,
   badge,
+  lobbyBadge,
 }: {
   section: NavSection;
   onNavigate?: () => void;
   collapsed: boolean;
   badge?: number;
+  /** New lobby messages, for an administrator: a second, amber badge. */
+  lobbyBadge?: number;
 }) {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -463,7 +494,7 @@ function Section({
   const expanded = open || holdsPath;
   const Icon = section.icon;
 
-  if (collapsed) return <CollapsedSection section={section} onNavigate={onNavigate} badge={badge} />;
+  if (collapsed) return <CollapsedSection section={section} onNavigate={onNavigate} badge={badge} lobbyBadge={lobbyBadge} />;
 
   if (section.to) {
     return (
@@ -489,7 +520,10 @@ function Section({
               className={clsx("relative h-[1.05rem] w-[1.05rem] shrink-0", isActive && "text-iris")}
             />
             <span className="relative truncate">{t(section.labelKey)}</span>
-            <UnreadBadge count={badge ?? 0} />
+            <span className="ml-auto flex shrink-0 items-center gap-1">
+              <LobbyBadge count={lobbyBadge ?? 0} />
+              <UnreadBadge count={badge ?? 0} inline />
+            </span>
           </span>
         )}
       </NavLink>
@@ -628,7 +662,10 @@ export function SidebarContent({
   // O menu segue o perfil: o que este perfil não abre também não é oferecido.
   // Ver `navForProfile` e a tabela em `lib/access.ts`.
   const { profile } = useProfile();
-  const { unreadCount } = useNetworkChatUnread(false);
+  const { unreadCount, snapshot } = useNetworkChatUnread(false);
+  const { data: node } = useNode();
+  // Only an administrator answers the lobby, and only while the network has it on.
+  const lobbyUnread = useLobbyUnread(Boolean(node?.authority_level) && snapshot?.lobbyEnabled === true);
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
@@ -644,6 +681,7 @@ export function SidebarContent({
                 onNavigate={onNavigate}
                 collapsed={collapsed}
                 badge={s.to === "/network-chat" ? unreadCount : undefined}
+                lobbyBadge={s.to === "/network-chat" ? lobbyUnread : undefined}
               />
             ))}
           </ScrollableNav>

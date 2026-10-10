@@ -366,8 +366,9 @@ export function useCluster() {
  * Keeping one query source means a message received off the chat screen is
  * visible to the menu without mounting the chat route.
  */
-export function useNetworkChat(room: NetworkChatRoom = "network") {
+export function useNetworkChat(room: NetworkChatRoom = "network", enabled = true) {
   return useQuery({
+    enabled,
     // The main room keeps the bare key: the menu's unread counter and the
     // plugin bridge share that cache entry.
     queryKey: room === "network" ? keys.networkChat : [...keys.networkChat, room],

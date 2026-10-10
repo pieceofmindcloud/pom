@@ -6,7 +6,7 @@ import { downloadNetworkChatFile, postNetworkChat } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
 import { useCluster, useNetworkChat, useNode } from "../lib/queries";
-import { markNetworkChatRead } from "../lib/networkChatUnread";
+import { markLobbyRead, markNetworkChatRead } from "../lib/networkChatUnread";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type {
@@ -194,6 +194,7 @@ export function NetworkChat() {
 
   useEffect(() => {
     if (!inLobby && snapshot?.messages.length) markNetworkChatRead(snapshot.messages);
+    if (inLobby && snapshot?.messages.length) markLobbyRead(snapshot.messages);
   }, [inLobby, snapshot?.messages]);
 
   // The principal closed the lobby while this tab was on it.

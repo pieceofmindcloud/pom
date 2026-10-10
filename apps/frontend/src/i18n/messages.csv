@@ -1626,6 +1626,7 @@ networkChat.hideOnline,Hide online,Ocultar online
 networkChat.hint,"Enter sends. Files are sent through the libp2p network.","Enter envia. Arquivos são enviados pela rede libp2p."
 networkChat.loadFailed,Could not load the network chat,Não foi possível carregar o Chat da rede
 networkChat.loading,Loading network chat,Carregando o Chat da rede
+networkChat.lobbyUnread,"{count, plural, one {# new message in the lobby} other {# new messages in the lobby}}","{count, plural, one {# mensagem nova no lobby} other {# mensagens novas no lobby}}"
 networkChat.noParticipants,No online participants,Nenhum participante online
 networkChat.nodeLabel,Node,Nó
 networkChat.online,online,online

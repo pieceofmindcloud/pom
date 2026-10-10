@@ -8,12 +8,20 @@ export interface NetworkChatReadMarker {
   sentAt: string;
 }
 
-const STORAGE = storageKey("network-chat.read");
+/**
+ * One read marker per room, each kept in this browser: the members' room and
+ * the lobby, where machines that are not members ask to join.
+ */
+type Room = "network" | "lobby";
+const STORAGE: Record<Room, string> = {
+  network: storageKey("network-chat.read"),
+  lobby: storageKey("network-chat.lobby.read"),
+};
 const listeners = new Set<() => void>();
 
-function loadMarker(): NetworkChatReadMarker | null {
+function loadMarker(room: Room): NetworkChatReadMarker | null {
   try {
-    const raw = localStorage.getItem(STORAGE);
+    const raw = localStorage.getItem(STORAGE[room]);
     if (!raw) return null;
     const value: unknown = JSON.parse(raw);
     if (
@@ -30,31 +38,39 @@ function loadMarker(): NetworkChatReadMarker | null {
   }
 }
 
-let marker = loadMarker();
+const markers: Record<Room, NetworkChatReadMarker | null> = {
+  network: loadMarker("network"),
+  lobby: loadMarker("lobby"),
+};
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-function getMarker(): NetworkChatReadMarker | null {
-  return marker;
-}
-
 function notifyMarkerChanged() {
   for (const listener of listeners) listener();
 }
 
-export function markNetworkChatRead(messages: NetworkChatEvent[]) {
+function markRead(room: Room, messages: NetworkChatEvent[]) {
   const latest = messages[messages.length - 1];
-  if (!latest || marker?.messageId === latest.messageId) return;
-  marker = { messageId: latest.messageId, sentAt: latest.sentAt };
+  if (!latest || markers[room]?.messageId === latest.messageId) return;
+  markers[room] = { messageId: latest.messageId, sentAt: latest.sentAt };
   try {
-    localStorage.setItem(STORAGE, JSON.stringify(marker));
+    localStorage.setItem(STORAGE[room], JSON.stringify(markers[room]));
   } catch {
     // The in-memory marker still makes this tab behave correctly.
   }
   notifyMarkerChanged();
+}
+
+export function markNetworkChatRead(messages: NetworkChatEvent[]) {
+  markRead("network", messages);
+}
+
+/** The lobby was read: called while the lobby room is open on its screen. */
+export function markLobbyRead(messages: NetworkChatEvent[]) {
+  markRead("lobby", messages);
 }
 
 export function countUnreadNetworkChatMessages(
@@ -78,7 +94,7 @@ export function countUnreadNetworkChatMessages(
 export function useNetworkChatUnread(active: boolean) {
   const query = useNetworkChat();
   const node = useNode();
-  const readMarker = useSyncExternalStore(subscribe, getMarker, () => null);
+  const readMarker = useSyncExternalStore(subscribe, () => markers.network, () => null);
   const initialized = useRef(false);
   const messages = query.data?.messages ?? [];
   const latestMessageId = messages[messages.length - 1]?.messageId;
@@ -97,4 +113,27 @@ export function useNetworkChatUnread(active: boolean) {
       ? 0
       : countUnreadNetworkChatMessages(messages, node.data?.node_id ?? "", readMarker),
   };
+}
+
+/**
+ * New lobby messages for an administrator: what machines that are not members
+ * wrote since the lobby was last open here. The lobby is read only while the
+ * network has it on and this machine holds an admin grant; otherwise nothing
+ * is asked and the count is zero. The first answer marks what is already
+ * there as read, like the members' room.
+ */
+export function useLobbyUnread(enabled: boolean) {
+  const query = useNetworkChat("lobby", enabled);
+  const node = useNode();
+  const readMarker = useSyncExternalStore(subscribe, () => markers.lobby, () => null);
+  const initialized = useRef(false);
+  const messages = enabled ? query.data?.messages ?? [] : [];
+
+  useEffect(() => {
+    if (!enabled || !query.isSuccess || initialized.current) return;
+    initialized.current = true;
+    if (messages.length > 0 && readMarker === null) markLobbyRead(messages);
+  }, [enabled, messages, query.isSuccess, readMarker]);
+
+  return enabled ? countUnreadNetworkChatMessages(messages, node.data?.node_id ?? "", readMarker) : 0;
 }

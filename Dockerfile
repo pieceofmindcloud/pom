@@ -277,6 +277,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     curl \
     git \
+    jq \
     libclang-dev \
     libssl-dev \
     nodejs \

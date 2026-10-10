@@ -1958,6 +1958,7 @@ plugins.monthlyPrice,{price}/month,{price}/mês
 plugins.noLicenseRequired,No license required,Não exige licença
 plugins.open,Open plugin,Abrir plugin
 plugins.openFailed,The plugin did not start,O plugin não iniciou
+plugins.openNamed,Open {name},Abrir {name}
 plugins.pageNext,Next,Próxima
 plugins.pagePrevious,Previous,Anterior
 plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
@@ -1999,8 +2000,9 @@ plugins.state.expired,Expired,Expirado
 plugins.state.needs_activation,Not activated,Não ativado
 plugins.state.revoked,Revoked,Revogado
 plugins.state.unavailable,Unavailable,Indisponível
-plugins.stopped,This plugin process is stopped,O processo deste plugin está parado
-plugins.stoppedHint,The plugin stays installed. Open it to start its process again.,O plugin continua instalado. Abra-o para iniciar o processo de novo.
+plugins.stopped,"The {name} piece is paused","A peça {name} está parada"
+plugins.stoppedCloseHint,"When you are not using it, close it again with the X next to its name in the menu.","Quando não estiver usando, feche de novo pelo X ao lado do nome no menu."
+plugins.stoppedHint,"It was stopped to save this machine's resources: while closed it uses no memory, processor or GPU, and it stays installed with everything you set. Open it to start it again.","Ela foi parada para economizar os recursos da sua máquina: fechada, não usa memória, processador nem GPU, e continua instalada com tudo o que você configurou. Abra para ligá-la de novo."
 plugins.subtitle,"Independent plugins for this node, each with its own license, version and lifecycle.","Plugins independentes para este nó, cada um com sua própria licença, versão e ciclo de vida."
 plugins.tabCatalog,Plugins,Plugins
 plugins.tabDevelop,Develop your plugin,Desenvolva seu plugin

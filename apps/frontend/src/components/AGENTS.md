@@ -167,8 +167,9 @@ Per-file list:
   whose manifest is `on_demand` (`NavSection.pluginCode`, `usePluginMenuItem`)
   starts its process on click when it is stopped, and shows a `PluginCloseButton`
   X beside the link while it runs; the button sits next to the link, never
-  inside it (a button inside an anchor is invalid). `PluginScreen` shows a
-  stopped card instead of loading the module while the process is down. The desktop
+  inside it (a button inside an anchor is invalid). `PluginScreen` shows the
+  paused puzzle piece (`MissingPiece variant="paused"`) with "Open <name>"
+  instead of loading the module while the process is down. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and child flyouts on hover, focus or
   click. The admin/node nav is a `ScrollableNav` in both states: when the items
@@ -297,7 +298,9 @@ Per-file list:
   token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
   the "starting our engines" set while the deployment wakes from idle. It is
   not drawn while the model is thinking, which has its own line.
-- `MissingPiece.tsx` - the Chat's screen while the network serves no model:
+- `MissingPiece.tsx` - the puzzle screen, `variant="paused"` for a stopped
+  on-demand plugin (fourth piece grey, dashed, with a pause sign) and, by
+  default, the Chat's screen while the network serves no model:
   an SVG 2x2 puzzle whose three pieces (`piecePath`, knobs that agree on
   shared edges) fly in and lock, leaving the bottom-right slot empty and
   pulsing with a "?", under the POM mark (art per theme), over a title, a

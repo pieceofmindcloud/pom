@@ -47,13 +47,19 @@ afterEach(() => {
 });
 
 describe("PluginScreen for an on-demand plugin", () => {
-  it("shows a stopped card with an action to start the process again", async () => {
+  it("shows the paused puzzle piece, says why, and starts the process again", async () => {
     pluginState.plugins = [{ code: "harness", on_demand: true, running: false }];
     api.openPlugin.mockResolvedValue({ code: "harness", running: true });
     renderScreen();
 
-    expect(screen.getByText("This plugin process is stopped")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Open plugin" }));
+    const paused = screen.getByTestId("paused-piece");
+    expect(screen.getByText("The harness piece is paused")).toBeTruthy();
+    expect(screen.getAllByTestId("puzzle-piece")).toHaveLength(3);
+    expect(screen.getByTestId("paused-piece-sign")).toBeTruthy();
+    // Why it can be stopped, and that it can be closed again.
+    expect(paused.textContent).toContain("save this machine's resources");
+    expect(paused.textContent).toContain("close it again with the X");
+    fireEvent.click(screen.getByRole("button", { name: "Open harness" }));
 
     await waitFor(() => expect(api.openPlugin).toHaveBeenCalledWith("harness"));
   });
@@ -62,6 +68,6 @@ describe("PluginScreen for an on-demand plugin", () => {
     pluginState.plugins = [{ code: "harness", on_demand: true, running: true }];
     renderScreen();
 
-    expect(screen.queryByText("This plugin process is stopped")).toBeNull();
+    expect(screen.queryByTestId("paused-piece")).toBeNull();
   });
 });

@@ -161,8 +161,11 @@ A resident plugin behaves as before.
 - The menu keeps listing the plugin with its saved manifest while the process
   is stopped (`GET /api/ui/plugins/ui` returns `on_demand` and `running`).
 - Clicking the menu item calls `POST /api/ui/plugins/<code>/open`, which starts
-  the process, and then opens the screen. The screen also shows a stopped card
-  with an open button when reached by address.
+  the process, and then opens the screen. Reached by address while stopped, the
+  screen shows the puzzle of `components/MissingPiece.tsx` with its fourth
+  piece paused, "The <name> piece is paused", why (closed, it uses no memory,
+  processor or GPU, and keeps its settings), that it can be closed again with
+  the X, and an "Open <name>" button.
 - A running on-demand plugin shows an X badge in the menu; `POST
   /api/ui/plugins/<code>/close` stops the process and leaves the plugin
   installed and licensed.

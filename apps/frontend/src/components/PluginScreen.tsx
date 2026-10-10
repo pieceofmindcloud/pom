@@ -9,12 +9,14 @@
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { installPluginHost } from "../lib/pluginHost";
-import { pluginAssetUrl, type ResolvedPluginRoute } from "../lib/pluginUi";
+import { Play } from "lucide-react";
+import { pluginAssetUrl, pluginDisplayName, type ResolvedPluginRoute } from "../lib/pluginUi";
 import { openPlugin } from "../lib/api";
 import { keys, usePluginUi } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Button, Panel, PanelHeader } from "./ui";
+import { MissingPiece } from "./MissingPiece";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 const loaded = new Map<string, Promise<ComponentType>>();
@@ -69,11 +71,14 @@ function PluginError({ message }: { message: string }) {
 
 /**
  * Screen of an on-demand plugin whose process is stopped (closed with the X
- * in the menu, or opened by direct address). The plugin stays installed; the button
- * starts the process again.
+ * in the menu, or opened by direct address): the puzzle with its fourth piece
+ * paused. It says why a plugin can be stopped - to give the machine its
+ * memory and processor back - and that it can be closed again when unused.
+ * The plugin stays installed; the button starts the process again.
  */
 function StoppedPlugin({ code }: { code: string }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const name = pluginDisplayName(code, locale);
   const toast = useToast();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
@@ -88,14 +93,12 @@ function StoppedPlugin({ code }: { code: string }) {
   };
   return (
     <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
-      <Panel className="w-full max-w-xl">
-        <PanelHeader title={t("plugins.stopped")} subtitle={t("plugins.stoppedHint")} />
-        <div className="px-5 pb-5">
-          <Button variant="primary" loading={busy} onClick={open}>
-            {t("plugins.open")}
-          </Button>
-        </div>
-      </Panel>
+      <MissingPiece variant="paused" title={t("plugins.stopped", { name })} detail={t("plugins.stoppedHint")}>
+        <p className="mt-2 text-xs leading-relaxed text-faint">{t("plugins.stoppedCloseHint")}</p>
+        <Button variant="primary" className="mt-5" loading={busy} onClick={open} icon={<Play className="h-4 w-4" />}>
+          {t("plugins.openNamed", { name })}
+        </Button>
+      </MissingPiece>
     </main>
   );
 }

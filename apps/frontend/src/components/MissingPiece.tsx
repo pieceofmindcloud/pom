@@ -62,18 +62,27 @@ export function piecePath(piece: Pick<Piece, "col" | "row" | "edges">): string {
 }
 
 /**
- * The Chat's screen when the network serves no model: three pieces of a
- * puzzle fly in and lock together, and the fourth slot stays empty, pulsing.
- * The words under it say what the missing piece is.
+ * Three pieces of a puzzle fly in and lock together around the fourth.
+ * `missing` (the Chat with no model served) leaves its slot empty with a "?";
+ * `paused` (a plugin whose process is stopped) has the fourth piece in place
+ * but grey, dashed and marked with a pause sign, breathing slowly. The words
+ * under it say what that piece is.
  */
-export function MissingPiece({ title, detail, children }: { title: string; detail: string; children?: React.ReactNode }) {
+export function MissingPiece({ title, detail, variant = "missing", children }: {
+  title: string;
+  detail: string;
+  variant?: "missing" | "paused";
+  children?: React.ReactNode;
+}) {
   const still = useReducedMotion() ?? false;
+  const paused = variant === "paused";
+  const centre = PAD + CELL * 1.5;
   const { theme } = useTheme();
   const glow = useId().replace(/:/g, "");
   return (
     <motion.div
       className="flex flex-col items-center text-center"
-      data-testid="chat-missing-piece"
+      data-testid={paused ? "paused-piece" : "chat-missing-piece"}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
@@ -95,32 +104,47 @@ export function MissingPiece({ title, detail, children }: { title: string; detai
             <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
         </defs>
-        {/* The hole: where the model goes. */}
+        {/* The hole where the model goes, or the stopped piece sitting in it. */}
         <motion.path
           d={piecePath(MISSING)}
-          fill="rgb(var(--iris) / 0.06)"
+          fill={paused ? "rgb(var(--muted) / 0.22)" : "rgb(var(--iris) / 0.06)"}
           stroke="rgb(var(--muted))"
           strokeWidth={1.6}
           strokeDasharray="5 5"
           data-testid="missing-piece-slot"
+          data-variant={variant}
           initial={still ? false : { opacity: 0 }}
-          animate={still ? { opacity: 0.9 } : { opacity: [0.35, 0.95, 0.35] }}
-          transition={still ? undefined : { delay: 1.9, duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+          animate={still ? { opacity: 0.9 } : { opacity: paused ? [0.55, 0.9, 0.55] : [0.35, 0.95, 0.35] }}
+          transition={still ? undefined : { delay: 1.9, duration: paused ? 3.2 : 2.2, repeat: Infinity, ease: "easeInOut" }}
         />
-        <motion.text
-          x={PAD + CELL * 1.5}
-          y={PAD + CELL * 1.5 + 9}
-          textAnchor="middle"
-          fontSize={26}
-          fontWeight={700}
-          fill="rgb(var(--muted))"
-          initial={still ? false : { opacity: 0, scale: 0.6 }}
-          animate={{ opacity: 0.8, scale: 1 }}
-          transition={{ delay: 2.1, duration: 0.5 }}
-          style={{ transformOrigin: `${PAD + CELL * 1.5}px ${PAD + CELL * 1.5}px` }}
-        >
-          ?
-        </motion.text>
+        {paused ? (
+          <motion.g
+            fill="rgb(var(--muted))"
+            initial={still ? false : { opacity: 0, scale: 0.6 }}
+            animate={{ opacity: 0.85, scale: 1 }}
+            transition={{ delay: 2.1, duration: 0.5 }}
+            style={{ transformOrigin: `${centre}px ${centre}px` }}
+            data-testid="paused-piece-sign"
+          >
+            <rect x={centre - 10} y={centre - 12} width={7} height={24} rx={2} />
+            <rect x={centre + 3} y={centre - 12} width={7} height={24} rx={2} />
+          </motion.g>
+        ) : (
+          <motion.text
+            x={centre}
+            y={centre + 9}
+            textAnchor="middle"
+            fontSize={26}
+            fontWeight={700}
+            fill="rgb(var(--muted))"
+            initial={still ? false : { opacity: 0, scale: 0.6 }}
+            animate={{ opacity: 0.8, scale: 1 }}
+            transition={{ delay: 2.1, duration: 0.5 }}
+            style={{ transformOrigin: `${centre}px ${centre}px` }}
+          >
+            ?
+          </motion.text>
+        )}
         {PIECES.map((piece, index) => (
           <motion.path
             key={`${piece.col}-${piece.row}`}

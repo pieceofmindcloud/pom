@@ -1115,12 +1115,18 @@ besides the turns:
   `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
   The text opens only on a click.
 - An empty conversation opens like other chat tools: no title card, only the
-  POM mark (`components/ChatHero.tsx`, the site's mark for the active theme),
+  POM mark (`components/ChatHero.tsx`, the site's mark for the active theme,
+  rising from below after a short pause; the line and the nodes follow it),
   a line that opens "P O M" into PIECE OF MIND, PLACE OF MIND, POWER OF
   MACHINES and PLATFORM OF MIND in turn, the access gate's three linked nodes,
-  and the composer centred under them. The composer is one element with a
-  framer-motion `layoutId`: the first message carries it to the bottom bar of
-  the conversation.
+  and the composer centred under them, drawn larger there. The composer is
+  one element with a framer-motion `layoutId`: the first message carries it to
+  the bottom bar of the conversation. Its placeholder is one of the
+  `chat.prompt.*` lines, in the tone of the waiting lines, chosen from the
+  conversation id (`promptPlaceholderKey`) so it does not change while typing;
+  the network Chat keeps "Write to the network". While no conversation has
+  messages, the conversation list and its New chat are not drawn, beside the
+  Chat or in the infer menu.
 - Text files are still refused before sending when the estimated size exceeds
   the model's effective context: first `context_length` from `/v1/models`, then
   the active node's `n_ctx`. Images use the same budget, but are reduced before

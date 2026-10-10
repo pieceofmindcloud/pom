@@ -294,7 +294,8 @@ Per-file list:
   not drawn while the model is thinking, which has its own line.
 - `ChatHero.tsx` - the Chat's opening screen over an empty conversation: the
   site's POM mark for the active theme (`assets/pom-mark-dark.png` /
-  `pom-mark-light.png`) breathing, the line that opens the initials "P O M"
+  `pom-mark-light.png`), which rises from below after a pause and then
+  breathes, followed by the line that opens the initials "P O M"
   into each of `POM_PHRASES` and closes back, and the `.pom-login-link`
   nodes; styles `.pom-chat-hero*` in `index.css`. Under reduced motion it
   holds PIECE OF MIND open.

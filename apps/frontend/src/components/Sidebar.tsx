@@ -8,7 +8,7 @@ import { ChatSessionList } from "./ChatSessionList";
 import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
-import { useOptionalChatSessionController } from "../lib/chatStore";
+import { hasConversations, useOptionalChatSessionController } from "../lib/chatStore";
 import { useLobbyUnread, useNetworkChatUnread } from "../lib/networkChatUnread";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
@@ -618,7 +618,8 @@ function InferenceMainMenu({
         collapsed ? "overflow-visible px-2" : "px-3",
       )}
     >
-      <ChatSessionList
+      {/* No conversation yet: the menu is only the network and the rest. */}
+      {hasConversations(sessions) && <ChatSessionList
         sessions={sessions}
         activeId={session?.id ?? ""}
         compact
@@ -634,7 +635,7 @@ function InferenceMainMenu({
           onNavigate?.();
         }}
         onDelete={(id) => deleteSession(id, session?.model ?? null)}
-      />
+      />}
       <div className="mt-2 shrink-0 space-y-1">
         {sections.map((section) => (
           <Section

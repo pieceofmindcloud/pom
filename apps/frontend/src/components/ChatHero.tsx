@@ -15,6 +15,14 @@ export const POM_PHRASES: string[][] = [
   ["PLATFORM", "OF", "MIND"],
 ];
 
+/**
+ * The entrance: a pause on the empty screen, then the mark rises from below,
+ * then the line and the nodes follow it. Seconds.
+ */
+const MARK_DELAY = 0.7;
+const MARK_RISE = 1.1;
+const AFTER_MARK = MARK_DELAY + MARK_RISE * 0.7;
+
 /** How long the line rests as "P O M" and as the open phrase, in ms. */
 const CLOSED_MS = 1400;
 const OPEN_MS = 2600;
@@ -30,12 +38,21 @@ export function ChatHero({ children }: { children?: React.ReactNode }) {
   const still = useReducedMotion() ?? false;
   const [phrase, setPhrase] = useState(0);
   const [open, setOpen] = useState(still);
+  // The phrases start once the line is on screen.
+  const [entered, setEntered] = useState(still);
+
+  useEffect(() => {
+    if (still || entered) return;
+    const timer = window.setTimeout(() => setEntered(true), AFTER_MARK * 1000);
+    return () => window.clearTimeout(timer);
+  }, [entered, still]);
 
   useEffect(() => {
     if (still) {
       setOpen(true);
       return;
     }
+    if (!entered) return;
     const timer = window.setTimeout(() => {
       if (open) {
         setOpen(false);
@@ -45,20 +62,31 @@ export function ChatHero({ children }: { children?: React.ReactNode }) {
       }
     }, open ? OPEN_MS : CLOSED_MS);
     return () => window.clearTimeout(timer);
-  }, [open, still]);
+  }, [entered, open, still]);
 
   const words = POM_PHRASES[still ? 0 : phrase];
   return (
     <motion.div
       className="pom-chat-hero"
       data-testid="chat-hero"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -24, scale: 0.97, transition: { duration: 0.28 } }}
-      transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
     >
-      <img className="pom-chat-hero-mark" src={theme === "dark" ? markOnDark : markOnLight} alt="POM" width={815} height={320} />
-      <p className="pom-chat-hero-sub" aria-label={words.join(" ")} data-testid="chat-hero-phrase" data-open={open}>
+      <motion.img
+        className="pom-chat-hero-mark"
+        src={theme === "dark" ? markOnDark : markOnLight}
+        alt="POM"
+        width={815}
+        height={320}
+        data-testid="chat-hero-mark"
+        initial={still ? false : { opacity: 0, y: 90 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: MARK_DELAY, duration: MARK_RISE, ease: [0.16, 1, 0.3, 1] }}
+      />
+      <motion.p
+        initial={still ? false : { opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: AFTER_MARK, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+        className="pom-chat-hero-sub" aria-label={words.join(" ")} data-testid="chat-hero-phrase" data-open={open}>
         {words.map((word, index) => (
           <span key={`${phrase}-${index}`} className="pom-chat-hero-word" aria-hidden="true">
             <span className="pom-chat-hero-initial">{word[0]}</span>
@@ -72,8 +100,14 @@ export function ChatHero({ children }: { children?: React.ReactNode }) {
             </motion.span>
           </span>
         ))}
-      </p>
-      <span className="pom-login-link pom-chat-hero-link" aria-hidden="true"><i /><i /><i /></span>
+      </motion.p>
+      <motion.span
+        initial={still ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: AFTER_MARK + 0.3, duration: 0.6 }}
+        className="pom-login-link pom-chat-hero-link"
+        aria-hidden="true"
+      ><i /><i /><i /></motion.span>
       {children}
     </motion.div>
   );

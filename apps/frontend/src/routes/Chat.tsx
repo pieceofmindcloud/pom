@@ -44,6 +44,7 @@ import {
 import type { ResolvedPluginSlot } from "../lib/pluginUi";
 import {
   ChatSessionProvider,
+  hasConversations,
   newId,
   titleFrom,
   turnsOnly,
@@ -336,6 +337,19 @@ export function Bubble({
       )}
     </motion.div>
   );
+}
+
+/** How many invitations `chat.prompt.<n>` has in `messages.csv`. */
+const PROMPT_PLACEHOLDERS = 6;
+
+/**
+ * The composer's invitation, in the tone of the waiting lines: one per
+ * conversation, picked from its id, so it does not change while typing.
+ */
+export function promptPlaceholderKey(sessionId: string): string {
+  let hash = 0;
+  for (const char of sessionId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return `chat.prompt.${(hash % PROMPT_PLACEHOLDERS) + 1}`;
 }
 
 /**
@@ -1152,7 +1166,9 @@ function ChatScreen() {
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               className={clsx(
-                "relative flex items-end gap-2 rounded-xl border bg-ink p-2 transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20",
+                "relative flex items-end gap-2 border bg-ink transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20",
+                // Alone on the opening screen the box is the whole page, so it is drawn larger.
+                session.messages.length === 0 ? "rounded-2xl p-3 shadow-lift" : "rounded-xl p-2",
                 dragActive ? "border-iris bg-iris/[0.08] ring-2 ring-iris/30" : "border-line",
               )}
             >
@@ -1191,7 +1207,7 @@ function ChatScreen() {
                 data-guide="chat-input"
                 rows={1}
                 value={draft}
-                placeholder={t("chat.placeholder")}
+                placeholder={t(promptPlaceholderKey(session.id))}
                 onChange={(e) => {
                   setDraft(e.target.value);
                   grow();
@@ -1202,7 +1218,10 @@ function ChatScreen() {
                     void send();
                   }
                 }}
-                className="max-h-[220px] min-h-[2.25rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-[0.9rem] leading-relaxed text-fg placeholder:text-faint focus:outline-none"
+                className={clsx(
+                  "max-h-[220px] flex-1 resize-none bg-transparent px-2 py-1.5 leading-relaxed text-fg placeholder:text-faint focus:outline-none",
+                  session.messages.length === 0 ? "min-h-[5.5rem] text-base" : "min-h-[2.25rem] text-[0.9rem]",
+                )}
               />
               {streaming ? (
                 <Button
@@ -1294,6 +1313,7 @@ function ChatScreen() {
     </motion.div>
   );
   const empty = session.messages.length === 0;
+  const showHistory = hasConversations(sessions);
   // The composer remounts in its new place; the focus follows it there.
   const wasEmpty = useRef(empty);
   useEffect(() => {
@@ -1303,7 +1323,7 @@ function ChatScreen() {
 
   return (
     <div className="flex h-full min-h-0">
-      {!historyLivesInMainMenu && (
+      {!historyLivesInMainMenu && showHistory && (
         <ChatSessionList
           sessions={sessions}
           activeId={session.id}
@@ -1330,7 +1350,7 @@ function ChatScreen() {
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {!historyLivesInMainMenu && (
+            {!historyLivesInMainMenu && showHistory && (
               <Button
                 size="sm"
                 variant="ghost"

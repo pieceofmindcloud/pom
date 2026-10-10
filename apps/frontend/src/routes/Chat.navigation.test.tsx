@@ -176,10 +176,20 @@ describe("navigation after the chat", () => {
     expect(loop.tripped).toBe(false);
   });
 
+  it("shows no conversation list or New chat while there is no conversation", async () => {
+    mount();
+    await screen.findByTestId("chat-empty");
+    expect(screen.queryByTestId("chat-session-list")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Conversa nova" })).toBeNull();
+  });
+
   it("does not duplicate the history when infer already has it in the main menu", async () => {
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      { id: "older", title: "Conversa antiga", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
+    ]));
     mount("infer");
 
-    await screen.findByPlaceholderText("Escreva para a rede…");
+    await screen.findByRole("textbox");
     expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();

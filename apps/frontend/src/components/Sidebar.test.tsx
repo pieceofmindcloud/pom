@@ -43,6 +43,9 @@ function RouteProbe() {
   return <output data-testid="route">{useLocation().pathname}</output>;
 }
 
+/** A conversation somebody wrote in: only those make the history appear. */
+const SPOKEN = [{ id: "m1", role: "user", content: "oi", at: "2026-09-06T10:00:00.000Z" }];
+
 describe("Sidebar", () => {
   afterEach(() => {
     cleanup();
@@ -247,14 +250,14 @@ describe("Sidebar", () => {
         id: "active",
         title: "Conversa ativa",
         model: "qwen",
-        messages: [],
+        messages: SPOKEN,
         updatedAt: "2026-09-07T10:00:00.000Z",
       },
       {
         id: "older",
         title: "Conversa antiga",
         model: "qwen",
-        messages: [],
+        messages: SPOKEN,
         updatedAt: "2026-09-06T10:00:00.000Z",
       },
     ]));
@@ -309,7 +312,7 @@ describe("Sidebar", () => {
         id: "older",
         title: "Conversa antiga",
         model: "qwen",
-        messages: [],
+        messages: SPOKEN,
         updatedAt: "2026-09-06T10:00:00.000Z",
       },
     ]));
@@ -336,7 +339,28 @@ describe("Sidebar", () => {
     expect(screen.getByTestId("route").textContent).toBe("/chat");
   });
 
+  it("leaves the infer menu without history or New chat while there is no conversation", () => {
+    render(
+      <MemoryRouter initialEntries={["/chat"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="infer">
+            <ChatSessionProvider>
+              <Sidebar />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId("chat-session-list")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Conversa nova" })).toBeNull();
+    // The rest of the menu stays.
+    expect(screen.getByText("Rede")).toBeTruthy();
+  });
+
   it("goes to the chat when a new conversation is started from the documentation", () => {
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      { id: "older", title: "Conversa antiga", model: "qwen", messages: SPOKEN, updatedAt: "2026-09-06T10:00:00.000Z" },
+    ]));
     render(
       <MemoryRouter
         initialEntries={["/documentation"]}

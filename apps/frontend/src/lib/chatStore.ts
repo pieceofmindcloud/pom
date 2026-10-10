@@ -227,6 +227,16 @@ export function emptySession(model: string | null): ChatSession {
   };
 }
 
+/**
+ * Whether there is any conversation to list: a session nobody wrote in (a new
+ * chat, or one only touched by a toggle) does not count. Without one, the
+ * history and its "New chat" are not drawn, so an empty Chat is only the
+ * composer.
+ */
+export function hasConversations(sessions: ChatSession[]): boolean {
+  return sessions.some((session) => session.messages.length > 0);
+}
+
 /** One subscription per mount, kept in sync across tabs of the same browser. */
 export function useChatSessions() {
   const [sessions, setSessions] = useState<ChatSession[]>(read);

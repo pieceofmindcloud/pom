@@ -547,7 +547,9 @@ body {
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .pom-chat-hero-rest { display: inline-block; overflow: hidden; }
-.pom-chat-hero-link { margin: 0 auto; }
+/* The entrance timing is framer-motion's here; the gate's CSS reveal would
+   override the inline opacity and show the nodes before the mark. */
+.pom-chat-hero-link { margin: 0 auto; animation: none; }
 .pom-chat-hero-link i { background: rgb(var(--surface)); }
 
 /* ==========================================================================

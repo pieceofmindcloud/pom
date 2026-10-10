@@ -149,8 +149,19 @@ describe("Chat", () => {
     const empty = await screen.findByTestId("chat-empty");
     expect(empty.querySelector('[data-testid="chat-hero"] img[alt="POM"]')).toBeTruthy();
     expect(screen.getByTestId("chat-hero-phrase").getAttribute("aria-label")).toBe("PIECE OF MIND");
-    // The composer sits inside the opening screen, not in a bottom bar.
-    expect(empty.contains(screen.getByRole("textbox"))).toBe(true);
+    // The composer sits inside the opening screen, not in a bottom bar, and
+    // is drawn larger there, inviting with one of the platform's lines.
+    const box = screen.getByRole("textbox");
+    expect(empty.contains(box)).toBe(true);
+    expect(box.className).toContain("min-h-[5.5rem]");
+    expect([
+      "Pergunte a qualquer pedaço da mente...",
+      "Todas as peças estão ouvindo. O que você quer saber?",
+      "Uma mente, várias máquinas. Manda a pergunta...",
+      "As GPUs estão prontas para trocar figurinhas...",
+      "Dê um quebra-cabeça para a rede montar...",
+      "Sua pergunta vai de máquina em máquina. Capriche...",
+    ]).toContain(box.getAttribute("placeholder"));
 
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
     fireEvent.click(screen.getByRole("button", { name: /enviar/i }));
@@ -158,7 +169,7 @@ describe("Chat", () => {
     await screen.findByText("primeiro segundo");
     expect(screen.queryByTestId("chat-empty")).toBeNull();
     expect(screen.queryByTestId("chat-hero")).toBeNull();
-    expect(screen.getByRole("textbox")).toBeTruthy();
+    expect(screen.getByRole("textbox").className).toContain("min-h-[2.25rem]");
   });
 
   it("keeps a finished answer's thinking closed, with its token count, until asked", () => {

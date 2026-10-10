@@ -68,6 +68,8 @@ export interface ChatMessage {
   source?: string;
   /** Thinking blocks emitted by models with reasoning enabled. */
   reasoning?: string;
+  /** How many tokens the model spent thinking, counted from the stream. */
+  reasoningTokens?: number;
   /** Authoritative final throughput from the generating node. */
   tokensPerSecond?: number;
   tokensGenerated?: number;
@@ -416,7 +418,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             }
             if (typeof delta === "string" && delta) {
               streamed = consumeChatDelta(streamed, delta);
-              patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+              patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined });
             }
             const metrics = chunk?.x_pom;
             if (metrics && typeof metrics === "object") finalMetrics = metrics;
@@ -439,7 +441,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           streamed = finishChatStream(streamed, measuredMetrics);
           patchReply({
             content: streamed.content,
-            reasoning: streamed.reasoning || undefined,
+            reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined,
             tokensPerSecond: streamed.tokensPerSecond,
             tokensGenerated: streamed.tokensGenerated,
             durationMs: streamed.durationMs,
@@ -450,7 +452,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         } else {
           streamed = finishChatStream(streamed);
         }
-        patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined }, true);
+        patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined }, true);
         if (streamAbort.current === controller && streamed.trace) {
           setLastStreamResult({
             sessionId: options.session.id,

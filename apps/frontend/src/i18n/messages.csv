@@ -274,6 +274,9 @@ chat.telemetryLine.ttftHint,Time to first token,Tempo até o primeiro token
 chat.thinkToggle,Think,Think
 chat.thinkToggleHint,"Use thinking for this inference. The choice stays active in this conversation.","Usar thinking nesta inferência. A escolha permanece ativa nesta conversa."
 chat.thinking,Thinking,Pensamento
+chat.thinkingDone,Thought,Pensou
+chat.thinkingLive,Thinking,Pensando
+chat.thinkingTokens,"{count, plural, one {# token} other {# tokens}}","{count, plural, one {# token} other {# tokens}}"
 chat.through,moving through the pipeline,atravessando o pipeline
 chat.timeUnit,s,s
 chat.title,Chat,Chat

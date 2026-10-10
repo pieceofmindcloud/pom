@@ -1109,6 +1109,18 @@ besides the turns:
   persisted in `localStorage`, so it carries across messages of the same
   conversation until the user changes the toggle. The head still enforces the
   global off, even if an old session carries `true`.
+- A model's thinking is shown closed: one line, "Thinking" with pulsing dots
+  while no answer text arrived and "Thought" after, with the count of thinking
+  tokens (one per stream delta that added to the reasoning,
+  `ChatStreamState.reasoningTokens`, kept as `ChatMessage.reasoningTokens`).
+  The text opens only on a click.
+- An empty conversation opens like other chat tools: no title card, only the
+  POM mark (`components/ChatHero.tsx`, the site's mark for the active theme),
+  a line that opens "P O M" into PIECE OF MIND, PLACE OF MIND, POWER OF
+  MACHINES and PLATFORM OF MIND in turn, the access gate's three linked nodes,
+  and the composer centred under them. The composer is one element with a
+  framer-motion `layoutId`: the first message carries it to the bottom bar of
+  the conversation.
 - Text files are still refused before sending when the estimated size exceeds
   the model's effective context: first `context_length` from `/v1/models`, then
   the active node's `n_ctx`. Images use the same budget, but are reduced before

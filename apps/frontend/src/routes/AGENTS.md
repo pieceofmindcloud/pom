@@ -254,6 +254,10 @@ Per-file list:
   o outro apaga a configuração local e reinicia no setup.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
+  opening an empty conversation on `../components/ChatHero` with the composer
+  centred (one `layoutId` element that moves to the bottom bar on the first
+  message) and showing a model's thinking closed (`ThinkingBlock`: label and
+  thinking-token count, text on click),
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
   and the shared active-session controller) and `../components/ChatSessionList`,
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`

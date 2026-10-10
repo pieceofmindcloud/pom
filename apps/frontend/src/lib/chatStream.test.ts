@@ -19,6 +19,14 @@ describe("chat stream parsing", () => {
     expect(state.content).toBe("Resposta");
   });
 
+  it("counts one thinking token per delta that adds to the reasoning", () => {
+    let state = emptyChatStream();
+    for (const delta of ["<think>", "a", "b", "c</think>", "Resposta", " final"]) state = consumeChatDelta(state, delta);
+    // "<think>" alone adds nothing; "c</think>" adds the last thinking token.
+    expect(state.reasoningTokens).toBe(3);
+    expect(state.content).toBe("Resposta final");
+  });
+
   it("keeps ordinary text that only resembles a thinking delimiter", () => {
     const state = finishChatStream(consumeChatDelta(emptyChatStream(), "Use <thing> como exemplo."));
 

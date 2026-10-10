@@ -143,6 +143,65 @@ afterEach(() => {
 });
 
 describe("Chat", () => {
+  it("opens an empty conversation on the POM mark with the composer under it, and moves it down on the first message", async () => {
+    mountChat();
+
+    const empty = await screen.findByTestId("chat-empty");
+    expect(empty.querySelector('[data-testid="chat-hero"] img[alt="POM"]')).toBeTruthy();
+    expect(screen.getByTestId("chat-hero-phrase").getAttribute("aria-label")).toBe("PIECE OF MIND");
+    // The composer sits inside the opening screen, not in a bottom bar.
+    expect(empty.contains(screen.getByRole("textbox"))).toBe(true);
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
+    fireEvent.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await screen.findByText("primeiro segundo");
+    expect(screen.queryByTestId("chat-empty")).toBeNull();
+    expect(screen.queryByTestId("chat-hero")).toBeNull();
+    expect(screen.getByRole("textbox")).toBeTruthy();
+  });
+
+  it("keeps a finished answer's thinking closed, with its token count, until asked", () => {
+    const message: ChatMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "Resposta",
+      reasoning: "passo um, passo dois",
+      reasoningTokens: 3,
+      at: new Date().toISOString(),
+    };
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile="admin">
+          <Bubble message={message} streaming={false} />
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+
+    const toggle = screen.getByRole("button", { name: /Pensou/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("chat-thinking-tokens").textContent).toBe("3 tokens");
+    expect(screen.queryByText("passo um, passo dois")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("passo um, passo dois")).toBeTruthy();
+  });
+
+  it("says the model is still thinking while no answer text arrived", () => {
+    const message: ChatMessage = { id: "a2", role: "assistant", content: "", reasoning: "hmm", reasoningTokens: 1, at: new Date().toISOString() };
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile="admin">
+          <Bubble message={message} streaming />
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+    expect(screen.getByRole("button", { name: /Pensando/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("chat-thinking-tokens").textContent).toBe("1 token");
+    expect(screen.queryByText("hmm")).toBeNull();
+  });
+
   it("shows the head choice in the admin profile too when there are two candidates", () => {
     headQuery.data = {
       model: "qwen",

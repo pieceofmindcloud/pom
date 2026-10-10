@@ -527,6 +527,29 @@ body {
 }
 .pom-login-error { margin: 2px 0 0; color: #ff9aa6; font-size: 13px; }
 
+/* Abertura do Chat sem conversa (`components/ChatHero.tsx`): a marca do site
+   respirando, a linha que abre "P O M" em cada frase e os três nós do portão,
+   nas cores do tema ativo. */
+.pom-chat-hero { display: flex; flex-direction: column; align-items: center; text-align: center; margin-bottom: clamp(20px, 4vh, 36px); }
+.pom-chat-hero-mark {
+  display: block; width: min(220px, 56vw); height: auto; margin: 0 auto 14px;
+  animation: pom-login-breathe 5s ease-in-out 1s infinite;
+}
+.pom-chat-hero-sub {
+  display: flex; justify-content: center; gap: .9em; min-height: 1em; margin: 0 0 28px;
+  color: rgb(var(--muted)); white-space: nowrap;
+  font: 700 10px/1 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: .28em;
+}
+.pom-chat-hero-word { display: inline-flex; }
+.pom-chat-hero-initial {
+  background: linear-gradient(96deg, #4f9bff, #2fdcc8);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.pom-chat-hero-rest { display: inline-block; overflow: hidden; }
+.pom-chat-hero-link { margin: 0 auto; }
+.pom-chat-hero-link i { background: rgb(var(--surface)); }
+
 /* ==========================================================================
    Wizard de primeiro acesso (`routes/Setup.tsx`), na identidade do portão e do
    site: o mesmo painel escuro flutuante com a marca, só mais largo e com o

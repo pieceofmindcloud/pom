@@ -493,6 +493,12 @@ export function isPhasedHop(hop: HopTrace): hop is PhasedHopTrace {
 export interface ChatStreamState {
   content: string;
   reasoning: string;
+  /**
+   * Deltas that added to the reasoning. The node streams one generated token
+   * per delta, so this is the count of thinking tokens; the usage block has
+   * no separate reasoning figure.
+   */
+  reasoningTokens: number;
   pending: string;
   inReasoning: boolean;
   tokensPerSecond?: number;
@@ -508,7 +514,7 @@ const OPEN = "<think>";
 const CLOSE = "</think>";
 
 export function emptyChatStream(): ChatStreamState {
-  return { content: "", reasoning: "", pending: "", inReasoning: false };
+  return { content: "", reasoning: "", reasoningTokens: 0, pending: "", inReasoning: false };
 }
 
 function suffixThatMayStart(text: string, marker: string): number {
@@ -528,6 +534,13 @@ function append(state: ChatStreamState, text: string): ChatStreamState {
 
 /** Separates `<think>` blocks without leaking split delimiters into the reply. */
 export function consumeChatDelta(previous: ChatStreamState, delta: string): ChatStreamState {
+  const next = splitThinking(previous, delta);
+  return next.reasoning.length > previous.reasoning.length
+    ? { ...next, reasoningTokens: (previous.reasoningTokens ?? 0) + 1 }
+    : next;
+}
+
+function splitThinking(previous: ChatStreamState, delta: string): ChatStreamState {
   let state = { ...previous, pending: "" };
   let buffer = previous.pending + delta;
 

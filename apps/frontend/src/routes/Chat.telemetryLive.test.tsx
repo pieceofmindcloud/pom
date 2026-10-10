@@ -163,8 +163,11 @@ describe("footer telemetry updates without F5", () => {
   it("keeps the summary, card and environment of each previous response", async () => {
     mountChat();
 
-    const composer = await screen.findByRole("textbox");
+    await screen.findByRole("textbox");
     const send = async (content: string, reply: string) => {
+      // The composer moves from the opening screen to the bottom on the
+      // first message, so it is looked up again each time.
+      const composer = screen.getByRole("textbox");
       act(() => {
         fireEvent.change(composer, { target: { value: content } });
         fireEvent.click(screen.getByRole("button", { name: /enviar/i }));

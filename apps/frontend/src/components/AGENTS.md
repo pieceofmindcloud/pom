@@ -285,7 +285,14 @@ Per-file list:
   sair da rede não fica exposta no menu.
 - `ChatWaitingLine.tsx` — The Chat's line between sending and the first
   token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
-  the "starting our engines" set while the deployment wakes from idle.
+  the "starting our engines" set while the deployment wakes from idle. It is
+  not drawn while the model is thinking, which has its own line.
+- `ChatHero.tsx` - the Chat's opening screen over an empty conversation: the
+  site's POM mark for the active theme (`assets/pom-mark-dark.png` /
+  `pom-mark-light.png`) breathing, the line that opens the initials "P O M"
+  into each of `POM_PHRASES` and closes back, and the `.pom-login-link`
+  nodes; styles `.pom-chat-hero*` in `index.css`. Under reduced motion it
+  holds PIECE OF MIND open.
 - `Notifications.tsx` — The activity bell: carries the default-password
   notice (once per start of the node, `lib/defaultPasswordNotice.ts`; it
   replaced the fixed `DefaultPasswordNotice` banner), counts running slicing jobs

@@ -10,11 +10,15 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
+  BookOpen,
   Boxes,
   Check,
   ChevronDown,
   Copy,
   Database,
+  Download,
+  History,
+  MessageCircle,
   Mic,
   MicOff,
   Paperclip,
@@ -68,6 +72,7 @@ import type { GenerationTimings, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useChatCapabilities,
+  useLocalCatalog,
   useCluster,
   useNode,
   usePeerRuntimes,
@@ -79,6 +84,7 @@ import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
+import { isWholeModel } from "../lib/types";
 import { useProfile } from "../lib/profile";
 
 export type { ChatTelemetryEnvironment } from "../lib/chatTelemetry";
@@ -339,6 +345,54 @@ export function Bubble({
         </div>
       )}
     </motion.div>
+  );
+}
+
+/**
+ * What to do when the network serves no model, for whoever may deploy one:
+ * download a model, deploy it, talk. The step this machine is at is the
+ * highlighted one, with its link; the ones done are checked.
+ */
+function NoModelSteps({ hasLocalModel }: { hasLocalModel: boolean }) {
+  const { t } = useI18n();
+  const current = hasLocalModel ? 1 : 0;
+  const steps = [
+    { key: "download", to: "/models/remote", icon: Download },
+    { key: "deploy", to: "/deploy", icon: Boxes },
+    { key: "talk", to: null, icon: MessageCircle },
+  ] as const;
+  return (
+    <ol className="mx-auto mt-5 grid w-full max-w-md gap-2 text-left" data-testid="no-model-steps">
+      {steps.map((step, index) => {
+        const done = index < current;
+        const active = index === current;
+        const Icon = step.icon;
+        const body = (
+          <>
+            <span className={clsx(
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+              done ? "border-lime/50 bg-lime/10 text-lime" : active ? "border-iris bg-iris text-white" : "border-line text-faint",
+            )}>
+              {done ? <Check className="h-3.5 w-3.5" /> : index + 1}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className={clsx("block text-sm font-medium", active ? "text-fg" : "text-muted")}>{t(`chat.noModelStep.${step.key}`)}</span>
+              <span className="block text-xs text-faint">{t(`chat.noModelStep.${step.key}Detail`)}</span>
+            </span>
+            <Icon className={clsx("h-4 w-4 shrink-0", active ? "text-iris" : "text-faint")} />
+          </>
+        );
+        const tone = clsx(
+          "flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors",
+          active ? "border-iris/50 bg-iris/[0.08] hover:bg-iris/[0.12]" : "border-line",
+        );
+        return (
+          <li key={step.key} data-step={step.key} data-state={done ? "done" : active ? "current" : "next"}>
+            {active && step.to ? <Link to={step.to} className={tone}>{body}</Link> : <div className={tone}>{body}</div>}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -1113,6 +1167,12 @@ function ChatScreen() {
 
   const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
   const canDeploy = canAccessRoute("/deploy", profile);
+  // Who may deploy is told the next step: download a model first if this
+  // machine has none, deploy it otherwise. Asked only on that screen.
+  const localCatalog = useLocalCatalog(noModel && canDeploy);
+  const hasLocalModel = Boolean(localCatalog.data?.models.some(isWholeModel) || localCatalog.data?.shard_sets.length);
+  // The most recent conversation with turns, to reopen the history from the empty screen.
+  const latestConversation = sessions.find((item) => item.messages.length > 0) ?? null;
   const firstTraceModel = session.messages.find((message) => message.trace?.model)?.trace?.model;
   const modelAtStart = session.modelAtStart ?? firstTraceModel ?? session.model ?? model;
 
@@ -1375,13 +1435,22 @@ function ChatScreen() {
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8 sm:px-6" data-testid="chat-empty">
             {noModel ? (
               // Nothing to talk to: no composer, no RAG, only what is missing.
-              <MissingPiece title={t("chat.noModel")} detail={t(canDeploy ? "chat.noModelDetail" : "chat.noModelAskAdmin")}>
-                {canDeploy && (
-                  <Link to="/deploy" className="mt-4 inline-flex items-center gap-2 rounded-full bg-iris px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-iris/85">
-                    <Boxes className="h-4 w-4" />
-                    {t("chat.noModelDeploy")}
+              <MissingPiece
+                title={t("chat.noModel")}
+                detail={t(!canDeploy ? "chat.noModelAskAdmin" : hasLocalModel ? "chat.noModelDeployNext" : "chat.noModelDownloadNext")}
+              >
+                {canDeploy && <NoModelSteps hasLocalModel={hasLocalModel} />}
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                  {latestConversation && (
+                    <Button size="sm" variant="outline" icon={<History className="h-3.5 w-3.5" />} onClick={() => selectSession(latestConversation)}>
+                      {t("chat.noModelHistory")}
+                    </Button>
+                  )}
+                  <Link to="/documentation" className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[0.8rem] font-medium text-muted transition-colors hover:bg-line/40 hover:text-fg">
+                    <BookOpen className="h-3.5 w-3.5" />
+                    {t("chat.noModelHowItWorks")}
                   </Link>
-                )}
+                </div>
               </MissingPiece>
             ) : (
               <>

@@ -250,8 +250,17 @@ chat.newShort,New,Nova
 chat.noCanvas2d,the browser does not offer a 2D canvas,o navegador não oferece um canvas 2D
 chat.noModel,One piece is missing: the network is not serving any model,Falta uma peça: a rede não está servindo nenhum modelo
 chat.noModelAskAdmin,"The machines are here, but there is no mind to put together yet. Ask an administrator of the network to deploy a model.","As máquinas estão aqui, mas ainda não há uma mente para montar. Peça a um administrador da rede para implantar um modelo."
-chat.noModelDeploy,Deploy a model,Implantar um modelo
+chat.noModelDeployNext,"There is a model on this machine already: deploy it on the network and every piece starts talking.","Já existe um modelo nesta máquina: implante na rede e todas as peças começam a conversar."
 chat.noModelDetail,"The machines are here, but there is no mind to put together yet. Deploy a model and every piece starts talking.","As máquinas estão aqui, mas ainda não há uma mente para montar. Implante um modelo e todas as peças começam a conversar."
+chat.noModelDownloadNext,"This machine has no model yet. Download one, deploy it on the network, and the mind is complete.","Esta máquina ainda não tem nenhum modelo. Baixe um, implante na rede e a mente fica completa."
+chat.noModelHistory,See earlier conversations,Ver conversas anteriores
+chat.noModelHowItWorks,How POM works,Como o POM funciona
+chat.noModelStep.deploy,Deploy it on the network,Implantar na rede
+chat.noModelStep.deployDetail,"Whole, or sliced across the machines.","Inteiro, ou fatiado entre as máquinas."
+chat.noModelStep.download,Download a model,Baixar um modelo
+chat.noModelStep.downloadDetail,Pick a GGUF from Hugging Face; it lands on this machine.,Escolha um GGUF no Hugging Face; ele fica nesta máquina.
+chat.noModelStep.talk,Talk to the network,Conversar com a rede
+chat.noModelStep.talkDetail,Come back here and ask anything.,Volte aqui e pergunte o que quiser.
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
 chat.placeholder,Write to the network…,Escreva para a rede…

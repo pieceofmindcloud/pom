@@ -300,7 +300,8 @@ Per-file list:
 - `MissingPiece.tsx` - the Chat's screen while the network serves no model:
   an SVG 2x2 puzzle whose three pieces (`piecePath`, knobs that agree on
   shared edges) fly in and lock, leaving the bottom-right slot empty and
-  pulsing with a "?", over a title, a detail and the caller's action.
+  pulsing with a "?", under the POM mark (art per theme), over a title, a
+  detail and the caller's actions (the Chat's next steps and links).
 - `ChatHero.tsx` - the Chat's opening screen over an empty conversation: the
   site's POM mark for the active theme (`assets/pom-mark-dark.png` /
   `pom-mark-light.png`), which rises from below after a pause and then

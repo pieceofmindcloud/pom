@@ -87,6 +87,8 @@ const chatScenario = vi.hoisted(() => ({
   cluster: null as unknown,
   capabilities: null as unknown,
   models: [{ id: "qwen" }] as { id: string }[],
+  /** Models on this machine's disk, for the "what next" steps. */
+  localModels: [] as { name: string; path: string; shard_range: null }[],
 }));
 
 /**
@@ -105,6 +107,7 @@ vi.mock("../lib/queries", () => ({
   useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
   useServableModels: () => ({ data: chatScenario.models }),
+  useLocalCatalog: () => ({ data: { models: chatScenario.localModels, shard_sets: [] } }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: (nodeIds: string[]) => {
@@ -159,6 +162,7 @@ afterEach(() => {
   chatScenario.cluster = null;
   chatScenario.capabilities = null;
   chatScenario.models = [{ id: "qwen" }];
+  chatScenario.localModels = [];
 });
 
 describe("navigation after the chat", () => {
@@ -176,12 +180,37 @@ describe("navigation after the chat", () => {
 
     const missing = await screen.findByTestId("chat-missing-piece");
     expect(missing.textContent).toContain("Falta uma peça: a rede não está servindo nenhum modelo");
+    expect(missing.querySelector('img[alt="POM"]')).toBeTruthy();
     expect(screen.getAllByTestId("puzzle-piece")).toHaveLength(3);
     expect(screen.getByTestId("missing-piece-slot")).toBeTruthy();
-    // An administrator is sent to deploy one.
-    expect(screen.getByRole("link", { name: "Implantar um modelo" }).getAttribute("href")).toContain("/deploy");
+    // No model on this machine: the next step is downloading one.
+    const steps = screen.getByTestId("no-model-steps");
+    expect(steps.querySelector('[data-step="download"]')?.getAttribute("data-state")).toBe("current");
+    expect(steps.querySelector('[data-step="download"] a')?.getAttribute("href")).toContain("/models/remote");
+    expect(screen.getByRole("link", { name: "Como o POM funciona" })).toBeTruthy();
+    // No conversation yet: no way to a history that does not exist.
+    expect(screen.queryByRole("button", { name: "Ver conversas anteriores" })).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /RAG/i })).toBeNull();
+  });
+
+  it("points an administrator with a model on disk to deploying it, and offers the earlier conversations", async () => {
+    chatScenario.models = [];
+    chatScenario.localModels = [{ name: "qwen.gguf", path: "/models/qwen.gguf", shard_range: null }];
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      // The open one is new and empty; an older one has turns.
+      { id: "c0", title: "Nova", model: "qwen", messages: [], updatedAt: "2026-09-07T10:00:00.000Z" },
+      { id: "c1", title: "Conversa antiga", model: "qwen", messages: [{ id: "m1", role: "user", content: "oi de antes", at: "2026-09-06T10:00:00.000Z" }], updatedAt: "2026-09-06T10:00:00.000Z" },
+    ]));
+    mount("admin");
+
+    const steps = await screen.findByTestId("no-model-steps");
+    expect(steps.querySelector('[data-step="download"]')?.getAttribute("data-state")).toBe("done");
+    expect(steps.querySelector('[data-step="deploy"]')?.getAttribute("data-state")).toBe("current");
+    expect(steps.querySelector('[data-step="deploy"] a')?.getAttribute("href")).toContain("/deploy");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver conversas anteriores" }));
+    expect(await screen.findByText("oi de antes")).toBeTruthy();
   });
 
   it("asks a machine that cannot deploy to call an administrator", async () => {
@@ -189,7 +218,7 @@ describe("navigation after the chat", () => {
     mount("infer");
     const missing = await screen.findByTestId("chat-missing-piece");
     expect(missing.textContent).toContain("Peça a um administrador");
-    expect(screen.queryByRole("link", { name: "Implantar um modelo" })).toBeNull();
+    expect(screen.queryByTestId("no-model-steps")).toBeNull();
   });
 
   it("switches screen when the menu is clicked after a response", async () => {

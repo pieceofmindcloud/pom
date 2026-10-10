@@ -9,6 +9,7 @@ const deploymentModel = `${baseModel}@d-80442220`;
 
 vi.mock("./queries", () => ({
   useCluster: () => ({ data: undefined }),
+  useLocalCatalog: () => ({ data: undefined }),
   useChatCapabilities: () => ({ data: { vision: "unavailable", coverage: "unavailable", thinking: "unavailable" } }),
   useNode: () => ({ data: undefined }),
   useServableModels: () => ({ data: [{ id: deploymentModel }, { id: baseModel }] }),

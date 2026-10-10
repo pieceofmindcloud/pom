@@ -1117,10 +1117,14 @@ besides the turns:
 - While the network serves no model, the Chat draws no composer and no RAG
   menu: an empty conversation shows `components/MissingPiece.tsx`, three
   puzzle pieces in the brand colours locking together around an empty,
-  pulsing slot, with "One piece is missing" and, for a profile that may open
-  `/deploy`, a "Deploy a model" link (otherwise it asks for an
-  administrator); a conversation with turns keeps them and puts that line in
-  place of the composer.
+  pulsing slot, under the POM mark, with "One piece is missing". A profile
+  that may open `/deploy` gets the next steps (download a model, deploy it,
+  talk): the local catalog (`/api/ui/models`, asked only on that screen)
+  decides whether downloading is done and deploying is the current step;
+  any other profile is told to ask an administrator. "How POM works" opens
+  the documentation, and "See earlier conversations" reopens the latest
+  conversation with turns, drawn only when one exists. A conversation with
+  turns keeps them and puts that line in place of the composer.
 - An empty conversation opens like other chat tools: no title bar, only the
   POM mark (`components/ChatHero.tsx`, the site's mark for the active theme,
   rising from below after a short pause; the line and the nodes follow it),

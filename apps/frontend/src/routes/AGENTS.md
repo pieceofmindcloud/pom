@@ -254,7 +254,10 @@ Per-file list:
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   with no title bar on an empty conversation, `../components/MissingPiece`
-  and no composer or RAG while the network serves no model, capabilities
+  and no composer or RAG while the network serves no model (with
+  `NoModelSteps` - download, deploy, talk, current step from
+  `useLocalCatalog` - for a profile that may deploy, and "See earlier
+  conversations" only when one exists), capabilities
   asked for the chosen model (`useChatCapabilities(model)`), otherwise
   opening an empty conversation on `../components/ChatHero` with the composer
   centred (one `layoutId` element that moves to the bottom bar on the first

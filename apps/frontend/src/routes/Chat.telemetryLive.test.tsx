@@ -71,6 +71,7 @@ vi.mock("../lib/queries", () => ({
     isError: false,
   }),
   useCluster: () => ({ data: null }),
+  useLocalCatalog: () => ({ data: undefined }),
   useChatCapabilities: () => ({
     data: { vision: "supported", coverage: "complete", thinking: "unsupported" },
   }),

@@ -1,5 +1,8 @@
 import { motion, useReducedMotion } from "framer-motion";
 import { useId } from "react";
+import markOnDark from "../assets/pom-mark-dark.png";
+import markOnLight from "../assets/pom-mark-light.png";
+import { useTheme } from "../lib/theme";
 
 /** -1 a blank (hole), 0 a straight border, 1 a tab sticking out. */
 type Edge = -1 | 0 | 1;
@@ -65,6 +68,7 @@ export function piecePath(piece: Pick<Piece, "col" | "row" | "edges">): string {
  */
 export function MissingPiece({ title, detail, children }: { title: string; detail: string; children?: React.ReactNode }) {
   const still = useReducedMotion() ?? false;
+  const { theme } = useTheme();
   const glow = useId().replace(/:/g, "");
   return (
     <motion.div
@@ -74,6 +78,16 @@ export function MissingPiece({ title, detail, children }: { title: string; detai
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
     >
+      <motion.img
+        className="pom-chat-hero-mark !mb-2 !w-[min(150px,40vw)]"
+        src={theme === "dark" ? markOnDark : markOnLight}
+        alt="POM"
+        width={815}
+        height={320}
+        initial={still ? false : { opacity: 0, y: 40 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
+      />
       <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE} className="max-w-[60vw] overflow-visible" role="img" aria-label={title}>
         <defs>
           <filter id={`glow-${glow}`} x="-30%" y="-30%" width="160%" height="160%">

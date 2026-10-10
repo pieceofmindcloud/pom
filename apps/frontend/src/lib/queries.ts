@@ -501,8 +501,9 @@ export function useInferenceHeads(model: string, enabled: boolean) {
   });
 }
 
-export function useLocalCatalog() {
+export function useLocalCatalog(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: keys.models,
     queryFn: () => api.get<CatalogResponse>("/api/ui/models", { auth: false }),
     // A fast inventory is useful immediately, but keep asking while the node

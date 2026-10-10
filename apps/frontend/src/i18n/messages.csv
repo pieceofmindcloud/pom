@@ -1938,13 +1938,20 @@ publicNetworks.add,Add network,Adicionar rede
 publicNetworks.addDetail,"Add a private network from its trust document, a JSON file its administrator exports.","Adicione uma rede privada a partir do documento de confiança, um arquivo JSON que o administrador dela exporta."
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
+publicNetworks.askToJoin,Ask to join,Pedir para entrar
+publicNetworks.backToNetworks,Back to networks,Voltar para redes
 publicNetworks.browserLocationDenied,The browser did not share its location.,O navegador não compartilhou a localização.
 publicNetworks.browserLocationUnavailable,The browser only shares its location on HTTPS or on localhost.,O navegador só compartilha a localização em HTTPS ou em localhost.
+publicNetworks.cached,Not seen now · last seen {when},Não vista agora · vista {when}
+publicNetworks.cachedDetail,"This machine heard of the network before, but it did not answer the last search. It may be offline.","Esta máquina já conheceu a rede, mas ela não respondeu à última busca. Pode estar fora do ar."
 publicNetworks.chat,Chat,Conversar
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
 publicNetworks.closed,Closed,Fechada
 publicNetworks.closedDetail,This network is not accepting new members right now.,Esta rede não está aceitando novos membros no momento.
+publicNetworks.closedShort,closed,fechada
+publicNetworks.closeLobby,Close the lobby of {name},Fechar o lobby de {name}
+publicNetworks.closePanel,Close panel,Fechar painel
 publicNetworks.country,Country,País
 publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
 publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório
@@ -1958,6 +1965,10 @@ publicNetworks.distanceFromNetwork,Distances are measured from your network's lo
 publicNetworks.distanceFromNone,"To see distances, set your network's location or use the browser's.","Para ver distâncias, defina a localização da sua rede ou use a do navegador."
 publicNetworks.emptyDetail,No relay listed a network yet. Networks appear here once their admin turns discovery on.,Nenhum relé listou uma rede ainda. As redes aparecem aqui quando o administrador liga a descoberta.
 publicNetworks.emptyTitle,No networks found,Nenhuma rede encontrada
+publicNetworks.enrollmentClosed,Closed to new members,Fechada para novos membros
+publicNetworks.enrollmentOpen,Accepting new members,Aceitando novos membros
+publicNetworks.expandDetails,Open all details,Abrir todos os detalhes
+publicNetworks.exportShort,Trust document,Documento de confiança
 publicNetworks.exportTrust,Export the trust document of {name},Exportar o documento de confiança de {name}
 publicNetworks.exportTrustDetail,Export the trust document so another machine can add this network,Exportar o documento de confiança para que outra máquina adicione esta rede
 publicNetworks.failed,Could not load the networks,Não foi possível carregar as redes
@@ -1976,18 +1987,27 @@ publicNetworks.latency,Average latency,Latência média
 publicNetworks.latencyChecking,measuring...,medindo...
 publicNetworks.latencyFailed,no answer,sem resposta
 publicNetworks.latencyValue,{value} ms,{value} ms
+publicNetworks.liveFailed,Could not update the list from the network,Não foi possível atualizar a lista pela rede
+publicNetworks.lobby,Lobby,Lobby
 publicNetworks.location,Country / city,País / cidade
 publicNetworks.locationNote,"Each network's city and country come from the coordinates it publishes, looked up in this node's own city list.","A cidade e o país de cada rede vêm das coordenadas que ela publica, consultadas na lista de cidades deste nó."
 publicNetworks.measureLatency,Measure latency,Medir latência
 publicNetworks.models,Served models,Modelos servidos
+publicNetworks.moreDetails,More details,Mais detalhes
 publicNetworks.name,Public name,Nome público
+publicNetworks.nextPage,Next page,Próxima página
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
-publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
+publicNetworks.noMatchesDetail,Try another search or filter.,Tente outra busca ou outro filtro.
 publicNetworks.nodes,Nodes,Nós
 publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
+publicNetworks.openLobbies,Open lobbies,Lobbies abertos
 publicNetworks.organization,Organization,Organização
+publicNetworks.pageOf,Page {page} of {pages},Página {page} de {pages}
+publicNetworks.pageRange,{from}-{to} of {total} networks,{from}-{to} de {total} redes
+publicNetworks.panelLabel,Network {name},Rede {name}
 publicNetworks.pkarr,pkarr,pkarr
 publicNetworks.place,Place,Local
+publicNetworks.previousPage,Previous page,Página anterior
 publicNetworks.publisherKey,Publisher key,Chave do publicador
 publicNetworks.reach,Reachability,Alcance
 publicNetworks.reachDirect,Direct route published,Rota direta publicada
@@ -2001,6 +2021,8 @@ publicNetworks.removeDescription,"{name} leaves this machine's list. Nothing cha
 publicNetworks.removeFailed,Could not remove the network,Não foi possível remover a rede
 publicNetworks.removeNamed,Remove {name} from the list,Remover {name} da lista
 publicNetworks.removeTitle,Remove this network from the list?,Remover esta rede da lista?
+publicNetworks.search,Search,Buscar
+publicNetworks.searchPlaceholder,"Name, organization, city...","Nome, organização, cidade..."
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
 publicNetworks.sort,Sort by,Ordenar por
 publicNetworks.sortDistance,Closest first,Mais próximas primeiro
@@ -2011,6 +2033,7 @@ publicNetworks.title,Networks,Redes
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
+publicNetworks.updatingLive,Updating from the network...,Atualizando pela rede...
 publicNetworks.useBrowserLocation,Use my browser's location,Usar a localização do meu navegador
 publicNetworks.vram,Total VRAM,VRAM total
 publicNetworks.within,Distance,Distância

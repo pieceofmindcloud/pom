@@ -56,58 +56,54 @@ Per-file list:
   com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
   `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
 
-- `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
-  padrão de Logs: tabela rolável com nome público, organização, localização,
-  label geo-hierárquico, alcance, nós, latência, VRAM, modelos e ação de
-  entrada. Usa `/api/public/networks`. **No IP is shown**: reachability comes
-  from `usePublicLocator` (`lib/publicLocator.ts`), which asks the node
-  (`/api/public/networks/locate?key=<publisher_key>`) whether the publisher key
-  has a direct route, only a relay or no pkarr record at all, and reports a
-  check that failed as `unknown` ("Could not check") instead of a missing
-  record; the details show
-  the publisher key and the `relay_hints`. Métricas agregadas só aparecem quando o cluster local
-  corresponde à rede exibida, pois o catálogo público atual não as fornece.
-  Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
-  país, o combo de cidade mostra apenas as cidades daquele país. The place
-  column (city, state, country) is what the node resolved from each network's
-  coordinates, not text the network sent; the discovery label is only in the
-  details. The toolbar also has a distance filter and a sort order (closest,
-  lowest latency, name). Distances are measured from this network's location
-  (`useNetworkInfo`) or, after "Use my browser's location", from the browser;
-  the screen never asks the browser by itself. Latency comes from
-  `usePublicLatencies` and is measured only after "Measure latency" or
-  choosing the latency order.
-  O nome de cada rede abre um `Modal` com todo o registro público, incluindo
-  descrição, regras e o campo único de canais Discord ou Telegram renderizados
-  como Markdown; a confirmação de entrada continua sendo uma ação separada.
-  The action column depends on membership: the row whose fingerprint matches
-  `/api/public/network` (the network this node is already in) never offers
-  Join. A member gets "Leave network" (`POST /api/ui/network/leave`, same
-  confirmation as Forget network in `NetworkSettings.tsx`); the principal
-  (`authority_level === "primary"` from `useNode`) gets no action there.
-  Pinned rows come from `GET /api/ui/networks/pinned` and stay on top,
-  outside the filters and the sort: this machine's network (`kind` "own",
-  whatever its visibility, the directory's copy dropped) and the networks
-  imported here ("custom", amber band and badge). "Add network" reads a JSON
-  file and posts its text to `/api/ui/networks/custom`; a custom row has a
-  remove button behind a confirmation (`api.del`). Every row has an export
-  button (`exportTrustDocument`) that downloads `trust_document` as
-  `<name>-trust.json`. A node that does not serve the pinned route just shows
-  the directory.
-  The screen is titled "Networks". For a network this node is not in, the one
-  action opens the lobby window (`LobbyChat`), where admission is requested;
-  every listed network has a lobby. The old path that
-  left the network and opened the wizard is gone.
-  A network advertising an empty `accepted_enrollments` can still be talked to
-  but offers no admission request; the list (or "Any role" when the record has
-  none) is shown in the details modal and travels to the wizard in the
-  `sessionStorage` handoff. That window is `../components/LobbyChat` against
-  `/api/ui/network-chat/lobby`. A
-  network with `public_stats` that this node is not in gets its nodes, VRAM and
-  models columns from `usePublicStats` (`../lib/publicStats`); latency stays
-  unavailable for it.
-  O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
-  da rede atual e o wizard real retoma com a rede pública pronta para revisão.
+- `PublicNetworks.tsx` - Full-bleed directory of public networks: a
+  scrolling table with name, organization, place, reach, nodes, latency, VRAM,
+  models and the action. The list is a page of the node's table of known
+  networks (`GET /api/ui/networks/known`, 25 per page, prev/next under the
+  table): it paints from there at once, then `refreshLive` asks
+  `/api/public/networks` (which records what it finds) and reads the page
+  again. A row the live listing did not return shows "Not seen now - last
+  seen ..." (`network-cached-<fingerprint>`). The search box (debounced
+  300 ms), country, city (narrowed by country), distance radius and order go
+  to the node as query parameters, and any change returns to page 1; the
+  country and city options come from the answer. **No IP is shown**:
+  reachability comes from `usePublicLocator` (`lib/publicLocator.ts`), which
+  asks the node (`/api/public/networks/locate?key=<publisher_key>`) whether
+  the publisher key has a direct route, only a relay or no pkarr record, and
+  reports a check that failed as `unknown`. The place column is what the node
+  resolved from each network's coordinates. Distances are measured from this
+  network's location (`useNetworkInfo`) or, after "Use my browser's
+  location", from the browser, and sent to the node only as the sort and
+  radius origin; the screen never asks the browser by itself. Latency comes
+  from `usePublicLatencies`, only after "Measure latency" or the latency
+  order, which reorders the current page.
+  Clicking a row selects it (iris band, `aria-selected`) and opens
+  `NetworkSidePanel` on the right, in the inspector's look and small print:
+  the name, the enrollment state (`network-enrollment-state`), description,
+  channels and rules (long rules folded), only the fields the owner filled,
+  nothing the row already shows. Its footer (`network-panel-actions`) holds
+  the actions: "Ask to join" and "Lobby" for another network (closed ones only
+  get the lobby), "Leave network" for a member, "More details", the trust
+  document export and, for an imported network, remove. "More details" opens
+  `PublicNetworkDetails`, a `Modal size="full"` with every field, technical
+  ones (fingerprint, publisher key, relays, trust document) included.
+  A lobby opens in place of the list (`LobbyChat layout="page"`, "Back to
+  networks"), not as a window; open lobbies are kept in a tab strip
+  ("Networks" plus one closable tab per lobby) and stay mounted and polling
+  while hidden, so the operator can talk in several at once. "Ask to join"
+  opens the lobby with the focus on the admission request.
+  The action column depends on membership: the network this node is in never
+  offers Join. A member gets "Leave network" (`POST /api/ui/network/leave`);
+  the principal (`authority_level === "primary"`) gets no action there.
+  Pinned rows come from `GET /api/ui/networks/pinned` and stay on top of every
+  page, outside the search, the filters and the order: this machine's network
+  ("own") and the networks imported here ("custom", amber band). The node
+  leaves both out of the known list. "Add network" reads a JSON file and posts
+  its text to `/api/ui/networks/custom`; every row exports `trust_document` as
+  `<name>-trust.json`. A network with an empty `accepted_enrollments` is
+  marked closed and can still be talked to. A network with `public_stats`
+  that this node is not in gets its nodes, VRAM and models from
+  `usePublicStats` (`../lib/publicStats`).
 
 - `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
   preferências locais **e** da identidade desta máquina, que vive em

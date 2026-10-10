@@ -112,7 +112,8 @@ Per-file list:
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
-  commands). Used by `Chat`.
+  commands). Used by `Chat`. `compact` shrinks text, headings and block gaps
+  together for side panels (the Networks screen's network panel).
 - `MarkdownField.tsx` - editor compartilhado para metadados administráveis:
   textarea com altura mínima confortável e prévia ao vivo usando `Markdown`.
   A configuração da rede usa o mesmo campo para descrição, regras e canais;
@@ -494,6 +495,11 @@ Per-file list:
   button switches at once, and the bell does not list it. A declined request
   shows how many minutes are left before asking again (`retryWaitMinutes`
   over `retry_at`), and the request form comes back when the wait is over.
+  `layout="page"` fills the hosting screen instead of a window, with a back
+  button (`backLabel`) in place of Close; the Networks screen uses it to keep
+  several lobbies open in tabs. `focusAdmission` puts the focus on the role
+  picker once the request form shows, and `onMessagesClosed` tells a page
+  lobby that the network's Chat is off, so the screen reopens it as a window.
   When the network answers `messages_closed` (its Chat is off) the
   conversation column is not rendered: the window is only the hardware card
   and the request panel (`lobby-request`).
@@ -517,7 +523,8 @@ Per-file list:
   them listen for Escape on the `document`, so `Modal` keeps a module-level
   stack of the open ones (`openModals`, keyed by `useId`) and only the top one
   answers Escape; without it one Escape closed both. `size` picks `md` (a
-  paragraph) or `lg` (a whole panel, for `PeerDetailDialog`); the panel is a
+  paragraph), `lg` (a whole panel, for `PeerDetailDialog`), `xl` or `full`
+  (nearly the whole window, the Networks screen's full details); the panel is a
   flex column capped at `max-h-[calc(100vh-2rem)]` whose body scrolls
   (`min-h-0 flex-1 overflow-y-auto`) instead of the old `max-h-[70vh]`.
 - `LeaveNode.tsx` - Take **one** machine off the network, from its card on the

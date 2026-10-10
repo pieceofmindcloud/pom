@@ -64,6 +64,7 @@ pub(crate) fn network_from_trust_document(content: &str) -> anyhow::Result<Pinne
             access_policy: setup.map(|setup| setup.access_policy).unwrap_or_default(),
             accepted_enrollments: Default::default(),
             public_stats: false,
+            lobby_chat: false,
             location: None,
             discovered_via: "custom".to_string(),
             directory_replicas: setup
@@ -74,7 +75,7 @@ pub(crate) fn network_from_trust_document(content: &str) -> anyhow::Result<Pinne
 }
 
 /// The stored documents that still validate, one per network.
-fn custom_networks(database: &crate::db::PomDb) -> Vec<PinnedNetwork> {
+pub(super) fn custom_networks(database: &crate::db::PomDb) -> Vec<PinnedNetwork> {
     let mut networks: Vec<PinnedNetwork> = Vec::new();
     for document in database.custom_networks().unwrap_or_default() {
         match network_from_trust_document(&document) {

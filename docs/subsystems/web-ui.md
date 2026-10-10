@@ -285,8 +285,30 @@ local-only notice. Routes:
   section "Local rebuild in development".
 - `/documentation` -> Documentation (full screen; see its own section below)
 - `/public-networks` -> PublicNetworks, a full-bleed catalog of public networks
-  discovered through the pkarr layer. Two kinds of rows stay at the top
-  whatever the filters and the order (`GET /api/ui/networks/pinned`): the
+  discovered through the pkarr layer. The list is paged and searched on the
+  node, over its table of every network it has heard of
+  (`GET /api/ui/networks/known`, `http-api.md`): the screen paints from that
+  table at once and, when the live listing (`GET /api/public/networks`, which
+  records what it finds) answers, reads the page again; a row the live
+  listing did not return says when it was last seen. The search box, the
+  country, city and distance filters and the order (distance, name) go to the
+  node; latency is measured in the browser and reorders the page. Clicking a
+  row selects it (iris band) and opens a side panel drawn like the
+  Dashboard's property inspector, in small print: the network's name, whether
+  it takes new members, description, channels (links) and rules - nothing the
+  row already shows, and no keys or fingerprints - with the network's actions
+  at the bottom (ask to join, lobby, leave, more details, trust document,
+  remove). "More details" opens a near full-screen window with every field,
+  technical ones included. A network whose record says `lobby_chat` (its
+  Chat is on) offers "Talk and ask to join" and a "Lobby" button: the lobby
+  (`LobbyChat` with `layout="page"`) replaces the list on the same screen,
+  with "Back to networks"; open lobbies stay in a tab strip and keep polling,
+  so several conversations run at once. Without `lobby_chat` there is nothing
+  to talk in: the button is "Ask to join" and opens the lobby as a window with
+  only the hardware card and the request, and a page lobby whose exchange
+  reports `messages_closed` turns into that window. Two
+  kinds of rows stay at the top of every page whatever the search, the
+  filters and the order (`GET /api/ui/networks/pinned`): the
   network this machine is in, tagged "Your network", shown even when it is
   not public; then the private networks added on this machine, tagged
   "Private - added here" with an amber band. "Add network" in the header

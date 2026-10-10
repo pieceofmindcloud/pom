@@ -20,6 +20,23 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub const DATABASE_FILENAME: &str = "pom.db";
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// One network to record in `known_public_networks`: the listing's JSON
+/// view, kept whole, and the folded text the search runs on.
+#[derive(Clone, Debug)]
+pub(crate) struct KnownNetworkEntry {
+    pub fingerprint: String,
+    pub view_json: String,
+    pub search_text: String,
+}
+
+/// A row of `known_public_networks`; times are Unix seconds.
+#[derive(Clone, Debug)]
+pub(crate) struct KnownNetworkRow {
+    pub view_json: String,
+    pub first_seen_at: i64,
+    pub last_seen_at: i64,
+}
+
 /// Last geo label observed for a public network peer. This tiny local index is
 /// what lets a prefix/suffix search choose candidates before opening HTTP
 /// probes; the signed pkarr record remains the source of the label itself.
@@ -808,6 +825,80 @@ impl PomDb {
         self.save_setting("custom_networks", &documents.to_vec())
     }
 
+    /// Records each network in the local table of known public networks: new
+    /// ones are added, known ones get their latest description and
+    /// `last_seen_at`. Rows not seen for `max_age_secs` are dropped and the
+    /// table keeps at most `cap` rows, the most recently seen.
+    pub(crate) fn remember_public_networks(
+        &self,
+        entries: &[KnownNetworkEntry],
+        now: i64,
+        max_age_secs: i64,
+        cap: usize,
+    ) -> Result<()> {
+        self.with_write("guardar redes públicas conhecidas", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            for entry in entries {
+                tx.execute(
+                    "INSERT INTO known_public_networks
+                        (fingerprint, view_json, search_text, first_seen_at, last_seen_at)
+                     VALUES (?1, ?2, ?3, ?4, ?4)
+                     ON CONFLICT(fingerprint) DO UPDATE SET
+                        view_json = excluded.view_json,
+                        search_text = excluded.search_text,
+                        last_seen_at = excluded.last_seen_at",
+                    params![entry.fingerprint, entry.view_json, entry.search_text, now],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM known_public_networks WHERE last_seen_at < ?",
+                params![now.saturating_sub(max_age_secs)],
+            )?;
+            tx.execute(
+                "DELETE FROM known_public_networks WHERE fingerprint NOT IN (
+                    SELECT fingerprint FROM known_public_networks
+                    ORDER BY last_seen_at DESC, fingerprint LIMIT ?
+                 )",
+                params![cap as i64],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// The known public networks whose search text contains every word of
+    /// `search` (already folded), most recently seen first.
+    pub(crate) fn known_public_networks(&self, search: &str) -> Result<Vec<KnownNetworkRow>> {
+        self.with_read("ler redes públicas conhecidas", |connection| {
+            let words: Vec<String> = search
+                .split_whitespace()
+                .map(|word| {
+                    let escaped = word.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+                    format!("%{escaped}%")
+                })
+                .collect();
+            let mut sql = String::from(
+                "SELECT view_json, first_seen_at, last_seen_at FROM known_public_networks",
+            );
+            for (index, _) in words.iter().enumerate() {
+                sql.push_str(if index == 0 { " WHERE " } else { " AND " });
+                sql.push_str("search_text LIKE ? ESCAPE '\\'");
+            }
+            sql.push_str(" ORDER BY last_seen_at DESC, fingerprint");
+            let mut statement = connection.prepare(&sql)?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(words.iter()), |row| {
+                    Ok(KnownNetworkRow {
+                        view_json: row.get(0)?,
+                        first_seen_at: row.get(1)?,
+                        last_seen_at: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
     /// A JSON list kept in `local_settings`; missing or unreadable is empty.
     fn read_setting<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Vec<T>> {
         self.with_read("ler configuração local", |connection| {
@@ -1567,6 +1658,15 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             setting_key TEXT PRIMARY KEY,
             value_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS known_public_networks (
+            fingerprint TEXT PRIMARY KEY,
+            view_json TEXT NOT NULL,
+            search_text TEXT NOT NULL,
+            first_seen_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS known_public_networks_seen_idx
+            ON known_public_networks(last_seen_at DESC);
         CREATE TABLE IF NOT EXISTS local_secrets (
             secret_key TEXT PRIMARY KEY,
             value_text TEXT
@@ -1886,6 +1986,7 @@ mod tests {
             "model_history",
             "model_slices",
             "local_settings",
+            "known_public_networks",
             "local_secrets",
             "chat_conversations",
             "chat_messages",

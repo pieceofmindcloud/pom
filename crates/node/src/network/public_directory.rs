@@ -108,6 +108,11 @@ pub(crate) struct PublicDirectoryNetwork {
     /// The publisher answers `Info` requests with models, nodes and VRAM.
     #[serde(default)]
     pub public_stats: bool,
+    /// The publisher's lobby carries a conversation (its network Chat is on).
+    /// Left out of the signed bytes when false, so a record signed before
+    /// the field existed still verifies.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lobby_chat: bool,
     pub location: Option<crate::config::NetworkLocation>,
     #[serde(default)]
     pub relay_hints: Vec<String>,
@@ -366,6 +371,7 @@ impl PublicDirectoryNetwork {
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             accepted_enrollments: Default::default(),
             public_stats: false,
+            lobby_chat: false,
             location: None,
             relay_hints: Vec::new(),
             directory_replicas: vec!["https://directory.example".to_string()],

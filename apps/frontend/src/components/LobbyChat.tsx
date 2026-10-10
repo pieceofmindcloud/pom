@@ -1,4 +1,4 @@
-import { Send } from "lucide-react";
+import { ArrowLeft, Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Confirm, Modal } from "./Confirm";
 import { LobbyHardwareCard } from "./LobbyHardwareCard";
@@ -47,10 +47,26 @@ function errorKey(code: string | null | undefined): string {
  * again every few seconds while the window is open, and that same request is
  * what keeps this machine listed in the lobby.
  */
-export function LobbyChat({ network, endpoint, onClose }: {
+export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLabel, focusAdmission = false, onMessagesClosed }: {
   network: { name: string; publisher_key: string; accepted_enrollments?: EnrollmentRole[] } | null;
   endpoint: LobbyEndpoint;
   onClose: () => void;
+  /**
+   * `page` fills the screen that hosts it, with a back button in place of the
+   * window's close, so a screen can keep several lobbies open side by side
+   * and switch between them. The wizard keeps the window.
+   */
+  layout?: "modal" | "page";
+  /** The back button's text in `page` layout. */
+  backLabel?: string;
+  /** Opened to ask for admission: the role picker takes the focus once it shows. */
+  focusAdmission?: boolean;
+  /**
+   * In `page` layout, called when the network answers that its Chat is off:
+   * with no conversation a full screen has nothing to fill, and the host
+   * shows the request in a window instead.
+   */
+  onMessagesClosed?: () => void;
 }) {
   const { t } = useI18n();
   const [exchange, setExchange] = useState<LobbyExchange | null>(null);
@@ -62,6 +78,8 @@ export function LobbyChat({ network, endpoint, onClose }: {
   const [joinConfirm, setJoinConfirm] = useState(false);
   const [joining, setJoining] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const admissionRef = useRef<HTMLDivElement>(null);
+  const page = layout === "page";
   const autoFollow = useRef(true);
   const key = network?.publisher_key ?? "";
   // The setup router has no session to present, and asking for one would
@@ -102,6 +120,9 @@ export function LobbyChat({ network, endpoint, onClose }: {
   const closed = exchange?.messages_closed === true;
   const latest = messages[messages.length - 1]?.message_id;
   useEffect(() => {
+    if (page && closed) onMessagesClosed?.();
+  }, [closed, onMessagesClosed, page]);
+  useEffect(() => {
     const element = messagesRef.current;
     if (element && autoFollow.current) element.scrollTop = element.scrollHeight;
   }, [latest, messages.length]);
@@ -136,6 +157,16 @@ export function LobbyChat({ network, endpoint, onClose }: {
   const waitMinutes = admission?.status === "rejected" ? retryWaitMinutes(admission.retry_at) : 0;
   const mayAsk = !admission || (admission.status === "rejected" && waitMinutes === 0);
 
+  const admissionFormShown = canAsk && Boolean(exchange) && mayAsk && acceptedRoles.length > 0;
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focusAdmission || focused.current || !admissionFormShown) return;
+    focused.current = true;
+    const select = admissionRef.current?.querySelector("select");
+    select?.focus();
+    select?.scrollIntoView?.({ block: "nearest" });
+  }, [admissionFormShown, focusAdmission]);
+
   async function requestAdmission() {
     if (!key || !askRole || asking) return;
     setAsking(true);
@@ -161,16 +192,19 @@ export function LobbyChat({ network, endpoint, onClose }: {
   }
 
   if (!network) return null;
-  return (
-    <Modal open size={closed ? "md" : "lg"} title={t("lobby.title", { name: network.name })} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
-      <div className={closed ? "min-w-0" : "grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]"}>
-        {!closed && <div className="flex min-w-0 flex-col">
+  const title = t("lobby.title", { name: network.name });
+  const content = (
+    <>
+      <div className={page
+        ? `grid h-full min-h-0 min-w-0 gap-4 ${closed ? "" : "md:grid-cols-[minmax(0,1fr)_18rem]"}`
+        : closed ? "min-w-0" : "grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_14rem]"}>
+        {!closed && <div className={page ? "flex min-h-0 min-w-0 flex-col" : "flex min-w-0 flex-col"}>
           <p className="mb-3 text-xs leading-relaxed text-muted">{t("lobby.detail")}</p>
           <div
             ref={messagesRef}
             data-testid="lobby-messages"
             onScroll={(event) => { autoFollow.current = isNearBottom(event.currentTarget); }}
-            className="h-72 space-y-2.5 overflow-y-auto rounded-lg border border-line bg-ink p-3"
+            className={`${page ? "min-h-0 flex-1" : "h-72"} space-y-2.5 overflow-y-auto overscroll-y-contain rounded-lg border border-line bg-ink p-3`}
           >
             {messages.length === 0 && <p className="py-8 text-center text-sm text-faint">{t(exchange ? "lobby.empty" : failure ? failure : "lobby.connecting")}</p>}
             {messages.map((message) => {
@@ -203,7 +237,7 @@ export function LobbyChat({ network, endpoint, onClose }: {
             </Button>
           </div>
         </div>}
-        <div className="min-w-0" data-testid="lobby-request">
+        <div className={page ? "min-h-0 min-w-0 overflow-y-auto" : "min-w-0"} data-testid="lobby-request">
           <p className="eyebrow mb-2">{t("lobby.yourCard")}</p>
           {exchange ? <LobbyHardwareCard nodeId={exchange.node_id} card={exchange.card} self /> : <p className="text-xs text-faint">{t("lobby.connecting")}</p>}
           <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t(closed ? "lobby.cardNoteRequest" : "lobby.cardNote")}</p>
@@ -215,7 +249,7 @@ export function LobbyChat({ network, endpoint, onClose }: {
               {mayAsk && (acceptedRoles.length === 0 ? (
                 <p className="text-xs text-faint">{t("publicNetworks.closedDetail")}</p>
               ) : (
-                <div className="space-y-2">
+                <div ref={admissionRef} className="space-y-2">
                   <Select compact aria-label={t("lobby.admissionRole")} value={askRole} onChange={(event) => setRole(event.target.value as EnrollmentRole)}>
                     {acceptedRoles.map((option) => <option key={option} value={option}>{t(`network.enrollment.${option}`)}</option>)}
                   </Select>
@@ -249,6 +283,22 @@ export function LobbyChat({ network, endpoint, onClose }: {
         </div>
       </div>
       <Confirm open={joinConfirm} title={t("lobby.joinTitle", { name: network.name })} description={t("lobby.joinDetail")} confirmLabel={t("lobby.joinNow")} tone="danger" busy={joining} onConfirm={() => void join()} onCancel={() => !joining && setJoinConfirm(false)} />
+    </>
+  );
+  if (page) {
+    return (
+      <section aria-label={title} className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lobby-page">
+        <div className="flex shrink-0 items-center gap-3 border-b border-line bg-raised/60 px-3 py-2 sm:px-4">
+          <Button size="sm" variant="ghost" onClick={onClose} icon={<ArrowLeft className="h-3.5 w-3.5" />}>{backLabel ?? t("common.close")}</Button>
+          <h2 className="min-w-0 truncate font-display text-sm font-semibold text-fg">{title}</h2>
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden p-3 text-sm leading-relaxed text-muted sm:p-4">{content}</div>
+      </section>
+    );
+  }
+  return (
+    <Modal open size={closed ? "md" : "lg"} title={title} onClose={onClose} footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
+      {content}
     </Modal>
   );
 }

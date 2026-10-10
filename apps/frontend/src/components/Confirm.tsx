@@ -41,8 +41,11 @@ export function Modal({
   children: React.ReactNode;
   footer: React.ReactNode;
   onClose: () => void;
-  /** `lg` para conteúdo que é um painel inteiro, e não um parágrafo. */
-  size?: "md" | "lg" | "xl";
+  /**
+   * `lg` para conteúdo que é um painel inteiro, e não um parágrafo; `full`
+   * ocupa quase toda a janela, para quem pediu para ver tudo.
+   */
+  size?: "md" | "lg" | "xl" | "full";
   /**
    * O título continua sendo o nome da janela para leitores de tela, mas some
    * da vista quando o conteúdo já abre com o próprio cabeçalho - senão o nome
@@ -100,7 +103,7 @@ export function Modal({
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
             className={
               "relative flex w-full max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-lift " +
-              (size === "xl" ? "max-w-4xl" : size === "lg" ? "max-w-2xl" : "max-w-md")
+              (size === "full" ? "h-[calc(100vh-2rem)] max-w-[min(96vw,90rem)]" : size === "xl" ? "max-w-4xl" : size === "lg" ? "max-w-2xl" : "max-w-md")
             }
           >
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">

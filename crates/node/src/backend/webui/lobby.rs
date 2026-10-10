@@ -880,6 +880,7 @@ pub async fn setup_public_networks(
         }
     }
     crate::gateway::resolve_places(&mut networks);
+    crate::webui::remember_public_networks(&state.database, &networks);
     Json(networks).into_response()
 }
 

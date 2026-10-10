@@ -17,6 +17,8 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  "en:publicNetworks.noMatchesDetail": "Try another search or filter.",
+  "pt-BR:publicNetworks.noMatchesDetail": "Tente outra busca ou outro filtro.",
   "en:plugins.state.active": "License active",
   "pt-BR:plugins.state.active": "Licença ativa",
   "en:deploy.knob.hidden_state_dtypeHint":

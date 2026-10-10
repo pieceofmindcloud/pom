@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { CircleCheck, CircleHelp, CircleX, Download, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogOut, MessageCircle, Plus, RefreshCw, ShieldCheck, Trash2, Waypoints } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleCheck, CircleHelp, CircleX, Download, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogIn, LogOut, Maximize2, MessageCircle, Plus, RefreshCw, Search, ShieldCheck, Trash2, Waypoints, X } from "lucide-react";
 import { Confirm, Modal } from "../components/Confirm";
 import { LobbyChat } from "../components/LobbyChat";
 import { Markdown } from "../components/Markdown";
-import { Badge, Button, ErrorState, PageHeader, Select, Skeleton } from "../components/ui";
+import { Badge, Button, ErrorState, Input, PageHeader, Select, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
+import { since } from "../lib/format";
 import { networkStats, type NetworkStats } from "../lib/networkStats";
 import { usePublicLatencies, type PublicLatency } from "../lib/publicLatency";
 import { usePublicLocator, type PublicLocator } from "../lib/publicLocator";
@@ -42,9 +43,31 @@ interface PublicNetwork {
   /** The network answers lobby chat from machines that are not members. */
   /** The network publishes models, node count and VRAM to non-members. */
   public_stats?: boolean;
+  /**
+   * The network's Chat is on, so its lobby carries a conversation. Without it
+   * the lobby only takes admission requests, and opens as a window.
+   */
+  lobby_chat?: boolean;
   location: { latitude: number; longitude: number; accuracy_m?: number } | null;
   discovered_via: string;
   directory_replicas?: string[];
+}
+
+/** A row of the node's table of every network it has heard of. Times are Unix seconds. */
+interface KnownNetwork {
+  network: PublicNetwork;
+  first_seen_at: number;
+  last_seen_at: number;
+}
+
+/** `GET /api/ui/networks/known`: one page, filtered and ordered by the node. */
+interface KnownNetworksPage {
+  networks: KnownNetwork[];
+  total: number;
+  page: number;
+  page_size: number;
+  countries: { code: string; name: string }[];
+  cities: string[];
 }
 
 type Visibility = "local" | "private" | "public";
@@ -65,6 +88,22 @@ interface PinnedNetworks {
 /** Where a row comes from: this machine's network, an imported one, or the directory. */
 type RowKind = "own" | "custom" | "public";
 
+type Membership = "none" | "member" | "principal";
+
+interface Row {
+  network: PublicNetwork;
+  kind: RowKind;
+  visibility: Visibility;
+  /** When the node last heard of it, for a directory row. */
+  lastSeenAt?: number;
+}
+
+interface OpenLobby {
+  network: PublicNetwork;
+  /** Opened from "Ask to join": the lobby puts the focus on the request. */
+  focusAdmission: boolean;
+}
+
 interface ViewerLocation {
   latitude: number;
   longitude: number;
@@ -73,20 +112,28 @@ interface ViewerLocation {
 type SortOrder = "distance" | "latency" | "name";
 /** Radius choices of the distance filter, in km. */
 const DISTANCE_FILTERS = [100, 500, 2000];
+const PAGE_SIZE = 25;
+/** How long the search waits for the operator to stop typing. */
+const SEARCH_DEBOUNCE_MS = 300;
+
+type T = (key: string, values?: Record<string, string | number>) => string;
 
 export function PublicNetworks() {
   const { t } = useI18n();
   const toast = useToast();
   const cluster = useCluster();
   const node = useNode();
-  const [networks, setNetworks] = useState<PublicNetwork[] | null>(null);
+  const [known, setKnown] = useState<KnownNetworksPage | null>(null);
+  const [knownError, setKnownError] = useState<unknown>(null);
+  const [knownVersion, setKnownVersion] = useState(0);
+  /** Fingerprints the live listing confirmed in this visit; `null` until it answers. */
+  const [liveFingerprints, setLiveFingerprints] = useState<Set<string> | null>(null);
   const [localNetwork, setLocalNetwork] = useState<PublicNetwork | null>(null);
   const [pinned, setPinned] = useState<PinnedNetworks | null>(null);
   const [importing, setImporting] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<PublicNetwork | null>(null);
   const [removing, setRemoving] = useState(false);
   const importInput = useRef<HTMLInputElement>(null);
-  const [error, setError] = useState<unknown>(null);
   const [refreshing, setRefreshing] = useState(false);
   const networkInfo = useNetworkInfo(Boolean(node.data));
   const [browserLocation, setBrowserLocation] = useState<ViewerLocation | null>(null);
@@ -94,12 +141,20 @@ export function PublicNetworks() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("distance");
   const [withinKm, setWithinKm] = useState(0);
   const [latencyAsked, setLatencyAsked] = useState(false);
-  const [detailsTarget, setDetailsTarget] = useState<PublicNetwork | null>(null);
-  const [chatTarget, setChatTarget] = useState<PublicNetwork | null>(null);
+  const [selected, setSelected] = useState<Row | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  /** Lobbies kept open, each a full-screen tab; `activeLobby` is the one shown. */
+  const [lobbies, setLobbies] = useState<OpenLobby[]>([]);
+  const [activeLobby, setActiveLobby] = useState<string | null>(null);
+  /** A lobby without conversation: only the request, in a window over the list. */
+  const [requestLobby, setRequestLobby] = useState<PublicNetwork | null>(null);
   const [leaveConfirm, setLeaveConfirm] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [countryFilter, setCountryFilter] = useState("");
   const [cityFilter, setCityFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [page, setPage] = useState(1);
   const [reachabilityRefreshKey, setReachabilityRefreshKey] = useState(0);
 
   /** This machine's own network and the imported ones; an older node has neither. */
@@ -115,6 +170,7 @@ export function PublicNetworks() {
     try {
       const imported = await api.post<PinnedNetwork>("/api/ui/networks/custom", { trust_document: await file.text() });
       await loadPinned();
+      setKnownVersion((value) => value + 1);
       toast.success(t("publicNetworks.importDone"), imported.network.name || imported.network.cluster_id);
     } catch (reason) {
       toast.fromError(t("publicNetworks.importFailed"), reason);
@@ -130,6 +186,8 @@ export function PublicNetworks() {
     try {
       await api.del(`/api/ui/networks/custom/${encodeURIComponent(removeTarget.fingerprint)}`);
       await loadPinned();
+      setKnownVersion((value) => value + 1);
+      if (selected?.network.fingerprint === removeTarget.fingerprint) setSelected(null);
     } catch (reason) {
       toast.fromError(t("publicNetworks.removeFailed"), reason);
     } finally {
@@ -138,27 +196,37 @@ export function PublicNetworks() {
     }
   }
 
-  async function load() {
+  /*
+   * The live listing (pkarr, relays, directory) is slow and only sees what
+   * answers now. The node records what it returns in its table of known
+   * networks, so when it is done the page is read again from there.
+   */
+  async function refreshLive() {
     setRefreshing(true);
-    setError(null);
     setReachabilityRefreshKey((value) => value + 1);
+    void loadPinned();
+    void api.get<PublicNetwork>("/api/public/network", { auth: false })
+      .then(setLocalNetwork)
+      .catch(() => setLocalNetwork(null));
     try {
       const discovered = await api.get<PublicNetwork[]>("/api/public/networks", { auth: false });
-      setNetworks(discovered);
-      void loadPinned();
-      void api.get<PublicNetwork>("/api/public/network", { auth: false })
-        .then(setLocalNetwork)
-        .catch(() => setLocalNetwork(null));
+      setLiveFingerprints(new Set(discovered.map((network) => network.fingerprint)));
     } catch (reason) {
-      setError(reason);
+      toast.fromError(t("publicNetworks.liveFailed"), reason);
     } finally {
       setRefreshing(false);
+      setKnownVersion((value) => value + 1);
     }
   }
 
   useEffect(() => {
-    void load();
+    void refreshLive();
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(search.trim()), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   /*
    * Distances need a point to measure from. This network's own location is
@@ -167,6 +235,42 @@ export function PublicNetworks() {
    */
   const ownLocation = networkInfo.data?.network.location ?? null;
   const viewerLocation: ViewerLocation | null = browserLocation ?? (ownLocation ? { latitude: ownLocation.latitude, longitude: ownLocation.longitude } : null);
+  const radiusKm = viewerLocation ? withinKm : 0;
+
+  // Any change of what is asked starts again from the first page.
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, countryFilter, cityFilter, sortOrder, radiusKm]);
+
+  useEffect(() => {
+    let current = true;
+    const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
+    if (searchQuery) params.set("q", searchQuery);
+    if (countryFilter) params.set("country", countryFilter);
+    if (cityFilter) params.set("city", cityFilter);
+    // Latency is measured in the browser, so the page comes by distance and
+    // is reordered here.
+    params.set("sort", sortOrder === "latency" ? "distance" : sortOrder);
+    if (viewerLocation) {
+      params.set("latitude", String(viewerLocation.latitude));
+      params.set("longitude", String(viewerLocation.longitude));
+      if (radiusKm) params.set("within_km", String(radiusKm));
+    }
+    api.get<KnownNetworksPage>(`/api/ui/networks/known?${params}`)
+      .then((answer) => {
+        if (!current) return;
+        setKnown(answer);
+        setKnownError(null);
+        // A page past the end, after a removal, is answered as the last one.
+        if (answer.page !== page) setPage(answer.page);
+      })
+      .catch((reason) => {
+        if (current) setKnownError(reason);
+      });
+    return () => {
+      current = false;
+    };
+  }, [searchQuery, countryFilter, cityFilter, sortOrder, radiusKm, viewerLocation?.latitude, viewerLocation?.longitude, page, knownVersion]);
 
   function useBrowserLocation() {
     if (!window.isSecureContext || !navigator.geolocation) {
@@ -187,87 +291,52 @@ export function PublicNetworks() {
     );
   }
 
-  const countryOptions = useMemo(
-    () => Array.from(
-      new Map(
-        (networks ?? [])
-          .filter((network) => network.country_code || network.country_name)
-          .map((network) => [
-            countryKey(network),
-            network.country_name || network.country_code,
-          ]),
-      ),
-    ).sort((left, right) => left[1].localeCompare(right[1])),
-    [networks],
-  );
-  const cityOptions = useMemo(
-    () => Array.from(new Set(
-      (networks ?? [])
-        .filter((network) => !countryFilter || countryKey(network) === countryFilter)
-        .map((network) => network.city)
-        .filter(Boolean),
-    )).sort((left, right) => left.localeCompare(right)),
-    [countryFilter, networks],
-  );
-  const selectedCity = cityOptions.includes(cityFilter) ? cityFilter : "";
+  const countryOptions = known?.countries ?? [];
+  const cityOptions = known?.cities ?? [];
   /*
-   * Two kinds of rows stay at the top whatever the filters and the order:
-   * the network this machine is in, then the ones imported here. The
-   * directory's copy of either is dropped so no network shows twice.
+   * Two kinds of rows stay at the top of every page whatever the search, the
+   * filters and the order: the network this machine is in, then the ones
+   * imported here. The node leaves both out of the known list, and the
+   * check below covers an own network it does not describe the same way.
    */
   const ownNetwork = pinned?.own?.network ?? localNetwork;
   const ownFingerprint = ownNetwork?.fingerprint;
   const customNetworks = (pinned?.custom ?? []).filter((entry) => entry.network.fingerprint !== ownFingerprint);
   const pinnedFingerprints = new Set([ownFingerprint, ...customNetworks.map((entry) => entry.network.fingerprint)].filter(Boolean));
-  const radiusKm = viewerLocation ? withinKm : 0;
-  const filteredNetworks = useMemo(
-    () => (networks ?? []).filter((network) => {
-      if (countryFilter && countryKey(network) !== countryFilter) return false;
-      if (selectedCity && network.city !== selectedCity) return false;
-      if (!radiusKm) return true;
-      const distance = distanceKm(network.location, viewerLocation);
-      return distance !== null && distance <= radiusKm;
-    }),
-    [countryFilter, networks, radiusKm, selectedCity, viewerLocation?.latitude, viewerLocation?.longitude],
+  const pageNetworks = useMemo(
+    () => (known?.networks ?? []).filter((entry) => !pinnedFingerprints.has(entry.network.fingerprint)),
+    [known, ownFingerprint, customNetworks.map((entry) => entry.network.fingerprint).join(",")],
   );
   // Measuring dials every listed network, so it waits for the operator to ask.
   const measuring = latencyAsked || sortOrder === "latency";
   const latencies = usePublicLatencies(
-    [...(pinned?.custom ?? []).map((entry) => entry.network), ...(networks ?? [])].filter((network) => network.fingerprint !== ownFingerprint).map((network) => network.publisher_key),
+    [...customNetworks.map((entry) => entry.network), ...pageNetworks.map((entry) => entry.network)].map((network) => network.publisher_key),
     measuring,
     reachabilityRefreshKey,
   );
-  const orderedNetworks = useMemo(
-    () => {
-      // Whatever has no value for the chosen order goes last, in list order.
-      const by = (value: (network: PublicNetwork) => number | null) => (left: PublicNetwork, right: PublicNetwork) => {
-        const leftValue = value(left);
-        const rightValue = value(right);
-        if (leftValue === null && rightValue === null) return 0;
-        if (leftValue === null) return 1;
-        if (rightValue === null) return -1;
-        return leftValue - rightValue;
-      };
-      const sorted = [...filteredNetworks];
-      if (sortOrder === "name") return sorted.sort((left, right) => (left.name || left.cluster_id).localeCompare(right.name || right.cluster_id));
-      if (sortOrder === "latency") {
-        return sorted.sort(by((network) => {
-          // This node's own network is as close as a network gets.
-          if (network.fingerprint === ownFingerprint) return 0;
-          const latency = latencies[network.publisher_key];
-          return typeof latency === "number" ? latency : null;
-        }));
-      }
-      return sorted.sort(by((network) => distanceKm(network.location, viewerLocation)));
-    },
-    [filteredNetworks, latencies, ownFingerprint, sortOrder, viewerLocation?.latitude, viewerLocation?.longitude],
-  );
-  const rows: { network: PublicNetwork; kind: RowKind; visibility: Visibility }[] = [
+  const orderedPage = useMemo(() => {
+    if (sortOrder !== "latency") return pageNetworks;
+    // Whatever has no latency goes last, in page order.
+    const value = (entry: KnownNetwork) => {
+      const latency = latencies[entry.network.publisher_key];
+      return typeof latency === "number" ? latency : null;
+    };
+    return [...pageNetworks].sort((left, right) => {
+      const leftValue = value(left);
+      const rightValue = value(right);
+      if (leftValue === null && rightValue === null) return 0;
+      if (leftValue === null) return 1;
+      if (rightValue === null) return -1;
+      return leftValue - rightValue;
+    });
+  }, [latencies, pageNetworks, sortOrder]);
+  const rows: Row[] = [
     ...(ownNetwork ? [{ network: ownNetwork, kind: "own" as const, visibility: pinned?.own?.visibility ?? "public" as const }] : []),
     ...customNetworks.map((entry) => ({ network: entry.network, kind: "custom" as const, visibility: entry.visibility })),
-    ...orderedNetworks.filter((network) => !pinnedFingerprints.has(network.fingerprint)).map((network) => ({ network, kind: "public" as const, visibility: "public" as const })),
+    ...orderedPage.map((entry) => ({ network: entry.network, kind: "public" as const, visibility: "public" as const, lastSeenAt: entry.last_seen_at })),
   ];
-  const detailsVisibility = rows.find((row) => row.network.fingerprint === detailsTarget?.fingerprint)?.visibility ?? "public";
+  // The panel follows the freshest copy of the selected network.
+  const selectedRow = selected ? rows.find((row) => row.network.fingerprint === selected.network.fingerprint) ?? selected : null;
   const metrics = networkStats(cluster.data);
   /*
    * The row of the network this node already belongs to never offers Join.
@@ -275,6 +344,39 @@ export function PublicNetworks() {
    * network is published under its key and leaving would orphan it.
    */
   const isPrincipal = node.data?.authority_level === "primary";
+  const membershipOf = (kind: RowKind): Membership => kind !== "own" ? "none" : isPrincipal ? "principal" : "member";
+  const total = known?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const firstShown = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const lastShown = Math.min(total, page * PAGE_SIZE);
+  const filtering = Boolean(searchQuery || countryFilter || cityFilter || radiusKm);
+
+  /*
+   * A lobby replaces the list on this screen instead of a window over it, and
+   * stays open (and polled, which keeps this machine listed there) when the
+   * operator goes back, so several conversations can run at once.
+   */
+  function openLobby(network: PublicNetwork, focusAdmission: boolean) {
+    if (!network.lobby_chat) {
+      setRequestLobby(network);
+      return;
+    }
+    setLobbies((open) => open.some((entry) => entry.network.fingerprint === network.fingerprint)
+      ? open.map((entry) => entry.network.fingerprint === network.fingerprint ? { network, focusAdmission: entry.focusAdmission || focusAdmission } : entry)
+      : [...open, { network, focusAdmission }]);
+    setActiveLobby(network.fingerprint);
+  }
+
+  /** The lobby said its Chat is off after all: there is nothing to talk in, so it becomes the request window. */
+  function lobbyHasNoChat(network: PublicNetwork) {
+    closeLobby(network.fingerprint);
+    setRequestLobby(network);
+  }
+
+  function closeLobby(fingerprint: string) {
+    setLobbies((open) => open.filter((entry) => entry.network.fingerprint !== fingerprint));
+    setActiveLobby((active) => active === fingerprint ? null : active);
+  }
 
   async function leave() {
     setLeaving(true);
@@ -289,6 +391,14 @@ export function PublicNetworks() {
     }
   }
 
+  const body = knownError && !known
+    ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={knownError} onRetry={() => setKnownVersion((value) => value + 1)} /></div>
+    : known === null || (rows.length === 0 && refreshing && !filtering)
+      ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>
+      : rows.length === 0
+        ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(filtering ? "publicNetworks.noMatches" : "publicNetworks.emptyTitle")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(filtering ? "publicNetworks.noMatchesDetail" : "publicNetworks.emptyDetail")}</p></div>
+        : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1200px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "reach", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{rows.map((row) => { const { network, kind } = row; const isLocal = kind === "own"; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} selected={selectedRow?.network.fingerprint === network.fingerprint} cachedSince={kind === "public" && liveFingerprints && !liveFingerprints.has(network.fingerprint) ? row.lastSeenAt : undefined} onExport={() => exportTrustDocument(network)} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={membershipOf(kind)} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => openLobby(network, network.accepted_enrollments?.length !== 0)} onSelect={() => setSelected(row)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table></div>;
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
       <PageHeader
@@ -298,56 +408,112 @@ export function PublicNetworks() {
         actions={<div className="flex items-center gap-2">
           <input ref={importInput} type="file" accept=".json,application/json" className="hidden" data-testid="network-import-file" onChange={(event) => void importNetwork(event.target.files?.[0])} />
           <Button size="sm" variant="primary" loading={importing} title={t("publicNetworks.addDetail")} onClick={() => importInput.current?.click()} icon={<Plus className="h-3.5 w-3.5" />}>{t("publicNetworks.add")}</Button>
-          <Button size="sm" loading={refreshing} onClick={() => void load()} icon={<RefreshCw className="h-3.5 w-3.5" />}>{t("publicNetworks.refresh")}</Button>
+          <Button size="sm" loading={refreshing} onClick={() => void refreshLive()} icon={<RefreshCw className="h-3.5 w-3.5" />}>{t("publicNetworks.refresh")}</Button>
         </div>}
       />
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-y border-line bg-surface/35">
-        <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-line bg-raised/60 px-4 py-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-iris/35 bg-iris/12 text-iris"><Globe2 className="h-4 w-4" /></span>
-            <div className="min-w-0"><h2 className="font-display text-sm font-semibold text-fg">{t("publicNetworks.discoveredTitle")}</h2><p className="mt-0.5 text-xs text-muted">{t("publicNetworks.discoveredDetail")}</p></div>
-          </div>
-          <div className="flex min-w-0 flex-wrap items-end gap-2">
-            <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
-              <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.country")}</span>
-              <Select aria-label={t("publicNetworks.country")} compact value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)}>
-                <option value="">{t("publicNetworks.allCountries")}</option>
-                {countryOptions.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
-              </Select>
-            </label>
-            <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
-              <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.city")}</span>
-              <Select aria-label={t("publicNetworks.city")} compact value={selectedCity} disabled={cityOptions.length === 0} onChange={(event) => setCityFilter(event.target.value)}>
-                <option value="">{t("publicNetworks.allCities")}</option>
-                {cityOptions.map((city) => <option key={city} value={city}>{city}</option>)}
-              </Select>
-            </label>
-            <label className="flex w-[9rem] min-w-[7rem] flex-col gap-1">
-              <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.within")}</span>
-              <Select aria-label={t("publicNetworks.within")} compact value={radiusKm} disabled={!viewerLocation} title={!viewerLocation ? t("publicNetworks.distanceFromNone") : undefined} onChange={(event) => setWithinKm(Number(event.target.value))}>
-                <option value={0}>{t("publicNetworks.withinAny")}</option>
-                {DISTANCE_FILTERS.map((km) => <option key={km} value={km}>{t("publicNetworks.withinKm", { value: km })}</option>)}
-              </Select>
-            </label>
-            <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
-              <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.sort")}</span>
-              <Select aria-label={t("publicNetworks.sort")} compact value={sortOrder} onChange={(event) => setSortOrder(event.target.value as SortOrder)}>
-                <option value="distance">{t("publicNetworks.sortDistance")}</option>
-                <option value="latency">{t("publicNetworks.sortLatency")}</option>
-                <option value="name">{t("publicNetworks.sortName")}</option>
-              </Select>
-            </label>
-            <Button size="sm" loading={locating} disabled={locating} onClick={useBrowserLocation} icon={<LocateFixed className="h-3.5 w-3.5" />}>{t("publicNetworks.useBrowserLocation")}</Button>
-            <Button size="sm" disabled={measuring} onClick={() => setLatencyAsked(true)} icon={<Gauge className="h-3.5 w-3.5" />}>{t("publicNetworks.measureLatency")}</Button>
-          </div>
+      {lobbies.length > 0 && (
+        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-surface/60 px-2 py-1" role="tablist" aria-label={t("publicNetworks.openLobbies")}>
+          <button type="button" role="tab" aria-selected={activeLobby === null} onClick={() => setActiveLobby(null)} className={`flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${activeLobby === null ? "bg-iris/15 text-fg" : "text-muted hover:text-fg"}`}><Globe2 className="h-3.5 w-3.5" />{t("publicNetworks.title")}</button>
+          {lobbies.map(({ network }) => {
+            const name = network.name || network.cluster_id;
+            const active = activeLobby === network.fingerprint;
+            return (
+              <span key={network.fingerprint} className={`flex shrink-0 items-center rounded-md ${active ? "bg-iris/15 text-fg" : "text-muted hover:text-fg"}`}>
+                <button type="button" role="tab" aria-selected={active} onClick={() => setActiveLobby(network.fingerprint)} className="flex items-center gap-1.5 py-1 pl-2.5 pr-1 text-xs"><MessageCircle className="h-3.5 w-3.5" />{name}</button>
+                <button type="button" aria-label={t("publicNetworks.closeLobby", { name })} title={t("publicNetworks.closeLobby", { name })} onClick={() => closeLobby(network.fingerprint)} className="rounded p-1 hover:text-rose"><X className="h-3 w-3" /></button>
+              </span>
+            );
+          })}
         </div>
-        {error ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={error} onRetry={() => void load()} /></div> : networks === null ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : rows.length === 0 ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(networks.length === 0 ? "publicNetworks.emptyTitle" : "publicNetworks.noMatches")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(networks.length === 0 ? "publicNetworks.emptyDetail" : "publicNetworks.noMatchesDetail")}</p></div> : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1200px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "reach", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{rows.map(({ network, kind }) => { const isLocal = kind === "own"; return <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} kind={kind} onExport={() => exportTrustDocument(network)} onRemove={() => setRemoveTarget(network)} distance={distanceKm(network.location, viewerLocation)} latency={isLocal ? undefined : latencies[network.publisher_key]} stats={isLocal ? metrics : null} membership={!isLocal ? "none" : isPrincipal ? "principal" : "member"} leaving={leaving} onLeave={() => setLeaveConfirm(true)} onChat={() => setChatTarget(network)} onDetails={() => setDetailsTarget(network)} t={t} refreshKey={reachabilityRefreshKey} />; })}</tbody></table></div>}
+      )}
+      {lobbies.map(({ network, focusAdmission }) => (
+        <div key={network.fingerprint} className={activeLobby === network.fingerprint ? "min-h-0 flex-1 bg-surface/35" : "hidden"}>
+          <LobbyChat layout="page" backLabel={t("publicNetworks.backToNetworks")} focusAdmission={focusAdmission} network={{ name: network.name || network.cluster_id, publisher_key: network.publisher_key, accepted_enrollments: network.accepted_enrollments }} endpoint="/api/ui/network-chat/lobby" onClose={() => setActiveLobby(null)} onMessagesClosed={() => lobbyHasNoChat(network)} />
+        </div>
+      ))}
+      <div className={activeLobby ? "hidden" : "flex min-h-0 flex-1 overflow-hidden border-y border-line bg-surface/35"}>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-line bg-raised/60 px-4 py-3 sm:px-5">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-iris/35 bg-iris/12 text-iris"><Globe2 className="h-4 w-4" /></span>
+              <div className="min-w-0"><h2 className="font-display text-sm font-semibold text-fg">{t("publicNetworks.discoveredTitle")}</h2><p className="mt-0.5 text-xs text-muted">{t("publicNetworks.discoveredDetail")}</p></div>
+            </div>
+            <div className="flex min-w-0 flex-wrap items-end gap-2">
+              <label className="flex w-[14rem] min-w-[10rem] flex-col gap-1">
+                <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.search")}</span>
+                <span className="relative block">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-faint" aria-hidden="true" />
+                  <Input type="search" aria-label={t("publicNetworks.search")} placeholder={t("publicNetworks.searchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} className="h-8 rounded-md pl-6 text-xs" />
+                </span>
+              </label>
+              <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
+                <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.country")}</span>
+                <Select aria-label={t("publicNetworks.country")} compact value={countryFilter} onChange={(event) => { setCountryFilter(event.target.value); setCityFilter(""); }}>
+                  <option value="">{t("publicNetworks.allCountries")}</option>
+                  {countryOptions.map((country) => <option key={country.code} value={country.code}>{country.name}</option>)}
+                </Select>
+              </label>
+              <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
+                <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.city")}</span>
+                <Select aria-label={t("publicNetworks.city")} compact value={cityFilter} disabled={cityOptions.length === 0} onChange={(event) => setCityFilter(event.target.value)}>
+                  <option value="">{t("publicNetworks.allCities")}</option>
+                  {cityOptions.map((city) => <option key={city} value={city}>{city}</option>)}
+                </Select>
+              </label>
+              <label className="flex w-[9rem] min-w-[7rem] flex-col gap-1">
+                <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.within")}</span>
+                <Select aria-label={t("publicNetworks.within")} compact value={radiusKm} disabled={!viewerLocation} title={!viewerLocation ? t("publicNetworks.distanceFromNone") : undefined} onChange={(event) => setWithinKm(Number(event.target.value))}>
+                  <option value={0}>{t("publicNetworks.withinAny")}</option>
+                  {DISTANCE_FILTERS.map((km) => <option key={km} value={km}>{t("publicNetworks.withinKm", { value: km })}</option>)}
+                </Select>
+              </label>
+              <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
+                <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.sort")}</span>
+                <Select aria-label={t("publicNetworks.sort")} compact value={sortOrder} onChange={(event) => setSortOrder(event.target.value as SortOrder)}>
+                  <option value="distance">{t("publicNetworks.sortDistance")}</option>
+                  <option value="latency">{t("publicNetworks.sortLatency")}</option>
+                  <option value="name">{t("publicNetworks.sortName")}</option>
+                </Select>
+              </label>
+              <Button size="sm" loading={locating} disabled={locating} onClick={useBrowserLocation} icon={<LocateFixed className="h-3.5 w-3.5" />}>{t("publicNetworks.useBrowserLocation")}</Button>
+              <Button size="sm" disabled={measuring} onClick={() => setLatencyAsked(true)} icon={<Gauge className="h-3.5 w-3.5" />}>{t("publicNetworks.measureLatency")}</Button>
+            </div>
+          </div>
+          {body}
+          {known && total > 0 && (
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-line bg-raised/40 px-4 py-2 text-[0.7rem] text-muted sm:px-5" data-testid="public-networks-pagination">
+              <span className="flex items-center gap-2">
+                {t("publicNetworks.pageRange", { from: firstShown, to: lastShown, total })}
+                {refreshing && <span className="flex items-center gap-1 text-amber"><LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" />{t("publicNetworks.updatingLive")}</span>}
+              </span>
+              <span className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" aria-label={t("publicNetworks.previousPage")} disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} icon={<ChevronLeft className="h-3.5 w-3.5" />} />
+                <span>{t("publicNetworks.pageOf", { page, pages })}</span>
+                <Button size="sm" variant="ghost" aria-label={t("publicNetworks.nextPage")} disabled={page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))} icon={<ChevronRight className="h-3.5 w-3.5" />} />
+              </span>
+            </div>
+          )}
+        </div>
+        {selectedRow && (
+          <NetworkSidePanel
+            row={selectedRow}
+            membership={membershipOf(selectedRow.kind)}
+            leaving={leaving}
+            onClose={() => setSelected(null)}
+            onExpand={() => setDetailsOpen(true)}
+            onLobby={(focusAdmission) => openLobby(selectedRow.network, focusAdmission)}
+            onLeave={() => setLeaveConfirm(true)}
+            onExport={() => exportTrustDocument(selectedRow.network)}
+            onRemove={() => setRemoveTarget(selectedRow.network)}
+            t={t}
+          />
+        )}
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 px-1 py-3 text-xs leading-relaxed text-faint"><span data-testid="distance-origin">{t(browserLocation ? "publicNetworks.distanceFromBrowser" : ownLocation ? "publicNetworks.distanceFromNetwork" : "publicNetworks.distanceFromNone")}</span><span>{t("publicNetworks.locationNote")}</span><span className="flex items-center gap-2"><ShieldCheck className="h-3.5 w-3.5 shrink-0" />{t("publicNetworks.securityNote")}</span></div>
+      <div className={activeLobby ? "hidden" : "flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 px-1 py-3 text-xs leading-relaxed text-faint"}><span data-testid="distance-origin">{t(browserLocation ? "publicNetworks.distanceFromBrowser" : ownLocation ? "publicNetworks.distanceFromNetwork" : "publicNetworks.distanceFromNone")}</span><span>{t("publicNetworks.locationNote")}</span><span className="flex items-center gap-2"><ShieldCheck className="h-3.5 w-3.5 shrink-0" />{t("publicNetworks.securityNote")}</span></div>
       <Confirm open={leaveConfirm} title={t("network.forgetNetworkTitle")} description={t("network.forgetNetworkDescription")} confirmLabel={t("network.leave")} tone="danger" busy={leaving} onConfirm={() => void leave()} onCancel={() => !leaving && setLeaveConfirm(false)} />
-      <LobbyChat network={chatTarget && { name: chatTarget.name || chatTarget.cluster_id, publisher_key: chatTarget.publisher_key, accepted_enrollments: chatTarget.accepted_enrollments }} endpoint="/api/ui/network-chat/lobby" onClose={() => setChatTarget(null)} />
+      <LobbyChat network={requestLobby && { name: requestLobby.name || requestLobby.cluster_id, publisher_key: requestLobby.publisher_key, accepted_enrollments: requestLobby.accepted_enrollments }} focusAdmission endpoint="/api/ui/network-chat/lobby" onClose={() => setRequestLobby(null)} />
       <Confirm open={removeTarget !== null} title={t("publicNetworks.removeTitle")} description={t("publicNetworks.removeDescription", { name: removeTarget?.name || removeTarget?.cluster_id || "" })} confirmLabel={t("publicNetworks.remove")} tone="danger" busy={removing} onConfirm={() => void removeCustom()} onCancel={() => !removing && setRemoveTarget(null)} />
-      <PublicNetworkDetails network={detailsTarget} visibility={detailsVisibility} onClose={() => setDetailsTarget(null)} t={t} />
+      <PublicNetworkDetails network={detailsOpen ? selectedRow?.network ?? null : null} visibility={selectedRow?.visibility ?? "public"} onClose={() => setDetailsOpen(false)} t={t} />
     </div>
   );
 }
@@ -363,7 +529,7 @@ function exportTrustDocument(network: PublicNetwork) {
   URL.revokeObjectURL(url);
 }
 
-function NetworkRow({ network, kind, onExport, onRemove, distance, latency, stats: localStats, membership, leaving, onLeave, onChat, onDetails, t, refreshKey }: { network: PublicNetwork; kind: RowKind; onExport: () => void; onRemove: () => void; distance: number | null; latency: PublicLatency | undefined; stats: NetworkStats | null; membership: "none" | "member" | "principal"; leaving: boolean; onLeave: () => void; onChat: () => void; onDetails: () => void; t: (key: string, values?: Record<string, string | number>) => string; refreshKey: number }) {
+function NetworkRow({ network, kind, selected, cachedSince, onExport, onRemove, distance, latency, stats: localStats, membership, leaving, onLeave, onChat, onSelect, t, refreshKey }: { network: PublicNetwork; kind: RowKind; selected: boolean; cachedSince: number | undefined; onExport: () => void; onRemove: () => void; distance: number | null; latency: PublicLatency | undefined; stats: NetworkStats | null; membership: Membership; leaving: boolean; onLeave: () => void; onChat: () => void; onSelect: () => void; t: T; refreshKey: number }) {
   const unavailable = t("publicNetworks.unavailable");
   const location = placeOf(network) || unavailable;
   const reachability = usePublicLocator(network.publisher_key, refreshKey);
@@ -384,40 +550,119 @@ function NetworkRow({ network, kind, onExport, onRemove, distance, latency, stat
           : unavailable;
   const models = stats?.models.length ? stats.models.join(", ") : unavailable;
   const closed = network.accepted_enrollments?.length === 0;
-  return <tr data-testid={`network-row-${network.fingerprint}`} data-network-kind={kind} className={kind === "custom" ? "align-top bg-amber/[0.05] shadow-[inset_3px_0_0_rgb(var(--amber)/0.7)] transition-colors hover:bg-amber/[0.09]" : kind === "own" ? "align-top bg-aqua/[0.05] shadow-[inset_3px_0_0_rgb(var(--aqua)/0.7)] transition-colors hover:bg-aqua/[0.09]" : "align-top transition-colors hover:bg-raised/45"}><td className="max-w-[15rem] px-4 py-3.5">{kind !== "public" && <div className="mb-1.5">{kind === "own" ? <Badge tone="aqua"><House className="h-3 w-3" />{t("publicNetworks.kindOwn")}</Badge> : <Badge tone="amber"><Lock className="h-3 w-3" />{t("publicNetworks.kindCustom")}</Badge>}</div>}<button type="button" className="group text-left" onClick={onDetails} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t((network.location?.accuracy_m ?? 0) >= 1000 ? "publicNetworks.distanceApproximate" : "publicNetworks.distance", { value: distance.toFixed(0) })}</span>}<p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[16rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="whitespace-nowrap px-4 py-3.5 font-mono text-muted" data-testid={`public-network-latency-${network.fingerprint}`}>{latencyText}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><div className="flex flex-wrap items-center gap-2">{membership === "none" ? <Button size="sm" variant="primary" data-guide={!closed ? "network-join" : undefined} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={(event) => { event.stopPropagation(); onChat(); }} icon={<MessageCircle className="h-3.5 w-3.5" />}>{t(closed ? "publicNetworks.chat" : "publicNetworks.join")}</Button> : membership === "member" ? <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={(event) => { event.stopPropagation(); onLeave(); }} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button> : null}<Button size="sm" variant="ghost" aria-label={t("publicNetworks.exportTrust", { name: network.name || network.cluster_id })} title={t("publicNetworks.exportTrustDetail")} disabled={!network.trust_document} onClick={(event) => { event.stopPropagation(); onExport(); }} icon={<Download className="h-3.5 w-3.5" />} />{kind === "custom" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.removeNamed", { name: network.name || network.cluster_id })} title={t("publicNetworks.remove")} onClick={(event) => { event.stopPropagation(); onRemove(); }} icon={<Trash2 className="h-3.5 w-3.5" />} />}</div></td></tr>;
+  const tone = selected
+    ? "bg-iris/[0.12] shadow-[inset_3px_0_0_rgb(var(--iris)/0.9)] hover:bg-iris/[0.15]"
+    : kind === "custom"
+    ? "bg-amber/[0.05] shadow-[inset_3px_0_0_rgb(var(--amber)/0.7)] hover:bg-amber/[0.09]"
+    : kind === "own"
+      ? "bg-aqua/[0.05] shadow-[inset_3px_0_0_rgb(var(--aqua)/0.7)] hover:bg-aqua/[0.09]"
+      : "hover:bg-raised/45";
+  return <tr data-testid={`network-row-${network.fingerprint}`} data-network-kind={kind} aria-selected={selected} onClick={onSelect} className={`cursor-pointer align-top transition-colors ${tone}`}><td className="max-w-[15rem] px-4 py-3.5">{kind !== "public" && <div className="mb-1.5">{kind === "own" ? <Badge tone="aqua"><House className="h-3 w-3" />{t("publicNetworks.kindOwn")}</Badge> : <Badge tone="amber"><Lock className="h-3 w-3" />{t("publicNetworks.kindCustom")}</Badge>}</div>}<button type="button" className="group text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={t("publicNetworks.openDetails", { name: network.name || network.cluster_id })}><span className="font-medium text-fg group-hover:text-iris">{network.name || network.cluster_id}</span>{distance !== null && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-lime">{t((network.location?.accuracy_m ?? 0) >= 1000 ? "publicNetworks.distanceApproximate" : "publicNetworks.distance", { value: distance.toFixed(0) })}</span>}{closed && <span className="ml-2 whitespace-nowrap text-[0.65rem] text-rose">{t("publicNetworks.closedShort")}</span>}{cachedSince !== undefined && <p className="mt-1 text-[0.62rem] text-faint" data-testid={`network-cached-${network.fingerprint}`} title={t("publicNetworks.cachedDetail")}>{t("publicNetworks.cached", { when: since(new Date(cachedSince * 1000).toISOString()) })}</p>}</button></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[16rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="whitespace-nowrap px-4 py-3.5 font-mono text-muted" data-testid={`public-network-latency-${network.fingerprint}`}>{latencyText}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><div className="flex flex-wrap items-center gap-2"><MembershipAction network={network} membership={membership} leaving={leaving} onChat={onChat} onLeave={onLeave} t={t} /><Button size="sm" variant="ghost" aria-label={t("publicNetworks.exportTrust", { name: network.name || network.cluster_id })} title={t("publicNetworks.exportTrustDetail")} disabled={!network.trust_document} onClick={(event) => { event.stopPropagation(); onExport(); }} icon={<Download className="h-3.5 w-3.5" />} />{kind === "custom" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.removeNamed", { name: network.name || network.cluster_id })} title={t("publicNetworks.remove")} onClick={(event) => { event.stopPropagation(); onRemove(); }} icon={<Trash2 className="h-3.5 w-3.5" />} />}</div></td></tr>;
 }
 
-function PublicNetworkDetails({ network, visibility, onClose, t }: { network: PublicNetwork | null; visibility: Visibility; onClose: () => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+/** Join (or just talk, when closed) for another network; Leave for a member of this one; nothing for its principal. */
+function MembershipAction({ network, membership, leaving, onChat, onLeave, t }: { network: PublicNetwork; membership: Membership; leaving: boolean; onChat: () => void; onLeave: () => void; t: T }) {
+  const closed = network.accepted_enrollments?.length === 0;
+  // Without the network's Chat there is no talking, only the request.
+  if (membership === "none" && !network.lobby_chat) return <Button size="sm" variant="primary" data-guide={!closed ? "network-join" : undefined} disabled={closed} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={(event) => { event.stopPropagation(); onChat(); }} icon={<LogIn className="h-3.5 w-3.5" />}>{t("publicNetworks.askToJoin")}</Button>;
+  if (membership === "none") return <Button size="sm" variant="primary" data-guide={!closed ? "network-join" : undefined} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={(event) => { event.stopPropagation(); onChat(); }} icon={<MessageCircle className="h-3.5 w-3.5" />}>{t(closed ? "publicNetworks.chat" : "publicNetworks.join")}</Button>;
+  if (membership === "member") return <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={(event) => { event.stopPropagation(); onLeave(); }} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button>;
+  return null;
+}
+
+/** Rules longer than this start folded in the side panel. */
+const LONG_RULES = 280;
+
+/**
+ * The side panel of the selected network, drawn like the Dashboard's property
+ * inspector. The row already shows organization, place, reach and stats, so
+ * the panel adds only what the network's owner wrote for people to read -
+ * whether it takes new members, description, channels and rules - and leaves
+ * keys, fingerprints and relays to the full view. A field the owner left
+ * empty is not drawn. Every action for the network sits at the bottom.
+ */
+function NetworkSidePanel({ row, membership, leaving, onClose, onExpand, onLobby, onLeave, onExport, onRemove, t }: { row: Row; membership: Membership; leaving: boolean; onClose: () => void; onExpand: () => void; onLobby: (focusAdmission: boolean) => void; onLeave: () => void; onExport: () => void; onRemove: () => void; t: T }) {
+  const { network, kind } = row;
+  const name = network.name || network.cluster_id;
+  const closed = network.accepted_enrollments?.length === 0;
+  return (
+    <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[21rem] shrink-0 flex-col overflow-hidden border-l border-line bg-surface shadow-lift lg:static lg:z-auto lg:bg-surface/80 lg:shadow-none" aria-label={t("publicNetworks.panelLabel", { name })} data-testid="network-side-panel">
+      <div className="flex items-start justify-between gap-2 border-b border-line bg-surface px-3 py-2">
+        <h3 className="min-w-0 break-words font-display text-sm font-semibold leading-snug text-fg">{name}</h3>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button type="button" aria-label={t("publicNetworks.expandDetails")} title={t("publicNetworks.expandDetails")} onClick={onExpand} className="rounded p-1 text-muted hover:text-fg"><Maximize2 className="h-3.5 w-3.5" /></button>
+          <button type="button" aria-label={t("publicNetworks.closePanel")} title={t("publicNetworks.closePanel")} onClick={onClose} className="rounded p-1 text-muted hover:text-fg"><X className="h-3.5 w-3.5" /></button>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain px-3 py-3 text-[0.72rem] leading-relaxed">
+        <div className={`rounded-md border px-2 py-1.5 ${closed ? "border-rose/30 bg-rose/[0.06] text-rose" : "border-lime/30 bg-lime/[0.06] text-lime"}`} data-testid="network-enrollment-state">
+          <p className="font-semibold">{t(closed ? "publicNetworks.enrollmentClosed" : "publicNetworks.enrollmentOpen")}</p>
+          {!closed && <p className="text-[0.66rem] text-muted">{acceptedEnrollmentsLabel(network.accepted_enrollments, t)}</p>}
+        </div>
+        {network.description && <PanelField label={t("network.description")}><Markdown compact>{network.description}</Markdown></PanelField>}
+        {network.channels && <PanelField label={t("network.channels")}><Markdown compact>{network.channels}</Markdown></PanelField>}
+        {network.rules && (network.rules.length > LONG_RULES
+          ? <details className="group"><summary className="eyebrow cursor-pointer select-none">{t("network.rules")}</summary><div className="mt-1"><Markdown compact>{network.rules}</Markdown></div></details>
+          : <PanelField label={t("network.rules")}><Markdown compact>{network.rules}</Markdown></PanelField>)}
+      </div>
+      <div className="shrink-0 space-y-2 border-t border-line bg-raised/60 px-3 py-2.5" data-testid="network-panel-actions">
+        {membership === "none" && (
+          <div className="flex flex-wrap gap-2">
+            {(!closed || !network.lobby_chat) && <Button size="sm" variant="primary" disabled={closed} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={() => onLobby(true)} icon={<LogIn className="h-3.5 w-3.5" />}>{t("publicNetworks.askToJoin")}</Button>}
+            {network.lobby_chat && <Button size="sm" variant={closed ? "primary" : "outline"} onClick={() => onLobby(false)} icon={<MessageCircle className="h-3.5 w-3.5" />}>{t("publicNetworks.lobby")}</Button>}
+          </div>
+        )}
+        {membership === "member" && <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={onLeave} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button>}
+        <div className="flex flex-wrap gap-1">
+          <Button size="sm" variant="ghost" onClick={onExpand} icon={<Maximize2 className="h-3.5 w-3.5" />}>{t("publicNetworks.moreDetails")}</Button>
+          <Button size="sm" variant="ghost" disabled={!network.trust_document} title={t("publicNetworks.exportTrustDetail")} onClick={onExport} icon={<Download className="h-3.5 w-3.5" />}>{t("publicNetworks.exportShort")}</Button>
+          {kind === "custom" && <Button size="sm" variant="ghost" onClick={onRemove} icon={<Trash2 className="h-3.5 w-3.5" />}>{t("publicNetworks.remove")}</Button>}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function PanelField({ label, children }: { label: string; children: ReactNode }) {
+  return <section className="min-w-0"><p className="eyebrow mb-0.5">{label}</p><div className="min-w-0 break-words">{children}</div></section>;
+}
+
+/** Everything known about a network, technical fields included, nearly full screen. */
+function PublicNetworkDetails({ network, visibility, onClose, t }: { network: PublicNetwork | null; visibility: Visibility; onClose: () => void; t: T }) {
   const unavailable = t("publicNetworks.unavailable");
   const value = (text: string) => text || unavailable;
   const location = network?.location ? `${network.location.latitude}, ${network.location.longitude}` : unavailable;
   if (!network) return null;
   return (
-    <Modal open title={t("publicNetworks.detailsTitle", { name: network.name || network.cluster_id })} onClose={onClose} size="lg" footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
-      <div className="space-y-5">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <DetailBlock label={t("network.organization")}><span>{value(network.organization)}</span></DetailBlock>
-          <DetailBlock label={t("network.visibility")}><span>{t(visibility === "private" ? "network.visibilityPrivate" : visibility === "local" ? "network.visibilityLocal" : "network.visibilityPublic")}</span></DetailBlock>
-          <DetailBlock label={t("network.accessPolicy")}><span>{accessPolicyLabel(network.access_policy, t)}</span></DetailBlock>
-          <DetailBlock label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(network.accepted_enrollments, t)}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.place")}><span>{value(placeOf(network))}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.fingerprint")}><span className="break-all font-mono text-xs">{value(network.fingerprint)}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.geoLabel")}><span className="break-all font-mono text-xs">{value(network.geo_label)}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.publisherKey")}><span className="break-all font-mono text-xs">{value(network.publisher_key)}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.relayHints")}><span className="break-all font-mono text-xs">{value(network.relay_hints?.join(", ") ?? "")}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.location")}><span>{location}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.discoveredVia")}><span>{value(network.discovered_via)}</span></DetailBlock>
-          <DetailBlock label={t("publicNetworks.directoryReplicas")}><span className="break-words">{value(network.directory_replicas?.join(", ") ?? "")}</span></DetailBlock>
-        </div>
-        <div className="grid gap-4 border-t border-line pt-4">
+    <Modal open title={t("publicNetworks.detailsTitle", { name: network.name || network.cluster_id })} onClose={onClose} size="full" footer={<Button variant="ghost" onClick={onClose}>{t("common.close")}</Button>}>
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <div className="space-y-5">
           <DetailBlock label={t("network.description")}><Markdown>{network.description || unavailable}</Markdown></DetailBlock>
           <DetailBlock label={t("network.rules")}><Markdown>{network.rules || unavailable}</Markdown></DetailBlock>
           <DetailBlock label={t("network.channels")}><Markdown>{network.channels || unavailable}</Markdown></DetailBlock>
         </div>
-        <details className="border-t border-line pt-4">
-          <summary className="cursor-pointer text-sm font-medium text-fg">{t("network.trustDocument")}</summary>
-          <pre className="mt-3 max-h-48 overflow-auto rounded-lg border border-line bg-ink p-3 text-[0.68rem] leading-relaxed text-muted">{network.trust_document || unavailable}</pre>
-        </details>
+        <div className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <DetailBlock label={t("network.organization")}><span>{value(network.organization)}</span></DetailBlock>
+            <DetailBlock label={t("publicNetworks.place")}><span>{value(placeOf(network))}</span></DetailBlock>
+            <DetailBlock label={t("network.acceptedEnrollments")}><span>{acceptedEnrollmentsLabel(network.accepted_enrollments, t)}</span></DetailBlock>
+            <DetailBlock label={t("network.accessPolicy")}><span>{accessPolicyLabel(network.access_policy, t)}</span></DetailBlock>
+            <DetailBlock label={t("network.visibility")}><span>{t(visibility === "private" ? "network.visibilityPrivate" : visibility === "local" ? "network.visibilityLocal" : "network.visibilityPublic")}</span></DetailBlock>
+            <DetailBlock label={t("publicNetworks.location")}><span>{location}</span></DetailBlock>
+            <DetailBlock label={t("publicNetworks.discoveredVia")}><span>{value(network.discovered_via)}</span></DetailBlock>
+            <DetailBlock label={t("publicNetworks.geoLabel")}><span className="break-all font-mono text-xs">{value(network.geo_label)}</span></DetailBlock>
+          </div>
+          <div className="grid gap-4 border-t border-line pt-4">
+            <DetailBlock label={t("publicNetworks.fingerprint")}><span className="break-all font-mono text-xs">{value(network.fingerprint)}</span></DetailBlock>
+            <DetailBlock label={t("publicNetworks.publisherKey")}><span className="break-all font-mono text-xs">{value(network.publisher_key)}</span></DetailBlock>
+            <DetailBlock label={t("publicNetworks.relayHints")}><span className="break-all font-mono text-xs">{value(network.relay_hints?.join(", ") ?? "")}</span></DetailBlock>
+            <DetailBlock label={t("publicNetworks.directoryReplicas")}><span className="break-words">{value(network.directory_replicas?.join(", ") ?? "")}</span></DetailBlock>
+          </div>
+          <details className="border-t border-line pt-4">
+            <summary className="cursor-pointer text-sm font-medium text-fg">{t("network.trustDocument")}</summary>
+            <pre className="mt-3 max-h-72 overflow-auto rounded-lg border border-line bg-ink p-3 text-[0.68rem] leading-relaxed text-muted">{network.trust_document || unavailable}</pre>
+          </details>
+        </div>
       </div>
     </Modal>
   );
@@ -478,8 +723,4 @@ function distanceKm(location: PublicNetwork["location"], viewer: ViewerLocation 
   const longitude = (location.longitude - viewer.longitude) * Math.PI / 180;
   const a = Math.sin(latitude / 2) ** 2 + Math.cos(viewer.latitude * Math.PI / 180) * Math.cos(location.latitude * Math.PI / 180) * Math.sin(longitude / 2) ** 2;
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function countryKey(network: PublicNetwork) {
-  return network.country_code || network.country_name;
 }

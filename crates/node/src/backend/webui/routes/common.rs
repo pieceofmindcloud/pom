@@ -81,6 +81,7 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(lobby_fetch).post(lobby_post),
         )
         .route("/api/ui/networks/pinned", get(pinned_networks))
+        .route("/api/ui/networks/known", get(known_networks))
         .route("/api/ui/networks/custom", post(import_custom_network))
         .route(
             "/api/ui/networks/custom/:fingerprint",

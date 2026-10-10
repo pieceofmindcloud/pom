@@ -165,6 +165,10 @@ profile policy remains the effective authorization boundary.
   conexão também faz leituras curtas em ordem, eliminando abertura e DDL por
   operação. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
   para um volume e, sem ele, o banco fica na raiz do projeto.
+  `known_public_networks` is the table of every public network this node has
+  heard of (`remember_public_networks`, `known_public_networks`): one row per
+  fingerprint with the listing's JSON view, folded search text and first/last
+  seen times, pruned by age and capped on every write.
   `local_setting_keys_with_prefix` permite que o runtime restaure dinamicamente
   os códigos de plugins persistidos sem manter uma lista compilada no binário.
 - `webapp.rs` - serves the frontend bundle from disk at `/admin-ui/`; `/`
@@ -1225,6 +1229,12 @@ faz o download autenticado do blob persistido.
   nothing. The lobby answers on a hidden network too
   (`NetworkChat::lobby_enabled`), which is what makes an imported network
   joinable.
+  `webui/known_networks.rs` is the Networks screen's list:
+  `remember_public_networks` records what `public_networks`,
+  `setup_public_networks` and the relay's directory scan return (after
+  `resolve_places`), and `GET /api/ui/networks/known` (`known_networks_page`)
+  searches, filters, orders and pages that table, leaving out this node's own
+  network and the imported ones (`http-api.md`).
   `webui/guide.rs` keeps the first run guide's progress
   (`Config::first_run_guide`) behind `GET|POST /api/ui/guide`:
   `advance_guide` marks a step done, ends the guide with the last one or on

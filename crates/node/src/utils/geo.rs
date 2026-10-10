@@ -348,7 +348,7 @@ pub fn distance_km(lat_a: f64, lon_a: f64, lat_b: f64, lon_b: f64) -> f64 {
 }
 
 /// Lower case without the common Latin diacritics, so "sao" finds "São Paulo".
-fn fold(value: &str) -> String {
+pub(crate) fn fold(value: &str) -> String {
     value
         .chars()
         .flat_map(char::to_lowercase)

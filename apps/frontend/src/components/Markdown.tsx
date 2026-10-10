@@ -29,9 +29,17 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export const Markdown = memo(function Markdown({ children }: { children: string }) {
+/**
+ * `compact` is the small print of a side panel: text, headings and the gaps
+ * between blocks shrink together, so a network's description written with a
+ * `#` title does not shout over the panel it sits in.
+ */
+const COMPACT =
+  "min-w-0 text-[0.72rem] leading-[1.55] text-fg [&_h1]:mb-1 [&_h1]:mt-2.5 [&_h1]:text-[0.8rem] [&_h2]:mb-1 [&_h2]:mt-2.5 [&_h2]:text-[0.76rem] [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:text-[0.74rem] [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_ul]:pl-4 [&_ol]:pl-4";
+
+export const Markdown = memo(function Markdown({ children, compact = false }: { children: string; compact?: boolean }) {
   return (
-    <div className="min-w-0 text-[0.9rem] leading-[1.7] text-fg">
+    <div className={compact ? COMPACT : "min-w-0 text-[0.9rem] leading-[1.7] text-fg"}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}

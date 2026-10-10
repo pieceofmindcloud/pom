@@ -70,7 +70,9 @@ last):
   the conversation, and a lobby answer says `messages_closed: true` without
   it). `access_policy` is `authorized`, `auto_approve` (admission requests are
   approved on arrival) or `local_only`; `public_stats` says the network
-  publishes models, node count and VRAM.
+  publishes models, node count and VRAM; `lobby_chat` says its Chat is on,
+  so its lobby carries a conversation (left out of the signed record when
+  false, so records signed before the field existed still verify).
 - **Lobby, candidate side** (`webui/lobby.rs`): `GET
   /api/ui/network-chat/lobby?key=pk:...` and `POST /api/ui/network-chat/lobby`
   (`{key, message_id, text}`) make this node talk to **another** network's
@@ -96,6 +98,25 @@ last):
   networks it hears through gossip even when its own network is not public.
   On every node that route also merges what its relays answer to `Directory`,
   which is the only source for a node with discovery off.
+- **Known networks**: `GET /api/ui/networks/known` (every profile, behind the
+  operator session, `webui/known_networks.rs`) pages the node's table of every
+  public network it has heard of (`known_public_networks` in `pom.db`). The
+  live listings (`GET /api/public/networks`, `GET /api/setup/public-networks`
+  and a relay's background directory scan) record what they return there,
+  already validated and with the place resolved; a row not seen for 90 days
+  leaves, and the table keeps at most 5000 rows. It is a cache for the
+  screen: nothing decides trust or admission from it. Query: `q` (every word
+  must appear in name, cluster id, organization, description, city, state or
+  country; case and common Latin accents are folded), `country` (code, or the
+  name when a network has none), `city`, `sort` (`distance` - needs
+  `latitude`/`longitude`, else most recently seen first -, `name` or
+  `recent`), `within_km` (with the coordinates), `page` (1-based) and
+  `page_size` (default 25, at most 100). It leaves out this node's own network
+  and the imported ones, which the screen pins above every page. The answer
+  is `{networks: [{network, first_seen_at, last_seen_at}], total, page,
+  page_size, countries: [{code, name}], cities}`; times are Unix seconds, a
+  page past the end answers the last one, and `countries`/`cities` (the latter
+  narrowed by `country`) cover every known network, for the filters.
 - **Pinned networks**: `GET /api/ui/networks/pinned` (every profile, behind
   the operator session) answers `{own, custom}`: the network this node is in
   whatever its visibility, and the networks imported on this machine. Each

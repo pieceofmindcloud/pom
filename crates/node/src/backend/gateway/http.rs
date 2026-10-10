@@ -178,6 +178,10 @@ pub(crate) struct PublicNetworkView {
     /// asked live from its principal.
     #[serde(default)]
     pub public_stats: bool,
+    /// The network's Chat is on, so its lobby carries a conversation with
+    /// non-members; off, the lobby only takes admission requests.
+    #[serde(default)]
+    pub lobby_chat: bool,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
     #[serde(default)]
@@ -244,6 +248,7 @@ fn directory_network_from_view(
         access_policy: view.access_policy,
         accepted_enrollments: view.accepted_enrollments.clone(),
         public_stats: view.public_stats,
+        lobby_chat: view.lobby_chat,
         location: view.location.clone(),
         relay_hints: view.relay_hints.clone(),
         directory_replicas: view.directory_replicas.clone(),
@@ -276,6 +281,7 @@ fn view_from_directory_record(
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments,
         public_stats: network.public_stats,
+        lobby_chat: network.lobby_chat,
         location: network.location,
         discovered_via: "directory".to_string(),
         directory_replicas: network.directory_replicas,
@@ -712,6 +718,7 @@ pub(crate) async fn local_network_view(state: &GatewayState) -> Option<PublicNet
         access_policy: network.access_policy,
         accepted_enrollments: network.accepted_enrollments.clone(),
         public_stats: network.public_stats,
+        lobby_chat: state.network_chat.enabled(),
         // Already reduced to the precision the admin chose; `accuracy_m` is
         // what tells a viewer the point is approximate.
         location: network.location.clone(),
@@ -927,6 +934,7 @@ pub(super) async fn public_networks(
     }
     remember_listed_publishers(&networks);
     resolve_places(&mut networks);
+    crate::webui::remember_public_networks(&state.database, &networks);
     Json(networks)
 }
 
@@ -1291,6 +1299,9 @@ pub(crate) fn spawn_directory_board_publisher(state: GatewayState) {
                 let scan = collect_public_networks(&state, &query);
                 match tokio::time::timeout(GATHER_TIMEOUT, scan).await {
                     Ok(found) => {
+                        let mut known = found.clone();
+                        resolve_places(&mut known);
+                        crate::webui::remember_public_networks(&state.database, &known);
                         gathered = found;
                         board.publish(own, Some(gathered.clone()));
                     }

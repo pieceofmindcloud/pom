@@ -16,7 +16,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Modal } from "./Confirm";
 import { LocationEditor } from "./LocationEditor";
-import { RelayChoices, relayStateKey, useRelayStatus, type RelayChoice, type RelayStatus } from "./RelayOptions";
+import { canRelay, RelayChoices, relayStateKey, useRelayStatus, type RelayChoice, type RelayStatus } from "./RelayOptions";
 import { Button, Field, Input } from "./ui";
 import { api } from "../lib/api";
 import { NETWORK_GEO, placeLabel } from "../lib/geo";
@@ -49,7 +49,8 @@ export const ENROLLMENT_ICONS: Record<EnrollmentRole, typeof Server> = {
 
 /**
  * The steps a draft goes through: a network nobody can reach skips who may
- * join and where it is. The relay step needs the node's relay report.
+ * join and where it is. The relay step only shows on a machine the internet
+ * reaches: behind a NAT it cannot relay for anyone.
  */
 export function quickSetupSteps(visibility: NetworkSettings["visibility"], relay = true): Step[] {
   const steps: Step[] = visibility === "local"
@@ -100,7 +101,7 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
   }, [open, network]);
 
   useEffect(() => {
-    setRelay(open && relayStatus ? suggestedRelay(relayStatus) : null);
+    setRelay(open && canRelay(relayStatus) ? suggestedRelay(relayStatus) : null);
   }, [open, relayStatus]);
 
   if (!open || !draft) return null;

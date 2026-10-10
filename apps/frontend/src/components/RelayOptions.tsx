@@ -3,7 +3,10 @@
  * (`/api/ui/network/relay`); an option the command line fixed for this run is
  * shown but cannot be changed here. The choices are drawn as the quick setup
  * draws its questions: the same cards in the wizard, which saves them at the
- * end, and in Network settings, which saves each change at once.
+ * end, and in Network settings, which saves each change at once. Both draw
+ * nothing while the internet does not reach this machine (`reachable`, from
+ * AutoNAT or a configured public address): behind a NAT it cannot relay for
+ * anyone, so there is nothing to choose.
  */
 import { ArrowLeftRight, Check, Globe2, Network } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -32,6 +35,11 @@ export function relayStateKey(status: RelayStatus): string {
   if (status.everyone) return "network.relayStateEveryone";
   if (!status.cluster) return "network.relayStateOff";
   return status.reachable ? "network.relayStateCluster" : "network.relayStateUnreachable";
+}
+
+/** Whether this machine can act as a relay at all: the internet reaches it. */
+export function canRelay(status: RelayStatus | null): status is RelayStatus {
+  return Boolean(status?.reachable);
 }
 
 /** The relay status as this machine reports it, or `null` while unknown or unavailable. */
@@ -108,7 +116,7 @@ export function RelayOptions({ section }: { section?: (content: ReactNode) => Re
   const [status, setStatus] = useRelayStatus();
   const [saving, setSaving] = useState(false);
 
-  if (!status) return null;
+  if (!canRelay(status)) return null;
 
   async function save(option: RelayOption, value: boolean) {
     if (!status) return;

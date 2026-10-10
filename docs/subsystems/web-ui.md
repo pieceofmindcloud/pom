@@ -335,7 +335,9 @@ local-only notice. Routes:
   (discovery, information, who can join, location, then this machine's relay,
   saved at once), with plain text fields and no Markdown preview. The quick
   setup also has the relay step, suggesting "Relay for any network" to
-  strengthen the distributed network; it is saved after the network. "Who can join" and "Accepting new members" appear
+  strengthen the distributed network; it is saved after the network. Both
+  leave the relay out while the relay report says `reachable: false`: behind
+  a NAT the machine cannot relay for anyone. "Who can join" and "Accepting new members" appear
   only with discovery on or hidden; "Who can join" has "Anyone without
   approval" (`auto_approve`), which admits every request on arrival and
   carries its warning in the choice. The location (city, pin, geographic

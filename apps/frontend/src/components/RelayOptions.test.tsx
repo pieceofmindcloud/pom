@@ -80,4 +80,13 @@ describe("RelayOptions", () => {
     await waitFor(() => expect(api.get).toHaveBeenCalled());
     expect(container.textContent).toBe("");
   });
+
+  it("stays out behind a NAT, where the machine cannot relay for anyone", async () => {
+    vi.mocked(api.get).mockResolvedValue({ ...base, reachable: false, serving: false });
+    const { container } = mount();
+    await waitFor(() => expect(api.get).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(container.textContent).toBe("");
+    expect(screen.queryByTestId("relay-everyone")).toBeNull();
+  });
 });

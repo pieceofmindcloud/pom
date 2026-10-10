@@ -126,8 +126,9 @@ Per-file list:
   `DiscoveryChoices`, `InfoFields`, `AccessFields` with `full`, then
   `LocationEditor`): discovery, information, who can join, location, and
   last this machine's relay (`RelayOptions` with `section`, saved at once,
-  not by the Save button). Who cannot edit the network gets the relay as a
-  panel below the read-only block. It
+  not by the Save button), only when the internet reaches this machine. Who
+  cannot edit the network gets the relay as a panel below the read-only
+  block, under the same condition. It
   includes "Accepting new members", one card per `EnrollmentRole`
   (`ENROLLMENT_ROLES` in `lib/types.ts`) with its icon; unchecking all of them
   advertises the network as closed.

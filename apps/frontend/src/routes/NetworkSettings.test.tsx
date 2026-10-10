@@ -56,6 +56,8 @@ const queryMocks = vi.hoisted(() => ({
       can_edit: false,
     },
   },
+  /** Whether the internet reaches this machine, as the relay report says. */
+  relayReachable: true,
   trustShare: {
     filename: ".pom-admin-trust.json",
     document: '{"anchor":{}}',
@@ -76,7 +78,7 @@ vi.mock("../lib/api", () => ({
     get: vi.fn(async (path: string) => path.includes("trust-share")
       ? queryMocks.trustShare
       : path.endsWith("/network/relay")
-        ? { everyone: false, cluster: true, transfers: true, fixed: { everyone: false, no_cluster: false, no_transfers: false }, reachable: true, serving: true }
+        ? { everyone: false, cluster: true, transfers: true, fixed: { everyone: false, no_cluster: false, no_transfers: false }, reachable: queryMocks.relayReachable, serving: queryMocks.relayReachable }
         : queryMocks.networkInfo.data),
     post: vi.fn(async (path: string, body: unknown) => path.endsWith("/settings") ? { network: body, can_edit: true } : undefined),
   },
@@ -272,6 +274,26 @@ describe("NetworkSettings", () => {
     fireEvent.click(screen.getByRole("radio", { name: /Desligada/ }));
     expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-relay"]);
     expect(screen.queryByText("Aceitando novos membros")).toBeNull();
+  });
+
+  it("asks nothing about relaying behind a NAT", async () => {
+    queryMocks.node.data.profile = "admin";
+    queryMocks.node.data.authority_level = "primary";
+    queryMocks.networkInfo.data.can_edit = true;
+    queryMocks.relayReachable = false;
+    try {
+      render(
+        <LocaleProvider initialLocale="pt-BR">
+          <NetworkSettings />
+        </LocaleProvider>,
+      );
+      await waitFor(() => expect(vi.mocked(api.get)).toHaveBeenCalledWith("/api/ui/network/relay"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.queryByTestId("network-section-relay")).toBeNull();
+      expect(screen.queryByTestId("relay-everyone")).toBeNull();
+    } finally {
+      queryMocks.relayReachable = true;
+    }
   });
 
   it("lets the admin revoke an admitted machine, behind a confirmation", async () => {

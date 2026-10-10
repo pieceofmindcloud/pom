@@ -256,7 +256,10 @@ Per-file list:
   (`useRelayStatus`). `RelayOptions` saves each change at once with `POST`,
   which the node applies live, inside a panel or, with `section`, inside the
   caller's own section (Network settings); the quick setup uses
-  `RelayChoices` as a draft and saves it at the end. An option the command line fixed for this run is
+  `RelayChoices` as a draft and saves it at the end. Nothing is drawn while
+  the report says `reachable: false` (`canRelay`): AutoNAT has not confirmed
+  a public address and none is configured, so behind a NAT the machine
+  cannot relay for anyone and there is nothing to choose. An option the command line fixed for this run is
   shown locked, with the reason; file transfers are locked while the machine
   does not relay for its network. `relayStateKey` turns the answer into one
   line (relaying for any network, for this network, not relaying, or not
@@ -518,7 +521,8 @@ Per-file list:
   `POST /api/ui/network/settings`, the same route as Network settings, and
   the node stays the authority. A relay step (this machine's
   `RelayChoices`, suggesting relaying for any network unless the command line
-  fixed it) comes before the review when the node reports its relay; the
+  fixed it) comes before the review only when the internet reaches this
+  machine (`canRelay`); the
   relay is posted after the network and only if it changed, and a failure
   there is reported apart (`onSaved(saved, relayFailed)`). Its steps are exported (`SetupSection`,
   `DiscoveryChoices`, `InfoFields`, `AccessFields`) and Network settings

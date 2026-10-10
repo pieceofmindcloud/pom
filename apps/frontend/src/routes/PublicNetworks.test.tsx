@@ -454,6 +454,35 @@ describe("PublicNetworks", () => {
     expect(order.indexOf("/api/ui/network/settings")).toBeLessThan(order.indexOf("/api/ui/network/relay"));
   });
 
+  it("leaves the relay step out of the quick setup behind a NAT", async () => {
+    const own = { ...networks[2], fingerprint: "fingerprint-own", name: "Minha rede", publisher_key: "pk:own" };
+    mocks.node.data = { authority_level: "primary" };
+    mocks.networkInfo.data = {
+      can_edit: true,
+      network: { public_name: "Minha rede", organization: "", description: "", rules: "", channels: "", country_code: "", country_name: "", city: "", geo_label: "", visibility: "local", access_policy: "local_only", accepted_enrollments: [], public_stats: false, location: null },
+    } as never;
+    mocks.get.mockImplementation((path: string) => {
+      if (path === "/api/public/networks") return Promise.resolve([]);
+      if (path === "/api/ui/networks/pinned") return Promise.resolve({ own: { network: own, visibility: "local" }, custom: [] });
+      if (path === "/api/ui/network/relay") return Promise.resolve({ everyone: false, cluster: true, transfers: true, fixed: { everyone: false, no_cluster: false, no_transfers: false }, reachable: false, serving: false });
+      return Promise.reject(new Error("no local network"));
+    });
+    mocks.post.mockImplementation((_path: string, body: unknown) => Promise.resolve({ can_edit: true, network: body }));
+    render(<LocaleProvider initialLocale="pt-BR"><PublicNetworks /></LocaleProvider>);
+
+    fireEvent.click(await screen.findByTestId("network-quick-setup-row"));
+    const wizard = await screen.findByTestId("network-quick-setup");
+    fireEvent.click(within(wizard).getByRole("radio", { name: /Desligada/ }));
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith("/api/ui/network/relay", undefined));
+    expect(within(wizard).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["1Descoberta", "2Informações", "3Revisão"]);
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
+    expect(within(wizard).getByTestId("quick-setup-review").textContent).not.toContain("Relé");
+    fireEvent.click(screen.getByRole("button", { name: "Salvar" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
+    expect(mocks.post).not.toHaveBeenCalledWith("/api/ui/network/relay", expect.anything());
+  });
+
   it("asks for the name and the place before publishing a public network", async () => {
     const own = { ...networks[2], fingerprint: "fingerprint-own", name: "", publisher_key: "pk:own" };
     mocks.node.data = { authority_level: "primary" };

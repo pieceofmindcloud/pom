@@ -1871,6 +1871,7 @@ plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs d
 plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.
 plugins.catalogError,Could not load the public plugin catalog.,Não foi possível carregar o catálogo público.
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
+plugins.closeFailed,The plugin process did not stop,O processo do plugin não parou
 plugins.community,Community,Comunidade
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
@@ -1944,6 +1945,8 @@ plugins.manage,Manage,Gerenciar
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível
 plugins.monthlyPrice,{price}/month,{price}/mês
 plugins.noLicenseRequired,No license required,Não exige licença
+plugins.open,Open plugin,Abrir plugin
+plugins.openFailed,The plugin did not start,O plugin não iniciou
 plugins.pageNext,Next,Próxima
 plugins.pagePrevious,Previous,Anterior
 plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}
@@ -1985,6 +1988,8 @@ plugins.state.expired,Expired,Expirado
 plugins.state.needs_activation,Not activated,Não ativado
 plugins.state.revoked,Revoked,Revogado
 plugins.state.unavailable,Unavailable,Indisponível
+plugins.stopped,This plugin process is stopped,O processo deste plugin está parado
+plugins.stoppedHint,The plugin stays installed. Open it to start its process again.,O plugin continua instalado. Abra-o para iniciar o processo de novo.
 plugins.subtitle,"Independent plugins for this node, each with its own license, version and lifecycle.","Plugins independentes para este nó, cada um com sua própria licença, versão e ciclo de vida."
 plugins.tabCatalog,Plugins,Plugins
 plugins.tabDevelop,Develop your plugin,Desenvolva seu plugin
@@ -2565,6 +2570,7 @@ sidebar.leaveNetworkConfirm,Leave network,Sair da rede
 sidebar.leaveNetworkDescription,"This removes the trust document and private network secret from this node, keeps local preferences, and restarts the first-access setup.","Isso remove o documento de confiança e o segredo privado da rede deste nó, preserva as preferências locais e reinicia a configuração inicial."
 sidebar.leaveNetworkFailed,The node could not leave the network,Não foi possível sair da rede
 sidebar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
+sidebar.pluginClose,Stop plugin process,Parar processo do plugin
 sidebar.scrollDown,Scroll menu down,Rolar menu para baixo
 sidebar.scrollUp,Scroll menu up,Rolar menu para cima
 sidebar.thisNetwork,this network,esta rede

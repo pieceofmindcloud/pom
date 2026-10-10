@@ -58,6 +58,7 @@ const PUBLIC_INSTALL_SETTING_PREFIX: &str = "plugin_public_install:";
 const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
 const GITHUB_REPOSITORIES_SETTING: &str = "plugin_github_repositories";
 const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
+const UI_MANIFEST_SETTING_PREFIX: &str = "plugin_ui_manifest:";
 
 /// Plugin codes come from the license service, from GitHub releases or from
 /// manifests of local sources. They also make up URL segments and directories;
@@ -71,6 +72,13 @@ pub(crate) fn is_valid_plugin_code(code: &str) -> bool {
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Reads `lifecycle: "on_demand"` from an already validated and saved UI manifest.
+fn manifest_is_on_demand(raw: Option<&serde_json::Value>) -> bool {
+    raw.and_then(|manifest| manifest.get("lifecycle"))
+        .and_then(|lifecycle| serde_json::from_value::<crate::plugin_ui::Lifecycle>(lifecycle.clone()).ok())
+        .is_some_and(crate::plugin_ui::Lifecycle::is_on_demand)
 }
 
 #[derive(Debug, Clone)]
@@ -865,6 +873,13 @@ pub(crate) struct PluginStatus {
     pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
     #[serde(default)]
     pub preferences: Option<enterprise_protocol::PluginPreferences>,
+    /// On-demand plugin: the manifest declares `lifecycle: "on_demand"`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// `true` when the host process is running. An on-demand plugin can
+    /// be `active` (installed and licensed) with `running` false.
+    #[serde(default)]
+    pub running: bool,
 }
 
 impl PluginStatus {
@@ -892,6 +907,8 @@ impl PluginStatus {
             github_repository: None,
             preferences_schema: None,
             preferences: None,
+            on_demand: false,
+            running: false,
         }
     }
 
@@ -928,6 +945,13 @@ pub(crate) struct PluginRuntime {
     /// Context the node hands to every plugin host (`host.configure`), shared
     /// with the [`PluginManager`]. `None` until the gateway is ready.
     host_context: HostContext,
+    /// Last `ui.manifest` the host returned, raw and already validated. Saved
+    /// in the database so the menu of an on-demand plugin keeps existing
+    /// while its process is stopped (the manifest can only be requested from a running host).
+    ui_manifest_raw: Arc<Mutex<Option<serde_json::Value>>>,
+    /// `lifecycle: "on_demand"` of the last known manifest. It comes from the cache, so
+    /// it applies at boot, before any process starts.
+    on_demand: std::sync::atomic::AtomicBool,
 }
 
 /// What the node hands to each plugin host through the `host.configure` operation.
@@ -959,6 +983,16 @@ impl PluginRuntime {
                     .flatten()
             })
             .and_then(|value| serde_json::from_str(&value).ok());
+        let ui_manifest_raw = database
+            .as_ref()
+            .and_then(|database| {
+                database
+                    .local_setting_json(&format!("{UI_MANIFEST_SETTING_PREFIX}{code}"))
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
+        let on_demand = manifest_is_on_demand(ui_manifest_raw.as_ref());
         Self {
             code: code.to_owned(),
             service,
@@ -974,7 +1008,14 @@ impl PluginRuntime {
             public_install: Arc::new(Mutex::new(public_install)),
             development_install: Arc::new(Mutex::new(development_install)),
             host_context,
+            ui_manifest_raw: Arc::new(Mutex::new(ui_manifest_raw)),
+            on_demand: std::sync::atomic::AtomicBool::new(on_demand),
         }
+    }
+
+    /// `true` when the plugin manifest declares `lifecycle: "on_demand"`.
+    fn on_demand(&self) -> bool {
+        self.on_demand.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Starts the plugin host and already hands it the node context, if any.
@@ -1087,6 +1128,8 @@ impl PluginRuntime {
 
     pub(crate) async fn status(&self) -> PluginStatus {
         let mut status = self.status.read().await.clone();
+        status.on_demand = self.on_demand();
+        status.running = self.host.lock().await.is_some();
         let public_install = self
             .public_install
             .lock()
@@ -1345,9 +1388,15 @@ impl PluginRuntime {
             let _ = std::fs::remove_file(path);
             return;
         }
-        match self.start_host(path).await {
+        // An on-demand plugin stays installed and active without a process until opened.
+        let host = if self.on_demand() {
+            Ok(None)
+        } else {
+            self.start_host(path).await.map(Some)
+        };
+        match host {
             Ok(host) => {
-                *self.host.lock().await = Some(host);
+                *self.host.lock().await = host;
                 let mut status = self.status.write().await;
                 status.active = true;
                 status.state = LicenseState::Active;
@@ -1407,9 +1456,14 @@ impl PluginRuntime {
             let _ = std::fs::remove_file(path);
             return;
         }
-        match self.start_host(path).await {
+        let host = if self.on_demand() {
+            Ok(None)
+        } else {
+            self.start_host(path).await.map(Some)
+        };
+        match host {
             Ok(host) => {
-                *self.host.lock().await = Some(host);
+                *self.host.lock().await = host;
                 let mut status = self.status.write().await;
                 status.active = true;
                 status.state = LicenseState::NeedsActivation;
@@ -1430,7 +1484,8 @@ impl PluginRuntime {
     }
 
     async fn restore_ready(&self, persisted: &PersistedPluginState) {
-        let host_ready = self.host.lock().await.is_some();
+        // On demand, "ready" means installed and licensed: the process starts when opened.
+        let host_ready = self.host.lock().await.is_some() || self.on_demand();
         let development_install = self.development_install.lock().await.is_some();
         let mut status = self.status.write().await;
         status.active = host_ready;
@@ -1867,7 +1922,8 @@ impl PluginRuntime {
     }
 
     async fn ensure_host_running(&self, persisted: &PersistedPluginState) {
-        if self.host.lock().await.is_some() {
+        // On demand, neither boot nor heartbeat starts the process: only `open_on_demand` does.
+        if self.on_demand() || self.host.lock().await.is_some() {
             return;
         }
         let Some(path) = persisted.plugin_path.clone().map(std::path::PathBuf::from) else {
@@ -1993,16 +2049,107 @@ impl PluginRuntime {
     /// validated. `None` when inactive, without a host, without UI or with an
     /// invalid manifest.
     pub(crate) async fn ui_manifest(&self) -> Option<crate::plugin_ui::PluginUiManifest> {
+        // On-demand plugin with its process stopped: the menu uses the saved manifest.
+        if self.on_demand() && self.host.lock().await.is_none() {
+            let raw = self.ui_manifest_raw.lock().await.clone()?;
+            return crate::plugin_ui::PluginUiManifest::parse(&self.code, raw).ok();
+        }
         let value = self
             .query_audit("ui.manifest", serde_json::json!({}))
             .await?;
-        match crate::plugin_ui::PluginUiManifest::parse(&self.code, value) {
-            Ok(manifest) => Some(manifest),
+        match crate::plugin_ui::PluginUiManifest::parse(&self.code, value.clone()) {
+            Ok(manifest) => {
+                self.remember_ui_manifest(value, manifest.lifecycle.is_on_demand())
+                    .await;
+                Some(manifest)
+            }
             Err(error) => {
                 tracing::warn!(plugin_code = %self.code, %error, "plugin UI manifest refused");
                 None
             }
         }
+    }
+
+    /// Stores the newly validated manifest (in memory and in the database) only when it
+    /// changed, because the menu requests it on every query.
+    async fn remember_ui_manifest(&self, raw: serde_json::Value, on_demand: bool) {
+        self.on_demand
+            .store(on_demand, std::sync::atomic::Ordering::Release);
+        let mut cached = self.ui_manifest_raw.lock().await;
+        if cached.as_ref() == Some(&raw) {
+            return;
+        }
+        if let Some(database) = &self.database {
+            let key = format!("{UI_MANIFEST_SETTING_PREFIX}{}", self.code);
+            if let Err(error) = database.save_local_setting(&key, &raw) {
+                tracing::warn!(plugin_code = %self.code, %error, "UI manifest could not be saved");
+            }
+        }
+        *cached = Some(raw);
+    }
+
+    /// Starts the process of an on-demand plugin that is already installed and active. Does not touch
+    /// the license: only the host.
+    pub(crate) async fn open_on_demand(&self) -> Result<(), String> {
+        if !self.on_demand() {
+            return Err("this plugin is not on demand".into());
+        }
+        if !self.status.read().await.active {
+            return Err("the plugin is not active on this node".into());
+        }
+        let _guard = self.update_lock.lock().await;
+        if self.host.lock().await.is_some() {
+            return Ok(());
+        }
+        let path = self
+            .installed_plugin_path()
+            .await
+            .ok_or("the plugin has no installed binary")?;
+        let host = self
+            .start_host(&path)
+            .await
+            .map_err(|error| format!("{error:#}"))?;
+        *self.host.lock().await = Some(host);
+        self.clear_installation_failure().await;
+        Ok(())
+    }
+
+    /// Stops the process of an on-demand plugin. The plugin stays installed and
+    /// active, and comes back with `open_on_demand`.
+    pub(crate) async fn close_on_demand(&self) -> Result<(), String> {
+        if !self.on_demand() {
+            return Err("this plugin is not on demand".into());
+        }
+        let _guard = self.update_lock.lock().await;
+        if let Some(host) = self.host.lock().await.take() {
+            if let Err(error) = host.stop().await {
+                *self.host.lock().await = Some(host);
+                return Err(format!("the process could not be stopped: {error:#}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Path of the binary of the current installation, in the order boot restore
+    /// picks it: license, then public installation, then local.
+    async fn installed_plugin_path(&self) -> Option<std::path::PathBuf> {
+        if let Some(path) = self
+            .persisted
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|persisted| persisted.plugin_path.clone())
+        {
+            return Some(path.into());
+        }
+        if let Some(installed) = self.public_install.lock().await.as_ref() {
+            return Some(installed.plugin_path.clone().into());
+        }
+        self.development_install
+            .lock()
+            .await
+            .as_ref()
+            .map(|installed| installed.plugin_path.clone().into())
     }
 
     pub(crate) async fn mark_plugin_ready(
@@ -2167,7 +2314,8 @@ impl PluginRuntime {
                         .load(std::sync::atomic::Ordering::Relaxed);
                 let mut status = self.status.write().await;
                 let license_was_active = status.state == LicenseState::Active;
-                status.active = host_running;
+                // On demand, installed and licensed is enough; the process starts when opened.
+                status.active = host_running || self.on_demand();
                 status.state = LicenseState::Active;
                 status.features = features;
                 status.lease_expires_at = Some(lease_expires_at);
@@ -3487,6 +3635,22 @@ impl PluginManager {
         code: &str,
     ) -> Option<crate::plugin_ui::PluginUiManifest> {
         self.runtime_for(code)?.ui_manifest().await
+    }
+
+    /// Starts the process of an on-demand plugin (menu click).
+    pub(crate) async fn open_on_demand(&self, code: &str) -> Result<(), String> {
+        match self.runtime_for(code) {
+            Some(runtime) => runtime.open_on_demand().await,
+            None => Err("unknown plugin on this node".into()),
+        }
+    }
+
+    /// Stops the process of an on-demand plugin (the X badge).
+    pub(crate) async fn close_on_demand(&self, code: &str) -> Result<(), String> {
+        match self.runtime_for(code) {
+            Some(runtime) => runtime.close_on_demand().await,
+            None => Err("unknown plugin on this node".into()),
+        }
     }
 
     /// Validates the key once to find out which `plugin_code`s it grants, creates
@@ -6521,6 +6685,100 @@ mod tests {
             events.contains("req-1"),
             "audit event should have reached the restarted host"
         );
+    }
+
+    /// An on-demand plugin (manifest with `lifecycle: on_demand`) does not have its
+    /// process restarted by boot or heartbeat: only `open_on_demand` starts the
+    /// host, `close_on_demand` stops it, and the installation and license stay.
+    #[tokio::test]
+    async fn an_on_demand_plugin_runs_only_while_opened() {
+        let _serial = REAL_HOST.lock().await;
+        let fake_host = std::env::current_exe()
+            .expect("locate the test binary")
+            .parent()
+            .and_then(|deps| deps.parent())
+            .expect("locate the target/<profile> directory")
+            .join(if cfg!(windows) {
+                "pom-fake-enterprise-plugin-host.exe"
+            } else {
+                "pom-fake-enterprise-plugin-host"
+            });
+        assert!(
+            fake_host.is_file(),
+            "helper binary {} was not built; run `cargo test -p node` (not `--lib`)",
+            fake_host.display()
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plugin_path = dir.path().join("logs-plugin.bin");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        let host_log = dir.path().join("ingest.log");
+
+        // SAFETY: same criterion as the restart test above; `REAL_HOST` serializes.
+        std::env::set_var("POM_PLUGIN_HOST", fake_host);
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+
+        let db = Arc::new(
+            crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
+        );
+        let service = Arc::new(MockLicenseService::single(
+            "logs",
+            activation("logs", "ent-1"),
+        ));
+        let manager =
+            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        let runtime = manager.runtime_for("logs").expect("runtime");
+        activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        {
+            let mut persisted = runtime.persisted.lock().await;
+            persisted.as_mut().unwrap().plugin_path =
+                Some(plugin_path.to_string_lossy().into_owned());
+        }
+        // The manifest declares the lifecycle, and the process has not started yet.
+        assert!(runtime.host.lock().await.is_none());
+        runtime
+            .remember_ui_manifest(
+                serde_json::json!({
+                    "schema": "pom-plugin-ui/v1",
+                    "plugin_code": "logs",
+                    "lifecycle": "on_demand",
+                    "screens": {},
+                    "assets": []
+                }),
+                true,
+            )
+            .await;
+        // Boot and heartbeat do not start an on-demand process.
+        let persisted = runtime.persisted_state().await.expect("persisted");
+        runtime.ensure_host_running(&persisted).await;
+        assert!(runtime.host.lock().await.is_none(), "boot does not start the process");
+        runtime
+            .heartbeat("nonce-on-demand")
+            .await
+            .expect("heartbeat de sucesso");
+        assert!(runtime.host.lock().await.is_none(), "heartbeat does not start the process");
+
+        let status = runtime.status().await;
+        assert!(status.active, "active: {status:?}");
+        assert!(status.on_demand, "on_demand: {status:?}");
+        assert!(!status.running);
+        // The menu keeps listing the plugin, through the saved manifest.
+        assert!(runtime.ui_manifest().await.is_some());
+
+        runtime.open_on_demand().await.expect("opening starts the process");
+        assert!(runtime.status().await.running);
+        runtime.close_on_demand().await.expect("fechar encerra o processo");
+        let status = runtime.status().await;
+        assert!(!status.running && status.active, "closing does not remove the license or the installation");
+    }
+
+    #[test]
+    fn the_saved_manifest_decides_on_demand_before_any_process_starts() {
+        let on_demand = serde_json::json!({ "lifecycle": "on_demand" });
+        let resident = serde_json::json!({ "lifecycle": "resident" });
+        assert!(manifest_is_on_demand(Some(&on_demand)));
+        assert!(!manifest_is_on_demand(Some(&resident)));
+        assert!(!manifest_is_on_demand(Some(&serde_json::json!({}))));
+        assert!(!manifest_is_on_demand(None));
     }
 }
 

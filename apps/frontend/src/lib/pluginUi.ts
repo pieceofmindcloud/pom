@@ -85,6 +85,10 @@ export interface ActivePluginUi {
   code: string;
   version?: string | null;
   manifest: PluginUiManifest;
+  /** `lifecycle: "on_demand"` from the manifest: the process starts when opened and can be stopped. */
+  on_demand?: boolean;
+  /** The host process is running now. */
+  running?: boolean;
 }
 
 /** A plugin component mounted inside a native screen (see `pluginSlot`). */

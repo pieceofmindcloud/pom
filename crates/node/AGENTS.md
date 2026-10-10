@@ -375,6 +375,15 @@ mão perde a corrida contra ela de forma não determinística - foi o que
 fazia `heartbeat_success_restarts_the_stopped_plugin_host` falhar ora por
 `plugin_path` sumido, ora por host revivido depois da revogação.
 
+On-demand plugins (`lifecycle: "on_demand"` in the `ui.manifest`, see
+`docs/subsystems/plugins-ui.md`) do not get their host started at boot, by the
+heartbeat or by restore: `PluginRuntime::on_demand()` reads the flag from the
+last manifest saved in `plugin_ui_manifest:<code>`, and `open_on_demand` /
+`close_on_demand` start and stop only the process, without touching the license
+or the installation. While the host is stopped, `ui_manifest()` returns the saved
+manifest so the menu keeps listing the plugin. The plugin's own manifest decides
+the flag, never a list in the code.
+
 `plugin_host.rs` (`PluginHost`) é o único adaptador do `pom` para o processo
 auxiliar `pom-plugin-host` - já suporta várias instâncias concorrentes, uma
 por plugin ativo. `PluginHost::start` passa o `plugin_code` para o binário

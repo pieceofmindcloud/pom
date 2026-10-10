@@ -42,6 +42,8 @@ export interface NavLeaf {
   promoteProfiles?: readonly Profile[];
   /** Matches child routes too — used by the sidebar to mark a section open. */
   end?: boolean;
+  /** Plugin that provides this item; the menu uses it to open/close the on-demand process. */
+  pluginCode?: string;
 }
 
 export interface NavSection {
@@ -50,6 +52,8 @@ export interface NavSection {
   iconImage?: string;
   /** A section either navigates somewhere itself, or holds children. */
   to?: string;
+  /** Plugin that provides this item; see `NavLeaf.pluginCode`. */
+  pluginCode?: string;
   children?: NavLeaf[];
   /** Profiles for which this destination is rendered in the utility footer. */
   footerProfiles?: readonly Profile[];
@@ -186,12 +190,13 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     return copy;
   });
   const replace = (
-    target: { labelKey: string; icon?: LucideIcon; iconImage?: string },
+    target: { labelKey: string; icon?: LucideIcon; iconImage?: string; pluginCode?: string },
     item: ReturnType<typeof pluginMenuItems>[number],
   ) => {
     target.labelKey = pluginLabelKey(item.code, item.id);
     target.icon = pluginIcon(item.icon);
     target.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
+    target.pluginCode = item.code;
   };
   for (const item of pluginMenuItems(profile)) {
     const key = pluginLabelKey(item.code, item.id);
@@ -201,6 +206,7 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
         section.labelKey = key;
         section.icon = pluginIcon(item.icon);
         section.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
+        section.pluginCode = item.code;
         placed = true;
       }
       for (const child of section.children ?? []) {
@@ -220,11 +226,13 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
           labelKey: key,
           icon: pluginIcon(item.icon),
           iconImage,
+          pluginCode: item.code,
           children: item.children.map((child) => ({
             labelKey: pluginLabelKey(child.code, child.id),
             to: child.to,
             icon: pluginIcon(child.icon),
             end: true,
+            pluginCode: child.code,
           })),
         }
       : {
@@ -232,6 +240,7 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
           icon: pluginIcon(item.icon),
           iconImage,
           to: item.to,
+          pluginCode: item.code,
         };
     result.splice(docs < 0 ? result.length : docs, 0, entry);
   }

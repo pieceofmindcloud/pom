@@ -347,6 +347,22 @@ export function searchRemoteModels(
   return api.get<RemoteModelSearchResponse>(modelSearchPath(options), { signal });
 }
 
+/** Starts the process of an on-demand plugin (menu click). */
+export function openPlugin(code: string) {
+  return api.post<{ code: string; running: boolean }>(
+    `/api/ui/plugins/${encodeURIComponent(code)}/open`,
+    {},
+  );
+}
+
+/** Stops the process of an on-demand plugin (X badge). */
+export function closePlugin(code: string) {
+  return api.post<{ code: string; running: boolean }>(
+    `/api/ui/plugins/${encodeURIComponent(code)}/close`,
+    {},
+  );
+}
+
 export function getRemoteModelDetails(
   repoId: string,
   revision?: string,

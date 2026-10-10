@@ -43,6 +43,7 @@ namespace. The real code of Request Logs and Statistics lives in
 |---|---|
 | `schema`, `plugin_code` | `pom-plugin-ui/v1`; the code must be the installed plugin's |
 | `icon_image` | optional; path of a `.png` asset. The frontend uses it in the menu and falls back to `menu[].icon` when the image fails or is missing |
+| `lifecycle` | optional; `resident` (default, the process starts with POM and the heartbeat restarts it) or `on_demand` (see "On-demand processes"). Any other value refuses the manifest |
 | `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
 | `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
 | `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
@@ -147,6 +148,31 @@ one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
 (`--tab-bar`, `--tab-ink`, `--tab-ink-on`, `--tab-line`, `--tab-card`,
 `--tab-accent`, `--tab-icon`, full colours in both themes). The plugin's CSS
 uses the same color tokens (CSS variables) as POM.
+
+## On-demand processes
+
+A plugin whose manifest declares `"lifecycle": "on_demand"` keeps its license
+and installation, but its host process runs only while the operator has it
+open. The node does not start it at boot, and the heartbeat does not restart
+it; the node reads the flag from the last `ui.manifest` it saved in `pom.db`
+(`plugin_ui_manifest:<code>`), so the decision holds before any process exists.
+A resident plugin behaves as before.
+
+- The menu keeps listing the plugin with its saved manifest while the process
+  is stopped (`GET /api/ui/plugins/ui` returns `on_demand` and `running`).
+- Clicking the menu item calls `POST /api/ui/plugins/<code>/open`, which starts
+  the process, and then opens the screen. The screen also shows a stopped card
+  with an open button when reached by address.
+- A running on-demand plugin shows an X badge in the menu; `POST
+  /api/ui/plugins/<code>/close` stops the process and leaves the plugin
+  installed and licensed.
+- Both routes refuse plugins whose manifest is not on demand (409) and are
+  same-origin only.
+- Installing a plugin still starts its process, as before. A plugin whose
+  manifest has never been saved has no menu entry until it runs once; the
+  saved manifest is what keeps the menu after a restart.
+- While the process is stopped, the plugin's services and inference engine are
+  unavailable to the cluster, the same as any stopped host.
 
 ## Plugin RPC
 

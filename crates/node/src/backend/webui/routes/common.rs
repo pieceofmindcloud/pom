@@ -21,6 +21,14 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_ui::plugin_rpc),
         )
         .route(
+            "/api/ui/plugins/:code/open",
+            post(crate::plugin_ui::plugin_open),
+        )
+        .route(
+            "/api/ui/plugins/:code/close",
+            post(crate::plugin_ui::plugin_close),
+        )
+        .route(
             "/api/internal/plugins/services",
             get(crate::rag::list_services),
         )

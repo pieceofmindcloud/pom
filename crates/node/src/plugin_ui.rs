@@ -119,6 +119,31 @@ pub(crate) struct PluginUiManifest {
     pub documentation: Option<PluginDocumentation>,
     /// Closed list of what `/assets/*` may serve.
     pub assets: Vec<String>,
+    /// Lifecycle of the plugin process. `on_demand` starts the host only
+    /// when the operator opens the plugin from the menu, and stops it with the X badge.
+    #[serde(default, skip_serializing_if = "Lifecycle::is_resident")]
+    pub lifecycle: Lifecycle,
+}
+
+/// How the plugin process is kept running.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Lifecycle {
+    /// Starts with `pom` and is restarted by the heartbeat (default).
+    #[default]
+    Resident,
+    /// Starts only when opened and can be stopped at any time.
+    OnDemand,
+}
+
+impl Lifecycle {
+    fn is_resident(&self) -> bool {
+        *self == Lifecycle::Resident
+    }
+
+    pub(crate) fn is_on_demand(self) -> bool {
+        self == Lifecycle::OnDemand
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -442,11 +467,15 @@ struct ActivePluginUi {
     code: String,
     version: Option<String>,
     manifest: PluginUiManifest,
+    /// On-demand plugin: the menu shows the X when `running` and opens the process on click.
+    on_demand: bool,
+    running: bool,
 }
 
-/// `GET /api/ui/plugins/ui`: manifests of the active plugins with a running host.
-/// An inactive or absent plugin, or one with an invalid manifest, simply does not
-/// appear - the frontend then shows only the promotional fallbacks.
+/// `GET /api/ui/plugins/ui`: manifests of the active plugins. An on-demand plugin
+/// whose host is stopped stays listed with its saved manifest, so the menu can
+/// open it. An inactive or absent plugin, or one with an invalid manifest, does
+/// not appear - the frontend then shows only the promotional fallbacks.
 pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewayState>) -> Response {
     let mut out = Vec::new();
     for status in state.plugins.all_statuses().await {
@@ -458,10 +487,64 @@ pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewaySt
                 code: status.code.clone(),
                 version: status.plugin_version.clone(),
                 manifest,
+                on_demand: status.on_demand,
+                running: status.running,
             });
         }
     }
     axum::Json(json!({ "plugins": out })).into_response()
+}
+
+/// `POST /api/ui/plugins/:code/open`: starts the process of an on-demand plugin.
+/// Called by the menu click; the license is not touched.
+pub(crate) async fn plugin_open(
+    State(state): State<crate::gateway::GatewayState>,
+    Path(code): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    plugin_lifecycle(&state, &code, &headers, true).await
+}
+
+/// `POST /api/ui/plugins/:code/close`: stops the process of an on-demand plugin
+/// (the X badge). The plugin stays installed and comes back with `open`.
+pub(crate) async fn plugin_close(
+    State(state): State<crate::gateway::GatewayState>,
+    Path(code): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    plugin_lifecycle(&state, &code, &headers, false).await
+}
+
+async fn plugin_lifecycle(
+    state: &crate::gateway::GatewayState,
+    code: &str,
+    headers: &axum::http::HeaderMap,
+    open: bool,
+) -> Response {
+    if !crate::plugin_proxy::same_origin(headers) {
+        return (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "cross-origin plugin call" }))).into_response();
+    }
+    let status = state.plugins.status(code).await;
+    if !status.as_ref().is_some_and(|status| status.on_demand) {
+        return (
+            StatusCode::CONFLICT,
+            axum::Json(json!({ "error": "plugin is not on demand" })),
+        )
+            .into_response();
+    }
+    let result = if open {
+        state.plugins.open_on_demand(code).await
+    } else {
+        state.plugins.close_on_demand(code).await
+    };
+    match result {
+        Ok(()) => axum::Json(json!({ "code": code, "running": open })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
 }
 
 /// Largest JSON body a plugin RPC accepts.
@@ -737,6 +820,29 @@ mod tests {
         assert!(validate_catalog("logs", &json!(["logs.a"])).is_err());
         let huge = "x".repeat(MAX_CATALOG_TEXT + 1);
         assert!(validate_catalog("logs", &json!({"logs.a": huge})).is_err());
+    }
+
+    /// `lifecycle` is optional: absent means `resident`; `on_demand` comes from the plugin's own
+    /// manifest, and any other value is refused.
+    #[test]
+    fn lifecycle_comes_from_the_manifest_and_defaults_to_resident() {
+        let base = json!({
+            "schema": "pom-plugin-ui/v1",
+            "plugin_code": "harness",
+            "screens": {},
+            "assets": []
+        });
+        let resident = PluginUiManifest::parse("harness", base.clone()).expect("no lifecycle");
+        assert_eq!(resident.lifecycle, Lifecycle::Resident);
+
+        let mut on_demand = base.clone();
+        on_demand["lifecycle"] = json!("on_demand");
+        let parsed = PluginUiManifest::parse("harness", on_demand).expect("on_demand");
+        assert!(parsed.lifecycle.is_on_demand());
+
+        let mut unknown = base;
+        unknown["lifecycle"] = json!("always");
+        assert!(PluginUiManifest::parse("harness", unknown).is_err());
     }
 
     /// The public pom-plugin-base release currently ships this UI manifest shape.

@@ -13,6 +13,15 @@ let sidebarNodeData: NodeInfo | null = null;
 
 vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: sidebarNodeData }),
+  // The plugin menu reads its lifecycle here; no plugin is active in these tests.
+  usePluginUi: () => ({ data: { plugins: [] } }),
+  keys: { pluginUi: ["plugin-ui"] },
+}));
+
+// The plugin menu invalidates the plugin list after open/close; no client is mounted here.
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQueryClient: () => ({ invalidateQueries: () => Promise.resolve() }),
 }));
 
 const lobby = vi.hoisted(() => ({ enabledOnNetwork: true, unread: 3 }));
@@ -70,7 +79,7 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
 
     expect(screen.getByRole("complementary").className).toContain("w-[68px]");
-    // O menu rola por dentro mesmo recolhido; os submenus são `fixed`, então não são cortados.
+    // The menu scrolls internally even when collapsed; the submenus are `fixed`, so they are not clipped.
     const scroller = screen.getByRole("navigation").querySelector(".overflow-y-auto") as HTMLElement;
     expect(scroller.className).toContain("overscroll-y-contain");
     expect(scroller.className).toContain("overflow-x-hidden");

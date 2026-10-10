@@ -59,6 +59,12 @@ vi.mock("../lib/api", async (importOriginal) => {
   };
 });
 
+// The sidebar's plugin menu invalidates the plugin list; this file mounts no query client.
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQueryClient: () => ({ invalidateQueries: () => Promise.resolve() }),
+}));
+
 vi.mock("../lib/imageResize", () => ({
   resizeImageForVision: async () => ({
     data: "data:image/jpeg;base64,ZmFrZQ==",

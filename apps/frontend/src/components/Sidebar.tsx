@@ -1,17 +1,20 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, ChevronUp, Moon, Sun } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronUp, Moon, Sun, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { LogoFull, LogoMark } from "./Logo";
 import { ChatSessionList } from "./ChatSessionList";
 import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
+import { closePlugin, openPlugin } from "../lib/api";
 import { useProfile } from "../lib/profile";
 import { hasConversations, useOptionalChatSessionController } from "../lib/chatStore";
 import { useLobbyUnread, useNetworkChatUnread } from "../lib/networkChatUnread";
-import { useNode } from "../lib/queries";
+import { keys, useNode, usePluginUi } from "../lib/queries";
 import { useTheme } from "../lib/theme";
+import { useToast } from "../lib/toast";
 import { TlsChip } from "./TlsIndicator";
 import { LanguageFlags } from "./LanguageFlags";
 
@@ -80,7 +83,7 @@ function NavigationIcon({
   );
 }
 
-/** Quanto cada clique na seta rola, em pixels. */
+/** Pixels scrolled by each chevron click. */
 const SCROLL_STEP = 120;
 
 function ScrollEdgeButton({ direction, onClick }: { direction: "up" | "down"; onClick: () => void }) {
@@ -101,9 +104,9 @@ function ScrollEdgeButton({ direction, onClick }: { direction: "up" | "down"; on
 }
 
 /**
- * Menu rolável: quando os itens não cabem na altura da janela, aparecem setas
- * no topo e no pé para rolar. Só são desenhadas as setas do lado em que ainda
- * há itens escondidos.
+ * Scrollable menu: when the items do not fit the window height, chevrons appear
+ * at the top and bottom to scroll. Only the chevrons on the side with hidden items
+ * are drawn.
  */
 export function ScrollableNav({ className, children }: { className?: string; children: ReactNode }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -123,7 +126,7 @@ export function ScrollableNav({ className, children }: { className?: string; chi
     const content = contentRef.current;
     if (!scroller || !content) return;
     measure();
-    // A altura da janela muda o que cabe; a do conteúdo muda quando uma seção abre.
+    // The window height changes what fits; the content height changes when a section opens.
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(scroller);
     observer?.observe(content);
@@ -224,6 +227,70 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+/**
+ * An on-demand plugin menu item: a click starts the process when it is
+ * stopped and only then opens the screen; `close` appears while it is running and
+ * stops the process. The plugin stays installed and licensed in both cases.
+ * A regular plugin (manifest without `lifecycle: "on_demand"`) passes straight through.
+ */
+function usePluginMenuItem(pluginCode: string | undefined, to: string, onNavigate?: () => void) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { data } = usePluginUi();
+  const [busy, setBusy] = useState(false);
+  const plugin = pluginCode ? data?.plugins.find((entry) => entry.code === pluginCode) : undefined;
+  const onDemand = plugin?.on_demand === true;
+  const running = plugin?.running === true;
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: keys.pluginUi });
+
+  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    onNavigate?.();
+    if (!pluginCode || !onDemand || running) return;
+    event.preventDefault();
+    setBusy(true);
+    openPlugin(pluginCode)
+      .then(() => navigate(to))
+      .catch((error: unknown) => toast.fromError(t("plugins.openFailed"), error))
+      .finally(() => {
+        setBusy(false);
+        refresh();
+      });
+  };
+
+  const close = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!pluginCode) return;
+    closePlugin(pluginCode)
+      .catch((error: unknown) => toast.fromError(t("plugins.closeFailed"), error))
+      .finally(refresh);
+  };
+
+  return { busy, onClick, close: onDemand && running ? close : undefined };
+}
+
+/** The X badge of a running plugin; the button sits beside the link, never inside it. */
+function PluginCloseButton({ onClick, className }: { onClick: (event: MouseEvent<HTMLButtonElement>) => void; className?: string }) {
+  const { t } = useI18n();
+  const label = t("sidebar.pluginClose");
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={clsx(
+        "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-muted transition-colors hover:border-rose/60 hover:text-rose",
+        className,
+      )}
+    >
+      <X className="h-2.5 w-2.5" aria-hidden="true" />
+    </button>
+  );
+}
+
 function leafHoldsPath(leaf: NonNullable<NavSection["children"]>[number], pathname: string): boolean {
   return (leaf.end ? pathname === leaf.to : pathname === leaf.to || pathname.startsWith(`${leaf.to}/`))
     || (leaf.children ?? []).some((child) => leafHoldsPath(child, pathname));
@@ -281,37 +348,45 @@ function Leaf({
   end,
   children,
   onNavigate,
+  pluginCode,
 }: {
   to: string;
   labelKey: string;
   end?: boolean;
   children?: NonNullable<NavSection["children"]>[number]["children"];
   onNavigate?: () => void;
+  pluginCode?: string;
 }) {
   const { t } = useI18n();
   const linkEnd = end ?? Boolean(children?.length);
+  const plugin = usePluginMenuItem(pluginCode, to, onNavigate);
   return (
     <div>
-      <NavLink to={to} end={linkEnd} onClick={onNavigate} data-guide-nav={to}>
-        {({ isActive }) => (
-          <span
-            className={clsx(
-              "relative flex items-center rounded-lg py-1.5 pl-3 pr-2.5 text-[0.83rem]",
-              "transition-colors duration-150",
-              isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
-            )}
-          >
-            {isActive && (
-              <motion.span
-                layoutId="nav-leaf"
-                className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
-                transition={{ type: "spring", stiffness: 520, damping: 42 }}
-              />
-            )}
-            <span className="relative truncate">{t(labelKey)}</span>
-          </span>
-        )}
-      </NavLink>
+      <div className="relative">
+        <NavLink to={to} end={linkEnd} onClick={plugin.onClick} data-guide-nav={to} className={plugin.close ? "block pr-6" : undefined}>
+          {({ isActive }) => (
+            <span
+              className={clsx(
+                "relative flex items-center rounded-lg py-1.5 pl-3 pr-2.5 text-[0.83rem]",
+                "transition-colors duration-150",
+                isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
+                plugin.busy && "opacity-60",
+              )}
+              aria-busy={plugin.busy || undefined}
+            >
+              {isActive && (
+                <motion.span
+                  layoutId="nav-leaf"
+                  className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
+                  transition={{ type: "spring", stiffness: 520, damping: 42 }}
+                />
+              )}
+              <span className="relative truncate">{t(labelKey)}</span>
+            </span>
+          )}
+        </NavLink>
+        {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute right-1.5 top-1/2 -translate-y-1/2" />}
+      </div>
       {children && children.length > 0 && (
         <div className="ml-3 border-l border-line pl-2">
           {children.map((child) => <Leaf key={child.to} {...child} onNavigate={onNavigate} />)}
@@ -327,29 +402,38 @@ function FlyoutLeaf({
   end,
   children,
   onNavigate,
+  pluginCode,
 }: {
   to: string;
   labelKey: string;
   end?: boolean;
   children?: NonNullable<NavSection["children"]>[number]["children"];
   onNavigate?: () => void;
+  pluginCode?: string;
 }) {
   const { t } = useI18n();
   const linkEnd = end ?? Boolean(children?.length);
+  const plugin = usePluginMenuItem(pluginCode, to, onNavigate);
   return (
     <div>
-      <NavLink to={to} end={linkEnd} onClick={onNavigate} data-guide-nav={to}>
-      {({ isActive }) => (
-        <span
-          className={clsx(
-            "block rounded-lg px-2.5 py-2 text-[0.83rem] transition-colors",
-            isActive ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
-          )}
-        >
-          {t(labelKey)}
-        </span>
-      )}
-      </NavLink>
+      <div className="relative">
+        <NavLink to={to} end={linkEnd} onClick={plugin.onClick} data-guide-nav={to} className={plugin.close ? "block" : undefined}>
+        {({ isActive }) => (
+          <span
+            className={clsx(
+              "block rounded-lg px-2.5 py-2 text-[0.83rem] transition-colors",
+              isActive ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
+              plugin.close && "pr-7",
+              plugin.busy && "opacity-60",
+            )}
+            aria-busy={plugin.busy || undefined}
+          >
+            {t(labelKey)}
+          </span>
+        )}
+        </NavLink>
+        {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute right-2 top-1/2 -translate-y-1/2" />}
+      </div>
       {children && children.length > 0 && <div className="ml-3 border-l border-line pl-2">{children.map((child) => <FlyoutLeaf key={child.to} {...child} onNavigate={onNavigate} />)}</div>}
     </div>
   );
@@ -375,9 +459,10 @@ function CollapsedSection({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const flyoutRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const plugin = usePluginMenuItem(section.pluginCode, section.to ?? "", onNavigate);
 
-  // O submenu é `fixed` e ancorado ao ícone, para não ser cortado pela área
-  // rolável do menu (um `overflow` faria o mesmo com um `absolute`).
+  // The submenu is `fixed` and anchored to the icon, so it is not clipped by the
+  // scrollable menu (an `overflow` would clip an `absolute` one).
   const anchorFlyout = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (rect) setAnchor({ top: rect.top, left: rect.right });
@@ -386,39 +471,43 @@ function CollapsedSection({
   useLayoutEffect(() => {
     const flyout = flyoutRef.current;
     if (!flyout || !anchor) return;
-    // Desce a partir do ícone, mas não passa do pé da janela.
+    // Drops from the icon, but never past the bottom of the window.
     const overflow = anchor.top + flyout.offsetHeight - (window.innerHeight - 8);
     flyout.style.top = `${Math.max(8, anchor.top - Math.max(0, overflow))}px`;
   }, [anchor]);
 
   if (section.to) {
     return (
-      <NavLink to={section.to} end onClick={onNavigate} data-guide-nav={section.to} aria-label={label} title={label}>
-        {({ isActive }) => (
-          <span
-            className={clsx(
-              "relative flex h-10 items-center justify-center rounded-lg transition-colors duration-150",
-              isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
-            )}
-          >
-            {isActive && (
-              <motion.span
-                layoutId="nav-collapsed-section"
-                className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
-                transition={{ type: "spring", stiffness: 520, damping: 42 }}
+      <div className="relative">
+        <NavLink to={section.to} end onClick={plugin.onClick} data-guide-nav={section.to} aria-label={label} title={label} aria-busy={plugin.busy || undefined}>
+          {({ isActive }) => (
+            <span
+              className={clsx(
+                "relative flex h-10 items-center justify-center rounded-lg transition-colors duration-150",
+                isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
+                plugin.busy && "opacity-60",
+              )}
+            >
+              {isActive && (
+                <motion.span
+                  layoutId="nav-collapsed-section"
+                  className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
+                  transition={{ type: "spring", stiffness: 520, damping: 42 }}
+                />
+              )}
+              <NavigationIcon
+                icon={Icon}
+                image={section.iconImage}
+                className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")}
               />
-            )}
-            <NavigationIcon
-              icon={Icon}
-              image={section.iconImage}
-              className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")}
-            />
-            <UnreadBadge count={badge ?? 0} compact />
-            {/* Both on a collapsed icon: the lobby takes the other corner. */}
-            <LobbyBadge count={lobbyBadge ?? 0} compact />
-          </span>
-        )}
-      </NavLink>
+              <UnreadBadge count={badge ?? 0} compact />
+              {/* Both on a collapsed icon: the lobby takes the other corner. */}
+              <LobbyBadge count={lobbyBadge ?? 0} compact />
+            </span>
+          )}
+        </NavLink>
+        {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute -left-1 -top-1" />}
+      </div>
     );
   }
 
@@ -494,17 +583,22 @@ function Section({
   const expanded = open || holdsPath;
   const Icon = section.icon;
 
+  const plugin = usePluginMenuItem(section.pluginCode, section.to ?? "", onNavigate);
+
   if (collapsed) return <CollapsedSection section={section} onNavigate={onNavigate} badge={badge} lobbyBadge={lobbyBadge} />;
 
   if (section.to) {
     return (
-      <NavLink to={section.to} end onClick={onNavigate} data-guide-nav={section.to}>
+      <div className="relative">
+      <NavLink to={section.to} end onClick={plugin.onClick} data-guide-nav={section.to} className={plugin.close ? "block" : undefined} aria-busy={plugin.busy || undefined}>
         {({ isActive }) => (
           <span
             className={clsx(
               "relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium",
               "transition-colors duration-150",
               isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
+              plugin.close && "pr-7",
+              plugin.busy && "opacity-60",
             )}
           >
             {isActive && (
@@ -527,6 +621,8 @@ function Section({
           </span>
         )}
       </NavLink>
+      {plugin.close && <PluginCloseButton onClick={plugin.close} className="absolute right-2 top-1/2 -translate-y-1/2" />}
+      </div>
     );
   }
 

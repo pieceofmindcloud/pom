@@ -163,7 +163,12 @@ Per-file list:
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated
-  active pill; a section holding the current path stays open. The desktop
+  active pill; a section holding the current path stays open. A plugin item
+  whose manifest is `on_demand` (`NavSection.pluginCode`, `usePluginMenuItem`)
+  starts its process on click when it is stopped, and shows a `PluginCloseButton`
+  X beside the link while it runs; the button sits next to the link, never
+  inside it (a button inside an anchor is invalid). `PluginScreen` shows a
+  stopped card instead of loading the module while the process is down. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and child flyouts on hover, focus or
   click. The admin/node nav is a `ScrollableNav` in both states: when the items

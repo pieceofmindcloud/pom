@@ -20,22 +20,19 @@ import { Confirm } from "../components/Confirm";
 import { formatClusterVersion } from "../lib/clusterVersion";
 import { MachineIcon } from "../components/MachineIcon";
 import { Markdown } from "../components/Markdown";
-import { MarkdownField } from "../components/MarkdownField";
+import { AccessFields, DiscoveryChoices, InfoFields, SetupSection } from "../components/NetworkQuickSetup";
 import {
   Badge,
   Button,
   Dot,
   Empty,
   ErrorState,
-  Field,
   Footnote,
-  Input,
   KeyValue,
   Mono,
   PageHeader,
   Panel,
   PanelHeader,
-  Select,
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
@@ -46,7 +43,6 @@ import { NETWORK_GEO, placeLabel } from "../lib/geo";
 import { networkStats } from "../lib/networkStats";
 import { admissionsApi, useAdmissions } from "../lib/admissions";
 import { useToast } from "../lib/toast";
-import { ENROLLMENT_ROLES } from "../lib/types";
 import type { AdminNode, ClusterView, EnrollmentRole, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -451,92 +447,18 @@ function NetworkInfoPanel({
         }
       />
       {editable ? (
-        <div className="grid min-w-0 gap-4 px-5 py-5 md:grid-cols-2">
-          <Field label={t("network.publicName")} hint={publicNetwork ? t("network.publicNameRequired") : undefined}>
-            <Input required={publicNetwork} value={draft.public_name} onChange={(event) => update({ public_name: event.target.value })} />
-          </Field>
-          <Field label={t("network.organization")}>
-            <Input value={draft.organization} onChange={(event) => update({ organization: event.target.value })} />
-          </Field>
-          <Field label={t("network.description")} className="md:col-span-2">
-            <MarkdownField value={draft.description} onChange={(description) => update({ description })} previewTestId="markdown-preview-description" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.description")} />
-          </Field>
-          <Field label={t("network.rules")} className="md:col-span-2">
-            <MarkdownField value={draft.rules} onChange={(rules) => update({ rules })} previewTestId="markdown-preview-rules" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.rules")} />
-          </Field>
-          <Field label={t("network.channels")} className="md:col-span-2">
-            <MarkdownField value={draft.channels} onChange={(channels) => update({ channels })} previewTestId="markdown-preview-channels" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.channels")} />
-          </Field>
-          <Field label={t("network.visibility")}>
-            <Select value={draft.visibility} onChange={(event) => update({ visibility: event.target.value as NetworkSettingsData["visibility"] })}>
-              <option value="local">{t("network.visibilityLocal")}</option>
-              {/* Hidden: announced, but no relay lists it. Another machine
-                  reaches it by importing its trust document on the Networks
-                  screen. */}
-              <option value="private">{t("network.visibilityPrivate")}</option>
-              <option value="public">{t("network.visibilityPublic")}</option>
-            </Select>
-          </Field>
-          {/* Admission only exists with discovery: a network nobody can
-              reach has nobody to admit, so its options are not shown. */}
-          {discoverable && (
-            <Field label={t("network.accessPolicy")}>
-              <Select value={draft.access_policy} onChange={(event) => update({ access_policy: event.target.value as NetworkSettingsData["access_policy"] })}>
-                <option value="authorized">{t("network.accessAuthorized")}</option>
-                <option value="auto_approve">{t("network.accessAutoApprove")}</option>
-                {/* The open mode is no longer offered. A network already on it
-                    keeps showing it, so saving another field does not silently
-                    close the network to its current members. */}
-                {draft.access_policy === "anyone_with_anchor" && <option value="anyone_with_anchor">{t("network.accessAnyoneWithAnchor")}</option>}
-                <option value="local_only">{t("network.accessLocalOnly")}</option>
-              </Select>
-            </Field>
-          )}
-          {discoverable && draft.access_policy === "auto_approve" && (
-            <div role="alert" data-testid="auto-approve-warning" className="flex items-start gap-3 rounded-lg border border-amber/40 bg-amber/[0.07] px-3 py-2.5 md:col-span-2">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <p className="text-sm leading-relaxed text-fg">{t("network.accessAutoApproveWarning")}</p>
-            </div>
-          )}
-          {discoverable && (
-            <Field label={t("network.acceptedEnrollments")} hint={t("network.acceptedEnrollmentsHint")} className="md:col-span-2">
-              <div className="flex flex-wrap gap-x-5 gap-y-2">
-                {ENROLLMENT_ROLES.map((role) => (
-                  <label key={role} className="flex items-center gap-2 text-sm text-fg">
-                    <input
-                      type="checkbox"
-                      checked={draft.accepted_enrollments.includes(role)}
-                      onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })}
-                    />
-                    {t(`network.enrollment.${role}`)}
-                  </label>
-                ))}
-              </div>
-            </Field>
-          )}
+        /* The same questions, in the same order and drawing, as the quick
+           setup of the Networks screen: one identity for both. A question a
+           discovery choice makes meaningless is not drawn. */
+        <div className="min-w-0 space-y-7 px-5 py-5">
+          <SetupSection step="discovery" number={1} t={t}><DiscoveryChoices draft={draft} update={update} t={t} /></SetupSection>
+          <SetupSection step="info" number={2} t={t}><InfoFields draft={draft} update={update} t={t} /></SetupSection>
+          {discoverable && <SetupSection step="access" number={3} t={t}><AccessFields draft={draft} update={update} t={t} full /></SetupSection>}
           {publicNetwork && (
-            <Field label={t("network.publicStats")} hint={t("network.publicStatsHint")} className="md:col-span-2">
-              <label className="flex items-center gap-2 text-sm text-fg">
-                <input
-                  type="checkbox"
-                  checked={Boolean(draft.public_stats)}
-                  onChange={(event) => update({ public_stats: event.target.checked })}
-                />
-                {t("network.publicStatsEnable")}
-              </label>
-            </Field>
-          )}
-          {/* The place is what the public directory groups and sorts by: a
-              network that is not listed has no use for it. */}
-          {publicNetwork && (
-            <>
-              <div className="min-w-0 md:col-span-2">
-                <LocationEditor value={draft} source={NETWORK_GEO} required t={t} onChange={(place) => update(place)} />
-              </div>
-              <div className="min-w-0 md:col-span-2">
-                <KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue>
-              </div>
-            </>
+            <SetupSection step="location" number={4} t={t}>
+              <LocationEditor value={draft} source={NETWORK_GEO} required t={t} onChange={(place) => update(place)} />
+              <div className="mt-4 min-w-0"><KeyValue label={t("network.geoLabel")}><Mono className="break-all">{draft.geo_label || t("network.notPublished")}</Mono></KeyValue></div>
+            </SetupSection>
           )}
         </div>
       ) : (

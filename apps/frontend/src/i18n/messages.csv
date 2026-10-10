@@ -2043,6 +2043,8 @@ publicNetworks.within,Distance,Distância
 publicNetworks.withinAny,Any distance,Qualquer distância
 publicNetworks.withinKm,Within {value} km,Até {value} km
 quickSetup.accessAuthorizedDetail,Each request waits for you to approve it in the notifications bell.,Cada pedido espera a sua aprovação no sino de notificações.
+quickSetup.accessLegacyDetail,"The old open mode: anyone holding the trust root joins. It is no longer offered; choose another one to leave it.","O modo aberto antigo: quem tem a raiz de confiança entra. Não é mais oferecido; escolha outro para sair dele."
+quickSetup.accessLocalOnlyDetail,"Nobody else is admitted, even with discovery on.","Ninguém mais é admitido, mesmo com a descoberta ligada."
 quickSetup.action,Quick setup,Configuração rápida
 quickSetup.descriptionHint,What the network is for and what it offers.,Para que serve a rede e o que ela oferece.
 quickSetup.discoveryHidden,Hidden,Oculta

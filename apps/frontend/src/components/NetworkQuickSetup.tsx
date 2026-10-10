@@ -9,7 +9,7 @@
  * stays the authority: it validates the place and refuses a caller that is
  * not the principal.
  */
-import { BrainCircuit, Check, ChevronLeft, ChevronRight, EyeOff, Globe2, MapPin, Rocket, Server, ShieldAlert, Users, WifiOff } from "lucide-react";
+import { BrainCircuit, Check, ChevronLeft, ChevronRight, EyeOff, Globe2, Monitor, MapPin, Rocket, Server, ShieldAlert, ShieldQuestion, Users, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Modal } from "./Confirm";
@@ -22,6 +22,21 @@ import type { EnrollmentRole, NetworkInfoView, NetworkSettings } from "../lib/ty
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 type Step = "discovery" | "info" | "access" | "location" | "review";
+type Update = (patch: Partial<NetworkSettings>) => void;
+
+/** The icon of each discovery choice, the same on the Networks screen and in Network settings. */
+export const VISIBILITY_ICONS: Record<NetworkSettings["visibility"], typeof Globe2> = {
+  public: Globe2,
+  private: EyeOff,
+  local: WifiOff,
+};
+
+/** The short name of each discovery choice. */
+export const VISIBILITY_LABELS: Record<NetworkSettings["visibility"], string> = {
+  public: "quickSetup.discoveryPublic",
+  private: "quickSetup.discoveryHidden",
+  local: "quickSetup.discoveryOff",
+};
 
 /** The icon of each role a machine can ask to join with. */
 export const ENROLLMENT_ICONS: Record<EnrollmentRole, typeof Server> = {
@@ -116,73 +131,13 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
           <h3 className="font-display text-base font-semibold text-fg">{t(`quickSetup.heading.${step}`)}</h3>
           <p className="mt-1 text-sm text-muted">{t(`quickSetup.lead.${step}`)}</p>
         </div>
-        {step === "discovery" && (
-          <div className="grid gap-2" role="radiogroup" aria-label={t("network.visibility")}>
-            <Choice selected={draft.visibility === "public"} onSelect={() => update({ visibility: "public" })} icon={<Globe2 className="h-5 w-5" />} title={t("quickSetup.discoveryPublic")} detail={t("quickSetup.discoveryPublicDetail")} badge={t("quickSetup.recommended")} />
-            <Choice selected={draft.visibility === "private"} onSelect={() => update({ visibility: "private" })} icon={<EyeOff className="h-5 w-5" />} title={t("quickSetup.discoveryHidden")} detail={t("quickSetup.discoveryHiddenDetail")} />
-            <Choice selected={draft.visibility === "local"} onSelect={() => update({ visibility: "local" })} icon={<WifiOff className="h-5 w-5" />} title={t("quickSetup.discoveryOff")} detail={t("quickSetup.discoveryOffDetail")} />
-          </div>
-        )}
-        {step === "info" && (
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label={t("network.publicName")} hint={publicNetwork ? t("network.publicNameRequired") : undefined}>
-              <Input autoFocus value={draft.public_name} onChange={(event) => update({ public_name: event.target.value })} />
-            </Field>
-            <Field label={t("network.organization")} hint={t("quickSetup.optional")}>
-              <Input value={draft.organization} onChange={(event) => update({ organization: event.target.value })} />
-            </Field>
-            <Field label={t("network.description")} hint={t("quickSetup.descriptionHint")} className="md:col-span-2">
-              <TextArea rows={4} value={draft.description} onChange={(description) => update({ description })} />
-            </Field>
-            <Field label={t("network.rules")} hint={t("quickSetup.rulesHint")} className="md:col-span-2">
-              <TextArea rows={3} value={draft.rules} onChange={(rules) => update({ rules })} />
-            </Field>
-            <Field label={t("network.channels")} hint={t("quickSetup.optional")} className="md:col-span-2">
-              <Input value={draft.channels} onChange={(event) => update({ channels: event.target.value })} />
-            </Field>
-          </div>
-        )}
-        {step === "access" && (
-          <div className="space-y-5">
-            <div className="grid gap-2" role="radiogroup" aria-label={t("network.accessPolicy")}>
-              <Choice selected={draft.access_policy === "authorized"} onSelect={() => update({ access_policy: "authorized" })} icon={<Users className="h-5 w-5" />} title={t("network.accessAuthorized")} detail={t("quickSetup.accessAuthorizedDetail")} badge={t("quickSetup.recommended")} />
-              <Choice selected={draft.access_policy === "auto_approve"} onSelect={() => update({ access_policy: "auto_approve" })} icon={<ShieldAlert className="h-5 w-5" />} title={t("network.accessAutoApprove")} detail={t("network.accessAutoApproveWarning")} warning />
-            </div>
-            <section>
-              <p className="eyebrow mb-1.5">{t("network.acceptedEnrollments")}</p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {ENROLLMENT_ROLES.map((role) => {
-                  const Icon = ENROLLMENT_ICONS[role];
-                  const checked = draft.accepted_enrollments.includes(role);
-                  return (
-                    <label key={role} className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 ${checked ? "border-lime/40 bg-lime/[0.06]" : "border-line"}`}>
-                      <input type="checkbox" checked={checked} onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })} />
-                      <Icon className={`h-4 w-4 shrink-0 ${checked ? "text-lime" : "text-faint"}`} />
-                      <span className="min-w-0">
-                        <span className="block text-sm text-fg">{t(`network.enrollment.${role}`)}</span>
-                        <span className="block text-[0.7rem] text-faint">{t(`quickSetup.role.${role}`)}</span>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-              <p className="mt-1.5 text-xs text-faint">{t("network.acceptedEnrollmentsHint")}</p>
-            </section>
-            {publicNetwork && (
-              <label className="flex items-start gap-3 rounded-lg border border-line px-3 py-2.5">
-                <input type="checkbox" className="mt-1" checked={Boolean(draft.public_stats)} onChange={(event) => update({ public_stats: event.target.checked })} />
-                <span>
-                  <span className="block text-sm text-fg">{t("network.publicStatsEnable")}</span>
-                  <span className="block text-xs text-faint">{t("network.publicStatsHint")}</span>
-                </span>
-              </label>
-            )}
-          </div>
-        )}
+        {step === "discovery" && <DiscoveryChoices draft={draft} update={update} t={t} />}
+        {step === "info" && <InfoFields draft={draft} update={update} t={t} autoFocus />}
+        {step === "access" && <AccessFields draft={draft} update={update} t={t} />}
         {step === "location" && <LocationEditor value={draft} source={NETWORK_GEO} required t={t} onChange={(place) => update(place)} />}
         {step === "review" && (
           <dl className="grid gap-x-6 gap-y-3 rounded-lg border border-line bg-raised/40 p-4 sm:grid-cols-2" data-testid="quick-setup-review">
-            <Summary label={t("network.visibility")}>{t(draft.visibility === "public" ? "quickSetup.discoveryPublic" : draft.visibility === "private" ? "quickSetup.discoveryHidden" : "quickSetup.discoveryOff")}</Summary>
+            <Summary label={t("network.visibility")}>{t(VISIBILITY_LABELS[draft.visibility])}</Summary>
             <Summary label={t("network.publicName")}>{draft.public_name || t("network.notProvided")}</Summary>
             <Summary label={t("network.organization")}>{draft.organization || t("network.notProvided")}</Summary>
             {draft.visibility !== "local" && <Summary label={t("network.accessPolicy")}>{t(draft.access_policy === "auto_approve" ? "network.accessAutoApprove" : draft.access_policy === "local_only" ? "network.accessLocalOnly" : "network.accessAuthorized")}</Summary>}
@@ -201,6 +156,103 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
         {failure && <p role="alert" className="rounded-md border border-rose/30 bg-rose/[0.06] px-3 py-2 text-xs text-rose">{t("network.infoSaveFailed")}: {failure}</p>}
       </div>
     </Modal>
+  );
+}
+
+/** A heading and lead for one question, the same words the wizard uses for its step. */
+export function SetupSection({ step, number, t, children }: { step: Exclude<Step, "review">; number: number; t: Translate; children: ReactNode }) {
+  return (
+    <section className="min-w-0 space-y-3" data-testid={`network-section-${step}`}>
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-iris/40 bg-iris/10 font-mono text-[0.7rem] text-iris">{number}</span>
+        <div className="min-w-0">
+          <h3 className="font-display text-base font-semibold text-fg">{t(`quickSetup.heading.${step}`)}</h3>
+          <p className="mt-0.5 text-sm text-muted">{t(`quickSetup.lead.${step}`)}</p>
+        </div>
+      </div>
+      <div className="min-w-0 sm:pl-9">{children}</div>
+    </section>
+  );
+}
+
+export function DiscoveryChoices({ draft, update, t }: { draft: NetworkSettings; update: Update; t: Translate }) {
+  return (
+    <div className="grid gap-2" role="radiogroup" aria-label={t("network.visibility")}>
+      <Choice selected={draft.visibility === "public"} onSelect={() => update({ visibility: "public" })} icon={<Globe2 className="h-5 w-5" />} title={t("quickSetup.discoveryPublic")} detail={t("quickSetup.discoveryPublicDetail")} badge={t("quickSetup.recommended")} />
+      <Choice selected={draft.visibility === "private"} onSelect={() => update({ visibility: "private" })} icon={<EyeOff className="h-5 w-5" />} title={t("quickSetup.discoveryHidden")} detail={t("quickSetup.discoveryHiddenDetail")} />
+      <Choice selected={draft.visibility === "local"} onSelect={() => update({ visibility: "local" })} icon={<WifiOff className="h-5 w-5" />} title={t("quickSetup.discoveryOff")} detail={t("quickSetup.discoveryOffDetail")} />
+    </div>
+  );
+}
+
+export function InfoFields({ draft, update, t, autoFocus = false }: { draft: NetworkSettings; update: Update; t: Translate; autoFocus?: boolean }) {
+  const publicNetwork = draft.visibility === "public";
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <Field label={t("network.publicName")} hint={publicNetwork ? t("network.publicNameRequired") : undefined}>
+        <Input autoFocus={autoFocus} required={publicNetwork} value={draft.public_name} onChange={(event) => update({ public_name: event.target.value })} />
+      </Field>
+      <Field label={t("network.organization")} hint={t("quickSetup.optional")}>
+        <Input value={draft.organization} onChange={(event) => update({ organization: event.target.value })} />
+      </Field>
+      <Field label={t("network.description")} hint={t("quickSetup.descriptionHint")} className="md:col-span-2">
+        <TextArea rows={4} value={draft.description} onChange={(description) => update({ description })} />
+      </Field>
+      <Field label={t("network.rules")} hint={t("quickSetup.rulesHint")} className="md:col-span-2">
+        <TextArea rows={3} value={draft.rules} onChange={(rules) => update({ rules })} />
+      </Field>
+      <Field label={t("network.channels")} hint={t("quickSetup.optional")} className="md:col-span-2">
+        <Input value={draft.channels} onChange={(event) => update({ channels: event.target.value })} />
+      </Field>
+    </div>
+  );
+}
+
+/**
+ * Who may join and with which roles. `full` also offers "This machine only"
+ * and keeps the legacy open mode visible on a network already on it, so
+ * saving another field never changes the policy behind the operator's back.
+ */
+export function AccessFields({ draft, update, t, full = false }: { draft: NetworkSettings; update: Update; t: Translate; full?: boolean }) {
+  const publicNetwork = draft.visibility === "public";
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-2" role="radiogroup" aria-label={t("network.accessPolicy")}>
+        <Choice selected={draft.access_policy === "authorized"} onSelect={() => update({ access_policy: "authorized" })} icon={<Users className="h-5 w-5" />} title={t("network.accessAuthorized")} detail={t("quickSetup.accessAuthorizedDetail")} badge={t("quickSetup.recommended")} />
+        <Choice selected={draft.access_policy === "auto_approve"} onSelect={() => update({ access_policy: "auto_approve" })} icon={<ShieldAlert className="h-5 w-5" />} title={t("network.accessAutoApprove")} detail={t("network.accessAutoApproveWarning")} warning />
+        {full && <Choice selected={draft.access_policy === "local_only"} onSelect={() => update({ access_policy: "local_only" })} icon={<Monitor className="h-5 w-5" />} title={t("network.accessLocalOnly")} detail={t("quickSetup.accessLocalOnlyDetail")} />}
+        {full && draft.access_policy === "anyone_with_anchor" && <Choice selected onSelect={() => undefined} icon={<ShieldQuestion className="h-5 w-5" />} title={t("network.accessAnyoneWithAnchor")} detail={t("quickSetup.accessLegacyDetail")} warning />}
+      </div>
+      <section>
+        <p className="eyebrow mb-1.5">{t("network.acceptedEnrollments")}</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {ENROLLMENT_ROLES.map((role) => {
+            const Icon = ENROLLMENT_ICONS[role];
+            const checked = draft.accepted_enrollments.includes(role);
+            return (
+              <label key={role} className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 ${checked ? "border-lime/40 bg-lime/[0.06]" : "border-line"}`}>
+                <input type="checkbox" checked={checked} onChange={(event) => update({ accepted_enrollments: ENROLLMENT_ROLES.filter((item) => item === role ? event.target.checked : draft.accepted_enrollments.includes(item)) })} />
+                <Icon className={`h-4 w-4 shrink-0 ${checked ? "text-lime" : "text-faint"}`} />
+                <span className="min-w-0">
+                  <span className="block text-sm text-fg">{t(`network.enrollment.${role}`)}</span>
+                  <span className="block text-[0.7rem] text-faint">{t(`quickSetup.role.${role}`)}</span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <p className="mt-1.5 text-xs text-faint">{t("network.acceptedEnrollmentsHint")}</p>
+      </section>
+      {publicNetwork && (
+        <label className="flex items-start gap-3 rounded-lg border border-line px-3 py-2.5">
+          <input type="checkbox" className="mt-1" checked={Boolean(draft.public_stats)} onChange={(event) => update({ public_stats: event.target.checked })} />
+          <span>
+            <span className="block text-sm text-fg">{t("network.publicStatsEnable")}</span>
+            <span className="block text-xs text-faint">{t("network.publicStatsHint")}</span>
+          </span>
+        </label>
+      )}
+    </div>
   );
 }
 

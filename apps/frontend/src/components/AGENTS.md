@@ -114,10 +114,6 @@ Per-file list:
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`. `compact` shrinks text, headings and block gaps
   together for side panels (the Networks screen's network panel).
-- `MarkdownField.tsx` - editor compartilhado para metadados administráveis:
-  textarea com altura mínima confortável e prévia ao vivo usando `Markdown`.
-  A configuração da rede usa o mesmo campo para descrição, regras e canais;
-  o contrato continua sendo texto Markdown, não HTML.
 - `ChatSessionList.tsx` - shared conversation history list. The Chat screen
   uses the wide variant; the `infer` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
@@ -517,8 +513,12 @@ Per-file list:
   only) and a review. `quickSetupSteps` drops the steps a visibility does not
   need. It saves the whole `NetworkSettings` through
   `POST /api/ui/network/settings`, the same route as Network settings, and
-  the node stays the authority. Also exports `ENROLLMENT_ICONS`, the icon of
-  each enrollment role used across the Networks screen. Tested through
+  the node stays the authority. Its steps are exported (`SetupSection`,
+  `DiscoveryChoices`, `InfoFields`, `AccessFields`) and Network settings
+  draws its edit form with them, so both ask the same questions the same way.
+  Also exports `ENROLLMENT_ICONS` (icon of each enrollment role) and
+  `VISIBILITY_ICONS`/`VISIBILITY_LABELS` (globe, eye-off, wifi-off), which the
+  Networks screen draws before each network's name. Tested through
   `../routes/PublicNetworks.test.tsx`.
 - `LobbyHardwareCard.tsx` - The hardware a lobby candidate declares: hostname,
   OS, CPU threads, RAM and GPUs with VRAM. Same facts the Dashboard card opens

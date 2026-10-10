@@ -120,17 +120,23 @@ Per-file list:
   leitura somente leitura com nome, descrição, regras, organização, canais,
   visibilidade e localização; um administrador autorizado pode editar o bloco
   completo. A edição grava no nó, propaga o envelope assinado aos peers e
-  atualiza a descoberta pública. The editable block includes "Accepting new
-  members", one checkbox per `EnrollmentRole` (`ENROLLMENT_ROLES` in
-  `lib/types.ts`); unchecking all of them advertises the network as closed.
+  atualiza a descoberta pública. The editable block asks the questions of the
+  Networks screen's quick setup, in the same order and drawing, with the
+  components `../components/NetworkQuickSetup.tsx` exports (`SetupSection`,
+  `DiscoveryChoices`, `InfoFields`, `AccessFields` with `full`, then
+  `LocationEditor`): discovery, information, who can join, location. It
+  includes "Accepting new members", one card per `EnrollmentRole`
+  (`ENROLLMENT_ROLES` in `lib/types.ts`) with its icon; unchecking all of them
+  advertises the network as closed.
   There is no lobby option: the lobby follows discovery. "Who can join"
   (`access_policy`) and "Accepting new members" are shown only with discovery
   on or hidden, and the published stats only on a public network; with
   discovery off they are not rendered at all. The location editor and the
   geographic label are rendered only on a public network, the only kind the
   directory places on a map. "Who can join" offers "Approved
-  by an admin", "Anyone without approval" (`auto_approve`, with a warning
-  block under it, `auto-approve-warning`) and "This machine only". Discovery offers
+  by an admin", "Anyone without approval" (`auto_approve`, its warning is the
+  choice's own text) and "This machine only"; a network still on the legacy
+  open mode sees it as a fourth choice. Discovery offers
   "Hidden" (`private`) again: no relay lists the network, and another machine
   reaches it by importing its trust document on the Networks screen. The leave
   action ("Return to my own network", `POST /api/ui/network/leave`) is not
@@ -155,9 +161,9 @@ Per-file list:
   esta máquina. No Windows, quando suportado, a mesma tela mostra o estado das
   quatro regras de firewall derivadas da porta P2P efetiva e oferece `Tentar
   novamente` após uma recusa do UAC; essa ação é independente da implantação.
-  Descrição, regras e o campo único de canais Discord ou Telegram são editados
-  como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
-  mesmo renderer Markdown compartilhado pelo Chat.
+  Description and rules are edited as plain Markdown text with no live
+  preview, and the channels in one line; the read-only view renders them with
+  the Markdown renderer the Chat uses.
 - `Plugins.tsx` - `/plugins` combines the public catalog at
   `https://license.pieceofmind.cloud/v1/plugins` with local state from
   `GET /api/ui/plugins`, using `code` as the identity. The public client lives

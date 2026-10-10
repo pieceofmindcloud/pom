@@ -203,13 +203,12 @@ describe("NetworkSettings", () => {
     expect(screen.queryByRole("button", { name: "Salvar detalhes da rede" })).toBeNull();
   });
 
-  it("offers wide Markdown editing with preview for description, rules and channels", () => {
+  it("edits description, rules and channels as plain text, with no Markdown preview", () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
     queryMocks.networkInfo.data.network.description = "# Descrição da rede\n\nTexto inicial";
     queryMocks.networkInfo.data.network.rules = "- Seja gentil";
-    queryMocks.networkInfo.data.network.channels = "[Discord](https://discord.example)";
 
     render(
       <LocaleProvider initialLocale="pt-BR">
@@ -217,14 +216,11 @@ describe("NetworkSettings", () => {
       </LocaleProvider>,
     );
 
-    for (const label of ["Descrição", "Regras da rede", "Discord ou Telegram"]) {
-      const field = screen.getByRole("textbox", { name: label });
-      expect(field.tagName).toBe("TEXTAREA");
-      expect(field.className).toMatch(/min-h-\[12rem\]/);
-    }
-    expect(screen.getByTestId("markdown-preview-description").querySelector("h1")?.textContent).toBe("Descrição da rede");
-    expect(screen.getByTestId("markdown-preview-rules").querySelector("li")?.textContent).toBe("Seja gentil");
-    expect(screen.getByTestId("markdown-preview-channels").querySelector("a")?.textContent).toBe("Discord");
+    expect((screen.getByLabelText(/^Descrição/) as HTMLTextAreaElement).value).toBe("# Descrição da rede\n\nTexto inicial");
+    expect(screen.getByLabelText(/^Descrição/).tagName).toBe("TEXTAREA");
+    expect(screen.getByLabelText(/^Regras da rede/).tagName).toBe("TEXTAREA");
+    expect(screen.queryByTestId("markdown-preview-description")).toBeNull();
+    expect(screen.queryByTestId("markdown-preview-rules")).toBeNull();
   });
 
   it("offers editing to the administrator and keeps sharing in the trust root", async () => {
@@ -243,7 +239,7 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 
-  it("offers admission options only with discovery, and warns about joining without approval", () => {
+  it("asks the quick setup's questions in its order, and only those that apply to the discovery", () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -253,22 +249,23 @@ describe("NetworkSettings", () => {
       </LocaleProvider>,
     );
 
-    // The place only matters to the public directory.
-    expect(screen.queryByText("Rótulo de descoberta")).toBeNull();
-    const policy = screen.getByDisplayValue("Aprovados por um administrador");
+    const sections = () => screen.getAllByTestId(/^network-section-/).map((section) => section.getAttribute("data-testid"));
+    // Hidden: no place, since only the public directory places a network.
+    expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-access"]);
+    expect(screen.getByRole("radio", { name: /Oculta/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: /Aprovados por um administrador/ }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByText("Aceitando novos membros")).toBeTruthy();
     expect(screen.queryByText("Lobby")).toBeNull();
-    expect(screen.queryByTestId("auto-approve-warning")).toBeNull();
-    fireEvent.change(policy, { target: { value: "auto_approve" } });
-    expect(screen.getByTestId("auto-approve-warning")).toBeTruthy();
+    // Joining without approval carries its warning in the choice itself.
+    fireEvent.click(screen.getByRole("radio", { name: /Qualquer um sem aprovação/ }));
+    expect(screen.getByRole("radio", { name: /Qualquer um sem aprovação/ }).textContent).toContain("sem um administrador olhar");
 
-    fireEvent.change(screen.getByDisplayValue(/^Oculta/), { target: { value: "public" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Pública/ }));
+    expect(sections()).toEqual(["network-section-discovery", "network-section-info", "network-section-access", "network-section-location"]);
     expect(screen.getByText("Rótulo de descoberta")).toBeTruthy();
-    fireEvent.change(screen.getByDisplayValue(/^Ligada/), { target: { value: "local" } });
-    expect(screen.queryByText("Rótulo de descoberta")).toBeNull();
-    expect(screen.queryByText("Quem pode entrar")).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /Desligada/ }));
+    expect(sections()).toEqual(["network-section-discovery", "network-section-info"]);
     expect(screen.queryByText("Aceitando novos membros")).toBeNull();
-    expect(screen.queryByTestId("auto-approve-warning")).toBeNull();
   });
 
   it("lets the admin revoke an admitted machine, behind a confirmation", async () => {

@@ -696,6 +696,9 @@ describe("PublicNetworks", () => {
     await screen.findByText("Rede privada");
     const kinds = screen.getAllByTestId(/^network-row-/).map((row) => row.getAttribute("data-network-kind"));
     expect(kinds).toEqual(["own", "custom", "public", "public", "public"]);
+    // Before each name, the discovery icon of Network settings.
+    const visibilities = screen.getAllByTestId("network-visibility-icon").map((icon) => icon.getAttribute("data-visibility"));
+    expect(visibilities).toEqual(["local", "private", "public", "public", "public"]);
     const ownRow = screen.getByTestId("network-row-fingerprint-own");
     expect(within(ownRow).getByText("Your network")).toBeTruthy();
     // The machine's own network offers neither joining nor removal.

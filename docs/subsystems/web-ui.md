@@ -292,7 +292,9 @@ local-only notice. Routes:
   records what it finds) answers, reads the page again; a row the live
   listing did not return says when it was last seen. The search box, the
   country, city and distance filters and the order (distance, name) go to the
-  node; latency is measured in the browser and reorders the page. Clicking a
+  node; latency is measured in the browser and reorders the page. Each name
+  is preceded by its discovery icon (public globe, hidden eye-off, off
+  wifi-off), the same Network settings and the quick setup draw. Clicking a
   row selects it (iris band) and opens a side panel drawn like the
   Dashboard's property inspector, in small print: the network's name, whether
   it takes new members (each role, network node and inference node, with its
@@ -328,12 +330,14 @@ local-only notice. Routes:
   joined like a public one, through its lobby; its admin only needs discovery
   on "Hidden", since the lobby follows discovery. The network Chat is not
   needed to ask for admission; without it the lobby window shows no
-  conversation, only the hardware card and the request panel. In Network
-  settings, "Who can join" and "Accepting new members" appear only with
-  discovery on or hidden; "Who can join" has "Anyone without approval"
-  (`auto_approve`), which admits every request on arrival and shows a
-  warning when selected. The location (city, pin, geographic label) is
-  shown only on a public network. The table groups by country/city and sorts
+  conversation, only the hardware card and the request panel. Network
+  settings asks the quick setup's questions in its order and drawing
+  (discovery, information, who can join, location), with plain text fields
+  and no Markdown preview. "Who can join" and "Accepting new members" appear
+  only with discovery on or hidden; "Who can join" has "Anyone without
+  approval" (`auto_approve`), which admits every request on arrival and
+  carries its warning in the choice. The location (city, pin, geographic
+  label) is shown only on a public network. The table groups by country/city and sorts
   by the approximate distance authorized in the browser; it shows the computed
   metrics when the local cluster matches the network and marks as unavailable
   what the public catalog does not provide. The join button reuses the trust

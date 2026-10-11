@@ -180,7 +180,8 @@ new configuration.
      `NodeRuntime::apply` with its `NodeConfig` (it brings up the Rust inference
      server **in-process** and supervises it); the `NodeConfig` also carries the
      configurable reserve of the automatic memory fit, and the VRAM query and the
-     application live in `inference/llm.rs`. A GPU above the limit removes the
+     application live in the engine's `llm` module (`llama-engine`, re-exported
+     by `main.rs`). A GPU above the limit removes the
      assignment and the `thermal` state waits for the configured cooldown. A lock,
      a fit or a model load cannot close the control port.
 
@@ -236,12 +237,12 @@ troubled deployment.
   (`ModelProfile`, `LayerAssignment`), `catalog.rs` (scan of
   `model_dirs`; the fast scan publishes roots and files without computing a
   SHA-256 of whole models, leaving the `pom_id` validation to the enrichment),
-  `gguf.rs` (header/tensor table reader), `plan.rs`
+  the engine's `gguf` module (header/tensor table reader, in `llama-engine`), `plan.rs`
   (slicing by budget/size), `splitter.rs` (split and merge),
   `lastslice.rs` (slice annotated with the Pending/Serving state),
   `ollama.rs` (`OllamaClient`), `provider.rs` (provider-agnostic contract) and
   `huggingface.rs` (`HuggingFaceProvider`, native HTTP).
-- `inference/` - the Rust server and the wire format: `infer_server.rs`
+- `inference/` - the Rust server and the wire format: `infer_server/`
   (inference routes, local scheduler + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, in-process supervision + slice annotation),
   `wire.rs` (single initial frame `[len][JSON][items][tensor]`, f16/f8/i4
@@ -252,9 +253,9 @@ troubled deployment.
 - `backend/` - HTTP and state: `gateway/` (`start_gateway_with_ready`, the
   `AdminAuth` boundary for `/api/ui/**` and `/admin/**`, and the port preflight),
   `generate_stream_with_stops` and the aggregated summary of TTFT, prefill,
-  generation and total), `webapp.rs` (serves the UI from disk), `webui.rs`
+  generation and total), `webapp.rs` (serves the UI from disk), `webui/`
   (the `/api/ui/*` routes), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,
-  `deploy.rs`, `transfer.rs` (slices over HTTP Range), `devupdate.rs`
+  `deploy/`, `transfer.rs` (slices over HTTP Range), `devupdate.rs`
   (update/restart), `openai.rs` (OpenAI-compatible routes), `messages.rs`,
   `reqlog.rs`, `session.rs`, `tool_call.rs`.
 

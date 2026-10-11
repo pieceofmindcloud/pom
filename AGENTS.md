@@ -40,7 +40,7 @@ links to other folders: `crates/`, `crates/node/`, and inside
 **`brand.json` (root)** is the product identity - name, slogan and logo - and
 the single source of every derived name: config file, environment variables,
 identity keys, GGUF metadata and the pkarr record. The binary embeds it at
-compile time (`utils/brand.rs`) and the interface copies it into the bundle
+compile time (`crates/brand/src/lib.rs`, `include_str!`) and the interface copies it into the bundle
 (`apps/frontend/scripts/build-brand.mjs`). The images live in `assets/brand/`.
 
 `assets/geo/` holds the offline city database the binary embeds

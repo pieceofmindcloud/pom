@@ -57,7 +57,7 @@ Models, GGUF reading, planning and slice files. The module is used by
   output-tensor contract before offering or generating a range; required heads
   are charged and copied from the source when the loader demands their presence
   in partial ranges.
-- `gguf.rs` - reads the scalar or per-layer KV geometry
+- the engine's `gguf` module - reads the scalar or per-layer KV geometry
   (`attention.head_count_kv`, `key_length` and `value_length`) and the MoE
   evidence (`<arch>.expert_count`/`expert_used_count`) without loading the
   weights. It also reads `tokenizer.chat_template`, the real control tokens and

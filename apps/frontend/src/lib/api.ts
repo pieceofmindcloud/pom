@@ -422,7 +422,7 @@ export function retryRemoteModelDownload(downloadId: string) {
  *
  * Without `nodeId`, or with this node's own `node_id`, it updates this machine.
  * With another peer's `node_id`, this node forwards the call to that peer's
- * `/api/ui/dev/update` (`src/devupdate.rs`) - the panel never talks directly to
+ * `/api/ui/dev/update` (`src/backend/devupdate.rs`) - the panel never talks directly to
  * another peer, `api.ts` only uses relative paths.
  */
 export function devUpdate(nodeId?: string) {

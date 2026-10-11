@@ -7,8 +7,9 @@ field.
 ## How the pieces fit
 
 - **One process per machine.** The Rust binary starts the embedded inference
-  server (`inference/infer_server.rs`) when a slice is deployed; the model is
-  loaded in-process by `inference/llm.rs`. There is no Python process.
+  server (`inference/infer_server/`) when a slice is deployed; the model is
+  loaded in-process by the engine's `llm` module (`llama-engine`, re-exported
+  into the node crate by `main.rs`). There is no Python process.
 - **The model and the layers come from the deployment.** The binary does not
   accept a model, a layer range or inference parameters on the command line:
   the UI plans each peer's range and each one extracts its own slice (see

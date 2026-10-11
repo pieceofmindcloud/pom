@@ -329,7 +329,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   network-chat action and snapshot contract. `NetworkChatEvent` preserves
   `node_id` as the identity key instead of using hostname as a key; the route
   resolves that identity to the dashboard's display-name map at render time.
-- Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
+- Authoritative shapes with pointers to their Rust origin (comments cite `src/backend/webui/`, `src/backend/transfer.rs`, `src/backend/admin.rs`, `src/backend/reqlog.rs`, `src/backend/deploy/`, `src/models/plan.rs`, `src/models/deployment.rs`, `src/inference/runtime.rs`, `src/utils/sysmon.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
   `ClusterView.traversal` (`TraversalView`) is the NAT traversal diagnosis of
@@ -504,7 +504,7 @@ fits.
 - `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records the legacy total rate, separated TTFT/prefill/generation/total timings and trace.
 - `isPhasedHop(hop)` - discriminates `PhasedHopTrace` (split prefill/decode) from `LegacyHopTrace` so the telemetry table can render both shapes.
 - Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry
-  contract from `inference/prefill.rs`/gateway. `PhaseTrace.selected_path` is
+  contract from `inference/prefill/support.rs` and `backend/gateway/`. `PhaseTrace.selected_path` is
   the GGUF selection, while `executed_engine` and `executed_engines` are the
   backend facts (`llama.cpp`, `moe` or unknown when absent). The mismatch and
   mixed flags are evidence from the request, not a UI guess.

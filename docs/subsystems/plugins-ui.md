@@ -271,7 +271,7 @@ applies to new data and the plugin decides how to preserve its legacy data.
 
 The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory containing the sibling plugin repositories) at
 `/opt/pom/dev-plugins` and enables `POM_DEV_MODE=1`. The optional cluster
-`docker-compose.dev-plugins.yml` keeps each source bind read-only and overrides
+overlay in `pom-cluster-config` keeps each source bind read-only and overrides
 the build image to `dev-runtime`; that target includes Rust/Cargo and native
 tools, exposes the toolchain to the non-root node user and sets `CARGO_HOME`
 to a writable cache in the project data volume. The release

@@ -190,8 +190,10 @@ local-only notice. Routes:
   visual pattern as the AI Chat, and follows the end of the history when the
   person is at the bottom; `/admin-ui/chat` is the compact alias used by the
   macOS menu bar app and renders the same Chat without the administrative
-  chrome. Both surfaces show `ChatSurfaceTabs`, which switches between `/chat`
-  and `/network-chat` in both directions. The `Network Chat` entry shows the
+  chrome. The two Chat surfaces are reached from the Sidebar's nav entries
+  (`nav.ts`: `nav.chat` to `/chat`, `nav.networkChat` to `/network-chat`), and
+  `NetworkChat.tsx` uses `Tabs` (`components/ui.tsx`) to switch between the
+  network room and the lobby room. The `Network Chat` entry shows the
   number of messages received since the last read, and entering the screen
   clears the badge. On a mobile viewport, online users start hidden and show up
   through the `See online` button. The AI/NETWORK tabs are the first strip of
@@ -1590,8 +1592,8 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (a variable of the receiving process, read
   at startup) accepts every offer without a click - dev only. Peers on the same
   machine share the hostname, so the destination and the availability label
-  carry the start of the `node_id` when the name repeats (`uniqueName`,
-  `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
+  carry the start of the `node_id` when the name repeats (`uniquePeerName` in
+  `lib/peerName.ts`, used by `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
   are each a full-width table (it used to be a list of cards), with the
   accept/refuse/cancel action in the last column.
 

@@ -4,7 +4,7 @@ The network subsystem solves the problem of a pom node finding the other nodes
 of the cluster and announcing itself to them. There are two worlds in the same
 directory (`crates/node/src/network/`): the native UDP transport
 (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`), which is the heart of the
-LAN, and the libp2p/pkarr path (`discovery.rs`, `pkarr_node.rs`, `bitswap.rs`),
+LAN, and the libp2p/pkarr path (`discovery.rs`, `pkarr_node.rs`),
 designed for the internet (Circuit Relay v2, DCuTR, AutoNAT, Kademlia,
 gossipsub, pkarr DHT). The house rule is that the address decision belongs to
 whoever is going to dial, not to whoever announced. The operator's
@@ -12,7 +12,7 @@ whoever is going to dial, not to whoever announced. The operator's
 accepts a DNS name), never an exclusive endpoint; `addr_candidates` and
 `RouteTable` keep the fallback (see `crates/node/src/network/AGENTS.md`).
 
-`main.rs` builds `Network` and `Discovery`; `backend/gateway.rs` and
+`main.rs` builds `Network` and `Discovery`; `backend/gateway/` and
 `routing/pipeline.rs` consume `PeerInfo` and `RouteTable`.
 
 ## 0. Identity is a key, the address is resolved
@@ -570,7 +570,9 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   outside the network it serves. Nodes behind NAT only need it as a bootstrap:
   the reservation is requested from every connected peer that offers relay.
 - **Who relays for whom:** `network::RelayGate`, consulted by the relay server
-  on every reservation request through a `relay::RateLimiter`. A node relays
+  on every reservation request through libp2p's `reservation_rate_limiters`
+  (`discovery.rs` pushes the gate's `allows_reservation` into them, beside
+  libp2p's own limits). A node relays
   for **everyone** when the operator asked for it (`--serve-relay`, or
   `relay.everyone` in the config file): that is a public relay. Otherwise a
   node the internet reaches (AutoNAT `Public`, or `--public-addr`) relays for

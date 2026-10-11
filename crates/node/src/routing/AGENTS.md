@@ -3,7 +3,7 @@
 Single file for now. It decides an ordered chain of peers that covers
 `0..total_layers` through executable sub-ranges, measures the load in flight and
 the input RTT of each peer, and picks the address per hop. It is the highest
-level entry consumed by `gateway.rs` (`generate_stream_with_stops`).
+level entry consumed by `backend/gateway/` (`generate_stream_with_stops`).
 
 ## Files
 
@@ -90,7 +90,7 @@ level entry consumed by `gateway.rs` (`generate_stream_with_stops`).
   `CAP_SPECULATE_LOOKUP` and `CAP_SPECULATE_MTP_SLICED` (the new protocol -
   `tokens`/`mtp_k`/`next_draft` on the wire - only exists in a new build; an old
   peer in the ring would receive a `speculate` it does not understand). See
-  `inference/mtp.rs`.
+  the engine's `mtp` module.
 - `supports_direct_reply` - requires **every** step to have `CAP_RELAY_DIRECT`
   (`relay/v2-direct`, strictly stronger than `relay/v1-chain`: whoever announces
   one announces the other) **and** at least 2 hops - a single-hop plan is already
@@ -115,16 +115,16 @@ level entry consumed by `gateway.rs` (`generate_stream_with_stops`).
 
 ## Links
 
-- **Called by**: `gateway.rs::generate_stream_with_stops` (a plan per request) and
-  `backend/webui.rs`.
+- **Called by**: `gateway/budget.rs::generate_stream_with_stops` (a plan per request) and
+  `backend/webui/`.
 - **Calls**: `network::PeerInfo` and `network::route::RouteTable`
   (`resolve_step_url`).
-- **Consumed by**: `inference/relay.rs` and `inference/infer_server.rs` (the
+- **Consumed by**: `inference/relay.rs` and `inference/infer_server/` (the
   capabilities `CAP_REMOTE_TOKEN_STREAM`/`CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
   `CAP_SPECULATE_LOOKUP`/
   `CAP_SPECULATE_MTP`/`CAP_SPECULATE_MTP_SLICED` travel in `next_hops` and in the
   wire format); `inference/direct.rs` (the direct mode depends on
-  `supports_direct_reply`); `inference/wire.rs` (tensor dtype/encoding).
+  `supports_direct_reply`); the engine's `wire` module (tensor dtype/encoding).
 - `network.rs::self_announce` asks for sync with the capability constants here.
 
 ## Defects noted

@@ -3,7 +3,7 @@
 The node's discovery transports and addressing. Two worlds in the same
 directory: the native UDP (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`)
 and the libp2p/pkarr for the internet (`discovery.rs`, `pkarr_node.rs`).
-`main.rs` assembles `Network` and `Discovery`; `gateway.rs` and
+`main.rs` assembles `Network` and `Discovery`; `backend/gateway/` and
 `routing/pipeline.rs` consume `PeerInfo` and `RouteTable`. The house rule: the
 address decision belongs to whoever is going to dial, not to whoever announced.
 Identity is a key, never an IP: the operator's `advertise_addr` is only a hint
@@ -454,7 +454,8 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   and reserves on announced members. `Network::set_dedicated_relays` feeds
   `PeerRoute.relay_kind` and the transfer rule.
 - `network::RelayGate` - whom this node relays for, consulted by the relay
-  server on every reservation (`relay::RateLimiter`): everyone with
+  server on every reservation (libp2p's `reservation_rate_limiters`, fed by
+  `allows_reservation`): everyone with
   `relay.everyone`/`--serve-relay`; the admitted members of its cluster when
   the internet reaches it and `relay.cluster` is on (the default); nobody
   otherwise. `offer()` is what goes into the `Announce` (`RelayOffer`, with
@@ -588,7 +589,7 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   UDP, via `Network::gossip_announce_bytes` -> `self_announce`, with or without
   assignment; `spawn_pkarr_bootstrap` dials `--pkarr-peers`, relays and trust chain
   principals by key),
-  `routing/pipeline.rs` (`resolve_step_url` uses `RouteTable`), `gateway.rs`
+  `routing/pipeline.rs` (`resolve_step_url` uses `RouteTable`), `gateway/`
   (consumes `PeerInfo`/`alive_peers`).
 - **Calls**: `network.rs` ← `identity.rs` (via main), `addrs.rs`
   (`self_addr_candidates`), `route.rs` (`Network.routes`); `discovery.rs` →

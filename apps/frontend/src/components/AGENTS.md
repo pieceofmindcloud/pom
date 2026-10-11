@@ -618,7 +618,7 @@ Per-file list:
   ask before acting (naming each machine and its layer range) and report
   machine by machine - a peer that did not confirm still holds its memory, and
   the report shows `released: false` with the reason instead of a rounded-up
-  "pronto!". Nothing is deleted from disk (`undeploy_endpoint` in `deploy.rs`).
+  "pronto!". Nothing is deleted from disk (`undeploy_endpoint` in `deploy/node.rs`).
   `Dashboard` renders it only for the `admin` profile, while the backend is the
   final authority and its refusal text is shown as it arrives.
   Renders both a `Confirm` and a result `Modal` (no cancel). `RemoveNode` stays

@@ -230,12 +230,12 @@ public networks only.
 
 - **`config`** is used by nearly everything: `main.rs`, `network/identity.rs`
   (`key_path`), `models/catalog.rs` (the folders scanned), `backend/transfer.rs`
-  (`safe_model_path`), `backend/webapp.rs` (`ui_dist_dir`), `backend/deploy.rs`,
-  `webui.rs`.
+  (`safe_model_path`), `backend/webapp.rs` (`ui_dist_dir`), `backend/deploy/`,
+  `backend/webui/`.
 - **`display`** only in `main.rs` (banner + refresh loop).
 - **`respawn`** is called by `backend/devupdate.rs` (update and restart through
   the interface) and by `main.rs` at startup.
-- **`sysmon`** in `main.rs` (hostname) and `webui.rs` (`/api/ui/*` endpoints).
+- **`sysmon`** in `main.rs` (hostname) and `backend/webui/` (`/api/ui/*` endpoints).
 
 ## Maintaining this file
 

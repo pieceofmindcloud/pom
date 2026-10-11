@@ -2,7 +2,7 @@
 
 Each screen of the panel, one file per route, wired up in `../App.tsx`. Every
 screen is backed by React Query hooks from `../lib/queries.ts` and speaks to the
-node's HTTP gateway (`src/webui.rs`, `src/gateway.rs`); none of them keep
+node's HTTP gateway (`crates/node/src/backend/webui/`, `backend/gateway/`); none of them keep
 cluster state in the browser. All copy goes through the i18n provider
 (`../i18n/provider.tsx`). Text written by the node (error messages, refusal
 reasons, job steps) is English at the source and is shown as it arrives.
@@ -744,7 +744,7 @@ Per-file list:
   `tp_parts` are separate sections; TP groups are ordered by group size and
   rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
-  `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
+  `../lib/deleteModel`. `uniquePeerName` (`../lib/peerName`) disambiguates same-hostname peers with
   the node_id prefix. Full-bleed shell; each `ShardCard` carries the set's
   vision / MTP link editor (`SidecarLinkEditor`), with the compatible files of
   every machine from `useClusterCatalog`.
@@ -857,7 +857,7 @@ Key logic carriers:
 - `ModelPaths.save` (ModelPaths.tsx:55) - trims/filters the folder list, posts,
   and re-syncs state from the server's answer (which is authoritative).
 
-Backend endpoints used (see `src/webui.rs` / `src/gateway.rs` / `src/openai.rs`
+Backend endpoints used (see `backend/webui/` / `backend/gateway/` / `backend/openai.rs`
 in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/ui/cluster/models`, `/api/ui/node`, `/api/ui/models`, `/api/ui/paths`,
 `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/deploy/plan`, `/api/ui/deploy`,

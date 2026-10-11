@@ -1,9 +1,9 @@
 /**
  * Shapes the node actually serves.
  *
- * Authoritative sources, in the Rust crate: `src/webui.rs` (node, cluster,
- * catalog, jobs), `src/sysmon.rs` (system load), `src/runtime.rs` (runtime
- * status and node config), `src/transfer.rs` (transfers), `src/admin.rs`
+ * Authoritative sources, in the Rust crate: `src/backend/webui/` (node, cluster,
+ * catalog, jobs), `src/utils/sysmon.rs` (system load), `src/inference/runtime.rs` (runtime
+ * status and node config), `src/backend/transfer.rs` (transfers), `src/backend/admin.rs`
  * (nodes and keys). Anything typed loosely here is loose in the API too.
  */
 import type { Profile } from "./profile";
@@ -78,7 +78,7 @@ export interface SystemLoad {
 }
 
 /**
- * The inference server's state on a node — `ServerState` in `src/runtime.rs`,
+ * The inference server's state on a node — `ServerState` in `src/inference/runtime.rs`,
  * serialised lowercase. No `| string` escape hatch on purpose: the first
  * version of this type invented "stopped" and "running", and because anything
  * was assignable every screen compared against a value the node never sends.
@@ -1314,7 +1314,7 @@ export interface AddNodeOptionsResponse {
   };
 }
 
-/** A slicing or apply run. `src/webui.rs` — `Job`. */
+/** A slicing or apply run. `src/backend/webui/jobs_apply.rs` - `Job`. */
 export interface Job {
   id: string;
   state: "running" | "done" | "failed";
@@ -1703,7 +1703,7 @@ export interface ClusterLogResponse {
   dropped: number;
 }
 
-/** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */
+/** One slice of a size-driven plan. `src/models/plan.rs` — `SizedRange`. */
 export interface SizedRange {
   index: number;
   start_layer: number;
@@ -1734,7 +1734,7 @@ export interface SliceLayerOptions {
   rule: string;
 }
 
-/** `src/plan.rs` — `SizePlan`, what `POST /api/ui/slice/plan` answers. */
+/** `src/models/plan.rs` — `SizePlan`, what `POST /api/ui/slice/plan` answers. */
 export interface SizePlan {
   mode?: "pipeline";
   total_layers: number;
@@ -1763,7 +1763,7 @@ export interface TpSliceRank {
   end_layer: number;
 }
 
-/** `src/backend/webui.rs` - Tensor Parallelism slicing plan. */
+/** `src/backend/webui/slicing.rs` - Tensor Parallelism slicing plan. */
 export interface TpSlicePlan {
   mode: "tensor_parallel";
   total_layers: number;
@@ -1782,7 +1782,7 @@ export interface TpSlicePlan {
 export type SliceMode = "pipeline" | "tensor_parallel";
 export type SlicePlan = SizePlan | TpSlicePlan;
 
-/** One peer in a memory-budget plan. `src/plan.rs` — `PlannedShard`. */
+/** One peer in a memory-budget plan. `src/models/plan.rs` — `PlannedShard`. */
 export interface PlannedShard {
   node_id: string;
   label: string;
@@ -1800,7 +1800,7 @@ export interface PlannedShard {
   has_model: boolean;
 }
 
-/** `src/plan.rs` — `SplitPlan`, what `POST /api/ui/plan` answers. */
+/** `src/models/plan.rs` — `SplitPlan`, what `POST /api/ui/plan` answers. */
 export interface SplitPlan {
   model_path: string;
   base_name: string;
@@ -1815,7 +1815,7 @@ export interface SplitPlan {
   warnings: string[];
 }
 
-/** One machine offered as the target of one slice. `src/deploy.rs`. */
+/** One machine offered as the target of one slice. `src/backend/deploy/`. */
 export interface DeployAlternative {
   node_id: string;
   label: string;
@@ -1884,7 +1884,7 @@ export interface DeployStep {
 }
 
 /** One GPU's projected use for a deploy step or an aggregated machine.
- *  `src/backend/webui.rs` — `GpuCapacityProjection`. */
+ *  `src/backend/webui/params.rs` - `GpuCapacityProjection`. */
 export interface GpuCapacityProjection {
   index: number;
   vram_total_mb: number;
@@ -1894,7 +1894,7 @@ export interface GpuCapacityProjection {
   vram_projected_mb: number;
 }
 
-/** A single deploy step's capacity projection. `src/backend/webui.rs` —
+/** A single deploy step's capacity projection. `src/backend/webui/params.rs` -
  *  `CapacityPreview`. */
 export interface CapacityPreview {
   /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
@@ -1912,7 +1912,7 @@ export interface CapacityPreview {
 }
 
 /** A whole machine's projection: the sum, per GPU, of every step it would
- *  take. `src/backend/deploy.rs` — `MachineCapacity`. */
+ *  take. `src/backend/deploy/planning.rs` - `MachineCapacity`. */
 export interface MachineCapacity {
   fits: boolean;
   /** Some step of this machine received the same possible-adjustment heuristic. */
@@ -1996,7 +1996,7 @@ export interface DeployLoadDistribution {
 }
 
 /**
- * Execution settings a launch carries. `src/webui.rs` — `RuntimeParams`.
+ * Execution settings a launch carries. `src/backend/webui/jobs.rs` - `RuntimeParams`.
  *
  * Cluster-wide on purpose: `n_ctx` is the full window for each session, the
  * session count multiplies the total KV-cache reservation, and the batch
@@ -2065,7 +2065,7 @@ export interface RuntimeParams {
   /** Multi-token prediction by the model's own `nextn` block.
    *  A switch **separate** from the one above: they are different mechanisms, and
    *  only this one uses trained weights. It only kicks in when one machine serves
-   *  the whole model - see `crates/node/src/inference/mtp.rs`. */
+   *  the whole model - see the engine's `mtp` module (`llama-engine`). */
   mtp_enabled: boolean;
   /** How many tokens the `nextn` head drafts per round. */
   mtp_draft_tokens: number;
@@ -2132,7 +2132,7 @@ export interface DeploySelection {
 }
 
 /**
- * What is being put into service. `src/backend/deploy.rs` — `DeployKind`.
+ * What is being put into service. `src/backend/deploy/types.rs` - `DeployKind`.
  *
  * Not two flows: a whole model is read by the node as a single range covering
  * every layer, so the plan, the copies and the launch are the same ones the
@@ -2143,7 +2143,7 @@ export interface DeploySelection {
 export type DeployKind = "shards" | "whole" | "tensor_parallel";
 
 /**
- * Tensor parallelism group (caminho C), from src/backend/deploy.rs TpLaunch.
+ * Tensor parallelism group (path C), `src/backend/deploy/launch.rs` - `TpLaunch`.
  * Present only with kind "tensor_parallel": the primary serves the whole
  * model and each worker extracts its own tensor shard.
  */

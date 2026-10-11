@@ -315,7 +315,7 @@ logo files. Renaming the product means editing that file - and, only for the
 executable, the `[[bin]]` in `crates/node/Cargo.toml`, which cargo requires as
 a literal.
 
-- **Binary**: embeds the file at compile time (`utils/brand.rs`,
+- **Binary**: embeds the file at compile time (`crates/brand/src/lib.rs`,
   `include_str!`), so the name travels inside the executable and there is no
   file to ship next to it. Everything that carried the old name now derives
   from the `slug`: `brand::config_filename()` (`pom.json`),
@@ -591,16 +591,16 @@ loses offload on the first click.
   `node-cpu`. The mixed-GPU machine uses `docker-compose.yml` by default;
   `docker-compose.salem.yml` can also be selected directly. The CUDA server's
   compose left this repository and lives in `pom-cluster-config`; device IDs, volumes
-  and data are runtime configuration, not distinct build requirements.
-  `pom-docker.sh` also generates a remote Compose with GPU reservations for
-  the CUDA server. The services keep the model and state volumes in
+  and data are runtime configuration, not distinct build requirements. That
+  external repository also generates the remote Compose with GPU reservations
+  for the CUDA server. The services keep the model and state volumes in
   `tests/fixtures/<name>`. Each service sets `POM_HOME=/data`,
   `POM_UI_DIST=/app/apps/frontend/dist`, `POM_DEV_MODE=1` and the explicit path
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (the UI would not be under
   the mounted data directory). `POM_DEV_PLUGINS_DIR` (default `..`, the
   workspace directory containing the sibling plugin repositories) mounts the
-  local sources at `/opt/pom/dev-plugins`. The optional cluster overlay
-  `pom-cluster-config/pom-jair/<host>/docker-compose.dev-plugins.yml` mounts
+  local sources at `/opt/pom/dev-plugins`. The optional cluster overlay in
+  `pom-cluster-config` (one Compose file per host) mounts
   those sources read-only, selects `dev-runtime` and keeps Cargo's writable
   cache in the project data volume. Rust artifacts are written to
   `<project_root>/.pom-dev-plugin-builds`.
@@ -655,11 +655,11 @@ loses offload on the first click.
 
 ## No Python runtime
 
-The supported runtime is **Rust** (`crates/node/src/inference/infer_server.rs`
+The supported runtime is **Rust** (`crates/node/src/inference/infer_server/`
 is the inference server; `crates/node/src/models/splitter.rs` the slicer).
 The old Python scripts (`inference_server.py`, `split_model.py`) and the
 legacy launchers were removed from the repository together with the `old/`
-folder. The ggml type table in `gguf.rs` is checked against `GGML_TRUTH` in the
+folder. The ggml type table in the engine's `gguf` module is checked against `GGML_TRUTH` in the
 file itself (a build test), not against any Python environment. The Python
 scripts that remain in `scripts/` are operational tools (for example
 `gen-node-configs.py`), not part of the build.

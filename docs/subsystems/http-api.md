@@ -13,7 +13,7 @@ boundary enforced on the server.
 
 Ports, for orientation: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000
 (52777), HTTP gateway `--gateway-port` (8080), and the inference server on
-`inference_port` in `pom.json` (8181, `inference/infer_server.rs`, a separate
+`inference_port` in `pom.json` (8181, `inference/infer_server/`, a separate
 router that serves `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`,
 `/health` - it does not go through this gateway). The gateway also registers
 `/v1/link` for the full-duplex return of `remote-stream`; both listeners use the
@@ -44,7 +44,7 @@ signature are used separately in the handshake to prove the peer's identity.
 `start_gateway_with_ready` registers, in this order (webapp is deliberately
 last):
 
-- **Base** (`gateway.rs`): `POST /api/generate` (+ alias `POST /generate`),
+- **Base** (`gateway/`): `POST /api/generate` (+ alias `POST /generate`),
   `GET /peers`, `GET /health`, `POST /handshake` (`session::handle_handshake`),
   `POST /v1/relay-result` (`direct::RELAY_RESULT_PATH`, 1 MB body limit),
   `POST /v1/remote-stream-result` (`direct::REMOTE_STREAM_RESULT_PATH`, the
@@ -241,7 +241,7 @@ last):
   `inference.md` 3.9.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
   `POST /v1/messages/count_tokens` + OPTIONS.
-- **Dashboard** (`webui.rs`): the `/api/ui/*` plane (see below).
+- **Dashboard** (`webui/`): the `/api/ui/*` plane (see below).
 - **Deployment** (`deploy/`): `/api/ui/deploy/*` + `POST /api/ui/undeploy`.
 - **Transfer** (`transfer.rs`): `/api/transfer/*` (see `file-transfer.md`).
 - **Dev update** (`devupdate.rs`): `POST /api/ui/dev/update`,
@@ -1581,7 +1581,7 @@ zero. The audit at `GET /api/ui/requests` keeps that same object in
 
 ## 5. Route tests - there is a single scaffold (`gateway::testkit`)
 
-`gateway::testkit` (`#[cfg(test)]` in `gateway.rs`) builds a whole
+`gateway::testkit` (`#[cfg(test)] mod testkit` in `gateway/tests.rs`) builds a whole
 `GatewayState` with the peer table seeded by hand: `peer(node_id, hostname,
 gateway_port)` builds a loopback `PeerInfo`, `state_with(node_id, peers)`
 builds the state (with a real `Network` on an ephemeral UDP port, but

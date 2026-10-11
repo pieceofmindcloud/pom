@@ -1117,7 +1117,7 @@ UI.
   `false` and `batch_width` is 1. Stream callbacks may declare
   `speculation_active=false` and a named reason; without the new fields, the parser keeps the
   old fallback.
-- `Speculate`/`DraftSource` (`infer_server.rs`) - the invitation to draft that travels in the
+- `Speculate`/`DraftSource` (`infer_server/`) - the invitation to draft that travels in the
   frame's `speculate` field: `{k, m, source, draft?}`. On the legacy path, `draft` is the
   pre-built draft the gateway injects in sliced mode; on the remote stream the head installs the
   draft received from the tail in its own `step_meta` before the next round. `source` is what
@@ -1408,11 +1408,11 @@ The full mechanism, the two details that are the correction and what is still un
 - Mechanism: `docs/subsystems/inference.md` 3.9.
 ## Connections
 
-- **Called by**: `backend/gateway.rs` (assembles the `DirectReply` with `ReplyInbox` +
+- **Called by**: `backend/gateway/` (assembles the `DirectReply` with `ReplyInbox` +
   `self_reply_urls`, registers `/v1/relay-result` and
   `/v1/remote-stream-result` without an API key, using the per-frame `Ticket`, passes
   `direct.as_ref()` to `prefill::run`/`step`; `step_speculative` goes without a direct),
-  `backend/webui.rs` (the rollback/release fan-out), `main.rs`
+  `backend/webui/` (the rollback/release fan-out), `main.rs`
   (`NodeRuntime::apply` at startup, including with `lastslice::take`),
   `routing/pipeline.rs` (the capabilities `CAP_REMOTE_TOKEN_STREAM`/
   `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
@@ -1425,9 +1425,10 @@ The full mechanism, the two details that are the correction and what is still un
   (the annotated slice reapplied on restart) and is what keeps the annotation's state: Pending
   (written by `apply`), promoted to Serving only by
   `spawn_health_watch`; `routing/AGENTS.md` lists the capabilities that
-  `infer_server.rs`/`relay.rs` carry out.
+  `infer_server/`/`relay.rs` carry out.
 - **External**: no external process. The model loads in-process through
-  `llm.rs` (llama-cpp-sys-2).
+  the engine's `llm` module (`llama-engine`, re-exported by `main.rs`), over
+  llama-cpp-sys-2.
 
 ### Multimodal prefill
 

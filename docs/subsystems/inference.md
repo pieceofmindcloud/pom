@@ -116,7 +116,7 @@ and `/v1/**` follow the same availability rule; only `/api/ui/**` and
 llama.cpp returns each token's piece as raw bytes: a BYTE token can be a single
 byte and a normal token can end in the middle of a codepoint.
 `llm::LlmEngine::token_to_piece_bytes` keeps those bytes up to the emission
-limit. Each `Session` of `infer_server.rs` has its own `Utf8Assembler`, which
+limit. Each `Session` of `infer_server/` has its own `Utf8Assembler`, which
 only delivers complete characters in the delta. On the speculative path, only
 the accepted positions advance the accumulator; rejected positions must not
 contaminate the next round.
@@ -127,12 +127,12 @@ returning the KV slot, discarding the result on those paths and guaranteeing
 that no leftover survives into another request. A truly invalid sequence keeps
 the `from_utf8_lossy` semantics: it produces a single U+FFFD.
 
-## 0. Tensor parallelism collective (`collective.rs`)
+## 0. Tensor parallelism collective (the engine's `collective` module)
 
 For path C (tensor parallelism without transferring weights), the exchange core
 is the all-reduce collective: each rank produces a partial sum of the
 row-parallel projection and the result is the sum of the partials.
-`inference/collective.rs` has `reduce_sum` (the math sum) and `ReduceBarrier`
+The engine's `collective` module has `reduce_sum` (the math sum) and `ReduceBarrier`
 (the barrier that accumulates each rank's partials and returns the sum to all
 of them through a `oneshot`, modeled on `direct.rs`'s `ReplyInbox`). The HTTP
 transport (`POST /v1/tp/reduce`) is a thin layer on top, wired together with the
@@ -717,7 +717,7 @@ check stays observational.
 
 ## 1. The execution modes
 
-Prefill happens in `inference/prefill.rs` (`run`); in decode, the gateway picks
+Prefill happens in `inference/prefill/` (`run`); in decode, the gateway picks
 the remote transport when the head is another node and announces
 `inference/remote-token-stream-v1`. Otherwise, `step` uses the three
 traditional modes:
@@ -778,7 +778,7 @@ remote transport requires the head to announce the capability and the gateway
 to have a callback address; without that the request keeps the previous path.
 A local head never uses the remote transport.
 
-## 2. Hidden-state protocol (`wire.rs`)
+## 2. Hidden-state protocol (the engine's `wire` module)
 
 The tensor that crosses the network is the **only** place that knows the dtype
 and the encoding in transit. Format:
@@ -1170,7 +1170,7 @@ the opening timeout happens before the fallback. The API has no special path:
 `generate_stream_with_stops`, so a run through the API goes through the same
 address selection and gets the same fix.
 
-### 2.3 Copies on `wire.rs`'s hot path
+### 2.3 Copies on the `wire` module's hot path
 
 Framing one crossing (encoding + decoding one `[1, 5120]` f16 item) cost
 21.97 µs in release; today it costs 20.94 µs - **-4.7%**
@@ -2192,7 +2192,7 @@ sample), `accept_count` and `batch_width`.
 - **The real proof is no longer static, it is each round's `seq_rm`.**
   `handle_rollback` (`/v1/session/rollback`) calls `kv_remove`
   (`llama_memory_seq_rm`) and returns `{rolled_back, reason}` in the body -
-  `rollback_sessions` (`gateway.rs`) reads that body (200 OK is not success by
+  `rollback_sessions` (`gateway/`) reads that body (200 OK is not success by
   itself, `handle_rollback` always answers 200); if any hop returns
   `rolled_back: false`, the gateway **ends the generation** with what was
   already confirmed (`partial: true`) instead of continuing on a cache that may
@@ -2221,7 +2221,7 @@ sample), `accept_count` and `batch_width`.
   without the new capability degrades to the plain sampler with the reason
   `peer_without_sliced_mtp_wire`.
 
-### 5.2 Multi-token prediction (MTP) - `inference/mtp.rs`
+### 5.2 Multi-token prediction (MTP) - the engine's `mtp` module
 
 The `nextn` block takes the trunk's hidden state at position `p` with the
 embedding of the token at `p+1` and predicts the token at `p+2`. It is the draft
@@ -3024,10 +3024,15 @@ context reserving after) in
 ## Version note
 
 Documented from the sources on the `fm/rdma-gateway-remoto-por-token` branch
-(2026-09-01) and kept up to date since: `inference/infer_server.rs`,
-`inference/prefill.rs`, `inference/direct.rs`, `inference/direct_lab.rs`,
-`inference/spec_lab.rs`, `inference/relay.rs`, `inference/wire.rs`,
-`inference/runtime.rs`, `routing/pipeline.rs`, `backend/gateway.rs`,
+(2026-09-01) and kept up to date since: `inference/infer_server/`,
+`inference/prefill/`, `inference/direct.rs`, `inference/direct_lab.rs`,
+`inference/spec_lab.rs`, `inference/relay.rs`,
+`inference/runtime.rs`, `routing/pipeline.rs`, `backend/gateway/`,
 `backend/openai.rs`, `backend/messages.rs`, and the AGENTS.md files of
-`inference/`, `routing/`, `backend/` and the root. Where code and documentation
+`inference/`, `routing/`, `backend/` and the root. The engine modules named here
+(`llm`, `wire`, `mtp`, `collective`, `gguf`, `multipart`, `kv_budget`, `moe`,
+`sysmon`) are not in this repository: they are the `llama-engine` crate of the
+private `pom-plugin-llama.cpp` repository, re-exported by
+`crates/node/src/main.rs` (`pub use llama_engine::{...}`), which is why the node
+code reaches them as `crate::llm::`, `crate::wire::` and so on. Where code and documentation
 diverge, the code wins and the divergence is noted as a defect.

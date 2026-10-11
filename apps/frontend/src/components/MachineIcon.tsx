@@ -5,7 +5,7 @@ import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 /**
  * What kind of machine this is, from what the node reports about itself
- * (`src/sysmon.rs`): the OS it runs and whether it has a discrete GPU. The
+ * (`src/utils/sysmon.rs`): the OS it runs and whether it has a discrete GPU. The
  * cluster is deliberately heterogeneous, so telling a laptop from a GPU box at
  * a glance is part of reading the pipeline.
  */

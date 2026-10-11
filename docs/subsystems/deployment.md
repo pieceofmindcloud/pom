@@ -3,7 +3,7 @@
 This subsystem puts into service a set of slices that already exists,
 distributing them across the cluster's machines. It lives in
 `crates/node/src/backend/deploy/` (planning and sequencing) and uses
-`crates/node/src/backend/webui.rs` (applying the slice on a node,
+`crates/node/src/backend/webui/` (applying the slice on a node,
 `apply`/`launch`/`release`), `crates/node/src/models/` (catalog,
 `plan_by_size`/`extract_shard`, `splitter::merge`) and
 `crates/node/src/backend/transfer.rs` (moving the bytes). The whole logic is
@@ -548,7 +548,7 @@ context, batch or sessions (260 ms debounce and one round trip, like the rest
 of the plan).
 
 - **One call per `Step`** (`POST /api/ui/deploy/capacity-preview`, handler in
-  `webui.rs`), only for `!merged` steps with a resolved `target_path` - a step
+  `webui/routes/admin.rs`), only for `!merged` steps with a resolved `target_path` - a step
   that still depends on a copy or a merge has no local file for the math to
   examine, and the preview never materializes anything. Waiting steps show up
   as "projection after the copy". Tensor Parallelism is left out in this
@@ -625,7 +625,7 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 | Route | Role |
 |---|---|
 | `POST /api/ui/deploy/plan` | preview (read, called on every edit); enriches the steps with the capacity projection |
-| `POST /api/ui/deploy/capacity-preview` | per-step preview, local to the peer: estimates from GGUF metadata and free VRAM, without calling the native fit, and returns the projected VRAM per GPU (`webui.rs`) |
+| `POST /api/ui/deploy/capacity-preview` | per-step preview, local to the peer: estimates from GGUF metadata and free VRAM, without calling the native fit, and returns the projected VRAM per GPU (`deploy/preview.rs`) |
 | `POST /api/ui/deploy` | executes (rescans, refuses `blocked`/empty, job) |
 | `POST /api/ui/deploy/node/options` | catalog and local options of the machine chosen for an incremental change |
 | `POST /api/ui/deploy/node` | adds a machine to a pipeline already live |
@@ -799,7 +799,7 @@ A coordinator that is not a participant of the existing deployment does not
 find it and mints a new id; the "Deployments" screen, which joins the
 cluster's records, does not have this limit.
 
-## 8. Applying and serving a slice (`webui.rs`)
+## 8. Applying and serving a slice (`webui/`)
 
 `POST /api/ui/apply` (applied by `deploy` to each target) carries an
 `ApplyRequest`: `{ start_layer, end_layer, total_layers, peer_index,

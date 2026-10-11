@@ -167,7 +167,7 @@ license server) lives entirely in `pom-plugin-logs`.
 ## Legacy Python
 
 There is no longer a Python inference server or splitter in the repository: the
-runtime is Rust (`crates/node/src/inference/infer_server.rs`,
+runtime is Rust (`crates/node/src/inference/infer_server/`,
 `crates/node/src/models/splitter.rs`). The old `old/` folder was removed.
 
 ## Build and dev infrastructure at the root

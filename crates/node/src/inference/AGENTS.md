@@ -1385,102 +1385,27 @@ reason that only shows up in the error of a tunnel that also failed.
 
 ## Multi-token prediction (MTP) - `mtp.rs`
 
-**It is not the "speculative decoding" that already existed.** `find_draft`
-(`infer_server.rs`) looks in the text already generated for a repetition of its own ending and
-guesses the continuation: it is *prompt-lookup decoding*, an array search that never touches any
-weight, and that is why it only speeds up repetitive output. MTP uses the `nextn` block trained
-**inside the GGUF**: it receives the trunk's hidden state at position `p` with the embedding of
-the token of `p+1` and predicts the token of `p+2`. Two separate keys
-(`speculative_decoding_enabled`, `mtp_enabled`) because they are two mechanisms; when both are
-on the gateway chooses the MTP.
+`mtp.rs` is the `nextn` drafter: `MtpDrafter::observe` / `accept` / `draft`, the draft travelling
+back to the head inside the stream frame that was going out anyway (`next_draft`), and the CPU-only
+companion the runtime prefers when one exists. It is a different mechanism from `find_draft`'s
+prompt lookup, which is why there are two keys (`mtp_enabled`, `speculative_decoding_enabled`).
+Whoever drafts is the peer serving the last layer, where the `nextn` block lives;
+`PipelinePlan::supports_mtp` demands `speculate/v1-mtp-sliced` on every hop and `speculate/v1-mtp`
+on the tail.
 
-None of this changes the answer: the verification in `step_blocking` samples each position again
-through the same `sample_token_profiled` and only accepts the prefix that matched. A bad draft
-costs acceptance, never correctness.
-
-The embedded engine **already knows** how to run the block: `llama-cpp-sys-2` 0.1.154 brings
-`LLAMA_CONTEXT_TYPE_MTP` and `llama_model_n_layer_nextn` in the bindings; the other
-four entries (`llama_{set,get}_embeddings_nextn`,
-`llama_set_nextn_layer_offset`) are in `libllama.a` but not in the bindings,
-because they live in `llama.cpp/src/llama-ext.h`, outside the `extern "C"` of `llama.h`
-that the crate's `wrapper.h` includes. Hence `llama_mtp_shim.cpp`.
-When loading an engine with MTP on, `llama_model_params.load_mtp` also has to be true: without
-it llama.cpp keeps `n_layer_nextn` in the metadata, but leaves the `nextn.*` weights null and the
-Qwen3.5 graph aborts while building `eh_proj`.
-`LoadedModel` records that loading decision together with the evidence of the tensors in the
-GGUF. Before `MtpDrafter::attach`, the runtime chooses the CPU-only companion when one exists and
-refuses the context if the selected model does not carry those weights, publishing `o modelo
-carregado não traz o bloco nextn` ("the loaded model does not bring the nextn block"); that way
-the guard happens before llama.cpp reserves the graph.
-
-The cycle, per round (one sequence, one head, memory not shared - the
-upstream's qwen35/qwen35moe path):
-
-1. `LlmEngine::decode_tokens` calls `MtpDrafter::observe` after **every**
-   decode of the target, the prompt included. It repeats the batch in the draft context with the
-   hidden state shifted one position (row `k` receives the `h` of `k-1`, row 0 receives the
-   `pending_h` of the previous call) and keeps the target's `h` rows. Staying inside
-   `decode_tokens`, and not in each caller, is what keeps a new path from forgetting the step.
-   The exception is the tail on a decode round that does not speculate (no `mtp_k` nor an MTP
-   draft, that is every token of a `remote-stream` of two or more hops): `step_blocking` calls
-   `decode_hidden_without_mtp`, which skips the `observe` and calls `MtpDrafter::forget` for the
-   sequence (a total removal in the MTP context), so a future `observe` does not fall into a hole
-   of positions. The `observe` used to run per token without use and, with the MTP in RAM, it
-   dominated the tail's decode.
-   The `observe`'s time comes out in `node_timings.mtp_observe_ms`, and the
-   `POM_PROFILE_SYNC` barrier runs before it, so `backend_sync_ms` is the trunk finishing on the
-   GPU and does not mix with the `nextn` head.
-2. `MtpDrafter::accept(accept_len)` moves the `pending_h` to the row the verification confirmed.
-3. `MtpDrafter::draft` decodes the head once per drafted token and returns the ids; `p_min`
-   cuts at the first doubtful guess.
-
-Two things that look like fussiness and are the correction:
-
-- **`seq_rm` before each decode of the draft** (in `observe` and in `draft`). The
-  previous round left in the draft's cache the positions it bet on, and the
-  verification may have refused part of them; rewriting over them without erasing
-  would leave two cells for the same position and the attention would read both.
-- **The batch's token pointer is ours.** `llama_batch_init` allocates `token`
-  **or** `embd`, never both, and the MTP needs both; the pointer goes back to the
-  original before the `llama_batch_free`, which would free Rust's memory.
-
-**It turns on on the whole model and on the sliced pipeline.** Whoever drafts is the machine
-that serves the last layer (the `nextn` block lives there) and whoever assembles the batch is
-the head; in the sliced case they are different machines, and the draft travels from back to
-front **with no extra traversal cost**: the tail attaches `next_draft` to the stream frame that
-was going to be sent anyway, and the remote head installs it in its next
-`step`. The gateway receives the same field and the explicit state
-(`speculated`, `speculation_active`, `speculation_disabled_reason`) for the telemetry, but it
- does no re-injection on the stream. On the legacy direct path, the gateway still injects
-`speculate.draft` in the following round. The head echoes the batch's composition (`tokens`) and
-the width asked (`mtp_k`) in the reply, the middle hops forward them, and the tail feeds the
-`observe` with that
-(`decode_hidden(..., tokens)`). `PipelinePlan::supports_mtp` demands
-`speculate/v1-mtp-sliced` on **every** hop and `speculate/v1-mtp` on the tail.
-A ready hybrid/recurrent tail (`mtp_ready` true) may return
-`next_draft` even when `kv_can_shift` is false: K-shift is an engine diagnostic, not a proof of
-rollback. Each hop undoes the surplus with `kv_remove` and aborts the round if the effective
-removal fails.
-
-**Still without a tok/s measurement** (cut by quota on 2026-08-16): the gain the block promises
-is real in LM Studio (21 -> 35 tok/s on Qwen3.8-27B-Q3_K_S,
-measured by the operator); here the implementation is complete and green in the unit tests but
-it has **no** end-to-end measured number.
-
+The full mechanism, the two details that are the correction and what is still unmeasured:
+`docs/subsystems/inference.md`, sections 5.1 and 5.2.
 ## Typed decisions (`probe`)
 
-- `prefill::DecisionProbe` (gateway side) carries the labels, the head's
-  `retain_prefix_bytes` and the question metadata; `add_probe_to_head_meta`
-  puts `probe` and `retain_prefix_bytes` in the head frame, and
-  `trace_summary` builds `RequestTrace::jev`.
-- `infer_server/prefill.rs`: `HeadProbe`/`parse_probe` read the frame;
-  the head bounds the stable boundary with `prefix::bounded_stable_len`; the
-  last peer answers `probe_result` (`probe_reply`, plus `probe_ms`) before
-  sampling. Probe jobs run alone in the scheduler.
-- `RequestTrace::refresh_telemetry` expects no decode rounds for a trace with
-  `probe` or `jev`: decisions are prefill-only.
-- Details: `docs/subsystems/inference.md` 3.9.
-
+- `prefill::DecisionProbe` (gateway side) carries the labels, the head's `retain_prefix_bytes` and
+  the question metadata; `add_probe_to_head_meta` puts them in the head frame, and `trace_summary`
+  builds `RequestTrace::jev`.
+- `infer_server/prefill.rs`: `HeadProbe`/`parse_probe` read the frame, the head bounds the stable
+  boundary with `prefix::bounded_stable_len`, and the last peer answers `probe_result` (plus
+  `probe_ms`) before sampling. Probe jobs run alone in the scheduler.
+- `RequestTrace::refresh_telemetry` expects no decode rounds for a trace with `probe` or `jev`:
+  decisions are prefill-only.
+- Mechanism: `docs/subsystems/inference.md` 3.9.
 ## Connections
 
 - **Called by**: `backend/gateway.rs` (assembles the `DirectReply` with `ReplyInbox` +
@@ -1506,66 +1431,14 @@ it has **no** end-to-end measured number.
 
 ### Multimodal prefill
 
-`LlmEngine` loads the `mtmd` context only when `NodeConfig.mmproj_path`
-is configured. The head's prefill carries the images in base64 only on the first chunk; the
-peers decode them and the `mtmd` does the prefill in order.
-Images use neither prefix reuse nor concurrent batching.
-Before applying a configuration, `NodeConfig::validate` reads both GGUF headers and refuses a
-path that is not a projector or whose output identity/dimension contradicts the model. That also
-keeps an incompatible `mmproj_path` persisted earlier from reaching the server.
-The projector is placed by `VisionContext::load` after the model and its
-contexts are loaded: on the GPU with the most free memory that fits its
-weights plus `VISION_COMPUTE_RESERVE_BYTES`, or on the CPU when none fits
-(loading it on a full GPU made llama.cpp abort in the warmup or dereference
-null in `ggml_gallocr_alloc_graph` on the first image). `image_max_tokens` is
-capped at `VISION_MAX_IMAGE_TOKENS`, which bounds the warmup and each encode.
+`LlmEngine` loads the `mtmd` context only when `NodeConfig.mmproj_path` is configured, and images
+use neither prefix reuse nor concurrent batching. `NodeConfig::validate` refuses a projector whose
+output identity or dimension contradicts the model, so an incompatible `mmproj_path` persisted
+earlier never reaches the server.
 
-**An image on a hyper-connection model enters as `hc` copies.** `qwen4exp`
-reads any batch without token ids as its wide residual (`n_embd_out = hc *
-n_embd` per row), the form one pipeline hop forwards to the next. The
-projector emits `n_embd_inp` per row, so `mtmd_helper_eval_chunks` aborted the
-head in `ggml_reshape_3d` on the first image. When `n_embd_out` is a whole
-multiple of `n_embd_inp`, `decode_multimodal` evaluates the chunks itself
-(`eval_chunks_with_wide_images`): text chunks still go through the mtmd
-helper, and each image is encoded by mtmd and decoded with every row repeated
-`n_embd_out / n_embd_inp` times, which is how the token path starts the
-residual. Positions and the non-causal switch follow the helper. Such a model
-runs without `cparams.embeddings`, so its last layer keeps only the rows
-marked as outputs; when the hop forwards the residual, every text and image
-cell is marked (the mtmd helper marks only the last one, and `take_residual`
-then refused the short capture). Text chunks are decoded there too for that
-reason. Other models keep the stock helper.
-
-A failed prefill reaches the client as `Prefill falhou: <cause>` ("Prefill failed: <cause>"),
-built by
-`prefill::failure_cause`, which drops the telemetry and resume wrappers from
-the error chain; the gateway also logs the full chain at `warn`.
-
-**M-RoPE hidden-state batches always carry four positions per row.** With an
-embedding batch (`batch.token` null) llama.cpp reads `pos[j * n_tokens + i]`
-for every M-RoPE section. Text-only requests used to send one scalar position
-per row, so every peer after the head rotated sections 1-3 with heap garbage
-and a long prompt crashed in `llama_batch_allocr::ubatch_add` once the read
-crossed a page. `decode_hidden` and the batched hidden path now build the four
-sections (`text_mrope_positions`) whenever the model's rope type is MROPE or
-IMROPE. MTP batches carry tokens, so llama.cpp reads one position there.
-
-**A KV cell is not a logical position.** An image writes `n_tokens` embedding cells into the KV,
-but in M-RoPE it occupies only
-`mtmd_input_chunk_get_n_pos` = `max(nx, ny)` logical positions. The two counts diverge **on
-purpose** - it is documented upstream design, not a defect, and the `find_slot: non-consecutive
-token position` lines that appear in the image batch are the normal consequence of that.
-`Session` keeps both:
-`n_past` is the logical position and `prompt_cells` the physical count.
-`prefill_has_more_chunks` decides the prompt's continuation by the right pair - a multimodal
-decode consumes all the `mtmd` chunks in one call and is always complete. Confusing them made the
-head ask for a second piece and decode the `vec![0; n_tokens]` padding of `prompt_tokens` as if
-they were real tokens; the answer came out as a row of exclamation marks.
-`Session::positions_match_cells` closes prefix reuse and snapshot for sessions with media, where
-`prompt_tokens` does not index the KV cell by cell.
-On the hub hand-off, `mrope_positions` travels in the metadata together with the residual so
-every downstream slice preserves the head's logical positions.
-
+The projector's placement and caps, the hyper-connection `hc` copies, the four M-RoPE positions per
+row, the KV-cell versus logical-position split and the cause of a failed prefill:
+`docs/subsystems/inference.md`, "Multimodal input".
 ## Maintaining this file
 
 This file is a map of the folder's responsibilities. When you change an inference interface or a
@@ -1573,7 +1446,6 @@ session invariant, update it here and the subsystem README in the same commit. K
 implementation details in the code or in `docs/subsystems/inference.md`, so this index stays
 short.
 
-## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.

@@ -555,7 +555,8 @@ of the plan).
   version, since the real split is `split-mode tensor`.
 - **Analytical estimate.** The route reads `gguf::read_layout` and
   `gguf::read_info`, charges weights and KV with `plan::range_cost` and
-  distributes the result in proportion to each GPU's current free VRAM. Cache
+  distributes the result in proportion to each GPU's current free VRAM
+  (`split_projection`). Cache
   quantization counts: `cache_type_k`/`cache_type_v` come from the
   installation config and KV is only added to VRAM when `offload_kqv` is on.
   Otherwise the cache lives in host RAM and the projection notes the

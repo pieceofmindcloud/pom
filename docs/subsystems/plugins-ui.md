@@ -123,6 +123,14 @@ apply: for example, `infer` cannot open `/logs`, `/statistics` or
 `/deployments`, even when a plugin claims an extension point. Plugin APIs and
 sensitive operations must enforce their own authorization on the backend.
 
+The registry lives in `lib/pluginUi.ts`: `setPluginUi` validates and installs a
+manifest, `resolvePluginRoute` resolves a declared target (including the single
+native claim of `/logs` and `/statistics`), `pluginRouteProfiles` and
+`pluginMenuItems` answer what the router and the menu may show, `pluginLabel`
+resolves `pluginDisplayName`, `pluginAssetUrl` resolves a declared asset, and
+`pluginSlot(id)` returns the first active claimant of a native slot. The
+registry knows no specific plugin.
+
 ## Screens
 
 `components/PluginScreen.tsx` imports the asset module (same origin, the
@@ -188,7 +196,9 @@ operation and checks only the name, the size (256 KiB), the same origin and
 that the plugin is active. `profile` is the node's persisted profile
 (`admin`, `node` or `infer`), so the plugin decides who may call each
 operation; the enterprise plugin, for example, answers its directory and
-insights only for `admin`.
+insights only for `admin`. On the browser side the helper is
+`scopedPluginApi(code).rpc(op, params)` (`lib/pluginEvents.ts`), which posts to
+that route for one plugin only.
 
 ## Slots inside native screens
 
@@ -609,7 +619,8 @@ namespace, string values, ceilings) and hands them to `setPluginMessages`
 (`i18n/locales.ts`), which puts them in the same `formatMessage` map without
 ever overwriting a POM key and removes them when the plugin leaves. A missing,
 unreadable or invalid catalog is dropped with a warning: it falls back to `en`
-or the key. **POM owns no plugin text.**
+or the key. **POM owns no plugin text.** `syncPluginCatalogs` is what installs
+the catalogs of every active plugin in the selected locales.
 
 ## Tests
 

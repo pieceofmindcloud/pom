@@ -1102,7 +1102,10 @@ besides the turns:
   four bytes per token, reserves 10% for safety and tries JPEG quality and
   resolution up to 2048 px on the longer side, without going over 512 px for
   normal images. The aspect ratio is kept, and the bubble and the pending
-  attachment show "Resized automatically" when the image was changed.
+  attachment show "Resized automatically" when the image was changed. Sent images
+  stay whole in the bubble, with a caption and alternative text.
+- The dictation button only renders when the browser exposes Web Speech, and it
+  dictates in the interface's locale.
 - The `Think` button uses the `thinking` field of the same capabilities read
   and only shows up when the head's global `no_thinking` is off. The choice is
   sent as `thinking_enabled` on each Chat call and stays in the `ChatSession`

@@ -27,44 +27,22 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   `8.8.8.8:80`), a last resort for the node to dial itself. The only
   file with per-platform code; the filtering stays outside the `cfg` and has a
   test that runs on any system.
-- `infer_tunnel.rs` - the request/response protocol that carries the inference
-  call through the libp2p swarm as the preferred transport when the peer
-  announces that capability. If the tunnel fails on transport, the relay uses the
-  pinned direct client as fallback. `TunnelRequest` carries method, path, body and
-  headers, including the `connection_key` and the inference port's internal
-  marker. The frame is binary - `[u32][JSON head][u32][raw body]`
-  for a request, `[u16 status][u32][raw body]` for a response - because a JSON
-  array of numbers cost about 3.6 bytes per byte of payload on every relayed
-  frame. `is_transfer_data_path`, `closed_range` and
-  `transfer_chunk_is_bounded` are what the receiving side uses to hold the
-  file rule: a piece of a file is a bounded range, and it is refused
-  (`TRANSFER_ROUTE_REFUSED_STATUS`, 421) on a connection that crosses a public
-  relay;
-  `serve_loopback` hands the call to the loopback, always in clear text
-  (`serve::plain_allowed` frees loopback even under strict TLS and the node's
-  certificate does not cover `127.0.0.1`). `TunnelTarget` chooses **which** local
-  server answers: `Inference` (the default, and the only one a peer of an earlier
-  binary knows) or `Gateway`, the control plane. The sender names the variant; the
-  receiver is the one that maps it to one of the two ports it itself chose - a
-  remote peer never names a port. For the gateway there is
-  `gateway_path_is_allowed`, a **closed** list of exact comparison: admission,
-  policies and direct return (`/handshake`, `/health`, `/api/cluster/*`,
-  `/v1/relay-result`, `/v1/remote-stream-result`) and the control plane of the
-  deployment and of the cluster reads (`/api/ui/{node,apply,...}`), plus
-  administrative sync with the principal
-  (`/api/internal/{api-keys,admin-trust,profile}/*`, all `InternalNodeAuth`). Everything
-  that leaves the tunnel reaches the gateway through `127.0.0.1`, and the gateway
-  decides what is local by the socket's address; that is why `serve_loopback`
-  marks the request with `TUNNEL_ORIGIN_HEADER` and the process secret
-  (`tunnel_mark`), and `serve::request_origin` treats it as remote. Without the
-  mark, any route on the list would hand the node's administration (localhost
-  mode, `install_trust_anchor`) to any peer of the swarm. The request's method is
-  passed on as it came (GET, POST, ...). `peer_client::send_to_gateway_over` is the
-  control plane's sender: each announced address and, last, the tunnel. POSTs
-  without a `Content-Type` get the binary default, but an explicit
-  `Content-Type`, like `application/json` in the session lifecycle, is never
-  duplicated nor overwritten. `measure_rtt` measures the round trip through the
-  same Noise tunnel.
+- `infer_tunnel.rs` - the request/response protocol that carries a call through the libp2p
+  swarm as the preferred transport, with the pinned direct client as fallback when it fails on
+  transport. `TunnelRequest` carries method, path, body and headers, including the
+  `connection_key` and the inference port's internal marker; the frame is binary
+  (`[u32][JSON head][u32][raw body]` for a request, `[u16 status][u32][raw body]` for a
+  response). `TunnelTarget` (`Inference` | `Gateway`) names which local server answers and the
+  receiver resolves the port. `is_transfer_data_path`, `closed_range` and
+  `transfer_chunk_is_bounded` hold the file rule on the receiving side (a piece is a bounded
+  range, refused with `TRANSFER_ROUTE_REFUSED_STATUS` 421 on a connection that crosses a public
+  relay); `gateway_path_is_allowed` is the closed exact-comparison list; `serve_loopback` hands
+  the call to the gateway over `127.0.0.1` and marks it with `TUNNEL_ORIGIN_HEADER` and
+  `tunnel_mark` so `serve::request_origin` never reads it as local. `peer_client::send_to_gateway_over`
+  is the control plane's sender: each announced address and, last, the tunnel. `measure_rtt`
+  measures the round trip through the same Noise tunnel. The protocol, the security invariants
+  and the frame format are `docs/subsystems/p2p-network.md`, "A request that comes out of the
+  tunnel is never local" and "The tunnel frame is binary".
 - `cluster_logs.rs` - bounded `tracing` capture and a separate request/response
   transport (`/pom/cluster-logs/1.0.0`); the queue discards under pressure, and
   each batch goes by fanout to every peer announced as admin. `CaptureLayer` uses
@@ -89,44 +67,30 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   `scope: "network"`): the same authenticated path and the same rate limit as the
   messages, but kept only in memory (50 notices, 24 h, `notice_snapshot`), never
   in `network_chat_messages`.
-- `network_lobby.rs` - the lobby: the `/pom/network-lobby/1.0.0` protocol a
-  machine that is **not** a member uses to talk to a public network's principal
-  before joining (`docs/subsystems/p2p-network.md`, 6.1). Holds the frame types
-  and bounds (`LobbyLimits`), the self-declared hardware card (`LobbyCard`,
-  clamped by `sanitized`), `transport_keypair` and `LobbyIdentity` (the lobby connects
-  under a key derived from the node key and proves the node with a signature
-  over that transport `PeerId`; it must never share the cluster swarm's
-  `PeerId`), `LobbyGuests` (presence plus the
-  per-candidate rate, used by the principal and, fed by relayed frames, by
-  every member) and `LobbyClient`, the candidate's dial-only swarm that also
-  runs in setup mode. The principal's handler is
-  `discovery.rs::answer_lobby_request`; inside the network the lobby is the
-  `lobby` room of `network_chat.rs`, which gained `ChatAction::LobbyPresence`
-  and `NetworkChat::{lobby_guests, lobby_enabled, auto_approves}`. The lobby
-  has no switch: it answers whenever discovery is not off, and under
-  `access_policy = auto_approve` the handler approves an admission request as
-  it arrives. The `Info` request and
-  `PublicStats` publish models, node count and VRAM under a separate switch
-  (`NetworkChat::{public_stats, public_stats_enabled}`); the slot is filled by
-  `webui::spawn_public_stats_publisher`, never by the swarm loop.
-  `Describe` and `Directory` are answered by any node from `DirectoryBoard`
-  (own public network; known public networks when the node is a relay or in a
-  public network), filled by `gateway::spawn_directory_board_publisher`.
-  `Publish` lets a network's principal hand its description to a relay over a
-  direct dial (`DirectoryBoard::accept_publication`), the listing path that
-  needs no circuit. `default_directory_relays` is the list of relay keys a fresh installation
-  asks (`DEFAULT_DIRECTORY_RELAYS` plus `POM_DIRECTORY_RELAYS`).
-  Admission requests live here too: `LobbyRequest::Admission`,
-  `AdmissionRecord` / `AdmissionView` / `AdmissionGrant` and
-  `apply_admission_request` (pending is refreshed, approved is kept, rejected
-  waits an hour); the principal's store is `NetworkChat::{request_admission,
-  admission_of, admissions, decide_admission}`. `network.rs` gates membership
-  by the connection key unless `NetworkSettings::open_admission`, and starts
-  detached when the network's visibility is `local`. `LobbyRequest::ClaimKey` hands the
-  current key to a node on the member list (`NetworkChat::record_member` /
-  `member_departed` keep it). `infer_tunnel.rs` lets
-  `/api/cluster/member-left` through the tunnel, the only way a member behind
-  NAT reaches its principal to say it is leaving.
+- `network_lobby.rs` - the lobby: the `/pom/network-lobby/1.0.0` protocol a machine that is
+  **not** a member uses to talk to a public network's principal before joining. Frame types and
+  bounds (`LobbyLimits`), the self-declared hardware card (`LobbyCard`, clamped by `sanitized`),
+  `transport_keypair` and `LobbyIdentity` (a key derived from the node key, proving the node
+  with a signature over that transport `PeerId` - never the cluster swarm's `PeerId`),
+  `LobbyGuests` (presence plus the per-candidate rate) and `LobbyClient`, the candidate's
+  dial-only swarm that also runs in setup mode. The principal's handler is
+  `discovery.rs::answer_lobby_request`; inside the network the lobby is the `lobby` room of
+  `network_chat.rs` (`ChatAction::LobbyPresence`, `NetworkChat::{lobby_guests, lobby_enabled,
+  auto_approves}`). `Info` and `PublicStats` publish models, node count and VRAM under their own
+  switch (`NetworkChat::{public_stats, public_stats_enabled}`), filled by
+  `webui::spawn_public_stats_publisher`, never by the swarm loop. `Describe` and `Directory` are
+  answered by any node from `DirectoryBoard` (own public network; known public networks when the
+  node is a relay or in a public network), filled by `gateway::spawn_directory_board_publisher`;
+  `Publish` lets a network's principal hand its description to a relay over a direct dial
+  (`DirectoryBoard::accept_publication`) - the listing path that needs no circuit.
+  `default_directory_relays` is the relay list a fresh installation asks (`DEFAULT_DIRECTORY_RELAYS`,
+  `POM_DIRECTORY_RELAYS`). Admission lives here too: `LobbyRequest::Admission`,
+  `AdmissionRecord` / `AdmissionView` / `AdmissionGrant`, `apply_admission_request` (pending is
+  refreshed, approved is kept, rejected waits an hour) and `NetworkChat::{request_admission,
+  admission_of, admissions, decide_admission}`. `LobbyRequest::ClaimKey` hands the current key to
+  a node on the member list (`NetworkChat::{record_member, member_departed}` keep it). The lobby
+  has no switch: it answers whenever discovery is not off. The joining rules and the lobby
+  protocol are `docs/subsystems/p2p-network.md`, 6.1.
 - `network_chat.rs` - a conversation channel over the libp2p swarm, with its own
   request/response, text/file limits, a bounded queue, rate limit and a
   persistence writer outside the swarm loop. The originating action carries the
@@ -186,76 +150,52 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   bounded by `sanitized`) so the admin's wizard can show who is looking for the
   network: the peer enters `peers` on the `Probe` with `joined: false` and becomes
   `joined: true` when it receives the root.
-- `peer_client.rs` - `prefer_tunnel`/`remember_tunnel_win`/`remember_direct_win`
-  are the **per peer** mark that the direct path is not answering: when on, the
-  frame skips QUIC and HTTP on the first attempt. Learned, not configured - a
-  direct success erases it. `relay.rs` consults it on both sending ladders.
-  `TunnelPeer`/`tunnel_gateway_call` carry a control plane call through the tunnel
-  when no direct address answers; that is what makes the admission of a pair behind
-  NAT complete.
-  `get_internal_from_candidates` tries the direct addresses and only then the
-  tunnel, and returns an `InternalResponse` (status + body already read), because
-  the tunnel does not produce a `reqwest::Response`.
-  `PeerClients`, one `reqwest::Client` per peer, because the TLS
-  verifier is per destination. Without TLS it goes back to being a single one. It
-  also keeps the global scheme of the URLs (`tls_enabled`/`peer_scheme`) and
-  `peer_base_url`, which is the one that brackets IPv6, besides the preference and
-  the temporary quarantine of routes that failed. `route_order` only reorders the
-  candidates: even when all are in quarantine, it returns the list so the real
-  attempt decides.
-  `get_internal_from_candidates` walks every announced gateway for an authenticated
-  control route; even 401/403 make the probe try the next address, because a ghost
-  address can answer as another node. The client destined for another node marks
-  control requests with `x-pom-internal-node`, uses the shared `connection_key` also
-  in the inference HTTP fallback on a public network and limits the TCP open to 2 s;
-  HTTPS and QUIC may validate through the secure transport and the same marker. The
-  `plain()` client for Ollama and
-  loopback does not send that mark. `for_peer_with_state` tells the trace whether the
-  TLS client was created or reused; local transport, tunnel and a client without TLS
-  stay explicitly unknown. `effective_quic_enabled`
-  combines the pool's flag with the global preference confirmed by the principal,
-  so that lazy clients created before the propagation do not divert inference to
-  the tunnel. Every peer HTTP client enables `TCP_NODELAY`, including the probes and
-  TLS clients, so that small decode requests do not combine Nagle with the operating
-  system's delayed ACK. The shared `reqwest::Client` and the cache by `node_id` also
-  preserve the connection pool; `for_peer` does not create a new client on every
-  frame.
-- `quic.rs` - the establishment budget of each call comes from
-  `route_plan::book().establish_budget(peer)` (ceiling `QUIC_FALLBACK_BUDGET`);
-  `ClientPool::for_probes` pins the probe's budget, which is what measures the RTT.
-  `ensure_local_route` does a UDP `connect` before the handshake and fails at once
-  when the machine has no route to the destination's family (a container without
-  IPv6 dialing an announced IPv6) - quinn only recorded the refused `sendmsg` and
-  waited for the whole budget.
-- `quic.rs` - the HTTP/3 client and server over Quinn. The pool keeps one QUIC
-  connection per peer and announced address, uses the same Ed25519 pinning as the
-  TCP connection and leaves the UDP endpoint ready on the dedicated announced port
-  (`inference_quic_port`/`gateway_quic_port`) even when the preference is off. The
-  dial requires `host:port` and never derives the destination from an HTTP URL.
-  The listener's configuration is independent of the TCP's `tls_required`, because
-  QUIC carries its own TLS 1.3. Each answer also exposes the Quinn connection's
-  smoothed RTT in microseconds, separate from the remote handler's processing.
-  `request_body_send_us` measures the wait for the HTTP/3 body's `send_data` and
-  `finish`; it is not the response time nor a delivery confirmation by the peer.
-  Every complete attempt, from the handshake to the response body, has a single
-  deadline: the frame's deadline (`relay::frame_deadline`: (1 s + 50 ms per token + 2 s per
-  image) x hops remaining; the prefill chunk has a liveness deadline of 10 min
-  per hop, `frame_deadline_for_path`), fixed in `send_frame_or_tunnel` and read by
-  the transports with `relay::frame_time_left`. There is no nested smaller ceiling; a peer that dropped is detected by
-  the connection's life (`QUIC_MAX_IDLE` 1.2 s, TCP keep-alive of ~4 s in
-  `peer_client::with_liveness`). The failure memories (route, QUIC quarantine,
-  opening the persistent channel, admission) use the single window
-  `peer_client::FAILURE_MEMORY` (5 s). A peer in `tunnel_first` has its direct path
-  probed in the background every `DIRECT_REPROBE_INTERVAL` (5 s,
-  `relay::spawn_direct_reprobe`); a success erases the mark.
-  Discovering a dead QUIC endpoint shares an aggregate budget of 300 ms across
-  addresses, and a failure puts that address in quarantine for 5 s so a handshake is
-  not repeated on every token; the healthy session is reused.
-  If a request fails on a cached session, as with the `ApplicationClose` caused by
-  the peer restarting, the pool closes and removes that instance and tries a new
-  handshake once inside the same budget. The quarantine records only the endpoint's
-  final failure. The removal compares the cached instance so it does not erase a new
-  connection created concurrently.
+- `peer_client.rs` - `prefer_tunnel`/`remember_tunnel_win`/`remember_direct_win` are the
+  **per peer** mark that the direct path is not answering: when on, the frame skips QUIC and
+  HTTP on the first attempt. Learned, not configured - a direct success erases it - and
+  `relay.rs` consults it on both sending ladders. `TunnelPeer`/`tunnel_gateway_call` carry a
+  control plane call through the tunnel when no direct address answers.
+  `get_internal_from_candidates` walks every announced gateway for an authenticated control
+  route, trying the direct addresses and only then the tunnel, and returns an
+  `InternalResponse` (status + body already read) because the tunnel does not produce a
+  `reqwest::Response`; even 401/403 make the probe try the next address, because a ghost address
+  can answer as another node. `PeerClients`, one `reqwest::Client` per peer, because the TLS
+  verifier is per destination (without TLS it goes back to being a single one), and keeps the
+  global URL scheme (`tls_enabled`/`peer_scheme`), `peer_base_url` - the one that brackets IPv6 -
+  and the temporary quarantine of routes that failed; `route_order` only reorders the
+  candidates, so even a fully quarantined peer still gets a real attempt. `for_peer` does not
+  create a new client on every frame; `for_peer_with_state` tells the trace whether the TLS
+  client was created or reused, with local transport, tunnel and a client without TLS explicitly
+  unknown. `effective_quic_enabled` combines the pool's flag with the global preference confirmed
+  by the principal, so lazy clients created before the propagation do not divert inference to the
+  tunnel. Control requests carry `x-pom-internal-node`; the `plain()` client for Ollama and
+  loopback does not. Every peer HTTP client enables `TCP_NODELAY`, including the probes and TLS
+  clients, so small decode requests do not combine Nagle with the operating system's delayed ACK.
+  `FAILURE_MEMORY` (5 s) is the single window the failure memories share - route, QUIC quarantine,
+  opening the persistent channel, admission - and `with_liveness` sets the TCP keep-alive (~4 s).
+- `quic.rs` - the HTTP/3 client and server over Quinn. The establishment budget of each call
+  comes from `route_plan::book().establish_budget(peer)` (ceiling `QUIC_FALLBACK_BUDGET`), and
+  `ClientPool::for_probes` pins the probe's budget - which is what measures the RTT.
+  `ensure_local_route` does a UDP `connect` before the handshake and fails at once when the
+  machine has no route to the destination's family (a container without IPv6 dialing an announced
+  IPv6): quinn only recorded the refused `sendmsg` and waited for the whole budget. The pool keeps
+  one QUIC connection per peer and announced address, uses the same Ed25519 pinning as the TCP
+  connection, and leaves the UDP endpoint ready on the dedicated announced port
+  (`inference_quic_port`/`gateway_quic_port`) even when the preference is off. The dial requires
+  `host:port` and never derives the destination from an HTTP URL; the listener's configuration is
+  independent of the TCP's `tls_required` because QUIC carries its own TLS 1.3. Each answer exposes
+  the Quinn connection's smoothed RTT in microseconds, separate from the remote handler's
+  processing; `request_body_send_us` measures the wait for the body's `send_data` and `finish`,
+  which is neither the response time nor a delivery confirmation. Every complete attempt, handshake
+  to response body, runs on the frame's single deadline (`relay::frame_deadline`, fixed in
+  `send_frame_or_tunnel` and read with `relay::frame_time_left`) - there is no nested smaller
+  ceiling. A dropped peer is detected by the connection's life (`QUIC_MAX_IDLE` 1.2 s). Discovering
+  a dead endpoint shares an aggregate budget of 300 ms across addresses and quarantines that address
+  for 5 s so a handshake is not repeated on every token; if a request fails on a cached session (the
+  `ApplicationClose` of a restarting peer) the pool closes and removes that instance - comparing the
+  cached one, so it does not erase a connection created concurrently - and handshakes once more
+  inside the same budget. A peer in `tunnel_first` has its direct path probed in the background every
+  `DIRECT_REPROBE_INTERVAL` (`relay::spawn_direct_reprobe`); a success erases the mark.
 - `pkarr_node.rs` - key -> address resolver on the pkarr DHT: a signed `_pom`
   TXT with public multiaddresses and the keys of the relays holding a
   reservation; `publish`/`resolve`/`resolve_dial_addrs`. The live publisher is
@@ -317,36 +257,28 @@ the ladder direct -> dedicated relay (with DCuTR) -> member relay, are in
   minutes enter selection.
   `last_success` returns the last HTTP address that answered (less than 5 min ago
   and without a failure after), the HTTP half of `Network::peer_route`.
-- `route_plan.rs` - the **per-edge route plan**: which transport (QUIC,
-  HTTP/HTTPS or the libp2p tunnel) this node speaks with each peer, measured in the
-  background and pinned. `RouteBook` (global to the process, `route_plan::book()`)
-  keeps per `(node_id, Plane)` the list of measured routes in RTT order (a 2 ms tie
-  decides QUIC, then HTTP, then the tunnel). Two planes per peer:
-  `Inference` (prefill/decode) and `Gateway` (the return of the direct reply and of
-  the remote-stream). `relayed_nodes` lists the peers reached only by a circuit on a
-  relay, rebuilt on each turn of the planner from `Network::libp2p_links`.
-  `spawn_planner`, started by `Network::start`, measures every edge without analysis,
-  when beaten (3 min) or when the peer changed addresses, ports, `deploy_id` or layer
-  range - which is why a deployment that becomes `serving` already triggers the
-  analysis before the first request. `measure_edge` probes in parallel with the real
-  transport: `GET /health` over HTTP with the pinned client, an HTTP/3 POST over the
-  QUIC endpoint (any status proves the path) and `/health` through the tunnel; two
-  samples, the smaller counts. `record_failure` repeats the route once, then moves to
-  the next measured one and, with the list exhausted, erases the edge and wakes the
-  planner (reanalysis). `begin_use` returns the `RouteUse`
-  guard every frame and every return delivery holds: with a frame in flight or
-  until `PIN_GRACE` (60 s) after the last one, the planner neither probes the
-  edge nor swaps its route, and `active` ignores `PLAN_TTL`; only the frame's
-  own failure swaps it. An empty analysis keeps the existing route (renewing
-  its deadline, so `active` still returns it) but leaves the edge due, so the
-  analysis repeats after `EMPTY_RETRY` (5 s); only an exhausted `record_failure` erases it. The tunnel probe does
-  not count the tunnel's own "nothing is listening" 502
-  (`infer_tunnel::NOTHING_LISTENING_STATUS`) as a route: a peer measured while
-  its server was down used to get the tunnel as its only route for a whole `PLAN_TTL`.
-  `establish_budget` gives the connection
-  budget: 3x the measured RTT between 100 ms and the ceiling, 150 ms without a
-  measurement. `snapshot`/`signature` feed the `route_plan` field of
-  `/api/ui/cluster`.
+- `route_plan.rs` - the **per-edge route plan**: which transport (QUIC, HTTP/HTTPS or the libp2p
+  tunnel) this node speaks with each peer, measured in the background and pinned. `RouteBook`
+  (global to the process, `route_plan::book()`) keeps per `(node_id, Plane)` the measured routes
+  in RTT order (a 2 ms tie decides QUIC, then HTTP, then the tunnel); the two planes are
+  `Inference` (prefill/decode) and `Gateway` (the return of the direct reply and of the
+  remote-stream). `relayed_nodes` lists the peers reached only by a circuit on a relay, rebuilt on
+  each turn of the planner from `Network::libp2p_links`. `spawn_planner`, started by
+  `Network::start`, measures every edge when beaten (3 min) or when the peer changed addresses,
+  ports, `deploy_id` or layer range - which is why a deployment that becomes `serving` triggers the
+  analysis before the first request. `measure_edge` probes in parallel with the real transport
+  (`GET /health` over HTTP with the pinned client, an HTTP/3 POST over the QUIC endpoint - any
+  status proves the path - and `/health` through the tunnel), two samples, the smaller counts; the
+  tunnel probe does not count the tunnel's own "nothing is listening" 502
+  (`infer_tunnel::NOTHING_LISTENING_STATUS`) as a route. `record_failure` repeats the route once,
+  then moves to the next measured one and, with the list exhausted, erases the edge and wakes the
+  planner. `begin_use` returns the `RouteUse` guard every frame and every return delivery holds:
+  with a frame in flight or until `PIN_GRACE` (60 s) after the last one, the planner neither probes
+  the edge nor swaps its route, and `active` ignores `PLAN_TTL`; only the frame's own failure swaps
+  it. An empty analysis keeps the existing route but leaves the edge due, repeating after
+  `EMPTY_RETRY` (5 s). `establish_budget` gives the connection budget: 3x the measured RTT between
+  100 ms and the ceiling, 150 ms without a measurement. `snapshot`/`signature` feed the
+  `route_plan` field of `/api/ui/cluster`.
 - `Network::gateway_bases` - a peer's gateway addresses in the order worth trying:
   the host that already answered (`RouteTable::last_success`, compared by host
   because it may have been the inference port), then the ones that did not fail,

@@ -17,6 +17,8 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `DeploymentInspector.idle
 `node` can slip past one component's `?.` and crash the next; the maintenance
 debt lives in `TODO.md`, item 23.
 
+## Chat head choice
+
 - `InferenceHeadChoice.tsx` - in the Chat, on any profile, it shows nothing
   when there is a single head available; with two or more it uses the same native combo as the model
   selector to inspect the layer-zero candidates. The options carry the name,
@@ -34,6 +36,8 @@ debt lives in `TODO.md`, item 23.
 
 Per-file list:
 
+## First access
+
 - `GpuTemperature.tsx` - a shared GPU temperature badge used by Flow and machine
   details. One machine may have more than one board: both cards show **one
   row per GPU**, named by `gpuDisplayName` (which appends `#index`
@@ -43,6 +47,8 @@ Per-file list:
   sensor message. Flow and machine details pass through this component so the
   no-GPU guard cannot be forgotten by a caller. Normal, attention, critical and
   unavailable-sensor readings use the existing design-system tones.
+
+## Design system
 
 - `ui.tsx` - the design system in one file on purpose. `Panel`/`PanelHeader`/
   `PageHeader` (surfaces), `Button` (4 variants, sizes, loading spinner),
@@ -76,6 +82,8 @@ Per-file list:
   **outside** the `<label>` (a `<button>` inside a `<label>` breaks the control's accessible
   name), so the `<label>` keeps wrapping only text and control. `hint` (visible text) keeps
   existing for the other screens.
+## Plugin screens
+
 - `EnterpriseFeatureShowcase.tsx` - the advertising fallback of `/logs` and
   `/statistics` **when no active plugin provides them** (rendered outside
   `<Routes>` in `App.tsx`, like the chat). It receives `kind: "logs" | "statistics"`.
@@ -109,6 +117,8 @@ Per-file list:
   from the plugin registry; while loading, without a claimant, or when the
   module fails to load or render, the slot shows its fallback (nothing by
   default) so a broken plugin never breaks the host screen.
+## Chat, history and shared tables
+
 - `Markdown.tsx` - a memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
@@ -131,6 +141,8 @@ Per-file list:
   `QuitNativeAppButton`, in the same file, quits the macOS menu-bar app through
   the `pomQuit` bridge (the app is an accessory with no visible menu); it sits
   at the end of the `Topbar` and renders only inside the macOS app.
+## App chrome
+
 - `nav.ts` - `NAV`: the menu as data. The Deployments section uses `Rocket` (it was
   `Boxes`, the same icon as Models), the History uses `History` and Logs has separate
   leaves for requests and deployment; Network Chat is its own
@@ -210,6 +222,8 @@ Per-file list:
   new one also **navigates to `/chat`**: without that, a click made from the
   settings or the documentation only swapped the active session and left the screen
   where it was. Whoever is already in the chat is not sent again.
+## Slicing, first run and network panels
+
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
   per job with state, named phase, byte heartbeat, rate/ETA when available and
@@ -294,6 +308,8 @@ Per-file list:
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
   so an invisible exit layer never blocks the next hamburger click. The action of
   leaving the network is not exposed in the menu.
+## Chat states and notifications
+
 - `ChatWaitingLine.tsx` - the Chat's line between sending and the first
   token: pulsing dots and a message that rotates (`lib/chatWaiting.ts`), with
   the "starting our engines" set while the deployment wakes from idle. It is
@@ -344,6 +360,8 @@ Per-file list:
   the notification showed the hash, which says neither which model it is nor which piece it
   carries. In an offer, what is offered is the title and who offers it is the subtitle - the other way
   around, the layer range was exactly what the ellipsis ate.
+## Cluster visualizations
+
 - `PipelineRail.tsx` - the cluster as the path a request takes: `PipelineRail`
   draws peer cards in execution order connected by `Conduit` wires labelled
   with the layer boundary the hidden state crosses; `LayerRibbon` is one tick
@@ -513,6 +531,8 @@ Per-file list:
   is aborted when the machine changes, and the option select is keyed by kind
   plus `start-end` (`keyOf`), not by array index, so a reordered list cannot
   silently point at another range.
+## Joining, guards and destructive actions
+
 - `LobbyChat.tsx` - Chat with a network this machine has **not** joined
   (`docs/subsystems/p2p-network.md`, 6.1). A modal that polls the node every
   3 s (`GET <endpoint>?key=<publisher_key>`) and posts through it; the browser
@@ -587,11 +607,11 @@ Per-file list:
   own interface to switch it off was a detour, so the request goes to the local
   node with the target's `node_id` and it forwards (`POST /api/ui/leave`,
   `webui::forward_leave`). `isSelf` sends `{}` (local, no relay). Explicit
-  confirmation because re-entry happens from that machine's own Rede tab, not
+  confirmation because re-entry happens from that machine's own `Rede` tab ("Network"), not
   from here.
 - `UndeployPipeline.tsx` - The inverse of "Implantar na rede" ("Deploy on the network"): take the whole
   pipeline out of service at once via `POST /api/ui/undeploy` (`{group}`), the
-  counterpoint to the per-machine `ReleaseSlice`. "Descarregar modelo" only ever
+  counterpoint to the per-machine `ReleaseSlice`. "Descarregar modelo" ("Unload model") only ever
   freed one box, and undoing a four-machine deploy was four visits to four
   panels; a machine left behind keeps RAM/VRAM busy and serves nothing, since
   the pipeline only plans with closed coverage. Two promises to the operator:
@@ -607,6 +627,8 @@ Per-file list:
   `App.tsx` (the chrome survives a broken screen). Clears on `resetKey` change
   (the route path); `fallback` lets the chrome collapse to a line; retry button
   plus the error message in a `<pre>`.
+## Brand and machine marks
+
 - `Logo.tsx` - `LogoFull` draws the lockup from `brand.logo[theme]`: two arts,
   one per theme, which is why it needs **no plate behind it** - each theme gets
   art drawn for its own ground. The dark one is derived from the light one by
@@ -623,6 +645,8 @@ Per-file list:
   `SystemLoad` (nvidia GPU box, Apple Silicon Mac, Windows, Linux) into a
   label/icon/accent color; `MachineIcon` renders it. Reused by Dashboard,
   NetworkSettings and PipelineRail to make a heterogeneous cluster readable.
+## Slice and node actions
+
 - `ReleaseSlice.tsx` - "Give this machine's memory back": probes
   `GET /api/ui/release/candidate` to say truthfully whether another machine
   picks the slice up (or the layers go down), then `POST /api/ui/release`. Only
@@ -634,6 +658,8 @@ Per-file list:
   rendering), computed the same way the node does.
 
 Key logic carriers:
+
+## Key symbols of the shared primitives
 
 - `ui.tsx:Button` (ui.tsx:100) - the single button primitive: variant/size/
   loading/icon, `active:scale` press feedback, disabled while loading. Every
@@ -663,6 +689,8 @@ Key logic carriers:
   machine cards and the gateway, keyed by layout id and clamped by card size;
   a pointer that starts on a control is left to the control. Positions are
   persisted on every move (`writePositions`).
+## Deploy-time views and inspectors
+
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,
@@ -762,6 +790,8 @@ Key logic carriers:
   off, the controls disappear, but the values received stay in the state
   and keep traveling in the request when a visible control is edited. An absent mode is
   presented as `dense` (`llama.cpp`).
+## Key symbols of the cluster views
+
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) - the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `PeerDetailCard.ContextReservationNotice` (PeerDetailCard.tsx) - when the
@@ -784,6 +814,8 @@ Key logic carriers:
   not just the ones opened from `backdrop-blur` ancestors. The `openModals`
   stack (Confirm.tsx:27) is the companion rule: only the top window answers
   Escape.
+## Remote models and downloads
+
 - `RemoteModelDetails.tsx` - an on-demand window for a provider's model, with
   priority for GGUF, quantization, size, license, revision and the
   installed/downloading states. `RemoteModels.tsx` (`../routes/`) lists the results

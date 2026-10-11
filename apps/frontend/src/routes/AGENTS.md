@@ -15,6 +15,7 @@ those three steps report nothing, the guide watches for their outcome.
 
 Per-file list:
 
+## First access
 - **`SetupWizard.tsx` and `Setup.tsx` are deprecated and unreachable.**
   `App.tsx` neither imports nor routes them, there is no `/setup` path and the
   node does not serve `/api/setup/*`. The files and their tests are kept until
@@ -55,6 +56,7 @@ Per-file list:
   to `/api/setup/*`; do not confuse it with the prototype `SetupWizard.tsx`. See
   `docs/subsystems/web-ui.md`, "First-access wizard".
 
+## Network, plugins and this machine
 - `PublicNetworks.tsx` - Full-bleed directory of public networks: a
   scrolling table with name, organization, place, reach, nodes, latency, VRAM,
   models and the action. The list is a page of the node's table of known
@@ -249,9 +251,10 @@ Per-file list:
   name" (`POST /api/ui/network/node-name`): the field holds the configured
   `node_name` and, while empty, shows the hostname in use as its placeholder.
   The relay options moved to `NetworkSettings.tsx`. `Sair da rede` ("Leave the network") here is different
-  from `Esquecer rede` in `NetworkSettings.tsx`: one disconnects the machine from the cluster,
+  from `Esquecer rede` ("Forget network") in `NetworkSettings.tsx`: one disconnects the machine from the cluster,
   the other erases the local configuration and restarts in the setup.
 
+## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   with no title bar on an empty conversation, `../components/MissingPiece`
   and no composer or RAG while the network serves no model (with
@@ -337,6 +340,7 @@ Per-file list:
   (`useNetworkChat(room)`). The lobby tab lists the candidates with
   `LobbyHardwareCard`, sends text with `room_id: "lobby"`, and offers neither
   files nor typing, because machines that are not members read that room.
+## Information screens
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guides|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG
@@ -466,6 +470,7 @@ Per-file list:
   cluster verdict: they show the local model, its real layer slice and local
   in-flight request count. A missing `/api/ui/node` response is rendered as
   unavailable, never as an empty model, incomplete pipeline or zero.
+## Deploy
 - `DeployModel.tsx` - "Deploy on the network". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
   central peer map and compact property inspector. Tensor mode, Simple/Complete
@@ -636,6 +641,7 @@ Per-file list:
   activates a deployment and undeploys it by `deploy_id`. The redeploy job's
   panel shows `job.outputs` (`"<host>: <motivo>"`) below the message.
   Test: `Deployments.test.tsx` (expansion, the active badge, `{version}` in the API).
+## Logs, keys and the audit
 - `DeploymentLogs.tsx` - the full-bleed console of the cluster's process log on
   `/deployments/logs`. It queries the admin's local replica, refreshes every
   second, keeps the arrival order the API returns and can filter by
@@ -663,6 +669,7 @@ Per-file list:
   `enterprise` plugin, delivered by `pom-plugin-logs` through the plugin UI
   mechanism (`docs/subsystems/plugins-ui.md`). `App.tsx` shows the fallback
   `../components/EnterpriseFeatureShowcase.tsx` when the plugin is not active.
+## Settings leaves
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Storage screen (`Armazenamento`) rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
@@ -725,6 +732,7 @@ Per-file list:
   address exists, what is missing is the profile, so the text names the active profile and
   tells you to use the authorized node instead of telling you to look for a route fault. Who
   picks it is the guard in `../App.tsx`, through the table in `../lib/access.ts`.
+## Models, slicing and transfers
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
@@ -802,6 +810,7 @@ Per-file list:
 
 Key logic carriers:
 
+## Cross-cutting behaviour
 - `ChatSessionProvider.startStream` (`lib/chatStore.ts`) - snapshots turns
   before the placeholder reply, streams deltas into `consumeChatDelta` (keeps
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
@@ -865,40 +874,12 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` and
 `/api/ui/model-provider/downloads/:id/{cancel,retry}`.
 
-### Multimodal deploy and chat
+## Multimodal deploy and chat
 
-`DeployModel.tsx` shows the vision option for a whole model and for a slice
-set when the plan exposes `mmproj_candidates`. Once the plan has answered,
-the options are **only** those of the layer-0 machine
-(`currentPlan.mmproj_candidates` and `mmproj_path`); the catalog, which mixes
-every machine's paths, only fills the list while the first plan loads, and a
-selection that is not among the head's options is replaced. The list is
-preselected with the plan's path and lets the operator pick another local
-format at deploy time. Without candidates, it shows `mmproj_reason` or a
-localized hint. The plan request carries no projector; the deployment sends
-`vision` and, only with vision on, `mmproj_path`, and the route redoes the
-survey and the plan before validating the path chosen for the head.
-The vision and MTP pickers of the inspector (`DeployPlan.sidecars`) send
-`vision_choice` / `mtp_choice` with the plan and the deploy; "use the model's
-link" sends nothing and leaves the saved link in charge.
-`Chat.tsx` uses a single
-file field without an extension filter, accepts drag and drop with visual
-feedback and resizes images before sending them to the OpenAI endpoint. Images
-require vision to be available; other types are converted to text in the request.
-The image receives the model's effective budget, using `context_length` from
-`/v1/models` or the local `n_ctx` as a fallback, with four bytes per token and
-a 10% safety margin. JPEG quality and resolution go down to 512 px,
-preserving the proportion; the `Redimensionada automaticamente` ("Automatically resized") label stays on the
-attachment when that happened. The vision and the
-Chat's coverage come from
-`GET /api/ui/chat/capabilities`, an aggregated reading of the deployment that also
-works on the `node` and `infer` profiles; a refusal or a failure stays unavailable,
-never an empty model or zero coverage. The same endpoint reports whether the
-global thinking allows rendering the `Think` button; the session's choice goes in
-each call's `thinking_enabled` and stays between messages. Images sent stay whole in the
-message bubble, with a caption and alternative text. The dictation button is only
-rendered when the browser exposes Web Speech and it uses the interface's locale.
-
+The deploy side (the head's `mmproj_candidates`, `vision_choice` / `mtp_choice`, what the plan and
+the deploy carry) is `docs/subsystems/http-api.md`. The Chat side (the file field, the resize to fit
+the effective budget, the "Resized automatically" label, the `Think` button and dictation) is
+`docs/subsystems/web-ui.md`, "Chat".
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

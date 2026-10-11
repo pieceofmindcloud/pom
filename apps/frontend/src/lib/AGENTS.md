@@ -674,44 +674,23 @@ When updating this file, preserve this bar for all agents and keep entries conci
 
 ## Plugin interface
 
-- `pluginUi.ts` - the manifest types and the validated registry (`setPluginUi`)
-  that the menu, the profile guard and the router read. It normalizes menu and
-  routes under `/<plugin_code>/...` in the same registry, except the single claim
-  of the native `/logs` and `/statistics` routes: `resolvePluginRoute`,
-  `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
-  Menus and routes are available to every profile; `roles` and `profiles` are
-  validated and preserved in the manifest for compatibility, not used as access
-  control. `icon_image` is validated as a PNG declared in `assets` and is
-  available to the menu as a visual fallback; `documentation` validates the
-  Markdown entries of the guides and of the reference. `menu[].children` becomes
-  a section with submenus (all children are visible in the profiles) and
-  `pluginDisplayName` gives the plugin's human name. `slots` maps native extension slots to declared
-  screens; `pluginSlot(id)` returns the first active claimant. It knows no
-  specific plugin.
-- `pluginHost.ts` - the SDK on `globalThis.__POM_HOST__` (React, React Query, the
-  design kit, i18n, theme, `api.get`...) that plugin screens use instead of
-  packaging their own copies. Version 2: `context()`, `events`, `protocol` and
-  `plugin(code)` (events and commands scoped to the plugin). Version 3 adds
-  `components.TelemetryLine`; `components.ExecutionTelemetry` stays for
-  version-2 bundles and renders the same basic line. Version 4 adds
-  `plugin(code).rpc`.
-- `pluginEvents.ts` - the `pom-plugin-events/v1` protocol: envelope, bus
-  (`publishPluginEvent`, `subscribePluginEvents`, replay of the last global
-  event), delivery through `CustomEvent("pom:plugin-event")` and `postMessage` to
-  `iframe[data-pom-plugin]`, and the `notification.notify`/`confirm` commands
-  (`runPluginCommand`, validated and always answered with
-  `notification.response`), also accepted over `pom:plugin-request` and
-  `postMessage` from the same origin. The one that executes is the `PluginBridge`.
-  `forwardNodeEvent` passes on the node's envelopes (`deployment.started`,
-  `model.serving`, `model.stopped`, `preferences.changed`) preserving `id`.
-  `scopedPluginApi(code).rpc(op, params)` posts to the plugin's own API
-  (`/api/ui/plugins/<code>/rpc/<op>`).
-- `defaultPasswordNotice.ts` - the bell's default-password notice: read and
-  dismissed state in `localStorage` per `boot_id`, so it returns unread on
-  every start of the node and not on a page reload.
-- `pluginInbox.ts` - the plugins' inbox in the bell: `notification.confirm`
-  questions with Accept/Decline (this tab only) and `notification.notify`
-  warnings without buttons, unread until the bell opens
-  (`markPluginNoticesRead`; read ids in `localStorage`).
-- `pluginI18n.ts` - loads/validates/installs the plugin's text catalogs
-  (`syncPluginCatalogs`), in the selected locales. See `docs/subsystems/plugins-ui.md`.
+The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that carry it.
+
+- `pluginUi.ts` - the manifest types and the validated registry the menu, the profile guard and the
+  router read (`setPluginUi`, `resolvePluginRoute`, `pluginRouteProfiles`, `pluginMenuItems`,
+  `pluginLabel`, `pluginAssetUrl`, `pluginSlot`). It knows no specific plugin.
+- `pluginHost.ts` - the SDK on `globalThis.__POM_HOST__` (React, React Query, the design kit, i18n,
+  theme, `api.get`...) that plugin screens use instead of packaging their own copies. Its version
+  history is in `plugins-ui.md`.
+- `pluginEvents.ts` - the `pom-plugin-events/v1` protocol: envelope, bus, delivery to
+  `iframe[data-pom-plugin]`, the `notification.notify`/`confirm` commands, `forwardNodeEvent` for
+  the node's own envelopes, and `scopedPluginApi(code).rpc`. The one that executes is the
+  `PluginBridge` (`components/`).
+- `pluginInbox.ts` - the plugins' inbox in the bell: `notification.confirm` questions with
+  Accept/Decline (this tab only) and `notification.notify` warnings without buttons, unread until
+  the bell opens (`markPluginNoticesRead`; read ids in `localStorage`).
+- `defaultPasswordNotice.ts` - the bell's default-password notice: read and dismissed state in
+  `localStorage` per `boot_id`, so it returns unread on every start of the node and not on a page
+  reload.
+- `pluginI18n.ts` - loads/validates/installs the plugin's text catalogs (`syncPluginCatalogs`), in
+  the selected locales.

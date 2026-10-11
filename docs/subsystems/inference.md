@@ -53,6 +53,55 @@ also do not serve as a reusable prefix nor as a snapshot
 (`Session::positions_match_cells`): `prompt_tokens` there is filler, not the
 cells' real ids.
 
+On the hub hand-off, `mrope_positions` travels in the metadata together with the residual so
+every downstream slice preserves the head's logical positions.
+
+### The projector's placement and its caps
+
+`LlmEngine` loads the `mtmd` context only when `NodeConfig.mmproj_path` is configured. The head's
+prefill carries the images in base64 only on the first chunk; the peers decode them and the `mtmd`
+does the prefill in order.
+
+Before applying a configuration, `NodeConfig::validate` reads both GGUF headers and refuses a path
+that is not a projector or whose output identity/dimension contradicts the model. That also keeps
+an incompatible `mmproj_path` persisted earlier from reaching the server.
+
+The projector is placed by `VisionContext::load` after the model and its contexts are loaded: on
+the GPU with the most free memory that fits its weights plus `VISION_COMPUTE_RESERVE_BYTES`, or on
+the CPU when none fits - loading it on a full GPU made llama.cpp abort in the warmup or dereference
+null in `ggml_gallocr_alloc_graph` on the first image. `image_max_tokens` is capped at
+`VISION_MAX_IMAGE_TOKENS`, which bounds the warmup and each encode.
+
+### An image on a hyper-connection model enters as `hc` copies
+
+`qwen4exp` reads any batch without token ids as its wide residual (`n_embd_out = hc * n_embd` per
+row), the form one pipeline hop forwards to the next. The projector emits `n_embd_inp` per row, so
+`mtmd_helper_eval_chunks` aborted the head in `ggml_reshape_3d` on the first image. When
+`n_embd_out` is a whole multiple of `n_embd_inp`, `decode_multimodal` evaluates the chunks itself
+(`eval_chunks_with_wide_images`): text chunks still go through the mtmd helper, and each image is
+encoded by mtmd and decoded with every row repeated `n_embd_out / n_embd_inp` times, which is how
+the token path starts the residual. Positions and the non-causal switch follow the helper.
+
+Such a model runs without `cparams.embeddings`, so its last layer keeps only the rows marked as
+outputs; when the hop forwards the residual, every text and image cell is marked (the mtmd helper
+marks only the last one, and `take_residual` then refused the short capture). Text chunks are
+decoded there too for that reason. Other models keep the stock helper.
+
+### M-RoPE hidden-state batches carry four positions per row
+
+With an embedding batch (`batch.token` null) llama.cpp reads `pos[j * n_tokens + i]` for every
+M-RoPE section. Text-only requests used to send one scalar position per row, so every peer after
+the head rotated sections 1-3 with heap garbage and a long prompt crashed in
+`llama_batch_allocr::ubatch_add` once the read crossed a page. `decode_hidden` and the batched
+hidden path build the four sections (`text_mrope_positions`) whenever the model's rope type is
+MROPE or IMROPE. MTP batches carry tokens, so llama.cpp reads one position there.
+
+### The cause of a failed prefill
+
+A failed prefill reaches the client as `Prefill falhou: <cause>` ("Prefill failed: <cause>"), built
+by `prefill::failure_cause`, which drops the telemetry and resume wrappers from the error chain;
+the gateway also logs the full chain at `warn`.
+
 ## Inference port and administrative exposure
 
 The inference server (`inference_port` in `pom.json`) keeps listening on IPv4
@@ -241,6 +290,19 @@ of the cluster - constant across engines, prompt sizes and cold/warm. Measured
 with an announcer that swallows SYN: 2005 ms before, 301 ms on the first request
 and 0 ms on the following ones. Coming back is automatic: once the deadline
 passes, the next request pays one probe and the peer re-enters if it answers.
+
+The probe follows the pinned route (`bases_by_route_plan`): a tunnel route goes
+straight to the tunnel, an HTTP/QUIC route puts the measured address first. It
+tries every inference address in `Network::inference_bases` order (the host that
+already answered first) and, last, `/health` over the libp2p tunnel
+(`infer_tunnel::health_via_tunnel`, 3 s) - the only way to reach a peer behind
+symmetric NAT. Session lifecycle calls use `SESSION_LIFECYCLE_TIMEOUT` (60 s)
+instead, because the peer's handler needs the engine lock. Each successful body
+also feeds `AdmissionHealth::note_perf` (`fastest::PeerPerf`), which the
+delivery-time planner and the dashboard telemetry read. A successful `/health`
+also refreshes the model label, the deployment id and the layer range from the
+inference process, so a P2P announcement still in transit cannot make a newly
+loaded pipeline look incomplete.
 
 The trace also carries `server_ttft_ms`, `engine_ttft_ms`, the decode call
 count, tokens per call, cold/warm state and calls with a new, reused or unknown
@@ -2006,6 +2068,9 @@ one waiting, on the ticket.
   is unique per frame it can never be confused with the next frame's.
 - `DirectReply::new` returns `None` when the node knows no address of itself -
   then the ring takes over instead of dispatching a frame that never comes back.
+  The addresses it may use come from `self_reply_hosts()`: `self_dial_host`
+  first (advertised address > local IP > loopback), then `self_addr_candidates`,
+  turned into URLs by `self_reply_urls(hosts, gateway_port)`.
 - `await_result_with_ack`: a biased `select!` between the inbox's result (the
   normal case), the head's ack (only relevant when it fails, or when an old peer
   bubbled the whole answer - a present `token_id` counts as the result), and the
@@ -2352,6 +2417,19 @@ two values are equal.
   Both layers only fire when the operator allows the RAM fallback
   (`mtp_cpu_fallback_enabled`); neither reloads weights beyond what is needed -
   layer 2 never reloads any weights, it only recreates the context.
+
+**The two details that are the correction.** `seq_rm` runs before each decode of the draft (in
+`observe` and in `draft`): the previous round left in the draft's cache the positions it bet on,
+and the verification may have refused part of them; rewriting over them without erasing would leave
+two cells for the same position and the attention would read both. And the batch's token pointer is
+ours: `llama_batch_init` allocates `token` **or** `embd`, never both, and the MTP needs both, so
+the pointer goes back to the original before the `llama_batch_free`, which would free Rust's
+memory. `MtpDrafter::draft` decodes the head once per drafted token and returns the ids; `p_min`
+cuts at the first doubtful guess.
+
+**What is not measured yet.** The gain the block promises is real upstream (21 -> 35 tok/s on
+Qwen3.8-27B-Q3_K_S, measured outside this project). Here the implementation is complete and green
+in the unit tests, but there is no end-to-end measured tok/s number for POM's own pipeline.
 
 ### 5.3 Kimi-K3 recurrent state
 

@@ -254,8 +254,9 @@ last):
   notifications are idempotent and have three attempts with a bounded timeout.
 - **UI** (`webapp.rs`): `GET /` redirects to `/admin-ui/`, which serves the
   bundle from disk (`config::ui_dist_dir()`); assets and SPA routes live under
-  that mount. The API fallback stays a JSON 404, and a miss with an extension
-  becomes "asset not found".
+  that mount. `API_PREFIXES` is the list of path prefixes that are never handed
+  to the SPA fallback. The API fallback stays a JSON 404, and a miss with an
+  extension becomes "asset not found".
 
 The registration of the UI control routes is organized in
 `crates/node/src/backend/webui/routes/`: `common.rs` for generic routes,
@@ -447,7 +448,8 @@ standalone HTML page, with no bundle and no navigation, with status 403 and the
 messages in English and Portuguese. In `network`, the static login screen is
 public, but the administrative data requires `X-POM-Access-Token` on the first
 call; the server then issues an in-memory session identified by an `HttpOnly`,
-`SameSite=Strict` cookie, valid for 8 hours and only on administrative paths.
+`SameSite=Strict` cookie, valid for the single `ADMIN_SESSION_TTL` (8 hours) and
+only on administrative paths.
 The cookie name carries the `Host` port (`<slug>_admin_session_<port>`,
 `auth::admin_session_cookie_name`): cookies do not separate by port, and two
 nodes on the same host (`<host>:8080` and `<host>:8081`) logged each other out on
@@ -1311,9 +1313,10 @@ only carries `{ offers }`; free disk space is an internal transfer decision,
 not part of the UI's read contract.
 
 `GET /api/ui/cluster` uses the same conditional contract. Each gateway keeps
-the already built snapshot for up to 2 seconds, protected by a fingerprint of
-the known state of peers, runtime, configuration and deployment. A known change
-swaps the fingerprint and forces a new collection before the TTL ends. The
+the already built snapshot for up to `CLUSTER_CACHE_TTL` (2 seconds), protected
+by a fingerprint of the known state of peers, runtime, configuration and
+deployment. A known change swaps the fingerprint and forces a new collection
+before the TTL ends. The
 `ETag` only ignores `system.sampled_at`, which is sampling noise; metrics and
 topology still invalidate the version. `x-state-version` is monotonic for
 changed snapshots.

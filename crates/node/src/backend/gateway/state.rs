@@ -488,7 +488,7 @@ pub struct GatewayState {
     pub network_chat: Arc<crate::network_chat::NetworkChat>,
     /// Short snapshot of the cluster, isolated per gateway and per test instance.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
-    /// Provider de modelos remotos e seus jobs de download.
+    /// Provider of remote models and their download jobs.
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
     /// Best-effort pkarr republisher used when network metadata changes.
     pub(crate) pkarr_publisher: Option<Arc<PkarrPublishHandle>>,

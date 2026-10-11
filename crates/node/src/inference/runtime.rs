@@ -608,7 +608,7 @@ impl NodeConfig {
         if !serves_last_layer {
             return false;
         }
-        // Modelo inteiro.
+        // Whole model.
         if self.start_layer == 0 && self.peer_count <= 1 {
             return true;
         }

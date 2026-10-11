@@ -45,13 +45,13 @@ RUN sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
     && sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 RUN echo 'export SSH_AUTH_SOCK=/ssh-agent.sock' >> /home/ubuntu/.bash_profile
 
-# BuildKit / buildx, do gist do jniltinho:
+# BuildKit / buildx, from the gist linked below:
 # https://gist.github.com/jniltinho/bcb28a99aef33dcb5f35c297bf71e4ae
 #
-# O script baixa o binário `linux-amd64` do release do buildx, então esta
-# imagem só constrói em x86_64. Num host arm64 (Apple Silicon) troque o script
-# por `docker-buildx-plugin`, que vem do mesmo repositório apt já configurado
-# acima e é resolvido por arquitetura.
+# The script downloads the `linux-amd64` binary from the buildx release, so this
+# image only builds on x86_64. On an arm64 host (Apple Silicon) replace the script
+# with `docker-buildx-plugin`, which comes from the same apt repository already configured
+# above and is resolved per architecture.
 USER ubuntu
 #COPY install-buildkit.sh /tmp/install-buildkit.sh
 #RUN bash /tmp/install-buildkit.sh
@@ -63,9 +63,9 @@ chmod +x $HOME/.docker/cli-plugins/docker-buildx
 EOF
 
 
-# O script exporta estas duas no `.profile`, que só um shell de login lê. Aqui
-# elas valem para todo processo do container, que é o que faz o `docker build`
-# e o `docker compose` do dia a dia usarem BuildKit de verdade.
+# The script exports these two in `.profile`, which only a login shell reads. Here
+# they apply to every process in the container, which is what makes the everyday `docker build`
+# and `docker compose` actually use BuildKit.
 ENV DOCKER_BUILDKIT=1 \
     COMPOSE_DOCKER_CLI_BUILD=1
 

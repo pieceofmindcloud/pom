@@ -1,81 +1,80 @@
-# crates/node - o nó pom
+# crates/node - the pom node
 
-Crate `node` (binário `pom`), o processo completo do cluster: P2P,
-inferência distribuída, gateway HTTP, UI web e monitor. É um binário de raiz
-única (`src/main.rs`) que declara os módulos via `#[path]` e um `lib.rs` do
-workspace que faz o papel de crate-raiz para os módulos auxiliares
-(`routing-contract` em `../routing-contract`, vazio para o runtime).
+Crate `node` (binary `pom`), the cluster's whole process: P2P, distributed
+inference, HTTP gateway, web UI and monitor. It is a single-root binary
+(`src/main.rs`) that declares its modules via `#[path]`, with a workspace
+`lib.rs` acting as the crate root for the auxiliary modules (`routing-contract`
+in `../routing-contract`, empty for the runtime).
 
 ## Cargo.toml
 
-- Binário único: `pom` em `src/main.rs`.
-- Features `cuda`/`metal` repassadas a `llama-cpp-sys-2` (compilação do GGML com
-  GPU). Usadas por `scripts/build-docker.sh`/`POM_BUILD_FEATURES` no
-  devupdate. O build CUDA mantém CUDA Graphs desligado por padrão; habilitar
-  com `POM_CUDA_GRAPHS=1` exige reconstruir o binário e VRAM livre adicional.
-- Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
+- Single binary: `pom` in `src/main.rs`.
+- `cuda`/`metal` features passed on to `llama-cpp-sys-2` (GGML compiled with GPU).
+  Used by `scripts/build-docker.sh`/`POM_BUILD_FEATURES` in the devupdate. The CUDA
+  build keeps CUDA Graphs off by default; enabling it with `POM_CUDA_GRAPHS=1`
+  requires rebuilding the binary and additional free VRAM.
+- Heavy dependencies: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
-  `socket2`, `tower-http` (compression-full), `rusqlite` bundled para a
-  auditoria persistente, `arc-swap` para snapshots lock-free do contexto de
-  captura de logs, `h3`/`h3-quinn`/`quinn` para o HTTP/3 opcional dos hops de
-  inferência, `routing-contract` (path).
-- No Windows, `windows_firewall.rs` usa COM `INetFwPolicy2` num helper elevado
-  por UAC para manter quatro regras inbound idempotentes: UDP P2P, UDP QUIC de
-  inferência, UDP QUIC do gateway e TCP libp2p. O pedido automático ocorre uma
-  vez por porta efetiva e fica no `local_settings` de `pom.db`; a UI oferece
-  retry sem bloquear o nó ou `Sair da rede`.
-- O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
-  runtime Python ou instalação externa no caminho normal.
+  `socket2`, `tower-http` (compression-full), `rusqlite` bundled for the
+  persistent audit, `arc-swap` for lock-free snapshots of the log capture
+  context, `h3`/`h3-quinn`/`quinn` for the optional HTTP/3 of the inference hops,
+  `routing-contract` (path).
+- On Windows, `windows_firewall.rs` uses COM `INetFwPolicy2` in a UAC-elevated
+  helper to keep four idempotent inbound rules: UDP P2P, inference UDP QUIC,
+  gateway UDP QUIC and libp2p TCP. The automatic request happens once per
+  effective port and stays in `pom.db`'s `local_settings`; the UI offers a retry
+  without blocking the node or `Leave network`.
+- The Hugging Face provider uses native HTTP via `reqwest`; there is no `hf`
+  executable, Python runtime or external install on the normal path.
 - `build = "build.rs"`.
 
 ## build.rs
 
-- `build.rs` carimba o fallback `POM_BUILD_COMMIT` no binário:
-  `git rev-parse --short HEAD` + sufixo `-dirty` se `git status --porcelain`
-  mostrar mudanças → `desconhecido`. `build_commit()` prefere a variável de
-  runtime `POM_BUILD_COMMIT` quando não vazia. No Docker, o commit do host é
-  exportado só no estágio runtime para não invalidar Cargo.
-- `rerun-if-changed` em `.git/HEAD` e `.git/index` atualiza o fallback local.
-- O comentário no topo avisa: a UI **não** é embutida aqui, é lida do disco
-  (`webapp.rs` + `config::ui_dist_dir`); `npm run build` em `apps/frontend` é
-  um passo separado.
-- `build_commit()` em `main.rs` é exposto em `/api/ui/node` e usado na checagem
-  de atualizações - identifica peer ou executável sem shell local.
-- `main.rs` lê `POM_DEV_MODE` uma vez no startup; somente o valor exato `1` habilita
-  controles de desenvolvimento e as rotas locais de rebuild de plugins, e
-  `NodeInfo.pom_dev_mode` publica a decisão para a interface. A flag não altera
-  a política de licença nem os `RuntimeParams` recebidos pela rede; o modo
-  ausente usa `dense` (`llama.cpp`) como padrão.
-- O build nativo prepara automaticamente o fork de `llama.cpp` em um worktree
-  novo, clonando a branch `pom-tensor-parallel` quando o symlink versionado
-  aponta para uma árvore ausente. `LLAMA_SOURCE` permite reutilizar um checkout
-  local que contenha `ggml`; falhas de preparo exibem o comando de recuperação.
-  O procedimento completo está em `docs/subsystems/build-and-run.md`, seção
-  "Preparing a local worktree".
-- Durante o build, `build/mtp_arch.rs` de `llama-engine` (repositório
-  `pom-plugin-llama.cpp`) lê o fork em modo somente leitura:
-  descobre as verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em
-  `src/models`, associa a verificação ao `build_arch_graph`, cruza a classe com
-  `llama-model.cpp` e resolve o nome GGUF em `llama-arch.cpp`. Ele gera
-  `OUT_DIR/mtp_graph_architectures.rs`; fork ausente, extração vazia, menor que
-  treze entradas ou mapeamento inconsistente interrompe o build.
-  As regras do extrator têm testes unitários no próprio arquivo; a dependência
-  operacional da extração está em `TODO.md`, item 10.
-- Com a feature `cuda`, `build.rs` compila os kernels MoE com `CUDACXX`; em uma
-  validação no servidor CUDA, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`
-  envolve o `nvcc`. O procedimento e o target separado estão em
+- `build.rs` stamps the `POM_BUILD_COMMIT` fallback into the binary:
+  `git rev-parse --short HEAD` + a `-dirty` suffix if `git status --porcelain`
+  shows changes → `unknown`. `build_commit()` prefers the runtime variable
+  `POM_BUILD_COMMIT` when it is not empty. In Docker, the host's commit is
+  exported only in the runtime stage so as not to invalidate Cargo.
+- `rerun-if-changed` on `.git/HEAD` and `.git/index` updates the local fallback.
+- The comment at the top warns: the UI **is not** embedded here, it is read from
+  disk (`webapp.rs` + `config::ui_dist_dir`); `npm run build` in `apps/frontend`
+  is a separate step.
+- `build_commit()` in `main.rs` is exposed in `/api/ui/node` and used in the
+  update check - it identifies a peer or an executable without a local shell.
+- `main.rs` reads `POM_DEV_MODE` once at startup; only the exact value `1`
+  enables development controls and the local plugin rebuild routes, and
+  `NodeInfo.pom_dev_mode` publishes the decision to the interface. The flag does
+  not change the licensing policy nor the `RuntimeParams` received over the
+  network; the absent mode uses `dense` (`llama.cpp`) as the default.
+- The native build automatically prepares the `llama.cpp` fork in a new worktree,
+  cloning the `pom-tensor-parallel` branch when the versioned symlink points at a
+  missing tree. `LLAMA_SOURCE` allows reusing a local checkout that contains
+  `ggml`; preparation failures show the recovery command. The full procedure is in
+  `docs/subsystems/build-and-run.md`, section "Preparing a local worktree".
+- During the build, `llama-engine`'s `build/mtp_arch.rs` (repository
+  `pom-plugin-llama.cpp`) reads the fork in read-only mode: it discovers the
+  effective `LLM_GRAPH_TYPE_DECODER_MTP` checks in `src/models`, pairs each check
+  with its `build_arch_graph`, crosses the class with `llama-model.cpp` and
+  resolves the GGUF name in `llama-arch.cpp`. It generates
+  `OUT_DIR/mtp_graph_architectures.rs`; a missing fork, an empty extraction, fewer
+  than thirteen entries or an inconsistent mapping stops the build. The extractor's
+  rules have unit tests in the file itself; the extraction's operational
+  dependency is in `TODO.md`, item 10.
+- With the `cuda` feature, `build.rs` compiles the MoE kernels with `CUDACXX`; in a
+  validation on the CUDA server, `CUDAARCHS=120` pins the architecture and
+  `CCACHE=ccache` wraps the `nvcc`. The procedure and the separate target are in
   `docs/subsystems/build-and-run.md`.
-- No alvo macOS, `build.rs` compila `src/macos_status.m` e liga somente os
-  frameworks AppKit e WebKit do sistema. Linux e Windows não recebem essa
-  ponte.
+- On the macOS target, `build.rs` compiles `src/macos_status.m` and links only the
+  system's AppKit and WebKit frameworks. Linux and Windows do not get that bridge.
 
-## src/main.rs - fluxo de arranque e CLI
+## src/main.rs - startup flow and CLI
 
-Responsabilidades: parse de CLI, orquestração de startup, subida do gateway
-HTTP e do servidor de inferência (Rust, em-processo) e spawn das tasks de
-fundo. **O modelo nunca vem da linha de comando**: ele é implantado pela
-interface, e num reinício volta pelo journal da fatia (`lastslice`).
+Responsibilities: CLI parsing, startup orchestration, bringing up the HTTP
+gateway and the inference server (Rust, in-process) and spawning the background
+tasks. **The model never comes from the command line**: it is deployed by the
+interface, and on a restart it comes back through the slice's journal
+(`lastslice`).
 
 **Flags (clap derive, `Args`):** `-p/--port` (42777), `-b/--bootstrap`,
 `--advertise-addr`, `--ollama-url`, `--gateway-port` (8080),
@@ -86,28 +85,27 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
 access).
-`--relay-peers` soma-se a `relay_peers` do `pom.json`
-(`merged_relay_peers`, config primeiro), como `--bootstrap` a
-`bootstrap_nodes`. Não há flag de modelo, memória, faixa de camadas, amostragem
-nem porta de inferência: isso vem da implantação (`runtime::NodeConfig`) e do
-`pom.json` (`inference_port`, padrão 8181; `slot_save_path`, default
-`~/.pom/kv-slots`).
+`--relay-peers` adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
+config first), as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
+model, memory, layer range, sampling or inference port: that comes from the
+deployment (`runtime::NodeConfig`) and from the `pom.json` (`inference_port`,
+default 8181; `slot_save_path`, default `~/.pom/kv-slots`).
 
-**Toda flag tem variável de ambiente** (`ARG_ENV`, nome por
-`brand::env_var`: `--gateway-port` → `POM_GATEWAY_PORT`), aplicada por
-`cli_command` com o builder do clap, porque o derive só aceita literal. A flag
-vence a variável, que vence o padrão; as booleanas usam `BoolishValueParser`.
-A variável vence o `pom.json`: `apply_env_overrides` troca `p2p_port` e
-`gateway_port` gravados quando `parse_args` viu o valor vir do ambiente
-(`ValueSource::EnvVariable`). Na linha de comando essas duas continuam cedendo à
-config - só valem enquanto não há `pom.json`, e é isso que mantém uma troca de
-porta feita pela interface depois do respawn, que repete o argv.
+**Every flag has an environment variable** (`ARG_ENV`, name by `brand::env_var`:
+`--gateway-port` → `POM_GATEWAY_PORT`), applied by `cli_command` with clap's
+builder, because the derive only accepts a literal. The flag beats the variable,
+which beats the default; the booleans use `BoolishValueParser`. The variable beats
+the `pom.json`: `apply_env_overrides` swaps the written `p2p_port` and
+`gateway_port` when `parse_args` saw the value come from the environment
+(`ValueSource::EnvVariable`). On the command line those two keep yielding to the
+config - they only count while there is no `pom.json`, and that is what keeps a
+port change made through the interface after a respawn, which repeats the argv.
 
-Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
-derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os
-peers vivos; `max_new_tokens` continua sendo apenas o tamanho de uma perna.
-Consulte `/v1/models` depois de todos os peers confirmarem o runtime. O passo
-operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
+There is no additional absolute ceiling in the `pom.json`. The output capacity is
+derived from the effective `n_ctx` each runtime confirms and aggregated across the
+live peers; `max_new_tokens` stays only the size of one leg. Consult `/v1/models`
+after every peer confirms its runtime. The full operational step is in
+`docs/subsystems/deployment.md`, section 1.3.
 
 **Startup flow (`main`):**
 
@@ -131,28 +129,29 @@ new configuration.
    `WIZARD_FORCED` stay in `main.rs` under `#[allow(dead_code)]` and nothing
    calls them; `--setup`, `--wizard`, `--setup-bind`, `POM_FORCE_SETUP` and
    `POM_SETUP_BIND` no longer exist. Do not wire them back.
-3. Com config: valida a porta da interface e faz o preflight de
-   disponibilidade; portas P2P, HTTP e de inferência vêm da config.
-4. `start_node`, o único caminho de um nó configurado:
+3. With a config: validates the interface port and runs the availability
+   preflight; the P2P, HTTP and inference ports come from the config.
+4. `start_node`, the only path of a configured node:
    - Identity `Identity::load_or_create` (`.pom-node.key`, resolved against
      `config::project_root()`): the node's only key, from which come
      `node_id`, `PeerId`, the pkarr key and the authority key.
-   - Bootstrap = config + `--bootstrap`, ambos passando por
-     `config::normalize_peer_addr` em `merged_bootstrap_nodes`; relés =
-     `relay_peers` + `--relay-peers`. `--advertise-addr` vence
-     `--public-addr`, que vence a config.
-   - `start_p2p_stack`: `Network::new` recebe a política TLS inicial e a
-     catraca de admissão antes de `start` (receive, gossip 5 s, medição de
-     rotas 30 s) e `bootstrap_discovery`. Rede privada prova `connection_key`
-     pelo `/handshake`; rede pública exige `cluster_id` e uma
-     principal/concessão da cadeia em `.pom-admin-trust.json`. Isso garante que
-     a primeira sonda use o mesmo esquema anunciado pela UI e que nenhum
-     Announce não autenticado entre em `peers`; a rede pública ainda conserva
-     uma `connection_key` local para a UI do administrador, mas ela não é
-     compartilhada nem usada na admissão; `--no-discovery` → `detach`.
-     `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
-     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
-     UDP, com ou sem assignment).
+   - Bootstrap = config + `--bootstrap`, both going through
+     `config::normalize_peer_addr` in `merged_bootstrap_nodes`; relays =
+     `relay_peers` + `--relay-peers`. `--advertise-addr` beats `--public-addr`,
+     which beats the config.
+   - `start_p2p_stack`: `Network::new` receives the initial TLS policy and the
+     admission ratchet before `start` (receive, gossip 5 s, route measurement
+     30 s) and `bootstrap_discovery`. A private network proves the
+     `connection_key` through `/handshake`; a public network requires a
+     `cluster_id` and a principal/concession of the chain in
+     `.pom-admin-trust.json`. This guarantees that the first probe uses the same
+     scheme the UI announced and that no unauthenticated Announce enters
+     `peers`; the public network still keeps a local `connection_key` for the
+     administrator's UI, but it is not shared nor used in admission;
+     `--no-discovery` → `detach`.
+     `Discovery::new` (libp2p, TCP = UDP+10000) + a publish task on the gossipsub
+     every 5 s (`Network::gossip_announce_bytes`, the same `self_announce` as the
+     UDP, with or without assignment).
    - pkarr: `PkarrPublishHandle::spawn_republisher` always publishes (with
      `r` equal to `--serve-relay`, the path of a dedicated relay,
      `examples/relay-node/`) and republishes when the swarm addresses change;
@@ -160,31 +159,30 @@ new configuration.
      `--pkarr-peers`, the `relay_peers` relays and the trust chain principals
      that are not alive yet. `--no-pkarr` skips all of it; without it, a failed
      publication backs off from 15 s to 30 min and only warns at the 1st, 2nd,
-     4th... consecutive failure. O Mainline DHT usado pelo pkarr
-     mantém um ator em thread própria; no Windows o timeout ocioso de leitura
-     do socket aparece como WSAETIMEDOUT (10060) a cada 50 ms na dependência,
-     e `application_log_filter` oculta somente esse aviso esperado.
-   - `ClusterLogs` inicia a captura limitada e as tasks best-effort; o
-     histórico usa `INFO` como nível mínimo por padrão, aceita
-     `cluster_logs_min_level` no `pom.json`; `attach_plugins` hands the batches
-     an admin accepts to the logs plugin, which stores and prunes them. O `Discovery`
-     mantém o behaviour request/response de logs separado do túnel de
-     inferência e só envia lotes ao principal.
-   - Monitor térmico do `NodeRuntime`, depois `GatewayState` +
-     `start_gateway_with_ready` spawnado (todo nó serve HTTP/UI). A rota de
-     prévia de capacidade faz somente estimativa analítica, com quatro
-     admissões por processo e `429` imediato quando todas estão ocupadas.
-   - Só com o gateway no ar inspeciona o journal persistente da fatia
-     (`lastslice::inspect()`) e restaura somente `Serving` ou `Idle`. Uma
-     fatia `Pending` conta tentativas no disco e, depois de
-     `MAX_AUTOMATIC_ATTEMPTS=10`, sobe vazia com `note_unloadable_slice`. A
-     implantação pela UI chama `NodeRuntime::apply` com o `NodeConfig` dela
-     (sobe o servidor de inferência Rust **em-processo** e o supervisa); o
-     `NodeConfig` leva também a reserva configurável do ajuste automático de
-     memória, e a consulta de VRAM e a aplicação ficam em `inference/llm.rs`.
-     Uma GPU acima do limite remove a atribuição e o estado `thermal` aguarda o
-     cooldown configurado. Lock, fit ou carga de modelo não podem fechar a
-     porta de controle.
+     4th... consecutive failure. The Mainline DHT used by pkarr keeps an actor on
+     its own thread; on Windows the socket's idle read timeout shows up as
+     WSAETIMEDOUT (10060) every 50 ms in the dependency, and
+     `application_log_filter` hides only that expected warning.
+   - `ClusterLogs` starts the bounded capture and the best-effort tasks; the
+     history uses `INFO` as the minimum level by default and accepts
+     `cluster_logs_min_level` in the `pom.json`; `attach_plugins` hands the batches
+     an admin accepts to the logs plugin, which stores and prunes them. The
+     `Discovery` keeps the logs request/response behaviour separate from the
+     inference tunnel and only sends batches to the principal.
+   - The `NodeRuntime`'s thermal monitor, then `GatewayState` +
+     `start_gateway_with_ready` spawned (every node serves HTTP/UI). The capacity
+     preview route does only an analytic estimate, with four admissions per
+     process and an immediate `429` when all are occupied.
+   - Only with the gateway up does it inspect the slice's persistent journal
+     (`lastslice::inspect()`) and restore only `Serving` or `Idle`. A `Pending`
+     slice counts attempts on disk and, after `MAX_AUTOMATIC_ATTEMPTS=10`, comes
+     up empty with `note_unloadable_slice`. The deployment through the UI calls
+     `NodeRuntime::apply` with its `NodeConfig` (it brings up the Rust inference
+     server **in-process** and supervises it); the `NodeConfig` also carries the
+     configurable reserve of the automatic memory fit, and the VRAM query and the
+     application live in `inference/llm.rs`. A GPU above the limit removes the
+     assignment and the `thermal` state waits for the configured cooldown. A lock,
+     a fit or a model load cannot close the control port.
 
 On macOS, `main` resolves the gateway port, moves the Tokio service to a
 background thread, and gives the main thread to the status item (`macos_status.rs`
@@ -193,148 +191,145 @@ background thread, and gives the main thread to the status item (`macos_status.r
 Rust passes dimensions, URL, and `brand::name()` through the ABI instead of
 hardcoding them in Objective-C. Both WebViews use WebKit's default data store
 and therefore share the frontend session.
-O menu de aplicativo do AppKit contém Sobre e Sair. Sair usa a ação padrão
-`terminate:` e encerra o processo depois que o laço de eventos volta, porque o
-serviço Tokio de longa duração ainda não tem um canal de cancelamento
-cooperativo. Quando o serviço termina por conta própria, a ponte apenas para o
-laço de eventos e o acorda; ela não encerra o processo, porque o `join()` Rust
-precisa propagar a mensagem e o código de saída de falhas como `pom.json`
-inválido. Isso faz um arranque que falha sair sozinho sem engolir o erro. Fora do macOS o ponto de
-entrada continua um CLI Tokio normal, sem nenhuma dependência de interface
-gráfica.
+The AppKit application menu contains About and Quit. Quit uses the standard
+`terminate:` action and ends the process after the event loop returns, because
+the long-running Tokio service does not yet have a cooperative cancellation
+channel. When the service ends on its own, the bridge only stops the event loop
+and wakes it; it does not end the process, because the Rust `join()` must
+propagate the message and the exit code of failures such as an invalid
+`pom.json`. That makes a failed startup exit on its own without swallowing the
+error. Outside macOS the entry point stays a normal CLI Tokio, with no graphical
+interface dependency.
 
-No Windows, `main.rs` marca o executável com `windows_subsystem = "windows"`
-para que o processo não crie um console. `windows_status.rs` move o serviço
-Tokio para uma thread de fundo, espera o sinal enviado depois do bind do
-gateway e só então conduz a janela Tao na thread principal; Wry carrega o
-`/admin-ui/chat` no WebView2 instalado pelo sistema e `tray-icon` registra o
-menu da área de notificação. O tracing também grava `<project_root>/pom.log`,
-porque a redireção de stdout/stderr do PowerShell não é confiável para um
-binário GUI. Fechar a janela esconde-a na bandeja, enquanto `Abrir POM`
-restaura e `Sair do POM` termina o processo inteiro.
+On Windows, `main.rs` marks the executable with `windows_subsystem = "windows"`
+so the process does not create a console. `windows_status.rs` moves the Tokio
+service to a background thread, waits for the signal sent after the gateway
+bind, and only then drives the Tao window on the main thread; Wry loads
+`/admin-ui/chat` in the system-installed WebView2 and `tray-icon` registers the
+notification area menu. Tracing also writes `<project_root>/pom.log`, because
+PowerShell's stdout/stderr redirection is not reliable for a GUI binary. Closing
+the window hides it in the tray, while `Open POM` restores it and `Quit POM`
+terminates the whole process.
 
-O servidor QUIC mantém o bind em `[::]`, mas cria o `UdpSocket` com
-`socket2::Socket::set_only_v6(false)` antes de entregá-lo ao Quinn. Assim o
-mesmo endpoint aceita IPv4 e IPv6 no Windows, Linux e macOS; o construtor de
-cliente do Quinn já aplica a mesma opção.
+The QUIC server keeps the bind on `[::]`, but creates the `UdpSocket` with
+`socket2::Socket::set_only_v6(false)` before handing it to Quinn. That way the
+same endpoint accepts IPv4 and IPv6 on Windows, Linux and macOS; Quinn's client
+constructor already applies the same option.
 
-`start_setup_mode` (dead code, see above) e `start_node` estão em `main.rs` (não num módulo
-separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
-`--ollama-url` e a anuncia **sempre**.
+`start_setup_mode` (dead code, see above) and `start_node` live in `main.rs` (not
+in a separate module). `advertised_ollama_port` (over `parse_ollama_port`) extracts
+the port from `--ollama-url` and announces it **always**.
 
-No Windows, o processo pai supervisiona o filho nativo: uma saída anormal
-relança o POM, mas `Sair do POM` retorna código zero e não relança.
-`pom undeploy` grava um bloqueio persistente para impedir retomadas
-automáticas de uma implantação problemática.
+On Windows, the parent process supervises the native child: an abnormal exit
+relaunches the POM, but `Quit POM` returns exit code zero and does not relaunch.
+`pom undeploy` writes a persistent block to prevent automatic resumptions of a
+troubled deployment.
 
-## src/ subpastas
+## src/ subfolders
 
 - `initial_ports.rs` - first-boot selection of available gateway, inference,
   P2P, QUIC and libp2p ports when `pom.json` is absent.
 - `network/` - P2P UDP + libp2p/pkarr. See `crates/node/src/network/AGENTS.md`.
-- `routing/` - planejador do pipeline. Ver `crates/node/src/routing/AGENTS.md`.
-- `utils/` - config, respawn, sysmon. Ver `crates/node/src/utils/AGENTS.md`.
-- `models/` - perfis de modelo e catálogo de GGUFs: `model.rs`
-  (`ModelProfile`, `LayerAssignment`), `catalog.rs` (varredura de
-  `model_dirs`; a varredura rápida publica raízes e arquivos sem calcular SHA-256
-  de modelos inteiros, deixando a validação de `pom_id` para o enriquecimento),
-  `gguf.rs` (leitor de cabeçalho/tensor table), `plan.rs`
-  (fatiamento por orçamento/tamanho), `splitter.rs` (split e merge),
-  `lastslice.rs` (fatia anotada com estado
-  Pending/Serving), `ollama.rs` (`OllamaClient`), `provider.rs` (contrato
-  agnóstico de provider) e `huggingface.rs` (`HuggingFaceProvider` HTTP
-  nativo).
-- `inference/` - servidor Rust e wire format: `infer_server.rs`
-  (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
-  (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
-  `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16/f8/i4
-  groupwise e batch validado), `relay.rs` (chain relay + agrupamento por próximo hop),
+- `routing/` - the pipeline planner. See `crates/node/src/routing/AGENTS.md`.
+- `utils/` - config, respawn, sysmon. See `crates/node/src/utils/AGENTS.md`.
+- `models/` - model profiles and the GGUF catalog: `model.rs`
+  (`ModelProfile`, `LayerAssignment`), `catalog.rs` (scan of
+  `model_dirs`; the fast scan publishes roots and files without computing a
+  SHA-256 of whole models, leaving the `pom_id` validation to the enrichment),
+  `gguf.rs` (header/tensor table reader), `plan.rs`
+  (slicing by budget/size), `splitter.rs` (split and merge),
+  `lastslice.rs` (slice annotated with the Pending/Serving state),
+  `ollama.rs` (`OllamaClient`), `provider.rs` (provider-agnostic contract) and
+  `huggingface.rs` (`HuggingFaceProvider`, native HTTP).
+- `inference/` - the Rust server and the wire format: `infer_server.rs`
+  (inference routes, local scheduler + `should_draft`/`kv_can_shift`), `runtime.rs`
+  (`NodeRuntime`/`NodeConfig`, in-process supervision + slice annotation),
+  `wire.rs` (single initial frame `[len][JSON][items][tensor]`, f16/f8/i4
+  groupwise and validated batch), `relay.rs` (chain relay + grouping by next hop),
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
-  `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
-  outro mecanismo, e outra chave, que a especulação por lookup).
-- `backend/` - HTTP e estado: `gateway/` (`start_gateway_with_ready`, a
-  fronteira de `AdminAuth` para `/api/ui/**` e `/admin/**`, e o preflight da porta),
-  `generate_stream_with_stops` e o resumo agregado de TTFT, prefill, geração e
-  total), `webapp.rs` (serve a UI do disco), `webui.rs`
-  (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,
-  `deploy.rs`, `transfer.rs` (fatias por HTTP Range), `devupdate.rs`
-  (atualizar/reiniciar), `openai.rs` (rotas OpenAI-compatíveis), `messages.rs`,
+  `llama_mtp_shim.cpp` (multi-token prediction through the model's `nextn` block -
+  another mechanism, and another key, than the lookup speculation).
+- `backend/` - HTTP and state: `gateway/` (`start_gateway_with_ready`, the
+  `AdminAuth` boundary for `/api/ui/**` and `/admin/**`, and the port preflight),
+  `generate_stream_with_stops` and the aggregated summary of TTFT, prefill,
+  generation and total), `webapp.rs` (serves the UI from disk), `webui.rs`
+  (the `/api/ui/*` routes), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,
+  `deploy.rs`, `transfer.rs` (slices over HTTP Range), `devupdate.rs`
+  (update/restart), `openai.rs` (OpenAI-compatible routes), `messages.rs`,
   `reqlog.rs`, `session.rs`, `tool_call.rs`.
 
-- `macos_status.rs` e `macos_status.m` - ponte específica de macOS para o item
-  de barra, o popover compacto e a janela WebKit; não carregam credenciais nem
-  implementam uma API paralela.
-- `windows_status.rs` - janela WebView2 e bandeja Windows, com a política
-  testável de fechar para a área de notificação e sair de verdade.
+- `macos_status.rs` and `macos_status.m` - the macOS-specific bridge for the bar
+  item, the compact popover and the WebKit window; they carry no credentials and
+  do not implement a parallel API.
+- `windows_status.rs` - the WebView2 window and Windows tray, with the testable
+  policy of hiding to the notification area on close and really quitting.
 
-`profile.rs` é a fonte única do perfil persistido do nó (`admin`, `node` ou
-`infer`) e das capacidades de visibilidade/promoção e gestão de implantação.
-`ProfileAction::ManageDeployment` limita adicionar máquina e desimplantar ao
-perfil `admin`; remover a máquina própria continua sendo uma ação local dos
-demais perfis. O perfil não substitui `Role`, que continua descrevendo
-autenticação e topologia.
+`profile.rs` is the single source of the node's persisted profile (`admin`,
+`node` or `infer`) and of the visibility/promotion capabilities and deployment
+management. `ProfileAction::ManageDeployment` limits adding a machine and
+undeploying to the `admin` profile; removing one's own machine stays a local
+action of the other profiles. The profile does not replace `Role`, which keeps
+describing authentication and topology.
 
-O protocolo de inferência ainda não foi lançado. `frame/v1-batch` é o primeiro
-e único contrato oficial: não manter fallback, adapter ou código de
-compatibilidade para formatos v1/v2 anteriores. Mudanças futuras devem
-evoluir este contrato explicitamente.
+The inference protocol has not shipped yet. `frame/v1-batch` is the first and only
+official contract: do not keep a fallback, adapter or compatibility code for
+earlier v1/v2 formats. Future changes must evolve this contract explicitly.
 
-O arranque cria o `NetworkChat` junto do `Discovery`, usando um behaviour
-libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviço
-com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
-catraca de `network_chat_policy`.
+The startup creates the `NetworkChat` next to the `Discovery`, using a libp2p
+behaviour separate from the inference tunnel. The `GatewayState` shares the service
+with the `/api/ui/network-chat` routes; the cluster policy is applied by the
+`network_chat_policy` ratchet.
 
-`src/plugins.rs` gerencia plugins licenciados e instalações locais independentes:
-`PluginManager` cria `PluginRuntime` para códigos concedidos por licença ou
-quando um release GitHub local é instalado. Runtimes licenciados persistem em
-`plugin_license:<code>` e mantêm seu ciclo de licença/heartbeat. Repositórios
-GitHub cadastrados ficam em `plugin_github_repositories` no `pom.db`; o POM lê
-`manifest.json` na raiz ou, na ausência dele, `ui/manifest.json` de contrato
-`pom-plugin-ui/v1`, sempre diretamente do GitHub e sem consultar o servidor de
-licenças ou checar `requires_license`. Essa segunda forma usa os manifestos de
-release `pom-plugin-<os>-<arch>.json` para descobrir e validar o binário. A instalação
-pública persiste separadamente em `plugin_public_install:<code>`, sem lease ou
-`licensed_plugins`. O manifesto do repositório declara `plugin_code`, ABI,
-features, preferências, capturas de tela opcionais e nomes dos assets por
-plataforma; o operador escolhe qual release instalar. `GithubRepository`
-também carrega `description` por idioma e `screenshot_urls` já resolvidas para
-`raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>`, que o navegador
-carrega direto do GitHub. Salvar preferências cria o diretório de
-armazenamento absoluto ausente e envia ao host o evento nativo `host.event`
-(`preferences.changed`, envelope `pom-plugin-events/v1` montado por
-`plugin_event_envelope`). `PluginManager::publish_event` guarda eventos do nó
-numa fila curta (`GET /api/ui/plugins/events`) e os entrega por `host.event` a
-todo host em execução: `deployment.started` sai dos handlers de deploy e
-redeploy, `model.serving`/`model.stopped` de `spawn_serving_watcher`. A ativação em lote de licenças valida uma vez, depois
-ativa/instala separadamente cada código concedido. As features de plugin vêm
-do manifesto, NÃO da licença. O catálogo público do servidor continua sendo a
-vitrine comercial; `GET /api/ui/plugins` publica os estados locais conhecidos
-pelo nó.
-`PersistedPluginState.installed_release_id` (chave JSON `plugin_release_id`,
-preservada por compatibilidade) só avança quando um download é de fato
-instalado (`activate_and_install`/`apply_update`) - o heartbeat não escreve
-nela, só usa seus próprios `release_changed`/`available_release_id` para
-disparar `detect_update` e alimentar `status.available_update` (2026-09-21:
-o heartbeat escrevia ali direto e corrompia a base que `detect_update`
-compara contra o manifest, fazendo "Atualizar" nunca mostrar a atualização
-real). `PluginStatus.update_checked_at` só avança quando a consulta de manifest
-termina com sucesso; `installed_at` só avança quando o host fica pronto após
-instalação ou aplicação. `active` significa host pronto, não só licença válida;
-`state` preserva a validade da licença e `installation_error` publica a falha
-acionável de instalação/handshake, persistida por plugin. Esses campos têm
-`serde(default)` para estados existentes e não são derivados de
-`last_success_at`, que é atualizado por heartbeat. `public_install` identifica um host GitHub sem lease e
-`PluginStatus.licensed_plugins` continua vazio nesse caso. `PluginStatus.license_expires_at` é a validade da LICENÇA
-(`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
-"Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
-confundir os dois já vazou para a UI uma vez, ver
-`docs/subsystems/enterprise-licensing.md`. Repositórios GitHub são uma fonte
-local independente: `plugin_github.rs` valida o manifesto da raiz ou o
-manifesto de UI `ui/manifest.json`, a ABI, o alvo, o digest SHA-256 e o tamanho
-do asset selecionado. Instalar a release
-escolhida não consulta o catálogo ou o servidor de licenças e não cria lease;
-um conflito local de `plugin_code` com uma instalação licenciada impede que um
-host seja substituído silenciosamente.
+`src/plugins.rs` manages licensed plugins and independent local installs:
+`PluginManager` creates a `PluginRuntime` for codes granted by a license or when a
+local GitHub release is installed. Licensed runtimes persist in
+`plugin_license:<code>` and keep their license/heartbeat cycle. Registered GitHub
+repositories live in `plugin_github_repositories` in the `pom.db`; the POM reads a
+`manifest.json` at the root or, in its absence, a `ui/manifest.json` of the
+`pom-plugin-ui/v1` contract, always directly from GitHub and without consulting the
+license server or checking `requires_license`. That second form uses the release
+manifests `pom-plugin-<os>-<arch>.json` to discover and validate the binary. A
+public install persists separately in `plugin_public_install:<code>`, without a
+lease or `licensed_plugins`. The repository's manifest declares `plugin_code`, ABI,
+features, preferences, optional screenshots and the asset names per platform; the
+operator chooses which release to install. `GithubRepository` also carries
+`description` per language and `screenshot_urls` already resolved to
+`raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>`, which the browser loads
+directly from GitHub. Saving preferences creates the missing absolute storage
+directory and sends the host the native `host.event` (`preferences.changed`, the
+`pom-plugin-events/v1` envelope assembled by `plugin_event_envelope`).
+`PluginManager::publish_event` keeps node events in a short queue
+(`GET /api/ui/plugins/events`) and delivers them through `host.event` to every
+running host: `deployment.started` comes from the deploy and redeploy handlers,
+`model.serving`/`model.stopped` from `spawn_serving_watcher`. Batch license
+activation validates once, then activates/installs each granted code separately.
+Plugin features come from the manifest, NOT from the license. The server's public
+catalog remains the commercial storefront; `GET /api/ui/plugins` publishes the local
+states the node knows.
+`PersistedPluginState.installed_release_id` (JSON key `plugin_release_id`, kept for
+compatibility) only advances when a download is actually installed
+(`activate_and_install`/`apply_update`) - the heartbeat does not write into it, it
+only uses its own `release_changed`/`available_release_id` to trigger
+`detect_update` and feed `status.available_update` (2026-09-21: the heartbeat wrote
+there directly and corrupted the base `detect_update` compares against the manifest,
+making "Update" never show the real update). `PluginStatus.update_checked_at` only
+advances when the manifest query finishes successfully; `installed_at` only advances
+when the host is ready after an install or an apply. `active` means a ready host,
+not just a valid license; `state` preserves the license validity and
+`installation_error` publishes the actionable install/handshake failure, persisted
+per plugin. Those fields have `serde(default)` for existing states and are not
+derived from `last_success_at`, which the heartbeat updates. `public_install`
+identifies a GitHub host without a lease and `PluginStatus.licensed_plugins` stays
+empty in that case. `PluginStatus.license_expires_at` is the LICENSE validity
+(`GET /v1/licenses/status`, queried in `restore()` and on the manual "Update" click
+through `refresh_license_status`), never the technical `lease_expires_at` -
+confusing the two already leaked into the UI once, see
+`docs/subsystems/enterprise-licensing.md`. GitHub repositories are an independent
+local source: `plugin_github.rs` validates the root manifest or the UI manifest
+`ui/manifest.json`, the ABI, the target, the SHA-256 digest and the size of the
+selected asset. Installing the chosen release does not query the catalog or the
+license server and creates no lease; a local `plugin_code` conflict with a licensed
+installation prevents a host from being replaced silently.
 `src/plugin_dev.rs` discovers direct child sources under
 `/opt/pom/dev-plugins` whose names match `pom-plugin-*`; it derives each
 `plugin_code` from valid, agreeing root/UI manifests and rejects unsafe codes.
@@ -353,27 +348,27 @@ licensed features. If a licensed or GitHub installation already exists, the
 local artifact replaces its binary without changing entitlement. The flow
 restarts only the plugin host and does not query GitHub/licenses or restart the
 node.
-As preferências opcionais do manifesto são guardadas localmente por
-`plugin_preferences:<code>`, fora do snapshot/licença.
-O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos
-com release elegível e uso autenticado por `plugin_code`, preservados da
-validação/ativação/heartbeat. `GET /api/ui/plugins` é aberta a todo perfil; esse JSON não
-inclui tokens de licença. O catálogo comercial permanece público e separado.
-Todo heartbeat com SUCESSO atualiza a validade da licença e chama
-`ensure_host_running` (a mesma lógica da restauração de boot): se o host daquele
-plugin estiver `None`, ele tenta subir de novo sem esperar um restart completo
-do processo `pom`. Só o host que conclui o handshake torna `PluginStatus.active`
-verdadeiro; falha mantém o estado da licença separado e publica
-`installation_error`, que a tela de Plugins exibe. `ingest_audit_event` avisa
-em log quando descarta um evento por falta de host.
+The manifest's optional preferences are kept locally by
+`plugin_preferences:<code>`, outside the snapshot/license.
+The `PluginStatus` also publishes the expiry, the granted plugins, candidates with
+an eligible release and authenticated usage per `plugin_code`, preserved from
+validation/activation/heartbeat. `GET /api/ui/plugins` is open to every profile;
+that JSON does not include license tokens. The commercial catalog stays public and
+separate. Every SUCCESSFUL heartbeat updates the license validity and calls
+`ensure_host_running` (the same logic as the boot restore): if that plugin's host is
+`None`, it tries to bring it up again without waiting for a full restart of the
+`pom` process. Only a host that completes the handshake makes `PluginStatus.active`
+true; a failure keeps the license state separate and publishes `installation_error`,
+which the Plugins screen shows. `ingest_audit_event` logs a warning when it drops an
+event for lack of a host.
 
-A restauração de boot (`PluginRuntime::restore`) é uma tarefa concorrente que
-sobrescreve o estado em memória com o do banco e pode religar o host por conta
-própria. Por isso `from_catalog` recebe `restore_on_boot`: produção passa
-`true`, e os construtores de teste passam `false`. Um teste que monta estado à
-mão perde a corrida contra ela de forma não determinística - foi o que
-fazia `heartbeat_success_restarts_the_stopped_plugin_host` falhar ora por
-`plugin_path` sumido, ora por host revivido depois da revogação.
+The boot restore (`PluginRuntime::restore`) is a concurrent task that overwrites the
+in-memory state with the database's and may reattach the host on its own. That is why
+`from_catalog` takes `restore_on_boot`: production passes `true`, and the test
+constructors pass `false`. A test that builds state by hand loses the race against it
+in a non-deterministic way - that is what made
+`heartbeat_success_restarts_the_stopped_plugin_host` fail sometimes for a missing
+`plugin_path`, sometimes for a host revived after the revocation.
 
 On-demand plugins (`lifecycle: "on_demand"` in the `ui.manifest`, see
 `docs/subsystems/plugins-ui.md`) do not get their host started at boot, by the
@@ -384,66 +379,65 @@ or the installation. While the host is stopped, `ui_manifest()` returns the save
 manifest so the menu keeps listing the plugin. The plugin's own manifest decides
 the flag, never a list in the code.
 
-`plugin_host.rs` (`PluginHost`) é o único adaptador do `pom` para o processo
-auxiliar `pom-plugin-host` - já suporta várias instâncias concorrentes, uma
-por plugin ativo. `PluginHost::start` passa o `plugin_code` para o binário
-auxiliar, que resolve `pom_<plugin_code>_plugin_v1` e usa `POM_PLUGIN_DB`.
-`PluginRuntime::plugin_database_path` deriva o arquivo do diretório do banco do
-POM: `enterprise` recebe `logs.db` (em Docker, `/data/logs.db`) e outros
-plugins recebem `<plugin_code>.db`; não há volume ou variável Enterprise
-separados. O host usa `kill_on_drop` e mata explicitamente
-o processo quando o handshake `ready` falha ou estoura o timeout de 30s - sem
-isso, um handshake lento (máquina ainda se recuperando de um OOM) deixava
-`pom-plugin-host` órfão no SO enquanto o `PluginRuntime` continuava sem host,
-e a auditoria caía pro fallback legado sem nenhum aviso. O host mantém um
-leitor persistente de stdout e correlaciona respostas pelo ID do pedido; um
-timeout remove somente o registro pendente, e uma resposta tardia é consumida
-sem deslocar o frame da chamada seguinte. `enterprise_p2p.rs`
-assina provas de fingerprint por nonce (uso genérico, não específico de um
-plugin). O `GatewayState` expõe o `PluginManager` ao backend, `webui` publica
-lista/ativação/atualização por plugin e `reqlog` encaminha eventos e consultas
-ao plugin `enterprise` especificamente. Os dois lados do IPC usam o limite
-compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
+`plugin_host.rs` (`PluginHost`) is the `pom`'s only adapter to the auxiliary
+process `pom-plugin-host` - it already supports several concurrent instances, one
+per active plugin. `PluginHost::start` passes the `plugin_code` to the auxiliary
+binary, which resolves `pom_<plugin_code>_plugin_v1` and uses `POM_PLUGIN_DB`.
+`PluginRuntime::plugin_database_path` derives the file from the POM's database
+directory: `enterprise` gets `logs.db` (in Docker, `/data/logs.db`) and other
+plugins get `<plugin_code>.db`; there is no separate Enterprise volume or
+variable. The host uses `kill_on_drop` and kills the process explicitly when the
+`ready` handshake fails or exceeds the 30 s timeout - without that, a slow
+handshake (a machine still recovering from an OOM) left `pom-plugin-host` orphaned
+in the OS while the `PluginRuntime` stayed without a host, and the audit fell to
+the legacy fallback with no warning. The host keeps a persistent stdout reader and
+correlates answers by request ID; a timeout removes only the pending record, and a
+late answer is consumed without shifting the next call's frame.
+`enterprise_p2p.rs` signs fingerprint proofs by nonce (a generic use, not specific
+to one plugin). The `GatewayState` exposes the `PluginManager` to the backend,
+`webui` publishes list/activation/per-plugin update and `reqlog` routes events and
+queries to the `enterprise` plugin specifically. Both sides of the IPC use the
+shared limit `enterprise_protocol::MAX_IPC_FRAME_BYTES` of 16 MiB.
 
-`src/plugin_ui.rs` é a interface fornecida por plugins: valida o manifesto
-`pom-plugin-ui/v1` que o plugin devolve na operação `ui.manifest` do `query`
-(`PluginUiManifest::parse`, `validate_catalog` para os catálogos i18n), e serve
-`GET /api/ui/plugins/ui` (só plugins ativos com manifesto válido) e
-`GET /api/ui/plugins/:code/assets/*path` (só assets listados, via `ui.asset`).
-O manifesto pode declarar `icon_image` como PNG do menu,
-`documentation` com guias e referência Markdown sob `docs/`, `description` por
-idioma, `screenshots` (caminhos do repositório ou `https://`, nunca servidos
-pelo nó) e `menu[].children` para submenus; tipos MIME e declarações são
-conferidos antes de servir.
-Menus e rotas aceitam `roles` e `profiles` como metadados validados e
-preservados no manifesto; o frontend do POM não os usa para restringir plugins,
-que ficam disponíveis em todos os perfis. As restrições de acesso nativas do
-POM continuam independentes.
-`PluginRuntime::ui_manifest` reaproveita `query_audit`. Contrato completo em
+`src/plugin_ui.rs` is the interface provided by plugins: it validates the
+`pom-plugin-ui/v1` manifest a plugin returns in the `query` operation's
+`ui.manifest` (`PluginUiManifest::parse`, `validate_catalog` for the i18n
+catalogs), and serves `GET /api/ui/plugins/ui` (only active plugins with a valid
+manifest) and `GET /api/ui/plugins/:code/assets/*path` (only listed assets, via
+`ui.asset`). The manifest may declare `icon_image` as the menu's PNG,
+`documentation` with guides and Markdown reference under `docs/`, `description`
+per language, `screenshots` (repository paths or `https://`, never served by the
+node) and `menu[].children` for submenus; MIME types and declarations are checked
+before serving.
+Menus and routes accept `roles` and `profiles` as validated metadata preserved in
+the manifest; the POM frontend does not use them to restrict plugins, which are
+available in every profile. The POM's native access restrictions stay independent.
+`PluginRuntime::ui_manifest` reuses `query_audit`. The full contract is in
 `docs/subsystems/plugins-ui.md`.
 
-Todo host de plugin recebe o contexto do nó pela operação `host.configure` do
-`query`: `{"gateway": {"openai_base_url", "api_key"}, "workspace_root": "..."}`.
-`workspace_root` é a raiz absoluta e gravável compartilhada por projetos e
-dados dinâmicos namespaced de plugins. `plugins::spawn_host_context`
-(iniciado no `main.rs` ao montar o gateway) monta esse JSON com
-`http://127.0.0.1:<gateway_port>/v1` e a chave de chat do nó
-(`admin::node_chat_key`, a mesma do Chat da interface, porque é a única classe
-de chave que um nó sem autoridade registra no principal) e o reavalia a cada
-10 min, ou a cada 30 s enquanto a chave não sai. `PluginManager::set_host_context`
-reentrega aos hosts em execução quando o contexto muda, e `PluginRuntime::start_host`
-o entrega a todo host que sobe. Plugin que não conhece a operação responde
-erro, e isso é ignorado. Nada disso vai por variável de ambiente nem argv.
+Every plugin host receives the node's context through the `query` operation's
+`host.configure`: `{"gateway": {"openai_base_url", "api_key"}, "workspace_root": "..."}`.
+`workspace_root` is the absolute writable root shared by projects and plugins'
+namespaced dynamic data. `plugins::spawn_host_context` (started in `main.rs` when
+the gateway is assembled) assembles that JSON with
+`http://127.0.0.1:<gateway_port>/v1` and the node's chat key
+(`admin::node_chat_key`, the same one the interface's Chat uses, because it is the
+only key class a node without authority registers on the principal) and re-evaluates
+it every 10 min, or every 30 s while the key does not come out.
+`PluginManager::set_host_context` re-delivers it to running hosts when the context
+changes, and `PluginRuntime::start_host` hands it to every host that comes up. A
+plugin that does not know the operation answers an error, and that is ignored. None
+of this goes by environment variable or argv.
 
-`src/plugin_proxy.rs` é o proxy reverso `/api/ui/plugins/:code/proxy/*` das
-interfaces web que um plugin serve em loopback: pergunta `ui.upstream` ao host
-(`{"status":"ready","port","token"}`), encaminha HTTP em streaming e upgrades
-(WebSocket; por isso `serve.rs` usa `serve_connection_with_upgrades`) para
-`127.0.0.1:<port>` com `x-pom-plugin-token` e `x-forwarded-prefix`, e nunca
-repassa cookie, `Authorization` ou `x-pom-access-token` nem aceita `Set-Cookie`
-do plugin. A autorização é a da superfície administrativa (aberta a todo perfil), a
-falsificação entre sites é barrada por `same_origin`, e chamadas entre nós são
-recusadas.
+`src/plugin_proxy.rs` is the reverse proxy `/api/ui/plugins/:code/proxy/*` of the
+web interfaces a plugin serves on loopback: it asks the host `ui.upstream`
+(`{"status":"ready","port","token"}`), forwards HTTP in streaming and upgrades
+(WebSocket; that is why `serve.rs` uses `serve_connection_with_upgrades`) to
+`127.0.0.1:<port>` with `x-pom-plugin-token` and `x-forwarded-prefix`, and never
+passes a cookie, `Authorization` or `x-pom-access-token` nor accepts a `Set-Cookie`
+from the plugin. The authorization is the administrative surface's (open to every
+profile), cross-site forgery is blocked by `same_origin`, and calls between nodes
+are refused.
 
 `src/plugin_services.rs` covers what a plugin offers to the cluster: it
 validates the optional `host.services` answer of every running plugin into
@@ -469,26 +463,26 @@ label-less `DecisionProbe`, so the prefix cache keeps the conversation and
 never the passages. Any failure leaves the request untouched. See
 `docs/subsystems/plugins-ui.md`, "Transparent retrieval (RAG)".
 
-: a
-atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases
-público sem licença (outra tarefa). Até essa migração, `PomCoreUpdater`
-empresta o lease do plugin `enterprise` para autenticar o manifest genérico
-`pom_core` e, só com uma confirmação explícita da UI, delega decisão, hash,
-troca atômica e reinício a `core_update.rs` - que continua puro e sem
-dependência de licenciamento. A fronteira e os limites restantes estão em
+`src/pom_core_update.rs` is deliberately SEPARATE from `src/plugins.rs`: the
+update of the `pom` binary itself is not a plugin and will become public GitHub
+Releases without a license (another task). Until that migration, `PomCoreUpdater`
+borrows the `enterprise` plugin's lease to authenticate the generic `pom_core`
+manifest and, only with an explicit confirmation from the UI, delegates decision,
+hash, atomic swap and restart to `core_update.rs` - which stays pure and with no
+licensing dependency. The boundary and the remaining limits are in
 `docs/subsystems/enterprise-licensing.md`.
 
-## Ligações
+## Links
 
-- **Depende de**: `routing-contract` e `brand` (crates irmãos) e `llama-engine`
-  (repositório `pom-plugin-llama.cpp`, dependência git);
-  `config` é um módulo interno de `node`.
-- **Chamado por**: ninguém (é o binário). O servidor de inferência e o
-  splitter são Rust, em-processo.
+- **Depends on**: `routing-contract` and `brand` (sibling crates) and
+  `llama-engine` (repository `pom-plugin-llama.cpp`, a git dependency);
+  `config` is an internal module of `node`.
+- **Called by**: nobody (it is the binary). The inference server and the splitter
+  are Rust, in-process.
 
-## Defeitos anotados
+## Defects noted
 
-Nenhum em aberto nesta pasta.
+None open in this folder.
 
 ## Maintaining this file
 

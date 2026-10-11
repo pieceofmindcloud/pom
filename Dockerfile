@@ -252,11 +252,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # would happily "offload" a model onto a CPU device. This also makes the AMD
 # index the Vulkan index by construction (sysmon::icd_amd / the ksia note).
 RUN find /usr/share/vulkan/icd.d -type f ! -name 'radeon_icd*.json' -delete
-# O runtime NVIDIA acrescenta aos processos os grupos donos dos dispositivos
-# do host (por exemplo render, gid 992 na ksia), que não têm nome dentro da
-# imagem. A dica de sudo do /etc/bash.bashrc do Ubuntu roda `groups` em todo
-# shell interativo e imprimia "groups: cannot find name for group id 992" nos
-# terminais dos plugins. A dica continua; só o aviso some.
+# The NVIDIA runtime adds the host's device-owning groups to the processes
+# (for example render, gid 992 on the ksia machine), which have no name inside the
+# image. The sudo hint in Ubuntu's /etc/bash.bashrc runs `groups` in every
+# interactive shell and used to print "groups: cannot find name for group id 992" in the
+# plugin terminals. The hint stays; only the warning goes away.
 RUN sed -i 's/\$(groups)/$(groups 2>\/dev\/null)/' /etc/bash.bashrc \
     && grep -q 'groups 2>/dev/null' /etc/bash.bashrc
 

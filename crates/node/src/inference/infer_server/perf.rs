@@ -229,7 +229,7 @@ mod tests {
             hidden_input_layout(2560, 2560, 10240),
             (10240, vec![2560, 4])
         );
-        // Modelo comum.
+        // A common model.
         assert_eq!(hidden_input_layout(4096, 4096, 4096), (4096, vec![4096]));
     }
 

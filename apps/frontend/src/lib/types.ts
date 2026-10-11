@@ -1035,7 +1035,7 @@ export interface DiscoveredModel {
   total_layers: number | null;
   quant: string | null;
   shard_range: [number, number] | null;
-  /** Key of the slicing round: `<modelo>-<id curto>`. */
+  /** Key of the slicing round: `<model>-<short id>`. */
   shard_group: string | null;
   /** sha256 of the part, when the file is content addressed. */
   sha256: string | null;
@@ -1089,7 +1089,7 @@ export interface DeploymentVersion {
  *
  * The same model can be in service in more than one deployment, with different
  * machines or configuration; the `deploy_id` is what tells them apart. A
- * request picks one by the suffix `<modelo>@<deploy_id>`.
+ * request picks one by the suffix `<model>@<deploy_id>`.
  *
  * `versions` is the history of configurations of the same `deploy_id`;
  * `active_version` points to the one in service. `nodes` is the flattened list

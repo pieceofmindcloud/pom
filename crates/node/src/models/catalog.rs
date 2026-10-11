@@ -181,7 +181,7 @@ impl DiscoveredModel {
 /// A set of slices that together (may) cover one model.
 #[derive(Debug, Clone, Serialize)]
 pub struct ShardSet {
-    /// The manifest's key: `<modelo>-<hash curto>`, the same name as the folder
+    /// The manifest's key: `<model>-<short id>`, the same name as the folder
     /// on disk. Alternatives of the same model share this set.
     pub group: String,
     /// The model's label, for the screen. The `group` identifies; this is what
@@ -727,7 +727,7 @@ pub struct PartContext {
     pub end_layer: u32,
     pub sha256: String,
     pub pom_id: String,
-    /// Identifies the manifest: `<modelo>-<hash curto>`, the same name as the folder.
+    /// Identifies the manifest: `<model>-<short id>`, the same name as the folder.
     /// It is the key by which the alternative slices are grouped.
     pub run_key: String,
     /// Quantization of the source model, copied by the slicer into the manifest.
@@ -1675,7 +1675,7 @@ fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Sc
 
 /// Every part file the `.pom`s of the slice folder describe.
 ///
-/// Scans `<shard_dir>/<modelo>/*.pom` and returns, per file path, what
+/// Scans `<shard_dir>/<model>/*.pom` and returns, per file path, what
 /// the manifest says about that part. It is this scan that makes the node,
 /// on startup, rebuild the catalog from the manifests instead of trying to
 /// guess anything at all from the file names.
@@ -3066,7 +3066,7 @@ mod part_naming_tests {
     /// Writes a real GGUF named by its own hash and the manifest beside it.
     fn sliced_model(root: &Path) -> (PomManifest, Vec<String>) {
         // As production does: it cuts in a work folder and, with the manifest
-        // ready, moves the run to `<modelo>-<id da rodada>`.
+        // ready, moves the run to `<model>-<round id>`.
         let folder = crate::pom::scratch_dir(root);
         std::fs::create_dir_all(&folder).unwrap();
 

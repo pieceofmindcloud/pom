@@ -21,9 +21,9 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# O motor llama.cpp (`llama-engine` e o binding `llama-cpp-sys-2`) mora no repositório
-# pom-plugin-llama.cpp, fixado em um commit (`rev`). O patch substitui o llama-cpp-sys-2
-# da crates.io pelo do mesmo repositório. O fonte do fork do llama.cpp vem de LLAMA_SOURCE
-# (ver .cargo/config.toml).
+# The llama.cpp engine (`llama-engine` and the `llama-cpp-sys-2` binding) lives in the
+# pom-plugin-llama.cpp repository, pinned to a commit (`rev`). The patch replaces the llama-cpp-sys-2
+# from crates.io with the one from that same repository. The source of the llama.cpp fork comes from LLAMA_SOURCE
+# (see .cargo/config.toml).
 [patch.crates-io]
 llama-cpp-sys-2 = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "b503e388b0dc65cf81a9df6c7909d33f0be7217b" }

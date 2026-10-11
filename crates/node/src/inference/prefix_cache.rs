@@ -329,7 +329,7 @@ impl Drop for PrefixLease {
 /// `gateway::snapshot_deployment` wrote to each peer's `slot_save_path`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskPrefixEntry {
-    /// `PrefixRouteKey::model` (modelo + deployment + chat_template).
+    /// `PrefixRouteKey::model` (model + deployment + chat_template).
     pub route_model: String,
     /// `PrefixRouteKey::hops`.
     pub route_hops: Vec<String>,

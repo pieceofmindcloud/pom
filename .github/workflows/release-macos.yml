@@ -1,18 +1,18 @@
 name: Release · macOS
 
-# Só roda quando você mandar, e roda no **runner self-hosted `macbook`** - não
-# consome cota nenhuma. Se o MacBook estiver desligado o job fica na fila em vez
-# de falhar. Ver `docs/subsystems/build-and-run.md`, "Release pelo GitHub
+# It only runs when you ask for it, and it runs on the **self-hosted runner `macbook`** - it
+# consumes no quota at all. If the MacBook is switched off the job waits in the queue instead
+# of failing. See `docs/subsystems/build-and-run.md`, "Release through GitHub
 # Actions".
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Versão da release (ex.: v0.3.0)'
+        description: 'Release version (e.g. v0.3.0)'
         required: true
         type: string
       prerelease:
-        description: 'Publicar como prerelease'
+        description: 'Publish as a prerelease'
         required: false
         default: true
         type: boolean
@@ -21,10 +21,10 @@ permissions:
   contents: write
 
 jobs:
-  # Um job só. Em runner hospedado a interface era compilada à parte, num runner
-  # Linux, porque o minuto de macOS custava 10x; aqui não há multiplicador, e
-  # separar só acrescentaria uma ida e volta de artefato entre dois jobs que
-  # rodariam na mesma máquina de qualquer jeito - o runner atende um job por vez.
+  # A single job. On a hosted runner the interface used to be built separately, on a
+  # Linux runner, because the macOS minute cost 10x; here there is no multiplier, and
+  # splitting would only add a round trip of artifacts between two jobs that
+  # would run on the same machine anyway - the runner serves one job at a time.
   build:
     name: macOS arm64 (Metal)
     runs-on: [self-hosted, macOS, ARM64, macbook]
@@ -39,79 +39,79 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preparar/cachear checkout do llama.cpp
+      - name: Prepare/cache the llama.cpp checkout
         id: llama-cache
         uses: ./.github/actions/llama-cache
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Ativar cache de compilação
+      - name: Enable the build cache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # Sem `Swatinem/rust-cache`: ele existe para devolver o `target/` a um
-      # runner que nasce vazio. Aqui o workspace é o mesmo entre execuções, o
-      # `target/` já está lá, e restaurar por cima só gastaria tempo e disco.
+      # No `Swatinem/rust-cache`: it exists to hand a `target/` to a
+      # runner that starts empty. Here the workspace is the same between runs, the
+      # `target/` is already there, and restoring over it would only spend time and disk.
 
-      - name: Conferir dependências da máquina
+      - name: Check the machine's dependencies
         run: |
-          # Num runner self-hosted as dependências são provisionadas uma vez na
-          # máquina, não instaladas a cada execução. Falhar aqui, nomeando o que
-          # falta, é melhor que morrer lá dentro do build do llama.cpp.
+          # On a self-hosted runner the dependencies are provisioned once on the
+          # machine, not installed on every run. Failing here, naming what
+          # is missing, is better than dying deep inside the llama.cpp build.
           faltou=""
           for p in cmake git; do command -v "$p" >/dev/null || faltou="$faltou $p"; done
           if [ -n "$faltou" ]; then
-            echo "faltando na máquina:$faltou (instale com: brew install$faltou)" >&2
+            echo "missing on the machine:$faltou (install with: brew install$faltou)" >&2
             exit 1
           fi
           cmake --version | head -1
 
-      # Fixa o Node em vez de confiar no que a máquina tem no PATH: o runner
-      # self-hosted grava um retrato do PATH de quem o configurou, e a ksia traz
-      # Node 18. Aqui a versão é a mesma que o projeto usa em desenvolvimento,
-      # baixada para o cache de ferramentas do runner.
+      # Pins Node instead of trusting what the machine has on PATH: the self-hosted
+      # runner stores a snapshot of the PATH of whoever configured it, and that snapshot
+      # brings Node 18. Here the version is the same one the project uses in development,
+      # downloaded into the runner's tool cache.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
 
-      - name: Interface web
+      - name: Web interface
         run: |
           npm ci
           npm run build
         working-directory: apps/frontend
 
-      - name: Acesso SSH ao repositório do motor (pom-plugin-llama.cpp)
+      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
 
-      - name: Chave do github.com no known_hosts
+      - name: github.com key in known_hosts
         shell: bash
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts
 
-      - name: Compilar
+      - name: Compile
         run: cargo build --release --locked -p node -p pom-plugin-host --features metal
 
-      - name: Montar o pacote
+      - name: Assemble the package
         run: |
           nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
-          # O workspace persiste entre execuções neste runner: limpar a sobra da
-          # release anterior evita empacotar o pacote velho junto.
+          # The workspace persists between runs on this runner: clearing the leftovers from
+          # the previous release avoids packaging the old package along with it.
           rm -rf pacote pom-*.tar.gz "$nome"
           mkdir -p pacote/apps/frontend
           cp -R apps/frontend/dist pacote/apps/frontend/dist
           cp target/release/pom pacote/
-          # Sem o host ao lado do pom nenhum plugin instala.
+          # Without the host beside the pom no plugin installs.
           cp target/release/pom-plugin-host pacote/
           cp README.md pacote/ 2>/dev/null || true
 
-          # Um executável Unix não carrega ícone: no macOS quem o mostra é o
-          # bundle .app. A interface vai **também** para dentro do bundle,
-          # ao lado do binário real, para o .app continuar funcionando depois de
-          # arrastado para /Applications.
+          # A Unix executable does not carry an icon: on macOS the one that shows it is the
+          # .app bundle. The interface goes **also** inside the bundle,
+          # beside the real binary, so the .app keeps working after being
+          # dragged to /Applications.
           ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
           mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
           cp -R pacote/apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
@@ -124,11 +124,11 @@ jobs:
           name: pacote-macos
           path: pom-*.tar.gz
           if-no-files-found: error
-          # Só passam entre os jobs desta execução; a release guarda os pacotes.
+          # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 2
 
-      # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow
-      # a rodar cria a release, os outros anexam o arquivo deles.
+      # Each system publishes its own package on the same tag: the first workflow
+      # to run creates the release, the others attach their file.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}

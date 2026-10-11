@@ -1,195 +1,194 @@
 # AGENTS.md - scripts/
 
-Scripts operacionais (build e geracao de config de cluster) e o endereco real
-do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
+Operational scripts (build and cluster config generation) and the real home of
+the Python code. Authoritative: read the files; this is a map.
 
 ## scripts/
 
-- `build-env.sh` - helper opt-in, carregado com `source`, que detecta
-  `sccache` e exporta o cache CAS compartilhado, o limite de 80G, os wrappers
-  Rust/CMake/CUDA, `CCACHE`, o socket dedicado e um `CARGO_TARGET_DIR` comum.
-  Sem `sccache` no `PATH`, nao altera o ambiente do build.
-  `test-build-env.sh` verifica os dois caminhos e a preservacao de overrides.
-- `bench-routes.sh` - executa a bateria reproduzivel de medicao da geracao
-  distribuida: quatro origens, cinco prompts, aquecimento por origem, CSV com
-  as telemetrias de timings/trace/decode/prefill e tabela de medianas. O CSV
-  inclui ao final os contadores
-  `trace_mtp_draft_tokens_{proposed,accepted,rejected}` e
-  `trace_mtp_acceptance_rate`, preservando a ordem das colunas anteriores; o
-  quinto prompt usa 1200 palavras hexadecimais novas e `max_tokens=8`. Envia a
-  API key de inferência em `POM_BENCH_API_KEY` para cada chamada ao
-  `/api/generate`; a variável não é impressa nem gravada no CSV. Por padrao
-  omite `model` no `/api/generate`, para o gateway usar o modelo atualmente
-  servido; `POM_BENCH_MODEL` e um override opcional. A origem remota alcançada por SSH
-  usa a variável de senha do script em tempo de execucao, nunca uma senha gravada no
-  repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
-  `--origins`, `--repetitions` e `--csv`.
-- `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
-  (`git rev-parse --short HEAD`, sufixo `-dirty` se a arvore tem alteracoes) e
-  exporta `POM_BUILD_COMMIT` apenas para o runtime. Por padrao resolve a tag da
-  branch remota `pom-tensor-parallel` (mesmo algoritmo da action de release,
-  completando a historia de um clone raso sem baixar blobs) e usa
-  `POM_LLAMA_CPP_MODE=release`; o `LLAMA_CPP_CACHE_KEY` passa a incluir essa
-  tag. `POM_LLAMA_CPP_RELEASE_TAG` fixa uma release existente.
-  `POM_LLAMA_CPP_MODE=source` compila o fork local;
-  `POM_LLAMA_CPP_SOURCE_DIR` pode apontar para outro clone Git, cujo conteudo e
-  preparado num named context temporario sem `.git`, os dados de `models/` da
-  raiz, diretorios de build, chaves ou arquivos dotenv; as fontes `src/models/`
-  e arquivos `build-*` em outras pastas sao preservados. O cache e chaveado por
-  commit e delta. O contexto principal ignora a copia local de `llama.cpp`,
-  pois o fork entra somente pelo named context. O script deriva
-  `POM_CUDA_ARCH_CACHE_KEY` da lista real de arquiteturas e chama
-  `docker compose build`. Os composes por cluster vivem no repositório
-  `pom-cluster-config`, que chama este script com `COMPOSE_FILE`. Todas as máquinas do cluster usam o mesmo target `runtime`, com um
-  `pom` universal CUDA+Vulkan e os módulos CPU/Vulkan/CUDA no mesmo runtime.
-  O frontend é um estágio independente e sua cópia de `dist` é a última camada
-  da imagem; Fork/tag, toolkit, arquitetura e toolchain não invalidam a UI, e
-  uma edição da UI não refaz Cargo. Todos os serviços usam `/usr/local/bin/pom`.
-  Construa por estes scripts, nao rode `docker compose build` diretamente.
-- `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
-  mudou. A parte estrutural verifica os estagios Rust/frontend independentes,
-  a cópia final do frontend, o `.dockerignore`, a exclusao do carimbo de commit
-  dos estagios de build, o cache Cargo nativo serializado entre os serviços,
-  que só há uma build POM combinando CPU, CUDA e Vulkan, e que o kache é
-  instalado depois do rustup e antes das fontes, com `kache init` antes do
-  `cargo build` e `XDG_CACHE_HOME=/build/target`. O `cargo install` do kache
-  conta no grupo `toolchain`. Depois, se houver daemon, deriva do Dockerfile
-  um stub e usa BuildKit sobre um
-  contexto sintetico para verificar cache em cenarios de fonte, commit, fork,
-  CUDA, toolchain e artefatos locais. `POM_CACHE_TEST_DEBUG=1` imprime cada
-  passo, grupo e estado do cache.
-- `test-docker-build-mode.sh` - testa os modos release/source com um `docker`
-  falso: source prepara um named context sem `.git`, dados de `models/` da
-  raiz, diretorios de build, GGUFs e credenciais, preservando `src/models/` e
-  fontes `build-*` em subpastas; release mantém apenas um marcador e propaga
-  a tag e o cache key fixados.
-- `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
-  falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
-  argumentos.
-- `test-docker-compose.py` - materializa os Compose das máquinas do cluster. Valida
-  que todos os nós usam a mesma imagem/build/binário, além de volumes e
-  visibilidade de NVIDIA/Radeon; a entrada do servidor CUDA tem um serviço `node-1` com as
-  GPUs 0 e 1 e os argumentos de arquitetura/cache coerentes.
-- `gen-node-configs.py` - gera um `pom.json` por no em
-  `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
-  (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =
-  principal (guarda `connection_key` e `api_keys`); demais = node com
-  `bootstrap_nodes` para `127.0.0.1:42777`. Recusa gerar sem `connection_key`;
-  `--force` sobrescreve config existente. Nunca gera a chave de conexao - herda
-  da config base (`--base`, padrao `pom.json` na raiz) para nao partir um
-  cluster existente. `--advertise-addr` atualiza somente o endereco anunciado
-  tambem em configs existentes, preservando os outros campos. Quando recebe
-  `HOST:PORT`, trata a porta como a base do conjunto e usa a porta `p2p_port`
-  propria de cada no; assim quatro processos no mesmo host nao anunciam todos
-  o socket 42777.
-- `test_gen_node_configs.py` - testes unitarios do override de
-  `advertise_addr`, incluindo a preservacao dos demais campos da config.
-- `bench-llamacpp.sh` - CLI do benchmark do llama.cpp puro no servidor CUDA. Recebe o
-  snapshot `.config.json` do pom-bench, seleciona uma implantacao `whole`,
-  verifica VRAM livre, sobe o `llama-server` do fork remoto do POM em uma porta
-  local ao host remoto, mede os cinco prompts da bateria e derruba somente o
-  PID criado. A implementacao Python fica em `bench_llamacpp.py`; os testes
-  puros de selecao, payload, SSE e medianas ficam em
-  `test_bench_llamacpp.py`. A geometria equivalente ao POM usa `-c n_ctx`,
-  `-np (max_sessions * 2)` e `--kv-unified`, preservando a janela por sessao
-  sem multiplicar `n_ctx`; `offload_kqv=true` usa o default do llama.cpp e so
-  `false` acrescenta `-nkvo`. Um binario preexistente
-  so e aceito quando o `CMakeCache.txt` prova o mesmo source com CUDA e
-  `LLAMA_BUILD_SERVER=ON`; caso contrario o build vai para fora da arvore.
-  Quando `mtp_enabled=true`, a configuracao vira `--spec-type draft-mtp`,
-  `--spec-draft-n-max` e `--spec-draft-p-min`; o fork usa a cabeca `nextn` do
-  proprio GGUF, sem modelo draft separado.
-  Os artefatos vao por padrao para a pasta de relatórios padrão e a
-  CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
-  tarefa. Se o `nvcc` nao estiver no `PATH` remoto, o harness autodetecta
-  `/usr/local/cuda/bin/nvcc`, `/usr/local/cuda-13.0/bin/nvcc` ou
-  `/usr/local/cuda-12.9/bin/nvcc`; `--cuda-compiler` e
-  `LLAMACPP_CUDA_COMPILER` permitem fixar outro caminho.
-- `migrate_pom_db.py` - ferramenta descartável e explícita para copiar, uma
-  única vez, implantações, auditoria, API keys, preferência térmica e token
-  das fontes antigas para um `pom.db` já criado pelo binário. O arranque nunca
-  chama o script; ele valida conflitos, não imprime credenciais e não apaga ou
-  altera as fontes.
-- `run-docker.sh` - `docker compose down` + `docker compose up -d`. Nao recria
-  a imagem; use `build-docker.sh` para isso.
-- `build-enterprise-plugin.sh` - compila um crate `cdylib` do workspace
-  (default: `enterprise-plugin-fixture`, o único que resta aqui) para uma
-  plataforma explícita, localiza a extensão correta e copia o artefato com
-  SHA-256 e tamanho para o diretório de saída. O cdylib de produção
-  (`enterprise-plugin`, domínio de auditoria de Logs/Estatísticas) foi
-  extraído para o repositório `pom-plugin-logs`, que tem seu próprio script de
-  build, empacotamento, workflows de release e publicação no servidor de
-  licenças - ver `docs/subsystems/enterprise-licensing.md`.
-- `resolve-release-version.py` - lê a resposta de `GET /internal/releases` e
-  escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
-  `build.N` para o `pom-release.sh`.
-- `release-ksia.sh` - build de release na ksia para `linux-cpu`,
-  `linux-cuda` (CUDA 12.9, lista larga de arquiteturas) ou `windows-cpu`
-  (cruzado com `cargo xwin` + `clang-cl`/`lld-link` do LLVM 20; o STL do
-  MSVC exige Clang >= 19), com estado em
-  `~/.cache/pom-release` e pacote em `dist-release-ksia/`; `--dry-run` só
-  imprime os comandos; `--debug-symbols` (windows-cpu) inclui `pom.pdb`. Toda
-  variante compila `-p node -p pom-plugin-host` e põe o host ao lado do `pom`
-  no pacote. Chamado por `.github/workflows/release-ksia.yml`.
-- `test-release-ksia.sh` - dry-run de cada variante (inclusive a cópia do
-  `pom-plugin-host`) e checagem de que o workflow do runner Linux não usa armazenamento
-  do GitHub.
-- `test_pom_release.sh` - smoke test local do incremento automático, override
-  manual e `--dry-run`, usando `curl` e `cargo` falsos. Cobre só `pom_core`
-  (binário `pom`/`pom.exe`) nas três plataformas.
+- `build-env.sh` - opt-in helper, loaded with `source`, that detects
+  `sccache` and exports the shared CAS cache, the 80G limit, the Rust/CMake/CUDA
+  wrappers, `CCACHE`, the dedicated socket and a common `CARGO_TARGET_DIR`.
+  Without `sccache` on the `PATH`, it does not change the build environment.
+  `test-build-env.sh` checks both paths and the preservation of overrides.
+- `bench-routes.sh` - runs the reproducible battery measuring the distributed
+  generation: four origins, five prompts, warm-up per origin, a CSV with the
+  timings/trace/decode/prefill telemetries and a medians table. The CSV
+  appends at the end the counters
+  `trace_mtp_draft_tokens_{proposed,accepted,rejected}` and
+  `trace_mtp_acceptance_rate`, preserving the order of the earlier columns; the
+  fifth prompt uses 1200 new hexadecimal words and `max_tokens=8`. It sends the
+  inference API key in `POM_BENCH_API_KEY` for every call to
+  `/api/generate`; the variable is neither printed nor written to the CSV. By
+  default it omits `model` in `/api/generate`, so the gateway uses the model
+  currently served; `POM_BENCH_MODEL` is an optional override. The remote origin
+  reached over SSH uses the script's password variable at run time, never a
+  password written in the repository. See the script's header for the columns,
+  URLs and the `--origins`, `--repetitions` and `--csv` options.
+- `build-docker.sh` - builds the cluster image: it reads the commit **on the
+  host** (`git rev-parse --short HEAD`, with a `-dirty` suffix when the tree has
+  changes) and exports `POM_BUILD_COMMIT` only for the runtime. By default it
+  resolves the tag of the remote `pom-tensor-parallel` branch (the same algorithm
+  as the release action, completing the history of a shallow clone without
+  downloading blobs) and uses `POM_LLAMA_CPP_MODE=release`; the
+  `LLAMA_CPP_CACHE_KEY` then includes that tag. `POM_LLAMA_CPP_RELEASE_TAG` pins
+  an existing release.
+  `POM_LLAMA_CPP_MODE=source` compiles the local fork;
+  `POM_LLAMA_CPP_SOURCE_DIR` may point at another Git clone, whose content is
+  prepared in a temporary named context without `.git`, the root's `models/`
+  data, build directories, keys or dotenv files; the `src/models/` sources and
+  `build-*` files in other folders are preserved. The cache is keyed by commit
+  and delta. The main context ignores the local copy of `llama.cpp`, because the
+  fork only enters through the named context. The script derives
+  `POM_CUDA_ARCH_CACHE_KEY` from the real architecture list and calls
+  `docker compose build`. The per-cluster composes live in the
+  `pom-cluster-config` repository, which calls this script with `COMPOSE_FILE`.
+  All cluster machines use the same `runtime` target, with a universal
+  CUDA+Vulkan `pom` and the CPU/Vulkan/CUDA modules in the same runtime.
+  The frontend is an independent stage and its copy of `dist` is the image's last
+  layer; fork/tag, toolkit, architecture and toolchain do not invalidate the UI,
+  and editing the UI does not redo Cargo. All services use
+  `/usr/local/bin/pom`.
+  Build through these scripts; do not run `docker compose build` directly.
+- `test-docker-build-cache.sh` - proves the image reuses what did not change. The
+  structural part checks the independent Rust/frontend stages, the final frontend
+  copy, the `.dockerignore`, the exclusion of the commit stamp from the build
+  stages, the native Cargo cache serialized across the services, that there is
+  only one POM build combining CPU, CUDA and Vulkan, and that kache is installed
+  after rustup and before the sources, with `kache init` before the
+  `cargo build` and `XDG_CACHE_HOME=/build/target`. The kache `cargo install`
+  counts in the `toolchain` group. Then, if a daemon exists, it derives a stub
+  from the Dockerfile and uses BuildKit over a synthetic context to verify cache
+  in source, commit, fork, CUDA, toolchain and local artifact scenarios.
+  `POM_CACHE_TEST_DEBUG=1` prints each step, group and cache state.
+- `test-docker-build-mode.sh` - tests the release/source modes with a fake
+  `docker`: source prepares a named context without `.git`, the root's `models/`
+  data, build directories, GGUFs and credentials, preserving `src/models/` and
+  `build-*` sources in subfolders; release keeps only a marker and propagates the
+  pinned tag and cache key.
+- `test-docker-entrypoint.sh` - smoke test of the Docker entrypoint with fake
+  binaries: it confirms the host path, the `exec` of `pom` and the preservation
+  of the arguments.
+- `test-docker-compose.py` - materializes the Compose files of the cluster machines. It
+  validates that all nodes use the same image/build/binary, plus volumes and
+  NVIDIA/Radeon visibility; the CUDA server's entry has a `node-1` service with
+  GPUs 0 and 1 and coherent architecture/cache arguments.
+- `gen-node-configs.py` - generates one `pom.json` per node in
+  `tests/fixtures/node-<N>/`. Each node's ports come from the config, not from
+  the CLI (with `network_mode: host`, a port collision and the typical error).
+  Node 1 = principal (keeps `connection_key` and `api_keys`); the rest = node
+  with `bootstrap_nodes` pointing at `127.0.0.1:42777`. It refuses to generate
+  without a `connection_key`; `--force` overwrites an existing config. It never
+  generates the connection key - it inherits it from the base config (`--base`,
+  default `pom.json` at the root) so an existing cluster is not broken.
+  `--advertise-addr` updates only the announced address, also in existing
+  configs, preserving the other fields. When it receives `HOST:PORT`, it treats
+  the port as the set's base and uses each node's own `p2p_port`; that way four
+  processes on the same host do not all announce socket 42777.
+- `test_gen_node_configs.py` - unit tests of the `advertise_addr`
+  override, including the preservation of the config's other fields.
+- `bench-llamacpp.sh` - CLI of the pure llama.cpp benchmark on the CUDA server. It takes the
+  pom-bench `.config.json` snapshot, selects a `whole` deployment, checks free
+  VRAM, brings up the `llama-server` of the POM's remote fork on a local port
+  beside the remote host, measures the battery's five prompts, and tears down
+  only the PID it created. The Python implementation lives in
+  `bench_llamacpp.py`; the pure tests of selection, payload, SSE and medians
+  live in `test_bench_llamacpp.py`. The geometry equivalent to POM uses
+  `-c n_ctx`, `-np (max_sessions * 2)` and `--kv-unified`, preserving the per
+  session window without multiplying `n_ctx`; `offload_kqv=true` uses llama.cpp's
+  default and only `false` adds `-nkvo`. A preexisting binary
+  is only accepted when the `CMakeCache.txt` proves the same source with CUDA and
+  `LLAMA_BUILD_SERVER=ON`; otherwise the build goes outside the tree.
+  When `mtp_enabled=true`, the configuration becomes `--spec-type draft-mtp`,
+  `--spec-draft-n-max` and `--spec-draft-p-min`; the fork uses the GGUF's own
+  `nextn` head, with no separate draft model.
+  Artifacts go to the standard reports folder by default, and the CLI, the flag
+  map and the limitations are in the task's operational report. If `nvcc` is not
+  on the remote `PATH`, the harness auto-detects `/usr/local/cuda/bin/nvcc`,
+  `/usr/local/cuda-13.0/bin/nvcc` or `/usr/local/cuda-12.9/bin/nvcc`;
+  `--cuda-compiler` and `LLAMACPP_CUDA_COMPILER` allow pinning another path.
+- `migrate_pom_db.py` - a disposable, explicit tool to copy, once, deployments,
+  audit, API keys, thermal preference and token from the old sources into a
+  `pom.db` already created by the binary. Startup never calls the script; it
+  validates conflicts, prints no credentials, and does not delete or alter the
+  sources.
+- `run-docker.sh` - `docker compose down` + `docker compose up -d`. It does not
+  recreate the image; use `build-docker.sh` for that.
+- `build-enterprise-plugin.sh` - compiles a workspace `cdylib` crate (default:
+  `enterprise-plugin-fixture`, the only one left here) for an explicit platform,
+  locates the right extension, and copies the artifact with SHA-256 and size to
+  the output directory. The production cdylib (`enterprise-plugin`, the
+  Logs/Statistics audit domain) was extracted to the `pom-plugin-logs`
+  repository, which has its own build script, packaging, release workflows and
+  publication on the license server - see
+  `docs/subsystems/enterprise-licensing.md`.
+- `resolve-release-version.py` - reads the `GET /internal/releases` answer and
+  picks the largest SemVer across all platforms, incrementing the `build.N`
+  metadata for the `pom-release.sh`.
+- `release-ksia.sh` - release build on the ksia runner for `linux-cpu`,
+  `linux-cuda` (CUDA 12.9, wide architecture list) or `windows-cpu`
+  (cross-compiled with `cargo xwin` + LLVM 20's `clang-cl`/`lld-link`; the MSVC
+  STL requires Clang >= 19), with state in `~/.cache/pom-release` and package in
+  `dist-release-ksia/`; `--dry-run` only prints the commands; `--debug-symbols`
+  (windows-cpu) includes `pom.pdb`. Every variant compiles
+  `-p node -p pom-plugin-host` and puts the host beside the `pom` in the package.
+  Called by `.github/workflows/release-ksia.yml`.
+- `test-release-ksia.sh` - dry-run of each variant (including the
+  `pom-plugin-host` copy) and a check that the Linux runner's workflow uses no
+  GitHub storage.
+- `test_pom_release.sh` - local smoke test of the automatic increment, the manual
+  override and `--dry-run`, using fake `curl` and `cargo`. Covers only
+  `pom_core` (the `pom`/`pom.exe` binary) on the three platforms.
 
-O `pom-release.sh` fica na raiz porque opera sobre o checkout remoto do POM:
-busca `origin/feat/enterprise`, cria worktree descartável e envia multipart
-para `/internal/releases/upload`. Sem `--version`, consulta
-`/internal/releases?plugin=pom_core&status=all` com o token
-`POM_RELEASE_TOKEN`, agrupa todas as plataformas pela versão SemVer e
-incrementa `+build.N`; `--version` é um override manual e não faz essa consulta.
-Libera somente `pom_core` (compila o binário real do pacote `node` com `cargo
-build --release -p node --target ...`): os defaults são `cuda,vulkan` no Linux
-(mesmo conjunto do `Dockerfile`), `metal` no macOS (workflow de release) e
-nenhuma feature no Windows CPU. `--features` substitui as features do build e
-`--feature-set` altera apenas o metadado do upload (default `core`). Os
-artefatos são `pom` em Linux/macOS e `pom.exe` no Windows; o wrapper `cargo`
-do operador deve encaminhar o alvo Windows MSVC para `cargo xwin` quando o
-host não for Windows. Antes do Cargo, o script remove
-`CMAKE_CUDA_ARCHITECTURES` e força `CUDAARCHS=''`: o CMake trata o valor vazio
-como não definido e o `CMakeLists.txt` vendorizado escolhe a lista ampla de
-arquiteturas CUDA, nunca a GPU da máquina de build. O servidor exige
-`plugin_abi` positivo também para `pom_core`, então o script envia `1` como
-metadado de compatibilidade de transporte, não como ABI de cdylib. O
-`feature_set=core` é apenas metadado e não cria entitlement. `--dry-run` não
-exige token nem faz chamada HTTP e mostra `+build.1` como prévia quando a
-versão não é informada.
+`pom-release.sh` lives at the root because it operates on the POM's remote
+checkout: it looks for `origin/feat/enterprise`, creates a throwaway worktree and
+sends a multipart to `/internal/releases/upload`. Without `--version`, it queries
+`/internal/releases?plugin=pom_core&status=all` with the `POM_RELEASE_TOKEN`,
+groups all platforms by SemVer version and increments `+build.N`; `--version` is
+a manual override and skips that query. It releases only `pom_core` (it compiles
+the real binary of the `node` package with `cargo build --release -p node
+--target ...`): the defaults are `cuda,vulkan` on Linux (the same set as the
+`Dockerfile`), `metal` on macOS (release workflow) and no feature on Windows CPU.
+`--features` replaces the build's features and `--feature-set` changes only the
+upload metadata (default `core`). The artifacts are `pom` on Linux/macOS and
+`pom.exe` on Windows; the operator's `cargo` wrapper must route the Windows MSVC
+target to `cargo xwin` when the host is not Windows. Before Cargo, the script
+removes `CMAKE_CUDA_ARCHITECTURES` and forces `CUDAARCHS=''`: CMake treats an
+empty value as not set, and the vendored `CMakeLists.txt` picks the wide CUDA
+architecture list, never the build machine's GPU. The server requires a positive
+`plugin_abi` for `pom_core` too, so the script sends `1` as transport
+compatibility metadata, not as a cdylib ABI. The `feature_set=core` is metadata
+only and creates no entitlement. `--dry-run` needs no token and makes no HTTP call,
+and shows `+build.1` as a preview when the version is not given.
 
-O plugin `enterprise` (Logs de Requisições/Estatísticas) não é mais liberado
-por este script: seu release (build, empacotamento, GitHub Actions e
-publicação no servidor de licenças) vive inteiramente em `pom-plugin-logs`.
+The `enterprise` plugin (Request Logs/Statistics) is no longer released by this
+script: its release (build, packaging, GitHub Actions and publication on the
+license server) lives entirely in `pom-plugin-logs`.
 
-## Python legado
+## Legacy Python
 
-Não há mais servidor de inferência nem splitter em Python no repositório: o
-runtime é Rust (`crates/node/src/inference/infer_server.rs`,
-`crates/node/src/models/splitter.rs`). A antiga pasta `old/` foi removida.
+There is no longer a Python inference server or splitter in the repository: the
+runtime is Rust (`crates/node/src/inference/infer_server.rs`,
+`crates/node/src/models/splitter.rs`). The old `old/` folder was removed.
 
-## Infra de build e dev na raiz
+## Build and dev infrastructure at the root
 
-- `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
-  runtime. Todas as máquinas do cluster compilam um executável `pom` com CPU, CUDA e Vulkan,
-  mais `pom-plugin-host`; os builds usam cache mounts e o frontend é
-  independente. Há duas imagens finais: `runtime`, a de distribuição, sem
-  compilador; e `dev-runtime`, a de desenvolvimento, com Rust/Cargo e
-  ferramentas nativas. O toolchain fica no estágio `dev-os`, sobre o sistema
-  operacional (`runtime-os`) e antes de qualquer arquivo do POM, e
-  `dev-runtime` copia os artefatos prontos de `runtime`: um build do POM
-  reaproveita as camadas do toolchain em vez de reinstalá-lo. O commit do host vira `ENV
-  POM_BUILD_COMMIT` no runtime, sem invalidar as camadas Cargo/npm. O
-  `docker-entrypoint.sh` faz `exec` do `pom` e exporta `POM_PLUGIN_HOST`; na
-  ativacao, o `pom` inicia o host como filho com o plugin baixado e IPC por
-  stdin/stdout, sem socket ou volume de IPC.
-- `docker-entrypoint.sh` - valida que `pom` e `pom-plugin-host` estao
-  executaveis, fixa o caminho do host e preserva os argumentos do container.
-  Nao inicia um host vazio no boot porque o host precisa do caminho do plugin
-  Enterprise, que so existe depois da ativacao.
+- `Dockerfile` - shared stages of dependencies, Rust, frontend and runtime. All
+  cluster machines compile one `pom` executable with CPU, CUDA and Vulkan, plus
+  `pom-plugin-host`; the builds use cache mounts and the frontend is independent.
+  There are two final images: `runtime`, the distribution one, without a
+  compiler; and `dev-runtime`, the development one, with Rust/Cargo and native
+  tools. The toolchain sits in the `dev-os` stage, over the operating system
+  (`runtime-os`) and before any POM file, and `dev-runtime` copies the finished
+  artifacts from `runtime`: a POM build reuses the toolchain layers instead of
+  reinstalling it. The host commit becomes `ENV POM_BUILD_COMMIT` in the runtime,
+  without invalidating the Cargo/npm layers. The `docker-entrypoint.sh` does an
+  `exec` of the `pom` and exports `POM_PLUGIN_HOST`; on activation, the `pom`
+  starts the host as a child with the downloaded plugin and IPC over
+  stdin/stdout, with no socket or IPC volume.
+- `docker-entrypoint.sh` - validates that `pom` and `pom-plugin-host` are
+  executable, pins the host path, and preserves the container's arguments. It
+  does not start an empty host at boot because the host needs the Enterprise
+  plugin's path, which only exists after activation.
 - `docker-compose.yml` - four-service local cluster (`node-gpu`, `node-gpu2`,
   `node-gpu-3`, `node-cpu`) using `network_mode: host`, shared build/image
   anchors and persisted state under `tests/fixtures/<name>`. The default local
@@ -205,42 +204,43 @@ runtime é Rust (`crates/node/src/inference/infer_server.rs`,
   same executable, and the backend is detected from visible devices. The UI is
   found at `POM_UI_DIST=/app/apps/frontend/dist` because `POM_HOME=/data` is
   not the image's `/app` directory.
-- `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com
-  `version` e `prerelease`). Job `ui` builda a interface uma vez; matriz de 4
-  alvos (macOS arm64 Metal, Linux x86_64 CPU, Linux x86_64 CUDA 12.6, Windows
-  x86_64 CPU experimental) com `continue-on-error` e `fail-fast: false`; o job
-  `release` (`if: always()`) publica com o que compilou. Pacote = binario +
-  `apps/frontend/dist` + README, para `config::project_root` achar a UI a partir
-  do diretorio do executavel. Windows empacota com 7z.
-- `.github/workflows/release-ksia.yml` - release manual compilado só no runner
-  Linux self-hosted (label `ksia`) (sem cota do GitHub): jobs `linux-cpu`, `linux-cuda`, `windows-cpu`
-  ligados por entrada, cada um chama `scripts/release-ksia.sh` e anexa o pacote
-  à tag. Ver `build-and-run.md`, "Release on the self-hosted Linux runner".
-- `.cargo/config.toml` - `BINDGEN_EXTRA_CLANG_ARGS` aponta o bindgen do
-  llama-cpp-sys para os headers do GCC no Ubuntu (o clang do apt nao os traz);
-  perfil release com `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`,
-  `incremental = true` (laco quente do sampler: ~30x medido); o linker mold
-  entra no Linux via `[target.'cfg(target_os = "linux")']`.
-- `.devcontainer/` - container de dev Ubuntu 24.04 com Rust, node, docker CLI +
-  buildx e sshd (`root:123`, sandbox local, nao internet). `devcontainer.json`
-  monta o docker.sock e a chave ssh do host; `install-buildkit.sh` baixa o
-  binario `linux-amd64` do buildx (arm64 precisa de `docker-buildx-plugin`).
-- `.dockerignore` - corta `target/`, `target-*/`, `.fm-secondmate/`,
-  `.git/`, `venv/`, `models/`, `*.gguf`, `*.key`, `pom.json` e
-  `docs/superpowers/` do contexto. Mantem `llama.cpp/` porque o link em
-  `vendor/llama-cpp-sys-2/llama.cpp` precisa do codigo-fonte no build.
+- `.github/workflows/release.yml` - manual-only release (`workflow_dispatch` with
+  `version` and `prerelease`). Job `ui` builds the interface once; a matrix of 4
+  targets (macOS arm64 Metal, Linux x86_64 CPU, Linux x86_64 CUDA 12.6, Windows
+  x86_64 CPU experimental) with `continue-on-error` and `fail-fast: false`; the
+  `release` job (`if: always()`) publishes with whatever compiled. Package =
+  binary + `apps/frontend/dist` + README, so `config::project_root` finds the UI
+  from the executable's directory. Windows packages with 7z.
+- `.github/workflows/release-ksia.yml` - manual release compiled only on the
+  self-hosted Linux runner (label `ksia`) (no GitHub quota): jobs `linux-cpu`,
+  `linux-cuda`, `windows-cpu` chained by input, each calling
+  `scripts/release-ksia.sh` and attaching the package to the tag. See
+  `build-and-run.md`, "Release on the self-hosted Linux runner".
+- `.cargo/config.toml` - `BINDGEN_EXTRA_CLANG_ARGS` points the llama-cpp-sys
+  bindgen at GCC's headers on Ubuntu (apt's clang does not bring them); the
+  release profile with `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`,
+  `incremental = true` (the sampler's hot loop: ~30x measured); the mold linker
+  enters on Linux via `[target.'cfg(target_os = "linux")']`.
+- `.devcontainer/` - Ubuntu 24.04 dev container with Rust, node, docker CLI +
+  buildx and sshd (`root:123`, local sandbox, not the internet).
+  `devcontainer.json` mounts the docker.sock and the host's ssh key;
+  `install-buildkit.sh` downloads the `linux-amd64` buildx binary (arm64 needs
+  `docker-buildx-plugin`).
+- `.dockerignore` - cuts `target/`, `target-*/`, `.fm-secondmate/`, `.git/`,
+  `venv/`, `models/`, `*.gguf`, `*.key`, `pom.json` and `docs/superpowers/` from
+  the context. It keeps `llama.cpp/` because the link in
+  `vendor/llama-cpp-sys-2/llama.cpp` needs the source code in the build.
 
-## Sobre os nomes e o estado das fixtures do docker-compose
+## About the names and the state of the docker-compose fixtures
 
-`docker-compose.yml` e `docker-compose.salem.yml` estendem `docker-compose.common.yml` para usar os
-mesmos quatro servicos nas duas maquinas,
-mas preservam os diretorios de estado ja usados
-por cada no. `gen-node-configs.py` continua gravando em
-`tests/fixtures/node-<N>`; Compose monta as pastas nomeadas por papel de
-hardware. Nao troque os caminhos dos volumes como parte do alinhamento dos
-servicos: isso mudaria a localizacao da persistencia e exige uma migracao
-separada. `tests/` fica fora do contexto da imagem, mas seus diretorios sao
-montados pelo host em runtime.
+`docker-compose.yml` and `docker-compose.salem.yml` extend
+`docker-compose.common.yml` to use the same four services on the two machines,
+while keeping the state directories each node already uses.
+`gen-node-configs.py` keeps writing into `tests/fixtures/node-<N>`; Compose
+mounts the folders named by hardware role. Do not swap the volume paths as part
+of aligning the services: that would move where the persistence lives and require
+a separate migration. `tests/` stays outside the image's context, but its
+directories are mounted by the host at runtime.
 
 ## migrate-to-pom.sh
 
@@ -252,69 +252,71 @@ the `*.last-slice.json` annotation and the identity key. The old separate pkarr
 key (`.rdma-p2p.key`) is no longer used and stays where it is. It does not touch
 models or slices. Once it has run on every machine, it can be deleted.
 
-Fatia cortada antes do rename perde o `original_block_count` (o metadado agora
-se chama `pom.original_block_count`) e volta a ser "total de camadas
-desconhecido", caso que o codigo ja trata; refatiar restaura.
+A slice cut before the rename loses its `original_block_count` (the metadata is
+now called `pom.original_block_count`) and goes back to "unknown layer total", a
+case the code already handles; re-slicing restores it.
 
-`--quiet` so fala quando renomeou alguma coisa e cala o lembrete do fim: e o
-modo que os scripts de deploy do operador usam, porque eles rodam a migracao em
-toda subida e numa maquina ja migrada nao ha o que dizer.
+`--quiet` only speaks when it renamed something and silences the closing
+reminder: that is the mode the operator's deploy scripts use, because they run the
+migration on every bring-up and on an already migrated machine there is nothing to
+say.
 
-Cobre tambem as **variantes por papel** (`rdma-p2p-cpu.json`,
-`.rdma-p2p-node-cpu.key`): o `.gitignore` do projeto sempre usou os padroes
-`rdma-p2p*.json` e `.rdma-p2p-node*.key`, e uma máquina do cluster tinha as duas variantes no
-disco - migrar so os nomes exatos deixava chave orfa.
+It also covers the **per-role variants** (`rdma-p2p-cpu.json`,
+`.rdma-p2p-node-cpu.key`): the project's `.gitignore` always used the patterns
+`rdma-p2p*.json` and `.rdma-p2p-node*.key`, and one cluster machine had both
+variants on disk - migrating only the exact names would leave an orphan key.
 
 ## make-macos-app.sh
 
-Monta `POM.app` em volta do binario ja compilado (padrao:
-`target/release/pom` -> `dist-release/POM.app`) e copia o `pom-plugin-host`
-irmao dele para `Contents/MacOS/`, recusando montar o bundle sem ele. E o unico jeito de um
-executavel ter icone no macOS: o icone pertence ao bundle, nao ao arquivo.
-Nome, slug e caminho do `.icns` saem do `brand.json`; o Info.plist marca
-`LSUIElement` (o no nao abre janela - a interface e web, na porta do gateway) e
-o bundle continua chamavel por linha de comando em
-`POM.app/Contents/MacOS/pom`. O workflow de release chama este script no alvo
-macOS e copia o `dist` da interface para `Contents/Resources/apps/frontend/`,
-que e onde `config::bundled_ui_dist()` a procura. O script também copia
-`assets/brand/macos/pom-status-template{,@2x,@3x}.png` e as localizações
-`assets/brand/macos/*.lproj` para `Contents/Resources`, e recusa montar o
-bundle se a arte do item de barra faltar - um item sem arte cai para um rótulo
-de texto, em silêncio. O mesmo bundle abre `/admin-ui/chat` no painel de
-390 x 844 points e oferece a janela maior pelo WebKit do sistema.
+Assembles `POM.app` around the already compiled binary (default:
+`target/release/pom` -> `dist-release/POM.app`) and copies its sibling
+`pom-plugin-host` into `Contents/MacOS/`, refusing to assemble the bundle without
+it. It is the only way an executable gets an icon on macOS: the icon belongs to
+the bundle, not to the file. Name, slug and `.icns` path come from
+`brand.json`; the Info.plist marks `LSUIElement` (the node opens no window - the
+interface is web, on the gateway port) and the bundle stays callable from the
+command line at `POM.app/Contents/MacOS/pom`. The release workflow calls this
+script on the macOS target and copies the interface's `dist` to
+`Contents/Resources/apps/frontend/`, which is where
+`config::bundled_ui_dist()` looks for it. The script also copies
+`assets/brand/macos/pom-status-template{,@2x,@3x}.png` and the
+`assets/brand/macos/*.lproj` localizations to `Contents/Resources`, and refuses to
+assemble the bundle if the status item's art is missing - an item without art
+falls back to a text label, silently. The same bundle opens `/admin-ui/chat` in
+the 390 x 844 point panel and offers the larger window through the system WebKit.
 
 ## derive-macos-status-icon.py
 
-Deriva a arte do `NSStatusItem` a partir de `pom-icon-src.png`. A barra de
-menus usa **template images**, que só têm canal alfa: a marca do POM é um
-quadrado azul opaco e, usada como está, viraria um retângulo preto. O script
-converte o traço branco em alfa, descarta o wordmark (ilegível a 18 pontos) e
-grava 1x, 2x e 3x em `assets/brand/macos/`. Corra-o depois de mexer na marca;
-um teste em `macos_status.rs` falha se a arte sumir.
+Derives the `NSStatusItem` art from `pom-icon-src.png`. The menu bar uses
+**template images**, which only have an alpha channel: the POM mark is an opaque
+blue square and, used as is, it would become a black rectangle. The script
+converts the white stroke into alpha, discards the wordmark (illegible at 18
+points), and writes 1x, 2x and 3x into `assets/brand/macos/`. Run it after
+changing the mark; a test in `macos_status.rs` fails if the art disappears.
 
 ## derive-dark-logo.py
 
-Deriva `assets/brand/pom-logo-dark.png` a partir da arte clara. Nao e arte
-nova: espelha a luminancia do letreiro (azul-petroleo chapado, desenhado para
-fundo claro, que sumia no painel escuro) preservando matiz e saturacao, e
-**nao toca na ilustracao do cerebro** - recolori-la achatava o volume, e ela ja
-tem contraste proprio no escuro. A regiao preservada e o retangulo do brilho
-dourado, com borda suave para nao deixar costura. Quando existir uma arte
-escura desenhada de verdade, sobrescreva o PNG e apague este script.
+Derives `assets/brand/pom-logo-dark.png` from the light art. It is not new art:
+it mirrors the lettering's luminance (a flat petrol blue, drawn for a light
+background, which vanished on the dark panel) preserving hue and saturation, and
+**does not touch the brain illustration** - recoloring it flattened the volume,
+and it already has its own contrast in the dark. The preserved region is the
+golden glow rectangle, with a soft edge so no seam is left. When a real designed
+dark art exists, overwrite the PNG and delete this script.
 
 ## generate-brand-assets.py
 
-Regenera os derivados quadrados de `assets/brand/pom-icon-src.png`: tamanhos
-web, `pom-mark.png`, ícones Linux, `favicon.ico`, `pom.ico` e `pom.icns`.
-`pom-logo-light.png` e `pom-logo-dark.png` são lockups-fonte e não são
-redimensionados por este script. Rode `python3 scripts/generate-brand-assets.py`
-depois de atualizar a arte manual para manter todas as plataformas alinhadas.
+Regenerates the square derivatives of `assets/brand/pom-icon-src.png`: web
+sizes, `pom-mark.png`, Linux icons, `favicon.ico`, `pom.ico` and `pom.icns`.
+`pom-logo-light.png` and `pom-logo-dark.png` are source lockups and are not
+resized by this script. Run `python3 scripts/generate-brand-assets.py` after
+updating the manual art to keep every platform aligned.
 
-## Defeitos anotados
+## Defects noted
 
-- `test-docker-build-cache.sh`, cenário "Rust toolchain changed": falha também
-  sem mudança no Dockerfile. O `RUN` que baixa a release do fork vem depois do
-  rustup, reconstrói quando a toolchain muda e cai no grupo `base`, que o
-  cenário não espera. E como a toolchain de teste é fixa (`1.90.0`), a partir
-  da segunda execução no mesmo builder a camada já está em cache e o grupo
-  `toolchain` some do resultado.
+- `test-docker-build-cache.sh`, scenario "Rust toolchain changed": it also fails
+  with no change in the Dockerfile. The `RUN` that downloads the fork's release
+  comes after the rustup, rebuilds when the toolchain changes, and falls in the
+  `base` group, which the scenario does not expect. And because the test toolchain
+  is pinned (`1.90.0`), from the second run on the same builder the layer is
+  already cached and the `toolchain` group disappears from the result.

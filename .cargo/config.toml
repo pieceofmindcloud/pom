@@ -1,32 +1,32 @@
 # bindgen needs to find stdbool.h when generating llama-cpp-sys-2 bindings.
 # Ubuntu ships clang without its bundled C headers; point bindgen at GCC's copy
 # instead. On macOS, Apple Clang has complete headers so this is harmless.
-# Dependências git (pom-plugin-llama.cpp, repositório privado por SSH) são buscadas pelo
-# cliente `git` do sistema, que usa as mesmas chaves e credenciais que o git do operador.
+# Git dependencies (pom-plugin-llama.cpp, a private repository over SSH) are fetched by the
+# system `git` client, which uses the same keys and credentials as the operator's git.
 [net]
 git-fetch-with-cli = true
 
 [env]
 BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include", force = false }
-# Fonte do fork do llama.cpp usado pelo binding llama-cpp-sys-2 (vem do repositório
-# pom-plugin-llama.cpp). Relativo a esta raiz: o `llama.cpp` da raiz do POM (checkout
-# ou symlink do fork). Um LLAMA_SOURCE já definido no ambiente (CI, Docker) prevalece.
+# Source of the llama.cpp fork used by the llama-cpp-sys-2 binding (it comes from the
+# pom-plugin-llama.cpp repository). Relative to this root: the `llama.cpp` at the POM root (a checkout
+# or a symlink of the fork). An LLAMA_SOURCE already set in the environment (CI, Docker) prevails.
 LLAMA_SOURCE = { value = "llama.cpp", relative = true, force = false }
 
-# Este perfil vale para o codigo *Rust*. O llama.cpp vem do cmake com
-# `--config Release` e sempre esteve otimizado - o que estava em opt-level 0 era
-# o nosso lado: sampler, wire.rs (f16, zstd), HTTP.
+# This profile applies to the *Rust* code. llama.cpp comes from cmake with
+# `--config Release` and has always been optimized - what was at opt-level 0 was
+# our side: sampler, wire.rs (f16, zstd), HTTP.
 #
-# Medido no sampler com o vocabulario do Qwen3 (151.936 tokens), mesmo codigo:
+# Measured in the sampler with the Qwen3 vocabulary (151,936 tokens), same code:
 #
-#   opt-level = 0   7,77 ms/token
-#   opt-level = 3   0,26 ms/token      (30x)
+#   opt-level = 0   7.77 ms/token
+#   opt-level = 3   0.26 ms/token      (30x)
 #
-# `incremental = true` para tempos de build baixos no dia a dia: `lto = "fat"`
-# ja faz link otimizado, e recompilacoes incrementais economizam mais do que o
-# eventual inline cross-crate que o incremental desabilitado trazia. Medido 30x
-# de opt-level 0 para 3 no sampler; voltar a false e uma linha se o custo de
-# build no CI incomodar.
+# `incremental = true` for low build times day to day: `lto = "fat"`
+# already does an optimized link, and incremental rebuilds save more than the
+# eventual cross-crate inlining that disabling incremental used to bring. Measured 30x
+# from opt-level 0 to 3 in the sampler; setting it back to false is one line if the build
+# cost in CI becomes a nuisance.
 [profile.release]
 opt-level = 3          # Maximize CPU execution speed and loop vectorization
 lto = "fat"            # Enable heavy Link-Time Optimization across crates

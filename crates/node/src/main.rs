@@ -2215,10 +2215,10 @@ mod main_tests {
 
 #[cfg(test)]
 mod llama_engine_contract {
-    /// `llama-engine` não depende de `brand`: o prefixo das chaves GGUF do POM
-    /// (`pom.<sufixo>`) é uma constante dele. Este teste garante que ela continua
-    /// igual ao `slug` de `brand.json`, para que o leitor e o escritor de GGUF
-    /// usem o mesmo nome.
+    /// `llama-engine` does not depend on `brand`: the prefix of the POM GGUF keys
+    /// (`pom.<suffix>`) is a constant of its own. This test guarantees it stays
+    /// equal to the `slug` of `brand.json`, so that the GGUF reader and the GGUF writer
+    /// use the same name.
     #[test]
     fn gguf_prefix_matches_the_brand_slug() {
         assert_eq!(llama_engine::GGUF_PREFIX, brand::slug());

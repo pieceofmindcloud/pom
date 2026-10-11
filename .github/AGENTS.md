@@ -1,18 +1,18 @@
 # AGENTS.md - .github
 
-Os workflows em `workflows/` publicam os pacotes de Linux, macOS e Windows.
-O build nativo passa pela action composta `actions/llama-cache`, que resolve o
-SHA atual da branch `pom-tensor-parallel`, restaura o checkout por SHA e valida
-o clone antes de o Cargo usá-lo. A estratégia completa, incluindo `sccache`,
-vive em `docs/subsystems/build-and-run.md`, seção "Cache in GitHub Actions".
+The workflows in `workflows/` publish the Linux, macOS and Windows packages.
+The native build goes through the composite action `actions/llama-cache`, which
+resolves the current SHA of the `pom-tensor-parallel` branch, restores the
+checkout by SHA and validates the clone before Cargo uses it. The full strategy,
+including `sccache`, lives in `docs/subsystems/build-and-run.md`, section "Cache in GitHub Actions".
 
-Ao alterar a estratégia de cache, mantenha a invalidação separada por sistema,
-arquitetura e SHA do fork. Alterações no lockfile devem continuar compondo a
-chave do cache Cargo no workflow Windows. Não dispare uma release para testar
-alterações de conveniência sem autorização explícita do operador.
+When changing the cache strategy, keep invalidation separated by system,
+architecture and fork SHA. Changes to the lockfile must keep composing the
+Cargo cache key in the Windows workflow. Do not trigger a release to test
+convenience changes without the operator's explicit authorization.
 
 ## Maintaining this file
 
-Mantenha este arquivo como um mapa curto da automação de CI. O YAML e a
-documentação de build são a fonte de verdade; não replique aqui comandos ou
-detalhes que já estão nesses arquivos.
+Keep this file as a short map of the CI automation. The YAML and the build
+documentation are the source of truth; do not replicate here commands or details
+that already live in those files.

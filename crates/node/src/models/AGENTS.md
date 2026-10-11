@@ -1,13 +1,12 @@
 # `crates/node/src/models/`
 
-> **Mudança de crate:** `gguf.rs`, `multipart.rs` e `kv_budget.rs` saíram para
-> `crates/llama-engine` (o lado FFI precisa deles). `node` os re-exporta em
-> `main.rs`; `crate::gguf::…` etc. seguem valendo. `splitter.rs` ficou aqui e
-> usa `crate::gguf` normalmente (nos testes, `llama_engine::llama_cpp_sys_2`).
+> **Crate change:** `gguf.rs`, `multipart.rs` and `kv_budget.rs` moved to
+> `crates/llama-engine` (the FFI side needs them). `node` re-exports them in
+> `main.rs`; `crate::gguf::…` etc. keep working. `splitter.rs` stayed here and
+> uses `crate::gguf` normally (in tests, `llama_engine::llama_cpp_sys_2`).
 
-Modelos, leitura de GGUF, planejamento e arquivos de fatias. O módulo é usado
-por `main.rs` e pelos handlers de catálogo, fatiamento, implantação e
-transferência.
+Models, GGUF reading, planning and slice files. The module is used by
+`main.rs` and by the catalog, slicing, deployment and transfer handlers.
 
 - `catalog.rs` sidecars - `Catalog.sidecars` lists vision projectors and
   external MTP drafts found under the shard folder and the GGUF libraries
@@ -23,257 +22,249 @@ transferência.
   `SidecarFile` the name + size identity and `find_local_sidecar` the on-disk
   lookup used at apply time. `DiscoveredModel.embedding_length` carries the
   width a sidecar must match.
-- `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
-  `discover_fast` enumera arquivos e lê apenas `stat`/metadados do sistema,
-  sem abrir o conteúdo GGUF; `enrich` lê os cabeçalhos depois e marca
-  `Catalog.metadata_complete`. Falha de leitura marca `metadata_error` no item,
-  sem impedir os modelos válidos; depois de uma passagem terminal,
-  `metadata_complete` vira `true`. Nova tentativa só ocorre em um novo refresh
-  ou invalidação. As capacidades publicadas pelo catálogo vêm somente do
-  cabeçalho; ele não percorre a tabela de tensores nem os pesos. A evidência
-  estrutural de MTP continua em `gguf::read_capability_evidence`, hoje restrita
-  às provas que exigem essa confirmação; o cálculo completo de layout continua
-  separado.
-  `discover` combina as duas fases para callers síncronos que ainda precisam da
-  resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
-  manifestos ou do nome de uma fatia são apenas dados de identidade.
-  Enquanto `metadata_complete` é falso, a ausência de um caminho significa que
-  a enumeração ainda não terminou, não que o arquivo esteja fora do catálogo;
-  os handlers de seleção devem expor esse estado para o cliente tentar
-  novamente.
-  Valores numéricos do cabeçalho GGUF são aceitos pela semântica de inteiro não
-  negativo, independentemente de o produtor tê-los escrito como signed ou
-  unsigned; valores negativos e overflow são recusados. Isso inclui
-  `split.tensors.count`, que o `gguf-split` de referência escreve como INT32.
-  Cada resultado enriquecido guarda apenas em memória a identidade
-  `path + size + mtime` do arquivo. O backend usa essa marca para reaproveitar
-  metadata quando um refresh cria outro inventário e para enriquecer somente
-  modelos novos ou alterados.
-  Para uma fonte GGUF multipart, `enrich` lê os cabeçalhos e faz `stat` das
-  partes por `multipart::catalog_metadata`, sem abrir o mapeamento completo de
-  pesos; soma os bytes e expõe as partes físicas no catálogo. Uma declaração
-  incompleta fica visível com erro concreto e tamanho desconhecido. A identidade
-  do modelo inteiro usa o hash da sequência completa de partes somente na
-  fronteira de fatiamento ou transferência.
-- `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
-  chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
-  `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa. O
-  plano valida o contrato de tensores de saída da arquitetura antes de oferecer
-  ou gerar uma faixa; cabeças obrigatórias são cobradas e copiadas da origem
-  quando o loader exige sua presença em faixas parciais.
-- `gguf.rs` - lê a geometria de KV escalar ou por camada
-  (`attention.head_count_kv`, `key_length` e `value_length`) e a evidência de
-  MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos. Também
-  lê `tokenizer.chat_template`, tokens de controle reais e os campos/tensores
-  `nextn` para produzir a evidência de thinking e MTP usada pelo planner. A
-  chave canônica `<arquitetura>.nextn_predict_layers` e a forma sem prefixo são
-  aceitas; a presença dos tensores `nextn` é prova estrutural quando o produtor
-  omite a metadata. A ausência de leitura permanece indeterminada. `read_layout`
-  valida os dtypes contra a tabela GGML suportada, descarta essa informação após
-  a validação, usa offsets físicos para o custo dos tensores e calcula o tamanho
-  serializado de cada fatia, incluindo cabeçalho, globais, alinhamento e
-  duplicações e cabeças específicas da arquitetura. `validate_slice_ranges`
-  compartilha a decisão com o fatiador. `deepseek4` exige seis tensores
-  não-bloco, não aceita fallback para `token_embd`; faixas não finais copiam da
-  origem os tensores reais da cabeça que o loader exige e mantêm o norm de
-  identidade já usado pelo tronco. Se a origem não tiver um tensor copiável, a
-  recusa nomeia os tensores ausentes. `LayerCountSemantics` classifica metadata
-  que o llama.cpp compara com o índice local: contagens desde o início são
-  rebaseadas por `start_layer` e limitadas ao tamanho da fatia, enquanto a
-  contagem desde o fim do NextN é zerada fora da última faixa. Valor não escalar
-  ou que não caiba em `u32` recusa o layout com a chave e a causa.
-  `GgufLayout::required_head_bytes` mede o payload real repetido por fatia
-  intermediária.
-  `read_layout` usa a tabela unificada de multipart.rs, então o
-  primeiro arquivo de um GGUF multipart, mesmo sem tensores, representa o
-  conjunto inteiro. O custo e a seleção também consideram tensores presentes
-  em todas as partes físicas, inclusive a terceira ou posteriores.
-- multipart.rs - mapeia um GGUF simples ou todas as partes declaradas por
-  split.count, split.no e split.tensors.count. Valida a convenção N-of-M.gguf,
-  resolve cada tensor para parte e offset relativo e soma/hash somente a
-  sequência física, sem remontar pesos.
- - As opções de corte para um modelo inteiro vêm de
-  `GgufLayout::valid_prefix_end_layers`: em layout denso, qualquer fim de
-  camada inteira é válido; em layout híbrido, só os fins derivados de
-  `arch_boundaries` são válidos. `prefix_cut_granularity` só informa um passo
-  quando todos os cortes têm a mesma distância; o consumidor usa a lista de
-  cortes quando as fronteiras são irregulares.
-- `splitter.rs` - mapeia a fonte para ler o cabeçalho e os pesos sem manter fd
-  de GGUF aberto. A tabela lógica não é uma ordem de armazenamento: os payloads
-  selecionados são ordenados por `(part_index, src_offset)` antes da cópia para
-  evitar page faults regressivos em fonte maior que a RAM. Antes da saída, o
-  fatiador confere a lista de tensores obrigatórios que o loader cria para a
-  arquitetura. Para `deepseek4`, a faixa final carrega a cabeça completa e cada
-  faixa intermediária copia os pesos obrigatórios reais, sem fabricar
-  `output.weight` nem tensores HC. Metadata de contagem relativa ao início é
-  reescrita para a numeração local da faixa; metadata relativa ao fim conserva
-  o valor somente na faixa final. A estimativa de tamanho inclui a repetição
-  e o plano expõe o custo adicional. A estimativa TP soma a
-  replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
-  Na fusão, arrays escalares sob o namespace da arquitetura são reconstruídos
-  pela cobertura de cada fatia, em vez de copiar a primeira; qualquer cauda de
-  camadas especiais é preservada uma vez. No `qwen4exp`, `ple.layers` é
-  filtrado e rebaseado para a numeração local, enquanto
-  `ple.layer_multipliers`, `ple.head_offsets` e `ple.head_vocab_sizes` são
-  preservados inteiros. `per_layer_token_embd.weight` só entra na fatia que
-  contém uma camada PLE, e os três tensores `output_hc_*` obrigatórios são
-  copiados para cada fatia. A identidade sintética de `output_norm.weight`
-  injetada em toda faixa não final (para satisfazer o loader genérico) é
-  pulada para `qwen4exp` (`gguf::uses_output_norm`): o mixer de
-  hyper-connection final dessa arquitetura carrega esse papel e o loader
-  nunca chama `create_tensor` para `output_norm`, então a fatia física não
-  pode ter um tensor extra não reclamado - era a causa de "wrong number of
-  tensors" na primeira fatia de um Qwen3.8 Flash Next real. O resultado é
-  validado por `gguf::read_layout` antes de o backend o nomear por conteúdo.
-- `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
-  linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
-  overflow, sem consultar FFI ou dispositivo.
-- `storage.rs` - calcula uso recursivo da pasta de fatias, registra e ignora
-  filhos ilegíveis. A rotina de retenção continua disponível para uma ação
-  explícita, mas o fatiamento não a chama: gerar uma faixa não apaga fatias
-  anteriores em silêncio.
-- `provider.rs` - contrato `ModelProvider`, tipos comuns de descoberta,
-  download, progresso, licença, armazenamento e manifesto.
-- `ollama.rs` - cliente opcional do Ollama; geração mantém o timeout longo do
-  backend. `is_available` devolve o último valor em cache imediatamente e
-  agenda uma sonda de 500 ms no máximo a cada 15 s, para o `/health` não abrir
-  uma conexão ao serviço opcional em cada requisição.
-- `huggingface.rs` - implementação `HuggingFaceProvider` por HTTP nativo, com
-  validação de entradas, retomada por faixa, cache próprio e manifesto local.
+- `catalog.rs` - discovers whole models and slices in the configured folders.
+  `discover_fast` lists files and reads only `stat`/system metadata, without
+  opening the GGUF content; `enrich` reads the headers afterwards and marks
+  `Catalog.metadata_complete`. A read failure marks `metadata_error` on the item
+  without blocking the valid models; after a terminal pass, `metadata_complete`
+  becomes `true`. A new attempt only happens on a new refresh or invalidation.
+  The capabilities the catalog publishes come only from the header; it does not
+  walk the tensor table or the weights. The structural evidence of MTP stays in
+  `gguf::read_capability_evidence`, today limited to the proofs that require
+  that confirmation; the full layout computation stays separate.
+  `discover` combines the two phases for synchronous callers that still need the
+  complete answer. The catalog does not compute a content hash: hashes coming
+  from manifests or from a slice's name are identity data only.
+  While `metadata_complete` is false, the absence of a path means the enumeration
+  has not finished yet, not that the file is outside the catalog; the selection
+  handlers must expose that state so the client can try again.
+  Numeric values of the GGUF header are accepted by the semantics of a
+  non-negative integer, regardless of whether the producer wrote them as signed
+  or unsigned; negative values and overflow are refused. This includes
+  `split.tensors.count`, which the reference `gguf-split` writes as INT32.
+  Each enriched result keeps only in memory the `path + size + mtime` identity of
+  the file. The backend uses that mark to reuse metadata when a refresh creates
+  another inventory, and to enrich only new or changed models.
+  For a multipart GGUF source, `enrich` reads the headers and `stat`s the parts
+  through `multipart::catalog_metadata`, without opening the full weight mapping;
+  it sums the bytes and exposes the physical parts in the catalog. An incomplete
+  declaration stays visible with a concrete error and an unknown size. The whole
+  model's identity uses the hash of the complete part sequence only at the
+  slicing or transfer boundary.
+- `plan.rs` - computes ranges by budget or by real layer size and calls the GGUF
+  extractor. The budget endpoint uses `GgufInfo` and `kv_budget.rs` to sum weight
+  and KV in bytes before accepting a range. The plan validates the architecture's
+  output-tensor contract before offering or generating a range; required heads
+  are charged and copied from the source when the loader demands their presence
+  in partial ranges.
+- `gguf.rs` - reads the scalar or per-layer KV geometry
+  (`attention.head_count_kv`, `key_length` and `value_length`) and the MoE
+  evidence (`<arch>.expert_count`/`expert_used_count`) without loading the
+  weights. It also reads `tokenizer.chat_template`, the real control tokens and
+  the `nextn` fields/tensors to produce the thinking and MTP evidence the planner
+  uses. The canonical key `<architecture>.nextn_predict_layers` and the
+  prefix-less form are accepted; the presence of the `nextn` tensors is
+  structural proof when the producer omits the metadata. A missing read stays
+  indeterminate. `read_layout` validates the dtypes against the supported GGML
+  table, discards that information after the validation, uses physical offsets
+  for the tensor cost, and computes the serialized size of each slice including
+  header, globals, alignment and duplications, and the architecture-specific
+  heads. `validate_slice_ranges` shares the decision with the slicer.
+  `deepseek4` requires six non-block tensors and accepts no fallback to
+  `token_embd`; non-final ranges copy from the source the real head tensors the
+  loader requires and keep the identity norm already used by the trunk. If the
+  source has no copyable tensor, the refusal names the missing tensors.
+  `LayerCountSemantics` classifies metadata that llama.cpp compares with the
+  local index: counts from the start are rebased by `start_layer` and capped to
+  the slice's size, while the count from the end of the NextN is zeroed outside
+  the last range. A non-scalar value, or one that does not fit in `u32`, refuses
+  the layout with the key and the cause.
+  `GgufLayout::required_head_bytes` measures the real payload repeated per
+  intermediate slice.
+  `read_layout` uses the unified table of multipart.rs, so the first file of a
+  multipart GGUF, even without tensors, represents the whole set. The cost and
+  the selection also consider tensors present in every physical part, including
+  the third or later ones.
+- multipart.rs - maps a simple GGUF or all the parts declared by split.count,
+  split.no and split.tensors.count. It validates the N-of-M.gguf convention,
+  resolves each tensor to a part and a relative offset, and sums/hashes only the
+  physical sequence, without reassembling weights.
+ - The cut options for a whole model come from
+  `GgufLayout::valid_prefix_end_layers`: in a dense layout, any whole-layer end
+  is valid; in a hybrid layout, only the ends derived from `arch_boundaries` are
+  valid. `prefix_cut_granularity` only reports a step when every cut has the same
+  distance; the consumer uses the cut list when the boundaries are irregular.
+- `splitter.rs` - maps the source to read the header and the weights without
+  keeping a GGUF fd open. The logical table is not a storage order: the selected
+  payloads are sorted by `(part_index, src_offset)` before the copy to avoid
+  regressive page faults on a source larger than RAM. Before the output, the
+  slicer checks the list of required tensors the loader creates for the
+  architecture. For `deepseek4`, the final range carries the complete head and
+  each intermediate range copies the real required weights, without fabricating
+  `output.weight` or HC tensors. Count metadata relative to the start is
+  rewritten to the range's local numbering; metadata relative to the end keeps
+  its value only in the final range. The size estimate includes the repetition
+  and the plan exposes the extra cost. The TP estimate sums the replication of
+  shared tensors per rank and reserves the generated header.
+  In a merge, scalar arrays under the architecture's namespace are rebuilt from
+  each slice's coverage, instead of copying the first one; any tail of special
+  layers is preserved once. In `qwen4exp`, `ple.layers` is filtered and rebased
+  to the local numbering, while `ple.layer_multipliers`, `ple.head_offsets` and
+  `ple.head_vocab_sizes` are preserved whole. `per_layer_token_embd.weight` only
+  enters the slice that contains a PLE layer, and the three required
+  `output_hc_*` tensors are copied into every slice. The synthetic
+  `output_norm.weight` identity injected into every non-final range (to satisfy
+  the generic loader) is skipped for `qwen4exp` (`gguf::uses_output_norm`): that
+  architecture's final hyper-connection mixer carries that role and the loader
+  never calls `create_tensor` for `output_norm`, so the physical slice cannot hold
+  an extra unclaimed tensor - that was the cause of "wrong number of tensors" on
+  the first slice of a real Qwen3.8 Flash Next. The result is validated by
+  `gguf::read_layout` before the backend names it by content.
+- `kv_budget.rs` - a pure byte policy of the KV cache. It replicates the row size
+  of the supported types and refuses a width that does not close a block or any
+  overflow, without consulting FFI or a device.
+- `storage.rs` - computes the recursive usage of the slices folder, records and
+  ignores unreadable children. The retention routine stays available for an
+  explicit action, but slicing does not call it: generating a range does not
+  silently erase earlier slices.
+- `provider.rs` - the `ModelProvider` contract, the common types of discovery,
+  download, progress, license, storage and manifest.
+- `ollama.rs` - the optional Ollama client; generation keeps the backend's long
+  timeout. `is_available` returns the last cached value immediately and schedules
+  a 500 ms probe at most every 15 s, so `/health` does not open a connection to
+  the optional service on every request.
+- `huggingface.rs` - the `HuggingFaceProvider` implementation over native HTTP,
+  with input validation, range resumption, its own cache and a local manifest.
 
-O token do Hugging Face é resolvido em cada requisição nesta ordem: `HF_TOKEN`,
-`HUGGING_FACE_HUB_TOKEN`, o segredo do `pom.db` e, por fim, o arquivo de cache
-(`HF_TOKEN_PATH`, `HF_HOME/token` ou
-`~/.cache/huggingface/token`). A configuração da UI fica em memória no
-`HfTokenStore` e no `pom.db`, então salvar na tela atualiza autenticação sem
-reiniciar o nó.
-Nenhum endpoint devolve o token bruto; erros continuam passando por
-`redact_sensitive`.
+The Hugging Face token is resolved on each request in this order: `HF_TOKEN`,
+`HUGGING_FACE_HUB_TOKEN`, the secret in `pom.db` and, last, the cache file
+(`HF_TOKEN_PATH`, `HF_HOME/token` or
+`~/.cache/huggingface/token`). The UI's configuration lives in memory in the
+`HfTokenStore` and in the `pom.db`, so saving on the screen updates authentication
+without restarting the node.
+No endpoint returns the raw token; errors keep going through `redact_sensitive`.
 
-Mensagens internas de `HfError` continuam passando por `redact_sensitive`, que
-aceita texto emprestado ou possuído sem alterar a redação de tokens, headers de
-autorização e `HF_TOKEN`. O teste de owned text fica em `provider.rs`; a suíte
-também cobre que erros públicos não devolvem detalhes do provider.
+The internal messages of `HfError` keep going through `redact_sensitive`, which
+accepts borrowed or owned text without changing the redaction of tokens,
+authorization headers and `HF_TOKEN`. The owned text test lives in `provider.rs`;
+the suite also covers that public errors do not return provider details.
 
-O provider usa os endpoints JSON do Hub e a URL `resolve` para busca, detalhes,
-arquivos, licença, autenticação e downloads. O download faz streaming para
-`.pom-hf/partials`, retoma com `Range` e `If-Range` somente após validar o
-tamanho e a identidade remota, cancela removendo o parcial e verifica SHA-256
-antes de finalizar. O backend mantém o JSON de status compatível com a tela,
-mas o campo `cli.installed` é verdadeiro quando o provider Rust está disponível.
-Callers internos devem consumir `ModelProvider`/`ProgressSender`, nunca montar
-URLs do Hugging Face diretamente.
+The provider uses the Hub's JSON endpoints and the `resolve` URL for search,
+details, files, license, authentication and downloads. The download streams to
+`.pom-hf/partials`, resumes with `Range` and `If-Range` only after validating the
+size and the remote identity, cancels by removing the partial, and verifies
+SHA-256 before finalizing. The backend keeps the status JSON compatible with the
+screen, but the `cli.installed` field is true when the Rust provider is
+available. Internal callers must consume `ModelProvider`/`ProgressSender`, never
+build Hugging Face URLs directly.
 
-`pom.rs` mantém o manifesto por modelo original: no único formato v1, `pom_id`
-é o sha256 do GGUF fonte, `parts` reúne fatias de camadas alternativas e
-`tp_parts` reúne shards de Tensor Parallelism. Novas fatias do mesmo modelo são
-mescladas na mesma pasta e no mesmo manifesto nomeado como a pasta; o catálogo
-só expõe as partes cujo arquivo existe no disco. `catalog::ShardSet` mantém as
-duas listas separadas e preserva `tp_rank`/`tp_size` para a UI agrupar por
-tamanho e exibir `1ofN`.
-Uma faixa avulsa encontra a pasta pelo `pom_id`, acrescenta sua parte ao
-manifesto existente e só reaproveita uma parte quando o arquivo confere por
-SHA-256 e tamanho.
+`pom.rs` keeps the per-model original manifest: in the only v1 format, `pom_id`
+is the sha256 of the source GGUF, `parts` gathers alternative layer slices and
+`tp_parts` gathers Tensor Parallelism shards. New slices of the same model are
+merged into the same folder and the same manifest named after the folder; the
+catalog only exposes the parts whose file exists on disk. `catalog::ShardSet`
+keeps the two lists separate and preserves `tp_rank`/`tp_size` so the UI groups
+by size and shows `1ofN`.
+A standalone range finds the folder by `pom_id`, adds its part to the existing
+manifest, and only reuses a part when the file matches by SHA-256 and size.
 
-`deployment::DeploymentIdentity` persiste a prova do artefato que entrou em
-serviço: `pom_id` para uma rodada de fatias ou SHA-256 do GGUF inteiro. O
-registro completo da implantação vive em `backend::db::PomDb`; os JSON em
-`deployments/` são fonte legada preservada para a ferramenta descartável. Registros
-antigos sem essa prova só podem ser associados por caminho canônico no mesmo
-peer, nunca por nome.
+`deployment::DeploymentIdentity` persists the proof of the artifact that went
+into service: `pom_id` for a round of slices, or the SHA-256 of the whole GGUF.
+The deployment's full record lives in `backend::db::PomDb`; the JSON in
+`deployments/` is a legacy source kept for the throwaway tool. Old records without
+that proof can only be associated by canonical path on the same peer, never by
+name.
 
-`Deployment` é versionado (`DEPLOYMENT_VERSION = 2`): `versions:
-Vec<DeploymentVersion>` guarda cada configuração que já rodou sob o mesmo
-`deploy_id` e `active_version` aponta a que está no ar; `nodes` é a lista
-achatada da versão ativa, mantida em sincronia. O que distingue uma versão é o
-`RuntimeParams` do deployment inteiro (`params`); ajustes por máquina entram no
-snapshot `nodes` mas não forkam versão. `upsert_version` reusa a versão de
-`params` iguais ou anexa `max+1`; `set_active_version` só troca a ativa;
-`ensure_versions` sintetiza a v1 de um registro v1 legado (sem `versions`), e é
-chamado em toda leitura (`PomDb`, `find_record`, listagem). `matching_shape` é a
-função pura que decide se um `POST /api/ui/deploy` reaproveita um `deploy_id`:
-mesmo `kind`, mesma `DeploymentIdentity` provada e o mesmo conjunto de
-`(node_id, faixa, tp_rank)`. Sem identidade provada, cunha id novo.
+`Deployment` is versioned (`DEPLOYMENT_VERSION = 2`): `versions:
+Vec<DeploymentVersion>` keeps every configuration that already ran under the same
+`deploy_id` and `active_version` points to the one in the air; `nodes` is the
+flattened list of the active version, kept in sync. What distinguishes a version
+is the whole deployment's `RuntimeParams` (`params`); per-machine adjustments
+enter the `nodes` snapshot but do not fork a version. `upsert_version` reuses the
+version with equal `params` or appends `max+1`; `set_active_version` only swaps
+the active one; `ensure_versions` synthesizes the v1 of a legacy v1 record
+(without `versions`), and is called on every read (`PomDb`, `find_record`,
+listing). `matching_shape` is the pure function that decides whether a
+`POST /api/ui/deploy` reuses a `deploy_id`: same `kind`, same proven
+`DeploymentIdentity` and the same set of `(node_id, range, tp_rank)`. Without a
+proven identity it mints a new id.
 
-`DeploymentKind::Mixed` representa um GGUF inteiro e uma cabeça fatiada no mesmo
-deployment. `Deployment::append_version` sempre cria `max+1` para alterações de
-topologia, mesmo com os mesmos `RuntimeParams`, e mantém o conjunto de máquinas
-da nova versão no histórico. A remoção parcial preserva a versão como ativa; a
-última remoção grava uma versão ativa vazia, que é válida para o histórico mas
-não é escolhida por `active()` como deployment vivo.
+`DeploymentKind::Mixed` represents a whole GGUF and a sliced head in the same
+deployment. `Deployment::append_version` always creates `max+1` for topology
+changes, even with the same `RuntimeParams`, and keeps the new version's set of
+machines in the history. A partial removal preserves the version as active; the
+last removal writes an empty active version, which is valid for the history but
+is not chosen by `active()` as a live deployment.
 
-A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
-de armazenamento vale somente para a pasta de fatias; pastas de modelos
-inteiros são somente leitura e nunca entram na retenção automática.
+The last entry of a size-based plan is always the rest of the model. The storage
+limit applies only to the slices folder; whole-model folders are read-only and
+never enter automatic retention.
 
-`lastslice.rs` serializa o `NodeConfig` inteiro com `serde(flatten)`. Portanto,
-as configurações do scheduler local (`batching_enabled`, limites da fila,
-janela e limites do microbatch) também sobrevivem a um reinício e voltam com a
-mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
-`cache_type_v`) e a margem de segurança do fit também são serializados no
-estado efetivo. Os tipos do cache continuam sendo repostos a partir do
-`pom.json` pelo `NodeRuntime` antes de carregar o modelo; a margem vem dos
-parâmetros da implantação. `save_at` é crate-private para o
-watcher de `/health` gravar no caminho de configuração que capturou ao iniciar,
-sem seguir uma mudança posterior de `POM_CONFIG` no processo.
+`lastslice.rs` serializes the whole `NodeConfig` with `serde(flatten)`. So the
+local scheduler settings (`batching_enabled`, the queue limits, the microbatch
+window and limits) also survive a restart and come back with the same slice in
+service. The global KV cache types (`cache_type_k` and `cache_type_v`) and the
+fit safety margin are serialized in the effective state too. The cache types keep
+being refilled from the `pom.json` by the `NodeRuntime` before loading the model;
+the margin comes from the deployment's parameters. `save_at` is crate-private so
+the `/health` watcher writes to the configuration path it captured at startup,
+without following a later change of `POM_CONFIG` in the process.
 
-O fatiador primeiro classifica arrays GGUF pelo namespace: somente arrays sob o
-namespace da arquitetura, exceto os arrays estruturais de rope, podem ser
-metadata por camada. Nesses arrays, comprimento pelo menos igual à contagem
-original de blocos é recortado para a faixa local, preservando a ampliação que
-suporta vetores como `compress_ratios` com cauda extra. O llama.cpp lê os
-primeiros `block_count` elementos desses vetores; por isso valores extras não
-são preservados na fatia. Arrays globais, inclusive `tokenizer.ggml.tokens` e
-arrays de strings, são copiados intactos antes de qualquer comparação de
-comprimento. Comprimento 1 é broadcast e permanece igual; um comprimento
-positivo menor que `block_count` em array da arquitetura é recusa nominal com
-chave e tamanho. Os quatro arrays `qwen4exp.ple.*` são tratados por semântica
-nominal: `layer_multipliers`, `head_offsets` e `head_vocab_sizes` representam
-estrutura compartilhada da tabela e são copiados inteiros em cada fatia;
-`ple.layers` é a lista de camadas PLE, filtrada para a faixa e rebaseada para
-o índice local. O tensor `per_layer_token_embd.weight` acompanha somente as
-fatias que contêm uma dessas camadas.
+The slicer first classifies GGUF arrays by namespace: only arrays under the
+architecture's namespace, except the structural rope arrays, may be per-layer
+metadata. In those arrays, a length at least equal to the original block count is
+cut to the local range, preserving the enlargement that supports vectors like
+`compress_ratios` with an extra tail. llama.cpp reads the first `block_count`
+elements of those vectors; that is why extra values are not preserved in the
+slice. Global arrays, including `tokenizer.ggml.tokens` and string arrays, are
+copied intact before any length comparison. Length 1 is broadcast and stays as
+is; a positive length smaller than `block_count` in an architecture array is a
+named refusal with key and size. The four `qwen4exp.ple.*` arrays are handled by
+named semantics: `layer_multipliers`, `head_offsets` and `head_vocab_sizes`
+represent shared table structure and are copied whole into every slice;
+`ple.layers` is the list of PLE layers, filtered to the range and rebased to the
+local index. The tensor `per_layer_token_embd.weight` accompanies only the slices
+that contain one of those layers.
 
-### Projetor multimodal
+### Multimodal projector
 
-`catalog.rs::resolve_mmproj_sibling` lê somente os headers GGUF dos candidatos e
-expõe todos os projetores compatíveis por identidade comum ou dimensão de
-projeção. Quantização nunca escolhe `mmproj`. A identidade vem de
-`general.name`, `general.basename` e `general.base_model.*`; quando há fatias,
-`ShardSet.mmproj_candidates` herda os candidatos do modelo inteiro pelo rótulo
-do manifesto, sem comparar o payload do modelo nem calcular SHA-256. O primeiro
-candidato ordenado é apenas a pré-seleção da interface. `mmproj_reason` informa
-como resolver ausência. A interface não deve varrer o disco: ela exibe os
-candidatos e envia a escolha explícita na implantação. O projetor não é um
-modelo selecionável no catálogo geral.
+`catalog.rs::resolve_mmproj_sibling` reads only the GGUF headers of the
+candidates and exposes every compatible projector by shared identity or projection
+dimension. Quantization never chooses `mmproj`. The identity comes from
+`general.name`, `general.basename` and `general.base_model.*`; when there are
+slices, `ShardSet.mmproj_candidates` inherits the whole model's candidates through
+the manifest label, without comparing the model's payload or computing SHA-256.
+The first ordered candidate is only the interface's pre-selection.
+`mmproj_reason` explains how to resolve an absence. The interface must not scan
+the disk: it shows the candidates and sends the explicit choice in the
+deployment. The projector is not a selectable model in the general catalog.
 
-### Rascunho MTP separado
+### Separate MTP draft
 
-`catalog.rs::find_mtp_draft_sibling` procura um irmão `.gguf` no mesmo diretório
-com prefixo `mtp-` e escolhe pela quantização mais próxima. Não existe
-convenção estabelecida para esse arquivo fora da própria Unsloth, e substring
-arriscaria falso positivo num modelo cujo nome contenha "mtp". Ao contrário do mmproj, esse
-caminho **não** vive no catálogo central (`DiscoveredModel`/`ShardSet`/`Plan`):
-a descoberta acontece direto na máquina que carrega o modelo
-(`webui::run_apply`, `webui::reconfigure_local`), porque só ela precisa do
-arquivo - nem o orquestrador do deploy nem as demais máquinas do pipeline. Sem
-opt-in na UI: o interruptor existente `mtp_enabled` já é a intenção do
-operador, e achar (ou não) o arquivo só decide como o MTP roda quando o modelo
-alvo não traz `nextn` embutido. Ver `crates/llama-engine/src/mtp.rs` para a
-mecânica completa (`LoadedModel::load_mtp_draft`, `EngineConfig.mtp_draft_path`)
-e o pré-requisito do lado do fork: o alvo precisa exportar `h_nextn` do
-próprio grafo (`qwen4exp.cpp` ganhou isso em `pieceofmindcloud/llama.cpp`,
-`pom-tensor-parallel`, sem regredir o corte antecipado de linhas da última
-camada quando MTP não foi pedido).
-
-## Manutenção deste arquivo
-
-Este arquivo é um mapa curto da pasta. Ao adicionar metadados de modelo ou
-mudar a fronteira entre catálogo, GGUF e planejamento, atualize aqui e o
-subsistema correspondente no mesmo commit. Detalhes de implementação ficam no
-código ou em `docs/subsystems/`.
+`catalog.rs::find_mtp_draft_sibling` looks for a sibling `.gguf` in the same
+directory with the `mtp-` prefix and chooses by the closest quantization. There is
+no established convention for that file outside Unsloth itself, and a substring
+would risk a false positive on a model whose name contains "mtp". Unlike mmproj,
+this path does **not** live in the central catalog
+(`DiscoveredModel`/`ShardSet`/`Plan`): the discovery happens directly on the
+machine that loads the model (`webui::run_apply`, `webui::reconfigure_local`),
+because only it needs the file - neither the deploy orchestrator nor the other
+machines of the pipeline. No opt-in in the UI: the existing `mtp_enabled` switch
+is already the operator's intent, and finding (or not) the file only decides how
+MTP runs when the target model does not carry `nextn` built in. See
+`crates/llama-engine/src/mtp.rs` for the full mechanics
+(`LoadedModel::load_mtp_draft`, `EngineConfig.mtp_draft_path`) and the
+prerequisite on the fork's side: the target must export `h_nextn` from its own
+graph (`qwen4exp.cpp` gained that in `pieceofmindcloud/llama.cpp`,
+`pom-tensor-parallel`, without regressing the early cut of the last layer's rows
+when MTP was not requested).
 
 ## Maintaining this file
+
+This file is a short map of the folder. When adding model metadata or changing
+the boundary between catalog, GGUF and planning, update here and the corresponding
+subsystem in the same commit. Implementation details live in the code or in
+`docs/subsystems/`.
 
 Keep this file for knowledge useful to almost every future agent session in this project.
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.

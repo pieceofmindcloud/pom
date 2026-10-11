@@ -143,10 +143,10 @@ export function resolveLocale(
 
 /** Every key in the CSV, kept sorted for stable callers and diffs. */
 /*
- * Textos que pertencem a plugins. Cada plugin leva seu próprio catálogo
- * (`lib/pluginI18n.ts` carrega e valida); aqui eles só entram no mesmo mapa que
- * `formatMessage` já consulta, na chave `<plugin_code>.*`, e saem quando o
- * plugin sai. Chave que já existe no catálogo do POM nunca é sobrescrita.
+ * Texts that belong to plugins. Each plugin carries its own catalog
+ * (`lib/pluginI18n.ts` loads and validates it); here they only enter the same map that
+ * `formatMessage` already consults, under the key `<plugin_code>.*`, and leave when the
+ * plugin leaves. A key that already exists in the POM catalog is never overwritten.
  */
 const pluginKeys = new Map<string, Set<string>>();
 const pluginListeners = new Set<() => void>();
@@ -164,7 +164,7 @@ export function subscribePluginMessages(listener: () => void): () => void {
 
 export const pluginMessagesVersion = () => pluginVersion;
 
-/** Substitui todos os textos deste plugin nos idiomas dados. */
+/** Replaces all the texts of this plugin in the given languages. */
 export function setPluginMessages(code: string, catalogs: Partial<Record<Locale, Record<string, string>>>): void {
   clearPluginMessages(code, false);
   const owned = new Set<string>();

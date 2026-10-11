@@ -1,5 +1,5 @@
 /**
- * Generates the dependency catalog shown by Configurações > Sobre.
+ * Generates the dependency catalog shown by Settings > About.
  *
  * The catalog intentionally contains direct non-development dependencies of
  * the frontend and workspace crates, plus direct build dependencies that are

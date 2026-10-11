@@ -1,232 +1,228 @@
-# TODO - defeitos anotados nos AGENTS.md
+# TODO - defects noted in the AGENTS.md files
 
-Lista de trabalho consolidada em 2026-09-07 a partir da auditoria das anotações
-dos `AGENTS.md`, na revisão `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
-A evidência completa de cada item está no relatório da auditoria que acompanha
-esta tarefa. A lista atual mantém a numeração da auditoria: 17 defeitos ainda
-existentes e 1 item não verificável nesta máquina. Itens acrescentados depois
-da auditoria seguem a numeração a partir do 27.
+Work list consolidated on 2026-09-07 from an audit of the `AGENTS.md` annotations,
+at revision `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
+The full evidence for each item is in the audit report that comes with this task.
+The current list keeps the audit's numbering: 17 defects still present and 1 item
+not verifiable on this machine. Items added after the audit continue the numbering
+from 27.
 
-## Regra de manutenção
+## Maintenance rule
 
-Ao corrigir um item numerado atual, remova a anotação do `AGENTS.md`
-correspondente e o item daqui no mesmo commit. Um defeito corrigido que
-continua anotado é pior que um defeito não anotado. As notas em
-`## Histórico preservado`, `## Recusados` e `## Dívida de documentação` são
-contexto e não devem voltar a ser propostas como defeitos novos.
+When you fix a current numbered item, remove the annotation from the matching
+`AGENTS.md` and the item from this file in the same commit. A fixed defect that
+stays annotated is worse than an unannotated one. The notes under
+`## Preserved history`, `## Refused` and `## Open documentation debt` are
+context and must not be proposed again as new defects.
 
-## Travessia de NAT (IPv4 sem endereço público)
+## NAT traversal (IPv4 with no public address)
 
-Entregue em 2026-09-22, em seis partes. O diagnóstico e o desenho final estão
-em `docs/subsystems/p2p-network.md`, seção "NAT traversal"; esta lista fica
-como registro do que foi feito e não tem item aberto.
+Delivered on 2026-09-22, in six parts. The diagnosis and the final design are
+in `docs/subsystems/p2p-network.md`, section "NAT traversal"; this list stays
+as a record of what was done and has no open item.
 
-- [x] **N1 - Swarm capaz de travessia.** QUIC no `SwarmBuilder` e nos listen
-  addresses; `DEFAULT_RELAY_NODES` esvaziado, porque bootstrapper do IPFS não
-  concede reserva de Circuit Relay v2; `reserve_circuit` pede reserva a
-  qualquer par que anuncie `relay::HOP_PROTOCOL_NAME`; `NatStatus::Public`
-  chama `Swarm::add_external_address`.
-- [x] **N2 - Publicar e discar multiaddresses reais.** `Announce`/`PeerInfo`
-  levam `libp2p_addrs`, alimentado por `publish_swarm_addrs`;
-  `libp2p_dialable_addrs` devolve todos; `tunnel_peer_multiaddrs` aceita
-  multiaddress completo e `host:port` legado.
-- [x] **N3 - Plano de controle pelo swarm.** `TunnelRequest.target` escolhe
-  entre inferência e gateway; `gateway_path_is_allowed` é a lista fechada
-  conferida no receptor, porque o que sai do túnel chega ao gateway por
-  `127.0.0.1`. A sonda `/handshake` da admissão e as catracas de política caem
-  no túnel depois de todos os endereços diretos falharem.
-- [x] **N4 - Preferência aprendida pelo túnel.** `PeerClients::prefer_tunnel`
-  liga com uma entrega do túnel depois de a escada direta falhar inteira e
-  desliga no primeiro sucesso direto; ligada, o frame pula QUIC e HTTP na
-  primeira tentativa.
-- [x] **N5 - pkarr publica o endereço confirmado.** `public_libp2p_addr`
-  vence o multiaddress derivado no arranque. Circuito fica fora: o registro é
-  republicado a cada 30 min e a reserva não dura previsivelmente tanto.
-- [x] **N0 - Observabilidade.** `TraversalStatus` em `/api/ui/cluster` e no
-  painel "Travessia de NAT" da tela de Rede.
+- [x] **N1 - A swarm that can do traversal.** QUIC in the `SwarmBuilder` and in the listen
+  addresses; `DEFAULT_RELAY_NODES` emptied, because the IPFS bootstrapper does not
+  grant a Circuit Relay v2 reservation; `reserve_circuit` asks any peer that advertises
+  `relay::HOP_PROTOCOL_NAME` for a reservation; `NatStatus::Public` calls `Swarm::add_external_address`.
+- [x] **N2 - Publish and dial real multiaddresses.** `Announce`/`PeerInfo`
+  carry `libp2p_addrs`, fed by `publish_swarm_addrs`;
+  `libp2p_dialable_addrs` returns all of them; `tunnel_peer_multiaddrs` accepts
+  a full multiaddress and the legacy `host:port`.
+- [x] **N3 - A control path through the swarm.** `TunnelRequest.target` chooses
+  between inference and gateway; `gateway_path_is_allowed` is the closed list
+  checked on the receiving side, because what leaves the tunnel reaches the gateway over
+  `127.0.0.1`. The admission `/handshake` probe and the policy gates fall into
+  the tunnel once every direct address has failed.
+- [x] **N4 - A preference the tunnel learns.** `PeerClients::prefer_tunnel`
+  turns on when the tunnel delivers after the whole direct ladder has failed, and
+  turns off at the first direct success; when it is on, the frame skips QUIC and HTTP
+  on the first attempt.
+- [x] **N5 - pkarr publishes the confirmed address.** `public_libp2p_addr`
+  wins over the multiaddress derived at startup. Circuit addresses stay out: the
+  record is republished every 30 min and a reservation does not reliably last that long.
+- [x] **N0 - Observability.** `TraversalStatus` in `/api/ui/cluster` and in
+  the "NAT traversal" panel on the Network screen.
 
-## Alta
+## High
 
-- [ ] **12 - Qualquer papel pode desimplantar a pipeline**
-  **Fonte:** `crates/node/src/backend/deploy.rs:6714-6716`.
-  **Prática:** `undeploy_authority` retorna sucesso para qualquer papel
-  autenticado, permitindo derrubar todas as fatias da implantação; a rota
-  continua protegida por `ConnectionAuth`.
-  **Afetados:** disponibilidade e controle operacional em clusters com papéis
-  separados.
-  **Esforço:** baixo para o gate, médio para revisar autorização, testes e UI.
-  **Decisão do operador:** decidir se o desimplante deve continuar aberto a
-  qualquer papel autenticado; não corrigir sem essa decisão.
+- [ ] **12 - Any role can undeploy the pipeline**
+  **Source:** `crates/node/src/backend/deploy.rs:6714-6716`.
+  **In practice:** `undeploy_authority` returns success for any authenticated role,
+  which lets it take down every slice of the deployment; the route is still
+  protected by `ConnectionAuth`.
+  **Who it affects:** availability and operational control in clusters with separated
+  roles.
+  **Effort:** low for the gate, medium to review authorization, tests and the UI.
+  **Operator decision:** decide whether undeploy stays open to any authenticated
+  role; do not fix it without that decision.
 
-- [ ] **13 - Rollback não é repassado ao TP**
-  **Fonte:** `crates/node/src/inference/infer_server.rs:3092-3108,3951-3984`;
-  fan-out em `crates/node/src/backend/gateway.rs:2733-2797`.
-  **Prática:** `/v1/session/rollback` trata o rank local, mas não replica o
-  descarte do sufixo rejeitado aos workers; com especulação TP ligada, os KV
-  podem ficar divergentes.
-  **Afetados:** implantações tensor-parallel que ativem speculative decoding.
-  **Esforço:** médio, incluindo headers, fan-out do rank 0 e testes com dois
+- [ ] **13 - Rollback is not passed on to TP**
+  **Source:** `crates/node/src/inference/infer_server.rs:3092-3108,3951-3984`;
+  fan-out in `crates/node/src/backend/gateway.rs:2733-2797`.
+  **In practice:** `/v1/session/rollback` handles the local rank but does not replicate
+  the discard of the rejected suffix to the workers; with TP speculation on, the KV
+  caches can drift apart.
+  **Who it affects:** tensor-parallel deployments that enable speculative decoding.
+  **Effort:** medium, including headers, the rank 0 fan-out and tests with two
   ranks.
 
-- [ ] **20 - Testes UDP transmitem na LAN real**
-  **Fonte:** `crates/node/src/network/network.rs:1075-1082,1368-1393`.
-  **Prática:** `broadcast_local` envia para `255.255.255.255:42777`, e testes
-  que anunciam um nó não destacado podem alterar um cluster vivo na mesma LAN.
-  **Afetados:** desenvolvedores e CI que executam a suíte junto de um cluster.
-  **Esforço:** baixo/médio, com sockets isolados, porta injetável e testkit sem
-  broadcast global.
+- [ ] **20 - UDP tests transmit on the real LAN**
+  **Source:** `crates/node/src/network/network.rs:1075-1082,1368-1393`.
+  **In practice:** `broadcast_local` sends to `255.255.255.255:42777`, and tests
+  that announce a node which is not isolated can disturb a live cluster on the same LAN.
+  **Who it affects:** developers and CI that run the suite alongside a cluster.
+  **Effort:** low/medium, with isolated sockets, an injectable port and a testkit without
+  global broadcast.
 
-## Média
+## Medium
 
-- [ ] **5 - Planner open-core não está ligado ao node**
-  **Fonte:** `crates/routing-base/src/lib.rs:12-62`;
+- [ ] **5 - The open-core planner is not wired into the node**
+  **Source:** `crates/routing-base/src/lib.rs:12-62`;
   `crates/node/src/routing/pipeline.rs:262-283,379-410`.
-  **Prática:** `routing-base::plan` é completo e testado, mas o node usa outro
-  planner guloso com pontuação de carga; os dois podem evoluir sem teste de
-  equivalência.
-  **Afetados:** consumidores do provider aberto e mantenedores dos dois
+  **In practice:** `routing-base::plan` is complete and tested, but the node uses a
+  different greedy planner with load scoring; the two can drift apart with no equivalence
+  test.
+  **Who it affects:** consumers of the open provider and maintainers of both
   planners.
-  **Esforço:** médio para equivalência; alto para trocar o caminho de produção
-  com compatibilidade e telemetria.
+  **Effort:** medium for equivalence; high to swap the production path over
+  with compatibility and telemetry.
 
-- [ ] **10 - Build depende de extração completa do fork**
-  **Fonte:** `crates/llama-engine/build/mtp_arch.rs:25-47,104-114,178-186`.
-  **Prática:** o build falha quando o fork não existe ou a extração de
-  arquiteturas MTP é vazia, ambígua ou fica abaixo do piso de segurança.
-  **Afetados:** onboarding, CI e releases sem o checkout correto.
-  **Esforço:** médio para tornar a preparação reproduzível; alto para eliminar
-  a dependência local.
+- [ ] **10 - The build depends on a full extraction of the fork**
+  **Source:** `crates/llama-engine/build/mtp_arch.rs:25-47,104-114,178-186`.
+  **In practice:** the build fails when the fork is missing or the extraction of
+  MTP architectures comes out empty, ambiguous, or below the safety floor.
+  **Who it affects:** onboarding, CI and releases without the right checkout.
+  **Effort:** medium to make the preparation reproducible; high to remove
+  the local dependency.
 
-- [ ] **15 - Limite de restart não persiste entre processos**
-  **Fonte:** `crates/node/src/inference/runtime.rs:20-25,1116-1120,1207-1227`.
-  **Prática:** `MAX_RESTARTS=10` vive no supervisor do processo; se OOM ou outra
-  falha mata o processo inteiro, o contador desaparece.
-  **Afetados:** operadores de máquinas no limite de memória e ambientes com
-  política automática de restart.
-  **Esforço:** médio, persistindo falha sem recriar o laço infinito que a
-  anotação `Pending`/`NeverLoaded` já evita.
+- [ ] **15 - The restart limit does not survive across processes**
+  **Source:** `crates/node/src/inference/runtime.rs:20-25,1116-1120,1207-1227`.
+  **In practice:** `MAX_RESTARTS=10` lives in the process supervisor; if OOM or another
+  failure kills the whole process, the counter is gone.
+  **Who it affects:** operators of machines at the memory limit and environments with
+  an automatic restart policy.
+  **Effort:** medium, persisting the failure without recreating the infinite loop that
+  the `Pending`/`NeverLoaded` annotation already avoids.
 
-- [ ] **16 - Modos de falha do relay não têm E2E**
-  **Fonte:** `crates/node/src/inference/direct.rs`;
+- [ ] **16 - The relay's failure modes have no E2E test**
+  **Source:** `crates/node/src/inference/direct.rs`;
   `crates/node/src/inference/AGENTS.md:1011-1013`.
-  **Prática:** hop intermediário morto, cauda morta, resposta direta perdida e
-  timeout têm código e testes unitários, mas não um cenário de quatro peers
-  que reproduza a topologia completa.
-  **Afetados:** confiabilidade do pipeline distribuído.
-  **Esforço:** alto, com harness multi-peer determinístico, falhas injetáveis e
-  isolamento da rede real.
+  **In practice:** a dead middle hop, a dead tail, a lost direct response and a timeout all
+  have code and unit tests, but no four-peer scenario that reproduces the full topology.
+  **Who it affects:** the reliability of the distributed pipeline.
+  **Effort:** high, with a deterministic multi-peer harness, injectable failures and
+  isolation from the real network.
 
-- [ ] **22 - Wizard de primeiro acesso ainda é protótipo**
-  **Fonte:** `apps/frontend/src/components/setup-wizard/WizardScreens.tsx:24-45`;
+- [ ] **22 - The first-access wizard is still a prototype**
+  **Source:** `apps/frontend/src/components/setup-wizard/WizardScreens.tsx:24-45`;
   `apps/frontend/src/routes/setupWizardMocks.ts:11-80`.
-  **Prática:** `/setup` navega por hardware, nós, modelos e redes simulados;
-  não configura o nó, cria permissões, descobre peers nem baixa modelos.
-  **Afetados:** usuários que esperam um fluxo real de primeira configuração.
-  **Esforço:** alto, envolvendo backend, permissões, descoberta, downloads e
-  estados de erro.
+  **In practice:** `/setup` walks through simulated hardware, nodes, models and networks;
+  it does not configure the node, create permissions, discover peers or download models.
+  **Who it affects:** users who expect a real first-configuration flow.
+  **Effort:** high, involving the backend, permissions, discovery, downloads and
+  error states.
 
-- [ ] **24 - Contrato ainda usa fim inclusivo**
-  **Fonte:** `crates/routing-contract/src/lib.rs:16-24,65-73,81-91,131-167`.
-  **Prática:** o wire v1 valida e percorre `end_layer` inclusivo; a versão futura
-  com fim exclusivo só aparece como intenção, sem conversão ou implementação.
-  **Afetados:** evolução do protocolo e interoperabilidade futura.
-  **Esforço:** médio quando necessário, incluindo versão, validação,
-  serialização e testes de compatibilidade.
+- [ ] **24 - The contract still uses an inclusive end**
+  **Source:** `crates/routing-contract/src/lib.rs:16-24,65-73,81-91,131-167`.
+  **In practice:** the v1 wire validates and walks `end_layer` as inclusive; the future
+  version with an exclusive end only appears as an intention, with no conversion or implementation.
+  **Who it affects:** protocol evolution and future interoperability.
+  **Effort:** medium when it is needed, including versioning, validation,
+  serialization and compatibility tests.
 
-- [ ] **26 - Build manual pode perder o commit do binário**
-  **Fonte:** `scripts/build-docker.sh`; `Dockerfile` (runtime `ARG POM_BUILD_COMMIT`).
-  **Prática:** um `docker compose build` manual sem `POM_BUILD_COMMIT` pode
-  produzir o carimbo `desconhecido`.
-  **Afetados:** builds manuais e pipelines que não exportam a variável;
-  diagnóstico do binário fica degradado.
-  **Esforço:** baixo, com validação no Dockerfile ou exigência explícita da
-  variável, preservando builds locais sem Docker.
+- [ ] **26 - A manual build can lose the binary's commit**
+  **Source:** `scripts/build-docker.sh`; `Dockerfile` (runtime `ARG POM_BUILD_COMMIT`).
+  **In practice:** a manual `docker compose build` without `POM_BUILD_COMMIT` can
+  produce the `desconhecido` stamp.
+  **Who it affects:** manual builds and pipelines that do not export the variable;
+  the binary's diagnostics get degraded.
+  **Effort:** low, with validation in the Dockerfile or an explicit requirement for the
+  variable, keeping local builds without Docker working.
 
-## Baixa
+## Low
 
-- [ ] **6 - Grafo do workspace diverge da documentação**
-  **Fonte:** `Cargo.toml` do workspace; `crates/node/Cargo.toml:49`;
+- [ ] **6 - The workspace graph diverges from the documentation**
+  **Source:** `Cargo.toml` of the workspace; `crates/node/Cargo.toml:49`;
   `crates/AGENTS.md`.
-  **Prática:** `node` depende de `routing-contract`, `llama-engine` e `brand`,
-  não de `config`, `types` ou `routing-base`; planos de extração e análise de
-  recompilação baseados no grafo antigo ficam errados.
-  **Afetados:** mantenedores e futuros consumidores da arquitetura open-core.
-  **Esforço:** baixo para corrigir documentação; médio/alto para concluir a
-  extração real.
+  **In practice:** `node` depends on `routing-contract`, `llama-engine` and `brand`,
+  not on `config`, `types` or `routing-base`; extraction plans and rebuild analyses
+  based on the old graph come out wrong.
+  **Who it affects:** maintainers and future consumers of the open-core architecture.
+  **Effort:** low to fix the documentation; medium/high to finish the
+  real extraction.
 
-- [ ] **14 - Pool de contextos não está integrado**
-  **Fonte:** `crates/llama-engine/src/llm.rs:3200-3214`.
-  **Prática:** `LlmEngine::pool` existe e tem testes de orçamento, mas o
-  servidor atual carrega um contexto por `load` e não usa a API.
-  **Afetados:** quem espera decodes concorrentes no mesmo modelo.
-  **Esforço:** médio/alto, com política de slots, memória, isolamento e
-  telemetria.
+- [ ] **14 - The context pool is not integrated**
+  **Source:** `crates/llama-engine/src/llm.rs:3200-3214`.
+  **In practice:** `LlmEngine::pool` exists and has budget tests, but the
+  current server loads one context per `load` and does not use the API.
+  **Who it affects:** anyone expecting concurrent decodes on the same model.
+  **Effort:** medium/high, with a slot policy, memory, isolation and
+  telemetry.
 
-- [ ] **18 - Diagnóstico MoE é ignorado por padrão**
-  **Fonte:** `crates/llama-engine/src/llm.rs:958-960`.
-  **Prática:** o teste só executa quando `POM_MOE_ROUTE_DIAGNOSTICS=1`; uma
-  regressão pode passar despercebida na suíte normal.
-  **Afetados:** diagnóstico e manutenção do caminho MoE.
-  **Esforço:** baixo/médio, separando a asserção determinística da parte de
-  logging e documentando o custo.
+- [ ] **18 - MoE diagnostics are ignored by default**
+  **Source:** `crates/llama-engine/src/llm.rs:958-960`.
+  **In practice:** the test only runs when `POM_MOE_ROUTE_DIAGNOSTICS=1`; a
+  regression can slip through the normal suite.
+  **Who it affects:** diagnosis and maintenance of the MoE path.
+  **Effort:** low/medium, separating the deterministic assertion from the logging
+  part and documenting the cost.
 
-- [ ] **23 - Fixtures parciais podem quebrar testes**
-  **Fonte:** `apps/frontend/src/test/fixtures.ts:1-8`;
+- [ ] **23 - Partial fixtures can break tests**
+  **Source:** `apps/frontend/src/test/fixtures.ts:1-8`;
   `apps/frontend/src/components/PeerDetailCard.tsx:339,686-695`.
-  **Prática:** uma leitura usa `n?.status`, mas outra pressupõe o objeto
-  completo; uma fixture parcial pode passar num componente e quebrar o
-  seguinte. A fixture oficial já fornece a forma integral.
-  **Afetados:** manutenção de novos testes e diagnósticos falsos durante o
-  desenvolvimento.
-  **Esforço:** baixo, com construtores tipados obrigatórios ou validação de
-  fixture.
+  **In practice:** one read uses `n?.status` while another assumes the full
+  object; a partial fixture can pass in one component and break the
+  next. The official fixture already provides the complete shape.
+  **Who it affects:** the maintenance of new tests and false diagnostics during the
+  development.
+  **Effort:** low, with mandatory typed constructors or fixture validation.
 
-- [ ] **25 - Crate público de tipos ainda é placeholder**
-  **Fonte:** `crates/types/src/lib.rs:1-12`.
-  **Prática:** `types` só expõe `WorkspaceMarker`; `PeerInfo` e `NodeConfig`
-  continuam dentro de `node`.
-  **Afetados:** fronteira open-core e consumidores que esperam tipos públicos.
-  **Esforço:** médio, extraindo tipos sem criar ciclos e atualizando
-  consumidores.
+- [ ] **25 - The public types crate is still a placeholder**
+  **Source:** `crates/types/src/lib.rs:1-12`.
+  **In practice:** `types` only exposes `WorkspaceMarker`; `PeerInfo` and `NodeConfig`
+  stay inside `node`.
+  **Who it affects:** the open-core boundary and consumers that expect public types.
+  **Effort:** medium, extracting types without creating cycles and updating
+  consumers.
 
-## Não verificável nesta máquina
+## Not verifiable on this machine
 
-- [ ] **17 - Prova diferencial CUDA de MoE sem ambiente de execução**
-  **Fonte:** `crates/node/src/inference/AGENTS.md:359-375`;
+- [ ] **17 - The CUDA differential proof for MoE has no execution environment**
+  **Source:** `crates/node/src/inference/AGENTS.md:359-375`;
   `crates/llama-engine/src/llm.rs:6268-6273`.
-  **Prática:** a prova exige um GGUF real, `--features cuda`, uma GPU CUDA e o
-  executor externo; esses recursos não estavam disponíveis na auditoria.
-  **Afetados:** validação numérica do caminho MoE CUDA.
-  **Esforço:** alto, em uma máquina com GPU compatível e o GGUF real.
+  **In practice:** the proof needs a real GGUF, `--features cuda`, a CUDA GPU and the
+  external executor; none of those were available during the audit.
+  **Who it affects:** the numerical validation of the CUDA MoE path.
+  **Effort:** high, on a machine with a compatible GPU and the real GGUF.
 
-## Histórico preservado
+## Preserved history
 
-O TODO anterior veio do levantamento de 2026-08-15, teve última limpeza em
-2026-08-17 e registrava 29 itens triados pelo operador, dos quais 23 haviam
-saído, 4 estavam adiados e 2 recusados. Essa contagem é histórica e não é
-substituída pela classificação da auditoria de 2026-09-07.
+The previous TODO came from the 2026-08-15 survey, was last cleaned on
+2026-08-17 and recorded 29 items triaged by the operator, of which 23 had
+been closed, 4 were deferred and 2 refused. That count is historical and is not
+replaced by the classification from the 2026-09-07 audit.
 
-O item antigo de bitswap fica registrado como resolvido: o arquivo e o
-behaviour saíram do swarm, e a transferência por conteúdo passou a usar o
-`.pom` e `GET /api/transfer/*?sha=` sobre HTTP Range. Na auditoria nova, ele é
-o item 21, anotação obsoleta.
+The old bitswap item stays recorded as resolved: the file and the behaviour left
+the swarm, and content transfer now uses the `.pom` and `GET /api/transfer/*?sha=`
+over HTTP Range. In the new audit it is item 21, an obsolete annotation.
 
-As notas antigas sobre alternância do endereço observado e sobre o timeout de
-75 s do `connect` também ficam preservadas como histórico fora da auditoria
-nova. A revisão atual já descreve a preferência pelo endereço local e o
-cliente de peer limita a abertura TCP a 2 s; elas não são contadas como itens
-atuais desta lista.
+The old notes about switching between observed addresses and about the 75 s
+`connect` timeout are also preserved as history outside the new audit. The
+current revision already describes the preference for the local address and the
+peer client caps the TCP open at 2 s; they are not counted as current items of
+this list.
 
-## Dívida de documentação em aberto
+## Open documentation debt
 
-- O grafo do workspace diverge da arquitetura declarada. A pendência está
-  consolidada no item 6; a decisão maior sobre a extração dos crates continua
-  registrada aqui para não se perder.
-- O contrato usa `end_layer` inclusivo. A evolução futura para fim exclusivo
-  está consolidada no item 24 e exige nova versão do wire.
+- The workspace graph diverges from the declared architecture. The pending work is
+  consolidated in item 6; the larger decision about extracting the crates stays
+  recorded here so it is not lost.
+- The contract uses an inclusive `end_layer`. The future move to an exclusive end
+  is consolidated in item 24 and requires a new wire version.
 
-## Itens da triagem anterior incorporados
+## Items from the earlier triage, incorporated
 
-Os adiados `routing-base::plan`, `undeploy_authority` e `crates/types` são agora
-os itens 5, 12 e 25, respectivamente, com a evidência atualizada. Nenhum
-desses contextos foi descartado.
+The deferred `routing-base::plan`, `undeploy_authority` and `crates/types` are now
+items 5, 12 and 25 respectively, with the evidence updated. None
+of that context was discarded.

@@ -8,7 +8,7 @@ export interface NetworkStats {
   models: string[];
 }
 
-/** Calcula somente os fatos publicados no retrato atual do cluster. */
+/** Computes only the facts published in the current cluster snapshot. */
 export function networkStats(cluster: ClusterView | null | undefined): NetworkStats {
   const peers = cluster?.peers ?? [];
   const latencies = peers

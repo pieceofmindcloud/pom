@@ -20,7 +20,7 @@
 //! Each frame, in both directions:
 //!
 //! ```text
-//! [4B BE tamanho do resto][2B BE status][2B BE tamanho do id][id][corpo]
+//! [4B BE size of the rest][2B BE status][2B BE size of the id][id][body]
 //! ```
 //!
 //! * `status` is `0` on the way out and the HTTP code on the way back. A refusal
@@ -150,7 +150,7 @@ pub struct LinkResponse {
 
 // ── Envelope ─────────────────────────────────────────────────────────────────
 
-/// Monta `[tamanho][status][id][corpo]`.
+/// Builds `[size][status][id][body]`.
 pub fn encode_envelope(status: u16, id: &str, body: &[u8]) -> Result<Vec<u8>> {
     if id.len() > u16::MAX as usize {
         return Err(anyhow!("frame identifier too long"));

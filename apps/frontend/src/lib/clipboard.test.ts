@@ -34,7 +34,7 @@ describe("copyText", () => {
 
     await expect(copyText("chave-123")).resolves.toBe(true);
     expect(execCommand).toHaveBeenCalledWith("copy");
-    // A área de transferência de reserva é removida do DOM depois da cópia.
+    // The fallback clipboard is removed from the DOM after the copy.
     expect(document.querySelector("textarea")).toBeNull();
   });
 

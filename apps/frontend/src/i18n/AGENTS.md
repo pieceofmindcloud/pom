@@ -5,35 +5,35 @@ panel. All visible strings live here as flat message keys; components consume
 them through `useI18n().t`. The same file also holds a module-level active
 locale used by non-React code (`api.ts`, `chatStore.ts`).
 
-As traduções ficam em `messages.csv`, com as colunas `key,en,pt-BR`, uma linha
-por chave e as mensagens em ICU MessageFormat. `locales.ts` importa o CSV como
-texto bruto em build time e interpreta as mensagens sincronicamente com
-`intl-messageformat` 11.2.14. O provider continua separado. Testes:
-`locales.test.ts` (resolução + formatação), `locales.equivalence.test.ts`
-(dump de referência congelado com revisões explícitas de copy) e
+The translations live in `messages.csv`, with the columns `key,en,pt-BR`, one
+row per key and the messages in ICU MessageFormat. `locales.ts` imports the CSV
+as raw text at build time and interprets the messages synchronously with
+`intl-messageformat` 11.2.14. The provider stays separate. Tests:
+`locales.test.ts` (resolution + formatting), `locales.equivalence.test.ts`
+(frozen reference dump with explicit copy revisions) and
 `provider.test.tsx` (jsdom).
 
 ## Per-file
 
-- `messages.csv` - fonte única das mensagens, ordenada por chave para diffs
-  estáveis. Textos simples permanecem literais; mensagens da senha administrativa
-  explicam que só o hash Argon2id é persistido e nunca carregam um segredo real;
-  interpolação usa `{name}` e
-  lógica usa `plural`, `select` e seletores exatos ICU. Valores internos de
-  `select` são preparados apenas pelo carregador para preservar condicionais
-  de truthiness que existiam no código antigo. As chaves de deployment também
-  cobrem `unloadIfIdle`, minutos de ociosidade e o status `idle`. Os filtros de
-  Redes públicas e Estatísticas mantêm as opções e rótulos em inglês e pt-BR
-  aqui, sem strings hard-coded nas rotas.
-  As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
-  para manter o detalhe disponível nas duas línguas.
+- `messages.csv` - the single source of the messages, ordered by key for stable
+  diffs. Simple texts stay literal; the administrative password messages explain
+  that only the Argon2id hash is persisted and never carry a real secret;
+  interpolation uses `{name}` and
+  logic uses `plural`, `select` and exact ICU selectors. Internal `select`
+  values are prepared only by the loader to preserve truthiness conditionals that
+  existed in the old code. The deployment keys also cover `unloadIfIdle`, idle
+  minutes and the `idle` status. The Public networks and Statistics filters keep
+  their options and labels in English and pt-BR here, with no hard-coded strings
+  in the routes.
+  The machine card's metrics use the GPU, usage and power labels here to keep the
+  detail available in both languages.
   `chat.telemetryLine.*` covers the compact telemetry line of the Chat; the
   detailed telemetry texts moved to the plugin that claims `chat.telemetry`
-  (`locales.equivalence.test.ts` lists them as moved). As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16
-  permanece padrão, f32 usa quatro bytes por valor sem perda e f8/i4g64/i4g128
-  são opções com perda sujeitas a capability.
-  `deploy.visionUnavailable` orienta que a tela só oferece visão quando a
-  identidade e as dimensões GGUF comprovam a associação do projetor.
+  (`locales.equivalence.test.ts` lists them as moved). The `deploy.knob.hidden_state_dtype*` messages explain that f16
+  stays the default, f32 uses four bytes per value without loss, and
+  f8/i4g64/i4g128 are lossy options subject to a capability.
+  `deploy.visionUnavailable` states that the screen only offers vision when the
+  identity and the GGUF dimensions prove the projector association.
 - The `deployStudio.*` group holds every label, tooltip and accessibility text of the
   Deploy screen (`DeployModel`, `DeployNetworkCanvas` and the vision rows of
   `DeploymentInspector`): the kind selector, the machine and Tensor Parallelism
@@ -43,15 +43,15 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   `AlertTooltip` triggers; `chat.image*` and `chat.noCanvas2d` are the image
   resize errors, `peer.routeUnavailable` and `plugins.screenExportMissing` are
   read through `formatMessage(getActiveLocale(), ...)` outside React.
-- As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
-  o aviso de miniaturização automática de imagens e a recusa rara quando o
-  contexto não comporta nem a resolução mínima.
-- As mensagens `chat.thinkToggle` e `chat.thinkToggleHint` nomeiam o controle
-  persistente de thinking do Chat nas duas línguas.
-- O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente
-  leitura de admins secundários e nós: roster, cadeia de promoções, sucessor,
-  recusas concretas, confirmações e resultado das ações. O grupo
-  `notifications.*` também nomeia ofertas de sucessão. The keys of the
+- The keys `chat.attachmentResized` and `chat.imageContextTooSmallDetail` cover
+  the automatic image downsizing notice and the rare refusal when the context
+  does not fit even the minimum resolution.
+- The messages `chat.thinkToggle` and `chat.thinkToggleHint` name the Chat's
+  persistent thinking control in both languages.
+- The `adminAuthority.*` group covers the principal's screen and the read-only
+  views of secondary admins and nodes: roster, promotion chain, successor,
+  concrete refusals, confirmations and the outcome of the actions. The
+  `notifications.*` group also names succession offers. The keys of the
   removed in-place role changes (`notifications.nodePromotion*`,
   `notifications.nodeRelinquish*`, `network.requestNode*`,
   `network.relinquishNode*`) are still in the table and unused.
@@ -72,63 +72,61 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   language is unavailable. License expiration, last installation/application
   and last update check are distinct timestamps in the node contract and are
   formatted using the selected locale.
-- `locales.ts` - parser CSV pequeno, carregamento síncrono do `?raw`, cache de
-  `IntlMessageFormat` e a API pública de locale. Não coloque traduções novas
-  aqui. O fallback continua sendo locale solicitado, depois inglês, depois a
-  própria chave. Erros de formatação ICU são avisados no console e devolvem o
-  padrão bruto, para que uma variável omitida não derrube a tela. Todas as
-  chaves e textos existentes, incluindo os grupos de logs de deployment,
-  preferências, telemetria e modelos remotos, ficam no CSV.
-- O grupo `trustAnchor.*` cobre a tela da raiz de confiança: estado ancorado e
-  por ancorar, a impressão digital e sua cópia, o formulário de instalação e as
-  cinco recusas do servidor por código (`trustAnchor.refusal.*`). A tela mostra
-  a recusa traduzida e só cai no texto do servidor para um código que ela não
-  conhece.
-- O grupo `remoteModels.*` cobre status compacto de login, busca, modelos
-  públicos em alta, detalhes, licença desconhecida, confirmação, fila, progresso,
-  cancelamento, retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
-  caminho local nesses valores.
-- O grupo `huggingFace.*` cobre o campo de token da tela de Preferências. O valor
-  persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
-  fonte efetiva.
-- Textos de plugin **não** ficam neste CSV: cada plugin leva os próprios
-  catálogos (o antigo grupo `tokenLogs.*` foi para `pom-plugin-logs/i18n/`).
-  `locales.ts` só oferece `setPluginMessages`/`clearPluginMessages`, que colocam
-  as chaves `<plugin_code>.*` no mapa de `formatMessage` e nunca sobrescrevem
-  chave do POM. Ver `docs/subsystems/plugins-ui.md`.
-- O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
-  estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
-  e estados de coleta.
-- O grupo `about.*` cobre a licença AGPL-3.0 publicada em `LICENSE`, os links
-  para o texto GNU e para o arquivo do repositório, o aviso de
-  segurança/privacidade LGPD e a explicação de criação de plugins; também cobre
-  status Enterprise, atualização do `pom_core`, contagem e filtro do catálogo,
-  rótulos de ecossistema, versão e repositório.
+- `locales.ts` - a small CSV parser, synchronous loading of the `?raw`, an
+  `IntlMessageFormat` cache and the public locale API. Do not put new
+  translations here. The fallback stays: requested locale, then English, then
+  the key itself. ICU formatting errors are warned in the console and return the
+  raw default, so an omitted variable does not take the screen down. All
+  existing keys and texts, including the deployment logs, preferences, telemetry
+  and remote models groups, live in the CSV.
+- The `trustAnchor.*` group covers the trust root screen: anchored and pending
+  state, the fingerprint and its copy, the install form, and the five server
+  refusals by code (`trustAnchor.refusal.*`). The screen shows the translated
+  refusal and only falls back to the server text for a code it does not know.
+- The `remoteModels.*` group covers the compact login status, search, trending
+  public models, details, unknown license, confirmation, queue, progress,
+  cancellation, retry and provider errors in both languages. Do not put CLI text
+  or a local path in those values.
+- The `huggingFace.*` group covers the token field of the Preferences screen.
+  The persisted value never enters a message; the UI shows only the mask and the
+  effective source.
+- Plugin texts do **not** live in this CSV: each plugin carries its own
+  catalogs (the former `tokenLogs.*` group moved to `pom-plugin-logs/i18n/`).
+  `locales.ts` only offers `setPluginMessages`/`clearPluginMessages`, which put
+  the `<plugin_code>.*` keys into the `formatMessage` map and never overwrite a
+  POM key. See `docs/subsystems/plugins-ui.md`.
+- The `deploymentLogs.*` group covers the process console of the local replica:
+  auto-scroll state, copying the last 500 lines, the copy's outcome, the filter,
+  and collection states.
+- The `about.*` group covers the AGPL-3.0 license published in `LICENSE`, the
+  links to the GNU text and to the repository file, the LGPD
+  security/privacy notice, and the explanation of plugin creation; it also
+  covers Enterprise status, the `pom_core` update, catalog count and filter,
+  ecosystem labels, version and repository.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
-Os identificadores oficiais de perfil são `admin`, `node` e `infer`. O rótulo
-visível do primeiro passa por `profile.admin`; os dois últimos permanecem
-minúsculos por decisão de produto. A toolbar, a tela de rede e o bootstrap
-usam essas chaves, nunca literais cravados nos componentes.
+The official profile identifiers are `admin`, `node` and `infer`. The visible
+label of the first goes through `profile.admin`; the last two stay lowercase by
+product decision. The toolbar, the network screen and the bootstrap use these
+keys, never literals nailed into components.
 
-O grupo `enterprise.*` cobre o estado de descoberta das telas de Logs de
-Requisições e Estatísticas. Essas telas continuam navegáveis sem licença para
-que o usuário veja o convite de ativação e o link de compra. O mesmo grupo
-nomeia o aviso de atualização do binário `pom_core` e a ação explícita de
-instalação e reinício.
+The `enterprise.*` group covers the discovery state of the Request Logs and
+Statistics screens. Those screens stay navigable without a license so the user
+sees the activation invitation and the purchase link. The same group names the
+`pom_core` binary update notice and the explicit install-and-restart action.
 
-## Como editar mensagens
+## Editing messages
 
-- `SUPPORTED_LOCALES = ["en", "pt-BR"]`, e `Locale` continua sendo a união literal.
-- Cada chave deve existir nas duas colunas. Ao adicionar ou editar uma mensagem, altere diretamente a mesma linha no CSV e mantenha a chave ordenada.
-- Use a sintaxe ICU de `intl-messageformat`: `{count, plural, one {# node} other {# nodes}}` para plural, `{value}` para interpolação e `select` para escolhas textuais. Para mensagens condicionais, preserve os nomes dos valores que os componentes já passam.
-- O CSV entra no bundle por importação `?raw`; não use fetch, estado assíncrono ou carregamento por rota.
-- Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump congelado; revisões deliberadas de copy ficam no mapa `copyUpdates` do teste para não regravar o dump minificado de 1,8 MB.
+- `SUPPORTED_LOCALES = ["en", "pt-BR"]`, and `Locale` remains the literal union.
+- Every key must exist in both columns. When adding or editing a message, change the same row in the CSV directly and keep the key ordered.
+- Use the ICU syntax of `intl-messageformat`: `{count, plural, one {# node} other {# nodes}}` for plural, `{value}` for interpolation and `select` for textual choices. For conditional messages, preserve the value names the components already pass.
+- The CSV enters the bundle through a `?raw` import; do not use fetch, async state or per-route loading.
+- Run `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` after any change. The equivalence test compares every key, both languages and the cases of the frozen dump; deliberate copy revisions go in the test's `copyUpdates` map so the 1.8 MB minified dump is not rewritten.
 
-- O grupo deploy.addNode* cobre o diálogo incremental: catálogo da máquina
-  alvo, modelo inteiro, localização do cache KV e tipos K/V. Toda chave nova
-  desse fluxo precisa existir em en e pt-BR, inclusive o rótulo
-  deployments.kind.mixed usado pelo histórico.
+- The deploy.addNode* group covers the incremental dialog: target machine
+  catalog, whole model, KV cache location and K/V types. Every new key of this
+  flow must exist in en and pt-BR, including the label
+  deployments.kind.mixed used by the history.
 
 ## Key functions
 
@@ -169,34 +167,34 @@ the disabled state, participants, files, typing indicator, mobile online-list
 toggle and unread badge. They must remain paired in both CSV locale columns
 because this route is reachable from the same AI chat shell.
 
-As chaves `network.networkInfo*`, `network.share*`, `network.publicName*`,
-`network.visibility*`, `network.access*` e os campos geográficos cobrem a tela
-de informações da rede e o compartilhamento da confiança. Cada nova chave
-desse fluxo precisa continuar presente nas colunas `en` e `pt-BR` do CSV;
-textos de documento e de chave são dados do servidor, não mensagens de locale.
-As chaves `network.forgetNetwork*` nomeiam a confirmação e o resultado da
-limpeza local da rede; elas não devem ser confundidas com `network.leave`, que
-tira a máquina do cluster sem apagar sua configuração.
-As chaves `network.traversal*` rotulam o painel de travessia de NAT, incluindo
-os três estados de AutoNAT em `network.traversalNat.{unknown,public,private}`.
-As chaves `publicNetworks.*`, `network.metrics*`, `network.participants*`,
-`keys.*`, `preferences.admin*` e `nav.*` cobrem a reorganização das telas,
-incluindo estados de métrica indisponível, os estados reachable/unreachable do
-indicador de Redes públicas e os rótulos do Chat da rede separado. As chaves
-`setupWizard.uploadTrust*` nomeiam o upload alternativo de `trust.json`; o
-checkbox de confirmação manual do wizard não existe mais.
+The keys `network.networkInfo*`, `network.share*`, `network.publicName*`,
+`network.visibility*`, `network.access*` and the geographic fields cover the
+network information screen and the sharing of the trust. Every new key of this
+flow must stay present in the CSV's `en` and `pt-BR` columns; document and key
+texts are server data, not locale messages.
+The keys `network.forgetNetwork*` name the confirmation and the outcome of the
+local network cleanup; they must not be confused with `network.leave`, which
+takes the machine out of the cluster without erasing its configuration.
+The keys `network.traversal*` label the NAT traversal panel, including the three
+AutoNAT states in `network.traversalNat.{unknown,public,private}`.
+The keys `publicNetworks.*`, `network.metrics*`, `network.participants*`,
+`keys.*`, `preferences.admin*` and `nav.*` cover the reorganization of the
+screens, including unavailable metric states, the reachable/unreachable states
+of the Public networks indicator, and the labels of the separate Network chat.
+The keys `setupWizard.uploadTrust*` name the alternative upload of
+`trust.json`; the wizard's manual confirmation checkbox no longer exists.
 
-Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
-velocidade de pré-processamento do prompt, velocidade de geração da saída,
-tempo total, tokens/s e o rótulo explícito de taxa não mensurável usado para
-prefill de zero token ou resposta de um token.
+The per-request time labels also exist in both blocks: TTFT, prompt
+preprocessing speed, output generation speed, total time, tokens/s, and the
+explicit unmeasurable-rate label used for a zero-token prefill or a one-token
+answer.
 
-O Chat também traduz o rótulo de erro vindo dentro do stream, o controle para
-copiar a mensagem e o estado de cópia. O texto do servidor é preservado sem
-passar pelo fallback de idioma, para que o diagnóstico real não seja perdido.
+The Chat also translates the error label arriving inside the stream, the control
+to copy the message, and the copy state. The server text is preserved without
+going through the language fallback, so the real diagnosis is not lost.
 
-O combo de cabeças de inferência também tem chaves para seu nome acessível e
-para a dica diagnóstica exibida junto do seletor nativo com visual de modelo.
+The inference head combo also has keys for its accessible name and for the
+diagnostic hint shown next to the native selector with a model visual.
 
 The `chat.history` message names the bounded conversation list used by the
 `infer` Sidebar. It remains in both CSV columns even though it is primarily an

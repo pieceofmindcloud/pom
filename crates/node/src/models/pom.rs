@@ -299,7 +299,7 @@ pub fn is_sha256_hex(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Where a part lives: `<dir do modelo>/<sha256>.gguf`.
+/// Where a part lives: `<model dir>/<sha256>.gguf`.
 ///
 /// The extension stays so that `catalog::find_gguf` and the llama.cpp loader
 /// need no exception at all; what identifies it is the stem.

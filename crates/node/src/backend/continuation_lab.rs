@@ -648,7 +648,7 @@ fn messages_request(max_tokens: u32, eager: Option<bool>) -> Value {
 struct Flow {
     /// Each `data:` of the stream, already unwrapped, except `[DONE]`.
     chunks: Vec<Value>,
-    /// Quantos `[DONE]` chegaram.
+    /// How many `[DONE]` arrived.
     done_sentinels: usize,
     /// At what instant each frame arrived, counted from the start of the request. It is
     /// what separates "arrived in several pieces" from "arrived early".
@@ -673,7 +673,7 @@ impl Flow {
             .collect()
     }
 
-    /// Os deltas de `tool_calls`, na ordem.
+    /// The `tool_calls` deltas, in order.
     fn tool_call_deltas(&self) -> Vec<&Value> {
         self.chunks
             .iter()

@@ -1,8 +1,8 @@
 # components/setup-wizard/
 
-Componentes reutilizáveis do wizard de primeiro acesso. `WizardLayout.tsx` mantém o header, progresso, conteúdo e ações; `WizardCards.tsx` concentra cartões de objetivo, hardware, máquinas, modelos, redes e capabilities. As telas e o estado simulados ficam em `../routes/SetupWizard.tsx`; o fluxo real fica em `../routes/Setup.tsx` e usa o mesmo layout com `/api/setup/*`.
+Reusable components of the first access wizard. `WizardLayout.tsx` holds the header, progress, content and actions; `WizardCards.tsx` gathers the goal, hardware, machines, models, networks and capabilities cards. The screens and state are simulated in `../routes/SetupWizard.tsx`; the real flow lives in `../routes/Setup.tsx` and uses the same layout with `/api/setup/*`.
 
-`SetupWizard.tsx` continua sendo somente apresentação: não chama backend, não cria permissões e não implementa descoberta ou download reais. `Setup.tsx` é a exceção e deve continuar com uma tela por pergunta, sem reaproveitar mocks como estado. Use os tokens de `../../index.css` e os primitives de `../ui.tsx`; qualquer texto novo deve passar pelo i18n existente.
+`SetupWizard.tsx` remains presentation only: it calls no backend, creates no permissions and implements no real discovery or download. `Setup.tsx` is the exception and must stay one screen per question, without reusing mocks as state. Use the tokens from `../../index.css` and the primitives from `../ui.tsx`; any new text must go through the existing i18n.
 
 ## Maintaining this file
 

@@ -1,23 +1,22 @@
-# POM — interface web
+# POM - web interface
 
-Interface administrativa do `pom`. **É a interface do produto**: o nó lê o
-build de produção deste diretório do disco e o serve na porta do gateway (8080
-por padrão), incluindo a tela de configuração inicial. O antigo `web/` foi
-removido.
+Administrative interface of `pom`. **It is the product's interface**: the node
+reads this directory's production build from disk and serves it on the gateway
+port (8080 by default), including the initial setup screen. The old `web/` was
+removed.
 
-A marca é só da interface. Crate, binário, config (`pom.json`) e rotas
-continuam `pom`.
+The brand is UI-only. Crate, binary, config (`pom.json`) and routes stay `pom`.
 
-**React 18 + TypeScript + Vite + Tailwind**, com `react-router`, `framer-motion`,
+**React 18 + TypeScript + Vite + Tailwind**, with `react-router`, `framer-motion`,
 `@tanstack/react-query`, `react-markdown` + `remark-gfm` + `rehype-highlight`,
-`lucide-react` e `recharts`.
+`lucide-react` and `recharts`.
 
-## Como o binário serve a interface
+## How the binary serves the interface
 
-O nó lê os arquivos de `apps/frontend/dist` **do disco, a cada requisição**
-(`crates/node/src/backend/webapp.rs`), em vez de embuti-los no binário. Nada no
-`cargo build` toca esse diretório — editar a interface não recompila o Rust.
-Para ter algo em `dist/`:
+The node reads the files of `apps/frontend/dist` **from disk, on every request**
+(`crates/node/src/backend/webapp.rs`), instead of embedding them in the binary.
+Nothing in `cargo build` touches this directory - editing the interface does not
+recompile Rust. To have something in `dist/`:
 
 ```bash
 cd apps/frontend
@@ -25,410 +24,415 @@ npm install
 npm run build
 ```
 
-O bundle de produção é dividido por rota. O shell carrega o painel e o chrome
-comum; as telas entram por `import()` quando o endereço é aberto. O
-`vite.config.ts` também separa React, animações, ícones, React Query e cada
-documento de referência em chunks próprios. Isso mantém o JavaScript inicial
-pequeno sem esconder o alerta do Vite com `chunkSizeWarningLimit`.
+The production bundle is split by route. The shell loads the dashboard and the
+common chrome; screens come in through `import()` when the address is opened.
+`vite.config.ts` also separates React, animations, icons, React Query and each
+reference document into their own chunks. This keeps the initial JavaScript small
+without hiding Vite's warning with `chunkSizeWarningLimit`.
 
-`config::ui_dist_dir()` decide onde procurar: por padrão
-`<project_root>/apps/frontend/dist` (o mesmo `project_root()` usado por
-`pom.json` e `models/`); `POM_UI_DIST` sobrescreve, para um container
-ou um layout de disco diferente — é o que a imagem Docker usa, apontando para
-onde o `dist` gerado no build foi copiado.
+`config::ui_dist_dir()` decides where to look: by default
+`<project_root>/apps/frontend/dist` (the same `project_root()` used by
+`pom.json` and `models/`); `POM_UI_DIST` overrides it, for a container or a
+different disk layout - that is what the Docker image uses, pointing at where the
+`dist` generated in the build was copied.
 
-Sem esse diretório (ou sem `index.html` dentro dele) o nó sobe normalmente e
-responde 500 nas rotas da interface, com a mensagem dizendo onde procurou.
+Without this directory (or without `index.html` inside it) the node comes up
+normally and answers 500 on the interface routes, with the message saying where
+it looked.
 
-`dist/` e `dist-release/` são artefatos locais e ignorados pelo Git.
+`dist/` and `dist-release/` are local artifacts and ignored by Git.
 
-### Roteamento
+### Routing
 
-O bundle é montado **por último** no roteador do axum, e o catch-all dele é
-estreito de propósito: arquivo real ganha; `/api`, `/v1`, `/admin`, `/peers`,
-`/health` e `/generate` nunca caem no app (uma rota de API desconhecida responde
-404 em JSON, não uma página com status 200); um caminho com extensão que não
-existe é 404; o que sobra recebe o `index.html`, para recarregar `/config/keys/api`
-funcionar.
+The bundle is mounted **last** in the axum router, and its catch-all is narrow on
+purpose: a real file wins; `/api`, `/v1`, `/admin`, `/peers`, `/health` and
+`/generate` never fall into the app (an unknown API route answers 404 in JSON,
+not a page with status 200); a path with an extension that does not exist is 404;
+what is left receives the `index.html`, so reloading `/config/keys/api` works.
 
-## Desenvolvimento com hot reload
+## Development with hot reload
 
-Para iterar na interface sem recompilar o Rust a cada mudança, o dev server do
-Vite continua sendo o caminho — ele fala com um nó de verdade por proxy.
+To iterate on the interface without recompiling Rust on every change, the Vite
+dev server remains the path - it talks to a real node through a proxy.
 
 ```bash
-# 1. o backend, na raiz do repo
+# 1. the backend, at the repo root
 cargo build --release
 ./target/release/pom --no-discovery
 
-# 2. a interface, apontada para ele
+# 2. the interface, pointed at it
 cd apps/frontend
 npm install
 VITE_API_TARGET=http://127.0.0.1:8099 npm run dev
 ```
 
-A interface sobe em <http://localhost:5199/>. `VITE_API_TARGET` é para onde o
-Vite encaminha `/api`, `/v1`, `/admin`, `/peers`, `/health` e `/generate`
-(ver `vite.config.ts`); sem ela o padrão é `http://127.0.0.1:8080`.
+The interface comes up at <http://localhost:5199/>. `VITE_API_TARGET` is where
+Vite forwards `/api`, `/v1`, `/admin`, `/peers`, `/health` and `/generate`
+(see `vite.config.ts`); without it the default is `http://127.0.0.1:8080`.
 
-Em produção nada disso é necessário: um nó serve API e interface na mesma porta,
-então o app é same-origin e todo caminho é relativo.
+In production none of this is needed: one node serves API and interface on the
+same port, so the app is same-origin and every path is relative.
 
-### `--no-discovery`, e por que ele existe
+### `--no-discovery`, and why it exists
 
-O broadcast de descoberta da LAN vai para `255.255.255.255:42777` **fixo**,
-ignorando `--port`. Um nó subido para experimentar a interface entra sozinho em
-qualquer cluster que esteja no ar na mesma rede. `--no-discovery` (adicionado
-nesta branch) sobe o nó destacado: não anuncia, não faz broadcast, não procura
-bootstrap. É a única forma segura de rodar um nó de teste ao lado de um cluster
-que está sendo usado. Há teste disso em `src/network.rs`
+The LAN discovery broadcast goes to `255.255.255.255:42777` **fixed**, ignoring
+`--port`. A node brought up to try the interface joins by itself any cluster that
+is up on the same network. `--no-discovery` (added on this branch) brings the node
+up detached: it does not announce, does not broadcast, does not look for
+bootstrap. It is the only safe way to run a test node beside a cluster that is in
+use. There is a test of it in `src/network.rs`
 (`a_detached_node_neither_announces_nor_looks_for_bootstrap`).
 
-Um nó destacado mostra "Fora da rede" em Configurações › Rede, com um botão
-"Voltar para a rede" que chama `/api/ui/rejoin`.
+A detached node shows "Disconnected from network" in Settings › Network, with a
+"Rejoin network" button that calls `/api/ui/rejoin`.
 
-A navegação principal separa Rede de Configurações. Rede contém Informações,
-Participantes, Administradores, Compartilhamento e API Keys. Configurações
-mantém Preferências, Armazenamento e Preferências Administrativas. A tela de
-Compartilhamento reúne a raiz de confiança, os dados desta máquina e a chave
-de conexão. Em Redes públicas, cada endereço publicado mostra o resultado de
-um probe curto em `/health`, com cache de 30 segundos e atualização manual.
+The main navigation separates Network from Settings. Network holds Network
+information, Network participants, Administration, Sharing and API keys.
+Settings keeps Preferences, Storage and the administrative preferences. The
+Sharing screen gathers the trust root, this machine's data and the connection
+key. In Public networks, each published address shows the result of a short probe
+on `/health`, with a 30 second cache and manual refresh.
 
-As preferências locais ficam em Configurações › Preferências: exposição da
-interface administrativa, porta do gateway, TLS entre nós, proteção térmica da
-GPU e credencial opcional do Hugging Face. A seção também termina com Sobre,
-que lista as dependências diretas e suas licenças e destaca a licença provisória
-do POM. A exposição começa em localhost;
-quando passa para a rede, a tela mostra o token humano gerado e a API exige
-`X-POM-Access-Token`. A `connection_key` continua separada, para autenticar os
-nós e clientes da pipeline.
+The local preferences live in Settings › Preferences: exposure of the
+administrative interface, gateway port, TLS between nodes, GPU thermal protection
+and the optional Hugging Face credential. The section also ends with About, which
+lists the direct dependencies and their licenses and highlights the POM's
+provisional license. The exposure starts at localhost; when it moves to the
+network, the screen shows the generated human token and the API requires
+`X-POM-Access-Token`. The `connection_key` stays separate, to authenticate the
+nodes and the pipeline's clients.
 
-### A tela abriu sem estilo? Reinicie o dev server
+### The screen opened without styles? Restart the dev server
 
-Sintoma: a página aparece crua, fontes com serifa, sem layout — e junto,
-`/api/*` devolve `<!doctype html>` em vez de JSON, então as telas mostram
-"Unexpected token '<'". Os dois ao mesmo tempo, sem nenhum erro no console e com
-o servidor respondendo 200 em tudo.
+Symptom: the page appears raw, serif fonts, no layout - and together, `/api/*`
+returns `<!doctype html>` instead of JSON, so the screens show
+"Unexpected token '<'". Both at the same time, with no error in the console and
+the server answering 200 on everything.
 
-Não é o Tailwind, não é o PostCSS, não é o cache. É o dev server que **perdeu o
-contexto do projeto** e está rodando sem config nenhuma. Reiniciar resolve:
+It is not Tailwind, it is not PostCSS, it is not the cache. It is the dev server
+**losing the project context** and running with no config at all. Restarting
+fixes it:
 
 ```bash
-# no diretorio apps/frontend
+# in the apps/frontend directory
 npm run dev
 ```
 
-Como se confirma em dez segundos, sem abrir o navegador:
+How it is confirmed in ten seconds, without opening the browser:
 
 ```bash
-curl -s http://localhost:5199/src/index.css | grep -c '@tailwind'   # sadio: 0
-curl -s http://localhost:5199/api/ui/node | head -c 20              # sadio: {"node_id"...
+curl -s http://localhost:5199/src/index.css | grep -c '@tailwind'   # healthy: 0
+curl -s http://localhost:5199/api/ui/node | head -c 20              # healthy: {"node_id"...
 ```
 
-`@tailwind` cru na saída significa que o PostCSS não rodou de todo — diferente
-de `content` mal configurado, que geraria o preflight e comeria a diretiva.
+Raw `@tailwind` in the output means PostCSS did not run at all - different from
+a badly configured `content`, which would generate the preflight and consume the
+directive.
 
-**Como se chega nesse estado sem editar nada:** um `git rebase`, um `git
-checkout` de outra branch, qualquer coisa que reescreva `vite.config.ts` com o
-dev server no ar. O Vite se reinicia sozinho ao ver o arquivo mudar, e o
-reinício pode cair no instante em que a árvore está no meio da reescrita; ele
-sobe sem achar o `package.json` e, a partir daí, sem config: sem PostCSS e sem
-`server.proxy`. Nada falha alto, o servidor continua servindo.
+**How one reaches this state without editing anything:** a `git rebase`, a
+`git checkout` of another branch, anything that rewrites `vite.config.ts` with
+the dev server up. Vite restarts itself when it sees the file change, and the
+restart can land on the instant when the tree is mid-rewrite; it comes up without
+finding the `package.json` and, from there, with no config: no PostCSS and no
+`server.proxy`. Nothing fails loudly, the server keeps serving.
 
-A regra prática: **mexeu no git com o dev server rodando, reinicie o dev server.**
+The practical rule: **you touched git with the dev server running, restart the
+dev server.**
 
-### A porta e a configuração usadas na validação
+### The port and the configuration used in the validation
 
-`pom.json` não é versionado. O que subiu durante esta entrega:
+`pom.json` is not versioned. What was brought up during this delivery:
 
 ```json
 {
   "role": "principal",
-  "connection_key": "codai-dev-key",
+  "connection_key": "<connection-key>",
   "gateway_port": 8099,
   "p2p_port": 42799,
   "inference_port": 8199,
   "bootstrap_nodes": [],
-  "shard_dir": "/Volumes/sdcard/models_sliced"
+  "shard_dir": "<models-dir>"
 }
 ```
 
-Portas fora das usuais (8080/42777/8181) de propósito, para não colidir com um
-cluster já rodando na máquina.
+Ports outside the usual ones (8080/42777/8181) on purpose, so as not to collide
+with a cluster already running on the machine.
 
 ---
 
-## O que está ligado ao backend de verdade
+## What is really wired to the backend
 
-Tudo abaixo lê ou escreve num nó real. Não há dado de exemplo em nenhuma tela:
-a versão anterior tinha um `mock-server.mjs` e ele foi removido.
+Everything below reads or writes on a real node. There is no sample data on any
+screen: the previous version had a `mock-server.mjs` and it was removed.
 
-| Tela | Rotas |
+| Screen | Routes |
 |---|---|
-| Painel (fluxo e detalhes) | `GET /api/ui/node`, `/api/ui/cluster`, `/peers` |
-| Chat | `POST /v1/chat/completions` (SSE, token a token) |
-| Modelos inteiros | `GET /api/ui/models` |
-| Fatiar modelos | `POST /api/ui/slice/plan`, `POST /api/ui/slice` |
-| Fatias / Fatiamentos | `GET /api/ui/cluster/models`, `/api/ui/jobs`, `/api/ui/jobs/:id` |
-| Transferências | `GET /api/ui/jobs`, rotas de `src/transfer.rs` |
-| Enviar um arquivo | transferência por concessão (`grant`) |
-| Logs por token e por nó | `GET /api/ui/requests` |
-| Estatísticas | `GET /api/ui/requests` |
-| Logs ao vivo | `GET /api/ui/requests` em polling |
-| Rede (bloquear nó) | `GET /admin/nodes`, `POST /admin/nodes/:id/block`/`unblock` |
+| Dashboard (flow and details) | `GET /api/ui/node`, `/api/ui/cluster`, `/peers` |
+| Chat | `POST /v1/chat/completions` (SSE, token by token) |
+| Whole models | `GET /api/ui/models` |
+| Slice models | `POST /api/ui/slice/plan`, `POST /api/ui/slice` |
+| Slices / Slicing rounds | `GET /api/ui/cluster/models`, `/api/ui/jobs`, `/api/ui/jobs/:id` |
+| Transfers | `GET /api/ui/jobs`, routes of `src/transfer.rs` |
+| Send a file | transfer by concession (`grant`) |
+| Logs per token and per node | `GET /api/ui/requests` |
+| Statistics | `GET /api/ui/requests` |
+| Live logs | `GET /api/ui/requests` in polling |
+| Network (block node) | `GET /admin/nodes`, `POST /admin/nodes/:id/block`/`unblock` |
 | API keys | `GET`/`POST /admin/api-keys`, `DELETE /admin/api-keys/:key` |
-| Chaves de conexão | `GET /api/ui/node`, `POST /admin/regenerate-key` |
-| Exposição da administração | `GET /api/access`, `GET`/`POST /api/ui/access` |
-| Pastas de modelos | `GET`/`POST /api/ui/paths` |
-| Configuração inicial | `GET /api/setup/key`, `POST /api/setup/save` |
-| Implantar modelo fatiado | `POST /api/ui/deploy/plan`, `POST /api/ui/deploy`, `GET /api/ui/jobs` |
-| Liberar fatia | `GET /api/ui/release/candidate`, `POST /api/ui/release` |
+| Connection keys | `GET /api/ui/node`, `POST /admin/regenerate-key` |
+| Administration exposure | `GET /api/access`, `GET`/`POST /api/ui/access` |
+| Model folders | `GET`/`POST /api/ui/paths` |
+| Initial setup | `GET /api/setup/key`, `POST /api/setup/save` |
+| Deploy a sliced model | `POST /api/ui/deploy/plan`, `POST /api/ui/deploy`, `GET /api/ui/jobs` |
+| Release a slice | `GET /api/ui/release/candidate`, `POST /api/ui/release` |
 
-### Nós bloqueados e disponibilidade para inferência
+### Blocked nodes and availability for inference
 
-Bloquear um `node_id` remove imediatamente esse peer remoto da visão operacional
-do cluster: ele não aparece no Painel, não participa do catálogo e do plano de
-implantação, e não pode receber tráfego de inferência. Anúncios UDP que já
-estejam chegando não desfazem esse bloqueio. A tela de Rede ainda o lista como
-bloqueado, para que o operador possa desbloqueá-lo ou removê-lo.
+Blocking a `node_id` immediately removes that remote peer from the cluster's
+operational view: it does not appear on the Dashboard, does not take part in the
+catalog and the deployment plan, and cannot receive inference traffic. UDP
+announcements already arriving do not undo that block. The Network screen still
+lists it as blocked, so the operator can unblock or remove it.
 
-Antes de montar um pipeline, cada requisição também consulta `GET /health` de
-cada endpoint de inferência candidato, em paralelo, com limite de dez segundos.
-Só peers que respondem com sucesso entram no plano daquela requisição. Assim um
-anúncio UDP antigo ou um servidor de inferência parado não fecha artificialmente
-a cobertura de camadas nem faz a requisição esperar por um hop indisponível.
+Before assembling a pipeline, each request also queries `GET /health` of each
+candidate inference endpoint, in parallel, with a ten second limit. Only peers
+that answer successfully enter that request's plan. This way an old UDP
+announcement or a stopped inference server does not artificially close the layer
+coverage nor make the request wait for an unavailable hop.
 
-**API token por nó está ligado de verdade**, não é maquete: os tokens são
-emitidos, listados e revogados em `/admin/api-keys`, ficam em `api_keys` no
-`pom.json`, valem como credencial nas rotas `/v1` (`ApiKeyAuth`, `src/auth.rs`),
-e cada requisição atendida é atribuída ao token que a pagou — é isso que a tela
-de Logs mostra. O registro vive **na memória do processo** (`src/reqlog.rs`):
-reiniciar o nó zera o histórico, e só as mais recentes ficam.
+**The per-node API token is really wired**, not a mockup: the tokens are issued,
+listed and revoked in `/admin/api-keys`, they live in `api_keys` in the
+`pom.json`, they count as a credential on the `/v1` routes (`ApiKeyAuth`,
+`src/auth.rs`), and every served request is attributed to the token that paid for
+it - that is what the Logs screen shows. The record lives **in the process
+memory** (`src/reqlog.rs`): restarting the node zeroes the history, and only the
+most recent ones remain.
 
-As notificações (sino) sobrevivem a um recarregamento porque o progresso vem do
-nó, via `/api/ui/jobs`, e não de estado do navegador.
+The notifications (the bell) survive a reload because the progress comes from the
+node, via `/api/ui/jobs`, and not from browser state.
 
-## O que não está ligado
+## What is not wired
 
-- **Histórico de conversas do chat** — sessões ficam em `localStorage`
-  (`src/lib/chatStore.ts`). Some ao limpar o navegador e não acompanha o
-  usuário entre máquinas. Foi a escolha aceita para esta entrega.
-- **`GET /admin/transfer-offers`** devolve lista vazia fixa no backend
-  (`src/admin.rs`). A interface consome a rota; o backend ainda não guarda as
-  ofertas recebidas para respondê-la.
-- **Geração de texto** depende de haver modelo carregado no nó. O nó validado
-  subiu sem modelo (ver abaixo), então o Chat conecta, chama `/v1/chat/completions`
-  e mostra o erro que o nó devolve. O caminho SSE em si está exercitado.
+- **Chat conversation history** - sessions live in `localStorage`
+  (`src/lib/chatStore.ts`). It disappears when the browser is cleared and does not
+  follow the user between machines. It was the accepted choice for this delivery.
+- **`GET /admin/transfer-offers`** returns a fixed empty list in the backend
+  (`src/admin.rs`). The interface consumes the route; the backend does not yet
+  keep the received offers to answer it.
+- **Text generation** depends on there being a model loaded on the node. The
+  validated node came up without a model (see below), so the Chat connects, calls
+  `/v1/chat/completions` and shows the error the node returns. The SSE path itself
+  was exercised.
 
-### Por que o nó validado subiu sem modelo
+### Why the validated node came up without a model
 
-A máquina de validação é a de trabalho do operador: 16 GB no total, com ~5 GB
-recuperáveis no momento da medição (`vm_stat`, páginas free + inactive +
-speculative + purgeable). A menor combinação de fatias que cobre um modelo
-inteiro entre as disponíveis é `qwen3-8b_0_31` (3,9 GB) + `qwen3-8b_32_35`
-(1,3 GB) = 5,2 GB em dois processos — acima da folga, ou seja, swap. Nenhum
-modelo pequeno o bastante estava no disco. Por cálculo, então, e não por
-tentativa: o nó subiu em modo gateway, com todas as rotas no ar e sem pesos na
-memória.
+The validation machine is the operator's work machine: 16 GB in total, with ~5 GB
+recoverable at the moment of the measurement (`vm_stat`, free + inactive +
+speculative + purgeable pages). The smallest combination of slices that covers a
+whole model among the available ones is `qwen3-8b_0_31` (3.9 GB) +
+`qwen3-8b_32_35` (1.3 GB) = 5.2 GB in two processes - above the headroom, that is,
+swap. No model small enough was on the disk. By calculation, then, and not by
+attempt: the node came up in gateway mode, with every route up and no weights in
+memory.
 
-Para exercitar a geração, suba o nó com uma fatia e `--inference-port`, ou
-aponte `VITE_API_TARGET` para um nó que já tenha modelo carregado.
-
----
-
-## Rotas novas criadas no backend
-
-Todas em `src/webui.rs`, no estilo do arquivo, mais um módulo novo.
-
-| Rota | O que faz |
-|---|---|
-| `GET /api/ui/jobs` | Lista os jobs ativos e os terminados há menos de dez minutos. Já havia `/api/ui/jobs/:id`, que só serve para acompanhar um job cujo id você já tem — sem a listagem, o sino não teria como se reconstruir depois de um recarregamento. |
-| `POST /api/ui/unload` | Descarrega da memória o modelo do nó. |
-| `POST /api/ui/leave` | Sai da rede: para de anunciar e esquece os peers. |
-| `POST /api/ui/rejoin` | Volta para a rede. |
-| `GET /api/ui/requests` | O registro de requisições, por token e por nó, que alimenta Logs e Estatísticas. |
-| `POST /api/ui/release` | O nó devolve a memória da fatia que serve e continua na rede; se houver peer ocioso com a fatia no disco, ela é passada adiante. Nunca é recusada. |
-| `GET /api/ui/release/candidate` | Quem assumiria a fatia, para a confirmação na tela avisar de verdade quando a faixa vai ficar descoberta. |
-| `POST /api/ui/deploy/plan` | Só leitura: quem serviria qual faixa de um conjunto de fatias pronto, e o que teria de ser copiado antes. |
-| `POST /api/ui/deploy` | Executa. Refaz o plano no servidor, manda cada alvo puxar o que falta pelo transporte existente, espera, e então chama o `launch` com `skip_split`. É um job, então o sino acompanha e recarregar não perde nada. |
-
-Módulo novo `src/reqlog.rs`: registro em memória das requisições atendidas, com
-o `Caller` (operador, token com dica do valor, ou anônimo) e os hops percorridos.
-`src/gateway.rs` e `src/openai.rs` passaram a alimentá-lo, e `src/auth.rs` ganhou
-`ApiKeyAuth`, que resolve a credencial da requisição em `Caller`.
-
-Flag nova de CLI: `--no-discovery` (`src/main.rs`, `src/network.rs`).
-
-`cargo build --release` passa e `cargo test` fica verde (145 testes).
+To exercise generation, bring the node up with a slice and `--inference-port`, or
+point `VITE_API_TARGET` at a node that already has a model loaded.
 
 ---
 
-## Implantar um modelo já fatiado
+## New routes created in the backend
 
-`src/deploy.rs` + `src/routes/DeployModel.tsx`. As peças já existiam — o catálogo
-sabe quem tem qual fatia, o `transfer` move arquivo entre máquinas, o `launch`
-amarra uma faixa a um peer. O que faltava era a decisão do meio: **qual máquina
-serve qual fatia**, e o que precisa ser copiado para isso ser possível. O módulo
-é só essa decisão mais a sequência; não inventa um segundo mecanismo de
-transferência nem de launch.
+All in `src/webui.rs`, in the file's style, plus one new module.
 
-### O plano automático continua sendo o caminho de poucos cliques
-
-Sem `selection` no corpo, as rotas se comportam como antes: o nó decide e a tela
-mostra o que ele decidiu. As regras, na ordem em que importam:
-
-1. A varredura começa na camada 0 e sempre pega a faixa **mais longa** que
-   continua de onde a anterior parou. Isso não é estética: menos fatias é menos
-   máquinas necessárias, e pegar só o que continua a corrente torna sobreposição
-   impossível por construção — o que passou a importar quando o mesmo modelo
-   pode estar fatiado duas vezes com cortes diferentes.
-2. Um nó pode servir várias faixas válidas, inclusive faixas separadas. O conjunto
-   precisa cobrir cada camada exigida exatamente uma vez; uma lacuna global é
-   recusa, não implantação pela metade.
-3. Máquina que já tem a fatia é preferida para ela — cada cópia evitada são ~17
-   minutos a menos no enlace real.
-4. A camada 0 vai para a máquina com mais memória livre, porque quem fica com
-   ela processa o prompt inteiro de toda requisição.
-
-Depois das cópias, o caminho de cada arquivo é perguntado à máquina que o
-recebeu em vez de deduzido — só ela sabe onde o próprio `received/` fica.
-
-### O que o operador escolhe por cima do plano
-
-O plano é sugestão. `selection` no corpo das duas rotas carrega a resposta do
-próprio operador, e o servidor **valida** essa resposta em vez de recalcular a
-sua e ignorá-la — `POST /api/ui/deploy` refaz a varredura do cluster (uma
-máquina pode ter saído entre olhar e decidir) mas não refaz a escolha.
-
-- **Quais camadas entram.** A tela lista *toda* faixa que existe no cluster, de
-  todos os fatiamentos, cada uma com uma caixa de marcar. Misturar cortes
-  diferentes é legítimo e a fita de cobertura mostra na hora o que ficou
-  coberto, descoberto ou dobrado.
-- **Qual máquina fica com cada faixa.** Um `select` por linha. Escolher uma
-  máquina que já está com outra faixa **troca** as duas, que é o que o operador
-  quis dizer.
-- **A ordem do pipeline.** Os botões ↑ ↓ trocam a máquina com a linha vizinha.
-  Não existe um segundo botão de "ordem" porque não existe uma segunda ordem: o
-  `pipeline.rs` varre da camada 0 para cima, então quem tem a camada 0 recebe
-  todo prompt, e reordenar o pipeline **é** reatribuir as faixas. A fita no topo
-  mostra a ordem resultante, com "processa o prompt" no primeiro.
-
-Viabilidade, e o que é recusa e o que é aviso:
-
-| Situação | Resposta |
+| Route | What it does |
 |---|---|
-| Faixas escolhidas se sobrepõem | **Recusa.** As camadas rodariam duas vezes e a resposta sairia errada sem nada falhar. |
-| Duas ou mais faixas na mesma máquina | **Aceitas** quando não se sobrepõem e a cobertura global é completa. Se "juntar fatias vizinhas" estiver ligado, apenas faixas **adjacentes** da mesma máquina são fundidas num arquivo só (`splitter::merge`); faixas separadas continuam etapas independentes. |
-| Faixa sem máquina, ou máquina que saiu do cluster | **Recusa.** |
-| Faixa que ninguém do cluster tem | **Recusa.** |
-| Disco insuficiente no destino de uma cópia | **Recusa** — o `transfer.rs` recusaria de qualquer jeito, melhor antes de mover byte. |
-| Memória apertada no destino | **Aviso**, com o número. É estimativa (VRAM livre onde há placa, RAM disponível no resto), e um bloqueio errado seria pior que uma linha em amarelo. |
-| Buraco na cobertura | **Recusa.** A implantação precisa cobrir todas as camadas exigidas antes de formar o pipeline. |
+| `GET /api/ui/jobs` | Lists the active jobs and the ones finished less than ten minutes ago. `/api/ui/jobs/:id` already existed, and it only serves to follow a job whose id you already have - without the listing, the bell would have no way to rebuild itself after a reload. |
+| `POST /api/ui/unload` | Unloads the node's model from memory. |
+| `POST /api/ui/leave` | Leaves the network: stops announcing and forgets the peers. |
+| `POST /api/ui/rejoin` | Returns to the network. |
+| `GET /api/ui/requests` | The request record, per token and per node, that feeds Logs and Statistics. |
+| `POST /api/ui/release` | The node gives back the memory of the slice it serves and stays in the network; if there is an idle peer with the slice on disk, it is passed on. It is never refused. |
+| `GET /api/ui/release/candidate` | Who would take the slice, so the confirmation on the screen can really warn when the range will be left uncovered. |
+| `POST /api/ui/deploy/plan` | Read only: who would serve which range of a ready set of slices, and what would have to be copied first. |
+| `POST /api/ui/deploy` | Executes. Redoes the plan on the server, makes each target pull what is missing through the existing transport, waits, and then calls the `launch` with `skip_split`. It is a job, so the bell follows it and reloading loses nothing. |
 
-### Ajustes avançados (execução)
+New module `src/reqlog.rs`: in-memory record of the served requests, with the
+`Caller` (operator, token with a hint of its value, or anonymous) and the hops
+traveled. `src/gateway.rs` and `src/openai.rs` started feeding it, and
+`src/auth.rs` gained `ApiKeyAuth`, which resolves the request's credential into a
+`Caller`.
 
-Os quatorze knobs de `RuntimeParams` (`src/webui.rs`) voltaram para a tela, com os
-mesmos rótulos e padrões da interface antiga, e agora vão de verdade para o
-`launch` de cada fatia: contexto (`n_ctx`), lote (`n_batch`), máx. tokens novos,
-requisições simultâneas, tokens por pedaço, temperatura, `top_p`, `top_k`,
-penalidade de repetição e sua janela, a reserva de segurança da VRAM do ajuste
-automático, desligar o bloco de raciocínio, e forçar sem embeddings.
+New CLI flag: `--no-discovery` (`src/main.rs`, `src/network.rs`).
 
-São **do cluster**, não de cada peer, porque o pipeline precisa que sejam: o
-contexto e o lote decidem o orçamento de prompt que o gateway cobra de toda
-requisição, e a amostragem só roda no último peer. A exceção é **camadas na
-GPU**, que é propriedade da máquina — uma caixa com 5060 Ti e uma sem placa
-querem números diferentes. Ela é editada na tabela de máquinas, viaja em
-`LaunchTarget::n_gpu_layers` e sobrescreve só aquele peer (`webui::params_for`).
+`cargo build --release` passes and `cargo test` stays green (145 tests).
 
-O cabeçalho do painel cita o número que decide se um harness cabe — "cada
-requisição aceita até N tokens de prompt, em pedaços de M" — calculado no
-servidor por `gateway::prompt_budget_of` / `prompt_chunk_of`, as mesmas funções
-que o gateway usa para recusar um prompt grande demais. Medido na tela:
-`n_ctx 32768`, 2 sessões, 256 novos → 16.128 tokens; pedaço `min(4096, 3072)` =
-3.072.
+---
 
-`no_embeddings` fica no painel por paridade com a interface antiga e **com o
-aviso na tela**: normalmente é automático (só o último peer dispensa), e ligar
-impede o primeiro de extrair o estado oculto.
+## Deploying an already sliced model
 
-### O que está ligado ao backend de verdade nesta tela
+`src/deploy.rs` + `src/routes/DeployModel.tsx`. The pieces already existed - the
+catalog knows who holds which slice, `transfer` moves a file between machines, the
+`launch` ties a range to a peer. What was missing was the decision in the middle:
+**which machine serves which slice**, and what needs to be copied for that to be
+possible. The module is only that decision plus the sequence; it does not invent a
+second transfer or launch mechanism.
 
-Tudo. Não há dado de exemplo: o conjunto de fatias vem de
-`GET /api/ui/cluster/models`, o plano e a validação de `POST /api/ui/deploy/plan`
-(que pergunta a cada peer o seu `/api/ui/models` e o seu `/api/ui/node`), a
-execução de `POST /api/ui/deploy`, e o progresso de `GET /api/ui/jobs` — o mesmo
-job que aparece no sino, agora também com barra na própria tela. As cópias
-continuam saindo por `POST /api/transfer/pull` em cada destino: nenhum mecanismo
-paralelo foi criado.
+### The automatic plan remains the few-clicks path
 
-O que a tela **não** calcula sozinha: nada da validação. Cada edição volta ao nó
-(com 260 ms de espera para não varrer o cluster a cada tecla) e a coluna "o que
-acontece" diz "conferindo…" enquanto a resposta ainda descreve outra escolha.
+Without `selection` in the body, the routes behave as before: the node decides and
+the screen shows what it decided. The rules, in the order they matter:
 
-### Rotas alteradas
+1. The sweep starts at layer 0 and always takes the **longest** range that
+   continues from where the previous one stopped. This is not aesthetics: fewer
+   slices means fewer machines needed, and taking only what continues the chain
+   makes overlap impossible by construction - which started to matter when the
+   same model can be sliced twice with different cuts.
+2. A machine may serve several valid ranges, including separate ranges. The set
+   must cover each required layer exactly once; a global gap is refusal, not a
+   half deployment.
+3. A machine that already holds the slice is preferred for it - each copy avoided
+   is ~17 minutes less on the real link.
+4. Layer 0 goes to the machine with the most free memory, because whoever holds it
+   processes the whole prompt of every request.
 
-| Rota | Mudança |
+After the copies, the path of each file is asked of the machine that received it
+instead of being deduced - only it knows where its own `received/` is.
+
+### What the operator chooses on top of the plan
+
+The plan is a suggestion. `selection` in the body of both routes carries the
+operator's own answer, and the server **validates** that answer instead of
+recomputing its own and ignoring it - `POST /api/ui/deploy` redoes the cluster
+sweep (a machine may have left between looking and deciding) but does not redo the
+choice.
+
+- **Which layers enter.** The screen lists *every* range that exists in the
+  cluster, from every slicing, each with a checkbox. Mixing different cuts is
+  legitimate and the coverage ribbon shows at once what ended covered, uncovered
+  or doubled.
+- **Which machine gets each range.** A `select` per row. Choosing a machine that
+  already holds another range **swaps** the two, which is what the operator meant.
+- **The pipeline's order.** The ↑ ↓ buttons swap the machine with the neighboring
+  row. There is no second "order" button because there is no second order: the
+  `pipeline.rs` sweeps from layer 0 upward, so whoever holds layer 0 receives every
+  prompt, and reordering the pipeline **is** reassigning the ranges. The ribbon at
+  the top shows the resulting order, with "processes the prompt" on the first.
+
+Feasibility, and what is refusal and what is a warning:
+
+| Situation | Answer |
 |---|---|
-| `POST /api/ui/deploy/plan` | Aceita `selection` (faixa + máquina + `n_gpu_layers` opcional) e `params`. Devolve, além do plano: `available` (toda faixa do cluster, com quem a tem), `machines` (memória e disco livres, o que cada uma tem e o que assume), `missing`, `overlap`, `warnings`, `params`, `prompt_tokens`, `chunk_tokens`, e por passo `position`, `primary`, `options`, `problem`, `note`. |
-| `POST /api/ui/deploy` | Aceita e valida a mesma `selection`/`params` em vez de replanejar por conta própria. |
-| `POST /api/ui/launch` | `LaunchTarget` ganhou `n_gpu_layers: Option<u32>`. |
+| Chosen ranges overlap | **Refusal.** The layers would run twice and the answer would come out wrong with nothing failing. |
+| Two or more ranges on the same machine | **Accepted** when they do not overlap and the global coverage is complete. If "join neighboring slices" is on, only **adjacent** ranges of the same machine are merged into one file (`splitter::merge`); separate ranges stay independent steps. |
+| Range without a machine, or a machine that left the cluster | **Refusal.** |
+| A range nobody in the cluster holds | **Refusal.** |
+| Insufficient disk on a copy's destination | **Refusal** - `transfer.rs` would refuse anyway, better before moving a byte. |
+| Tight memory on the destination | **Warning**, with the number. It is an estimate (free VRAM where there is a card, available RAM elsewhere), and a wrong block would be worse than a yellow line. |
+| Hole in the coverage | **Refusal.** The deployment must cover all required layers before forming the pipeline. |
 
-Nada foi removido do corpo antigo dessas rotas: um cliente que só manda `group`
-continua recebendo exatamente o plano automático de antes.
+### Advanced adjustments (execution)
 
-### Como isto foi revisado, e o que ficou de fora da revisão
+The fourteen knobs of `RuntimeParams` (`src/webui.rs`) came back to the screen, with
+the same labels and defaults of the old interface, and now they really go to each
+slice's `launch`: context (`n_ctx`), batch (`n_batch`), max new tokens, concurrent
+requests, tokens per chunk, temperature, `top_p`, `top_k`, repetition penalty and
+its window, the safety reserve of the automatic fit's VRAM, turning the reasoning
+block off, and forcing without embeddings.
 
-**Nada foi implantado no cluster do operador.** A ordem era clara: planejar,
-validar e revisar, sem apertar "Implantar" contra as máquinas dele, e sem tocar
-no servidor CUDA. Então:
+They are **of the cluster**, not of each peer, because the pipeline needs them to
+be: the context and the batch decide the prompt budget the gateway charges on every
+request, and the sampling only runs on the last peer. The exception is **layers on
+the GPU**, which is a property of the machine - a box with a 5060 Ti and one without
+a card want different numbers. It is edited in the machines table, travels in
+`LaunchTarget::n_gpu_layers` and overrides only that peer (`webui::params_for`).
 
-- **Backend real, uma máquina.** Um nó isolado (`--no-discovery`, com
-  `POM_HOME` num diretório temporário) com quatro fatias GGUF de cabeçalho
-  só, sobrepostas de propósito (0-4 / 5-31 e 0-10 / 11-31). É a origem dos
-  estados de recusa: "são 2 fatias para 1 máquina", faixa sem máquina, e a
-  escolha automática pegando 0-10 + 11-31 entre os quatro cortes.
-- **Três máquinas, por dublê.** Um servidor local de ~250 linhas
-  (scratchpad, não versionado) serve as mesmas rotas com três máquinas, para
-  revisar o que uma máquina só não desenha: `select` de destino, a troca, linha
-  de cópia, aviso de memória, coluna de GPU por máquina. É um **port** do
-  `plan()` do Rust, não a fonte da verdade — a lógica é a do Rust, coberta pelos
-  testes.
-- O `POST /api/ui/deploy` foi exercitado **só contra o dublê** (que devolve 400
-  de propósito), para conferir o toast de erro e o diálogo de confirmação.
+The panel's header quotes the number that decides whether a harness fits - "Each
+request accepts up to {prompt} prompt tokens, in chunks of {chunk}" - computed on
+the server by `gateway::prompt_budget_of` / `prompt_chunk_of`, the same functions
+the gateway uses to refuse a prompt that is too large. Measured on the screen:
+`n_ctx 32768`, 2 sessions, 256 new → 16,128 tokens; chunk `min(4096, 3072)` =
+3,072.
 
-Corrigido na revisão por pixel: caixa de marcar nativa (o estado desmarcado do
-sistema chega como quadrado cinza claro e lê como *desabilitado*), alinhamento
-da faixa entre os cartões da fita, largura do `select` de destino (uma classe de
-largura nele perde para o `w-full` do componente — a largura vive na célula),
-rodapé prometendo "1 cópia" para uma faixa sem máquina, e a ordem das fatias na
-tabela de máquinas, que vinha na ordem do diretório.
+`no_embeddings` stays in the panel for parity with the old interface and **with the
+warning on the screen**: it is normally automatic (only the last peer skips it), and
+turning it on prevents the first one from extracting the hidden state.
 
-Testes: `cargo test` (145 + 2 verdes), com o planejador e a validação cobertos —
-cobertura completa, buraco, sobreposição, duas faixas numa máquina, faixa sem
-máquina, máquina fora do cluster, faixa que ninguém tem, disco insuficiente,
-memória apertada, leitura de VRAM vs RAM, eco dos parâmetros e orçamento, e GPU
-por máquina.
+### What is really wired to the backend on this screen
 
-## O que ficou faltando
+Everything. There is no sample data: the set of slices comes from
+`GET /api/ui/cluster/models`, the plan and validation from `POST /api/ui/deploy/plan`
+(which asks each peer its `/api/ui/models` and its `/api/ui/node`), the execution
+from `POST /api/ui/deploy`, and the progress from `GET /api/ui/jobs` - the same job
+that appears in the bell, now also with a bar on the screen itself. The copies keep
+going out through `POST /api/transfer/pull` on each destination: no parallel
+mechanism was created.
 
-- Persistir o histórico do chat fora do navegador.
-- Guardar as ofertas de transferência no backend, para `/admin/transfer-offers`
-  deixar de ser lista vazia.
-- Registro de requisições em disco, para sobreviver ao reinício do nó.
-- A logo. `src/components/Logo.tsx` é um placeholder com dimensões fixas,
-  isolado de propósito: trocar por um SVG mexe só nesse arquivo.
+What the screen does **not** compute on its own: none of the validation. Each edit
+goes back to the node (with a 260 ms wait so as not to sweep the cluster on every
+key) and the "what happens" column says "checking…" while the answer still
+describes another choice.
 
-## Detalhes que economizam tempo depois
+### Routes changed
 
-- **Editar `apps/frontend/` só exige `npm run build`** para valer no nó — o bundle é
-  lido do disco a cada requisição, não embutido. Durante o desenvolvimento use o
-  dev server, que tem hot reload.
-- **`Footnote`** (`src/components/ui.tsx`) existe porque a marcação óbvia é uma
-  armadilha: um `<p className="flex">` com um `<span>` no meio da frase faz do
-  span um item de flex próprio e a frase se parte em colunas. Use o componente,
-  não repita o markup.
-- O tema escuro é o padrão; o claro é definido no `:root` nu, e o escuro
-  redefine tokens sob `[data-theme="dark"]` (`src/index.css`).
-- Nada rola na horizontal: conteúdo largo rola dentro do próprio painel
-  (`ScrollX`), nunca a página.
+| Route | Change |
+|---|---|
+| `POST /api/ui/deploy/plan` | Accepts `selection` (range + machine + optional `n_gpu_layers`) and `params`. Returns, besides the plan: `available` (every range of the cluster, with who holds it), `machines` (free memory and disk, what each one holds and what it takes on), `missing`, `overlap`, `warnings`, `params`, `prompt_tokens`, `chunk_tokens`, and per step `position`, `primary`, `options`, `problem`, `note`. |
+| `POST /api/ui/deploy` | Accepts and validates the same `selection`/`params` instead of replanning on its own. |
+| `POST /api/ui/launch` | `LaunchTarget` gained `n_gpu_layers: Option<u32>`. |
+
+Nothing was removed from those routes' old body: a client that only sends `group`
+keeps receiving exactly the automatic plan of before.
+
+### How this was reviewed, and what was left out of the review
+
+**Nothing was deployed to the operator's cluster.** The order was clear: plan,
+validate and review, without pressing "Deploy" against the operator's machines, and
+without touching the CUDA server. So:
+
+- **Real backend, one machine.** An isolated node (`--no-discovery`, with
+  `POM_HOME` in a temporary directory) with four header-only GGUF slices,
+  overlapping on purpose (0-4 / 5-31 and 0-10 / 11-31). It is the origin of the
+  refusal states: "there are 2 slices for 1 machine", a range without a machine,
+  and the automatic choice taking 0-10 + 11-31 among the four cuts.
+- **Three machines, by stand-in.** A local server of ~250 lines (scratchpad, not
+  versioned) serves the same routes with three machines, to review what one machine
+  alone cannot draw: destination `select`, the swap, the copy row, the memory
+  warning, the per-machine GPU column. It is a **port** of Rust's `plan()`, not the
+  source of truth - the logic is Rust's, covered by the tests.
+- The `POST /api/ui/deploy` was exercised **only against the stand-in** (which
+  returns 400 on purpose), to check the error toast and the confirmation dialog.
+
+Fixed in the pixel review: native checkbox (the system's unchecked state arrives as
+a light gray square and reads as *disabled*), range alignment between the ribbon
+cards, the destination `select`'s width (a width class on it loses to the
+component's `w-full` - the width lives in the cell), a footer promising "1 copy" for
+a range without a machine, and the order of the slices in the machines table, which
+came in directory order.
+
+Tests: `cargo test` (145 + 2 green), with the planner and the validation covered -
+full coverage, gap, overlap, two ranges on one machine, range without a machine,
+machine out of the cluster, range nobody holds, insufficient disk, tight memory,
+VRAM vs RAM reading, parameter and budget echo, and per-machine GPU.
+
+## What is still missing
+
+- Persisting the chat history outside the browser.
+- Keeping the transfer offers in the backend, so `/admin/transfer-offers` stops
+  being an empty list.
+- A request record on disk, to survive a node restart.
+- The logo. `src/components/Logo.tsx` is a placeholder with fixed dimensions,
+  isolated on purpose: replacing it with an SVG touches only that file.
+
+## Details that save time later
+
+- **Editing `apps/frontend/` only requires `npm run build`** to take effect on the
+  node - the bundle is read from disk on every request, not embedded. During
+  development use the dev server, which has hot reload.
+- **`Footnote`** (`src/components/ui.tsx`) exists because the obvious markup is a
+  trap: a `<p className="flex">` with a `<span>` in the middle of the sentence makes
+  the span its own flex item and the sentence breaks into columns. Use the
+  component, do not repeat the markup.
+- The dark theme is the default; the light one is defined on bare `:root`, and the
+  dark one redefines tokens under `[data-theme="dark"]` (`src/index.css`).
+- Nothing scrolls horizontally: wide content scrolls inside its own panel
+  (`ScrollX`), never the page.

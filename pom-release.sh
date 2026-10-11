@@ -37,10 +37,10 @@ usage() {
     '  --dry-run                        resolve e compila, sem enviar ao servidor'
 }
 
-# Este script só libera `pom_core` desde que o plugin `enterprise`
-# (request_logs/statistics) foi extraído para o repositório pom-plugin-logs,
-# que tem seu próprio `release.sh`, workflows do GitHub Actions e script de
-# publicação no servidor de licenças. Ver `docs/subsystems/enterprise-licensing.md`.
+# This script only releases `pom_core` since the `enterprise` plugin
+# (request_logs/statistics) was extracted to the pom-plugin-logs repository,
+# which has its own `release.sh`, its GitHub Actions workflows and its
+# publication script on the license server. See `docs/subsystems/enterprise-licensing.md`.
 while (($# > 0)); do
   case "$1" in
     --platform) (($# >= 2)) || die '--platform precisa de um valor'; platform="$2"; shift 2 ;;
@@ -65,7 +65,7 @@ fi
 [[ -n "${POM_RDMA_REPO:-}" ]] || die 'POM_RDMA_REPO é obrigatório'
 [[ -n "$platform" ]] || die '--platform é obrigatório'
 
-# pom_core não tem entitlement Enterprise; feature_set é só metadado do upload.
+# pom_core has no Enterprise entitlement; feature_set is only upload metadata.
 [[ "$feature_set_arg_set" == true ]] && feature_set="$feature_set_arg"
 
 case "$platform" in

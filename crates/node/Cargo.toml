@@ -8,26 +8,26 @@ build = "build.rs"
 name = "pom"
 path = "src/main.rs"
 
-# Host IPC falso, usado apenas pelos testes de regressão de ciclo de vida,
-# caminho POM_PLUGIN_DB e handshake em `src/plugins.rs`. Não faz parte do produto.
+# Fake IPC host, used only by the lifecycle regression tests,
+# the POM_PLUGIN_DB path and the handshake in `src/plugins.rs`. It is not part of the product.
 [[bin]]
 name = "pom-fake-enterprise-plugin-host"
 path = "tests/support/fake_plugin_host.rs"
 
 [features]
 default = []
-# As features do backend nativo vivem em `llama-engine` (repositório pom-plugin-llama.cpp),
-# que é quem declara `llama-cpp-sys-2`. Aqui só encaminham.
+# The native backend features live in `llama-engine` (the pom-plugin-llama.cpp repository),
+# which is the one declaring `llama-cpp-sys-2`. Here they only forward.
 cuda = ["llama-engine/cuda"]
 metal = ["llama-engine/metal"]
-# Backend portatil: e o caminho das placas AMD, e tambem roda em NVIDIA e
-# Intel. Pode ser combinado com `cuda` - o ggml carrega os dois backends e a
-# escolha de qual usar e feita em tempo de execucao.
+# Portable backend: it is the path for AMD cards, and it also runs on NVIDIA and
+# Intel. It can be combined with `cuda` - ggml loads both backends and the
+# choice of which one to use is made at runtime.
 vulkan = ["llama-engine/vulkan"]
 
 [dependencies]
-# Todo o código llama.cpp (FFI, MTP, MoE, GGUF, sysmon) mora aqui, para que
-# editar backend/rede/roteamento de `node` não o reconstrua.
+# All the llama.cpp code (FFI, MTP, MoE, GGUF, sysmon) lives here, so that
+# editing the backend/network/routing of `node` does not rebuild it.
 llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "b503e388b0dc65cf81a9df6c7909d33f0be7217b" }
 brand = { path = "../brand" }
 enterprise-protocol = { path = "../enterprise-protocol" }
@@ -60,8 +60,8 @@ http = "1"
 bytes = "1"
 url = "2"
 axum = "0.7"
-# TLS entre peers: certificado auto assinado derivado da identidade do nó.
-# Ver `network/tls.rs` para por que não há CA nem arquivo de certificado.
+# TLS between peers: a self-signed certificate derived from the node's identity.
+# See `network/tls.rs` for why there is no CA and no certificate file.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
@@ -103,16 +103,16 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
-# O shell nativo Windows usa WebView2 (runtime do sistema), sem Electron nem
-# um segundo processo de navegador. Tao mantém a janela e o loop Win32; tray-icon
-# instala o ícone e o menu na área de notificação.
+# The native Windows shell uses WebView2 (a system runtime), without Electron nor
+# a second browser process. Tao keeps the window and the Win32 loop; tray-icon
+# installs the icon and the menu in the notification area.
 image = { version = "0.25", default-features = false, features = ["png"] }
 tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
 tray-icon = { version = "0.25", default-features = false }
 wry = { version = "0.57", default-features = false }
 
-# Só compila `src/macos_status.m`, a ponte AppKit/WebKit do item de barra de
-# status. Como o `winresource` acima, o `cfg` aqui é do host.
+# It only compiles `src/macos_status.m`, the AppKit/WebKit bridge of the status bar
+# item. Like the `winresource` above, the `cfg` here is the host's.
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1"
 

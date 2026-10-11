@@ -1,21 +1,21 @@
 # plugin-host
 
-Binário auxiliar `pom-plugin-host`, responsável por carregar a biblioteca
-`cdylib` de UM plugin em processo separado e expor o IPC JSON enquadrado do
-host. Valida caminho absoluto, manifesto, hash, versão ABI e callbacks antes
-de criar o handle. O processo `pom` não deve importar `libloading` nem
-carregar a biblioteca diretamente. Além de `ready`, `ingest` e `shutdown`, o
-IPC expõe `query` com cópia segura do buffer retornado pela biblioteca e
-limite compartilhado de 16 MiB definido por
+Auxiliary binary `pom-plugin-host`, responsible for loading the `cdylib` of
+ONE plugin in a separate process and exposing the host's framed JSON IPC. It
+validates the absolute path, the manifest, the hash, the ABI version and the
+callbacks before creating the handle. The `pom` process must not import
+`libloading` or load the library directly. Besides `ready`, `ingest` and
+`shutdown`, the IPC exposes `query` with a safe copy of the buffer returned by
+the library and a shared 16 MiB limit defined by
 `enterprise_protocol::MAX_IPC_FRAME_BYTES`.
 
-Cada instância deste binário serve um plugin só; nada aqui é global ou
-singleton (nem estado de processo, nem socket com nome fixo), então
-`crate::plugins::PluginManager` (em `crates/node`) já pode manter uma
-instância concorrente por `plugin_code` ativo, cada uma com seu próprio
-`POM_PLUGIN_DB` e seus próprios pipes stdin/stdout. O segundo argumento do
-processo é o `plugin_code` validado no manifesto; ele resolve o símbolo
-`pom_<plugin_code>_plugin_v1`, sem acoplar o host a um produto específico.
+Each instance of this binary serves one plugin only; nothing here is global or
+a singleton (no process state, no fixed-name socket), so
+`crate::plugins::PluginManager` (in `crates/node`) can already keep one
+concurrent instance per active `plugin_code`, each with its own
+`POM_PLUGIN_DB` and its own stdin/stdout pipes. The second argument of the
+process is the `plugin_code` validated in the manifest; it resolves the symbol
+`pom_<plugin_code>_plugin_v1`, without coupling the host to a specific product.
 
 ## Maintaining this file
 

@@ -2,6 +2,6 @@ node_modules/
 dist/
 dist-release/
 *.local
-# Gerados no build a partir de brand.json e dos AGENTS.md do repositorio.
+# Generated at build time from brand.json and the repo's AGENTS.md.
 src/brand/
 public/brand/

@@ -1,4 +1,4 @@
-//! Provider Hugging Face por HTTP nativo.
+//! Hugging Face provider over native HTTP.
 
 use crate::model_provider::{
     validate_directory, validate_filename, validate_filter, validate_repo_id, validate_revision,

@@ -1,12 +1,12 @@
 /**
- * Copia um texto para a área de transferência.
+ * Copies a text to the clipboard.
  *
- * `navigator.clipboard` só existe em contexto seguro (HTTPS ou localhost). Num
- * POM acessado por `http://<ip>:8080` ele é `undefined`, e o clique em "copiar"
- * não fazia nada. Por isso há um caminho de reserva com um `<textarea>` fora da
- * tela e `document.execCommand("copy")`, que funciona em HTTP. Resolve `true`
- * quando alguma das duas formas copiou; `false` deixa o texto selecionável para
- * a pessoa copiar à mão.
+ * `navigator.clipboard` only exists in a secure context (HTTPS or localhost). On a
+ * POM reached over `http://<ip>:8080` it is `undefined`, and clicking "copy"
+ * did nothing. That is why there is a fallback path with an off-screen `<textarea>` and
+ * `document.execCommand("copy")`, which works over HTTP. It resolves `true`
+ * when either of the two ways copied; `false` leaves the text selectable so the
+ * person can copy it by hand.
  */
 export async function copyText(text: string): Promise<boolean> {
   if (window.isSecureContext && navigator.clipboard?.writeText) {
@@ -14,7 +14,7 @@ export async function copyText(text: string): Promise<boolean> {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Permissão negada ou documento sem foco: tenta o caminho de reserva.
+      // Permission denied or a document without focus: try the fallback path.
     }
   }
   return copyWithSelection(text);
@@ -24,7 +24,7 @@ function copyWithSelection(text: string): boolean {
   const area = document.createElement("textarea");
   area.value = text;
   area.setAttribute("readonly", "");
-  // Fora da tela, sem rolagem e sem zoom no iOS; o foco precisa existir para o select().
+  // Off screen, without scrolling and without zoom on iOS; the focus has to exist for select().
   Object.assign(area.style, { position: "fixed", top: "0", left: "0", opacity: "0", fontSize: "16px" });
   document.body.appendChild(area);
   const previous = document.activeElement as HTMLElement | null;

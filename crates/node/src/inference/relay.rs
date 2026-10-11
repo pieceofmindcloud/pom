@@ -226,7 +226,7 @@ pub(crate) fn frame_deadline_for_path(
     }
 }
 
-/// `(base + tokens x por_token + imagens x por_imagem) x hops`.
+/// `(base + tokens x per_token + images x per_image) x hops`.
 pub(crate) fn frame_deadline(tokens: usize, images: usize, hops: usize) -> Duration {
     let per_hop = FRAME_DEADLINE_BASE
         .saturating_add(FRAME_DEADLINE_PER_TOKEN.saturating_mul(tokens.max(1) as u32))

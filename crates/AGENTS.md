@@ -74,20 +74,20 @@ content so far; `types` is a placeholder awaiting migration.
 - `routing-contract` is the seam a future private/closed routing provider would
   implement against; `routing-base` is the open one.
 
-## Pendências
+## Open items
 
-- O planner open-core ainda não está ligado ao caminho de produção; ver `TODO.md`,
-  item 5.
-- A extração de `config` e tipos compartilhados ainda não corresponde ao grafo
-  atual; ver `TODO.md`, item 6.
+- The open-core planner is not wired into the production path yet; see
+  `TODO.md`, item 5.
+- The extraction of `config` and shared types does not match the current graph
+  yet; see `TODO.md`, item 6.
 
-Os crates `enterprise-protocol`, `enterprise-plugin-fixture` e `plugin-host`
-formam a fronteira de licenciamento: o primeiro define DTOs e ABI C v1, o
-segundo é uma `cdylib` de teste e o terceiro é o único carregador de plugins.
-O licenciamento é por `plugin_code` independente, não de um produto único -
-`pom-plugin-host` sobe uma instância por plugin ativo, e os nomes com
-"enterprise" ficaram por história de git (o plugin de logs agora é `"logs"`). O contrato e as lacunas de extração
-estão em `docs/subsystems/enterprise-licensing.md`.
+The crates `enterprise-protocol`, `enterprise-plugin-fixture` and `plugin-host`
+form the licensing boundary: the first defines the DTOs and the C ABI v1, the
+second is a test `cdylib`, and the third is the only plugin loader. Licensing is
+per independent `plugin_code`, not for a single product - `pom-plugin-host`
+brings up one instance per active plugin, and the "enterprise" names remain only
+as git history (the logs plugin is now `"logs"`). The contract and the
+extraction gaps are in `docs/subsystems/enterprise-licensing.md`.
 
 ## Maintaining this file
 

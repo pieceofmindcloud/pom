@@ -1,35 +1,35 @@
 name: Release · Windows
 
-# Só roda quando você mandar. Em repositório privado o minuto de runner Windows
-# conta 2x. Ver `docs/subsystems/build-and-run.md`, seção "Release pelo GitHub
+# It only runs when you ask for it. On a private repository the Windows runner minute
+# counts 2x. See `docs/subsystems/build-and-run.md`, section "Release through GitHub
 # Actions".
 #
-# Duas variantes, escolhidas na entrada `variantes`:
-#   gpu  CUDA 13.4 + Vulkan no mesmo pom.exe (o ggml carrega os dois backends),
-#        com o llama.cpp da release do fork pieceofmindcloud/llama.cpp.
-#        CUDA para NVIDIA; Vulkan cobre NVIDIA, AMD (ex. RX 7800 XT) e Intel.
-#   cpu  só CPU, pacote leve.
-# Se falhar, falha sozinho - os workflows de Linux e macOS não dependem deste.
+# Two variants, chosen in the `variantes` input:
+#   gpu  CUDA 13.4 + Vulkan in the same pom.exe (ggml loads both backends),
+#        with the llama.cpp from the release of the fork pieceofmindcloud/llama.cpp.
+#        CUDA for NVIDIA; Vulkan covers NVIDIA, AMD (e.g. RX 7800 XT) and Intel.
+#   cpu  CPU only, light package.
+# If it fails, it fails alone - the Linux and macOS workflows do not depend on this one.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Versão da release (ex.: v0.3.0)'
+        description: 'Release version (e.g. v0.3.0)'
         required: true
         type: string
       variantes:
-        description: 'Quais pacotes gerar'
+        description: 'Which packages to build'
         required: true
         default: gpu
         type: choice
         options: [gpu, cpu, ambos]
       prerelease:
-        description: 'Publicar como prerelease'
+        description: 'Publish as a prerelease'
         required: false
         default: true
         type: boolean
       llama_tag:
-        description: 'Release do fork pieceofmindcloud/llama.cpp (vazio = a mais recente com o pacote CUDA 13.4 + Vulkan)'
+        description: 'Release of the fork pieceofmindcloud/llama.cpp (empty = the newest one with the CUDA 13.4 + Vulkan package)'
         required: false
         default: ''
         type: string
@@ -38,24 +38,24 @@ permissions:
   contents: write
 
 env:
-  # Lista reduzida enquanto o repositório é privado (minuto Windows 2x, job de
-  # no máximo 6 h). 75 Turing, 80 A100, 86 Ampere (RTX 3060 do salem),
-  # 89 Ada, 120 Blackwell (RTX 5060 Ti da ksia). A RX 7800 XT é AMD e roda
-  # pelo Vulkan. Quando o projeto for público, troque por '' (lista completa
-  # do llama.cpp, ver "Arquiteturas de GPU").
+  # A reduced list while the repository is private (Windows minute 2x, a job of
+  # at most 6 h). 75 Turing, 80 A100, 86 Ampere (an RTX 3060 on a development
+  # machine), 89 Ada, 120 Blackwell (the RTX 5060 Ti of the self-hosted runner). The RX 7800 XT is AMD and runs
+  # through Vulkan. When the project becomes public, replace this with '' (the full
+  # llama.cpp list, see "GPU architectures").
   POM_WINDOWS_CUDAARCHS: '75;80;86;89;120'
-  # A mesma do pacote do fork (cuda-13.4) e da imagem Docker: o CUDA aqui só
-  # compila os kernels MoE do próprio POM, e eles têm que casar com o
-  # ggml-cuda.dll que vem pronto.
+  # The same one as the fork's package (cuda-13.4) and the Docker image: the CUDA here
+  # only compiles POM's own MoE kernels, and they have to match the
+  # ggml-cuda.dll that arrives ready.
   CUDA_VERSION: '13.4.1'
   VULKAN_VERSION: '1.4.313.2'
   LLAMA_REPOSITORY: pieceofmindcloud/llama.cpp
 
 jobs:
-  # Em `ubuntu-latest` de propósito: a interface é a mesma para os três sistemas
-  # e o minuto de Linux conta 1x.
+  # On `ubuntu-latest` on purpose: the interface is the same for the three systems
+  # and the Linux minute counts 1x.
   ui:
-    name: Interface web
+    name: Web interface
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +73,7 @@ jobs:
           name: ui-dist-windows
           path: apps/frontend/dist
           if-no-files-found: error
-          # Só passam entre os jobs desta execução; a release guarda os pacotes.
+          # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 1
 
   build:
@@ -86,20 +86,20 @@ jobs:
       matrix:
         variante: ${{ fromJSON(inputs.variantes == 'ambos' && '["gpu","cpu"]' || format('["{0}"]', inputs.variantes)) }}
     env:
-      # Ninja em vez do gerador do Visual Studio: o CUDA com o gerador VS exige
-      # a integração MSBuild instalada no Visual Studio; com Ninja basta o
-      # nvcc e o cl.exe do ambiente de desenvolvimento.
+      # Ninja instead of the Visual Studio generator: CUDA with the VS generator needs
+      # the MSBuild integration installed in Visual Studio; with Ninja the
+      # nvcc and the cl.exe of the development environment are enough.
       CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v4
 
-      # O llama.cpp não é compilado aqui: vem pronto da release do fork, que já
-      # é compilada (e testada) lá. O POM linka as bibliotecas de importação do
-      # pacote e leva as DLLs ao lado do pom.exe; o código-fonte da mesma tag
-      # serve só para os headers (bindgen, mtmd e os kernels MoE).
+      # llama.cpp is not compiled here: it arrives ready from the fork's release, which is
+      # already compiled (and tested) there. POM links the import libraries of the
+      # package and takes the DLLs beside pom.exe; the source code of the same tag
+      # is only for the headers (bindgen, mtmd and the MoE kernels).
       #   gpu  llama-<tag>-bin-win-cuda-13.4-vulkan-x64.zip (CUDA + Vulkan)
       #   cpu  llama-<tag>-bin-win-cpu-x64.zip
-      - name: Baixar o llama.cpp do fork
+      - name: Download llama.cpp from the fork
         id: llama
         shell: bash
         env:
@@ -117,15 +117,15 @@ jobs:
               fi
             done
           fi
-          test -n "$tag" || { echo "nenhuma release do fork tem o pacote CUDA 13.4 + Vulkan" >&2; exit 1; }
-          echo "release do fork: $tag"
+          test -n "$tag" || { echo "no release of the fork has the CUDA 13.4 + Vulkan package" >&2; exit 1; }
+          echo "fork release: $tag"
           if [ "${{ matrix.variante }}" = gpu ]; then
             package="llama-${tag}-bin-win-cuda-13.4-vulkan-x64.zip"
           else
             package="llama-${tag}-bin-win-cpu-x64.zip"
           fi
-          # Caminho Unix: com `D:\a\_temp` o tar do Git Bash lê o `D:` como
-          # um host remoto ("Cannot connect to D: resolve failed").
+          # Unix path: with `D:\a\_temp` the Git Bash tar reads `D:` as
+          # a remote host ("Cannot connect to D: resolve failed").
           root="$(cygpath -u "$RUNNER_TEMP")/llama"
           mkdir -p "$root/prebuilt" "$root/source"
           gh release download "$tag" -R "$LLAMA_REPOSITORY" -p "$package" -D "$root"
@@ -138,7 +138,7 @@ jobs:
           curl -fsSL -o "$root/source.tar.gz" "https://github.com/$LLAMA_REPOSITORY/archive/refs/tags/$tag.tar.gz"
           tar --force-local -xzf "$root/source.tar.gz" --strip-components=1 -C "$root/source"
           for lib in llama ggml ggml-base llama-common; do
-            test -f "$root/prebuilt/$lib.lib" || { echo "o pacote $package não traz $lib.lib" >&2; exit 1; }
+            test -f "$root/prebuilt/$lib.lib" || { echo "the package $package does not bring $lib.lib" >&2; exit 1; }
           done
           {
             echo "LLAMA_SOURCE=$(cygpath -w "$root/source")"
@@ -153,52 +153,52 @@ jobs:
         with:
           key: ${{ matrix.variante }}-llama-${{ steps.llama.outputs.tag }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Acesso SSH ao repositório do motor (pom-plugin-llama.cpp)
+      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
 
-      - name: Chave do github.com no known_hosts
+      - name: github.com key in known_hosts
         shell: bash
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts
 
-      - name: Validar destino do autoclone no Windows
+      - name: Validate the autoclone destination on Windows
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force target | Out-Null
-          # llama-cpp-sys-2 vem do repositório pom-plugin-llama.cpp (dependência git): o
-          # arquivo de teste está no checkout que o cargo acabou de baixar.
+          # llama-cpp-sys-2 comes from the pom-plugin-llama.cpp repository (a git dependency): the
+          # test file is in the checkout cargo has just downloaded.
           $meta = cargo metadata --format-version 1 --locked | ConvertFrom-Json
           $sys = ($meta.packages | Where-Object { $_.name -eq 'llama-cpp-sys-2' }).manifest_path
           rustc --test (Join-Path (Split-Path -Parent $sys) 'src/build_support.rs') -o target/build-support-test.exe
           .\target\build-support-test.exe
 
-      # O bindgen procura a libclang por conta própria e, quando não acha, o
-      # erro sai como "unable to find libclang" no meio do build do
-      # llama-cpp-sys. A imagem do runner traz o LLVM; apontar explicitamente
-      # tira essa variável do caminho.
-      - name: Apontar a libclang para o bindgen
+      # bindgen looks for libclang on its own and, when it does not find it, the
+      # error comes out as "unable to find libclang" in the middle of the
+      # llama-cpp-sys build. The runner image brings LLVM; pointing at it explicitly
+      # takes that variable out of the way.
+      - name: Point libclang at bindgen
         shell: bash
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
 
-      # cl.exe, lib.exe e o linker do MSVC no PATH: o nvcc precisa do cl.exe
-      # como compilador host e os kernels MoE do POM são empacotados com lib.exe.
+      # cl.exe, lib.exe and the MSVC linker on PATH: nvcc needs cl.exe
+      # as the host compiler and POM's MoE kernels are packaged with lib.exe.
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Garantir ninja
+      - name: Make sure ninja is there
         shell: pwsh
         run: |
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
           ninja --version
 
-      # Só os componentes que o build usa, direto dos arquivos "redist" da
-      # NVIDIA (o instalador completo leva ~3 GB e muitos minutos). O manifesto
-      # da versão diz o caminho de cada componente.
-      - name: Instalar CUDA ${{ env.CUDA_VERSION }}
+      # Only the components the build uses, straight from NVIDIA's "redist"
+      # files (the full installer takes ~3 GB and many minutes). The version's
+      # manifest gives the path of each component.
+      - name: Install CUDA ${{ env.CUDA_VERSION }}
         if: matrix.variante == 'gpu'
         shell: pwsh
         run: |
@@ -207,15 +207,15 @@ jobs:
           $manifest = Invoke-RestMethod "$base/redistrib_$env:CUDA_VERSION.json"
           $cuda = 'C:\cuda'
           New-Item -ItemType Directory -Force $cuda | Out-Null
-          # No CUDA 13 o CCCL virou `cccl` e o NVVM (cicc, que o nvcc chama)
-          # saiu do pacote do nvcc para `libnvvm`.
+          # In CUDA 13 the CCCL became `cccl` and the NVVM (cicc, which nvcc calls)
+          # left the nvcc package for `libnvvm`.
           $componentes = 'cuda_nvcc','libnvvm','cuda_cudart','cccl','cuda_nvrtc','cuda_nvtx',
                          'cuda_profiler_api','libcublas','visual_studio_integration','cuda_crt'
           foreach ($c in $componentes) {
             $item = $manifest.$c.'windows-x86_64'
-            if (-not $item) { Write-Host "sem $c nesta versão"; continue }
+            if (-not $item) { Write-Host "no $c in this version"; continue }
             $zip = Join-Path $env:RUNNER_TEMP "$c.zip"
-            Write-Host "baixando $c $($manifest.$c.version)"
+            Write-Host "downloading $c $($manifest.$c.version)"
             curl.exe -fsSL -o $zip "$base/$($item.relative_path)"
             $tmp = Join-Path $env:RUNNER_TEMP $c
             Expand-Archive -Force $zip $tmp
@@ -226,7 +226,7 @@ jobs:
           Add-Content $env:GITHUB_PATH "$cuda\bin"
           & "$cuda\bin\nvcc.exe" --version
 
-      - name: Instalar Vulkan SDK ${{ env.VULKAN_VERSION }}
+      - name: Install the Vulkan SDK ${{ env.VULKAN_VERSION }}
         if: matrix.variante == 'gpu'
         shell: pwsh
         run: |
@@ -235,13 +235,13 @@ jobs:
           curl.exe -fsSL -o $exe "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe"
           & $exe --accept-licenses --default-answer --confirm-command install
           $sdk = "C:\VulkanSDK\$env:VULKAN_VERSION"
-          if (-not (Test-Path "$sdk\Lib\vulkan-1.lib")) { throw "Vulkan SDK não instalou em $sdk" }
+          if (-not (Test-Path "$sdk\Lib\vulkan-1.lib")) { throw "Vulkan SDK did not install in $sdk" }
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=$sdk"
           Add-Content $env:GITHUB_PATH "$sdk\Bin"
 
-      # pwsh, não bash: no Git Bash o /usr/bin/link.exe do MSYS aparece antes
-      # do linker do MSVC no PATH.
-      - name: Compilar (${{ matrix.variante }})
+      # pwsh, not bash: in Git Bash the MSYS /usr/bin/link.exe shows up before
+      # the MSVC linker on PATH.
+      - name: Compile (${{ matrix.variante }})
         shell: pwsh
         run: |
           if ('${{ matrix.variante }}' -eq 'gpu') {
@@ -258,27 +258,27 @@ jobs:
           name: ui-dist-windows
           path: pacote/apps/frontend/dist
 
-      # O binário fica na raiz do pacote com `apps/` ao lado: `project_root()`
-      # sobe a partir do diretório do executável, então a pasta descompactada
-      # funciona em qualquer lugar, sem `POM_HOME`. O ícone já viaja dentro do
-      # .exe (`crates/node/build.rs`), então aqui não há nada a copiar.
+      # The binary sits at the package root with `apps/` beside it: `project_root()`
+      # walks up from the executable's directory, so the unpacked folder
+      # works anywhere, with no `POM_HOME`. The icon already travels inside the
+      # .exe (`crates/node/build.rs`), so there is nothing to copy here.
       #
-      # O `pom-plugin-host.exe` vai ao lado do `pom.exe`: é por ali que o pom
-      # inicia cada plugin.
+      # `pom-plugin-host.exe` goes beside `pom.exe`: that is how pom
+      # starts each plugin.
       #
-      # No Windows o CUDA é linkado dinamicamente (`llama-cpp-sys-2/build.rs`):
-      # o pom.exe precisa de cudart/cublas/cublasLt ao lado, redistribuíveis
-      # pela licença da NVIDIA; vêm do pacote cudart da mesma release do fork.
-      # vulkan-1.dll vem com o driver de vídeo.
-      - name: Montar o pacote
+      # On Windows the CUDA is linked dynamically (`llama-cpp-sys-2/build.rs`):
+      # pom.exe needs cudart/cublas/cublasLt beside it, redistributable
+      # under NVIDIA's licence; they come from the cudart package of the same fork release.
+      # vulkan-1.dll comes with the video driver.
+      - name: Assemble the package
         shell: bash
         run: |
           set -euo pipefail
           nome="pom-${{ inputs.version }}-x86_64-pc-windows-msvc"
           llama="$(cygpath -u "$RUNNER_TEMP")/llama"
-          # As DLLs do llama.cpp da release do fork: llama, ggml, os backends
-          # carregáveis (ggml-cpu-*, e no gpu ggml-cuda e ggml-vulkan) e o
-          # OpenMP. As *-impl.dll são das ferramentas do llama.cpp, não do POM.
+          # The llama.cpp DLLs from the fork's release: llama, ggml, the loadable
+          # backends (ggml-cpu-*, and on the gpu ggml-cuda and ggml-vulkan) and
+          # OpenMP. The *-impl.dll are of llama.cpp's tools, not of POM.
           for dll in "$llama"/prebuilt/*.dll; do
             case "$(basename "$dll")" in *-impl.dll) continue ;; esac
             cp "$dll" pacote/
@@ -292,7 +292,7 @@ jobs:
             ls pacote/ggml-cuda.dll pacote/ggml-vulkan.dll >/dev/null
           fi
           cp target/release/pom.exe pacote/
-          # Sem o host ao lado do pom.exe nenhum plugin instala
+          # Without the host beside pom.exe no plugin installs
           # (`plugin_host::host_executable`).
           cp target/release/pom-plugin-host.exe pacote/
           cp README.md pacote/ 2>/dev/null || true
@@ -304,13 +304,13 @@ jobs:
           name: pacote-windows-${{ matrix.variante }}
           path: pom-*.zip
           if-no-files-found: error
-          # Só passam entre os jobs desta execução; a release guarda os pacotes.
+          # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 1
 
-  # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow a
-  # rodar cria a release, os outros anexam o arquivo deles.
+  # Each system publishes its own package on the same tag: the first workflow to
+  # run creates the release, the others attach their file.
   release:
-    name: Publicar
+    name: Publish
     needs: build
     if: always() && !cancelled()
     runs-on: ubuntu-latest
@@ -320,7 +320,7 @@ jobs:
           pattern: pacote-windows-*
           merge-multiple: true
           path: pacotes
-      - name: Conferir pacotes
+      - name: Check the packages
         run: ls -la pacotes && test -n "$(ls pacotes)"
       - uses: softprops/action-gh-release@v2
         with:

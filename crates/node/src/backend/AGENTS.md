@@ -49,43 +49,42 @@ legitimate pipeline control call; the handler still verifies the signed admin
 mutation where authority changes. Setup and the separate inference listener
 are marked out of scope in the table and are not silently treated as gateway
 routes.
-Os testes do gateway cobrem essa diferença por método: `GET /api/ui/deployments`
-é leitura `NodeAdmin`, enquanto as ações de implantação e parada permanecem
-`AdminOnly`; chamadas internas autenticadas continuam independentes do perfil
-local do receptor.
+The gateway's tests cover that difference per method: `GET /api/ui/deployments`
+is a `NodeAdmin` read, while the deploy and undeploy actions stay `AdminOnly`;
+authenticated internal calls stay independent of the receiver's local profile.
 
-O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
-de geração dispara `reload_model` em paralelo para os peers ociosos da pipeline
-planejada. The event is idempotent and answers at once: `ready`, or `loading`
+The gateway records activity per peer in `reqlog::RequestActivity` and the
+generation gateway fires `reload_model` in parallel to the idle peers of the planned
+pipeline. The event is idempotent and answers at once: `ready`, or `loading`
 when the peer was idle (the call starts the load) or already loading. The
 gateway repeats it every second until every planned peer is `ready`, with a
 15 min ceiling, instead of holding one call open for the whole model load;
 a 503 carries the reason a load cannot happen and ends the wait. After the
 wake it waits for the peers' announcement and plans again
-(`generate_stream_inner`, span `pipeline_wake`). O descarregamento continua
-sendo avaliado pelo monitor já existente.
+(`generate_stream_inner`, span `pipeline_wake`). The unloading keeps being
+evaluated by the monitor that already exists.
 
-O `serve_with_quic` encerra o endpoint HTTP/3 com um canal one-shot, para que
-um pedido de parada emitido antes do primeiro poll da task não seja perdido.
-Depois da drenagem TCP, ele aguarda o endpoint QUIC por no máximo 2 s e aborta
-a task se o transporte não fechar; assim o supervisor do runtime não fica
-preso em `endpoint.wait_idle()` durante um reload. O supervisor tem 5 s no
-total para concluir a geração anterior.
+`serve_with_quic` closes the HTTP/3 endpoint with a one-shot channel, so a stop
+request emitted before the task's first poll is not lost. After the TCP
+drainage, it waits for the QUIC endpoint for at most 2 s and aborts the task if
+the transport does not close; that way the runtime's supervisor does not get
+stuck in `endpoint.wait_idle()` during a reload. The supervisor has 5 s in total
+to finish the previous generation.
 
-`POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
-somente o endereço anunciado deste processo e não recebe alvo nem repassa a
-chamada. `GET`/`POST /api/ui/network/relay` (`catalog.rs::get_relay`,
+`POST /api/ui/network/advertise-addr` is `InferNodeAdmin` because it updates
+only this process's announced address and receives no target nor forwards the
+call. `GET`/`POST /api/ui/network/relay` (`catalog.rs::get_relay`,
 `save_relay`) has the same scope for the same reason: the relay options
 decide how this machine's own bandwidth is used. Saving writes
 `Config.relay` and calls `RelayGate::set`, with no restart.
 `POST /api/ui/network/node-name` (`catalog.rs::save_node_name`), same scope,
 writes `Config.node_name` and renames the node live through
 `Network::set_hostname` and `ClusterLogs::set_identity`; `/api/ui/node` carries
-the configured `node_name` beside the effective `hostname`. As rotas administrativas com parâmetro de nó usam a sintaxe `:id`
-do Axum 0.7. A webapp serve a SPA por um fallback do router, então um handler
-concreto de POST ou DELETE vence e um caminho mutável desconhecido, depois da
-autorização, devolve 404, não o 405 produzido por um wildcard registrado apenas
-para GET. Perfis sem escopo continuam recusados antes do fallback.
+the configured `node_name` beside the effective `hostname`. The administrative routes with a node
+parameter use Axum 0.7's `:id` syntax. The webapp serves the SPA through a router
+fallback, so a concrete POST or DELETE handler wins and an unknown mutable path, after the
+authorization, returns 404, not the 405 produced by a wildcard registered only for
+GET. Profiles without scope keep being refused before the fallback.
 
 Two decisions the table cannot express, because they depend on the body rather
 than the path, live in their handlers: `POST /api/ui/leave` (leaving is
@@ -123,23 +122,23 @@ profile policy remains the effective authorization boundary.
   `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
-  `Caller`. Uma chave desconhecida é consultada no principal pelo canal interno
-  autenticado, enviando só o hash, e falha fechada em timeout ou erro. A porta de inferência não
-  usa a `connection_key` compartilhada somente em redes privadas; em redes
-  públicas exige transporte TLS e o marcador interno, enquanto os callbacks de
-  resultado validam o `Ticket` por quadro.
-- `/handshake` é a prova de admissão da descoberta privada. A comparação exige
-  que a chave configurada e a recebida sejam ambas não vazias; chave vazia
-  nunca transforma um processo de setup em membro do enxame.
-- `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
-  geração, snapshots/planejamento, HTTP e testes: `GatewayState`,
+  `Caller`. An unknown key is consulted on the principal through the authenticated
+  internal channel, sending only the hash, and it fails closed on timeout or error. The inference
+  port does not use the shared `connection_key` alone on private networks; on public
+  networks it demands TLS transport and the internal marker, while the result callbacks validate
+  the per-frame `Ticket`.
+- `/handshake` is the admission proof of the private discovery. The comparison demands
+  that the configured key and the received one both be non-empty; an empty key never turns a
+  setup process into a member of the swarm.
+- `gateway/` - the module split into state/selection, budgets and generation types,
+  generation, snapshots/planning, HTTP and tests: `GatewayState`,
   `start_gateway_with_ready`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), the bounded remote-token
   callback route (`POST /v1/remote-stream-result`), the deployment-wide KV
   snapshot fan-out (`resolve_plan_for_model`, `snapshot_deployment`,
-  `restore_deployment`, `erase_snapshot` — all-or-nothing across hops, mirroring
+  `restore_deployment`, `erase_snapshot` - all-or-nothing across hops, mirroring
   `rewind_sessions`/`release_sessions`; used by `/admin/slots`), the persistent
   prefix cache (Phase 3, `slot_persist_prefix_cache`): `build_prefix_disk_index`
   builds `GatewayState.prefix_disk`, `generate_stream_with_stops` spills each
@@ -151,45 +150,45 @@ profile policy remains the effective authorization boundary.
   `docs/subsystems/inference.md`, "Adaptive chunk"), capped by
   `prefill_chunk_tokens` and `n_batch`, and the `testkit`
   test scaffold (peer/state_with/body_of).
-- `db.rs` - único armazenamento SQLite local, interno ao crate: schema criado no arranque,
-  WAL/timeout, implantações, API keys e revogações, preferências térmicas,
-  segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas. Cada admin efetivo mantém sua própria réplica da auditoria. The
+- `db.rs` - the only local SQLite store, internal to the crate: schema created at startup,
+  WAL/timeout, deployments, API keys and revocations, thermal preferences,
+  the Hugging Face secret, the catalog's durable history and the conversation history. Each
+  effective admin keeps its own replica of the audit. The
   cluster process log is not here: the logs plugin keeps it in its own
-  database, and the schema drops the old `cluster_logs` tables. O histórico identifica
-  modelos inteiros pelo caminho local, sem
-  hashear os pesos durante o registro do catálogo; hashes de conteúdo ficam
-  nas fronteiras explícitas de implantação, fatiamento e transferência.
-  `PomDb` mantém uma conexão configurada no arranque, reutilizada
-  por todas as operações; um mutex explícito serializa escritas e a mesma
-  conexão também faz leituras curtas em ordem, eliminando abertura e DDL por
-  operação. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
-  para um volume e, sem ele, o banco fica na raiz do projeto.
+  database, and the schema drops the old `cluster_logs` tables. The history identifies
+  whole models by the local path, without
+  hashing the weights during the catalog registration; content hashes live
+  on the explicit boundaries of deployment, slicing and transfer.
+  `PomDb` keeps one connection configured at startup, reused
+  by every operation; an explicit mutex serializes writes and the same
+  connection also does short reads in order, eliminating the opening and the DDL per
+  operation. The path comes from `config::database_path()`; `POM_DB_DIR` points
+  to a volume and, without it, the database sits at the project root.
   `known_public_networks` is the table of every public network this node has
   heard of (`remember_public_networks`, `known_public_networks`): one row per
   fingerprint with the listing's JSON view, folded search text and first/last
   seen times, pruned by age and capped on every write.
-  `local_setting_keys_with_prefix` permite que o runtime restaure dinamicamente
-  os códigos de plugins persistidos sem manter uma lista compilada no binário.
+  `local_setting_keys_with_prefix` lets the runtime dynamically restore the
+  persisted plugin codes without keeping a compiled list in the binary.
 - `webapp.rs` - serves the frontend bundle from disk at `/admin-ui/`; `/`
   redirects there and the static surface is covered by the same local-only
   boundary, while nothing is compiled into the binary.
-- `model_provider.rs` - API agnóstica de status do CLI, autenticação, busca,
-  licença, detalhes, espaço e downloads remotos. Injeta `DynModelProvider`, usa
-  `webui::Job` como estado persistente, `CancellationToken` por download e
-  semáforo de dois processos; não monta comandos nem expõe token ou stderr.
-  Cada download escolhe a primeira pasta de modelos não vazia resolvida da
-  configuração, passa essa pasta ao provider e registra o destino no job. A
-  resposta de storage expõe as pastas elegíveis. O status estruturado em
-  `GET /api/ui/model-provider/status` permite à UI distinguir CLI ausente,
-  login necessário e sessão autenticada.
-  `GET` e `POST /api/ui/model-provider/config` expõem somente a máscara e a
-  fonte efetiva do token, e o POST salva o segredo em `pom.db` com modo
-  restrito e atualiza o `HfTokenStore` sem reinício. O segredo nunca aparece
-  em log, erro ou resposta.
-  O handler clona o `ModelFile` antes de criar a task `'static`, não mantém
-  empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
-  arquivos locais emprestam o nome a cada iteração.
+- `model_provider.rs` - an API-agnostic wrapper for the CLI's status, authentication, search,
+  license, details, space and remote downloads. It injects `DynModelProvider`, uses
+  `webui::Job` as persistent state, a `CancellationToken` per download and
+  a two-process semaphore; it assembles no commands and exposes no token or stderr.
+  Each download picks the first non-empty models folder resolved from the
+  configuration, passes that folder to the provider and records the destination in the job. The
+  storage response exposes the eligible folders. The structured status in
+  `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
+  authenticated session apart.
+  `GET` and `POST /api/ui/model-provider/config` expose only the mask and the
+  effective source of the token, and the POST saves the secret in `pom.db` with a restricted
+  mode and updates the `HfTokenStore` without a restart. The secret never appears
+  in a log, an error or a response.
+  The handler clones the `ModelFile` before creating the `'static` task, it does not keep
+  provider-response borrows in `tokio::spawn`, and the local file searches borrow the name on
+  each iteration.
 - `webui/` - the `/api/ui/*` control API behind the dashboard, split into
   `mod.rs`, `routes/` (common, infer, node and admin), `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
   `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs`, `trust.rs` and test fragments:
@@ -200,7 +199,7 @@ profile policy remains the effective authorization boundary.
   `logs_plugin_required` without it; `POST /api/ui/network/logs`, primary
   only, refuses turning collection on unless the logs plugin is active on that
   node, while turning it off always works), slice retention
-  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
+  and the authenticated CRUD of the conversation history (`/api/ui/chat/history`).
   `GET /api/ui/plugins` (all profiles) lists local state for independent
   plugins restored or seen by the runtime (`crate::plugins`), each with its
   own features, validity, authenticated usage and updates.
@@ -237,48 +236,45 @@ profile policy remains the effective authorization boundary.
   `/api/ui/network/geo/{countries,cities,nearest}` routes read the offline
   city database embedded in the binary (`utils/geo.rs`) for the location
   editor and use `InferNodeAdmin`; they do not create or change network data
-  and look nothing up on the internet. `GET /api/ui/deployments` é `NodeAdmin` para permitir
-  que node veja o inspetor somente leitura, enquanto mutações e ações de
-  implantação continuam sob a política administrativa existente.
-  superfície de autoridade expõe o contrato de apresentação em
+  and look nothing up on the internet. `GET /api/ui/deployments` is `NodeAdmin` so a
+  `node` profile can see the read-only inspector, while mutations and deployment actions stay
+  under the existing administrative policy.
+  The authority surface exposes the presentation contract in
   `/api/ui/network/admin-authority`. There is no route that changes a
   node's role in place (infer-to-node and node-to-infer were removed): a role
-  is set at admission. Ofertas de autoridade compartilham o feed
-  de ofertas para que o sino do browser não escolha o mecanismo de concessão ou
-  assinatura.
-  **A raiz de confiança é anterior a tudo isso** e vive em `webui/trust.rs`:
-  `GET/POST /api/ui/network/trust-anchor` mostra a impressão digital da âncora
-  e o estado ancorado/por ancorar, e instala a cadeia que o operador
-  transportou. A rota é `CommonOrInternal` de propósito - um `profile: admin`
-  por ancorar não passa em `AdminOnly`, que é exatamente o estado em que o
-  operador precisa dela - e não exige a chave de conexão do cluster, pelo
-  motivo registrado no cabeçalho do arquivo. As três travas da instalação são
-  do servidor: loopback medido no `serve::PeerAddr` (nunca `admin_exposure`,
-  que pode estar aberta à rede, e nunca `X-Forwarded-For`), nó ainda sem
-  âncora, e a impressão digital digitada pelo operador conferida contra a
-  cadeia colada. A validação e a conferência são as de `admin_trust`
-  (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
-  `pom admin-anchor` usa: não existe segunda política.
-  `GET /api/ui/network/trust-share` serializa a cadeia local, inclusive o
-  bloco `setup` assinado pelo wizard. Se uma cadeia primária antiga não tiver
-  esse bloco, a rota recupera os dados persistidos em `pom.json`/`pom.db`,
-  assina-os com o principal local e grava a cadeia antes do download; uma
-  autoridade secundária não pode fabricar esses metadados.
-  `POST /api/ui/chat-key` é permitido a `node` porque cria somente a chave
-  local `pom-<node_id>` e a registra no principal pela rota interna assinada
-  (só o hash vai; o segredo fica em `local_secrets`, `PomDb::node_api_key`, e
-  é trocado quando não bate mais com uma chave ativa);
-  a exceção não permite criar, revogar ou validar chaves de terceiros.
-  A leitura `/api/cluster/network-settings` é interna e somente leitura: um
-  nó adota do principal o documento completo de `NetworkSettings`, inclusive
-  visibilidade e metadados, depois do primeiro `Announce` autenticado.
-  `GET /api/ui/infer/heads?model=...` é a única leitura dedicada das cabeças
-  de layer zero: entrega as candidatas e a escolha do planejador, sem peers
-  gerais nem ações de controle. A rota é `InferNodeAdmin`, portanto admin e
-  infer podem lê-la. A carga de cada candidata vem do próprio `/api/ui/node` e
-  fica `null` quando o relatório não chega, para que a UI mostre indisponível
-  em vez de zero. A validade do RTT é de cinco minutos; valores vencidos
-  aparecem como diagnóstico, mas não entram na seleção da geração.
+  is set at admission. Authority offers share the offers feed so the browser's bell does not
+  choose the granting or signing mechanism.
+  **The trust anchor predates all of that** and lives in `webui/trust.rs`:
+  `GET/POST /api/ui/network/trust-anchor` shows the anchor's fingerprint and the anchored/not
+  yet anchored state, and installs the chain the operator
+  carried over. The route is `CommonOrInternal` on purpose - an unanchored `profile: admin`
+  does not pass `AdminOnly`, which is exactly the state where the operator needs it - and it
+  does not demand the cluster's connection key, for the reason recorded in the file's header.
+  The installation's three locks are the server's: loopback measured in `serve::PeerAddr` (never
+  `admin_exposure`, which may be open to the network, and never `X-Forwarded-For`), a node still
+  without an anchor, and the fingerprint typed by the operator checked against the chain pasted.
+  The validation and the check are `admin_trust`'s
+  (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), the same ones
+  `pom admin-anchor` uses: there is no second policy.
+  `GET /api/ui/network/trust-share` serializes the local chain, including the
+  `setup` block signed by the wizard. If an old primary chain does not have
+  that block, the route recovers the data persisted in `pom.json`/`pom.db`, signs it with the
+  local principal and writes the chain before the download; a secondary authority cannot
+  fabricate that metadata.
+  `POST /api/ui/chat-key` is allowed to `node` because it only creates the local
+  key `pom-<node_id>` and registers it on the principal through the signed internal route
+  (only the hash goes; the secret stays in `local_secrets`, `PomDb::node_api_key`, and
+  it is swapped when it no longer matches an active key);
+  the exception does not allow creating, revoking or validating other people's keys.
+  The read `/api/cluster/network-settings` is internal and read-only: a
+  node adopts the complete `NetworkSettings` document from the principal, including
+  visibility and metadata, after the first authenticated `Announce`.
+  `GET /api/ui/infer/heads?model=...` is the only dedicated read of the layer-zero
+  heads: it delivers the candidates and the planner's choice, without general peers or control
+  actions. The route is `InferNodeAdmin`, so admin and infer can read it. Each candidate's load
+  comes from its own `/api/ui/node` and stays `null` when the report does not arrive, so the UI
+  shows it unavailable instead of zero. The RTT's validity is five minutes; expired values
+  appear as a diagnostic, but they do not enter the generation's selection.
   `NodeInfo` carries the same thermal policy used by the runtime. It also
   carries `pom_dev_mode`, which is true only for the exact startup environment
   value `POM_DEV_MODE=1`; this flag controls only local UI visibility, so every
@@ -291,23 +287,23 @@ profile policy remains the effective authorization boundary.
   matching `If-None-Match` returns 304 without a body, and the cluster keeps
   a 2s fingerprinted snapshot cache that bypasses its TTL on known state
   changes.
-  A leitura de cada peer no `/api/ui/cluster` percorre `gateway_candidates()`,
-  não um endereço só, e alimenta a memória de falha do `RouteTable`
-  (`mark_failure`/`mark_success`) - a mesma do caminho de inferência. Sem
-  candidato utilizável ela chama `Network::request_peer_addresses` e devolve
-  `rediscovering: true` em vez de `unreachable`, e `model_inventory[]` nomeia em
-  `unreadable_nodes` os pares de quem a cobertura depende sem conseguir ler.
-  O `PeerView.load` é a carga em voo reportada pelo próprio peer: para o nó
-  local vem do `LoadTracker` local, e para peers remotos vem do JSON de
-  `/api/ui/node`. Leitura remota ausente ou inválida permanece `null`, porque
-  o zero do tracker local significa apenas que nenhuma requisição passou por
-  este gateway.
-  `model_inventory[].complete` e `/api/ui/chat/capabilities` só confirmam uma
-  pipeline quando cada peer contribuinte tem `runtime_capacity` confirmado
-  pelo `/health` ou está `idle`; capacidades de gossip durante o boot ficam
-  visíveis como cobertura, mas não são apresentadas como prontas.
-  Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/p2p-network.md`,
-  "Endereço que deixou de responder".
+  The read of each peer in `/api/ui/cluster` walks `gateway_candidates()`,
+  not a single address, and feeds the `RouteTable`'s failure memory
+  (`mark_failure`/`mark_success`) - the same one the inference path uses. With no usable
+  candidate it calls `Network::request_peer_addresses` and returns
+  `rediscovering: true` instead of `unreachable`, and `model_inventory[]` names in
+  `unreadable_nodes` the peers whose coverage it depends on without being able to read them.
+  `PeerView.load` is the in-flight load reported by the peer itself: for the local node it comes
+  from the local `LoadTracker`, and for remote peers it comes from the JSON of
+  `/api/ui/node`. A missing or invalid remote read stays `null`, because
+  the local tracker's zero only means no request went through
+  this gateway.
+  `model_inventory[].complete` and `/api/ui/chat/capabilities` only confirm a
+  pipeline when every contributing peer has `runtime_capacity` confirmed
+  by `/health` or is `idle`; gossip capacities during the boot stay
+  visible as coverage, but they are not presented as ready.
+  Temporary IPv6 addresses run on their own: see `docs/subsystems/p2p-network.md`,
+  "The address that stopped answering".
   `plan` reads the GGUF header from the node that owns `model_path` and, when
   calculating budget-driven ranges, includes the configured context, sessions
   and K/V cache types in the byte arithmetic. The response exposes weight,
@@ -359,76 +355,76 @@ profile policy remains the effective authorization boundary.
   older range. Jobs report named phases, source bytes read, current file, rate,
   ETA when measurable, terminal errors and partial outputs.
   (local or forwarded to a peer).
-- `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
-  caminho de apply/launch dos demais ajustes globais. f16 continua padrão, f32
-  é a opção sem perda sem negociação extra; `DeployPlan.capabilities` para
-  f8/i4 bloqueia os formatos com perda quando algum peer não anuncia suporte. O redeploy consulta
-  `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
-  evitando uma implantação parcialmente misturada.
-- **Implantações são versionadas** (`Deployment`, `DEPLOYMENT_VERSION = 2`,
-  `models/deployment.rs`): `versions` guarda cada `RuntimeParams` que já rodou
-  sob o mesmo `deploy_id`, `active_version` aponta a que está no ar e `nodes` é
-  a lista achatada da versão ativa. `POST /api/ui/deploy` (`deploy_endpoint`),
-  antes de cunhar um id, procura no `pom.db` local uma implantação de mesma
-  forma (`deployment::matching_shape`: `kind` + `DeploymentIdentity` provada +
-  conjunto de `(node_id, faixa, tp_rank)`); achando, passa
-  `RecordPlan::ReuseVersion` para `run`, que chama `upsert_version` (reusa a
-  versão de `params` iguais, senão anexa `max+1`). Sem prova de identidade,
-  `RecordPlan::New` com id novo. A resposta carrega `deploy_id` e `reused`. Toda
-  leitura de registro (`PomDb`, `find_record`, `list_deployments`) roda
-  `ensure_versions` para sintetizar a v1 de um registro v1 legado. `find_record`
-  reúne a cópia local e as cópias dos peers participantes e escolhe, por
-  `activated_at` e depois `active_version`, a versão corrente antes de
-  `redeploy`/`activate` a usarem.
-- `POST /api/ui/deployments/:id/redeploy` (`redeploy_endpoint` →
-  `run_redeploy`, `deploy/`): mesmo `deploy_id`, mesmas máquinas e faixas.
-  `RedeployRequest` carrega `params` (opcional), `version` (opcional) e
-  `per_node`; informe um dos dois (400 quando faltam os dois ou `version` não
-  existe). `RedeployRequest::resolve` roda antes do desvio TP: `version`
-  reativa uma versão registrada sem anexar; `params` novos anexam - ou
-  reativam - pela mesma comparação do `deploy_endpoint`; muta o registro e
-  devolve os parâmetros base. A subida usa `no.config` da versão ativa (os
-  parâmetros com os ajustes por máquina embutidos), então reimplantar uma
-  versão devolve a cada máquina o que ela rodava. Fotografa o `NodeConfig`
-  vivo de cada nó, **descarrega** todo peer que anuncia o `deploy_id`
-  (`release_one` em paralelo), e **sobe uma máquina de cada vez** esperando
-  cada uma reportar `ready` (`wait_for_peer_serving_with_timeout`). Funciona
-  mesmo se um nó não estava servindo: `/api/ui/reconfigure` aceita um
-  `ReconfigureSlice` opcional (`webui/`) e `reconfigure_local` reconstrói o
-  `NodeConfig` dele. O arquivo é resolvido em três degraus: o `model_path`
-  fotografado antes do unload; o `part_sha256` do registro
-  (`transfer::find_part`); e, quando o registro não tem hash de parte (modelo
-  inteiro, ou fatia de rodada antiga), o catálogo local casando rótulo do
-  modelo + faixa de camadas (`resolve_deployment_slice_file`). Só quando os
-  três falham é erro com o nome da faixa. `DeploymentNode.source_model_path`
-  (`models/deployment.rs`, `#[serde(default)]`) grava o arquivo que cada nó
-  carregou, para o redeploy achá-lo mesmo com o nó fora do ar. `finish_redeploy`
-  grava por máquina o que foi aceito, sincroniza o snapshot da versão ativa
-  (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
-  máquina. Tensor Parallelism ainda usa o caminho antigo
-  (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
-- `POST /api/ui/deploy/node/options` revarre o catálogo real do
-  `target_node_id` e devolve somente as faixas fatiadas e o GGUF inteiro
-  materializados nessa máquina, além dos defaults locais de GPU/KV. A tela não
-  usa o plano antigo como fallback quando já conhece o grupo do modelo.
-  `POST /api/ui/deploy/node` valida novamente essa
-  opção no alvo, aplica `cache_type_k`/`cache_type_v` pela API local ou remota e
-  lança somente a máquina escolhida. Quando há `deploy_id`, a operação anexa
-  uma versão de topologia e muda `kind` para `mixed` quando uma cabeça whole e
-  uma fatiada passam a coexistir. `POST /api/ui/deploy/node/remove` descarrega
-  somente o alvo e anexa uma versão com as máquinas restantes; remoção parcial
-  mantém o registro servindo, enquanto a última grava uma versão vazia e o
-  deixa fora da seleção de deployments ativos. O snapshot vazio é encaminhado
-  aos peers que já conheceram o deployment para retirar a máquina removida sem
-  tocar a inferência dos demais.
-- `gateway/generation.rs` - `log_early_outcome` garante que toda requisição
-  aceita deixe **exatamente uma** linha de desfecho. As saídas antecipadas de
-  `generate_stream_inner` (cancelamento antes do início, orçamento de prompt,
-  nenhum pipeline válido, visão sem projetor) eram mudas: o registo mostrava o
-  pedido a chegar e o ajuste do limite de saída, e depois nada - nem
-  `Pipeline planejado`, nem erro. Para o cliente isso é um pedido pendurado, e
-  foi o que pôs um agente em recuo exponencial a repetir o mesmo pedido em
-  produção a 2026-09-08.
+- `RuntimeParams.hidden_state_dtype` is persisted and forwarded through the same
+  apply/launch path as the other global knobs. f16 stays the default, f32
+  is the lossless option without extra negotiation; `DeployPlan.capabilities` for
+  f8/i4 blocks the lossy formats when some peer does not announce support. The redeploy queries
+  `/api/ui/node` of every participant before reconfiguring any node,
+  avoiding a partially mixed deployment.
+- **Deployments are versioned** (`Deployment`, `DEPLOYMENT_VERSION = 2`,
+  `models/deployment.rs`): `versions` keeps every `RuntimeParams` that already ran
+  under the same `deploy_id`, `active_version` points to the one that is live and `nodes` is
+  the flattened list of the active version. `POST /api/ui/deploy` (`deploy_endpoint`),
+  before minting an id, looks in the local `pom.db` for a deployment of the same
+  shape (`deployment::matching_shape`: `kind` + a proven `DeploymentIdentity` +
+  the set of `(node_id, range, tp_rank)`); finding one, it passes
+  `RecordPlan::ReuseVersion` to `run`, which calls `upsert_version` (it reuses the
+  version of equal `params`, otherwise it appends `max+1`). Without proof of identity,
+  `RecordPlan::New` with a new id. The response carries `deploy_id` and `reused`. Every
+  record read (`PomDb`, `find_record`, `list_deployments`) runs
+  `ensure_versions` to synthesize the v1 of a legacy v1 record. `find_record`
+  gathers the local copy and the copies of the participating peers and picks, by
+  `activated_at` and then `active_version`, the current version before
+  `redeploy`/`activate` use it.
+- `POST /api/ui/deployments/:id/redeploy` (`redeploy_endpoint` ->
+  `run_redeploy`, `deploy/`): same `deploy_id`, same machines and ranges.
+  `RedeployRequest` carries `params` (optional), `version` (optional) and
+  `per_node`; give one of the two (400 when both are missing or `version` does not
+  exist). `RedeployRequest::resolve` runs before the TP detour: `version`
+  reactivates a registered version without appending; new `params` append - or
+  reactivate - by the same comparison as `deploy_endpoint`; it mutates the record and
+  returns the base parameters. The bring-up uses the active version's `no.config` (the
+  parameters with the per-machine adjustments embedded), so redeploying a
+  version gives each machine back what it was running. It photographs each node's live
+  `NodeConfig`, **unloads** every peer announcing the `deploy_id`
+  (`release_one` in parallel), and **brings up one machine at a time** waiting for
+  each one to report `ready` (`wait_for_peer_serving_with_timeout`). It works
+  even if a node was not serving: `/api/ui/reconfigure` accepts an
+  optional `ReconfigureSlice` (`webui/`) and `reconfigure_local` rebuilds the
+  `NodeConfig` from it. The file is resolved in three steps: the `model_path`
+  photographed before the unload; the record's `part_sha256`
+  (`transfer::find_part`); and, when the record has no part hash (whole
+  model, or a slice from an older round), the local catalog matching the model's label + the
+  layer range (`resolve_deployment_slice_file`). Only when all three fail is it an error naming
+  the range. `DeploymentNode.source_model_path`
+  (`models/deployment.rs`, `#[serde(default)]`) records the file each node
+  loaded, so the redeploy finds it even with the node offline. `finish_redeploy`
+  records per machine what was accepted, synchronizes the active version's snapshot
+  (`commit_active_nodes`) and publishes it; `job.outputs` carries the result per
+  machine. Tensor Parallelism still uses the older path
+  (`run_redeploy_in_place` -> `reconfigure_one`, without an unload).
+- `POST /api/ui/deploy/node/options` traverses the `target_node_id`'s real catalog
+  and returns only the sliced ranges and the whole GGUF materialized on that machine, plus the
+  local GPU/KV defaults. The screen does not use the old plan as a fallback when it already
+  knows the model's group.
+  `POST /api/ui/deploy/node` validates that option again on the target, applies
+  `cache_type_k`/`cache_type_v` through the local or remote API and
+  launches only the chosen machine. When there is a `deploy_id`, the operation appends
+  a topology version and changes `kind` to `mixed` when a whole head and
+  a sliced one come to coexist. `POST /api/ui/deploy/node/remove` unloads
+  only the target and appends a version with the remaining machines; a partial removal
+  keeps the record serving, while the last one writes an empty version and leaves
+  it out of the active deployments' selection. The empty snapshot is forwarded
+  to the peers that already knew the deployment so the removed machine is withdrawn without
+  touching the others' inference.
+- `gateway/generation.rs` - `log_early_outcome` guarantees that every accepted
+  request leaves **exactly one** outcome line. The early exits of
+  `generate_stream_inner` (a cancellation before the start, the prompt budget,
+  no valid pipeline, vision without a projector) were mute: the record showed the
+  request arriving and the output-limit adjustment, and then nothing - neither
+  `Pipeline planejado` ("Pipeline planned") nor an error. For the client that is a hung
+  request, and that is what put a backing-off agent into repeating the same request in
+  production on 2026-09-08.
 - `profile.rs` - `NodeProfile` is the durable product profile and the one source
   for network visibility and profile transitions. The web UI serializes it
   through `GET /api/ui/node`. Infer nodes can read a local-only network view;
@@ -462,43 +458,43 @@ profile policy remains the effective authorization boundary.
   setup copies `relay_hints` into its `relay_peers`. `ensure_setup_metadata` repairs only a missing setup block
   from the local administrator configuration, and only when the local
   principal is the current primary.
-- `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
+- `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, split into
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
-  `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de
-  capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
-  escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
-  deploy e mantém `group` técnico separado de `deployment_name` operacional.
-  A carga em voo do survey vem do `/api/ui/node` de cada máquina. A struct
-  interna mantém zero apenas para que o planner ordene máquinas sem leitura,
-  mas `load_known` impede que esse fallback chegue à `MachineView` ou à UI;
-  nesse caso a carga publicada é `null`.
-  Depois de montar os passos (e só com `blocked` vazio), `plan_endpoint` chama
-  `enrich_capacity_previews`: uma requisição `capacity-preview` por `Step`
-  materializado localmente (não `merged`, `target_path` presente), agregada
-  por máquina em `MachineView.capacity` (soma por GPU). O fan-out usa no máximo
-  quatro chamadas simultâneas; TP e passos ainda por copiar/fundir ficam sem
-  projeção. É aviso, nunca bloqueio: a tela mostra a máquina estourada em
-  rósea e pede um `Confirm` antes de implantar.
+  `launch.rs`, `lifecycle.rs`, `node.rs` and test fragments: the capacity survey,
+  the simple/full strategies, the directional RTT, coverage, the projected load,
+  the machine choice and the sequencing of the copies; it re-surveys the cluster on deploy and
+  keeps the technical `group` separate from the operational `deployment_name`.
+  The survey's in-flight load comes from each machine's `/api/ui/node`. The internal
+  struct keeps zero only so the planner can order machines without a read,
+  but `load_known` keeps that fallback from reaching the `MachineView` or the UI;
+  in that case the published load is `null`.
+  After assembling the steps (and only with `blocked` empty), `plan_endpoint` calls
+  `enrich_capacity_previews`: one `capacity-preview` request per locally materialized
+  `Step` (not `merged`, with a `target_path`), aggregated
+  per machine in `MachineView.capacity` (a sum per GPU). The fan-out uses at most
+  four simultaneous calls; TP and steps still to copy/merge stay without a
+  projection. It is a warning, never a block: the screen shows the overflowing machine in pink
+  and asks for a `Confirm` before deploying.
 
-  Quando um modelo inteiro selecionado ainda não tem `total_layers` no
-  `/api/ui/models`, o survey chama `model-metadata` somente para esse caminho;
-  `metadata_complete` dos vizinhos continua podendo ser falso sem bloquear a
-  implantação. O layout completo só é pedido quando há um corte de prefixo
-  explícito.
-  Antes de transferir ou lançar, prova a identidade por `pom_id` ou hash do
-  GGUF, libera somente a implantação comprovadamente igual e aguarda cada peer
-  ficar ocioso dentro de um prazo; recusações de identidade, falhas de unload e
-  timeouts ficam no job com o peer e o motivo.
-  Em `tensor_parallel`, prefere `shard_sets[].tp_parts`, monta `TpTarget` por
-  rank e transfere pelo hash do arquivo original; o `apply` usa
-  `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
-  de runtime que extrai cada rank de um modelo inteiro.
-  `route_options` forma um grafo das máquinas selecionadas cujas sub-faixas de
-  execução são contíguas; ele preserva mais de uma entrada quando há caminhos
-  alternativos e nunca inventa salto para uma camada posterior. Faixas
-  carregadas sobrepostas são permitidas quando pertencem a caminhos distintos;
-  a cobertura é validada pelo caminho executável, não pela união dos arquivos.
-  `undeploy` tira uma pipeline inteira do ar.
+  When a whole model selected still has no `total_layers` in
+  `/api/ui/models`, the survey calls `model-metadata` only for that path;
+  the neighbours' `metadata_complete` can still be false without blocking the
+  deployment. The complete layout is only asked for when there is an explicit prefix
+  cut.
+  Before transferring or launching, it proves the identity by `pom_id` or by the GGUF's hash,
+  releases only the provably equal deployment and waits for each peer
+  to become idle within a deadline; identity refusals, unload failures and
+  timeouts stay in the job with the peer and the reason.
+  In `tensor_parallel`, it prefers `shard_sets[].tp_parts`, assembles a `TpTarget` per
+  rank and transfers by the original file's hash; the `apply` uses
+  `skip_split: true` so it does not slice again. Without `tp_parts`, it keeps the
+  runtime path that extracts each rank from a whole model.
+  `route_options` builds a graph of the selected machines whose execution sub-ranges are
+  contiguous; it keeps more than one entry when there are alternative
+  paths and it never invents a jump to a later layer. Overlapping loaded
+  ranges are allowed when they belong to distinct paths;
+  the coverage is validated by the executable path, not by the union of the files.
+  `undeploy` takes a whole pipeline off the air.
 - `webui/sidecars.rs` - `GET/POST /api/ui/model-sidecar-links`: the
   principal's model -> projector / MTP draft links (`model_sidecar_links` in
   `pom.db`). A secondary reads them from the principal and keeps the last copy
@@ -526,11 +522,11 @@ profile policy remains the effective authorization boundary.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf` or no extension. Manifestos v1 são mesclados por `pom_id` no peer receptor,
-  preservando `parts` e `tp_parts` locais. **O veredito volta para quem
-  ofereceu** (`receive_answer`), e todo desfecho passa por
-  `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
-  da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
+  require `.gguf` or no extension. Manifest v1 are merged by `pom_id` on the receiving peer,
+  preserving the local `parts` and `tp_parts`. **The verdict goes back to whoever
+  offered** (`receive_answer`), and every outcome passes through
+  `TransferState::finish`, which stamps `finished_at`. A job carries the slice's label
+  (`SliceLabel`: model + range), read from the `.pom` - a hash is not a name.
   When no direct address connects, `run_download` falls back to
   `download_over_tunnel`: closed 4 MiB pieces through the libp2p tunnel, only
   over a connection that may carry a file - **never across a public relay**
@@ -547,57 +543,54 @@ profile policy remains the effective authorization boundary.
   boundary (`retain_prefix_bytes`), so repeated questions over new states
   reuse the question's KV. See `docs/subsystems/inference.md` 3.9.
 - `openai.rs` - OpenAI-compatible `/v1/*` on top of the generation path;
-  `max_tokens` da requisição é `min(pedido, n_ctx restante)`, com
-  `DEFAULT_MAX_TOKENS=512` só como padrão de quem não pede. O
-  `max_new_tokens` da implantação **não** entra nessa conta: ele é o teto de
-  uma **perna** do laço de continuação (ver `gateway/` abaixo). A redução é
-  registrada e devolvida em `x_pom.output_limits`
+  `max_tokens` of the request is `min(requested, n_ctx remaining)`, with
+  `DEFAULT_MAX_TOKENS=512` only as the default of whoever does not ask. The
+  deployment's `max_new_tokens` does **not** enter that arithmetic: it is the ceiling of one
+  **leg** of the continuation loop (see `gateway/` below). The reduction is
+  recorded and returned in `x_pom.output_limits`
   (`requested`/`effective`/`deployment`/`context_available`/`leg`),
-  e `x_pom.continuation_legs` diz quantas pernas a resposta costurou.
-  Streaming e blocking usam a mesma ordem de finish-reason, e ela não tem
-  exceção: orçamento **total** esgotado é `length`/`max_tokens` mesmo com
-  chamada de ferramenta lida, porque atingir o teto é parada terminal; perna
-  esgotada nunca é. Quando o corte cai **dentro** de uma chamada, ela volta
-  estruturada e incompleta (`x_pom.truncated_tool_call: true`), que é o que os
-  dois provedores devolvem - nunca markup cru, nunca descarte. A linha de
-  auditoria desse resultado é `incomplete`,
-  enquanto falha de transporte continua `partial`. `/v1/models` expõe
-  `context_length` e o `top_provider.max_completion_tokens` compatível com
-  OpenRouter, que é a capacidade da **requisição** derivada do `n_ctx`, não o
-  tamanho de uma perna. O contexto disponível reduz o orçamento quando o
-  prompt já ocupa parte da janela.
-  `messages.rs` aceita `output_config.task_budget` (advisory, nunca corta) e
-  injeta o marcador de contagem regressiva no prompt; ver `http-api.md`.
-  **Os argumentos de uma chamada saem em fragmentos** (`CallArgsStreamer`),
-  conforme o modelo gera: `eager_input_streaming` por ferramenta no
-  `/v1/messages`, sempre no `/v1/chat/completions` porque a OpenAI não tem
-  interruptor. A concatenação dos fragmentos é sempre a string que o caminho
-  não-streaming produziria, e o prefixo transmitido só cresce - não existe
-  desenviar um fragmento SSE.
-  O Chat pode enviar `inference_head` com um `node_id` de layer 0; o gateway
-  valida a candidata viva, fixa essa cabeça no planejador e a repete em
-  `x_pom.source`/trace, sem reescolher por RTT ou carga.
-  A capacidade publicada em `/v1/models` e usada por
-  `request_output_limit_for_model` é a menor `RuntimeCapacity` entre os peers
-  da pipeline escolhida para o modelo/implantação. Um peer ocioso nessa
-  pipeline é acordado pelo evento `reload_model` em paralelo aos demais peers
-  ociosos antes do primeiro prefill; a barreira espera `/health` por até 15
-  minutos e falha explicitamente se o peer não voltar. Um peer vivo de rota
-  alternativa não bloqueia a requisição. O runtime só
-  anuncia esse valor depois do `/health` efetivo; apply, erro e unload retiram
-  a capacidade durante restart.
+  and `x_pom.continuation_legs` says how many legs the answer stitched together.
+  Streaming and blocking use the same finish-reason order, and it has no
+  exception: an exhausted **total** budget is `length`/`max_tokens` even with a tool call read,
+  because reaching the ceiling is a terminal stop; an exhausted leg never is. When the cut falls
+  **inside** a call, it comes back structured and incomplete (`x_pom.truncated_tool_call: true`),
+  which is what the two providers return - never raw markup, never a discard. The audit line of
+  that result is `incomplete`,
+  while a transport failure stays `partial`. `/v1/models` exposes
+  `context_length` and the `top_provider.max_completion_tokens` compatible with
+  OpenRouter, which is the **request's** capacity derived from the `n_ctx`, not the
+  size of one leg. The available context shrinks the budget when the prompt already occupies
+  part of the window.
+  `messages.rs` accepts `output_config.task_budget` (advisory, it never cuts) and
+  injects the countdown marker into the prompt; see `http-api.md`.
+  **A call's arguments come out in fragments** (`CallArgsStreamer`),
+  as the model generates them: `eager_input_streaming` per tool in
+  `/v1/messages`, always in `/v1/chat/completions` because OpenAI has no
+  switch. Concatenating the fragments is always the string the non-streaming path would
+  produce, and the transmitted prefix only grows - there is no un-sending an SSE fragment.
+  The Chat may send an `inference_head` with a layer-0 `node_id`; the gateway
+  validates the live candidate, pins that head in the planner and repeats it in
+  `x_pom.source`/trace, without re-choosing by RTT or load.
+  The capacity published in `/v1/models` and used by
+  `request_output_limit_for_model` is the smallest `RuntimeCapacity` among the peers
+  of the pipeline chosen for the model/deployment. An idle peer in that
+  pipeline is woken by the `reload_model` event in parallel to the other idle
+  peers before the first prefill; the barrier waits for `/health` for up to 15
+  minutes and fails explicitly if the peer does not come back. A live peer of an alternative
+  route does not block the request. The runtime only
+  announces that value after the effective `/health`; apply, error and unload take
+  the capacity away during a restart.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
   and finish-reason rules, with `x_pom.output_limits` and
   `x_pom.continuation_legs` on blocking responses and the final streaming
   `message_delta`.
-- `continuation_lab.rs` (`#[cfg(test)]`) - bancada do laço de continuação: dois
-  hops falsos, as rotas `/v1` de verdade num socket TCP e `reqwest` do outro
-  lado, inclusive lendo o SSE byte a byte. Prova que a saída volta inteira, que
-  a costura não aparece como `finish_reason` intermediário nem como segundo
-  `[DONE]`, que a chamada de ferramenta chega com JSON completo, e que o teto
-  absoluto para um modelo em laço. A prova de fragmentação não depende de uma
-  fração fixa do relógio de parede, pois o scheduler e o agrupamento do socket
-  não fazem parte do contrato do SSE.
+- `continuation_lab.rs` (`#[cfg(test)]`) - the bench of the continuation loop: two fake
+  hops, the real `/v1` routes on a TCP socket and `reqwest` on the other
+  side, including reading the SSE byte by byte. It proves the output comes back whole, that
+  the stitching does not appear as an intermediate `finish_reason` nor as a second
+  `[DONE]`, that the tool call arrives with complete JSON, and that the ceiling is absolute for a
+  looping model. The fragmentation proof does not depend on a fixed fraction of the wall clock,
+  because the scheduler and the socket's grouping are not part of the SSE contract.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` - the operator's control plane: nodes, blocking, keys and
@@ -614,84 +607,82 @@ profile policy remains the effective authorization boundary.
   (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
   it works with the principal offline. `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
-- `reqlog.rs` - adaptador de auditoria e fallback de migração. Com o plugin
-  ativo, o host grava em `enterprise.db`; independentemente desse destino, o
-  `AuditLog` do POM replica `begin` e `complete` aos admins efetivos por libp2p.
-  O receptor ordena os eventos numa fila limitada e os entrega ao próprio host
-  ativo; se ele não os aceitar, persiste no `pom.db` legado. Eventos recebidos
-  nunca são retransmitidos. `AuditDb` cria o schema e o índice FTS5 somente no
-  adaptador de teste, abre requests em `in_progress`, completa a mesma linha,
-  marca registros antigos como `incomplete` e serve consultas autenticadas
-  paginadas mais estatísticas no servidor. As consultas aceitam `node_id`,
-  identidade de API key, rótulo de usuário, modelo, prompt e intervalo de
-  entrada; o usuário é o rótulo humano da API key porque a auditoria não
-  armazena uma conta separada. Falha de enfileiramento ou gravação registra
-  sempre a operação e o request id. Pedidos e conversas ficam no `pom.db`; a
-  auditoria Enterprise fica no `enterprise.db` isolado, enquanto o adaptador
-  legado permanece como fallback. Permissões dos bancos e dos sidecars WAL/SHM
-  são aplicadas no arranque. Filtros de usuário e modelo vazios são ignorados
-  antes da consulta SQL, preservando a busca ampla quando o campo não foi
-  preenchido. As rotas `/api/ui/requests` e `/api/ui/requests/stats` são
-  Enterprise e falham fechado com `enterprise_required` sem entitlement. Com
-  entitlement ativo, os handlers encaminham listagem e estatísticas ao processo
-  `pom-plugin-host`.
-- **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
-  fixa o certificado do destino pelo node_id. Não existe mais cliente
-  compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
-  e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
-  `peer_http.plain()`. Chamada de controle a outro nó usa
-  `GatewayState::control_get`/`control_post_json`/`control_post_empty`: assina
-  uma vez, tenta cada endereço anunciado - na ordem de `gateway_bases`, o host
-  que já respondeu primeiro - e cai no túnel libp2p
-  (`peer_client::send_to_gateway_over`), que é o caminho para um peer atrás de
-  NAT simétrico. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` é o último recurso de quem já
-  percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
+- `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
+  active, the host writes in `enterprise.db`; independently of that destination, the
+  POM's `AuditLog` replicates `begin` and `complete` to the effective admins over libp2p.
+  The receiver orders the events in a bounded queue and hands them to its own active
+  host; if it does not accept them, it persists them in the legacy `pom.db`. Received events are
+  never retransmitted. `AuditDb` creates the schema and the FTS5 index only in the test
+  adapter, opens requests in `in_progress`, completes the same row,
+  marks old records as `incomplete` and serves authenticated paginated queries plus statistics on
+  the server. The queries accept `node_id`, an API key's identity, a user label, a model, a prompt
+  and an input range; the user is the API key's human label because the audit does not
+  store a separate account. An enqueueing or write failure always records
+  the operation and the request id. Requests and conversations stay in `pom.db`; the
+  Enterprise audit stays in the isolated `enterprise.db`, while the legacy
+  adapter remains as a fallback. The permissions of the databases and of the WAL/SHM sidecars
+  are applied at startup. Empty user and model filters are ignored
+  before the SQL query, preserving the broad search when the field was not filled in. The routes
+  `/api/ui/requests` and `/api/ui/requests/stats` are Enterprise and fail closed with
+  `enterprise_required` without an entitlement. With an active entitlement, the handlers forward
+  the listing and the statistics to the `pom-plugin-host` process.
+- **Every call to a peer leaves through `GatewayState.peer_http`** (`PeerClients`), which
+  pins the destination's certificate by node_id. There is no longer a shared client without
+  pinning in the state: with TLS on it verified no one,
+  and a caller that took it out of habit failed silently. Loopback and Ollama use
+  `peer_http.plain()`. A control call to another node uses
+  `GatewayState::control_get`/`control_post_json`/`control_post_empty`: it signs
+  once, tries each announced address - in `gateway_bases` order, the host that already answered
+  first - and falls back to the libp2p tunnel
+  (`peer_client::send_to_gateway_over`), which is the path to a peer behind symmetric
+  NAT. A signed command that changes state is sent to **one** delivered address: after a timeout on an established connection it is not repeated elsewhere, because the same envelope would be refused as a replay (409) while the peer still runs the first copy. Calls that stop a server (`/api/ui/unload`, `/api/ui/stop-inference`, `/api/ui/leave`) use `webui::PEER_STOP_TIMEOUT` (60 s), not `PEER_TIMEOUT`. `control_get_via_tunnel` is the last resort of whoever already
+  traversed the addresses with the `RouteTable`'s failure memory (the read of
   `/api/ui/cluster`). `admin.rs` sync with the principal (`sync_json`,
   `post_internal_json`, `validate_api_key_remote_parts`) uses the same
   `send_to_gateway_over`: direct addresses and, last, the tunnel; `sync_json`
   signs a new envelope on every attempt. Only weight transfer stays outside
   the tunnel.
-- `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
-  vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo
-  pedido - ver `p2p-network.md`) e serve TLS ou texto claro na mesma porta TCP, com upgrades de
-  conexão habilitados (o WebSocket do proxy de plugins,
-  `crate::plugin_proxy`). O endpoint HTTP/3
-  recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
-  mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
-  TCP, modo estrito e duração do último handshake. Ver
-  `docs/subsystems/p2p-network.md`, seção 5.
-- `models::OllamaClient::is_available` é apenas uma sonda opcional do
-  `/health`: devolve o último valor e agenda em background uma checagem de
-  500 ms no máximo a cada 15 s. Não herda os 300 s da geração, e um Ollama frio
-  ou ausente nunca segura a resposta do gateway.
-- `session.rs` - `POST /handshake` usa um desafio Ed25519 em duas etapas. Uma
-  requisição sem `nonce` e `signature` é recusada com HTTP 403
-  `challenge_required` e recebe um nonce hexadecimal aleatório de 32 bytes. O
-  verificador guarda esse nonce por 30 segundos e o consome antes de conferir a
-  assinatura enviada; somente a assinatura do nonce bruto pela chave cuja
-  `SHA256` é o `node_id` recebe `approved: true`. Um nó que usa o corpo antigo
-  vê a resposta 403 do desafio e nunca entra até falar o formato assinado novo.
-  Reuso, expiração, divergência de chave e assinatura ausente são recusados.
+- `serve.rs` - the accept loop: it spies on the first byte, keeps the `PeerAddr` in the
+  request (`request_origin`: a request from the loopback carrying the libp2p tunnel's mark becomes
+  `TUNNELED_ORIGIN`, non-loopback, and that mark header leaves every request - see
+  `p2p-network.md`) and serves TLS or cleartext on the same TCP port, with connection upgrades
+  enabled (the plugin proxy's WebSocket,
+  `crate::plugin_proxy`). The HTTP/3 endpoint
+  receives a separate QUIC configuration and comes up on the dedicated announced UDP port,
+  even when the TCP is in plain HTTP; `TlsServer` covers only the TCP certificate, the strict
+  mode and the duration of the last handshake. See
+  `docs/subsystems/p2p-network.md`, section 5.
+- `models::OllamaClient::is_available` is only an optional probe of the
+  `/health`: it returns the last value and schedules a background check of at most 500 ms
+  every 15 s. It does not inherit the generation's 300 s, and a cold or absent Ollama never
+  holds up the gateway's answer.
+- `session.rs` - `POST /handshake` uses a two-step Ed25519 challenge. A
+  request without a `nonce` and a `signature` is refused with HTTP 403
+  `challenge_required` and receives a random 32-byte hexadecimal nonce. The
+  verifier keeps that nonce for 30 seconds and consumes it before checking the signature sent;
+  only the signature of the raw nonce by the key whose `SHA256` is the `node_id` gets
+  `approved: true`. A node that uses the old body sees the challenge's 403 answer and never gets
+  in until it speaks the new signed format.
+  Reuse, expiration, key divergence and a missing signature are refused.
 
 ## Key functions and routes
 
-### Chat da rede
+### The network Chat
 
-`GatewayState.network_chat` expõe o serviço libp2p do Chat da rede. `webui`
-serve `GET/POST /api/ui/network-chat` para a interface, persistência e ações
-com API key. `POST /api/ui/network/chat` grava no principal real; quando a
-interface está num admin secundário, a rota encaminha a mutação autenticada
-para esse principal. A rota de política entre nós é
-`GET /api/cluster/network-chat`, e o probe só trata como principal a
-`authority_pubkey` confirmada pelo `AdminTrust`, não o perfil anunciado.
-Os GETs de política (`/api/cluster/tls`, `/api/cluster/logs` e
-`/api/cluster/network-chat`) exigem `InternalNodeAuth`: `connection_key` mais
-`x-pom-internal-node: 1`; não são superfície de token humano.
-O backend não retransmite pela HTTP UI: a ação entra na fila limitada do
-`NetworkChat` e o swarm valida e encaminha por `discovery.rs`. O snapshot não
-repete bytes de arquivo em cada polling; `GET /api/ui/network-chat/file/:message_id`
-faz o download autenticado do blob persistido.
+`GatewayState.network_chat` exposes the network Chat's libp2p service. `webui`
+serves `GET/POST /api/ui/network-chat` for the interface, the persistence and the actions
+with an API key. `POST /api/ui/network/chat` writes on the real principal; when the
+interface is on a secondary admin, the route forwards the authenticated mutation
+to that principal. The policy route between nodes is
+`GET /api/cluster/network-chat`, and the probe only treats the `authority_pubkey`
+confirmed by the `AdminTrust` as the principal, not the announced profile.
+The policy GETs (`/api/cluster/tls`, `/api/cluster/logs` and
+`/api/cluster/network-chat`) demand `InternalNodeAuth`: a `connection_key` plus
+`x-pom-internal-node: 1`; they are not a human-token surface.
+The backend does not retransmit through the HTTP UI: the action enters the `NetworkChat`'s bounded
+queue and the swarm validates and forwards it through `discovery.rs`. The snapshot does not
+repeat file bytes on every polling; `GET /api/ui/network-chat/file/:message_id`
+does the authenticated download of the persisted blob.
 
 - `gateway/` - `GatewayState` (network, ollama, default_model,
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
@@ -796,10 +787,10 @@ faz o download autenticado do blob persistido.
   retry, hop or chunk. The remote-stream callback propagates an asynchronous
   `410 Gone` ACK as `GatewayGone`, so an abandoned remote producer stops too;
   already accepted peer frames are cleaned up by the normal session release.
-  Logs `prefix gateway` registram hit/miss e tamanho do prefixo; `prefix rewind`
-  registra a confirmação ou recusa por peer e sessão, sem conteúdo do prompt.
-  `start_gateway_with_ready` faz o bind do listener antes de sinalizar ao shell
-  Windows que o gateway está pronto, e então registra
+  The `prefix gateway` logs record a hit/miss and the prefix's size; `prefix rewind` records the
+  confirmation or refusal per peer and session, without the prompt's content.
+  `start_gateway_with_ready` binds the listener before signalling to the Windows shell
+  that the gateway is ready, and then registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), `POST /v1/relay-result`,
   `POST /v1/remote-stream-result` and `POST /v1/link`
@@ -816,37 +807,33 @@ faz o download autenticado do blob persistido.
   names another node as primary and carries one signed secondary grant;
   `body_of(response)` extracts the JSON body (used by the transfer, deploy and
   webui tests).
-- `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
-  número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
-  de backend, escolha do operador, que a decisão do produto proíbe levantar.
-  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`, recomputed
-  after prefill with the real prompt (`OutputBudget::within_session_window`,
+- `gateway/` - **the two budgets** (`OutputBudget`), which are never the same
+  number. `leg` is the deployment's `max_new_tokens`: the ceiling of **one** backend
+  generation, an operator's choice, which the product's decision forbids raising.
+  `total` is the ceiling of the **request**: `min(requested, n_ctx remaining)`, recomputed
+  after the prefill with the real prompt (`OutputBudget::within_session_window`,
   against `n_ctx_per_session`); reaching the window also ends with `length`.
-  Esgotar a
-  perna não encerra a resposta -
-  `note_leg_boundary` conta a perna e o laço segue decodificando na **mesma**
-  sessão de KV, no mesmo fluxo SSE, sem reprefill e sem o cliente ver nada
-  (`GenSummary::legs` é o que torna a costura inspecionável). O
-  `max_new_tokens` nunca foi limite do backend - o `infer_server` não o conhece;
-  sempre foi um corte do gateway, e cortar aí calado era o defeito. Só `total`
-  produz `finish_reason: "length"`. `/api/generate` aceita `max_tokens`
-  opcional (padrão 512), exige valor maior que zero e conta o primeiro token do
-  prefill no orçamento, sem o overshoot
-  histórico de 513 tokens; a resposta separa TTFT, velocidade do prefill,
-  velocidade da geração e total em `timings`. `generation_finish_reason` testa o
-  orçamento total antes do EOS em cada ramo de decodificação;
-  `audit_status_for_summary` registra `length` como `incomplete` - exceto
-  numa decisão tipada (trace com `jev`/`probe`), que sempre para no seu único
-  token e por isso é `ok` -, e reserva `partial` para falha de transporte com
-  texto salvo.
-  **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
-  aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
-  ela foi removida porque nenhum dos dois
-  provedores transborda. Quando o corte cai dentro de uma chamada, o adaptador
-  a devolve estruturada e incompleta (`TagScanner::finish_truncated`), com os
-  argumentos numa string JSON inacabada - possível porque o scanner segura o
-  corpo da chamada até a tag fechar, então nada vazou. Ver
-  `docs/subsystems/inference.md` (9.1) e a bancada `continuation_lab.rs`.
+  Exhausting the
+  leg does not end the answer -
+  `note_leg_boundary` counts the leg and the loop keeps decoding in the **same** KV
+  session, in the same SSE stream, with no re-prefill and with nothing visible to the client
+  (`GenSummary::legs` is what makes the stitching inspectable). The
+  `max_new_tokens` was never a backend cap - the `infer_server` does not know it;
+  it was always a gateway cut, and cutting there silently was the defect. Only `total`
+  produces `finish_reason: "length"`. `/api/generate` accepts an optional `max_tokens`
+  (default 512), demands a value greater than zero and counts the prefill's first token in the
+  budget, without the historical 513-token overshoot; the answer separates TTFT, prefill speed,
+  generation speed and total in `timings`. `generation_finish_reason` tests the total budget
+  before the EOS in each decoding branch;
+  `audit_status_for_summary` records `length` as `incomplete` - except in a typed decision (a
+  trace with `jev`/`probe`), which always stops at its single token and therefore is `ok` -, and
+  it reserves `partial` for a transport failure with saved text.
+  **The total is inviolable.** Nothing goes past it, not even a tool call left open on the cut
+  token - there was a slack here that went past the ceiling, and it was removed because neither of
+  the two providers overflows. When the cut falls inside a call, the adapter returns it structured
+  and incomplete (`TagScanner::finish_truncated`), with the arguments in an unfinished JSON string
+  - possible because the scanner holds the call's body until the tag closes, so nothing leaked. See
+  `docs/subsystems/inference.md` (9.1) and the `continuation_lab.rs` bench.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective
   request budget is the minimum of the client request and the remaining `n_ctx`
@@ -856,15 +843,14 @@ faz o download autenticado do blob persistido.
   **every** turn including the first, so one turn's prompt is an exact prefix of
   the next one's - the property the prefix cache rests on; raw, unlabelled text
   is what `/v1/completions` and `/api/generate` are for.
-  `conversation_cache_key` é o prompt renderizado canônico que a cabeça
-  tokeniza e viaja como `GenerationInput::cache_key`; isso mantém a ordenação
-  de system/developer e ferramentas idêntica à execução e evita declarar hit
-  quando essas partes mudam no início do prompt. O gateway registra o motivo
-  local do miss e o tamanho efetivo do chunk no trace. A versão
-  Anthropic, `conversation_cache_key_with_budget`, prefixa a identidade do
-  orçamento de tarefa para que uma entrada sem orçamento ou com marcador
-  diferente não seja reutilizada; o marcador final é injetado a cada pedido,
-  como na semântica do provedor.
+  `conversation_cache_key` is the canonical rendered prompt the head
+  tokenizes and that travels as `GenerationInput::cache_key`; that keeps the ordering
+  of system/developer and tools identical to the execution and avoids declaring a hit
+  when those parts change at the start of the prompt. The gateway records the local
+  reason for the miss and the chunk's effective size in the trace. The Anthropic
+  version, `conversation_cache_key_with_budget`, prefixes the task budget's identity so
+  an entry without a budget or with a different marker is not reused; the final marker is
+  injected on every request, as in the provider's semantics.
   `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
   pipeline did not reprocess, read from the trace - the executed number, not the
   cache's choice; `approx_tokens` = chars/4; `model_ids` comes only from live
@@ -896,32 +882,31 @@ faz o download autenticado do blob persistido.
 - `webui/` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
   `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy/). Registers the `/api/ui/*` routes: `node` (GET node_info),
-  `model-identity` (POST, prova um arquivo já catalogado por caminho canônico
-  e opcionalmente calcula seu SHA-256),
-  `model-metadata` (POST, lê e publica somente o cabeçalho do modelo selecionado
-  enquanto o restante do catálogo ainda está em background),
-  `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
-  `models/delete` (POST), `cluster` (GET), `chat/capabilities` (GET, modelo
-  ativo, visão e cobertura do Chat), `cluster/models`
+  `model-identity` (POST, proves a file already cataloged by canonical path and
+  optionally computes its SHA-256),
+  `model-metadata` (POST, it reads and publishes only the header of the selected model
+  while the rest of the catalog is still in the background),
+  `models` (GET, `hostname` = the name the node announces, **not** the OS's),
+  `models/delete` (POST), `cluster` (GET), `chat/capabilities` (GET, the Chat's
+  active model, vision and coverage), `cluster/models`
   (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
-  `model-layer-options` (POST, cortes reais do GGUF) e `slice-ranges` (POST,
-  materialização local de faixas escolhidas a partir de um modelo inteiro),
+  `model-layer-options` (POST, the GGUF's real cuts) and `slice-ranges` (POST,
+  the local materialization of chosen ranges taken from a whole model),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
-  (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
-  `network/rtt` (GET autenticado, relatório direcional deste nó),
-  `chat/telemetry` (POST autenticado, deriva transporte e RTT das pernas
-  direcionais de `pipeline_cycle` no trace da execução identificada, ou da
-  última execução concluída no Painel; sem `execution_id`, também enumera todas
-  as rotas completas do modelo ativo, soma Gateway -> cabeça -> ... -> cauda ->
-  Gateway e ordena por custo agregado e `node_id`; uma perna observada no trace
-  recente usa primeiro seu RTT de fio (`net_rtt_median_ms`), enquanto as
-  sondas direcionais frescas do gateway e dos peers ficam como fallback; também
-  devolve `pipeline_cost` quando a decomposição observada de rede e compute
-  existe; traces antigos recuam para o RTT de execução),
+  (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (authenticated GET),
+  `network/rtt` (authenticated GET, this node's directional report),
+  `chat/telemetry` (authenticated POST, it derives the transport and the RTT from the directional
+  legs of `pipeline_cycle` in the identified execution's trace, or from the
+  last execution completed in the Panel; without an `execution_id` it also enumerates every
+  complete route of the active model, sums Gateway -> head -> ... -> tail ->
+  Gateway and orders by aggregate cost and `node_id`; a leg observed in a recent trace uses its
+  wire RTT first (`net_rtt_median_ms`), while the gateway's and the peers' fresh directional
+  probes stay as a fallback; it also returns `pipeline_cost` when the observed decomposition of
+  network and compute exists; older traces fall back to the execution's RTT),
   `requests` (GET ->
-  `crate::reqlog::list_requests`; `chat/history` (GET/POST/DELETE autenticado,
-  transcriptos normalizados em `pom.db`); `requests/stats` (GET ->
+  `crate::reqlog::list_requests`; `chat/history` (authenticated GET/POST/DELETE,
+  normalized transcripts in `pom.db`); `requests/stats` (GET ->
   `crate::reqlog::stats_requests`). `leave_network` now takes an optional
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's
@@ -933,105 +918,102 @@ faz o download autenticado do blob persistido.
   the job store (`Job`, `JOB_RETENTION=600s`,
   `jobs()`/`new_job`/`set_job`/`set_job_progress`),
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,
-  stale-while-revalidate). A primeira resposta do catálogo publica o inventário
-  rápido de arquivos e `metadata_complete: false`; os cabeçalhos GGUF são lidos
-  em uma tarefa `spawn_blocking` e publicados quando terminam, mesmo que o
-  refresh tenha trocado o `Arc` do inventário: a reconciliação usa caminho,
-  tamanho e mtime do arquivo. O cache instala um placeholder antes da primeira
-  varredura, ordena as raízes e mantém single-flight para scans e enriquecimentos;
-  as rotas de seleção de modelo distinguem esse placeholder de um arquivo
-  ausente: quando `metadata_complete` é falso, devolvem que a descoberta ainda
-  está em andamento e não a mensagem de que o arquivo não pertence ao peer;
-  a varredura rápida não calcula SHA-256 de modelos inteiros para montar
-  `shard_sets`, então um volume grande publica seus caminhos e raízes antes da
-  leitura dos headers GGUF usados para sugerir projetores. A escolha do
-  projetor não calcula SHA-256 do payload; a validação estrutural do caminho
-  escolhido fica no apply do peer que vai carregá-lo.
-  F5 ou seleção repetida não empilha trabalho. Uma configuração nova fica em
-  fila para o scan atual terminar. O enriquecimento registra início e conclusão
-  (inclusive descarte), e uma falha terminal marca `metadata_error` no item e
-  não impede os demais, então a passagem termina com `metadata_complete: true`.
-  Um arquivo que o enriquecimento descarta (sidecar que só o header revela,
-  como um draft MTP sem o prefixo `mtp-` ou sem extensão) sai também do
-  inventário atual (`drop_discarded`): pendente para sempre, ele reiniciava o
-  enriquecimento em laço, centenas de vezes por segundo.
-  O resultado publicado é reutilizado nas requisições da interface; modelo cujo
-  caminho, tamanho e mtime não mudaram não é relido. Nova leitura só ocorre em
-  refresh por TTL ou invalidação. O survey de implantação só recusa uma
-  seleção que ainda não tem suas faixas resolvidas; em TP ele verifica cada
-  rank selecionado. Enriquecimento de outro modelo, peer silencioso ou campo
-  ausente em peer antigo não bloqueia. `merge_parts`
-  (arquivo temporário com sufixo único, `read_layout` validado antes do rename
-  e de `finalize_run`; reuses an already-complete output, preserves the source
+  stale-while-revalidate). The catalog's first answer publishes the quick inventory
+  and `metadata_complete: false`; the GGUF headers are read in a
+  `spawn_blocking` task and published when they finish, even if the
+  refresh swapped the inventory's `Arc`: the reconciliation uses the file's path,
+  size and mtime. The cache installs a placeholder before the first
+  scan, orders the roots and keeps single-flight for scans and enrichments;
+  the model-selection routes distinguish that placeholder from an absent file: when
+  `metadata_complete` is false they answer that the discovery is still underway and
+  not the message that the file does not belong to the peer;
+  the quick scan does not compute the SHA-256 of whole models to assemble
+  `shard_sets`, so a large volume publishes its paths and roots before reading the GGUF headers
+  used to suggest projectors. The projector's choice does not compute the payload's SHA-256; the
+  structural validation of the chosen path lives in the apply of the peer that will load it.
+  F5 or a repeated selection does not stack work. A new configuration waits in queue for the
+  current scan to finish. The enrichment records the start and the conclusion
+  (including a discard), and a terminal failure marks `metadata_error` on the item and
+  does not block the others, so the pass ends with `metadata_complete: true`.
+  A file the enrichment discards (a sidecar only the header reveals,
+  like an MTP draft without the `mtp-` prefix or without an extension) also leaves the
+  current inventory (`drop_discarded`): pending forever, it restarted the
+  enrichment in a loop, hundreds of times per second.
+  The published result is reused across the interface's requests; a model whose
+  path, size and mtime did not change is not read again. A new read only happens on a
+  refresh by TTL or an invalidation. The deployment survey only refuses a
+  selection that still does not have its ranges resolved; in TP it checks each
+  selected rank. The enrichment of another model, a silent peer or a field missing in an older
+  peer does not block. `merge_parts`
+  (a temporary file with a unique suffix, `read_layout` validated before the rename
+  and before `finalize_run`; it reuses an already-complete output, preserves the source
   `pom_id`, and invalidates the catalog),
   `run_apply`/`run_slice`/`release_slice`, and the setup handlers for hardware,
   models, trust-anchor, health and save, which are deliberately NOT registered
   here - they belong to the deprecated wizard's router in `main.rs`
   (`start_setup_mode`), which nothing starts any more.
-  Os testes que chamam `apply_cluster_policy` também seguram
-  `peer_client::GLOBAL_POLICY`, porque o esquema TLS global é compartilhado
-  por toda a suíte.
-- `deploy/` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
-  qual inventário o `survey` lê: `shard_sets`, ou os modelos inteiros via
-  `parse_whole`, que lê um GGUF não fatiado como a faixa `0..total-1`. O
-  `tensor_parallel` (caminho C) nomeia o grupo (primary + workers); a v1 da
-  varredura lê o modelo do primary, e a descoberta de workers fica junto do
-  fork do llama.cpp. O pedido carrega `TpLaunch {size, primary_node_id,
-  worker_node_ids}` - o operador escolhe primary/workers por node_id e o nó
-  deriva a `rank0_url` e seus candidatos da `Machine.inference_url` e
-  `Machine.inference_candidates` (`tp_identity`). Validação em
-  duas camadas antes do deploy: `tp_group_checks` (tamanho, presença no
-  cluster, modelo inteiro, sem repetição) dentro do `plan`, e
-  `tp_shardability_check` (rota `POST /api/ui/tp/check`, handler
-  `webui::tp_check` -> `splitter::validate_tensor_parallel`) que recusa MoE/
-  SSM/weight-tied na tela. Essa rota é **autenticada** (`ConnectionAuth`), então
-  a chamada leva `bearer_auth(connection_key)`: `peer_http.for_peer` resolve só
-  o TLS, credencial é por requisição. Sem ela o primary responde 401 e nenhuma
-  implantação TP passa, em máquina nenhuma. A leitura da resposta vive em
-  `tp_check_verdict`, separada para ser testável e para repetir o `error` do
-  peer em vez de chamar toda resposta sem `ok` de binário velho. Daí em diante é o mesmo planner, o mesmo
-  `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
-  mudam de substantivo (`DeployKind::unit`). Ver
-  `docs/subsystems/deployment.md` §1.1 e §1.2.
-  O `survey` preserva o `PeerId`, os candidatos de endereço UDP e a capability
-  do túnel de cada máquina; os candidatos vêm do `/api/ui/node` do próprio
-  peer, e não somente do anúncio que o coordenador recebeu. `tp_members`
-  transfere esses dados e todos os candidatos de URL para cada rank, permitindo
-  que `broadcast_to` e o reduce reidratem o swarm no destino e tentem cada
-  endereço HTTPS alcançável quando o túnel não está disponível.
-  O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
-  tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
-  bytes ou esperas TP com a telemetria de pipeline.
-  O mesmo `survey` agrega os relatórios autenticados de `/api/ui/network/rtt`:
-  cada origem publica somente suas medições diretas, e `route_options` usa a
-  chave `(from_node_id, to_node_id)`. A latência do gateway não é reutilizada
-  para uma aresta entre dois peers remotos.
-- `deploy/` - `launch_targets` é a fase 2 extraída de `run`: os passos do
-  plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
-  testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).
-- `deploy/` - `RuntimeParams.fit_memory` fica ligado por padrão em shards e
-  modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
-  `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
-  parallelism, que não suporta o fit automático em `split-mode tensor`.
-  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy
-  independentemente de `POM_DEV_MODE`; `effective_params_for_kind` só aplica a
-  regra estrutural de desligar `fit_memory` no Tensor Parallelism. O modo
-  ausente é `dense` (`llama.cpp`); `auto` só entra quando foi pedido
-  explicitamente.
-  O survey leva `is_moe` do catálogo GGUF ao `DeployPlan`; somente metadata de
-  experts identifica MoE. O plano expõe `inference_mode_supported` e
-  `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente
-  enquanto esse caminho não for suportado.
-  O mesmo `DeployPlan` expõe `capabilities` em estado `supported`,
-  `unsupported` ou `unknown`, com origem, motivo e aviso opcional: thinking vem
-  do template e vocabulário GGUF, MTP primeiro do arquivo GGUF selecionado e
-  depois apenas adverte sobre o runtime do peer final, lookup vem das
-  capacidades runtime de todos os alvos, e fit-memory da estratégia. Ausência
-  comprovada no modelo oculta; runtime limitado ou evidência indeterminada
-  permanece acionável. O `no_embeddings` é avaliado por posição real na
-  cadeia; quando solicitado, `launch` valida todos os peers antes de parar
-  qualquer processo, recusando intermediários comprovadamente inseguros e
-  permitindo topologia indeterminada somente com o controle avisado.
+  The tests that call `apply_cluster_policy` also hold
+  `peer_client::GLOBAL_POLICY`, because the global TLS scheme is shared
+  by the whole suite.
+- `deploy/` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) chooses
+  which inventory the `survey` reads: `shard_sets`, or the whole models through
+  `parse_whole`, which reads an unsliced GGUF as the range `0..total-1`. The
+  `tensor_parallel` (path C) names the group (primary + workers); the scan's v1 reads
+  the primary's model, and the worker discovery lives beside the llama.cpp fork. The request
+  carries `TpLaunch {size, primary_node_id,
+  worker_node_ids}` - the operator chooses primary/workers by node_id and the node
+  derives the `rank0_url` and its candidates from `Machine.inference_url` and
+  `Machine.inference_candidates` (`tp_identity`). Two-layer validation
+  before the deploy: `tp_group_checks` (size, presence in the
+  cluster, whole model, no repetition) inside the `plan`, and
+  `tp_shardability_check` (route `POST /api/ui/tp/check`, handler
+  `webui::tp_check` -> `splitter::validate_tensor_parallel`) which refuses MoE/
+  SSM/weight-tied on the screen. This route is **authenticated** (`ConnectionAuth`), so
+  the call carries `bearer_auth(connection_key)`: `peer_http.for_peer` resolves only
+  the TLS, the credential is per request. Without it the primary answers 401 and no
+  TP deployment passes, on any machine. The reading of the answer lives in
+  `tp_check_verdict`, separate so it is testable and so it repeats the peer's `error` instead of
+  calling every answer without `ok` an old binary's. From there on it is the same planner, the
+  same `launch_targets` and the same `launch` - there is no second path. Only the refusals change
+  noun (`DeployKind::unit`). See
+  `docs/subsystems/deployment.md` §1.1 and §1.2.
+  The `survey` preserves each machine's `PeerId`, its UDP address candidates and the tunnel
+  capability; the candidates come from the peer's own `/api/ui/node`, and not only from the
+  announcement the coordinator received. `tp_members`
+  transfers that data and every URL candidate to each rank, allowing
+  `broadcast_to` and the reduce to rehydrate the swarm on the destination and try each
+  reachable HTTPS address when the tunnel is not available.
+  The `register_tp_reduce` also receives the group's size. The node publishes that
+  size and the collectives snapshot in the `node_timings.tp` field, without mixing TP bytes or
+  waits with the pipeline telemetry.
+  The same `survey` aggregates the authenticated reports of `/api/ui/network/rtt`:
+  each origin publishes only its own direct measurements, and `route_options` uses the
+  key `(from_node_id, to_node_id)`. The gateway's latency is not reused
+  for an edge between two remote peers.
+- `deploy/` - `launch_targets` is phase 2 extracted from `run`: the plan's steps resolved
+  against the post-copy scan, which is the only part of the deploy testable without a cluster
+  (`a_whole_model_is_launched_as_one_plain_target`).
+- `deploy/` - `RuntimeParams.fit_memory` stays on by default in shards and
+  whole models so `llama.cpp` can fit the layers to the free memory;
+  `effective_params_for_kind` and the `apply` turn that fitting off in tensor
+  parallelism, which does not support the automatic fit in `split-mode tensor`.
+  `RuntimeParams.inference_mode` travels with the request in the three deploy kinds
+  independently of `POM_DEV_MODE`; `effective_params_for_kind` only applies the structural rule of
+  turning `fit_memory` off in Tensor Parallelism. An absent mode is `dense` (`llama.cpp`); `auto`
+  only enters when it was explicitly asked for.
+  The survey carries `is_moe` from the GGUF catalog to the `DeployPlan`; only expert metadata
+  identifies MoE. The plan exposes `inference_mode_supported` and
+  `inference_mode_reason`: MoE in Tensor Parallelism is refused explicitly
+  while that path is not supported.
+  The same `DeployPlan` exposes `capabilities` in state `supported`,
+  `unsupported` or `unknown`, with origin, reason and an optional warning: thinking comes from
+  the template and the GGUF vocabulary, MTP first from the selected GGUF file and
+  then it only warns about the final peer's runtime, lookup comes from all targets' runtime
+  capabilities, and fit-memory from the strategy. A proven absence in the model hides it; a
+  limited runtime or indeterminate evidence stays actionable. The `no_embeddings` is evaluated by
+  real position in the chain; when requested, `launch` validates all peers before stopping
+  any process, refusing provably unsafe intermediaries and
+  allowing an indeterminate topology only with the control warned.
 - `deploy/` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST
@@ -1089,12 +1071,13 @@ faz o download autenticado do blob persistido.
   receiver computes the MD5 itself, via `/api/transfer/manifest`, after
   accepting. **Accepting returns before the other side answers**:
   `spawn_download` registers the job right away (`bytes_total` 0, indeterminate
-  bar, detail "conferindo o arquivo na origem"), then in a background task
+  bar, detail "conferindo o arquivo na origem" - "checking the file on the origin"), then in a
+  background task
   `fetch_manifest` asks for size + MD5 (`MANIFEST_TIMEOUT` = 30 min - a digest
-  is a full read on a slow volume - and runs the disk-space check there too),
+  is a full read on a slow volume - and it runs the disk-space check there too),
   then `run_download` writes a `.part` next to its destination - the model's
-  folder for a **part** (`<shard_dir>/<modelo>-<hash curto do original>/<sha256>.gguf`,
-  `<modelo>-<hash curto do original>.pom` written first - pipeline and tensor
+  folder for a **part** (`<shard_dir>/<model>-<short hash of the original>/<sha256>.gguf`,
+  `<model>-<short hash of the original>.pom` written first - pipeline and tensor
   slicing of one model share the folder and manifest), `<shard_dir>/received/`
   for anything that belongs to no manifest -
   resumes with `Range`, verifies the sha256 it asked for (a part) or the MD5
@@ -1102,25 +1085,25 @@ faz o download autenticado do blob persistido.
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet
   known). A manifest/download error becomes a job `failed` with the reason,
   never overwriting an operator's `cancel`.
-  **Os dois lados sabem o desfecho.** Todo estado terminal passa por
-  `TransferState::finish`, que grava `finished_at` e recusa reescrever um
-  terminal já posto - é ele que faz "cancelado por X" sobreviver a um "falhou"
-  anônimo, e é o carimbo que deixa o sino mostrar o que **acabou de** terminar.
-  Do lado que envia, `served_stream` fecha o job no **último byte** e não no
-  fim do stream: o hyper para de puxar quando o corpo satisfaz o
-  `Content-Length` e nunca pede o `None` do fim, então o job de envio ficava
-  `running` para sempre com `bytes_done` congelado. E o veredito do receptor
-  volta por `notify_offerer` → `POST /api/transfer/offers/answer`
-  (`receive_answer`), casado pelo `grant` guardado em `TransferState::offered`:
-  aceite vira job `sending` já em curso ("aceito; aguardando o início do
-  envio"), recusa vira `cancelled` com o nome de quem recusou. Um veredito de
-  um `node_id` que não é o destino registrado é 403.
-  **Um job diz de que modelo é.** `TransferJob` carrega `model_label`,
-  `start_layer` e `end_layer`, montados por `slice_label`/`slice_label_for_path`
-  a partir do `.pom` que está ao lado do arquivo - nunca deduzidos do nome, que
-  é o sha256 e não afirma nada sobre camada nenhuma. O manifesto já está no
-  lugar quando o job nasce nos dois sentidos: veio na oferta (push) ou foi
-  buscado em `/api/transfer/pom` (pull), sempre antes do primeiro byte de peso.
+  **Both sides know the outcome.** Every terminal state passes through
+  `TransferState::finish`, which writes `finished_at` and refuses to rewrite a
+  terminal state already set - that is what makes "cancelled by X" survive an anonymous "it
+  failed", and it is the stamp that lets the bell show what **just** finished.
+  On the sending side, `served_stream` closes the job on the **last byte** and not at the
+  end of the stream: hyper stops pulling once the body satisfies the
+  `Content-Length` and never asks for the closing `None`, so the send job stayed
+  `running` forever with `bytes_done` frozen. And the receiver's verdict
+  comes back through `notify_offerer` -> `POST /api/transfer/offers/answer`
+  (`receive_answer`), matched by the `grant` kept in `TransferState::offered`:
+  an acceptance becomes a `sending` job already underway ("accepted; waiting for the send to
+  start"), a refusal becomes `cancelled` with the name of whoever refused. A verdict from a
+  `node_id` that is not the registered destination is a 403.
+  **A job says which model it is.** `TransferJob` carries `model_label`,
+  `start_layer` and `end_layer`, assembled by `slice_label`/`slice_label_for_path`
+  from the `.pom` sitting beside the file - never deduced from the name, which
+  is the sha256 and asserts nothing about any layer. The manifest is already in place when the
+  job is born in both directions: it came in the offer (push) or it was fetched from
+  `/api/transfer/pom` (pull), always before the first weight byte.
   `DEV_AUTO_ACCEPT_ENV` (`POM_DEV_AUTO_ACCEPT_TRANSFERS`, read once at
   startup via `dev_auto_accept`, the receiver's own variable) is OFF unless the
   receiver sets it; a sender cannot ask for it.
@@ -1131,7 +1114,7 @@ faz o download autenticado do blob persistido.
   `transfer.rs::list_offers`), `GET /admin/slots` (local `/health` view of KV
   snapshots plus `prefix_auto_cache` index stats when Phase 3 is on),
   `POST /admin/slots/:name?action=save|restore|erase` (orchestrates
-  a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
+  a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` - see
   `docs/subsystems/inference.md` §3.1.1 and `http-api.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty,
   and gives each remote peer a `route` (`Network::peer_route`): the path this
@@ -1281,16 +1264,16 @@ faz o download autenticado do blob persistido.
   /admin/authority/secondaries/:id/demote`.
   Internal profile mutations carry signed authority commands; a promotion
   delivers and validates the complete trust document at the target.
-- `webui/network.rs` - `GET /api/ui/network/info` entrega o bloco `network`
-  salvo no banco para todos os perfis, com `can_edit` derivado da cadeia de
-  autoridade. `POST /api/ui/network/settings` é exclusivo do administrador,
-  grava `pom.json` e SQLite, atualiza o rótulo geo do pkarr e envia a nova
-  configuração em um envelope assinado aos peers. O envelope leva a
-  `connection_key` somente como segredo de transporte de redes privadas; em uma
-  rede pública o valor local do admin não entra no envelope. A mutação remota
-  exige a assinatura da autoridade. `GET
-  /api/ui/network/trust-share` entrega ao administrador a raiz de confiança
-  para cópia ou download e, quando aplicável, a chave de conexão. `GET
+- `webui/network.rs` - `GET /api/ui/network/info` delivers the `network` block
+  saved in the database for every profile, with `can_edit` derived from the authority
+  chain. `POST /api/ui/network/settings` is the administrator's alone,
+  it writes `pom.json` and SQLite, updates the pkarr geo label and sends the new
+  configuration in a signed envelope to the peers. The envelope carries the
+  `connection_key` only as a transport secret of private networks; on a public
+  network the admin's local value does not enter the envelope. The remote mutation
+  demands the authority's signature. `GET
+  /api/ui/network/trust-share` delivers the trust root to the administrator for copying or
+  downloading and, when applicable, the connection key. `GET
   /api/ui/network/geo/countries`, `/geo/cities?country=&q=` and
   `/geo/nearest?latitude=&longitude=` answer from the offline city database.
   Saving runs `geo::apply_location` first: the city must be a row of that
@@ -1356,14 +1339,14 @@ faz o download autenticado do blob persistido.
 - `webapp.rs` - `API_PREFIXES = ["api/", "v1/", "admin/", "peers", "health",
   "generate"]`; `routes<S>()` serves `GET /` (index) and `GET /*path`. A miss
   under an API prefix is a JSON 404, a miss with a file extension is "asset
-  não encontrado", anything else falls back to `index.html`. `resolve`
+  não encontrado" ("asset not found"), anything else falls back to `index.html`. `resolve`
   rejects `..`, absolute and prefixed components. Cache: index.html no-cache,
   hashed assets immutable (1 year). Missing bundle -> 500 explaining the
   `npm run build` / `POM_UI_DIST` remedy.
-- `session.rs` - `handle_handshake` compara `connection_key` (403
-  `invalid_key`), amarra `node_id` à `pubkey`, consulta `blocked_nodes`, exige o
-  desafio Ed25519 de uso único e aprova com `peer_id`; as recusas do desafio
-  estão descritas na entrada do arquivo acima.
+- `session.rs` - `handle_handshake` compares the `connection_key` (403
+  `invalid_key`), ties the `node_id` to the `pubkey`, consults `blocked_nodes`, demands the
+  single-use Ed25519 challenge and approves with a `peer_id`; the challenge's refusals are
+  described in the file's entry above.
 
 ## Links to other folders
 
@@ -1398,32 +1381,34 @@ faz o download autenticado do blob persistido.
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
   gateway HTTP for transfers, deploy forwarding, and cancel notices.
 
-### Visão na implantação e no chat
+### Vision in the deployment and in the chat
 
-`deploy::Plan.mmproj_path`, `mmproj_candidates` e `mmproj_reason` vêm do modelo
-inteiro ou do `ShardSet` escolhido. A interface pré-seleciona o primeiro
-candidato compatível e pode enviar `DeployRequest.mmproj_path` para escolher
-outro formato na cabeça selecionada. A seleção da cabeça usa a faixa e o nome
-do candidato escolhido, não o primeiro arquivo de visão da máquina.
+`deploy::Plan.mmproj_path`, `mmproj_candidates` and `mmproj_reason` come from the whole
+model or from the chosen `ShardSet`. The interface pre-selects the first
+compatible candidate and may send `DeployRequest.mmproj_path` to choose
+another file on the selected head. The head's selection uses the range and the name
+of the chosen candidate, not the machine's first vision file.
 `deploy::launch` only passes `mmproj_path` to the plan with `vision: true`, and
 `planning::resolve_head_projector` resolves it against the head by path or, if
 the screen sent another machine's copy, by the unique file name among the
 head's candidates; with no match, the plan refuses naming the file.
-`DeployRequest.vision` só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
-`webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
-`openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve
-`mmproj_reason`; o caminho também é validado contra o GGUF antes de o runtime
-iniciar, inclusive em configurações antigas.
-O Chat consulta `GET /api/ui/chat/capabilities?model=<rótulo>`, uma rota comum
-que agrega, para o modelo escolhido no Chat (sem `model`, o que a rede serve,
-`displayed_model`; nunca só o que este nó carrega), a cobertura, o `mmproj_path` e o `no_thinking` da cabeça da
-implantação sem expor topologia ao perfil `infer`. A resposta usa `supported`,
-`unsupported` ou `unavailable` para visão, thinking e cobertura completa,
-incompleta ou indisponível; recusa de autorização nunca é convertida em vazio.
-Visão e a disponibilidade de thinking são propriedades do modelo servido, não
-privilégios do perfil. `openai::ChatRequest.thinking_enabled` segue no
-`GenerationInput` e no metadata de prefill; a cabeça aplica o kill-switch
-global antes de renderizar o template.
+`DeployRequest.vision` only enables the projector on the target whose `start_layer` is zero, the
+deployment's head;
+`webui::ApplyRequest.use_mmproj` persists the choice in `NodeConfig` and the
+`openai` adapter extracts base64 images from multimodal requests. A vision refusal returns
+`mmproj_reason`; the path is also validated against the GGUF before the runtime
+starts, including in older configurations.
+The Chat queries `GET /api/ui/chat/capabilities?model=<label>`, a common route
+that aggregates, for the model chosen in the Chat (without `model`, the one the network serves,
+`displayed_model`; never only what this node carries), the coverage, the `mmproj_path` and the
+`no_thinking` of the deployment's head without exposing the topology to the `infer` profile. The
+answer uses `supported`,
+`unsupported` or `unavailable` for vision, thinking and full, incomplete or unavailable coverage;
+an authorization refusal is never turned into an empty value.
+Vision and the thinking availability are properties of the model served, not
+privileges of the profile. `openai::ChatRequest.thinking_enabled` travels in the
+`GenerationInput` and in the prefill metadata; the head applies the global kill-switch
+before rendering the template.
 
 ## Maintaining this file
 

@@ -18,7 +18,7 @@ describe("ScrollableNav", () => {
       </LocaleProvider>,
     );
     const scroller = container.querySelector(".overflow-y-auto") as HTMLElement;
-    // Janela de 200px diante de 500px de conteúdo, no topo.
+    // A 200px window in front of 500px of content, at the top.
     Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 500 });
     Object.defineProperty(scroller, "scrollTop", { configurable: true, writable: true, value: 0 });
@@ -31,7 +31,7 @@ describe("ScrollableNav", () => {
     fireEvent.click(down);
     expect(scroller.scrollBy).toHaveBeenCalledWith({ top: 120, behavior: "smooth" });
 
-    // Rolou até o fim: some a seta de baixo e aparece a de cima.
+    // Scrolled to the end: the down arrow disappears and the up arrow appears.
     Object.defineProperty(scroller, "scrollTop", { configurable: true, writable: true, value: 300 });
     fireEvent.scroll(scroller);
     expect(screen.queryByRole("button", { name: "Scroll menu down" })).toBeNull();

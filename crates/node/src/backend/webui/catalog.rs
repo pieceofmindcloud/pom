@@ -2084,7 +2084,7 @@ pub(super) struct ChatTelemetryPipelineRoute {
     /// Some leg of the route goes through a relay; the route needs to be reviewed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) relayed: bool,
-    /// Which legs, as `[de, para]`. The first may be the gateway's own: it
+    /// Which legs, as `[from, to]`. The first may be the gateway's own: it
     /// holds only for requests that enter through this node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) relayed_legs: Vec<[String; 2]>,

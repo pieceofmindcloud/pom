@@ -248,7 +248,7 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    // O seletor de idioma é uma bandeira com submenu; o TLS fica no mesmo grupo.
+    // The language selector is a flag with a submenu; the TLS one stays in the same group.
     const controls = screen.getByRole("button", { name: /^(Idioma|Language):/ }).parentElement as HTMLElement;
     expect(within(controls).queryByTestId("tls-indicator")).toBeNull();
   });

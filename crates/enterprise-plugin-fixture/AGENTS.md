@@ -1,9 +1,9 @@
 # enterprise-plugin-fixture
 
-`cdylib` mínima usada em testes locais do contrato de plugins. Exporta
-`pom_logs_plugin_v1` e `pom_base_plugin_v1`, além dos callbacks no ABI
-definido por `enterprise-protocol`; não representa plugins comerciais nem
-contém auditoria. O único carregador é `crates/plugin-host`.
+Minimal `cdylib` used in local tests of the plugin contract. Exports
+`pom_logs_plugin_v1` and `pom_base_plugin_v1`, plus the callbacks in the ABI
+defined by `enterprise-protocol`; it does not represent commercial plugins and
+contains no audit. The only loader is `crates/plugin-host`.
 
 ## Maintaining this file
 

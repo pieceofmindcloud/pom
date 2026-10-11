@@ -8,16 +8,16 @@
 > enterprise provider is a separate private local plugin, never a dependency of
 > this repository. See `docs/architecture/routing-plugin-contract.md`.
 
-**POM - Piece Of Mind: inferência distribuída de LLM entre máquinas comuns, sem servidor central**
+**POM - Piece Of Mind: distributed LLM inference across ordinary machines, with no central server**
 
-Cada nó aloca uma fatia de RAM, calcula automaticamente quantas camadas do modelo cabem, e se coordena com outros nós via UDP P2P para cobrir o modelo completo.
+Each node allocates a slice of RAM, works out automatically how many model layers fit in it, and coordinates with the other nodes over UDP P2P to cover the whole model.
 
 ---
 
-## Instalação
+## Installation
 
 ```bash
-# Requer Rust 1.75+
+# Requires Rust 1.75+
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
@@ -26,7 +26,7 @@ cd pom
 cargo build --release
 ```
 
-O binário estará em `./target/release/pom`.
+The binary lands in `./target/release/pom`.
 
 ---
 
@@ -38,128 +38,126 @@ O binário estará em `./target/release/pom`.
 ./scripts/build-docker.sh
 ```
 
-Todas as máquinas do cluster compilam o mesmo executável `pom` com CPU, CUDA e Vulkan e o
-`pom-plugin-host`; os módulos GGML escolhem o backend disponível em runtime. O
-frontend é um estágio independente. Os builds de desenvolvimento usam por
-padrão as bibliotecas da release exata do fork `pieceofmindcloud/llama.cpp` (pacote
-CUDA 13.4), para evitar recompilar o núcleo nativo. A release correspondente deve
-estar publicada antes do build; `POM_LLAMA_CPP_RELEASE_TAG` pode fixar uma tag
-específica. Para compilar o fork local, inclusive uma cópia
-fora do POM ou com alterações não commitadas:
+Every machine in the cluster builds the same `pom` executable, with CPU, CUDA and Vulkan, plus the
+`pom-plugin-host`; the GGML modules pick whichever backend is available at runtime. The
+frontend is an independent stage. Development builds use, by default, the libraries of the
+exact release of the fork `pieceofmindcloud/llama.cpp` (CUDA 13.4 package), to avoid
+recompiling the native core. The matching release must be published before the build;
+`POM_LLAMA_CPP_RELEASE_TAG` can pin a specific tag. To build a local fork, including a copy
+outside POM or one with uncommitted changes:
 
 ```bash
 POM_LLAMA_CPP_MODE=source \
-POM_LLAMA_CPP_SOURCE_DIR=/caminho/para/llama.cpp \
+POM_LLAMA_CPP_SOURCE_DIR=/path/to/llama.cpp \
   ./scripts/build-docker.sh
 ```
 
-Os composes por máquina/cluster ficam no repositório `pom-cluster-config`, que
-chama este script com `COMPOSE_FILE` apontando para o compose do cluster. O
-script lê o commit do POM
-no host e o passa apenas ao runtime como `POM_BUILD_COMMIT`; o `.dockerignore`
-corta `.git/` do contexto, então sem isso o binário carimba `desconhecido` em
-`/api/ui/node`. A publicação de binários do POM não depende desse modo Docker.
+The per-machine and per-cluster composes live in the `pom-cluster-config` repository, which
+calls this script with `COMPOSE_FILE` pointing at the cluster's compose. The script reads the POM
+commit on the host and passes it only to the runtime as `POM_BUILD_COMMIT`; the `.dockerignore`
+cuts `.git/` out of the build context, so without it the binary stamps `desconhecido` in
+`/api/ui/node`. Publishing POM binaries does not depend on this Docker mode.
 
-### Executar
+### Run
 
 ```bash
-# Nó simples, com o estado (pom.json, chaves, modelos) num volume
+# Single node, with its state (pom.json, keys, models) in a volume
 docker run --rm \
     -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
     -v ./data:/data -e POM_HOME=/data -e POM_UI_DIST=/app/apps/frontend/dist \
     pom
 
-# Nó conectando a bootstrap
+# Node joining a bootstrap
 docker run --rm \
     -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
     -v ./data:/data -e POM_HOME=/data -e POM_UI_DIST=/app/apps/frontend/dist \
     pom --bootstrap 192.168.1.10:42777
 ```
 
-A interface web fica disponível em `http://localhost:8080/` assim que o
-contêiner sobe. No primeiro acesso ela conduz a configuração do nó; os modelos
-são implantados por ela, nunca pela linha de comando.
+The web interface is available at `http://localhost:8080/` as soon as the container
+comes up. On the first visit it walks you through the node's configuration; models
+are deployed through it, never from the command line.
 
 ---
 
-## Uso
+## Usage
 
 ```bash
-# Iniciar um nó (sem pom.json, abre a configuração inicial em :8080)
+# Start a node (with no pom.json, it opens the initial configuration on :8080)
 ./pom
 
-# Nó com porta customizada e bootstrap
+# Node with a custom port and a bootstrap
 ./pom --port 42777 --bootstrap 192.168.1.10:42777
 
-# Nó conectando a bootstrap remoto (internet)
+# Node joining a remote bootstrap (internet)
 ./pom --bootstrap 45.33.32.156:42777
 ```
 
-Depois de configurado, abra `http://<nó>:8080/` e implante o modelo pela
-interface: ela fatia o GGUF, distribui as camadas entre os nós e carrega cada
-fatia no seu peer.
+Once it is configured, open `http://<node>:8080/` and deploy the model through the
+interface: it slices the GGUF, spreads the layers across the nodes and loads each
+slice on its peer.
 
 ---
 
-## Como funciona
+## How it works
 
-### 1. Descoberta
-Ao iniciar, o nó:
-1. Envia `PeerRequest` para os bootstrap nodes
-2. Faz broadcast UDP local (mDNS-style)
-3. Entra no gossip libp2p para peers fora da LAN
+### 1. Discovery
+On startup, the node:
+1. Sends `PeerRequest` to the bootstrap nodes
+2. Broadcasts locally over UDP (mDNS-style)
+3. Joins the libp2p gossip for peers outside the LAN
 
-### 2. Implantação
-A implantação é feita pela interface web: ela mede o que cada nó tem de memória
-e GPU, planeja quais camadas cada um serve, e cada peer extrai a própria faixa
-da própria cópia do modelo. Ver `docs/subsystems/deployment.md`.
+### 2. Deployment
+Deployment is done through the web interface: it measures the memory and GPU each node
+has, plans which layers each one serves, and every peer extracts its own range
+from its own copy of the model. See `docs/subsystems/deployment.md`.
 
-### 3. Gossip P2P
-Cada 5 segundos o nó:
-- Anuncia suas camadas para todos os peers conhecidos
-- Broadcast local para novos nós na LAN
-- Remove peers que não respondem há 30s
-- Troca lista de peers (gossip Kademlia-style)
+### 3. P2P gossip
+Every 5 seconds the node:
+- Announces its layers to every peer it knows
+- Broadcasts locally for new nodes on the LAN
+- Drops peers that have not answered for 30s
+- Exchanges peer lists (Kademlia-style gossip)
 
 ---
 
-## Estrutura do workspace
+## Workspace layout
 
 ```
-Cargo.toml                     # workspace e dependências compartilhadas
+Cargo.toml                     # workspace and shared dependencies
 crates/
-├── node/                      # pacote que produz o binário pom
-│   ├── src/main.rs             # CLI e orquestração de inicialização
-│   ├── src/models/             # catálogo, GGUF, perfis e fatiamento
-│   ├── src/network/            # descoberta, identidade e transporte P2P
-│   ├── src/routing/            # planejador de pipeline atual
-│   ├── src/backend/            # gateway HTTP, API e interface administrativa
-│   └── src/utils/              # configuração e monitoramento
-├── routing-contract/           # contrato serializável e versionado de roteamento
-├── routing-base/               # planejador determinístico independente de infraestrutura
-├── config/                     # ponto de extração para esquemas de configuração públicos
-└── types/                      # ponto de extração para tipos de domínio públicos
-apps/frontend/                  # fonte React/Vite; build lido do disco pelo node em runtime
+├── node/                      # package that produces the pom binary
+│   ├── src/main.rs             # CLI and startup orchestration
+│   ├── src/models/             # catalog, GGUF, profiles and slicing
+│   ├── src/network/            # discovery, identity and P2P transport
+│   ├── src/routing/            # the current pipeline planner
+│   ├── src/backend/            # HTTP gateway, API and admin interface
+│   └── src/utils/              # configuration and monitoring
+├── routing-contract/           # serializable, versioned routing contract
+├── routing-base/               # infrastructure-independent deterministic planner
+├── config/                     # extraction point for public configuration schemas
+└── types/                      # extraction point for public domain types
+apps/frontend/                  # React/Vite source; the node reads the build from disk at runtime
 ```
 
-`cargo build`, `cargo test` e `cargo run --bin pom -- <argumentos>` na
-raiz usam `crates/node` como membro padrão do workspace. Para validar todos os
-crates públicos e o nó, use `cargo test --workspace`.
+`cargo build`, `cargo test` and `cargo run --bin pom -- <arguments>` at the
+root use `crates/node` as the default workspace member. To validate every public
+crate and the node, use `cargo test --workspace`.
 
-### Protocolo de mensagens (UDP JSON)
+### Message protocol (UDP JSON)
 
 ```json
-// Announce - nó anuncia suas camadas
+// Announce - a node announces its layers
 { "type": "Announce", "node_id": "abc...", "model": "gemma3",
   "start_layer": 11, "end_layer": 21, "memory_mb": 3840 }
 
-// PeerRequest - pede lista de peers
+// PeerRequest - asks for the peer list
 { "type": "PeerRequest", "from": "abc..." }
 
-// PeerList - responde com peers conhecidos
+// PeerList - answers with the peers it knows
 { "type": "PeerList", "peers": [...] }
 
-// Heartbeat - sinal de vida
+// Heartbeat - a liveness signal
 { "type": "Heartbeat", "node_id": "abc...", "timestamp": "..." }
 
 // LocalDiscover - broadcast LAN
@@ -168,7 +166,7 @@ crates públicos e o nó, use `cargo test --workspace`.
 
 ---
 
-## Modelos suportados
+## Supported models
 
 | Model           | Layers | MB/layer | Description          |
 |-----------------|--------|----------|----------------------|
@@ -183,48 +181,48 @@ crates públicos e o nó, use `cargo test --workspace`.
 
 ---
 
-## Exemplo de rede distribuída
+## Example of a distributed network
 
 ```
-Máquina A (10GB) → gemma3 layers 0-27   (cobre tudo sozinha)
-Máquina A (3GB)  → gemma3 layers 0-14
-Máquina B (3GB)  → gemma3 layers 15-27  (detecta gap, pega a segunda metade)
-Máquina C (2GB)  → gemma3 layers 0-9    (já coberto, fica como redundância)
+Machine A (10GB) → gemma3 layers 0-27   (covers everything on its own)
+Machine A (3GB)  → gemma3 layers 0-14
+Machine B (3GB)  → gemma3 layers 15-27  (sees the gap, takes the second half)
+Machine C (2GB)  → gemma3 layers 0-9    (already covered, stays as redundancy)
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] WireGuard mesh automático entre peers
-- [ ] Capability tokens para controle de acesso à memória
-- [ ] QUIC como transporte (substituir UDP raw)
-- [ ] Suporte a mais modelos (auto-detect via manifest Ollama)
-- [ ] DHT Kademlia completo via libp2p
+- [ ] Automatic WireGuard mesh between peers
+- [ ] Capability tokens for memory access control
+- [ ] QUIC as the transport (replace raw UDP)
+- [ ] Support for more models (auto-detect via the Ollama manifest)
+- [ ] Full Kademlia DHT via libp2p
 
 ---
 
-## Segurança (próxima fase)
+## Security (next phase)
 
-Atualmente os nós se comunicam sem criptografia (adequado para LAN confiável).
+Right now nodes talk to each other without encryption (fine for a trusted LAN).
 
-Para redes públicas, o plano é:
-1. **WireGuard mesh** - cada node_id mapeia para uma chave WireGuard
-2. **Capability tokens** - Ed25519 assinados para acesso a regiões de memória
-3. **Canal separado** - controle (TLS) vs dados (QUIC + ChaCha20)
+For public networks, the plan is:
+1. **WireGuard mesh** - each node_id maps to a WireGuard key
+2. **Capability tokens** - signed Ed25519 tokens for access to memory regions
+3. **Separate channel** - control (TLS) vs data (QUIC + ChaCha20)
 
 ---
 
-## Dependências
+## Dependencies
 
 ```toml
 tokio       = "1"        # async runtime
 clap        = "4"        # CLI
-serde_json  = "1"        # protocolo P2P
-ed25519-dalek = "2"      # identidade criptográfica
-uuid        = "1"        # IDs únicos
-sha2        = "0.10"     # hash de chaves públicas
+serde_json  = "1"        # P2P protocol
+ed25519-dalek = "2"      # cryptographic identity
+uuid        = "1"        # unique IDs
+sha2        = "0.10"     # public key hash
 chrono      = "0.4"      # timestamps
-tracing     = "0.1"      # logs estruturados
+tracing     = "0.1"      # structured logs
 anyhow      = "1"        # error handling
 ```

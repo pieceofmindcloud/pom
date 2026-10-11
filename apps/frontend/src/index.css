@@ -344,9 +344,9 @@ body {
   color: rgb(var(--rose));
 }
 
-/* Tela de senha administrativa: a assinatura da página inicial do
-   pieceofmind.cloud (painel escuro flutuante, marca, gradiente navy -> teal).
-   O painel é escuro nos dois temas, como no site; só o fundo segue o tema. */
+/* Administrative password screen: the signature of the pieceofmind.cloud home page
+   (floating dark panel, brand mark, navy -> teal gradient).
+   The panel is dark in both themes, as on the site; only the background follows the theme. */
 .pom-login {
   display: grid;
   min-height: 100%;
@@ -436,7 +436,7 @@ body {
   animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .42s both;
 }
 
-/* Três nós ligados por uma linha com um pulso de luz que viaja entre eles. */
+/* Three nodes joined by a line with a pulse of light travelling between them. */
 .pom-login-link {
   position: relative;
   display: flex; justify-content: space-between; align-items: center;
@@ -527,9 +527,9 @@ body {
 }
 .pom-login-error { margin: 2px 0 0; color: #ff9aa6; font-size: 13px; }
 
-/* Abertura do Chat sem conversa (`components/ChatHero.tsx`): a marca do site
-   respirando, a linha que abre "P O M" em cada frase e os três nós do portão,
-   nas cores do tema ativo. */
+/* Chat opening without a conversation (`components/ChatHero.tsx`): the site's brand mark
+   breathing, the line that opens "P O M" in each phrase and the three nodes of the gate,
+   in the colors of the active theme. */
 .pom-chat-hero { display: flex; flex-direction: column; align-items: center; text-align: center; margin-bottom: clamp(20px, 4vh, 36px); }
 .pom-chat-hero-mark {
   display: block; width: min(220px, 56vw); height: auto; margin: 0 auto 14px;
@@ -553,11 +553,11 @@ body {
 .pom-chat-hero-link i { background: rgb(var(--surface)); }
 
 /* ==========================================================================
-   Wizard de primeiro acesso (`routes/Setup.tsx`), na identidade do portão e do
-   site: o mesmo painel escuro flutuante com a marca, só mais largo e com o
-   conteúdo alinhado à esquerda. Dentro dele os tokens do tema escuro valem
-   sempre (`.pom-setup-scope`), para os campos compartilhados combinarem com o
-   painel também no tema claro.
+   First-access wizard (`routes/Setup.tsx`), in the identity of the gate and of
+   the site: the same floating dark panel with the brand mark, only wider and with the
+   content aligned to the left. Inside it the dark-theme tokens always apply
+   (`.pom-setup-scope`), so the shared fields match the
+   panel in the light theme too.
    ========================================================================== */
 .pom-setup-scope {
   --ink: 8 14 24;
@@ -586,11 +586,11 @@ body {
 .pom-setup-mark { width: min(170px, 46%); margin-bottom: 10px; }
 .pom-setup-sub { margin-bottom: 22px; }
 .pom-setup-body { min-height: 280px; }
-/* O seletor de idioma fica no canto; em tela estreita o painel desce para não cobri-lo. */
+/* The language selector sits in the corner; on a narrow screen the panel moves down so it does not cover it. */
 @media (max-width: 720px) { .pom-setup { padding-top: 64px; place-items: start center; } }
 .pom-setup-loading { margin: 0 auto; transform: scale(1.35); }
 
-/* Trilha de passos: os nós ligados do site, com o pulso viajando. */
+/* Step trail: the site's joined nodes, with the pulse travelling. */
 .pom-setup-trail { margin: 0 auto 30px; animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .34s both; }
 .pom-setup-trail ol {
   position: relative; display: flex; justify-content: space-between; gap: 8px;
@@ -695,10 +695,10 @@ body {
 @keyframes pom-setup-blink { 50% { opacity: .55; } }
 
 /* ==========================================================================
-   Página de venda do plugin Estatísticas e Logs (`EnterpriseFeatureShowcase`),
-   na linguagem do pieceofmind.cloud: hero escuro flutuante, gradiente navy ->
-   teal, eyebrows mono numerados, cards arredondados e botões pílula. O hero é
-   escuro nos dois temas, como no site; o resto segue o tema do POM.
+   Sales page of the Statistics and Logs plugin (`EnterpriseFeatureShowcase`),
+   in the language of pieceofmind.cloud: floating dark hero, navy ->
+   teal gradient, numbered mono eyebrows, rounded cards and pill buttons. The hero is
+   dark in both themes, as on the site; the rest follows the POM theme.
    ========================================================================== */
 .pom-store {
   --st-blue: #123f8f; --st-cyan: #0d7297; --st-teal: #0b8279;

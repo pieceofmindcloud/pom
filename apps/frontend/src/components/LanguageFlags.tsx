@@ -9,8 +9,8 @@ const LANGUAGES = [
 ] as const;
 
 /**
- * Estado de um menu de idioma que abre no clique: fecha num clique fora ou no
- * Escape, devolvendo o foco ao gatilho.
+ * State of a language menu that opens on click: it closes on an outside click or on
+ * Escape, handing the focus back to the trigger.
  */
 export function useLanguageMenu() {
   const [open, setOpen] = useState(false);
@@ -39,8 +39,8 @@ export function useLanguageMenu() {
 }
 
 /**
- * Mostra apenas a bandeira do idioma atual; um clique abre o submenu com as
- * opções, e escolher uma troca o idioma e fecha o submenu.
+ * Shows only the flag of the current language; a click opens the submenu with the
+ * options, and choosing one switches the language and closes the submenu.
  */
 export function LanguageFlags({ className, children }: { className?: string; children?: ReactNode }) {
   const { locale, setLocale } = useI18n();

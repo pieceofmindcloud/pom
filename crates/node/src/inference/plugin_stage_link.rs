@@ -15,15 +15,31 @@
 //!   `link: {token, prev_port}`; the engine connects to `127.0.0.1:prev_port`.
 //! - **The relay** reads the engine's frames - a little-endian `u32` length,
 //!   then that many bytes, the same framing both ways - and posts each one,
-//!   signed, to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn`
+//!   signed, to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq`
 //!   on the earlier stage's machine, along the route already measured to it.
-//!   The answer's body is the answer frame. An empty body closes `conn`.
+//!   The answer's body is the answer frame. An empty body (to `.../:conn`)
+//!   closes `conn`.
+//! - **In order, several at once** (the micro-pipelining): the engine may send
+//!   frames before it has read the answers to the earlier ones, as a prompt's
+//!   pieces. The relay keeps up to the deployment's
+//!   `prefill_max_inflight_chunks` frames of a connection posted at once
+//!   (`link.max_inflight` tells the engine) and writes their answers back in
+//!   the order of the frames; `seq` numbers them from 0, and the earlier
+//!   machine passes a frame to its engine only after the frame before it, so
+//!   its engine reads the next piece while the answer to the last one travels.
+//! - **The envelope** of every frame between an engine and its node: a kind
+//!   byte, then `1` the bytes as they are, or `2` a tensor - `u32` meta
+//!   length, the meta, then `f32` values. Between the machines a tensor
+//!   crosses in the deployment's `hidden_state_dtype`, encoded by the POM's
+//!   own `wire` (f16, f8, groupwise int4), and reaches the engine as `f32`
+//!   again; an opaque frame crosses as it is. A tensor that the precision
+//!   cannot carry (f8 past its range) crosses that once as `f32`.
 //! - **The earlier stage's machine** ([`link_frame_route`]) keeps one loopback
 //!   connection per `conn` to the port its plugin gives in `engine.link`
 //!   (`{status, port, token}`) and passes the frames through. Its own
 //!   `engine.load` gets `link: {}`: the plugin makes the secret.
 //!
-//! The node reads nothing of a frame but its length. Only a live peer serving
+//! The node reads nothing of a frame but its envelope. Only a live peer serving
 //! the next slice of the same deployment gets the secret or a frame through.
 
 use crate::gateway::GatewayState;
@@ -32,10 +48,11 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
+use futures::stream::{FuturesOrdered, StreamExt};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
@@ -48,6 +65,71 @@ const WAIT_EARLIER: Duration = Duration::from_secs(3600);
 const RETRY: Duration = Duration::from_secs(3);
 /// Loopback connections the earlier stage's machine keeps open at once.
 const MAX_CONNECTIONS: usize = 16;
+/// Frames of one engine connection posted to the earlier machine at once: the
+/// deployment's `prefill_max_inflight_chunks`, within the prefill's own range.
+fn max_in_flight(cfg: &crate::runtime::NodeConfig) -> usize {
+    (cfg.prefill_max_inflight_chunks as usize).clamp(1, crate::prefill::PrefillOverlapWindow::MAX_INFLIGHT_CHUNKS)
+}
+
+const KIND_BYTES: u8 = 1;
+const KIND_TENSOR: u8 = 2;
+
+/// An engine's frame as it crosses between the machines: a tensor in
+/// `dtype`, through the POM's `wire` (its meta as hex in the header), and an
+/// opaque frame as it is.
+fn to_network(frame: Vec<u8>, dtype: crate::wire::WireDtype) -> Result<Vec<u8>, String> {
+    match frame.first() {
+        Some(&KIND_BYTES) => Ok(frame),
+        Some(&KIND_TENSOR) => {
+            let meta_len = frame
+                .get(1..5)
+                .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize)
+                .ok_or("a tensor frame without its meta length")?;
+            let values = frame
+                .get(5 + meta_len..)
+                .filter(|values| values.len() % 4 == 0)
+                .ok_or("a tensor frame whose values are not f32")?;
+            let values: Vec<f32> = values
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            let meta = json!({ "meta": hex::encode(&frame[5..5 + meta_len]) });
+            let shape = vec![1, values.len()];
+            let encoded = crate::wire::encode(&meta, Some((&values, shape.clone())), dtype)
+                .or_else(|_| crate::wire::encode(&meta, Some((&values, shape)), crate::wire::WireDtype::F32))
+                .map_err(|error| error.to_string())?;
+            let mut out = Vec::with_capacity(1 + encoded.len());
+            out.push(KIND_TENSOR);
+            out.extend_from_slice(&encoded);
+            Ok(out)
+        }
+        _ => Err("a frame without the link's kind byte".into()),
+    }
+}
+
+/// The inverse of [`to_network`]: the frame the engine reads, its tensor in `f32`.
+fn from_network(body: &[u8]) -> Result<Vec<u8>, String> {
+    match body.first() {
+        Some(&KIND_BYTES) => Ok(body.to_vec()),
+        Some(&KIND_TENSOR) => {
+            let (meta, tensor) = crate::wire::decode(&body[1..]).map_err(|error| error.to_string())?;
+            let meta = meta["meta"]
+                .as_str()
+                .and_then(|text| hex::decode(text).ok())
+                .ok_or("a tensor without its meta")?;
+            let values = tensor.map(|(values, _)| values).unwrap_or_default();
+            let mut out = Vec::with_capacity(5 + meta.len() + values.len() * 4);
+            out.push(KIND_TENSOR);
+            out.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+            out.extend_from_slice(&meta);
+            for value in values {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            Ok(out)
+        }
+        _ => Err("a frame without the link's kind byte".into()),
+    }
+}
 
 static GATEWAY: OnceLock<GatewayState> = OnceLock::new();
 
@@ -161,7 +243,7 @@ pub(crate) async fn prepare(
         }
     });
     Ok((
-        json!({ "token": token, "prev_port": port }),
+        json!({ "token": token, "prev_port": port, "max_inflight": max_in_flight(cfg) }),
         Some(Relay { task }),
     ))
 }
@@ -196,7 +278,7 @@ fn valid_token(token: &str) -> bool {
     (16..=256).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
-async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
+async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Option<Vec<u8>>> {
     let mut length = [0u8; 4];
     match stream.read_exact(&mut length).await {
         Ok(_) => {}
@@ -215,7 +297,7 @@ async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> 
     Ok(Some(payload))
 }
 
-async fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {
+async fn write_frame(stream: &mut (impl AsyncWrite + Unpin), payload: &[u8]) -> std::io::Result<()> {
     stream
         .write_all(&(payload.len() as u32).to_le_bytes())
         .await?;
@@ -224,59 +306,138 @@ async fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> std::io::Result<
 }
 
 /// One engine connection of a later stage: every frame goes to the earlier
-/// stage's machine and its answer comes back. A frame the earlier machine
-/// cannot take yet (its stage still loading) is sent again.
+/// stage's machine and its answer comes back, up to [`MAX_IN_FLIGHT`] frames
+/// at once, the answers in the order of the frames. A frame the earlier
+/// machine cannot take yet (its stage still loading) is sent again.
 async fn relay_connection(
     state: GatewayState,
     cfg: crate::runtime::NodeConfig,
     code: String,
-    mut stream: TcpStream,
+    stream: TcpStream,
 ) {
     let conn = uuid::Uuid::new_v4().simple().to_string();
-    let path = format!(
+    let base = format!(
         "/api/internal/plugins/{code}/engine/link/{}/{conn}",
         cfg.deploy_id
     );
-    let mut peer: Option<crate::network::PeerInfo> = None;
+    let (mut reader, mut writer) = stream.into_split();
+    // the reader is a task of its own: a frame half read is never dropped by the select below
+    let in_flight = max_in_flight(&cfg);
+    let (frames, mut incoming) = tokio::sync::mpsc::channel::<Vec<u8>>(in_flight);
+    let reading = {
+        let code = code.clone();
+        tokio::spawn(async move {
+            loop {
+                match read_frame(&mut reader).await {
+                    Ok(Some(frame)) => {
+                        if frames.send(frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        warn!(plugin = %code, %error, "stage link: the engine's frame");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    let peer = Arc::new(tokio::sync::Mutex::new(None::<crate::network::PeerInfo>));
+    let mut pending = FuturesOrdered::new();
+    let mut seq: u64 = 0;
+    let mut open = true;
     loop {
-        let frame = match read_frame(&mut stream).await {
-            Ok(Some(frame)) => frame,
-            Ok(None) => break,
-            Err(error) => {
-                warn!(plugin = %code, %error, "stage link: the engine's frame");
-                break;
-            }
-        };
-        let deadline = Instant::now() + WAIT_EARLIER;
-        let answer = loop {
-            if peer.is_none() {
-                peer = earlier_peer(&state, &cfg, &code).await;
-            }
-            let attempt = match &peer {
-                None => Err("the earlier stage's machine is not in the network".to_owned()),
-                Some(target) => send(&state, target, &path, frame.clone()).await,
-            };
-            match attempt {
-                Ok(answer) => break Some(answer),
-                Err(error) if Instant::now() < deadline => {
-                    warn!(plugin = %code, %error, "stage link: trying again");
-                    peer = None;
-                    tokio::time::sleep(RETRY).await;
+        tokio::select! {
+            frame = incoming.recv(), if open && pending.len() < in_flight => match frame {
+                Some(frame) => {
+                    pending.push_back(forward(
+                        state.clone(),
+                        cfg.clone(),
+                        code.clone(),
+                        Arc::clone(&peer),
+                        format!("{base}/{seq}"),
+                        frame,
+                    ));
+                    seq += 1;
                 }
-                Err(error) => {
-                    warn!(plugin = %code, %error, "stage link: giving up");
-                    break None;
+                None => open = false,
+            },
+            answer = pending.next(), if !pending.is_empty() => match answer {
+                Some(Some(answer)) => {
+                    if write_frame(&mut writer, &answer).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        };
-        let Some(answer) = answer else { break };
-        if write_frame(&mut stream, &answer).await.is_err() {
-            break;
+                _ => break,
+            },
+            else => break,
         }
     }
-    if let Some(target) = &peer {
-        let _ = send(&state, target, &path, Vec::new()).await;
+    reading.abort();
+    drop(pending);
+    let target = peer.lock().await.clone();
+    if let Some(target) = target {
+        let _ = send(&state, &target, &base, Vec::new()).await;
     }
+}
+
+/// One frame to the earlier machine at `path`, tried again while that machine
+/// cannot take it yet; `None` gives up on the connection.
+async fn forward(
+    state: GatewayState,
+    cfg: crate::runtime::NodeConfig,
+    code: String,
+    peer: Arc<tokio::sync::Mutex<Option<crate::network::PeerInfo>>>,
+    path: String,
+    frame: Vec<u8>,
+) -> Option<Vec<u8>> {
+    let frame = match to_network(frame, cfg.hidden_state_dtype) {
+        Ok(frame) => frame,
+        Err(error) => {
+            warn!(plugin = %code, %error, "stage link: the engine's frame");
+            return None;
+        }
+    };
+    let deadline = Instant::now() + WAIT_EARLIER;
+    loop {
+        let target = {
+            let mut peer = peer.lock().await;
+            if peer.is_none() {
+                *peer = earlier_peer(&state, &cfg, &code).await;
+            }
+            peer.clone()
+        };
+        let attempt = match &target {
+            None => Err(Refusal::Retry(
+                "the earlier stage's machine is not in the network".to_owned(),
+            )),
+            Some(target) => send(&state, target, &path, frame.clone()).await,
+        };
+        match attempt {
+            Ok(answer) => {
+                return from_network(&answer)
+                    .map_err(|error| warn!(plugin = %code, %error, "stage link: the earlier stage's answer"))
+                    .ok()
+            }
+            Err(Refusal::Retry(error)) if Instant::now() < deadline => {
+                warn!(plugin = %code, %error, "stage link: trying again");
+                *peer.lock().await = None;
+                tokio::time::sleep(RETRY).await;
+            }
+            Err(Refusal::Retry(error) | Refusal::Final(error)) => {
+                warn!(plugin = %code, %error, "stage link: giving up");
+                return None;
+            }
+        }
+    }
+}
+
+/// Why a frame got no answer: worth sending again, or not (the earlier
+/// machine has already passed a frame of that number on, or lost its link).
+enum Refusal {
+    Retry(String),
+    Final(String),
 }
 
 /// A frame that the earlier machine answered, or why not. A refusal of the
@@ -287,13 +448,16 @@ async fn send(
     peer: &crate::network::PeerInfo,
     path: &str,
     frame: Vec<u8>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Refusal> {
     let response = state
         .control_post_bytes_routed(peer, path, frame, FRAME_TIMEOUT)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| Refusal::Retry(error.to_string()))?;
     let status = response.status();
-    let body = response.bytes().await.map_err(|error| error.to_string())?;
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| Refusal::Retry(error.to_string()))?;
     if status.is_success() {
         return Ok(body.to_vec());
     }
@@ -301,7 +465,11 @@ async fn send(
         .ok()
         .and_then(|value| value["error"].as_str().map(str::to_owned))
         .unwrap_or_else(|| status.to_string());
-    Err(message)
+    Err(if status == StatusCode::GONE {
+        Refusal::Final(message)
+    } else {
+        Refusal::Retry(message)
+    })
 }
 
 // ── The earlier stage's machine ──────────────────────────────────────────────
@@ -390,7 +558,43 @@ pub(crate) async fn link_secret_route(
     }
 }
 
-type Connection = Arc<tokio::sync::Mutex<TcpStream>>;
+/// A loopback connection to this machine's engine: the stream and the number
+/// of the next frame it takes (`seq`); `broken` once the engine closed it.
+struct LinkIo {
+    stream: TcpStream,
+    next: u64,
+    broken: bool,
+}
+
+struct Link {
+    io: tokio::sync::Mutex<LinkIo>,
+    turn: tokio::sync::Notify,
+}
+
+type Connection = Arc<Link>;
+
+/// The connection's stream once frame `seq` is the next one: the frames of a
+/// connection are posted together and may arrive in any order.
+async fn turn(link: &Link, seq: u64) -> Result<tokio::sync::MutexGuard<'_, LinkIo>, &'static str> {
+    loop {
+        let notified = link.turn.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        {
+            let io = link.io.lock().await;
+            if io.broken {
+                return Err("the earlier stage closed the link");
+            }
+            if io.next == seq {
+                return Ok(io);
+            }
+            if io.next > seq {
+                return Err("a frame of that number was already passed on");
+            }
+        }
+        notified.await;
+    }
+}
 
 fn connections() -> &'static Mutex<HashMap<(String, String), (Instant, Connection)>> {
     static CONNECTIONS: OnceLock<Mutex<HashMap<(String, String), (Instant, Connection)>>> =
@@ -433,12 +637,36 @@ fn drop_connection(key: &(String, String)) {
 }
 
 /// `POST /api/internal/plugins/:code/engine/link/:deploy/:conn`: one frame of
-/// the next stage's engine for this machine's earlier stage; the answer frame
-/// is the body. An empty body closes the connection.
+/// the next stage's engine for this machine's earlier stage, from a node that
+/// numbers none; the answer frame is the body. An empty body closes the
+/// connection.
 pub(crate) async fn link_frame_route(
     auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
     Path((code, deploy, conn)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Response {
+    link_frame(auth, state, code, deploy, conn, None, body).await
+}
+
+/// `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq`: frame
+/// number `seq` of the connection, passed to the engine after frame `seq - 1`.
+pub(crate) async fn link_frame_seq_route(
+    auth: crate::auth::InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Path((code, deploy, conn, seq)): Path<(String, String, String, u64)>,
+    body: Bytes,
+) -> Response {
+    link_frame(auth, state, code, deploy, conn, Some(seq), body).await
+}
+
+async fn link_frame(
+    auth: crate::auth::InternalNodeAuth,
+    state: GatewayState,
+    code: String,
+    deploy: String,
+    conn: String,
+    seq: Option<u64>,
     body: Bytes,
 ) -> Response {
     let caller = match authorize(&state, &auth, &code, &deploy).await {
@@ -451,6 +679,9 @@ pub(crate) async fn link_frame_route(
     if body.len() > MAX_FRAME {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "frame too large");
     }
+    let Some(dtype) = state.runtime.config().await.map(|cfg| cfg.hidden_state_dtype) else {
+        return refuse(StatusCode::CONFLICT, "this machine serves no model");
+    };
     let key = (caller, conn);
     if body.is_empty() {
         drop_connection(&key);
@@ -458,6 +689,10 @@ pub(crate) async fn link_frame_route(
     }
     let connection = match take_connection(&key) {
         Some(connection) => connection,
+        // a numbered frame past the first finds no connection: it was closed or dropped, its engine has moved on
+        None if seq.is_some_and(|seq| seq > 0) => {
+            return refuse(StatusCode::GONE, "the earlier stage's link was reset")
+        }
         None => {
             let link = match engine_link(&state, &code).await {
                 Ok(link) => link,
@@ -485,29 +720,64 @@ pub(crate) async fn link_frame_route(
                 }
             };
             let _ = stream.set_nodelay(true);
-            let connection = Arc::new(tokio::sync::Mutex::new(stream));
+            let connection = Arc::new(Link {
+                io: tokio::sync::Mutex::new(LinkIo {
+                    stream,
+                    next: 0,
+                    broken: false,
+                }),
+                turn: tokio::sync::Notify::new(),
+            });
             keep_connection(key.clone(), Arc::clone(&connection));
             connection
         }
     };
-    let mut stream = connection.lock().await;
+    let mut io = match seq {
+        None => connection.io.lock().await,
+        Some(seq) => match tokio::time::timeout(FRAME_TIMEOUT, turn(&connection, seq)).await {
+            Ok(Ok(io)) => io,
+            Ok(Err(error)) => return refuse(StatusCode::GONE, error),
+            Err(_) => {
+                return refuse(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "the frames before this one did not come",
+                )
+            }
+        },
+    };
+    let frame = match from_network(&body) {
+        Ok(frame) => frame,
+        Err(error) => {
+            drop(io);
+            return refuse(StatusCode::BAD_REQUEST, &error);
+        }
+    };
     let exchanged = tokio::time::timeout(FRAME_TIMEOUT, async {
-        write_frame(&mut stream, &body).await?;
-        read_frame(&mut stream).await
+        write_frame(&mut io.stream, &frame).await?;
+        read_frame(&mut io.stream).await
     })
     .await;
-    match exchanged {
-        Ok(Ok(Some(answer))) => (
-            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-            answer,
-        )
-            .into_response(),
+    let response = match exchanged {
+        Ok(Ok(Some(answer))) => {
+            io.next += 1;
+            match to_network(answer, dtype) {
+                Ok(answer) => (
+                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                    answer,
+                )
+                    .into_response(),
+                Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
+            }
+        }
         Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
-            drop(stream);
+            io.broken = true;
             drop_connection(&key);
             refuse(StatusCode::BAD_GATEWAY, "the earlier stage closed the link")
         }
-    }
+    };
+    drop(io);
+    connection.turn.notify_waiters();
+    response
 }
 
 #[cfg(test)]
@@ -563,5 +833,82 @@ mod tests {
         }
         drop(client);
         echo.await.unwrap();
+    }
+
+    fn tensor_frame(meta: &[u8], values: &[f32]) -> Vec<u8> {
+        let mut frame = vec![KIND_TENSOR];
+        frame.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        frame.extend_from_slice(meta);
+        for value in values {
+            frame.extend_from_slice(&value.to_le_bytes());
+        }
+        frame
+    }
+
+    #[test]
+    fn a_tensor_crosses_in_the_deployments_precision_and_comes_back_as_f32() {
+        let values: Vec<f32> = (0..1024).map(|i| ((i as f32) * 0.37).sin() * 3.0).collect();
+        let frame = tensor_frame(&[0], &values);
+        for (dtype, tolerance) in [
+            (crate::wire::WireDtype::F32, 0.0),
+            (crate::wire::WireDtype::F16, 0.01),
+            (crate::wire::WireDtype::F8, 0.2),
+            (crate::wire::WireDtype::I4G128, 0.3),
+        ] {
+            let network = to_network(frame.clone(), dtype).unwrap();
+            if dtype != crate::wire::WireDtype::F32 {
+                assert!(network.len() < frame.len() * 3 / 4, "{dtype:?} is smaller on the wire");
+            }
+            let back = from_network(&network).unwrap();
+            assert_eq!(back.len(), frame.len());
+            assert_eq!(&back[..6], &frame[..6], "kind and meta come back as they went");
+            for (sent, got) in frame[6..].chunks_exact(4).zip(back[6..].chunks_exact(4)) {
+                let sent = f32::from_le_bytes(sent.try_into().unwrap());
+                let got = f32::from_le_bytes(got.try_into().unwrap());
+                assert!((sent - got).abs() <= tolerance, "{dtype:?}: {sent} came back as {got}");
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_frames_cross_as_they_are_and_f8_falls_back_past_its_range() {
+        let opaque = vec![KIND_BYTES, b'P', 1, 2, 3];
+        assert_eq!(to_network(opaque.clone(), crate::wire::WireDtype::F8).unwrap(), opaque);
+        assert_eq!(from_network(&opaque).unwrap(), opaque);
+        let big = tensor_frame(&[0, 7], &[1000.0, -2.0]);
+        let back = from_network(&to_network(big.clone(), crate::wire::WireDtype::F8).unwrap()).unwrap();
+        assert_eq!(back, big, "a value past f8's range crosses that once as f32");
+        assert!(to_network(vec![b'P', 0], crate::wire::WireDtype::F16).is_err());
+        assert!(to_network(vec![KIND_TENSOR, 9, 0, 0, 0, 1], crate::wire::WireDtype::F16).is_err());
+    }
+
+    #[tokio::test]
+    async fn numbered_frames_take_their_turn() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let link = Arc::new(Link {
+            io: tokio::sync::Mutex::new(LinkIo {
+                stream,
+                next: 0,
+                broken: false,
+            }),
+            turn: tokio::sync::Notify::new(),
+        });
+        let second = {
+            let link = Arc::clone(&link);
+            tokio::spawn(async move { turn(&link, 1).await.map(|io| io.next) })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!second.is_finished(), "frame 1 waits for frame 0");
+        {
+            let mut io = turn(&link, 0).await.unwrap();
+            io.next += 1;
+        }
+        link.turn.notify_waiters();
+        assert_eq!(second.await.unwrap(), Ok(1));
+        assert!(turn(&link, 0).await.is_err(), "frame 0 was already passed on");
+        link.io.lock().await.broken = true;
+        assert!(turn(&link, 1).await.is_err(), "a broken link takes no frame");
     }
 }

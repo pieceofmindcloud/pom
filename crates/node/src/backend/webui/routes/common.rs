@@ -51,6 +51,12 @@ pub(super) fn routes() -> Router<GatewayState> {
             ),
         )
         .route(
+            "/api/internal/plugins/:code/engine/link/:deploy/:conn/:seq",
+            post(crate::plugin_stage_link::link_frame_seq_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::plugin_stage_link::MAX_FRAME),
+            ),
+        )
+        .route(
             "/api/ui/pom-update/status",
             get(crate::pom_core_update::pom_update_status),
         )

@@ -715,9 +715,11 @@ back from the plugin's loopback generation server. When the model is split
 across machines on such a service, the machine of a later slice reaches the
 earlier one through `GET /api/internal/plugins/:code/engine/link/:deploy`
 (the stage's link secret) and
-`POST /api/internal/plugins/:code/engine/link/:deploy/:conn` (one frame of the
-engines' stage link, up to 64 MiB, the answer frame as the body; an empty body
-closes the connection). Both take only a signed call from the live peer that
+`POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq` (frame
+number `seq` of the engines' stage link, up to 64 MiB, passed on after frame
+`seq - 1`; the answer frame is the body, `410` when that number was already
+passed on or the connection was reset). An empty body to
+`.../:deploy/:conn` closes the connection. Both take only a signed call from the live peer that
 serves the next slice of that deployment.
 `POST /api/internal/reload_model` answers at once with `state: "loading"` or
 `"ready"` (503 with `error` when the load cannot happen) and the gateway

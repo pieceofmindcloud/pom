@@ -389,9 +389,11 @@ export function DeploymentInspector({
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
   pomDevMode?: boolean;
-  /** A plugin's inference service runs the whole model (Strata): only the
-   *  settings that engine reads are shown - the context, the concurrent
-   *  requests and idle unloading. The llama.cpp knobs do not reach it. */
+  /** A plugin's inference service runs the model (Strata): only the settings
+   *  that engine reads are shown - the context, the concurrent requests and
+   *  idle unloading - and, when its slices cross machines, the POM's own
+   *  transfer between them (pieces in flight, hidden-state precision). The
+   *  llama.cpp knobs do not reach it. */
   inferenceService?: { name: string; settings?: EngineSetting[] };
 }) {
   const { t } = useI18n();
@@ -535,6 +537,49 @@ export function DeploymentInspector({
     ? `${t("inspector.capabilityUnknown")} ${chosenCapability.reason}`
     : chosenCapability?.warning || undefined;
 
+  /** The hidden-state precision between machines: the POM's, whatever engine runs the slices. */
+  const hiddenStateField = () => (
+    <>
+      <InspectorRow
+        label={t("deploy.knob.hidden_state_dtype")}
+        tip={t("deploy.knob.hidden_state_dtypeHint")}
+      >
+        {readOnly ? (
+          <ReadValue>{value.hidden_state_dtype ?? "f16"}</ReadValue>
+        ) : (
+          <Select
+            aria-label={t("deploy.knob.hidden_state_dtype")}
+            name="hidden_state_dtype"
+            value={hiddenStateDtype}
+            onChange={(event) =>
+              set({ hidden_state_dtype: event.target.value as WireDtype })
+            }
+            compact
+          >
+            <option value="f32">{t("deploy.knob.hidden_state_dtypeF32")}</option>
+            <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
+            <option value="f8" disabled={f8Unavailable}>
+              {t("deploy.knob.hidden_state_dtypeF8")}
+            </option>
+            <option value="i4g64" disabled={i4g64Unavailable}>
+              {t("deploy.knob.hidden_state_dtypeI4G64")}
+            </option>
+            <option value="i4g128" disabled={i4g128Unavailable}>
+              {t("deploy.knob.hidden_state_dtypeI4G128")}
+            </option>
+          </Select>
+        )}
+      </InspectorRow>
+      {!readOnly && hiddenStateCapability && hiddenStateUnavailable && (
+        <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
+          {t("deploy.knob.hidden_state_dtypeUnavailable")}
+          {" "}
+          {hiddenStateCapability.reason}
+        </p>
+      )}
+    </>
+  );
+
   if (inferenceService) {
     return (
       <Section title={t("inspector.sectionInferenceService", { name: inferenceService.name })} tone="iris">
@@ -552,6 +597,10 @@ export function DeploymentInspector({
           tip: t("deploy.unloadIfIdleHint"),
         })}
         {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
+        {/* A model split across machines: the POM carries the hidden state between the plugin's stages,
+            with its own micro-pipelining and precision. */}
+        {showHiddenStateDtype && numeric("prefill_max_inflight_chunks")}
+        {showHiddenStateDtype && hiddenStateField()}
         {(inferenceService.settings?.length ?? 0) > 0 && (
           <EngineSettingsFields
             settings={inferenceService.settings ?? []}
@@ -799,47 +848,7 @@ export function DeploymentInspector({
             />
           </InspectorRow>
         )}
-        {showHiddenStateDtype && (
-          <>
-            <InspectorRow
-              label={t("deploy.knob.hidden_state_dtype")}
-              tip={t("deploy.knob.hidden_state_dtypeHint")}
-            >
-              {readOnly ? (
-                <ReadValue>{value.hidden_state_dtype ?? "f16"}</ReadValue>
-              ) : (
-                <Select
-                  aria-label={t("deploy.knob.hidden_state_dtype")}
-                  name="hidden_state_dtype"
-                  value={hiddenStateDtype}
-                  onChange={(event) =>
-                    set({ hidden_state_dtype: event.target.value as WireDtype })
-                  }
-                  compact
-                >
-                  <option value="f32">{t("deploy.knob.hidden_state_dtypeF32")}</option>
-                  <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
-                  <option value="f8" disabled={f8Unavailable}>
-                    {t("deploy.knob.hidden_state_dtypeF8")}
-                  </option>
-                  <option value="i4g64" disabled={i4g64Unavailable}>
-                    {t("deploy.knob.hidden_state_dtypeI4G64")}
-                  </option>
-                  <option value="i4g128" disabled={i4g128Unavailable}>
-                    {t("deploy.knob.hidden_state_dtypeI4G128")}
-                  </option>
-                </Select>
-              )}
-            </InspectorRow>
-            {!readOnly && hiddenStateCapability && hiddenStateUnavailable && (
-              <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
-                {t("deploy.knob.hidden_state_dtypeUnavailable")}
-                {" "}
-                {hiddenStateCapability.reason}
-              </p>
-            )}
-          </>
-        )}
+        {showHiddenStateDtype && hiddenStateField()}
         <BetaGroup>
           {toggle({
             key: "moe_experts_in_ram",

@@ -749,7 +749,10 @@ Key logic carriers:
   publishes (`PluginService.settings`) in the interface's language: one row
   per setting, an empty field or "Engine default" keeps the engine's default,
   and the values go to `RuntimeParams.engine_settings`. Mounted by
-  `DeploymentInspector` when a plugin's inference service is chosen.
+  `DeploymentInspector` when a plugin's inference service is chosen. When that
+  service's slices cross machines (`showHiddenStateDtype`), the same section
+  also shows the POM's own transfer between them - `prefill_max_inflight_chunks`
+  and the hidden-state precision, the same field the llama.cpp pipeline uses.
 - `DeploymentInspector.tsx` - the inspector of a deployment's properties, and
   **one single** one for the two screens: the deploy screen uses it editable, the History
   uses it with `readOnly` to show with which parameters a version came up. In

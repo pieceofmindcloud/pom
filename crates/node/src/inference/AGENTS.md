@@ -665,10 +665,14 @@ UI.
 - `plugin_stage_link.rs` - the stage link of a plugin engine split across
   machines: `prepare` (a later stage finds the earlier stage's machine, takes
   its link secret and opens a loopback relay that posts each length-prefixed
-  frame of the engine to it), `link_secret_route` and `link_frame_route` (the
-  earlier machine's side, which keeps one loopback connection per relay
-  connection to the port of `engine.link`). Both routes take only the signed
-  live peer that serves the next slice of the same deployment.
+  frame of the engine to it, up to `prefill_max_inflight_chunks` at once,
+  numbered, answers written back in order), `link_secret_route` and
+  `link_frame_seq_route` (the earlier machine's side, which keeps one loopback
+  connection per relay connection to the port of `engine.link` and passes the
+  frames on in number order). A tensor frame (kind `2`) crosses between the
+  machines in the deployment's `hidden_state_dtype` through `wire` and reaches
+  the engine as `f32` (`to_network`, `from_network`). Both routes take only the
+  signed live peer that serves the next slice of the same deployment.
 - `relay.rs` - `BatchCoordinator` schedules the flush immediately and still groups
   concurrent calls to the same next hop in the same executor cycle; it sends a single
   frame and distributes the answers by `item_id`. QUIC also publishes, in microseconds,

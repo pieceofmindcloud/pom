@@ -2589,19 +2589,35 @@ engines exchange their own hidden states, never POM's hop protocol of section
   `deploy_id` whose slice ends at `start_layer - 1` and serves the same
   plugin, asks it for the stage's link secret
   (`GET /api/internal/plugins/:code/engine/link/:deploy`) and opens a relay on
-  loopback. Its `engine.load` gets `link: {token, prev_port}`; the first
+  loopback. Its `engine.load` gets `link: {token, prev_port, max_inflight}`; the first
   stage's gets `link: {}` and its plugin makes the secret, which
   `engine.link` (`{status, port?, token?}`) returns to the local node only.
 - The relay reads the engine's frames (a little-endian `u32` length, then the
   bytes, both ways) and posts each one, signed and along the measured route,
-  to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn` on the
+  to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq` on the
   earlier machine (up to 64 MiB a frame); the answer's body is the answer
   frame, and a wait while the earlier stage loads is retried. That route keeps
   one loopback connection per `conn` to the port of `engine.link` and passes
-  the frames through; an empty body closes `conn`.
+  the frames through in `seq` order; an empty body to `.../:conn` closes it.
+- **Micro-pipelining.** The engine may send frames before it reads the
+  answers to the earlier ones (a prompt's pieces): the relay keeps up to the
+  deployment's `prefill_max_inflight_chunks` frames of a connection posted at
+  once and writes the answers back in order, and `link.max_inflight` tells the
+  engine that depth. The earlier machine passes frame `seq` to its engine only
+  after frame `seq - 1`, so that engine reads the next piece while the answer
+  to the last one crosses. A frame number already passed on, or one past the
+  first on a connection that was reset, is refused with `410` and not sent
+  again.
+- **Hidden-state precision.** Every frame between an engine and its node
+  starts with a kind byte: `1`, bytes the node passes as they are; `2`, a
+  tensor - `u32` meta length, the meta, then `f32` values. Between the
+  machines the node carries a tensor in the deployment's `hidden_state_dtype`
+  through the same `wire` encoding as the pipeline hops (f16, f8, groupwise
+  int4) and hands it back to the other engine as `f32`; a tensor that f8
+  cannot carry crosses that once as `f32`. Neither engine knows the precision.
 - Both routes take only a signed call from the live peer that serves the next
   slice of the same deployment. The node reads nothing of a frame but its
-  length, and no engine listens beyond loopback.
+  envelope, and no engine listens beyond loopback.
 
 Only the last stage takes requests: the earlier one answers `engine.upstream`
 with an error.

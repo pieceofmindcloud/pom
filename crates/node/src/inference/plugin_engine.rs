@@ -590,7 +590,7 @@ fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool) -> Vec<u8> {
         return line.to_vec();
     };
     // The machine that runs the engine measured its speed: its /health publishes it, the card reads it there.
-    super::engine_telemetry::record_perf(
+    super::engine_telemetry::record_head_perf(
         code,
         &super::engine_telemetry::EngineReport::from_done(done, 0),
     );
@@ -634,6 +634,8 @@ pub(crate) async fn generate(
     // frames of this one are the prompt's until the first token.
     let _ = super::plugin_stage_link::take_link_stats(code);
     let _ = super::plugin_stage_link::take_channel_stats(code);
+    let _ = super::plugin_stage_link::take_own_wait(code, super::plugin_stage_link::LinkPhase::Prefill);
+    let _ = super::plugin_stage_link::take_own_wait(code, super::plugin_stage_link::LinkPhase::Decode);
     super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
     let channel = super::plugin_stage_link::channel_of(node_id, &state.network.node_id);
     let leg_started = Instant::now();
@@ -757,7 +759,7 @@ pub(crate) async fn generate(
                 super::engine_telemetry::apply_stage_links(&mut trace, code, prefill_ms);
                 // The speed belongs to the machine that runs the engine; a remote head records it on its own /health.
                 if node_id == state.network.node_id {
-                    super::engine_telemetry::record_perf(code, &report);
+                    super::engine_telemetry::record_head_perf(code, &report);
                 }
                 trace.input_tokens = prompt_tokens;
                 trace.cached_tokens = cached_tokens;
@@ -945,6 +947,8 @@ pub(crate) async fn engine_generate_route(
     }
     // This machine's stage links of the generation start from nothing; its prompt phase begins now.
     let _ = super::plugin_stage_link::take_link_stats(&code);
+    let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Prefill);
+    let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Decode);
     super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
     let response = match post_local(&state.plugins, &code, body.to_vec()).await {
         Ok(response) => response,

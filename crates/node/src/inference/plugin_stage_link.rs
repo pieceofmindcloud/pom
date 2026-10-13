@@ -527,6 +527,53 @@ fn channel_stats() -> &'static Mutex<HashMap<(String, String, LinkPhase, String)
     STATS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The time this machine spent waiting on the stages below it, per plugin and phase, since it was last taken. A
+/// frame's own work is its time here minus the waits its own relays made meanwhile.
+fn own_waits() -> &'static Mutex<HashMap<(String, LinkPhase), u64>> {
+    static WAITS: OnceLock<Mutex<HashMap<(String, LinkPhase), u64>>> = OnceLock::new();
+    WAITS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn add_own_wait(code: &str, phase: LinkPhase, ms: u64) {
+    if let Ok(mut waits) = own_waits().lock() {
+        *waits.entry((code.to_owned(), phase)).or_insert(0) += ms;
+    }
+}
+
+/// The waits so far, without taking them.
+pub(crate) fn peek_own_wait(code: &str, phase: LinkPhase) -> u64 {
+    own_waits()
+        .lock()
+        .ok()
+        .and_then(|waits| waits.get(&(code.to_owned(), phase)).copied())
+        .unwrap_or(0)
+}
+
+/// Takes the waits of `phase`: the head reads them once per generation.
+pub(crate) fn take_own_wait(code: &str, phase: LinkPhase) -> u64 {
+    own_waits()
+        .lock()
+        .ok()
+        .and_then(|mut waits| waits.remove(&(code.to_owned(), phase)))
+        .unwrap_or(0)
+}
+
+/// The phase and the token count of a request a later stage sends, from the engine's stage protocol: `P` is a prompt
+/// piece of n tokens (prefill), `W` a verify window of T tokens (decode). The frame is the envelope's kind byte, the
+/// tag, an i64 position, then the u32 count (native byte order, little-endian on the machines the engine runs on).
+pub(crate) fn frame_phase_and_tokens(frame: &[u8]) -> Option<(LinkPhase, u32)> {
+    if frame.len() < 14 || frame[0] != KIND_BYTES {
+        return None;
+    }
+    let phase = match frame[1] {
+        b'P' => LinkPhase::Prefill,
+        b'W' => LinkPhase::Decode,
+        _ => return None,
+    };
+    let n = u32::from_le_bytes([frame[10], frame[11], frame[12], frame[13]]);
+    (n > 0).then_some((phase, n))
+}
+
 /// The phase each plugin's frames are in now (a generation starts in the prompt).
 fn phases() -> &'static Mutex<HashMap<String, LinkPhase>> {
     static PHASES: OnceLock<Mutex<HashMap<String, LinkPhase>>> = OnceLock::new();
@@ -595,16 +642,9 @@ fn record_link(
     served_ms: u64,
     channel: &str,
 ) {
-    record_leg(
-        code,
-        node_id,
-        current_phase(code),
-        elapsed,
-        sent,
-        received,
-        served_ms,
-        channel,
-    );
+    let phase = current_phase(code);
+    add_own_wait(code, phase, elapsed.as_millis() as u64);
+    record_leg(code, node_id, phase, elapsed, sent, received, served_ms, channel);
 }
 
 /// Totals a machine below us reported in its answer, filed under the phase this machine is in.
@@ -1147,6 +1187,12 @@ async fn link_frame(
             return refuse(StatusCode::BAD_REQUEST, &error);
         }
     };
+    // The frame's phase and token count are what this machine's speed is measured on.
+    let tokens = frame_phase_and_tokens(&frame);
+    if let Some((phase, _)) = tokens {
+        set_phase(&code, phase);
+    }
+    let waits_before = tokens.map_or(0, |(phase, _)| peek_own_wait(&code, phase));
     let exchanged = tokio::time::timeout(FRAME_TIMEOUT, async {
         write_frame(&mut io.stream, &frame).await?;
         read_frame(&mut io.stream).await
@@ -1156,7 +1202,15 @@ async fn link_frame(
         Ok(Ok(Some(answer))) => {
             io.next += 1;
             match to_network(answer, dtype) {
-                Ok(answer) => stage_answer(&code, answer, started),
+                Ok(answer) => {
+                    if let Some((phase, count)) = tokens {
+                        // This machine's own work on the frame: its time here minus the waits its relays made.
+                        let waited = peek_own_wait(&code, phase).saturating_sub(waits_before);
+                        let own_ms = started.elapsed().as_millis() as f64 - waited as f64;
+                        super::engine_telemetry::record_frame(&code, phase, own_ms, count);
+                    }
+                    stage_answer(&code, answer, started)
+                }
                 Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
             }
         }
@@ -1418,5 +1472,21 @@ mod link_stats_tests {
         assert_eq!(quic.bytes_sent, 20);
         assert_eq!(taken[1].2.channel, "tunnel");
         assert_eq!(taken[1].2.calls, 1);
+    }
+
+    #[test]
+    fn a_stage_request_tells_its_phase_and_token_count() {
+        let mut prompt = vec![KIND_BYTES, b'P'];
+        prompt.extend_from_slice(&0i64.to_le_bytes());
+        prompt.extend_from_slice(&5u32.to_le_bytes());
+        assert_eq!(frame_phase_and_tokens(&prompt), Some((LinkPhase::Prefill, 5)));
+        let mut window = vec![KIND_BYTES, b'W'];
+        window.extend_from_slice(&7i64.to_le_bytes());
+        window.extend_from_slice(&3u32.to_le_bytes());
+        assert_eq!(frame_phase_and_tokens(&window), Some((LinkPhase::Decode, 3)));
+        let mut commit = vec![KIND_BYTES, b'C'];
+        commit.extend_from_slice(&2u32.to_le_bytes());
+        assert_eq!(frame_phase_and_tokens(&commit), None, "a commit carries no tokens of its own");
+        assert_eq!(frame_phase_and_tokens(&[KIND_BYTES, b'P']), None);
     }
 }

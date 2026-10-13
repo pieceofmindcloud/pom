@@ -7,6 +7,7 @@
 //! When a plugin does not report a field itself, the llama.cpp server's `timings` object is read in its place, so a
 //! server that already speaks that needs no adapter.
 
+use super::plugin_stage_link::{take_own_wait, LinkPhase};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -83,22 +84,39 @@ fn blend(previous: Option<f64>, sample: f64) -> f64 {
     previous.map_or(sample, |previous| previous * 0.7 + sample * 0.3)
 }
 
-/// Folds one generation's measured times into the plugin's speed.
-pub(crate) fn record_perf(code: &str, report: &EngineReport) {
+/// Folds one sample of milliseconds per token into the plugin's speed for `phase`.
+fn fold(code: &str, phase: LinkPhase, sample: f64) {
     let Ok(mut perf) = engine_perf().lock() else {
         return;
     };
     let entry = perf.entry(code.to_owned()).or_default();
-    if let Some(prefill_ms) = report.prefill_ms.filter(|ms| *ms > 0.0) {
-        if report.prompt_n > 0 {
-            let sample = prefill_ms / report.prompt_n as f64;
-            entry.prefill_ms_per_token = Some(blend(entry.prefill_ms_per_token, sample));
+    match phase {
+        LinkPhase::Prefill => entry.prefill_ms_per_token = Some(blend(entry.prefill_ms_per_token, sample)),
+        LinkPhase::Decode => entry.decode_ms_per_step = Some(blend(entry.decode_ms_per_step, sample)),
+    }
+}
+
+/// One frame this machine answered: its own work on it (its time here minus the waits its relays made), per token
+/// of the frame. Every stage measures itself this way, so the speeds of the machines compare.
+pub(crate) fn record_frame(code: &str, phase: LinkPhase, own_ms: f64, tokens: u32) {
+    if own_ms > 0.0 && tokens > 0 {
+        fold(code, phase, own_ms / f64::from(tokens));
+    }
+}
+
+/// The head's speed for one generation: its engine's prompt and decode times, less the time it waited on the stages
+/// below it, per token. The waits are taken here, so each generation counts once.
+pub(crate) fn record_head_perf(code: &str, report: &EngineReport) {
+    let prefill_wait = take_own_wait(code, LinkPhase::Prefill) as f64;
+    let decode_wait = take_own_wait(code, LinkPhase::Decode) as f64;
+    if let Some(ms) = report.prefill_ms.map(|ms| ms - prefill_wait) {
+        if ms > 0.0 && report.prompt_n > 0 {
+            fold(code, LinkPhase::Prefill, ms / report.prompt_n as f64);
         }
     }
-    if let Some(decode_ms) = report.decode_ms.filter(|ms| *ms > 0.0) {
-        if report.decode_n > 0 {
-            let sample = decode_ms / report.decode_n as f64;
-            entry.decode_ms_per_step = Some(blend(entry.decode_ms_per_step, sample));
+    if let Some(ms) = report.decode_ms.map(|ms| ms - decode_wait) {
+        if ms > 0.0 && report.decode_n > 0 {
+            fold(code, LinkPhase::Decode, ms / report.decode_n as f64);
         }
     }
 }
@@ -322,15 +340,26 @@ mod speed_tests {
 
     #[test]
     fn engine_speed_is_a_blend_of_the_answers() {
-        record_perf("strata-speed-test", &report(100, 1000.0, 50, 500.0));
+        record_head_perf("strata-speed-test", &report(100, 1000.0, 50, 500.0));
         let first = perf_for("strata-speed-test");
         assert_eq!(first.prefill_ms_per_token, Some(10.0));
         assert_eq!(first.decode_ms_per_step, Some(10.0));
         // a slower answer moves the average by 30%, it does not replace it
-        record_perf("strata-speed-test", &report(100, 2000.0, 50, 1500.0));
+        record_head_perf("strata-speed-test", &report(100, 2000.0, 50, 1500.0));
         let second = perf_for("strata-speed-test");
         assert!((second.prefill_ms_per_token.unwrap() - 13.0).abs() < 1e-9);
         assert!((second.decode_ms_per_step.unwrap() - 16.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_stage_speed_is_its_own_work_per_token_of_each_frame() {
+        record_frame("strata-stage-test", LinkPhase::Decode, 30.0, 3);
+        let first = perf_for("strata-stage-test");
+        assert_eq!(first.decode_ms_per_step, Some(10.0));
+        assert_eq!(first.prefill_ms_per_token, None, "a phase nothing ran in is not measured");
+        record_frame("strata-stage-test", LinkPhase::Decode, 0.0, 3);
+        record_frame("strata-stage-test", LinkPhase::Decode, 9.0, 0);
+        assert_eq!(perf_for("strata-stage-test").decode_ms_per_step, Some(10.0));
     }
 
     #[test]

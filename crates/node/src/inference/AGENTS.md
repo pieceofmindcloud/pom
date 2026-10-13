@@ -645,7 +645,8 @@ UI.
   (`RuntimeParams::inference_service`, for example `"strata"`). On the target
   node, `run` replaces `infer_server::run` inside the runtime supervisor: it
   binds the inference port, asks the plugin to load the model
-  (`engine.load`, with the NVIDIA GPU indices `sysmon` reports), answers
+  (`engine.load`, with the NVIDIA GPU indices `sysmon` reports and every GPU's
+  vendor and per-vendor ordinal in `gpu_devices`, `gpus_of`), answers
   `/health` from `engine.status` with the same fields the llama.cpp server
   publishes (`model_loaded` only when the plugin is `ready`) and asks
   `engine.unload` when the generation ends; an `error` state, or `idle` after

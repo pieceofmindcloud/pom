@@ -2527,8 +2527,11 @@ runs it through that plugin or fails.
 - **Target node.** The runtime supervisor calls `plugin_engine::run` instead
   of `infer_server::run`. It binds the inference port first, asks the plugin
   to load the model through the local plugin host (`engine.load` with
-  `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv` and the NVIDIA
-  GPU indices of the machine), reads `engine.status` every 2 s and answers
+  `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus` - the
+  NVIDIA GPU indices of the machine - and `gpu_devices`, every GPU with its
+  `vendor` and its `ordinal` among that vendor's cards, the number its own
+  runtime gives it: `HIP_VISIBLE_DEVICES` for an AMD card, which `sysmon`
+  counts after the NVIDIA ones), reads `engine.status` every 2 s and answers
   `/health` with the fields the llama.cpp server publishes: `model_loaded`
   only once the plugin is `ready`, the layer range, `n_ctx_per_session` (the
   whole window: the engine gives it to every request) and

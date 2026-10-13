@@ -121,14 +121,39 @@ fn kv_of(cfg: &crate::runtime::NodeConfig) -> &'static str {
     }
 }
 
-async fn nvidia_gpus() -> Vec<u32> {
-    crate::sysmon::sample()
-        .await
-        .gpus
-        .into_iter()
-        .filter(|gpu| matches!(gpu.vendor, crate::sysmon::GpuVendor::Nvidia))
-        .map(|gpu| gpu.index)
-        .collect()
+/// This node's GPUs for a plugin's engine: `gpus`, the NVIDIA ones by the
+/// index the node gives them (what CUDA numbers), and `gpu_devices`, every
+/// GPU with its vendor and its position among that vendor's cards - what the
+/// vendor's runtime numbers (`HIP_VISIBLE_DEVICES` for an AMD one), since the
+/// node counts AMD cards after the NVIDIA ones.
+async fn node_gpus() -> (Vec<u32>, Vec<Value>) {
+    gpus_of(crate::sysmon::sample().await.gpus)
+}
+
+fn gpus_of(gpus: Vec<crate::sysmon::GpuStat>) -> (Vec<u32>, Vec<Value>) {
+    let mut nvidia = Vec::new();
+    let mut devices = Vec::new();
+    let mut counts: std::collections::HashMap<&'static str, u32> = Default::default();
+    for gpu in gpus {
+        let vendor = match gpu.vendor {
+            crate::sysmon::GpuVendor::Nvidia => "nvidia",
+            crate::sysmon::GpuVendor::Amd => "amd",
+            crate::sysmon::GpuVendor::Apple => "apple",
+        };
+        if vendor == "nvidia" {
+            nvidia.push(gpu.index);
+        }
+        let ordinal = counts.entry(vendor).or_insert(0);
+        devices.push(json!({
+            "index": gpu.index,
+            "vendor": vendor,
+            "ordinal": *ordinal,
+            "name": gpu.name,
+            "vram_total_mb": gpu.vram_total_mb,
+        }));
+        *ordinal += 1;
+    }
+    (nvidia, devices)
 }
 
 /// What `engine.load` receives. `link` is set for one stage of a model split
@@ -136,6 +161,7 @@ async fn nvidia_gpus() -> Vec<u32> {
 pub(crate) fn load_params(
     cfg: &crate::runtime::NodeConfig,
     gpus: &[u32],
+    gpu_devices: &[Value],
     link: Option<&Value>,
 ) -> Value {
     let mut params = json!({
@@ -145,6 +171,7 @@ pub(crate) fn load_params(
         "max_sessions": cfg.max_sessions,
         "kv": kv_of(cfg),
         "gpus": gpus,
+        "gpu_devices": gpu_devices,
         "settings": cfg.engine_settings,
     });
     if let Some(link) = link {
@@ -212,7 +239,7 @@ pub(crate) async fn run(
     // The port first, as the llama.cpp server does: binding is the part that
     // fails because of the outside world, and loading costs minutes.
     let listener = crate::infer_server::bind_dual_stack(cfg.inference_port).await?;
-    let gpus = nvidia_gpus().await;
+    let (gpus, gpu_devices) = node_gpus().await;
     // One stage of a split model: a later stage waits here for the earlier
     // stage's machine and keeps the relay to it while it serves.
     let (link, _relay) = if crate::plugin_stage_link::is_stage(&cfg) {
@@ -234,7 +261,7 @@ pub(crate) async fn run(
     let accepted = query(
         &code,
         "engine.load",
-        json!({ "params": load_params(&cfg, &gpus, link.as_ref()) }),
+        json!({ "params": load_params(&cfg, &gpus, &gpu_devices, link.as_ref()) }),
     )
     .await;
     if accepted.is_none() {
@@ -972,13 +999,37 @@ mod tests {
     }
 
     #[test]
+    fn an_amd_card_keeps_its_place_among_the_amd_ones() {
+        let gpu = |index: u32, vendor: crate::sysmon::GpuVendor| crate::sysmon::GpuStat {
+            index,
+            name: format!("gpu{index}"),
+            vendor,
+            vram_total_mb: Some(16384.0),
+            vram_used_mb: None,
+            vram_used_pct: None,
+            utilization_pct: None,
+            power_watts: None,
+            temperature_c: None,
+        };
+        let (nvidia, devices) = gpus_of(vec![
+            gpu(0, crate::sysmon::GpuVendor::Nvidia),
+            gpu(1, crate::sysmon::GpuVendor::Amd),
+        ]);
+        assert_eq!(nvidia, vec![0]);
+        assert_eq!(devices[1]["vendor"], "amd");
+        assert_eq!(devices[1]["index"], 1);
+        assert_eq!(devices[1]["ordinal"], 0, "HIP numbers the Radeon 0");
+        assert_eq!(devices[0]["ordinal"], 0);
+    }
+
+    #[test]
     fn a_stage_receives_its_link() {
         let cfg =
             crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
-        assert!(load_params(&cfg, &[0], None).get("link").is_none());
+        assert!(load_params(&cfg, &[0], &[], None).get("link").is_none());
         let link = json!({"token": "t", "prev_port": 4100});
         assert_eq!(
-            load_params(&cfg, &[0], Some(&link))["link"]["prev_port"],
+            load_params(&cfg, &[0], &[], Some(&link))["link"]["prev_port"],
             4100
         );
     }

@@ -573,6 +573,87 @@ async fn open_stream(
 /// long it spent on the frames (`processing_ms`, which includes the stages below it), the wire between us and it
 /// (`network_ms`), and the bytes; each goes on that machine's hop, in the phase its frames belonged to. The head
 /// serves the prompt, so its prompt time is the engine's own.
+/// Relays the engine's NDJSON answer to the machine that asked for it. At the `done` line it adds the stage links
+/// this machine used (its own and the ones below it), so the requester's trace covers every link of the pipeline.
+/// The first token moves the links to the decode phase.
+fn relay_with_links(
+    code: String,
+    upstream: impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
+) -> impl futures::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static {
+    struct Relay<S> {
+        upstream: S,
+        code: String,
+        pending: Vec<u8>,
+        first_token: bool,
+        ended: bool,
+    }
+    futures::stream::unfold(
+        Relay {
+            upstream,
+            code,
+            pending: Vec::new(),
+            first_token: false,
+            ended: false,
+        },
+        |mut relay| async move {
+            loop {
+                if let Some(end) = relay.pending.iter().position(|byte| *byte == b'\n') {
+                    let line: Vec<u8> = relay.pending.drain(..=end).collect();
+                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token);
+                    return Some((Ok(Bytes::from(out)), relay));
+                }
+                if relay.ended {
+                    if relay.pending.is_empty() {
+                        return None;
+                    }
+                    let rest = std::mem::take(&mut relay.pending);
+                    return Some((Ok(Bytes::from(rest)), relay));
+                }
+                match relay.upstream.next().await {
+                    Some(Ok(chunk)) => relay.pending.extend_from_slice(&chunk),
+                    Some(Err(error)) => return Some((Err(error), relay)),
+                    None => relay.ended = true,
+                }
+            }
+        },
+    )
+}
+
+/// One NDJSON line of the engine's answer, with the stage links added to its `done` event.
+fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool) -> Vec<u8> {
+    let text = line.strip_suffix(b"\n").unwrap_or(line);
+    let Ok(mut value) = serde_json::from_slice::<Value>(text) else {
+        return line.to_vec();
+    };
+    if value.get("t").is_some() && !*first_token {
+        *first_token = true;
+        super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Decode);
+    }
+    let Some(done) = value.get_mut("done") else {
+        return line.to_vec();
+    };
+    done["links"] = json!(super::plugin_stage_link::drain_reported_links(code));
+    let mut out = serde_json::to_vec(&value).unwrap_or_else(|_| text.to_vec());
+    if line.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    out
+}
+
+/// The gateway side: the stage links the head reported in its `done` event join this machine's totals.
+fn merge_reported_links(code: &str, done: &Value) {
+    let Some(links) = done.get("links") else {
+        return;
+    };
+    let Ok(links) = serde_json::from_value::<Vec<super::plugin_stage_link::ReportedLink>>(links.clone())
+    else {
+        return;
+    };
+    for link in links {
+        super::plugin_stage_link::merge_reported_link(code, link);
+    }
+}
+
 fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: &str, prompt_ms: u64) {
     use super::plugin_stage_link::{take_link_stats, LinkPhase};
     for (node_id, phase, link) in take_link_stats(code) {
@@ -774,6 +855,7 @@ pub(crate) async fn generate(
                     done,
                     generated,
                 );
+                merge_reported_links(code, done);
                 apply_stage_links(&mut trace, code, prefill_ms);
                 record_engine_perf(
                     code,
@@ -966,13 +1048,16 @@ pub(crate) async fn engine_generate_route(
             "this machine does not serve a model with that inference service",
         );
     }
+    // This machine's stage links of the generation start from nothing; its prompt phase begins now.
+    let _ = super::plugin_stage_link::take_link_stats(&code);
+    super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
     let response = match post_local(&state.plugins, &code, body.to_vec()).await {
         Ok(response) => response,
         Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
     };
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let stream = response.bytes_stream();
+    let stream = relay_with_links(code.clone(), response.bytes_stream());
     Response::builder()
         .status(status)
         .header("content-type", "application/x-ndjson")
@@ -1190,5 +1275,42 @@ mod speed_tests {
         let second = engine_perf().lock().unwrap().get("strata-speed-test").copied().unwrap();
         assert!((second.prefill_ms_per_token.unwrap() - 13.0).abs() < 1e-9);
         assert!((second.decode_ms_per_step.unwrap() - 16.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use super::super::plugin_stage_link::{merge_reported_link, LinkPhase, LinkStats, ReportedLink};
+
+    #[test]
+    fn the_done_line_carries_the_links_and_the_first_token_starts_decode() {
+        merge_reported_link(
+            "strata-relay-test",
+            ReportedLink {
+                node: "node-9".to_string(),
+                phase: LinkPhase::Prefill,
+                stats: LinkStats {
+                    calls: 3,
+                    round_trip_ms: 30,
+                    network_ms: 6,
+                    served_ms: 24,
+                    bytes_sent: 900,
+                    bytes_received: 400,
+                    ..Default::default()
+                },
+            },
+        );
+        let mut first = false;
+        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first);
+        assert!(first, "a text line is the first token");
+        assert_eq!(token, b"{\"t\":\"hi\"}\n", "text lines pass through unchanged");
+        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first);
+        let value: Value = serde_json::from_slice(&done[..done.len() - 1]).unwrap();
+        assert_eq!(value["done"]["links"][0]["node"], "node-9");
+        assert_eq!(value["done"]["links"][0]["phase"], "prefill");
+        assert_eq!(value["done"]["links"][0]["round_trip_ms"], 30);
+        assert_eq!(value["done"]["links"][0]["bytes_sent"], 900);
+        assert!(done.ends_with(b"\n"));
     }
 }

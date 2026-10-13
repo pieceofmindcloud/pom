@@ -394,6 +394,7 @@ async fn relay_connection(
 /// cannot take it yet; `None` gives up on the connection.
 /// The phase a frame belongs to, for the trace: the prompt's frames come before the first token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum LinkPhase {
     Prefill,
     Decode,
@@ -512,6 +513,34 @@ pub(crate) fn take_link_stats(code: &str) -> Vec<(String, LinkPhase, LinkStats)>
     keys.into_iter()
         .filter_map(|key| totals.remove(&key).map(|value| (key.1, key.2, value)))
         .collect()
+}
+
+/// A link total as one machine reports it to the next one up (the `done` event of its generation): the earlier
+/// node it talked to, the phase its frames were in, and the totals.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ReportedLink {
+    pub(crate) node: String,
+    pub(crate) phase: LinkPhase,
+    #[serde(flatten)]
+    pub(crate) stats: LinkStats,
+}
+
+/// Takes this machine's link totals for `code` as reports, for the `done` event.
+pub(crate) fn drain_reported_links(code: &str) -> Vec<ReportedLink> {
+    take_link_stats(code)
+        .into_iter()
+        .map(|(node, phase, stats)| ReportedLink { node, phase, stats })
+        .collect()
+}
+
+/// Files a total a machine above us reported (its own links and the ones below it) under its own phase.
+pub(crate) fn merge_reported_link(code: &str, link: ReportedLink) {
+    if let Ok(mut totals) = link_stats().lock() {
+        totals
+            .entry((code.to_owned(), link.node, link.phase))
+            .or_default()
+            .add(&link.stats);
+    }
 }
 
 /// What this machine answers upward: the totals below it, summed over the phases (the requester files them).

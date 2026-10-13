@@ -569,6 +569,37 @@ async fn open_stream(
 /// `done`), not per hop, so every stage counts the same prompt call and decode
 /// rounds, and the engine's own prompt and decode times go to the last stage,
 /// which serves the request.
+/// Puts the stage links of this request on the trace. Each machine below the head reported, in its answer, how
+/// long it spent on the frames (`processing_ms`, which includes the stages below it), the wire between us and it
+/// (`network_ms`), and the bytes; each goes on that machine's hop, in the phase its frames belonged to. The head
+/// serves the prompt, so its prompt time is the engine's own.
+fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: &str, prompt_ms: u64) {
+    use super::plugin_stage_link::{take_link_stats, LinkPhase};
+    for (node_id, phase, link) in take_link_stats(code) {
+        let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == node_id) else {
+            continue;
+        };
+        let part = match phase {
+            LinkPhase::Prefill => &mut hop.prefill,
+            LinkPhase::Decode => &mut hop.decode,
+        };
+        part.reported_spans += u64::from(link.calls);
+        part.round_trip_ms += link.round_trip_ms;
+        part.network_ms += link.network_ms;
+        part.processing_ms += link.served_ms;
+        part.bytes_sent += link.bytes_sent;
+        part.bytes_received += link.bytes_received;
+        part.hidden_state_bytes_sent += link.bytes_sent;
+        part.hidden_state_bytes_received += link.bytes_received;
+        trace.total_bytes_sent += link.bytes_sent;
+        trace.total_bytes_received += link.bytes_received;
+    }
+    if let Some(head) = trace.hops.last_mut() {
+        head.prefill.processing_ms = prompt_ms;
+    }
+}
+
+/// `trace` for one generation: the engine's record, with the stage links it used.
 pub(crate) fn engine_trace(
     trace_id: String,
     model: &str,
@@ -658,6 +689,10 @@ pub(crate) async fn generate(
     };
     let mut stream = response.bytes_stream();
     let mut pending: Vec<u8> = Vec::new();
+    // Totals left by an earlier generation that never reached its end belong to nobody now: drop them, and the
+    // frames of this one are the prompt's until the first token.
+    let _ = super::plugin_stage_link::take_link_stats(code);
+    super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
     let mut first_token_at: Option<Instant> = None;
     let mut streamed_any = false;
     let mut pieces = 0u32;
@@ -690,6 +725,9 @@ pub(crate) async fn generate(
             if let Some(text) = event["t"].as_str() {
                 if text.is_empty() {
                     continue;
+                }
+                if first_token_at.is_none() {
+                    super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Decode);
                 }
                 first_token_at.get_or_insert_with(Instant::now);
                 streamed_any = true;
@@ -736,18 +774,7 @@ pub(crate) async fn generate(
                     done,
                     generated,
                 );
-                // Each earlier stage this request waited on gets the time of its frames, on its own hop.
-                for (node_id, link) in super::plugin_stage_link::take_link_stats(code) {
-                    if let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == node_id) {
-                        hop.prefill.round_trip_ms += link.round_trip_ms;
-                        hop.prefill.bytes_sent += link.bytes_sent;
-                        hop.prefill.bytes_received += link.bytes_received;
-                    }
-                }
-                // The engine's prompt time covers the whole pipeline, and the head (the last step) serves it.
-                if let Some(head) = trace.hops.last_mut() {
-                    head.prefill.processing_ms = prefill_ms;
-                }
+                apply_stage_links(&mut trace, code, prefill_ms);
                 record_engine_perf(
                     code,
                     done["timings"]["prompt_n"].as_u64().unwrap_or(0),

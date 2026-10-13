@@ -48,6 +48,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::stream::{FuturesOrdered, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -391,49 +392,152 @@ async fn relay_connection(
 
 /// One frame to the earlier machine at `path`, tried again while that machine
 /// cannot take it yet; `None` gives up on the connection.
-/// What the links to an earlier stage carried for one plugin, since the last
-/// drain: frames answered, the time from sending each frame to its answer
-/// (the earlier machine's work plus the wire), and the bytes both ways.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+/// The phase a frame belongs to, for the trace: the prompt's frames come before the first token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) enum LinkPhase {
+    Prefill,
+    Decode,
+}
+
+/// What the links to an earlier stage carried. A frame's `round_trip_ms` is the time from sending it to its
+/// answer; `served_ms` is the time the earlier machine spent on it, its own work and the stages below it (it
+/// reports it in the answer); `network_ms` is the rest - the wire and the two relays.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LinkStats {
     pub(crate) calls: u32,
     pub(crate) round_trip_ms: u64,
+    pub(crate) max_round_trip_ms: u64,
+    pub(crate) served_ms: u64,
+    pub(crate) network_ms: u64,
     pub(crate) bytes_sent: u64,
     pub(crate) bytes_received: u64,
 }
 
-/// Per (plugin code, earlier node id) totals, drained by the generation that
-/// used them, so each request's trace carries its own link time.
-fn link_stats() -> &'static Mutex<HashMap<(String, String), LinkStats>> {
-    static STATS: OnceLock<Mutex<HashMap<(String, String), LinkStats>>> = OnceLock::new();
-    STATS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn record_link(code: &str, node_id: &str, elapsed: Duration, sent: u64, received: u64) {
-    if let Ok(mut stats) = link_stats().lock() {
-        let entry = stats
-            .entry((code.to_owned(), node_id.to_owned()))
-            .or_default();
-        entry.calls += 1;
-        entry.round_trip_ms += elapsed.as_millis() as u64;
-        entry.bytes_sent += sent;
-        entry.bytes_received += received;
+impl LinkStats {
+    fn add(&mut self, other: &LinkStats) {
+        self.calls += other.calls;
+        self.round_trip_ms += other.round_trip_ms;
+        self.max_round_trip_ms = self.max_round_trip_ms.max(other.max_round_trip_ms);
+        self.served_ms += other.served_ms;
+        self.network_ms += other.network_ms;
+        self.bytes_sent += other.bytes_sent;
+        self.bytes_received += other.bytes_received;
     }
 }
 
-/// Takes the link totals of `code`, keyed by the earlier stage's node id.
-pub(crate) fn take_link_stats(code: &str) -> Vec<(String, LinkStats)> {
-    let Ok(mut stats) = link_stats().lock() else {
+/// The header an answer to a frame carries: how long this machine spent on it, and the links below it, so the
+/// requester's trace has the whole chain of stages (each machine forwards what its own downstream reported).
+pub(crate) const ENVELOPE_HEADER: &str = "x-pom-stage-telemetry";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct StageEnvelope {
+    pub(crate) served_ms: u64,
+    #[serde(default)]
+    pub(crate) links: Vec<StageLinkWire>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct StageLinkWire {
+    pub(crate) node: String,
+    #[serde(flatten)]
+    pub(crate) stats: LinkStats,
+}
+
+/// Per (plugin code, earlier node id, phase) totals, drained by the generation that used them.
+fn link_stats() -> &'static Mutex<HashMap<(String, String, LinkPhase), LinkStats>> {
+    static STATS: OnceLock<Mutex<HashMap<(String, String, LinkPhase), LinkStats>>> = OnceLock::new();
+    STATS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The phase each plugin's frames are in now (a generation starts in the prompt).
+fn phases() -> &'static Mutex<HashMap<String, LinkPhase>> {
+    static PHASES: OnceLock<Mutex<HashMap<String, LinkPhase>>> = OnceLock::new();
+    PHASES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn set_phase(code: &str, phase: LinkPhase) {
+    if let Ok(mut phases) = phases().lock() {
+        phases.insert(code.to_owned(), phase);
+    }
+}
+
+fn current_phase(code: &str) -> LinkPhase {
+    phases()
+        .lock()
+        .ok()
+        .and_then(|phases| phases.get(code).copied())
+        .unwrap_or(LinkPhase::Prefill)
+}
+
+/// One frame answered by the earlier machine `node_id`.
+fn record_link(code: &str, node_id: &str, elapsed: Duration, sent: u64, received: u64, served_ms: u64) {
+    let round_trip_ms = elapsed.as_millis() as u64;
+    let stats = LinkStats {
+        calls: 1,
+        round_trip_ms,
+        max_round_trip_ms: round_trip_ms,
+        served_ms,
+        network_ms: round_trip_ms.saturating_sub(served_ms),
+        bytes_sent: sent,
+        bytes_received: received,
+    };
+    merge(code, node_id, stats);
+}
+
+/// Totals a machine below us reported in its answer, filed under the phase this machine is in.
+fn merge_downstream(code: &str, node_id: &str, stats: LinkStats) {
+    merge(code, node_id, stats);
+}
+
+fn merge(code: &str, node_id: &str, stats: LinkStats) {
+    if let Ok(mut totals) = link_stats().lock() {
+        let phase = current_phase(code);
+        totals
+            .entry((code.to_owned(), node_id.to_owned(), phase))
+            .or_default()
+            .add(&stats);
+    }
+}
+
+/// Takes the link totals of `code`, per node and phase.
+pub(crate) fn take_link_stats(code: &str) -> Vec<(String, LinkPhase, LinkStats)> {
+    let Ok(mut totals) = link_stats().lock() else {
         return Vec::new();
     };
-    let keys: Vec<(String, String)> = stats
+    let keys: Vec<(String, String, LinkPhase)> = totals
         .keys()
-        .filter(|(plugin, _)| plugin == code)
+        .filter(|(plugin, _, _)| plugin == code)
         .cloned()
         .collect();
     keys.into_iter()
-        .filter_map(|key| stats.remove(&key).map(|value| (key.1, value)))
+        .filter_map(|key| totals.remove(&key).map(|value| (key.1, key.2, value)))
         .collect()
+}
+
+/// What this machine answers upward: the totals below it, summed over the phases (the requester files them).
+fn take_downstream_links(code: &str) -> Vec<StageLinkWire> {
+    let mut summed: HashMap<String, LinkStats> = HashMap::new();
+    for (node, _phase, stats) in take_link_stats(code) {
+        summed.entry(node).or_default().add(&stats);
+    }
+    summed
+        .into_iter()
+        .map(|(node, stats)| StageLinkWire { node, stats })
+        .collect()
+}
+
+/// The answer to a frame, with the earlier machine's envelope when it sent one.
+struct StageAnswer {
+    body: Vec<u8>,
+    envelope: StageEnvelope,
+}
+
+fn parse_envelope(headers: &reqwest::header::HeaderMap) -> StageEnvelope {
+    headers
+        .get(ENVELOPE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| serde_json::from_str::<StageEnvelope>(text).ok())
+        .unwrap_or_default()
 }
 
 async fn forward(
@@ -467,16 +571,23 @@ async fn forward(
             Some(target) => {
                 let started = Instant::now();
                 let sent = frame.len() as u64;
-                send(&state, target, &path, frame.clone()).await.map(|answer| {
-                    record_link(
-                        &code,
-                        &target.node_id,
-                        started.elapsed(),
-                        sent,
-                        answer.len() as u64,
-                    );
-                    answer
-                })
+                match send(&state, target, &path, frame.clone()).await {
+                    Ok(answer) => {
+                        record_link(
+                            &code,
+                            &target.node_id,
+                            started.elapsed(),
+                            sent,
+                            answer.body.len() as u64,
+                            answer.envelope.served_ms,
+                        );
+                        for link in answer.envelope.links {
+                            merge_downstream(&code, &link.node, link.stats);
+                        }
+                        Ok(answer.body)
+                    }
+                    Err(refusal) => Err(refusal),
+                }
             }
         };
         match attempt {
@@ -513,18 +624,22 @@ async fn send(
     peer: &crate::network::PeerInfo,
     path: &str,
     frame: Vec<u8>,
-) -> Result<Vec<u8>, Refusal> {
+) -> Result<StageAnswer, Refusal> {
     let response = state
         .control_post_bytes_routed(peer, path, frame, FRAME_TIMEOUT)
         .await
         .map_err(|error| Refusal::Retry(error.to_string()))?;
     let status = response.status();
+    let envelope = parse_envelope(response.headers());
     let body = response
         .bytes()
         .await
         .map_err(|error| Refusal::Retry(error.to_string()))?;
     if status.is_success() {
-        return Ok(body.to_vec());
+        return Ok(StageAnswer {
+            body: body.to_vec(),
+            envelope,
+        });
     }
     let message = serde_json::from_slice::<Value>(&body)
         .ok()
@@ -725,6 +840,26 @@ pub(crate) async fn link_frame_seq_route(
     link_frame(auth, state, code, deploy, conn, Some(seq), body).await
 }
 
+/// The answer to a frame: this machine's time on it and the links below it, in the envelope header.
+fn stage_answer(code: &str, body: Vec<u8>, started: Instant) -> Response {
+    let envelope = StageEnvelope {
+        served_ms: started.elapsed().as_millis() as u64,
+        links: take_downstream_links(code),
+    };
+    let mut response = (
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        body,
+    )
+        .into_response();
+    if let Some(value) = serde_json::to_string(&envelope)
+        .ok()
+        .and_then(|text| axum::http::HeaderValue::from_str(&text).ok())
+    {
+        response.headers_mut().insert(ENVELOPE_HEADER, value);
+    }
+    response
+}
+
 async fn link_frame(
     auth: crate::auth::InternalNodeAuth,
     state: GatewayState,
@@ -734,6 +869,7 @@ async fn link_frame(
     seq: Option<u64>,
     body: Bytes,
 ) -> Response {
+    let started = Instant::now();
     let caller = match authorize(&state, &auth, &code, &deploy).await {
         Ok(caller) => caller,
         Err(refusal) => return refusal,
@@ -831,11 +967,7 @@ async fn link_frame(
         Ok(Ok(Some(answer))) => {
             io.next += 1;
             match to_network(answer, dtype) {
-                Ok(answer) => (
-                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-                    answer,
-                )
-                    .into_response(),
+                Ok(answer) => stage_answer(&code, answer, started),
                 Err(error) => refuse(StatusCode::BAD_GATEWAY, &error),
             }
         }
@@ -1016,16 +1148,20 @@ mod link_stats_tests {
 
     #[test]
     fn link_totals_are_taken_once_per_plugin_and_node() {
-        record_link("strata-link-test-a", "node-1", Duration::from_millis(40), 100, 200);
-        record_link("strata-link-test-a", "node-1", Duration::from_millis(10), 50, 60);
-        record_link("strata-link-test-b", "node-1", Duration::from_millis(5), 1, 1);
+        record_link("strata-link-test-a", "node-1", Duration::from_millis(40), 100, 200, 25);
+        record_link("strata-link-test-a", "node-1", Duration::from_millis(10), 50, 60, 4);
+        record_link("strata-link-test-b", "node-1", Duration::from_millis(5), 1, 1, 0);
         assert_eq!(
             take_link_stats("strata-link-test-a"),
             vec![(
                 "node-1".to_string(),
+                LinkPhase::Prefill,
                 LinkStats {
                     calls: 2,
                     round_trip_ms: 50,
+                    max_round_trip_ms: 40,
+                    served_ms: 29,
+                    network_ms: 21,
                     bytes_sent: 150,
                     bytes_received: 260,
                 },
@@ -1033,5 +1169,43 @@ mod link_stats_tests {
         );
         assert!(take_link_stats("strata-link-test-a").is_empty());
         assert_eq!(take_link_stats("strata-link-test-b").len(), 1);
+    }
+
+    #[test]
+    fn downstream_totals_are_filed_in_the_current_phase() {
+        set_phase("strata-link-test-c", LinkPhase::Decode);
+        merge_downstream(
+            "strata-link-test-c",
+            "node-2",
+            LinkStats {
+                calls: 1,
+                round_trip_ms: 9,
+                ..Default::default()
+            },
+        );
+        let taken = take_link_stats("strata-link-test-c");
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].1, LinkPhase::Decode);
+        assert_eq!(taken[0].2.round_trip_ms, 9);
+    }
+
+    #[test]
+    fn the_envelope_survives_the_header() {
+        let envelope = StageEnvelope {
+            served_ms: 7,
+            links: vec![StageLinkWire {
+                node: "node-3".to_string(),
+                stats: LinkStats {
+                    calls: 1,
+                    round_trip_ms: 12,
+                    ..Default::default()
+                },
+            }],
+        };
+        let text = serde_json::to_string(&envelope).unwrap();
+        let back: StageEnvelope = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.served_ms, 7);
+        assert_eq!(back.links[0].node, "node-3");
+        assert_eq!(back.links[0].stats.round_trip_ms, 12);
     }
 }

@@ -775,6 +775,10 @@ async fn forward(
     path: String,
     frame: Vec<u8>,
 ) -> Option<Vec<u8>> {
+    // The engine's own request names the phase its frames belong to, whatever the stream has told this machine.
+    if let Some((phase, _)) = frame_phase_and_tokens(&frame) {
+        set_phase(&code, phase);
+    }
     let frame = match to_network(frame, cfg.hidden_state_dtype) {
         Ok(frame) => frame,
         Err(error) => {
@@ -1189,6 +1193,14 @@ async fn link_frame(
     };
     // The frame's phase and token count are what this machine's speed is measured on.
     let tokens = frame_phase_and_tokens(&frame);
+    // A prompt that starts at position 0 begins a generation: what an earlier one left unreported is dropped, so a
+    // generation that ended without its totals cannot be counted in this one.
+    if frame.len() >= 10 && frame[0] == KIND_BYTES && frame[1] == b'P' && frame[2..10] == [0u8; 8] {
+        let _ = take_link_stats(&code);
+        let _ = take_channel_stats(&code);
+        let _ = take_own_wait(&code, LinkPhase::Prefill);
+        let _ = take_own_wait(&code, LinkPhase::Decode);
+    }
     if let Some((phase, _)) = tokens {
         set_phase(&code, phase);
     }

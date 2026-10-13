@@ -201,14 +201,16 @@ pub(crate) fn merge_reported_links(code: &str, done: &Value) {
     }
 }
 
-/// Puts the stage links of this request on the trace. Each machine below the head reported, in its answer, how
-/// long it spent on the frames (`processing_ms`, which includes the stages below it), the wire between us and it
-/// (`network_ms`), and the bytes; each goes on that machine's hop, in the phase its frames belonged to. The head
-/// serves the prompt, so its prompt time is the engine's own.
+/// Puts the stage links of this request on the trace. Each machine's wire, round trips and bytes are recorded on its
+/// hop, in the phase its frames belonged to. A machine's `processing_ms` is its own work: the time it served the
+/// frames (reported in its answer) less the round trip to the machine below it, which the served time already
+/// includes. The head serves the prompt, so its own prompt time is the engine's, less the same round trip.
 pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: &str, prompt_ms: u64) {
     use super::plugin_stage_link::{take_channel_stats, take_link_stats, LinkPhase};
-    for (node_id, phase, link) in take_link_stats(code) {
-        let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == node_id) else {
+    let links = take_link_stats(code);
+    let ids: Vec<String> = trace.hops.iter().map(|hop| hop.node_id.clone()).collect();
+    for (node_id, phase, link) in &links {
+        let Some(hop) = trace.hops.iter_mut().find(|hop| &hop.node_id == node_id) else {
             continue;
         };
         let part = match phase {
@@ -218,13 +220,43 @@ pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: 
         part.reported_spans += u64::from(link.calls);
         part.round_trip_ms += link.round_trip_ms;
         part.network_ms += link.network_ms;
-        part.processing_ms += link.served_ms;
         part.bytes_sent += link.bytes_sent;
         part.bytes_received += link.bytes_received;
         part.hidden_state_bytes_sent += link.bytes_sent;
         part.hidden_state_bytes_received += link.bytes_received;
         trace.total_bytes_sent += link.bytes_sent;
         trace.total_bytes_received += link.bytes_received;
+    }
+    let sum = |node: &str, phase: LinkPhase, field: fn(&super::plugin_stage_link::LinkStats) -> u64| -> u64 {
+        links
+            .iter()
+            .filter(|(n, p, _)| n == node && *p == phase)
+            .map(|(_, _, link)| field(link))
+            .sum()
+    };
+    let last = ids.len().saturating_sub(1);
+    for (index, node_id) in ids.iter().enumerate() {
+        for phase in [LinkPhase::Prefill, LinkPhase::Decode] {
+            let below = match index.checked_sub(1) {
+                Some(lower) => sum(&ids[lower], phase, |link| link.round_trip_ms),
+                None => 0,
+            };
+            // The head's own time: its engine's prompt and decode times, less what it waited on below it.
+            let own = if index == last {
+                match phase {
+                    LinkPhase::Prefill => prompt_ms,
+                    LinkPhase::Decode => trace.hops[index].decode.node_decode_ms.round() as u64,
+                }
+                .saturating_sub(below)
+            } else {
+                sum(node_id, phase, |link| link.served_ms).saturating_sub(below)
+            };
+            let hop = &mut trace.hops[index];
+            match phase {
+                LinkPhase::Prefill => hop.prefill.processing_ms = own,
+                LinkPhase::Decode => hop.decode.processing_ms = own,
+            }
+        }
     }
     // The channels the links used: each becomes one entry of its hop's transport summary, as the llama.cpp path has.
     for (node_id, phase, channel) in take_channel_stats(code) {
@@ -239,9 +271,6 @@ pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: 
             .transports
             .push(channel_entry(&channel));
         part.transport_summary.fallback_calls += channel.fallback_calls;
-    }
-    if let Some(head) = trace.hops.last_mut() {
-        head.prefill.processing_ms = prompt_ms;
     }
 }
 

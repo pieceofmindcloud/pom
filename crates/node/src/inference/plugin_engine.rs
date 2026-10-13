@@ -947,6 +947,7 @@ pub(crate) async fn engine_generate_route(
     }
     // This machine's stage links of the generation start from nothing; its prompt phase begins now.
     let _ = super::plugin_stage_link::take_link_stats(&code);
+    let _ = super::plugin_stage_link::take_channel_stats(&code);
     let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Prefill);
     let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Decode);
     super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
@@ -1045,6 +1046,32 @@ mod tests {
             (310, 259)
         );
         assert_eq!(trace.mtp_draft_tokens_rejected, 51);
+    }
+
+    #[test]
+    fn each_machines_own_time_leaves_out_the_round_trip_below_it() {
+        use super::super::plugin_stage_link::{record_leg, LinkPhase};
+        let caps = vec![capability("strata")];
+        let plan = crate::pipeline::plan_from_steps(vec![
+            step("a", 0, 19, &caps),
+            step("b", 20, 34, &caps),
+            step("c", 35, 47, &caps),
+        ]);
+        let code = "strata-own-time-test";
+        // b (answering the head) served 250 ms, of which its own call to a took 100 ms; a served 40 ms on its own
+        record_leg(code, "b", LinkPhase::Prefill, std::time::Duration::from_millis(300), 0, 0, 250, "quic");
+        record_leg(code, "a", LinkPhase::Prefill, std::time::Duration::from_millis(100), 0, 0, 40, "quic");
+        let mut trace = super::super::engine_telemetry::build_trace(
+            "t".into(),
+            "m",
+            &plan,
+            code,
+            &super::super::engine_telemetry::EngineReport::default(),
+        );
+        super::super::engine_telemetry::apply_stage_links(&mut trace, code, 500);
+        assert_eq!(trace.hops[0].prefill.processing_ms, 40);
+        assert_eq!(trace.hops[1].prefill.processing_ms, 150, "250 served, less the 100 ms to a");
+        assert_eq!(trace.hops[2].prefill.processing_ms, 200, "the head's 500 ms prompt, less the 300 ms to b");
     }
 
     #[test]

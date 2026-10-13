@@ -426,6 +426,62 @@ impl LinkStats {
     }
 }
 
+/// The traffic of one channel (QUIC, HTTP, the libp2p tunnel or the local loopback) towards one earlier node, as
+/// aggregates: the frames, their round trips and network times (sum, minimum, maximum) and the bytes. The trace
+/// reports the mean of each.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ChannelStats {
+    pub(crate) channel: String,
+    pub(crate) calls: u32,
+    pub(crate) fallback_calls: u32,
+    pub(crate) round_trip_sum_ms: u64,
+    pub(crate) round_trip_min_ms: u64,
+    pub(crate) round_trip_max_ms: u64,
+    pub(crate) network_sum_ms: u64,
+    pub(crate) network_min_ms: u64,
+    pub(crate) network_max_ms: u64,
+    pub(crate) bytes_sent: u64,
+    pub(crate) bytes_received: u64,
+}
+
+impl ChannelStats {
+    fn one(channel: &str, round_trip_ms: u64, network_ms: u64, sent: u64, received: u64) -> Self {
+        Self {
+            channel: channel.to_owned(),
+            calls: 1,
+            fallback_calls: 0,
+            round_trip_sum_ms: round_trip_ms,
+            round_trip_min_ms: round_trip_ms,
+            round_trip_max_ms: round_trip_ms,
+            network_sum_ms: network_ms,
+            network_min_ms: network_ms,
+            network_max_ms: network_ms,
+            bytes_sent: sent,
+            bytes_received: received,
+        }
+    }
+
+    fn add(&mut self, other: &ChannelStats) {
+        if other.calls == 0 {
+            return;
+        }
+        if self.calls == 0 {
+            *self = other.clone();
+            return;
+        }
+        self.calls += other.calls;
+        self.fallback_calls += other.fallback_calls;
+        self.round_trip_sum_ms += other.round_trip_sum_ms;
+        self.round_trip_min_ms = self.round_trip_min_ms.min(other.round_trip_min_ms);
+        self.round_trip_max_ms = self.round_trip_max_ms.max(other.round_trip_max_ms);
+        self.network_sum_ms += other.network_sum_ms;
+        self.network_min_ms = self.network_min_ms.min(other.network_min_ms);
+        self.network_max_ms = self.network_max_ms.max(other.network_max_ms);
+        self.bytes_sent += other.bytes_sent;
+        self.bytes_received += other.bytes_received;
+    }
+}
+
 /// The header an answer to a frame carries: how long this machine spent on it, and the links below it, so the
 /// requester's trace has the whole chain of stages (each machine forwards what its own downstream reported).
 pub(crate) const ENVELOPE_HEADER: &str = "x-pom-stage-telemetry";
@@ -442,11 +498,32 @@ pub(crate) struct StageLinkWire {
     pub(crate) node: String,
     #[serde(flatten)]
     pub(crate) stats: LinkStats,
+    #[serde(default)]
+    pub(crate) channels: Vec<ChannelStats>,
+}
+
+/// A link total as one machine reports it to the next one up (the `done` event of its generation): the earlier
+/// node it talked to, the phase its frames were in, the totals and the channels they used.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ReportedLink {
+    pub(crate) node: String,
+    pub(crate) phase: LinkPhase,
+    #[serde(flatten)]
+    pub(crate) stats: LinkStats,
+    #[serde(default)]
+    pub(crate) channels: Vec<ChannelStats>,
 }
 
 /// Per (plugin code, earlier node id, phase) totals, drained by the generation that used them.
 fn link_stats() -> &'static Mutex<HashMap<(String, String, LinkPhase), LinkStats>> {
     static STATS: OnceLock<Mutex<HashMap<(String, String, LinkPhase), LinkStats>>> = OnceLock::new();
+    STATS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Per (plugin code, earlier node id, phase, channel) totals of the same frames.
+fn channel_stats() -> &'static Mutex<HashMap<(String, String, LinkPhase, String), ChannelStats>> {
+    static STATS: OnceLock<Mutex<HashMap<(String, String, LinkPhase, String), ChannelStats>>> =
+        OnceLock::new();
     STATS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -470,33 +547,90 @@ fn current_phase(code: &str) -> LinkPhase {
         .unwrap_or(LinkPhase::Prefill)
 }
 
-/// One frame answered by the earlier machine `node_id`.
-fn record_link(code: &str, node_id: &str, elapsed: Duration, sent: u64, received: u64, served_ms: u64) {
+/// The channel a frame to `node_id` leaves by, as the route book has it now.
+pub(crate) fn channel_of(node_id: &str, own_node_id: &str) -> &'static str {
+    if node_id == own_node_id {
+        return "local";
+    }
+    match crate::route_plan::book().active(node_id, crate::route_plan::Plane::Gateway) {
+        Some(route) => route.kind.as_str(),
+        None => "http",
+    }
+}
+
+/// One exchange with `node_id` over `channel`: the time from sending to answer (`elapsed`), the time the other side
+/// spent on it (`served_ms`), and the bytes each way. The network part is what is left.
+pub(crate) fn record_leg(
+    code: &str,
+    node_id: &str,
+    phase: LinkPhase,
+    elapsed: Duration,
+    sent: u64,
+    received: u64,
+    served_ms: u64,
+    channel: &str,
+) {
     let round_trip_ms = elapsed.as_millis() as u64;
+    let network_ms = round_trip_ms.saturating_sub(served_ms);
     let stats = LinkStats {
         calls: 1,
         round_trip_ms,
         max_round_trip_ms: round_trip_ms,
         served_ms,
-        network_ms: round_trip_ms.saturating_sub(served_ms),
+        network_ms,
         bytes_sent: sent,
         bytes_received: received,
     };
-    merge(code, node_id, stats);
+    let channel_stats = ChannelStats::one(channel, round_trip_ms, network_ms, sent, received);
+    merge_in(code, node_id, phase, stats, std::slice::from_ref(&channel_stats));
+}
+
+/// One frame answered by the earlier machine `node_id`, in the current phase.
+fn record_link(
+    code: &str,
+    node_id: &str,
+    elapsed: Duration,
+    sent: u64,
+    received: u64,
+    served_ms: u64,
+    channel: &str,
+) {
+    record_leg(
+        code,
+        node_id,
+        current_phase(code),
+        elapsed,
+        sent,
+        received,
+        served_ms,
+        channel,
+    );
 }
 
 /// Totals a machine below us reported in its answer, filed under the phase this machine is in.
-fn merge_downstream(code: &str, node_id: &str, stats: LinkStats) {
-    merge(code, node_id, stats);
+fn merge_downstream(code: &str, node_id: &str, stats: LinkStats, channels: &[ChannelStats]) {
+    merge_in(code, node_id, current_phase(code), stats, channels);
 }
 
-fn merge(code: &str, node_id: &str, stats: LinkStats) {
+fn merge_in(code: &str, node_id: &str, phase: LinkPhase, stats: LinkStats, channels: &[ChannelStats]) {
     if let Ok(mut totals) = link_stats().lock() {
-        let phase = current_phase(code);
         totals
             .entry((code.to_owned(), node_id.to_owned(), phase))
             .or_default()
             .add(&stats);
+    }
+    if let Ok(mut totals) = channel_stats().lock() {
+        for channel in channels {
+            totals
+                .entry((
+                    code.to_owned(),
+                    node_id.to_owned(),
+                    phase,
+                    channel.channel.clone(),
+                ))
+                .and_modify(|total| total.add(channel))
+                .or_insert_with(|| channel.clone());
+        }
     }
 }
 
@@ -515,32 +649,19 @@ pub(crate) fn take_link_stats(code: &str) -> Vec<(String, LinkPhase, LinkStats)>
         .collect()
 }
 
-/// A link total as one machine reports it to the next one up (the `done` event of its generation): the earlier
-/// node it talked to, the phase its frames were in, and the totals.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ReportedLink {
-    pub(crate) node: String,
-    pub(crate) phase: LinkPhase,
-    #[serde(flatten)]
-    pub(crate) stats: LinkStats,
-}
-
-/// Takes this machine's link totals for `code` as reports, for the `done` event.
-pub(crate) fn drain_reported_links(code: &str) -> Vec<ReportedLink> {
-    take_link_stats(code)
-        .into_iter()
-        .map(|(node, phase, stats)| ReportedLink { node, phase, stats })
+/// Takes the per-channel totals of `code`, per node, phase and channel.
+pub(crate) fn take_channel_stats(code: &str) -> Vec<(String, LinkPhase, ChannelStats)> {
+    let Ok(mut totals) = channel_stats().lock() else {
+        return Vec::new();
+    };
+    let keys: Vec<(String, String, LinkPhase, String)> = totals
+        .keys()
+        .filter(|(plugin, _, _, _)| plugin == code)
+        .cloned()
+        .collect();
+    keys.into_iter()
+        .filter_map(|key| totals.remove(&key).map(|value| (key.1, key.2, value)))
         .collect()
-}
-
-/// Files a total a machine above us reported (its own links and the ones below it) under its own phase.
-pub(crate) fn merge_reported_link(code: &str, link: ReportedLink) {
-    if let Ok(mut totals) = link_stats().lock() {
-        totals
-            .entry((code.to_owned(), link.node, link.phase))
-            .or_default()
-            .add(&link.stats);
-    }
 }
 
 /// What this machine answers upward: the totals below it, summed over the phases (the requester files them).
@@ -549,9 +670,24 @@ fn take_downstream_links(code: &str) -> Vec<StageLinkWire> {
     for (node, _phase, stats) in take_link_stats(code) {
         summed.entry(node).or_default().add(&stats);
     }
+    let mut channels: HashMap<String, Vec<ChannelStats>> = HashMap::new();
+    for (node, _phase, channel) in take_channel_stats(code) {
+        let list = channels.entry(node).or_default();
+        match list.iter_mut().find(|known| known.channel == channel.channel) {
+            Some(known) => known.add(&channel),
+            None => list.push(channel),
+        }
+    }
+    for node in channels.keys() {
+        summed.entry(node.clone()).or_default();
+    }
     summed
         .into_iter()
-        .map(|(node, stats)| StageLinkWire { node, stats })
+        .map(|(node, stats)| StageLinkWire {
+            channels: channels.remove(&node).unwrap_or_default(),
+            node,
+            stats,
+        })
         .collect()
 }
 
@@ -567,6 +703,28 @@ fn parse_envelope(headers: &reqwest::header::HeaderMap) -> StageEnvelope {
         .and_then(|value| value.to_str().ok())
         .and_then(|text| serde_json::from_str::<StageEnvelope>(text).ok())
         .unwrap_or_default()
+}
+
+/// Takes this machine's link totals for `code` as reports, for the `done` event.
+pub(crate) fn drain_reported_links(code: &str) -> Vec<ReportedLink> {
+    let mut channels: HashMap<(String, LinkPhase), Vec<ChannelStats>> = HashMap::new();
+    for (node, phase, channel) in take_channel_stats(code) {
+        channels.entry((node, phase)).or_default().push(channel);
+    }
+    take_link_stats(code)
+        .into_iter()
+        .map(|(node, phase, stats)| ReportedLink {
+            channels: channels.remove(&(node.clone(), phase)).unwrap_or_default(),
+            node,
+            phase,
+            stats,
+        })
+        .collect()
+}
+
+/// Files a total a machine above us reported (its own links and the ones below it) under its own phase.
+pub(crate) fn merge_reported_link(code: &str, link: ReportedLink) {
+    merge_in(code, &link.node, link.phase, link.stats, &link.channels);
 }
 
 async fn forward(
@@ -600,6 +758,7 @@ async fn forward(
             Some(target) => {
                 let started = Instant::now();
                 let sent = frame.len() as u64;
+                let channel = channel_of(&target.node_id, &state.network.node_id);
                 match send(&state, target, &path, frame.clone()).await {
                     Ok(answer) => {
                         record_link(
@@ -609,9 +768,10 @@ async fn forward(
                             sent,
                             answer.body.len() as u64,
                             answer.envelope.served_ms,
+                            channel,
                         );
                         for link in answer.envelope.links {
-                            merge_downstream(&code, &link.node, link.stats);
+                            merge_downstream(&code, &link.node, link.stats, &link.channels);
                         }
                         Ok(answer.body)
                     }
@@ -1177,9 +1337,9 @@ mod link_stats_tests {
 
     #[test]
     fn link_totals_are_taken_once_per_plugin_and_node() {
-        record_link("strata-link-test-a", "node-1", Duration::from_millis(40), 100, 200, 25);
-        record_link("strata-link-test-a", "node-1", Duration::from_millis(10), 50, 60, 4);
-        record_link("strata-link-test-b", "node-1", Duration::from_millis(5), 1, 1, 0);
+        record_link("strata-link-test-a", "node-1", Duration::from_millis(40), 100, 200, 25, "quic");
+        record_link("strata-link-test-a", "node-1", Duration::from_millis(10), 50, 60, 4, "quic");
+        record_link("strata-link-test-b", "node-1", Duration::from_millis(5), 1, 1, 0, "http");
         assert_eq!(
             take_link_stats("strata-link-test-a"),
             vec![(
@@ -1211,6 +1371,7 @@ mod link_stats_tests {
                 round_trip_ms: 9,
                 ..Default::default()
             },
+            &[],
         );
         let taken = take_link_stats("strata-link-test-c");
         assert_eq!(taken.len(), 1);
@@ -1229,6 +1390,7 @@ mod link_stats_tests {
                     round_trip_ms: 12,
                     ..Default::default()
                 },
+                channels: Vec::new(),
             }],
         };
         let text = serde_json::to_string(&envelope).unwrap();
@@ -1236,5 +1398,25 @@ mod link_stats_tests {
         assert_eq!(back.served_ms, 7);
         assert_eq!(back.links[0].node, "node-3");
         assert_eq!(back.links[0].stats.round_trip_ms, 12);
+    }
+
+    #[test]
+    fn channels_are_kept_apart_and_aggregated() {
+        record_link("strata-chan-test", "node-7", Duration::from_millis(20), 10, 10, 5, "quic");
+        record_link("strata-chan-test", "node-7", Duration::from_millis(30), 10, 10, 5, "quic");
+        record_link("strata-chan-test", "node-7", Duration::from_millis(9), 4, 4, 1, "tunnel");
+        let mut taken = take_channel_stats("strata-chan-test");
+        taken.sort_by(|a, b| a.2.channel.cmp(&b.2.channel));
+        assert_eq!(taken.len(), 2);
+        let quic = &taken[0].2;
+        assert_eq!(quic.channel, "quic");
+        assert_eq!(quic.calls, 2);
+        assert_eq!(quic.round_trip_sum_ms, 50);
+        assert_eq!(quic.round_trip_min_ms, 20);
+        assert_eq!(quic.round_trip_max_ms, 30);
+        assert_eq!(quic.network_sum_ms, 40);
+        assert_eq!(quic.bytes_sent, 20);
+        assert_eq!(taken[1].2.channel, "tunnel");
+        assert_eq!(taken[1].2.calls, 1);
     }
 }

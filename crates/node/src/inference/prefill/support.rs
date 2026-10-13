@@ -851,6 +851,31 @@ pub struct TransportSummaryEntry {
 }
 
 impl TransportSummaryEntry {
+    /// A channel's entry built from aggregates measured elsewhere (the stage links of a plugin pipeline). The
+    /// round trips are averaged: `median` carries the mean and `p95` the maximum, because no sample list travels.
+    pub(crate) fn from_aggregates(
+        transport: crate::relay::InferenceTransport,
+        calls: u32,
+        bytes_sent: u64,
+        bytes_received: u64,
+        fallback_calls: u32,
+        round_trip: (u64, u64, u64),
+        network: (u64, u64, u64),
+    ) -> Self {
+        let mut entry = Self::new(transport);
+        entry.calls = calls;
+        entry.bytes_sent = bytes_sent;
+        entry.bytes_received = bytes_received;
+        entry.fallback_calls = fallback_calls;
+        (entry.rtt_min_ms, entry.rtt_median_ms, entry.rtt_max_ms) = round_trip;
+        entry.rtt_p95_ms = round_trip.2;
+        (entry.net_rtt_min_ms, entry.net_rtt_median_ms, entry.net_rtt_max_ms) = network;
+        entry.net_rtt_p95_ms = network.2;
+        entry
+    }
+}
+
+impl TransportSummaryEntry {
     pub(super) fn new(transport: crate::relay::InferenceTransport) -> Self {
         Self {
             transport,

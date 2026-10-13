@@ -655,7 +655,7 @@ fn merge_reported_links(code: &str, done: &Value) {
 }
 
 fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: &str, prompt_ms: u64) {
-    use super::plugin_stage_link::{take_link_stats, LinkPhase};
+    use super::plugin_stage_link::{take_channel_stats, take_link_stats, LinkPhase};
     for (node_id, phase, link) in take_link_stats(code) {
         let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == node_id) else {
             continue;
@@ -675,9 +675,53 @@ fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: &str, promp
         trace.total_bytes_sent += link.bytes_sent;
         trace.total_bytes_received += link.bytes_received;
     }
+    // The channels the links used: each becomes one entry of its hop's transport summary, as the llama.cpp path has.
+    for (node_id, phase, channel) in take_channel_stats(code) {
+        let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == node_id) else {
+            continue;
+        };
+        let part = match phase {
+            LinkPhase::Prefill => &mut hop.prefill,
+            LinkPhase::Decode => &mut hop.decode,
+        };
+        part.transport_summary
+            .transports
+            .push(channel_entry(&channel));
+        part.transport_summary.fallback_calls += channel.fallback_calls;
+    }
     if let Some(head) = trace.hops.last_mut() {
         head.prefill.processing_ms = prompt_ms;
     }
+}
+
+/// One channel's entry in a hop's transport summary. The round trips and the network time are means (with the
+/// maximum as the p95): the links report aggregates, not the sample list.
+fn channel_entry(channel: &super::plugin_stage_link::ChannelStats) -> crate::prefill::TransportSummaryEntry {
+    use crate::relay::InferenceTransport;
+    let transport = match channel.channel.as_str() {
+        "quic" => InferenceTransport::Quic,
+        "tunnel" => InferenceTransport::Libp2pTunnel,
+        "local" => InferenceTransport::Local,
+        _ => InferenceTransport::Http,
+    };
+    let calls = u64::from(channel.calls.max(1));
+    crate::prefill::TransportSummaryEntry::from_aggregates(
+        transport,
+        channel.calls,
+        channel.bytes_sent,
+        channel.bytes_received,
+        channel.fallback_calls,
+        (
+            channel.round_trip_min_ms,
+            channel.round_trip_sum_ms / calls,
+            channel.round_trip_max_ms,
+        ),
+        (
+            channel.network_min_ms,
+            channel.network_sum_ms / calls,
+            channel.network_max_ms,
+        ),
+    )
 }
 
 /// `trace` for one generation: the engine's record, with the stage links it used.
@@ -761,6 +805,13 @@ pub(crate) async fn generate(
     };
     let node_id = step.node_id.as_str();
     let body = generation_body(&request);
+    // Totals left by an earlier generation that never reached its end belong to nobody now: drop them, and the
+    // frames of this one are the prompt's until the first token.
+    let _ = super::plugin_stage_link::take_link_stats(code);
+    let _ = super::plugin_stage_link::take_channel_stats(code);
+    super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
+    let channel = super::plugin_stage_link::channel_of(node_id, &state.network.node_id);
+    let leg_started = Instant::now();
     let response = match open_stream(state, node_id, code, &body).await {
         Ok(response) => response,
         Err(error) => {
@@ -768,12 +819,20 @@ pub(crate) async fn generate(
             return;
         }
     };
+    // The gateway's own leg to the head: the time until the head answers with its headers, the request's bytes.
+    super::plugin_stage_link::record_leg(
+        code,
+        node_id,
+        super::plugin_stage_link::LinkPhase::Prefill,
+        leg_started.elapsed(),
+        body.to_string().len() as u64,
+        0,
+        0,
+        channel,
+    );
     let mut stream = response.bytes_stream();
     let mut pending: Vec<u8> = Vec::new();
-    // Totals left by an earlier generation that never reached its end belong to nobody now: drop them, and the
-    // frames of this one are the prompt's until the first token.
-    let _ = super::plugin_stage_link::take_link_stats(code);
-    super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
+    let mut received_bytes = 0u64;
     let mut first_token_at: Option<Instant> = None;
     let mut streamed_any = false;
     let mut pieces = 0u32;
@@ -797,6 +856,7 @@ pub(crate) async fn generate(
             }
             Ok(Some(Ok(chunk))) => chunk,
         };
+        received_bytes += chunk.len() as u64;
         pending.extend_from_slice(&chunk);
         while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
@@ -855,6 +915,20 @@ pub(crate) async fn generate(
                     done,
                     generated,
                 );
+                // The gateway's leg to the head while it decodes: from the first token to the end of the stream. The
+                // head's own decode time is the part it served; the rest is the wire. The bytes are the whole stream.
+                if let Some(first) = first_token_at {
+                    super::plugin_stage_link::record_leg(
+                        code,
+                        node_id,
+                        super::plugin_stage_link::LinkPhase::Decode,
+                        first.elapsed(),
+                        0,
+                        received_bytes,
+                        done["timings"]["predicted_ms"].as_f64().unwrap_or(0.0).round() as u64,
+                        channel,
+                    );
+                }
                 merge_reported_links(code, done);
                 apply_stage_links(&mut trace, code, prefill_ms);
                 record_engine_perf(
@@ -1299,6 +1373,7 @@ mod relay_tests {
                     bytes_received: 400,
                     ..Default::default()
                 },
+                channels: Vec::new(),
             },
         );
         let mut first = false;

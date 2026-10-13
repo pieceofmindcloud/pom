@@ -151,6 +151,8 @@ mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
 mod plugin_dev;
+#[path = "inference/engine_telemetry.rs"]
+mod engine_telemetry;
 #[path = "inference/plugin_engine.rs"]
 mod plugin_engine;
 mod plugin_github;

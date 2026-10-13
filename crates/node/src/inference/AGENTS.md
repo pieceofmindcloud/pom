@@ -663,6 +663,15 @@ UI.
   running the plugin's `inference` service. A slice's `engine.load` also gets
   the `link` from `plugin_stage_link::prepare`. See
   `docs/subsystems/inference.md`, "Plugin inference services".
+- `engine_telemetry.rs` - what the POM measures about any plugin engine. A
+  plugin reports only its basic data in the `done` event (`EngineReport::from_done`:
+  token counts, `prefill_ms`/`decode_ms`, the drafts, the finish; the llama.cpp
+  `timings` object is read in place of a field the plugin does not report).
+  Everything else is the POM's: `build_trace` (the hops of the plan, the phases,
+  the rounds and drafts), `apply_stage_links` (each hop's time on the frames, the
+  wire, the bytes and one transport-summary entry per channel), `merge_reported_links`
+  (the links of the machines below the head, from its `done`), and `record_perf`/`perf_for`
+  (the speed the `/health` publishes as `perf`). No engine-specific code belongs here.
 - `plugin_stage_link.rs` - the stage link of a plugin engine split across
   machines: `prepare` (a later stage finds the earlier stage's machine, takes
   its link secret and opens a loopback relay that posts each length-prefixed

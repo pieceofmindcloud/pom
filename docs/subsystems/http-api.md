@@ -161,7 +161,7 @@ last):
   returns the grant. `POST /api/ui/network/join` (`{key}`) joins a network that
   approved this machine, replacing the one it is in, and restarts the node
   (`409 not_approved` without a grant, `502 grant_invalid` when the granted
-  trust document is not that key's). On the network's principal, AdminOnly:
+  trust document is not that key's). On the network's principal, PrimaryAdmin:
   `GET /api/ui/network/admissions` lists the requests with each candidate's
   declared hardware, measured latency and whether it connects through a relay,
   and `POST /api/ui/network/admissions` (`{node_id, decision}` with `approve`,
@@ -175,28 +175,29 @@ last):
     `/api/ui/launch`, `/api/ui/deploy`, `/api/ui/reconfigure`,
     `/api/ui/slice`, `/api/transfer` - before anything else, so an admin's
     signed request is refused too.
-  - **Who the caller is** (`caller_may_ask`). An `AdminOnly` route needs the
-    control envelope signed by the **principal** (`reason:
-    "signature_required"` for the key alone, `"principal_required"`
-    otherwise). A `DeployAdmin` route needs it signed by any admin of the
-    trust chain, principal or secondary (`"admin_required"`). A
-    `NodeAdmin` route needs it signed by an admin or by an admitted peer that
-    is not an inference node (`"infer_caller"`, `"unknown_caller"`). A
-    forwarded `POST /api/ui/leave` - one node taking another out of the
-    network - also needs the principal's signature, although the route is
-    open to every profile for a node leaving by itself.
-  - **What a secondary admin may do.** `DeployAdmin` is the only scope it
+  - **Who the caller is** (`caller_may_ask`). The admin scopes are bitwise:
+    `PrimaryAdmin` (bit 0b01), `SecondaryAdmin` (bit 0b10), `AnyAdmin` (0b11 =
+    PrimaryAdmin | SecondaryAdmin). A `PrimaryAdmin` route needs the control
+    envelope signed by the **principal** (`reason: "signature_required"` for
+    the key alone, `"principal_required"` otherwise). An `AnyAdmin` route needs
+    it signed by any admin of the trust chain, principal or secondary
+    (`"admin_required"`). A `NodeAdmin` route needs it signed by an admin or
+    by an admitted peer that is not an inference node (`"infer_caller"`,
+    `"unknown_caller"`). A forwarded `POST /api/ui/leave` - one node taking
+    another out of the network - also needs the principal's signature, although
+    the route is open to every profile for a node leaving by itself.
+  - **What a secondary admin may do.** `AnyAdmin` is the only scope it
     has beyond a node's: `/api/ui/deploy/*`, `/api/ui/deployments` (writes),
     `/api/ui/apply`, `/api/ui/launch`, `/api/ui/undeploy`,
-    `/api/ui/stop-inference`, `/api/ui/unload` and `/api/ui/reconfigure`.
-    Everything else that was `AdminOnly` now needs the principal, in the
-    browser (`require_admin_for_surface` asks for `EffectiveAuthority::Primary`)
-    and between nodes: `/admin/*` (block, remove, promote, demote, resign,
-    regenerate the key, slots), admissions, network settings and their
-    fan-out, TLS/QUIC/logs policy, the trust share, slice release, the KV
-    cache, sidecar links, the cluster log. A secondary cannot demote itself:
-    demotion is a principal route. API keys of other nodes are synced only
-    under the principal's signature (`require_signed_principal`); a node's
+    `/api/ui/stop-inference`, `/api/ui/unload`, `/api/ui/reconfigure`,
+    `/api/ui/cluster-logs` and `/api/ui/requests`. `PrimaryAdmin` routes need
+    the principal, in the browser (`require_admin_for_surface` asks for
+    `EffectiveAuthority::Primary`) and between nodes: `/admin/*` (block,
+    remove, promote, demote, resign, regenerate the key, slots), admissions,
+    network settings and their fan-out, TLS/QUIC/logs policy, the trust share,
+    slice release, the KV cache and sidecar links. A secondary cannot demote
+    itself: demotion is a principal route. API keys of other nodes are synced
+    only under the principal's signature (`require_signed_principal`); a node's
     own chat key is unchanged. The one signature a secondary still gives is
     its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
@@ -429,7 +430,7 @@ what validates it is the value the operator brought through their own channel,
 which is why it is never prefilled from the pasted content.
 
 The route is `CommonOrInternal` in the scope table, on purpose: a `profile:
-admin` **not yet anchored** does not pass `AdminOnly`, which is exactly the
+admin` **not yet anchored** does not pass `PrimaryAdmin`, which is exactly the
 state in which it needs to see the fingerprint, and whoever receives the anchor
 is usually a `node` or an `infer`. It also does not require the
 `connection_key`: the boundary is still `AdminAuth` (loopback in local mode,
@@ -941,7 +942,7 @@ key never authenticates again.
 `prefix_auto_cache: {enabled, index_entries, index_bytes}` when the persistent
 prefix cache (`slot_persist_prefix_cache`) is on in this gateway.
 
-`POST /api/ui/kv-cache/clear` (AdminOnly) empties the KV cache of **one**
+`POST /api/ui/kv-cache/clear` (PrimaryAdmin) empties the KV cache of **one**
 machine. The body is `{node_id?}`: absent or the node's own id acts locally,
 another id is forwarded to that machine, since only the owner of a disk deletes
 from it. Locally it removes every `.bin` and `.json` of the snapshot directory
@@ -1045,7 +1046,7 @@ node) and use `ConnectionAuth`:
   repositories and valid mounted sources;
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds the local plugin without requiring an existing
-  activation. These two routes stay AdminOnly. The server validates the paths,
+  activation. These two routes stay PrimaryAdmin. The server validates the paths,
   only uses fixed Cargo commands plus the rebuild steps the plugin's manifest
   declares (`development.rebuild`, scripts inside the source; see
   `plugins-ui.md`) and does not return the build's stdout/stderr.
@@ -1090,7 +1091,7 @@ upgrades because of it.
 `pom_core` release detection (`PomCoreUpdateStatus`). The node only fills that
 notice after an accepted `enterprise` plugin heartbeat and while that license
 is active; installations without it do not query the core manifest. The
-AdminOnly action `POST /api/ui/pom-update/check` forces that detection on
+PrimaryAdmin action `POST /api/ui/pom-update/check` forces that detection on
 demand and returns the updated status, without downloading or restarting
 anything. `POST /api/ui/pom-update/apply` receives `{ "release_id": "..." }`,
 checks that it is the release_id still announced, queries and verifies the
@@ -1157,7 +1158,7 @@ avoiding reusing another peer's plan.
 `POST /api/ui/deploy/node` (adding a machine to a deployment),
 `POST /api/ui/deploy/node/remove` (releasing one machine) and
 `POST /api/ui/undeploy` (taking the whole deployment offline) sit under the
-AdminOnly `/api/ui/deploy*` and `/api/ui/undeploy` rules: besides
+AnyAdmin `/api/ui/deploy*` and `/api/ui/undeploy` rules: besides
 `ConnectionAuth`, the persisted `profile` of this node must be `admin` with
 effective authority. The UI hides these controls for the `node` and `infer`
 profiles, but the server keeps the authority. A single machine can still free
@@ -1180,7 +1181,7 @@ structured state, while login required and an authenticated session stay
 distinguishable for the UI. The model detail queries the license on the
 provider before the screen offers the download.
 
-`GET /api/ui/requests` requires `ConnectionAuth` (and is AdminOnly), since it
+`GET /api/ui/requests` requires `ConnectionAuth` (and is AnyAdmin), since it
 returns prompts and request bodies. The filters are `node_id`, `user` (the API
 key's human label), `api_key` (id, label or associated node), `model`, `prompt`
 (FTS5 search), `from`, `to`, `limit` and `offset`; sorting is by most recent
@@ -1245,7 +1246,7 @@ discover or select candidates.
 the principal's list of model -> projector / MTP draft links, read from the
 principal by a secondary (which keeps the last copy and sets `stale: true`
 when the principal does not answer). `POST /api/ui/model-sidecar-links`
-(`AdminOnly`) saves one `SidecarLink`; a secondary forwards it to the
+(`PrimaryAdmin`) saves one `SidecarLink`; a secondary forwards it to the
 principal, which stamps `updated_at`/`updated_by`. A file link needs a name and
 a size; vision cannot be `embedded`. `DeployRequest` accepts `vision_choice`
 and `mtp_choice` (`{ mode, file: { file_name, size_bytes } }`) and
@@ -1489,7 +1490,7 @@ challenge to the same request's ephemeral keys; it then sends a `Secret`
 encrypted with X25519 and ChaCha20-Poly1305 containing the document and the
 `connection_key`. The persisted preference `local_auto_discovery` starts
 `false` and the administrative version uses
-`GET/POST /api/ui/network/auto-discovery`; that route requires `AdminOnly`,
+`GET/POST /api/ui/network/auto-discovery`; that route requires `PrimaryAdmin`,
 never returns the key and drops the in-memory material when it receives
 `enabled: false`.
 

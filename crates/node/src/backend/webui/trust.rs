@@ -1,8 +1,8 @@
 //! The two sides of anchoring admin trust, as seen by the interface.
 //!
 //! **Where this lives and why.** The route is `CommonOrInternal`, outside the
-//! `AdminOnly` scope, because before anchoring a node with `profile: admin` has **no**
-//! effective admin capability: `require_admin_for_surface` refuses `AdminOnly`
+//! `PrimaryAdmin` scope, because before anchoring a node with `profile: admin` has **no**
+//! effective admin capability: `require_admin_for_surface` refuses `PrimaryAdmin`
 //! in exactly that state. Putting the screen behind the administrator profile
 //! would make it unreachable at the only moment when it is of any use.
 //! For the same reason the node that receives the anchor may be `node` or `infer`.
@@ -590,7 +590,7 @@ mod tests {
 
     /// This task's fold: an unanchored `profile: admin` has no
     /// effective admin capability. The fingerprint screen has to stay
-    /// outside the `AdminOnly` scope, otherwise the operator never reaches it - and it is
+    /// outside the `PrimaryAdmin` scope, otherwise the operator never reaches it - and it is
     /// exactly there that they need it.
     #[tokio::test]
     async fn an_admin_yet_to_be_anchored_reaches_the_fingerprint_screen() {

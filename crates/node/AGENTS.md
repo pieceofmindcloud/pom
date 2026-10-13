@@ -342,7 +342,7 @@ arguments. Cargo artifacts go to
 so read-only source binds work. The cluster development image exposes Cargo to
 its non-root node user and points `CARGO_HOME` to a writable cache in the
 project data volume.
-AdminOnly routes work only with `POM_DEV_MODE=1`; a build may install a local
+PrimaryAdmin routes work only with `POM_DEV_MODE=1`; a build may install a local
 plugin without a license or prior installation,
 persisting its binary and state in `plugin_dev_install:<code>` without granting
 licensed features. If a licensed or GitHub installation already exists, the

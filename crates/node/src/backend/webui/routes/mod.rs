@@ -11,20 +11,41 @@ mod node;
 /// shared internal credential. Setup and the separate inference listener
 /// are represented on purpose so they do not vanish from the inventory by
 /// omission.
+///
+/// The admin variants compose as bit flags:
+///   `PrimaryAdmin`   = 0b01  (primary admin bit)
+///   `SecondaryAdmin` = 0b10  (secondary admin bit)
+///   `AnyAdmin`       = 0b11  (PrimaryAdmin | SecondaryAdmin)
+/// Use `allows_primary_admin()` / `allows_secondary_admin()` to test membership
+/// without spelling out every combination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteScope {
-    /// The network's principal only. A secondary admin does not reach these:
-    /// everything that governs the network (members, admissions, settings,
-    /// keys, the trust chain) comes from the principal.
-    AdminOnly,
-    /// Any admin of the trust chain, principal or secondary: putting models
-    /// in and out of service. It is the one thing a secondary admin may do
-    /// that a node may not.
-    DeployAdmin,
+    /// The network's principal only (bit 0b01). Everything that governs the
+    /// network (members, admissions, settings, keys, the trust chain) comes
+    /// from the principal; a secondary admin does not reach these routes.
+    PrimaryAdmin,
+    /// Secondary admin only (bit 0b10). No route currently uses this; it
+    /// exists so `AnyAdmin = PrimaryAdmin | SecondaryAdmin` is complete.
+    SecondaryAdmin,
+    /// Any admin of the trust chain, principal or secondary (bits 0b11 =
+    /// PrimaryAdmin | SecondaryAdmin). Deploy, undeploy, and reading logs are
+    /// the things a secondary admin shares with the principal.
+    AnyAdmin,
     NodeAdmin,
     InferNodeAdmin,
     CommonOrInternal,
     OutOfScope,
+}
+
+impl RouteScope {
+    /// True when this scope grants access to a primary (principal) admin.
+    pub(crate) const fn allows_primary_admin(self) -> bool {
+        matches!(self, Self::PrimaryAdmin | Self::AnyAdmin)
+    }
+    /// True when this scope grants access to a secondary admin.
+    pub(crate) const fn allows_secondary_admin(self) -> bool {
+        matches!(self, Self::SecondaryAdmin | Self::AnyAdmin)
+    }
 }
 
 struct RouteRule {
@@ -168,7 +189,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/pom-update",
         method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/cluster",
@@ -232,7 +253,7 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     // Anchoring the trust root is the work that precedes any authority existing:
-    // an unanchored `profile: admin` does not pass `AdminOnly`, and whoever receives
+    // an unanchored `profile: admin` does not pass `PrimaryAdmin`, and whoever receives
     // the anchor is usually `node` or `infer`. The real locks are of origin and
     // of state, in the handler; see `webui/trust.rs`.
     RouteRule {
@@ -262,7 +283,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/model-sidecar-links",
         method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/paths",
@@ -312,12 +333,12 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/settings",
         method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/trust-share",
         method: Some(Method::GET),
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/leave",
@@ -335,7 +356,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/admissions",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/plan",
@@ -391,7 +412,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/admin/",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     // API keys are the credential of whoever serves inference, and every profile
     // serves: `/v1` is `InferNodeAdmin`. An `infer` swaps its own key through the
@@ -404,7 +425,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     },
     // Reading who is on the network is what the Network screen shows; blocking, unblocking,
     // removing and promoting a machine are POST/DELETE and remain under
-    // `/admin/`, that is, `AdminOnly`.
+    // `/admin/`, that is, `PrimaryAdmin`.
     RouteRule {
         prefix: "/admin/nodes",
         method: Some(Method::GET),
@@ -413,37 +434,37 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/access",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/tls",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/quic",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/logs",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/auto-discovery",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/cluster-logs",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/deploy",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/deployments",
@@ -453,48 +474,48 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/deployments",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/apply",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/launch",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/undeploy",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/stop-inference",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/unload",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     // Emptying a machine's KV cache deletes what its conversations saved.
     RouteRule {
         prefix: "/api/ui/kv-cache",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/api/ui/reconfigure",
         method: None,
-        scope: RouteScope::DeployAdmin,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/release",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     // Leaving the network is abdicating one's own post, not a privilege: any
     // profile shuts down its own machine at any time, and coming back is the other
@@ -514,17 +535,17 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/requests",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::AnyAdmin,
     },
     RouteRule {
         prefix: "/api/ui/dev/",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
     RouteRule {
         prefix: "/admin/authority",
         method: None,
-        scope: RouteScope::AdminOnly,
+        scope: RouteScope::PrimaryAdmin,
     },
 ];
 
@@ -553,7 +574,7 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
             } else if path.starts_with("/api/") || path.starts_with("/admin/") {
                 // New control routes fail closed until they receive a
                 // profile in this table.
-                RouteScope::AdminOnly
+                RouteScope::PrimaryAdmin
             } else if path.starts_with("/v1/") {
                 RouteScope::InferNodeAdmin
             } else {
@@ -587,7 +608,7 @@ pub(crate) const fn profile_can_access(
     scope: RouteScope,
 ) -> bool {
     match scope {
-        RouteScope::AdminOnly | RouteScope::DeployAdmin => {
+        RouteScope::PrimaryAdmin | RouteScope::SecondaryAdmin | RouteScope::AnyAdmin => {
             matches!(profile, crate::profile::NodeProfile::Admin)
         }
         RouteScope::NodeAdmin => matches!(
@@ -623,9 +644,9 @@ mod policy_tests {
     fn route_policy_exposes_the_four_declared_scopes() {
         assert_eq!(
             route_scope(&Method::DELETE, "/admin/nodes/abc"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
-        assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
+        assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AnyAdmin);
         assert_eq!(scope_of("/api/ui/plugins"), RouteScope::InferNodeAdmin);
         assert_eq!(
             scope_of("/api/ui/plugins/github-repositories"),
@@ -664,7 +685,7 @@ mod policy_tests {
         for path in ["/api/ui/pom-update/check", "/api/ui/pom-update/apply"] {
             assert_eq!(
                 route_scope(&Method::POST, path),
-                RouteScope::AdminOnly,
+                RouteScope::PrimaryAdmin,
                 "rota={path}"
             );
         }
@@ -725,47 +746,50 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/network/auto-discovery"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);
         assert_eq!(
             route_scope(&Method::POST, "/api/ui/deployments"),
-            RouteScope::DeployAdmin
+            RouteScope::AnyAdmin
         );
-        // Deploying is the one admin scope a secondary admin shares; what
-        // governs the network stays with the principal.
+        // Deploying and reading logs are the scopes a secondary admin shares;
+        // what governs the network stays with the principal.
         for path in [
             "/api/ui/deploy",
             "/api/ui/undeploy",
             "/api/ui/apply",
             "/api/ui/unload",
+            "/api/ui/cluster-logs",
+            "/api/ui/requests",
+            "/api/ui/requests/stats",
         ] {
-            assert_eq!(scope_of(path), RouteScope::DeployAdmin, "{path}");
+            assert_eq!(scope_of(path), RouteScope::AnyAdmin, "{path}");
         }
         for path in [
             "/api/ui/network/admissions",
             "/admin/authority/resign",
             "/api/ui/release",
         ] {
-            assert_eq!(scope_of(path), RouteScope::AdminOnly, "{path}");
+            assert_eq!(scope_of(path), RouteScope::PrimaryAdmin, "{path}");
         }
         assert!(profile_can_access(
             crate::profile::NodeProfile::Admin,
-            RouteScope::DeployAdmin
+            RouteScope::AnyAdmin
         ));
         assert!(!profile_can_access(
             crate::profile::NodeProfile::Node,
-            RouteScope::DeployAdmin
+            RouteScope::AnyAdmin
         ));
         // Changing a role in place is not a route any more: with no rule,
         // the old paths fall to the closed default.
         assert_eq!(
             scope_of("/api/ui/network/request-node"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
         assert_eq!(
             scope_of("/api/ui/network/relinquish-node"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
         assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::InferNodeAdmin);
         assert!(profile_can_access(
@@ -813,14 +837,14 @@ mod policy_tests {
 
     #[test]
     fn route_policy_matches_segments_not_similar_prefixes() {
-        assert_eq!(scope_of("/api/ui/models-old"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/admin"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui"), RouteScope::AdminOnly);
+        assert_eq!(scope_of("/api/ui/models-old"), RouteScope::PrimaryAdmin);
+        assert_eq!(scope_of("/admin"), RouteScope::PrimaryAdmin);
+        assert_eq!(scope_of("/api/ui"), RouteScope::PrimaryAdmin);
         assert_eq!(
             scope_of("/api/ui/requests/stats/today"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
-        assert_eq!(scope_of("/api/new-control"), RouteScope::AdminOnly);
+        assert_eq!(scope_of("/api/new-control"), RouteScope::PrimaryAdmin);
         assert_eq!(
             scope_of("/api/ui/chat/telemetry"),
             RouteScope::CommonOrInternal
@@ -838,23 +862,23 @@ mod policy_tests {
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/block"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/unblock"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/promote-admin"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
         assert_eq!(
             route_scope(&Method::DELETE, "/admin/nodes/abc"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
         assert_eq!(
             route_scope(&Method::POST, "/admin/regenerate-key"),
-            RouteScope::AdminOnly
+            RouteScope::PrimaryAdmin
         );
     }
 

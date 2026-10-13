@@ -378,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn what_a_node_may_ask_of_another_depends_on_who_it_is() {
         use crate::webui::RouteScope::{
-            AdminOnly, CommonOrInternal, DeployAdmin, InferNodeAdmin, NodeAdmin,
+            AnyAdmin, CommonOrInternal, InferNodeAdmin, NodeAdmin, PrimaryAdmin,
         };
         let mut worker = testkit::peer("worker", "worker", 8090);
         worker.profile = crate::profile::NodeProfile::Node;
@@ -394,32 +394,32 @@ mod tests {
 
         // Routes that govern the network: the principal's signature, nothing less.
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, None).await,
+            caller_may_ask(&state, PrimaryAdmin, None).await,
             Err("signature_required")
         );
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, Some(&admin)).await,
+            caller_may_ask(&state, PrimaryAdmin, Some(&admin)).await,
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, Some(&principal_of("worker"))).await,
+            caller_may_ask(&state, PrimaryAdmin, Some(&principal_of("worker"))).await,
             Err("principal_required")
         );
         assert_eq!(
-            caller_may_ask(&state, AdminOnly, Some(&principal_of("infer"))).await,
+            caller_may_ask(&state, PrimaryAdmin, Some(&principal_of("infer"))).await,
             Err("principal_required")
         );
         // Deploy routes: an admin's signature, and a plain member is not one.
         assert_eq!(
-            caller_may_ask(&state, DeployAdmin, None).await,
+            caller_may_ask(&state, AnyAdmin, None).await,
             Err("signature_required")
         );
         assert_eq!(
-            caller_may_ask(&state, DeployAdmin, Some(&admin)).await,
+            caller_may_ask(&state, AnyAdmin, Some(&admin)).await,
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&state, DeployAdmin, Some(&principal_of("worker"))).await,
+            caller_may_ask(&state, AnyAdmin, Some(&principal_of("worker"))).await,
             Err("admin_required")
         );
 
@@ -472,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_secondary_admin_deploys_and_does_nothing_else() {
-        use crate::webui::RouteScope::{AdminOnly, DeployAdmin, NodeAdmin};
+        use crate::webui::RouteScope::{AnyAdmin, NodeAdmin, PrimaryAdmin};
         use axum::http::Method;
         // A network with a principal and one secondary admin, seen from a
         // third member that holds the same chain.
@@ -486,7 +486,7 @@ mod tests {
         // Between nodes: the secondary's signature opens the deploy routes
         // and a node's routes, and none of the routes that govern the network.
         assert_eq!(
-            caller_may_ask(&member, DeployAdmin, Some(&secondary)).await,
+            caller_may_ask(&member, AnyAdmin, Some(&secondary)).await,
             Ok(())
         );
         assert_eq!(
@@ -494,11 +494,11 @@ mod tests {
             Ok(())
         );
         assert_eq!(
-            caller_may_ask(&member, AdminOnly, Some(&secondary)).await,
+            caller_may_ask(&member, PrimaryAdmin, Some(&secondary)).await,
             Err("principal_required")
         );
         assert_eq!(
-            caller_may_ask(&member, AdminOnly, Some(&principal)).await,
+            caller_may_ask(&member, PrimaryAdmin, Some(&principal)).await,
             Ok(())
         );
         assert!(issuer_is_principal(&member, &principal));

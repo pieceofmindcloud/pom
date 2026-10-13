@@ -692,7 +692,7 @@ repository (not even in git history).
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Directory of `pom.db` and its WAL/SHM files. If absent or empty, uses `<project_root>`; the directory is created at startup. |
 | `POM_DEV` | The common Compose sends `1` for development configuration; it is not the flag that enables local rebuilds. |
-| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the AdminOnly plugin rebuild/reinstall routes. The local Compose sends that value. |
+| `POM_DEV_MODE` | Only the exact value `1` enables the panel and the PrimaryAdmin plugin rebuild/reinstall routes. The local Compose sends that value. |
 | `POM_DEV_PLUGINS_DIR` | Host directory with known plugin sources (`..` by default, the workspace containing the sibling plugin repositories), mounted at `/opt/pom/dev-plugins` in the local Compose. |
 | `POM_UI_DIST` | Where `webapp.rs` reads the UI bundle (default `<project_root>/apps/frontend/dist`). The Docker image sets it explicitly. |
 | `POM_MODEL_DIRS` / `POM_SHARD_DIR` | Whole-model folders (several, separated like `PATH`: `:` on Unix, `;` on Windows) and the slice folder. They beat `model_dirs`/`shard_dir` in `pom.json` and are not persisted; empty counts as absent. The Storage screen locks the field set by one of them. |

@@ -868,7 +868,10 @@ pub(crate) async fn caller_may_ask(
     use crate::webui::RouteScope;
     if !matches!(
         scope,
-        RouteScope::AdminOnly | RouteScope::DeployAdmin | RouteScope::NodeAdmin
+        RouteScope::PrimaryAdmin
+            | RouteScope::SecondaryAdmin
+            | RouteScope::AnyAdmin
+            | RouteScope::NodeAdmin
     ) {
         return Ok(());
     }
@@ -878,13 +881,13 @@ pub(crate) async fn caller_may_ask(
     if issuer == &state.authority_principal || issuer_is_principal(state, issuer) {
         return Ok(());
     }
-    if scope == RouteScope::AdminOnly {
+    if !scope.allows_secondary_admin() {
         return Err("principal_required");
     }
     if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer) {
         return Ok(());
     }
-    if scope == RouteScope::DeployAdmin {
+    if !matches!(scope, RouteScope::NodeAdmin) {
         return Err("admin_required");
     }
     let peers = state.network.alive_peers().await;
@@ -968,12 +971,14 @@ pub(crate) async fn require_admin_for_surface(
     let local_authority = state
         .admin_trust
         .effective_authority(&state.authority_principal, profile);
-    let authority_access = match scope {
-        crate::webui::RouteScope::AdminOnly => {
-            local_authority == Some(crate::admin_trust::EffectiveAuthority::Primary)
-        }
-        crate::webui::RouteScope::DeployAdmin => local_authority.is_some(),
-        _ => true,
+    let authority_access = if scope.allows_primary_admin() && !scope.allows_secondary_admin() {
+        // PrimaryAdmin: the principal's authority only.
+        local_authority == Some(crate::admin_trust::EffectiveAuthority::Primary)
+    } else if scope.allows_secondary_admin() {
+        // AnyAdmin or SecondaryAdmin: any authority suffices.
+        local_authority.is_some()
+    } else {
+        true
     };
     let profile_access = crate::webui::profile_can_access(profile, scope) && authority_access;
     if !profile_access && !internal_node_request {

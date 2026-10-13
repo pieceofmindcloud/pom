@@ -28,7 +28,7 @@ namespace. The real code of Request Logs and Statistics lives in
    Both sit under `/api/ui/plugins`, open to every profile
    (`RouteScope::InferNodeAdmin`, since plugins are local to each node); the
    authorization of the data the screen reads stays in the plugin's routes (for
-   example `/api/ui/requests`, AdminOnly).
+   example `/api/ui/requests`, AnyAdmin).
 3. The frontend (`usePluginUi`) stores the result in `lib/pluginUi.ts`. The menu
    (`components/nav.ts`), the profile guard (`lib/access.ts`), text loading
    (`lib/pluginI18n.ts`) and the router (`App.tsx`) all read the same validated
@@ -319,7 +319,7 @@ source mount; a mounted directory is listed only when its Cargo manifest and
 root `manifest.json` or `ui/manifest.json` are valid and all plugin manifests
 agree on a safe `plugin_code`. The code-server source uses
 `plugin_code: "code_server"`. `GET /api/ui/plugins/dev-sources` lists only
-valid mounted sources. The AdminOnly route
+valid mounted sources. The PrimaryAdmin route
 `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` uses fixed
 arguments for `cargo metadata --no-deps --locked` and `cargo build --release
 --locked`, requires a single `cdylib` target and checks canonical source and

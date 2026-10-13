@@ -20,7 +20,7 @@ callbacks) separate from the administrative surface (`/api/ui/**`, `/admin/**`, 
 static UI), and the two never share an authorization rule. The rules that decide who
 may call what - the profile table, the in-memory browser session and its single
 `ADMIN_SESSION_TTL`, the signed control envelope between nodes, the per-route
-`RouteScope` (`AdminOnly`, `DeployAdmin`, `NodeAdmin`, `InferNodeAdmin`,
+`RouteScope` (`PrimaryAdmin`, `SecondaryAdmin`, `AnyAdmin`, `NodeAdmin`, `InferNodeAdmin`,
 `CommonOrInternal`) and the `x-pom-admin-error` header the browser reads to know its
 session died instead of printing a raw 401 inside whatever screen was open - are
 `docs/subsystems/http-api.md`. The deployment lifecycle, the idle wake
@@ -134,7 +134,7 @@ boundary.
   `POST /api/ui/plugins/activate` activates every `plugin_code` granted by the
   server in one batch; `POST /api/ui/plugins/:code/refresh|deactivate|update/check|update/apply`
   acts on one plugin. GitHub repositories are local to the node and use the
-  AdminOnly routes `GET/POST /api/ui/plugins/github-repositories`,
+  PrimaryAdmin routes `GET/POST /api/ui/plugins/github-repositories`,
   `POST /api/ui/plugins/github-repositories/:id/refresh`,
   `DELETE /api/ui/plugins/github-repositories/:id` and
   `POST /api/ui/plugins/github-repositories/:id/install` with
@@ -147,7 +147,7 @@ boundary.
   /api/ui/plugins/dev-sources` lists mounted sources and
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds a local plugin without prior activation. Both routes
-  are AdminOnly; the handler accepts mounted direct-child `pom-plugin-*`
+  are PrimaryAdmin; the handler accepts mounted direct-child `pom-plugin-*`
   sources only after validating their manifests and plugin codes, uses fixed
   Cargo commands and never exposes compiler output. A development-only installation persists in
   `plugin_dev_install:<code>` and starts the host without granting licensed
@@ -176,7 +176,7 @@ boundary.
   `GET/POST /api/ui/network/trust-anchor` shows the anchor's fingerprint and the anchored/not
   yet anchored state, and installs the chain the operator
   carried over. The route is `CommonOrInternal` on purpose - an unanchored `profile: admin`
-  does not pass `AdminOnly`, which is exactly the state where the operator needs it - and it
+  does not pass `PrimaryAdmin`, which is exactly the state where the operator needs it - and it
   does not demand the cluster's connection key, for the reason recorded in the file's header.
   The installation's three locks are the server's: loopback measured in `serve::PeerAddr` (never
   `admin_exposure`, which may be open to the network, and never `X-Forwarded-For`), a node still
@@ -445,7 +445,7 @@ boundary.
   download invalidates the receiver's catalog.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
-  `POST /api/ui/kv-cache/clear` (AdminOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
+  `POST /api/ui/kv-cache/clear` (PrimaryAdmin, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
   `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
   `GatewayState.prefix_disk` and clears the inference server's host-memory
   cache. See `http-api.md`.

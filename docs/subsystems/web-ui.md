@@ -281,7 +281,7 @@ local-only notice. Routes:
   do not show up for other profiles or for nodes without the flag. A
   development-only install grants no licensed features, while rebuilding an
   existing licensed or GitHub install preserves its entitlement. That endpoint
-  is AdminOnly and the UI only gets success or the step/exit code, not compiler
+  is PrimaryAdmin and the UI only gets success or the step/exit code, not compiler
   logs. The
   GitHub release flow stays separate. See `docs/subsystems/plugins-ui.md`,
   section "Local rebuild in development".

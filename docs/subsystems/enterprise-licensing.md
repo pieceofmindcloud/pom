@@ -204,7 +204,7 @@ only the generic boundary, reusable by any future `plugin_code`:
   "Checkout through the node" below). An earlier version (97bb0e91) showed only
   the showcase even with the plugin active ("This plugin is already active in
   this cluster") - defect fixed. The `/api/ui/requests` and
-  `/api/ui/requests/stats` routes stay in the node, AdminOnly, and refuse the
+  `/api/ui/requests/stats` routes stay in the node, AnyAdmin, and refuse the
   data without entitlement.
 
 ## Checkout through the node
@@ -540,7 +540,7 @@ The About screen calls `POST /api/ui/pom-update/check` to repeat detection on
 demand and reads `GET /api/ui/pom-update/status` for the current state
 (`usePomCoreUpdateStatus()`, its own `PomCoreUpdateStatus` contract - never
 `PluginStatus`). The status route downloads no artifacts and restarts nothing;
-`check` and `apply` are AdminOnly. The About screen itself holds the
+`check` and `apply` are PrimaryAdmin. The About screen itself holds the
 confirmation and the install, without redirecting to any other screen - see
 `## Phase 7` above.
 

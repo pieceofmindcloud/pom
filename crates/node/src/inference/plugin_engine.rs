@@ -40,6 +40,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -183,13 +184,51 @@ pub(crate) fn load_params(
 /// The `/health` this node answers while a plugin engine serves its model:
 /// the fields the gateway's admission, the health watcher and the capacity
 /// read, with `model_loaded` true only once the plugin says it is ready.
+/// The speed each plugin engine measured on its last generations, as the
+/// `/health` publishes it (`perf`, the same fields a llama.cpp server gives).
+/// The engine's own telemetry has no timing of its own; the timings of its
+/// `done` event do, so they are kept here as an average that one long answer
+/// cannot decide.
+#[derive(Debug, Clone, Copy, Default)]
+struct EnginePerf {
+    prefill_ms_per_token: Option<f64>,
+    decode_ms_per_step: Option<f64>,
+}
+
+fn engine_perf() -> &'static Mutex<HashMap<String, EnginePerf>> {
+    static PERF: OnceLock<Mutex<HashMap<String, EnginePerf>>> = OnceLock::new();
+    PERF.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn blend(previous: Option<f64>, sample: f64) -> f64 {
+    previous.map_or(sample, |previous| previous * 0.7 + sample * 0.3)
+}
+
+fn record_engine_perf(code: &str, prompt_n: u64, prompt_ms: f64, decode_n: u64, decode_ms: f64) {
+    let Ok(mut perf) = engine_perf().lock() else {
+        return;
+    };
+    let entry = perf.entry(code.to_owned()).or_default();
+    if prompt_n > 0 && prompt_ms > 0.0 {
+        let sample = prompt_ms / prompt_n as f64;
+        entry.prefill_ms_per_token = Some(blend(entry.prefill_ms_per_token, sample));
+    }
+    if decode_n > 0 && decode_ms > 0.0 {
+        let sample = decode_ms / decode_n as f64;
+        entry.decode_ms_per_step = Some(blend(entry.decode_ms_per_step, sample));
+    }
+}
+
 pub(crate) fn health_body(cfg: &crate::runtime::NodeConfig, code: &str, status: &Value) -> Value {
     let ready = status["state"] == "ready";
     let n_ctx = status["n_ctx"]
         .as_u64()
         .filter(|n_ctx| *n_ctx > 0)
         .unwrap_or(u64::from(cfg.n_ctx));
-    json!({
+    // The route fields the llama.cpp server adds (infer_server `add_route_fields`): the pipeline panel reads the
+    // RTT between machines from here, so a plugin engine must say what its node measures as well.
+    let book = crate::route_plan::book();
+    let mut body = json!({
         "status": "ok",
         "model_loaded": ready,
         "model_label": cfg.model_label,
@@ -210,7 +249,22 @@ pub(crate) fn health_body(cfg: &crate::runtime::NodeConfig, code: &str, status: 
             "detail": status["detail"],
             "busy": status["busy"],
         },
-    })
+    });
+    body["route_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Inference));
+    body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
+    body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
+    body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
+    body["relayed_peers"] = json!(book.relayed_nodes());
+    let measured = engine_perf()
+        .lock()
+        .ok()
+        .and_then(|perf| perf.get(code).copied())
+        .unwrap_or_default();
+    body["perf"] = json!({
+        "prefill_ms_per_token": measured.prefill_ms_per_token,
+        "decode_ms_per_step": measured.decode_ms_per_step,
+    });
+    body
 }
 
 async fn query(code: &str, operation: &str, payload: Value) -> Option<Value> {
@@ -682,6 +736,25 @@ pub(crate) async fn generate(
                     done,
                     generated,
                 );
+                // Each earlier stage this request waited on gets the time of its frames, on its own hop.
+                for (node_id, link) in super::plugin_stage_link::take_link_stats(code) {
+                    if let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == node_id) {
+                        hop.prefill.round_trip_ms += link.round_trip_ms;
+                        hop.prefill.bytes_sent += link.bytes_sent;
+                        hop.prefill.bytes_received += link.bytes_received;
+                    }
+                }
+                // The engine's prompt time covers the whole pipeline, and the head (the last step) serves it.
+                if let Some(head) = trace.hops.last_mut() {
+                    head.prefill.processing_ms = prefill_ms;
+                }
+                record_engine_perf(
+                    code,
+                    done["timings"]["prompt_n"].as_u64().unwrap_or(0),
+                    done["timings"]["prompt_ms"].as_f64().unwrap_or(0.0),
+                    done["timings"]["predicted_n"].as_u64().unwrap_or(0),
+                    done["timings"]["predicted_ms"].as_f64().unwrap_or(0.0),
+                );
                 trace.input_tokens = prompt_tokens;
                 trace.cached_tokens = cached_tokens;
                 trace.prefix_match_tokens = cached_tokens;
@@ -1072,5 +1145,23 @@ mod tests {
         assert_eq!(body["top_k"], 20);
         assert!(body.get("seed").is_none());
         assert!(body.get("messages").is_none());
+    }
+}
+
+#[cfg(test)]
+mod speed_tests {
+    use super::*;
+
+    #[test]
+    fn engine_speed_is_a_blend_of_the_answers() {
+        record_engine_perf("strata-speed-test", 100, 1000.0, 50, 500.0);
+        let first = engine_perf().lock().unwrap().get("strata-speed-test").copied().unwrap();
+        assert_eq!(first.prefill_ms_per_token, Some(10.0));
+        assert_eq!(first.decode_ms_per_step, Some(10.0));
+        // a slower answer moves the average by 30%, it does not replace it
+        record_engine_perf("strata-speed-test", 100, 2000.0, 50, 1500.0);
+        let second = engine_perf().lock().unwrap().get("strata-speed-test").copied().unwrap();
+        assert!((second.prefill_ms_per_token.unwrap() - 13.0).abs() < 1e-9);
+        assert!((second.decode_ms_per_step.unwrap() - 16.0).abs() < 1e-9);
     }
 }

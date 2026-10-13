@@ -391,6 +391,51 @@ async fn relay_connection(
 
 /// One frame to the earlier machine at `path`, tried again while that machine
 /// cannot take it yet; `None` gives up on the connection.
+/// What the links to an earlier stage carried for one plugin, since the last
+/// drain: frames answered, the time from sending each frame to its answer
+/// (the earlier machine's work plus the wire), and the bytes both ways.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub(crate) struct LinkStats {
+    pub(crate) calls: u32,
+    pub(crate) round_trip_ms: u64,
+    pub(crate) bytes_sent: u64,
+    pub(crate) bytes_received: u64,
+}
+
+/// Per (plugin code, earlier node id) totals, drained by the generation that
+/// used them, so each request's trace carries its own link time.
+fn link_stats() -> &'static Mutex<HashMap<(String, String), LinkStats>> {
+    static STATS: OnceLock<Mutex<HashMap<(String, String), LinkStats>>> = OnceLock::new();
+    STATS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_link(code: &str, node_id: &str, elapsed: Duration, sent: u64, received: u64) {
+    if let Ok(mut stats) = link_stats().lock() {
+        let entry = stats
+            .entry((code.to_owned(), node_id.to_owned()))
+            .or_default();
+        entry.calls += 1;
+        entry.round_trip_ms += elapsed.as_millis() as u64;
+        entry.bytes_sent += sent;
+        entry.bytes_received += received;
+    }
+}
+
+/// Takes the link totals of `code`, keyed by the earlier stage's node id.
+pub(crate) fn take_link_stats(code: &str) -> Vec<(String, LinkStats)> {
+    let Ok(mut stats) = link_stats().lock() else {
+        return Vec::new();
+    };
+    let keys: Vec<(String, String)> = stats
+        .keys()
+        .filter(|(plugin, _)| plugin == code)
+        .cloned()
+        .collect();
+    keys.into_iter()
+        .filter_map(|key| stats.remove(&key).map(|value| (key.1, value)))
+        .collect()
+}
+
 async fn forward(
     state: GatewayState,
     cfg: crate::runtime::NodeConfig,
@@ -419,7 +464,20 @@ async fn forward(
             None => Err(Refusal::Retry(
                 "the earlier stage's machine is not in the network".to_owned(),
             )),
-            Some(target) => send(&state, target, &path, frame.clone()).await,
+            Some(target) => {
+                let started = Instant::now();
+                let sent = frame.len() as u64;
+                send(&state, target, &path, frame.clone()).await.map(|answer| {
+                    record_link(
+                        &code,
+                        &target.node_id,
+                        started.elapsed(),
+                        sent,
+                        answer.len() as u64,
+                    );
+                    answer
+                })
+            }
         };
         match attempt {
             Ok(answer) => return from_network(&answer)
@@ -949,5 +1007,31 @@ mod tests {
             turn(&link, 1).await.is_err(),
             "a broken link takes no frame"
         );
+    }
+}
+
+#[cfg(test)]
+mod link_stats_tests {
+    use super::*;
+
+    #[test]
+    fn link_totals_are_taken_once_per_plugin_and_node() {
+        record_link("strata-link-test-a", "node-1", Duration::from_millis(40), 100, 200);
+        record_link("strata-link-test-a", "node-1", Duration::from_millis(10), 50, 60);
+        record_link("strata-link-test-b", "node-1", Duration::from_millis(5), 1, 1);
+        assert_eq!(
+            take_link_stats("strata-link-test-a"),
+            vec![(
+                "node-1".to_string(),
+                LinkStats {
+                    calls: 2,
+                    round_trip_ms: 50,
+                    bytes_sent: 150,
+                    bytes_received: 260,
+                },
+            )]
+        );
+        assert!(take_link_stats("strata-link-test-a").is_empty());
+        assert_eq!(take_link_stats("strata-link-test-b").len(), 1);
     }
 }

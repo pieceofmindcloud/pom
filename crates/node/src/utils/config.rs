@@ -946,7 +946,11 @@ impl Config {
         default_workspace: &Path,
     ) -> Vec<(PathBuf, std::io::Error)> {
         let mut wanted = Vec::new();
-        if self.model_dir_paths().iter().any(|dir| dir == default_models) {
+        if self
+            .model_dir_paths()
+            .iter()
+            .any(|dir| dir == default_models)
+        {
             wanted.push(default_models.to_path_buf());
         }
         let shard_dir = self.shard_dir_path();
@@ -960,7 +964,11 @@ impl Config {
         wanted
             .into_iter()
             .filter(|dir| !dir.is_dir())
-            .filter_map(|dir| std::fs::create_dir_all(&dir).err().map(|error| (dir, error)))
+            .filter_map(|dir| {
+                std::fs::create_dir_all(&dir)
+                    .err()
+                    .map(|error| (dir, error))
+            })
             .collect()
     }
 
@@ -1210,13 +1218,23 @@ fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, 
 mod tests {
     #[test]
     fn the_default_inference_port_follows_the_gateway_port() {
-        let mut config: Config =
-            serde_json::from_value(serde_json::json!({"profile": "admin", "connection_key": "k", "gateway_port": 8080})).unwrap();
-        assert_eq!(config.inference_port_or_default(), 8181, "the single-node default is unchanged");
+        let mut config: Config = serde_json::from_value(
+            serde_json::json!({"profile": "admin", "connection_key": "k", "gateway_port": 8080}),
+        )
+        .unwrap();
+        assert_eq!(
+            config.inference_port_or_default(),
+            8181,
+            "the single-node default is unchanged"
+        );
         config.gateway_port = 8082;
         assert_eq!(config.inference_port_or_default(), 8183);
         config.inference_port = Some(9000);
-        assert_eq!(config.inference_port_or_default(), 9000, "a configured port wins");
+        assert_eq!(
+            config.inference_port_or_default(),
+            9000,
+            "a configured port wins"
+        );
     }
 
     /// A peer address with no port is what produces `invalid port value` — the
@@ -1601,11 +1619,8 @@ mod tests {
             serde_json::from_str(r#"{"accepted_enrollments":[]}"#).unwrap();
         assert!(closed.accepted_enrollments.0.is_empty());
 
-        let only_infer = AcceptedEnrollments(vec![
-            EnrollmentRole::Infer,
-            EnrollmentRole::Infer,
-        ])
-        .normalized();
+        let only_infer =
+            AcceptedEnrollments(vec![EnrollmentRole::Infer, EnrollmentRole::Infer]).normalized();
         assert_eq!(
             serde_json::to_value(&only_infer).unwrap(),
             serde_json::json!(["infer"])
@@ -1769,7 +1784,8 @@ mod tests {
 
     #[test]
     fn the_default_storage_folders_are_created_but_a_typed_one_is_not() {
-        let root = std::env::temp_dir().join(format!("pom-storage-{}", uuid::Uuid::new_v4().simple()));
+        let root =
+            std::env::temp_dir().join(format!("pom-storage-{}", uuid::Uuid::new_v4().simple()));
         let models = root.join(".pom").join("models");
         let shards = root.join(".pom").join("models_sliced");
         let workspace = root.join("pom_workspace");
@@ -1782,7 +1798,9 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(cfg.create_storage_dirs_for_defaults(&models, &shards, &workspace).is_empty());
+        assert!(cfg
+            .create_storage_dirs_for_defaults(&models, &shards, &workspace)
+            .is_empty());
         assert!(models.is_dir() && shards.is_dir() && workspace.is_dir());
         assert!(!typed.exists());
 

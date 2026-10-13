@@ -432,6 +432,21 @@ pub fn model_pipeline_candidates<'a>(
         })
         .collect();
 
+    // A REPLICA STILL LOADING is not a route while another one of the same
+    // range is ready: it is alive and announces the model, but it has not
+    // published its capacity yet, and a request planned through it waits (or
+    // is refused) until it finishes loading. With no ready twin it stays: the
+    // request then waits for it, as before.
+    let ready_ranges: std::collections::HashSet<(u32, u32)> = serving
+        .iter()
+        .filter(|p| !p.is_warming())
+        .map(|p| (p.start_layer, p.end_layer))
+        .collect();
+    let serving: Vec<&PeerInfo> = serving
+        .into_iter()
+        .filter(|p| !p.is_warming() || !ready_ranges.contains(&(p.start_layer, p.end_layer)))
+        .collect();
+
     match deploy_id {
         Some(_) => serving,
         None => {
@@ -808,14 +823,12 @@ mod ipv6_tests {
             .expect("deployment A covers the whole model");
         assert_eq!(plan.steps.len(), 2);
         assert!(
-            plan
-                .steps
+            plan.steps
                 .iter()
                 .all(|s| s.inference_url.contains("10.0.0.1")
                     || s.inference_url.contains("10.0.0.2")),
             "no hop can come from deployment B: {:?}",
-            plan
-                .steps
+            plan.steps
                 .iter()
                 .map(|s| &s.inference_url)
                 .collect::<Vec<_>>()
@@ -837,8 +850,7 @@ mod ipv6_tests {
             .steps
             .iter()
             .map(|s| {
-                all
-                    .iter()
+                all.iter()
                     .find(|p| p.node_id == s.node_id)
                     .map(|p| p.deploy_id.as_str())
                     .unwrap_or("")

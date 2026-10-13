@@ -47,8 +47,8 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde_json::{json, Value};
 use futures::stream::{FuturesOrdered, StreamExt};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -68,7 +68,8 @@ const MAX_CONNECTIONS: usize = 16;
 /// Frames of one engine connection posted to the earlier machine at once: the
 /// deployment's `prefill_max_inflight_chunks`, within the prefill's own range.
 fn max_in_flight(cfg: &crate::runtime::NodeConfig) -> usize {
-    (cfg.prefill_max_inflight_chunks as usize).clamp(1, crate::prefill::PrefillOverlapWindow::MAX_INFLIGHT_CHUNKS)
+    (cfg.prefill_max_inflight_chunks as usize)
+        .clamp(1, crate::prefill::PrefillOverlapWindow::MAX_INFLIGHT_CHUNKS)
 }
 
 const KIND_BYTES: u8 = 1;
@@ -96,7 +97,9 @@ fn to_network(frame: Vec<u8>, dtype: crate::wire::WireDtype) -> Result<Vec<u8>, 
             let meta = json!({ "meta": hex::encode(&frame[5..5 + meta_len]) });
             let shape = vec![1, values.len()];
             let encoded = crate::wire::encode(&meta, Some((&values, shape.clone())), dtype)
-                .or_else(|_| crate::wire::encode(&meta, Some((&values, shape)), crate::wire::WireDtype::F32))
+                .or_else(|_| {
+                    crate::wire::encode(&meta, Some((&values, shape)), crate::wire::WireDtype::F32)
+                })
                 .map_err(|error| error.to_string())?;
             let mut out = Vec::with_capacity(1 + encoded.len());
             out.push(KIND_TENSOR);
@@ -112,7 +115,8 @@ fn from_network(body: &[u8]) -> Result<Vec<u8>, String> {
     match body.first() {
         Some(&KIND_BYTES) => Ok(body.to_vec()),
         Some(&KIND_TENSOR) => {
-            let (meta, tensor) = crate::wire::decode(&body[1..]).map_err(|error| error.to_string())?;
+            let (meta, tensor) =
+                crate::wire::decode(&body[1..]).map_err(|error| error.to_string())?;
             let meta = meta["meta"]
                 .as_str()
                 .and_then(|text| hex::decode(text).ok())
@@ -297,7 +301,10 @@ async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Op
     Ok(Some(payload))
 }
 
-async fn write_frame(stream: &mut (impl AsyncWrite + Unpin), payload: &[u8]) -> std::io::Result<()> {
+async fn write_frame(
+    stream: &mut (impl AsyncWrite + Unpin),
+    payload: &[u8],
+) -> std::io::Result<()> {
     stream
         .write_all(&(payload.len() as u32).to_le_bytes())
         .await?;
@@ -415,11 +422,11 @@ async fn forward(
             Some(target) => send(&state, target, &path, frame.clone()).await,
         };
         match attempt {
-            Ok(answer) => {
-                return from_network(&answer)
-                    .map_err(|error| warn!(plugin = %code, %error, "stage link: the earlier stage's answer"))
-                    .ok()
-            }
+            Ok(answer) => return from_network(&answer)
+                .map_err(
+                    |error| warn!(plugin = %code, %error, "stage link: the earlier stage's answer"),
+                )
+                .ok(),
             Err(Refusal::Retry(error)) if Instant::now() < deadline => {
                 warn!(plugin = %code, %error, "stage link: trying again");
                 *peer.lock().await = None;
@@ -679,7 +686,12 @@ async fn link_frame(
     if body.len() > MAX_FRAME {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "frame too large");
     }
-    let Some(dtype) = state.runtime.config().await.map(|cfg| cfg.hidden_state_dtype) else {
+    let Some(dtype) = state
+        .runtime
+        .config()
+        .await
+        .map(|cfg| cfg.hidden_state_dtype)
+    else {
         return refuse(StatusCode::CONFLICT, "this machine serves no model");
     };
     let key = (caller, conn);
@@ -857,15 +869,25 @@ mod tests {
         ] {
             let network = to_network(frame.clone(), dtype).unwrap();
             if dtype != crate::wire::WireDtype::F32 {
-                assert!(network.len() < frame.len() * 3 / 4, "{dtype:?} is smaller on the wire");
+                assert!(
+                    network.len() < frame.len() * 3 / 4,
+                    "{dtype:?} is smaller on the wire"
+                );
             }
             let back = from_network(&network).unwrap();
             assert_eq!(back.len(), frame.len());
-            assert_eq!(&back[..6], &frame[..6], "kind and meta come back as they went");
+            assert_eq!(
+                &back[..6],
+                &frame[..6],
+                "kind and meta come back as they went"
+            );
             for (sent, got) in frame[6..].chunks_exact(4).zip(back[6..].chunks_exact(4)) {
                 let sent = f32::from_le_bytes(sent.try_into().unwrap());
                 let got = f32::from_le_bytes(got.try_into().unwrap());
-                assert!((sent - got).abs() <= tolerance, "{dtype:?}: {sent} came back as {got}");
+                assert!(
+                    (sent - got).abs() <= tolerance,
+                    "{dtype:?}: {sent} came back as {got}"
+                );
             }
         }
     }
@@ -873,13 +895,24 @@ mod tests {
     #[test]
     fn opaque_frames_cross_as_they_are_and_f8_falls_back_past_its_range() {
         let opaque = vec![KIND_BYTES, b'P', 1, 2, 3];
-        assert_eq!(to_network(opaque.clone(), crate::wire::WireDtype::F8).unwrap(), opaque);
+        assert_eq!(
+            to_network(opaque.clone(), crate::wire::WireDtype::F8).unwrap(),
+            opaque
+        );
         assert_eq!(from_network(&opaque).unwrap(), opaque);
         let big = tensor_frame(&[0, 7], &[1000.0, -2.0]);
-        let back = from_network(&to_network(big.clone(), crate::wire::WireDtype::F8).unwrap()).unwrap();
-        assert_eq!(back, big, "a value past f8's range crosses that once as f32");
+        let back =
+            from_network(&to_network(big.clone(), crate::wire::WireDtype::F8).unwrap()).unwrap();
+        assert_eq!(
+            back, big,
+            "a value past f8's range crosses that once as f32"
+        );
         assert!(to_network(vec![b'P', 0], crate::wire::WireDtype::F16).is_err());
-        assert!(to_network(vec![KIND_TENSOR, 9, 0, 0, 0, 1], crate::wire::WireDtype::F16).is_err());
+        assert!(to_network(
+            vec![KIND_TENSOR, 9, 0, 0, 0, 1],
+            crate::wire::WireDtype::F16
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -907,8 +940,14 @@ mod tests {
         }
         link.turn.notify_waiters();
         assert_eq!(second.await.unwrap(), Ok(1));
-        assert!(turn(&link, 0).await.is_err(), "frame 0 was already passed on");
+        assert!(
+            turn(&link, 0).await.is_err(),
+            "frame 0 was already passed on"
+        );
         link.io.lock().await.broken = true;
-        assert!(turn(&link, 1).await.is_err(), "a broken link takes no frame");
+        assert!(
+            turn(&link, 1).await.is_err(),
+            "a broken link takes no frame"
+        );
     }
 }

@@ -58,13 +58,19 @@ pub(crate) fn advance_guide(
             done.push(step.to_string());
         }
     }
-    if GUIDE_STEPS.iter().all(|step| done.iter().any(|known| known == step)) {
+    if GUIDE_STEPS
+        .iter()
+        .all(|step| done.iter().any(|known| known == step))
+    {
         return Ok(None);
     }
     Ok(Some(done))
 }
 
-pub(super) async fn get_guide(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn get_guide(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     Json(guide_view(state.auth.read().await.first_run_guide.as_ref())).into_response()
 }
 

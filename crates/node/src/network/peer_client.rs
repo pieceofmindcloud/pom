@@ -1055,7 +1055,11 @@ mod tests {
         .expect_err("the command arrived and did not answer in time");
         assert!(error.to_string().contains("was not resent"), "{error}");
         assert_eq!(slow_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(fast_calls.load(Ordering::SeqCst), 0, "the copy would be a replay");
+        assert_eq!(
+            fast_calls.load(Ordering::SeqCst),
+            0,
+            "the copy would be a replay"
+        );
 
         // A read consumes no nonce and still falls through to the next address.
         let response = send_to_gateway_over(&peer, &bases, |base| {

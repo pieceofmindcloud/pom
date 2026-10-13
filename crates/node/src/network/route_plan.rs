@@ -1120,7 +1120,9 @@ mod tests {
 
     #[test]
     fn the_tunnel_answering_for_a_closed_port_is_not_a_route() {
-        assert!(!tunnel_reply_proves_route(crate::infer_tunnel::NOTHING_LISTENING_STATUS));
+        assert!(!tunnel_reply_proves_route(
+            crate::infer_tunnel::NOTHING_LISTENING_STATUS
+        ));
         // The server answered, even while loading: the path exists.
         assert!(tunnel_reply_proves_route(200));
         assert!(tunnel_reply_proves_route(503));

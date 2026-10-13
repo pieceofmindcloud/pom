@@ -98,10 +98,18 @@ pub(super) async fn deploy_endpoint(
 
     if plan.blocked.is_none() {
         if let Some(service) = params.inference_service.as_deref() {
-            let targets: Vec<String> = plan.steps.iter().map(|step| step.target_node_id.clone()).collect();
-            plan.blocked =
-                crate::plugin_engine::deploy_block(&state, service, req.kind == DeployKind::Whole, &targets)
-                    .await;
+            let targets: Vec<String> = plan
+                .steps
+                .iter()
+                .map(|step| step.target_node_id.clone())
+                .collect();
+            plan.blocked = crate::plugin_engine::deploy_block(
+                &state,
+                service,
+                req.kind == DeployKind::Whole,
+                &targets,
+            )
+            .await;
         }
     }
     if let Some(reason) = plan.blocked {
@@ -170,7 +178,11 @@ pub(super) async fn deploy_endpoint(
         "Deploy {} on {} {}",
         deployment_name,
         plan.steps.len(),
-        if plan.steps.len() == 1 { "node" } else { "nodes" }
+        if plan.steps.len() == 1 {
+            "node"
+        } else {
+            "nodes"
+        }
     );
     jobs().write().await.insert(
         job_id.clone(),
@@ -856,9 +868,7 @@ pub(super) async fn whole_layer_options_for_plan(
                     cuts: Vec::new(),
                     granularity: None,
                     rule: "could not confirm the real rules of this GGUF".to_string(),
-                    reason: Some(format!(
-                        "invalid slicing rules response: {error}"
-                    )),
+                    reason: Some(format!("invalid slicing rules response: {error}")),
                 });
             }
         };
@@ -900,10 +910,7 @@ pub(super) fn add_virtual_whole_slices(
     options: &WholeLayerOptions,
 ) -> Result<(), String> {
     if let Some(reason) = &options.reason {
-        return Err(format!(
-            "cannot choose layers of {}: {}",
-            group, reason
-        ));
+        return Err(format!("cannot choose layers of {}: {}", group, reason));
     }
     let cut = options
         .cuts
@@ -916,9 +923,7 @@ pub(super) fn add_virtual_whole_slices(
             )
         })?;
     if selection.source_node_id == selection.target_node_id {
-        return Err(
-            "the source machine and the destination machine must be different".to_string(),
-        );
+        return Err("the source machine and the destination machine must be different".to_string());
     }
     let source = machines
         .iter()
@@ -1014,12 +1019,7 @@ pub(super) async fn materialize_slices_on_peer(
             Duration::from_secs(3600),
         )
         .await
-        .map_err(|error| {
-            format!(
-                "could not slice the model on {}: {error:#}",
-                peer.hostname
-            )
-        })?;
+        .map_err(|error| format!("could not slice the model on {}: {error:#}", peer.hostname))?;
     let status = response.status();
     let body: serde_json::Value = response.json().await.map_err(|error| {
         format!(
@@ -1034,12 +1034,8 @@ pub(super) async fn materialize_slices_on_peer(
             .unwrap_or("the peer refused the local slicing")
             .to_string());
     }
-    serde_json::from_value(body).map_err(|error| {
-        format!(
-            "invalid slicing response from {}: {error}",
-            peer.hostname
-        )
-    })
+    serde_json::from_value(body)
+        .map_err(|error| format!("invalid slicing response from {}: {error}", peer.hostname))
 }
 
 pub(super) async fn model_identity_on_peer(

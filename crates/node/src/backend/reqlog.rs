@@ -1369,10 +1369,7 @@ pub async fn list_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
-    let plugin_status = state
-        .plugins
-        .status(crate::plugins::LOGS_PLUGIN_CODE)
-        .await;
+    let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
     if !plugin_status.is_some_and(|status| status.has_feature("request_logs")) {
         return (
             StatusCode::FORBIDDEN,
@@ -1426,10 +1423,7 @@ pub async fn stats_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
-    let plugin_status = state
-        .plugins
-        .status(crate::plugins::LOGS_PLUGIN_CODE)
-        .await;
+    let plugin_status = state.plugins.status(crate::plugins::LOGS_PLUGIN_CODE).await;
     if !plugin_status.is_some_and(|status| status.has_feature("statistics")) {
         return (
             StatusCode::FORBIDDEN,

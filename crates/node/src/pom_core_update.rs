@@ -149,9 +149,7 @@ impl PomCoreUpdater {
         let _guard = self.update_lock.lock().await;
         let requested_release_id = requested_release_id.trim();
         let Some(available) = self.status.read().await.clone() else {
-            return Err(update_unavailable(
-                "no pom update is available",
-            ));
+            return Err(update_unavailable("no pom update is available"));
         };
         if available.release_id != requested_release_id {
             return Err(update_unavailable(
@@ -418,17 +416,9 @@ mod tests {
             )
             .await;
         let manager = PluginManager::test_manager(&["logs"], service.clone());
-        let logs = manager
-            .runtime_for(LOGS_PLUGIN_CODE)
-            .expect("runtime");
-        logs
-            .activate("PM-test-key")
-            .await
-            .expect("activate logs");
-        logs
-            .mark_plugin_ready("0.1.0")
-            .await
-            .expect("mark ready");
+        let logs = manager.runtime_for(LOGS_PLUGIN_CODE).expect("runtime");
+        logs.activate("PM-test-key").await.expect("activate logs");
+        logs.mark_plugin_ready("0.1.0").await.expect("mark ready");
         let updater = PomCoreUpdater::new(manager);
 
         updater.detect().await.expect("detect core update");
@@ -459,17 +449,9 @@ mod tests {
             )
             .await;
         let manager = PluginManager::test_manager(&["logs"], service.clone());
-        let logs = manager
-            .runtime_for(LOGS_PLUGIN_CODE)
-            .expect("runtime");
-        logs
-            .activate("PM-test-key")
-            .await
-            .expect("activate logs");
-        logs
-            .mark_plugin_ready("0.1.0")
-            .await
-            .expect("mark ready");
+        let logs = manager.runtime_for(LOGS_PLUGIN_CODE).expect("runtime");
+        logs.activate("PM-test-key").await.expect("activate logs");
+        logs.mark_plugin_ready("0.1.0").await.expect("mark ready");
         let updater = PomCoreUpdater::new(manager);
         updater.detect().await.expect("detect core update");
 

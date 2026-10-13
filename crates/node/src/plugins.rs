@@ -77,7 +77,9 @@ pub(crate) fn is_valid_plugin_code(code: &str) -> bool {
 /// Reads `lifecycle: "on_demand"` from an already validated and saved UI manifest.
 fn manifest_is_on_demand(raw: Option<&serde_json::Value>) -> bool {
     raw.and_then(|manifest| manifest.get("lifecycle"))
-        .and_then(|lifecycle| serde_json::from_value::<crate::plugin_ui::Lifecycle>(lifecycle.clone()).ok())
+        .and_then(|lifecycle| {
+            serde_json::from_value::<crate::plugin_ui::Lifecycle>(lifecycle.clone()).ok()
+        })
         .is_some_and(crate::plugin_ui::Lifecycle::is_on_demand)
 }
 
@@ -1301,8 +1303,7 @@ impl PluginRuntime {
             status.installation_error = Some(if path.is_file() {
                 "The local POM database is not available to start the plugin host.".into()
             } else {
-                "The installed plugin binary is missing. Reactivate it to download it again."
-                    .into()
+                "The installed plugin binary is missing. Reactivate it to download it again.".into()
             });
             return;
         }
@@ -2527,9 +2528,7 @@ impl PluginRuntime {
         }
         let requested_release_id = requested_release_id.trim();
         let Some(available) = status.available_update.as_ref() else {
-            return Err(update_unavailable(
-                "no update of this plugin is available",
-            ));
+            return Err(update_unavailable("no update of this plugin is available"));
         };
         if available.release_id != requested_release_id {
             return Err(update_unavailable(
@@ -3023,7 +3022,8 @@ impl PluginManager {
             fingerprint,
             database,
             restore_on_boot,
-            crate::plugin_github::GithubReleaseClient::new().with_license_fallback(&license_base_url()),
+            crate::plugin_github::GithubReleaseClient::new()
+                .with_license_fallback(&license_base_url()),
         )
     }
 
@@ -3417,13 +3417,19 @@ impl PluginManager {
         fallback: bool,
     ) -> Result<crate::plugin_github::GithubRepository, String> {
         let (os, arch) = (&self.fingerprint.platform, &self.fingerprint.arch);
-        match self.github_client.inspect_repository(repository_url, os, arch).await {
+        match self
+            .github_client
+            .inspect_repository(repository_url, os, arch)
+            .await
+        {
             Ok(repository) => Ok(repository),
             Err(github_error) if fallback => self
                 .github_client
                 .inspect_from_license_server(repository_url, os, arch, &github_error)
                 .await
-                .map_err(|license_error| format!("{github_error}; license server fallback: {license_error}")),
+                .map_err(|license_error| {
+                    format!("{github_error}; license server fallback: {license_error}")
+                }),
             Err(error) => Err(error),
         }
     }
@@ -5148,13 +5154,8 @@ mod tests {
 
     #[test]
     fn plugin_path_accepts_semver_build_metadata_in_release_id() {
-        let path = plugin_path(
-            "logs",
-            "ent-0.1.0+build.1-linux-x86_64",
-            "linux",
-            "x86_64",
-        )
-        .expect("a release_id with a build metadata '+' must be accepted");
+        let path = plugin_path("logs", "ent-0.1.0+build.1-linux-x86_64", "linux", "x86_64")
+            .expect("a release_id with a build metadata '+' must be accepted");
 
         assert!(path
             .to_string_lossy()
@@ -5252,11 +5253,8 @@ mod tests {
         service
             .grant("logs", response, b"plugin-binary".to_vec())
             .await;
-        let manager = PluginManager::test_manager_with_database(
-            &["logs"],
-            service.clone(),
-            database.clone(),
-        );
+        let manager =
+            PluginManager::test_manager_with_database(&["logs"], service.clone(), database.clone());
         let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-logs", "0.1.0").await;
         let schema = runtime
@@ -5307,10 +5305,7 @@ mod tests {
             features: [("unknown_toggle".into(), true)].into(),
             storage_directory: None,
         };
-        assert!(manager
-            .save_preferences("logs", invalid_key)
-            .await
-            .is_err());
+        assert!(manager.save_preferences("logs", invalid_key).await.is_err());
         let invalid_directory = enterprise_protocol::PluginPreferences {
             features: [("include_headers".into(), true)].into(),
             storage_directory: Some("relative/path".into()),
@@ -5346,11 +5341,8 @@ mod tests {
             .expect("license record");
         assert!(!persisted.contains(&storage.to_string_lossy().to_string()));
 
-        let restored =
-            PluginManager::test_manager_with_database(&["logs"], service, database);
-        let restored_runtime = restored
-            .runtime_for("logs")
-            .expect("restored runtime");
+        let restored = PluginManager::test_manager_with_database(&["logs"], service, database);
+        let restored_runtime = restored.runtime_for("logs").expect("restored runtime");
         restored_runtime.restore().await;
         assert_eq!(
             restored_runtime.preferences_for(&schema),
@@ -5607,7 +5599,11 @@ mod tests {
     async fn deactivate_clears_an_activation_the_server_does_not_know() {
         let service = Arc::new(MockLicenseService::new());
         service
-            .grant("logs", activation("logs", "ent-1"), b"plugin-binary".to_vec())
+            .grant(
+                "logs",
+                activation("logs", "ent-1"),
+                b"plugin-binary".to_vec(),
+            )
             .await;
         let manager = PluginManager::test_manager(&["logs"], service.clone());
         let logs = manager.runtime_for("logs").expect("runtime");
@@ -5659,10 +5655,7 @@ mod tests {
         assert!(manager.status("logs").await.expect("status").active);
         assert!(manager.status("sample").await.expect("status").active);
 
-        manager
-            .deactivate("logs")
-            .await
-            .expect("deactivate logs");
+        manager.deactivate("logs").await.expect("deactivate logs");
 
         assert!(!manager.status("logs").await.expect("status").active);
         assert!(
@@ -5695,7 +5688,8 @@ mod tests {
     async fn production_manager_restores_any_persisted_plugin_code() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database = Arc::new(
-            crate::db::PomDb::open(directory.path().join("pom.db")).expect("open the test database"),
+            crate::db::PomDb::open(directory.path().join("pom.db"))
+                .expect("open the test database"),
         );
         database
             .save_local_setting("plugin_license:future.plugin-v2", &serde_json::json!({}))
@@ -5821,9 +5815,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_license_keeps_the_plugin_inactive_and_returns_a_stable_error() {
         let service = Arc::new(MockLicenseService::new());
-        service
-            .deny("logs", LicenseErrorCode::InvalidKey)
-            .await;
+        service.deny("logs", LicenseErrorCode::InvalidKey).await;
         let manager = PluginManager::test_manager(&["logs"], service);
 
         let error = manager
@@ -5927,7 +5919,10 @@ mod tests {
 
         let status = runtime.status().await;
         assert_eq!(status.state, LicenseState::Degraded);
-        assert!(status.active, "a transient failure does not deactivate the plugin");
+        assert!(
+            status.active,
+            "a transient failure does not deactivate the plugin"
+        );
     }
 
     #[tokio::test]
@@ -6284,8 +6279,9 @@ mod tests {
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
         std::env::remove_var("POM_FAKE_HOST_READY_ERROR");
 
-        let database =
-            Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("open the POM database"));
+        let database = Arc::new(
+            crate::db::PomDb::open(data_dir.join("pom.db")).expect("open the POM database"),
+        );
         let service = Arc::new(MockLicenseService::single(
             "logs",
             activation("logs", "ent-1"),
@@ -6326,7 +6322,10 @@ mod tests {
         std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
         std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
-        std::env::set_var("POM_FAKE_HOST_READY_ERROR", "plugin refused the configuration");
+        std::env::set_var(
+            "POM_FAKE_HOST_READY_ERROR",
+            "plugin refused the configuration",
+        );
 
         let database = Arc::new(
             crate::db::PomDb::open(directory.path().join("pom.db")).expect("open the POM database"),
@@ -6348,11 +6347,7 @@ mod tests {
             LicenseErrorCode::ServerError,
             "an installation failure must come back as an error: {error}"
         );
-        assert_eq!(
-            status.state,
-            LicenseState::Active,
-            "license stays valid"
-        );
+        assert_eq!(status.state, LicenseState::Active, "license stays valid");
         assert!(
             !status.active,
             "a refused handshake does not leave the plugin ready"
@@ -6421,8 +6416,7 @@ mod tests {
             "logs",
             activation("logs", "ent-1"),
         ));
-        let manager =
-            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        let manager = PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
         let context = |key: &str| {
             serde_json::json!({
                 "gateway": {
@@ -6493,7 +6487,10 @@ mod tests {
         let body = crate::gateway::testkit::body_of(response).await;
         assert_eq!(body["uri"], "/hello?x=1");
         assert_eq!(body["token"], token.as_str());
-        assert_eq!(body["cookie"], false, "the POM session does not reach the plugin");
+        assert_eq!(
+            body["cookie"], false,
+            "the POM session does not reach the plugin"
+        );
 
         let root = app
             .clone()
@@ -6532,7 +6529,9 @@ mod tests {
             if let Some(origin) = origin {
                 builder = builder.header("origin", origin);
             }
-            builder.body(axum::body::Body::from(body.to_owned())).unwrap()
+            builder
+                .body(axum::body::Body::from(body.to_owned()))
+                .unwrap()
         };
         let reply = app
             .clone()
@@ -6549,10 +6548,30 @@ mod tests {
         assert_eq!(reply["params"]["person"], "Ana");
         assert!(reply["profile"].is_string());
         for (uri, body, origin, status) in [
-            ("/api/ui/plugins/logs/rpc/insights", "{}", Some("http://evil.example"), axum::http::StatusCode::FORBIDDEN),
-            ("/api/ui/plugins/logs/rpc/Bad.Op", "{}", None, axum::http::StatusCode::BAD_REQUEST),
-            ("/api/ui/plugins/logs/rpc/insights", "not json", None, axum::http::StatusCode::BAD_REQUEST),
-            ("/api/ui/plugins/nope/rpc/insights", "{}", None, axum::http::StatusCode::BAD_GATEWAY),
+            (
+                "/api/ui/plugins/logs/rpc/insights",
+                "{}",
+                Some("http://evil.example"),
+                axum::http::StatusCode::FORBIDDEN,
+            ),
+            (
+                "/api/ui/plugins/logs/rpc/Bad.Op",
+                "{}",
+                None,
+                axum::http::StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/ui/plugins/logs/rpc/insights",
+                "not json",
+                None,
+                axum::http::StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/ui/plugins/nope/rpc/insights",
+                "{}",
+                None,
+                axum::http::StatusCode::BAD_GATEWAY,
+            ),
         ] {
             let response = app.clone().oneshot(rpc(uri, body, origin)).await.unwrap();
             assert_eq!(response.status(), status, "{uri} {body}");
@@ -6623,8 +6642,7 @@ mod tests {
         // `from_codes`): here the state is built by hand just below, and a
         // concurrent restore would overwrite it from the database at an instant
         // outside the test's control.
-        let manager =
-            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        let manager = PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
         let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         {
@@ -6724,8 +6742,7 @@ mod tests {
             "logs",
             activation("logs", "ent-1"),
         ));
-        let manager =
-            PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
+        let manager = PluginManager::test_manager_with_database(&["logs"], service.clone(), db);
         let runtime = manager.runtime_for("logs").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         {
@@ -6750,12 +6767,18 @@ mod tests {
         // Boot and heartbeat do not start an on-demand process.
         let persisted = runtime.persisted_state().await.expect("persisted");
         runtime.ensure_host_running(&persisted).await;
-        assert!(runtime.host.lock().await.is_none(), "boot does not start the process");
+        assert!(
+            runtime.host.lock().await.is_none(),
+            "boot does not start the process"
+        );
         runtime
             .heartbeat("nonce-on-demand")
             .await
             .expect("heartbeat de sucesso");
-        assert!(runtime.host.lock().await.is_none(), "heartbeat does not start the process");
+        assert!(
+            runtime.host.lock().await.is_none(),
+            "heartbeat does not start the process"
+        );
 
         let status = runtime.status().await;
         assert!(status.active, "active: {status:?}");
@@ -6764,11 +6787,20 @@ mod tests {
         // The menu keeps listing the plugin, through the saved manifest.
         assert!(runtime.ui_manifest().await.is_some());
 
-        runtime.open_on_demand().await.expect("opening starts the process");
+        runtime
+            .open_on_demand()
+            .await
+            .expect("opening starts the process");
         assert!(runtime.status().await.running);
-        runtime.close_on_demand().await.expect("fechar encerra o processo");
+        runtime
+            .close_on_demand()
+            .await
+            .expect("fechar encerra o processo");
         let status = runtime.status().await;
-        assert!(!status.running && status.active, "closing does not remove the license or the installation");
+        assert!(
+            !status.running && status.active,
+            "closing does not remove the license or the installation"
+        );
     }
 
     #[test]

@@ -37,7 +37,11 @@ pub(crate) struct PrefixDecision {
 /// conversation was edited, switched template, changed the tool list), when no
 /// token would be left to decode, and when the session has no prompt in the KV.
 /// Refusing costs the reuse of that turn and never the request.
-pub(crate) fn plan_prefix_reuse(retained: &[i32], n_past: u32, new_items: &[i32]) -> PrefixDecision {
+pub(crate) fn plan_prefix_reuse(
+    retained: &[i32],
+    n_past: u32,
+    new_items: &[i32],
+) -> PrefixDecision {
     let common = retained
         .iter()
         .zip(new_items)
@@ -358,7 +362,10 @@ mod prefix_rule_tests {
     #[test]
     fn a_partially_ingested_prompt_is_not_offered_as_a_prefix() {
         let d = plan_prefix_reuse(&[10, 11, 12, 13], 2, &[10, 11, 12, 13, 20]);
-        assert!(!d.reused, "the retained has 4 tokens but only 2 are in the KV");
+        assert!(
+            !d.reused,
+            "the retained has 4 tokens but only 2 are in the KV"
+        );
     }
 
     #[test]
@@ -376,14 +383,8 @@ mod prefix_rule_tests {
         let prompts: Vec<u32> = (0..max_sessions).collect();
         let generations: Vec<u32> = prompts.iter().map(|s| s + max_sessions).collect();
         for g in &generations {
-            assert!(
-                !prompts.contains(g),
-                "sequence {g} serving both roles"
-            );
-            assert!(
-                *g < budget,
-                "sequence {g} outside the context budget"
-            );
+            assert!(!prompts.contains(g), "sequence {g} serving both roles");
+            assert!(*g < budget, "sequence {g} outside the context budget");
         }
     }
 }
@@ -818,7 +819,10 @@ mod slot_name_tests {
             "a b",
             "sÿm",
         ] {
-            assert!(sanitize_slot_name(bad).is_err(), "expected to refuse {bad:?}");
+            assert!(
+                sanitize_slot_name(bad).is_err(),
+                "expected to refuse {bad:?}"
+            );
         }
     }
 }

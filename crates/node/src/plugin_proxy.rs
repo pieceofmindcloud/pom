@@ -227,10 +227,7 @@ pub(crate) async fn forward(upstream: &Upstream, prefix: &str, request: Request)
         Ok(reply) => reply,
         Err(error) => {
             tracing::warn!(%error, "plugin server did not answer the proxy");
-            return refusal(
-                StatusCode::BAD_GATEWAY,
-                "the plugin server did not answer",
-            );
+            return refusal(StatusCode::BAD_GATEWAY, "the plugin server did not answer");
         }
     };
     let mut response = Response::builder().status(reply.status());
@@ -271,12 +268,7 @@ async fn forward_upgrade(
 
     let mut stream = match tokio::net::TcpStream::connect(&host).await {
         Ok(stream) => stream,
-        Err(_) => {
-            return refusal(
-                StatusCode::BAD_GATEWAY,
-                "the plugin server did not answer",
-            )
-        }
+        Err(_) => return refusal(StatusCode::BAD_GATEWAY, "the plugin server did not answer"),
     };
     if stream.write_all(head.as_bytes()).await.is_err() {
         return refusal(
@@ -391,10 +383,7 @@ pub(crate) async fn plugin_proxy(
         );
     }
     if !same_origin(request.headers()) {
-        return refusal(
-            StatusCode::FORBIDDEN,
-            "origin refused by the plugin proxy",
-        );
+        return refusal(StatusCode::FORBIDDEN, "origin refused by the plugin proxy");
     }
     let Some(reply) = state
         .plugins

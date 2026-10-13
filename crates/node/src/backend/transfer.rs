@@ -432,8 +432,8 @@ pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
     }
 
     let mut head = [0u8; 4];
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("could not open {}: {e}", path.display()))?;
     file.read_exact(&mut head)
         .map_err(|_| format!("{} is too short to be a GGUF", path.display()))?;
     if &head != GGUF_MAGIC {
@@ -832,9 +832,11 @@ async fn download(
     }
 
     use futures::StreamExt;
-    let reader =
-        tokio_util::io::ReaderStream::with_capacity(tokio::io::AsyncReadExt::take(file, remaining), CHUNK)
-            .boxed();
+    let reader = tokio_util::io::ReaderStream::with_capacity(
+        tokio::io::AsyncReadExt::take(file, remaining),
+        CHUNK,
+    )
+    .boxed();
     let body = match q.job.clone() {
         Some(job_id) => {
             Body::from_stream(served_stream(state.clone(), job_id, reader, start, total))
@@ -2125,10 +2127,7 @@ async fn spawn_download(
                     let p = crate::pom::merge_manifest(&state.shard_dir().await, &m)
                         .map(|(path, _)| path)
                         .map_err(|e| {
-                            format!(
-                                "could not merge the manifest of {}: {e:#}",
-                                m.model.label
-                            )
+                            format!("could not merge the manifest of {}: {e:#}", m.model.label)
                         })?;
                     p
                 }
@@ -2263,9 +2262,16 @@ async fn fetch_pom(
         Ok(resp) => resp,
         Err(error) if error.is_connect() => {
             let query = [("sha", sha256.to_string())];
-            tunnel_get(state, peer_id, "/api/transfer/pom", &query, None, MANIFEST_TIMEOUT)
-                .await
-                .ok()?
+            tunnel_get(
+                state,
+                peer_id,
+                "/api/transfer/pom",
+                &query,
+                None,
+                MANIFEST_TIMEOUT,
+            )
+            .await
+            .ok()?
         }
         Err(_) => return None,
     };
@@ -2363,7 +2369,10 @@ async fn download_over_tunnel(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    info!("{}: no direct address, bringing it through the libp2p tunnel", part.display());
+    info!(
+        "{}: no direct address, bringing it through the libp2p tunnel",
+        part.display()
+    );
 
     let mut done = already;
     let started = Instant::now();
@@ -2411,7 +2420,12 @@ async fn download_over_tunnel(
             last_report = Instant::now();
             state
                 .transfers
-                .progress(job_id, done, done.saturating_sub(already), started.elapsed())
+                .progress(
+                    job_id,
+                    done,
+                    done.saturating_sub(already),
+                    started.elapsed(),
+                )
                 .await;
         }
     }
@@ -2567,7 +2581,11 @@ async fn run_download(
             // Along with the status goes the phrase from the other side: see the twin note in
             // `fetch_manifest`.
             let status = resp.status();
-            let body = direct.expect("checked above").text().await.unwrap_or_default();
+            let body = direct
+                .expect("checked above")
+                .text()
+                .await
+                .unwrap_or_default();
             let body = body.trim();
             return Err(if body.is_empty() {
                 format!("peer answered {status}")
@@ -2595,8 +2613,17 @@ async fn run_download(
             state, job_id, peer_id, locator, part, &mut file, already, total,
         )
         .await?;
-        return finish_download(state, job_id, part, dest, file, done, expected_md5, expected_sha256)
-            .await;
+        return finish_download(
+            state,
+            job_id,
+            part,
+            dest,
+            file,
+            done,
+            expected_md5,
+            expected_sha256,
+        )
+        .await;
     };
     let mut stream = resp.bytes_stream();
 
@@ -2625,7 +2652,17 @@ async fn run_download(
                 .await;
         }
     }
-    finish_download(state, job_id, part, dest, file, done, expected_md5, expected_sha256).await
+    finish_download(
+        state,
+        job_id,
+        part,
+        dest,
+        file,
+        done,
+        expected_md5,
+        expected_sha256,
+    )
+    .await
 }
 
 /// Closes a download whichever way the bytes came: flush, verify, rename.
@@ -2906,7 +2943,10 @@ mod tests {
         let job = jobs.get("job-1").unwrap();
         assert_eq!(job.state, TRANSFER_CANCELLED, "someone's decision won");
         assert!(job.detail.contains("atena"), "detail: {}", job.detail);
-        assert_eq!(job.finished_at, when, "and the time is that of the cancellation");
+        assert_eq!(
+            job.finished_at, when,
+            "and the time is that of the cancellation"
+        );
     }
 
     /// Cancelling is idempotent and does not depend on the job existing: the notice from the other
@@ -3386,7 +3426,10 @@ mod offer_latency_tests {
         // And the work really exists: the job is in the list, with the other side
         // already being queried in the background.
         let jobs = state.transfers.jobs.read().await;
-        assert!(jobs.contains_key(&job_id), "the job must show up on the screen");
+        assert!(
+            jobs.contains_key(&job_id),
+            "the job must show up on the screen"
+        );
         drop(jobs);
         for _ in 0..50 {
             if slow_hits.load(Ordering::SeqCst) > 0 {
@@ -3771,7 +3814,10 @@ mod pom_travels_tests {
             "the slice presents itself by the model and the layers: {}",
             cat.models[0].name
         );
-        assert!(cat.models[0].is_shard(), "and as a slice, not a whole model");
+        assert!(
+            cat.models[0].is_shard(),
+            "and as a slice, not a whole model"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -3948,7 +3994,10 @@ mod verdict_tests {
     }
 
     /// A node with a part on disk, serving the transfer router.
-    async fn node_with_part(node_id: &str, root: &Path) -> (GatewayState, u16, PomManifest, String) {
+    async fn node_with_part(
+        node_id: &str,
+        root: &Path,
+    ) -> (GatewayState, u16, PomManifest, String) {
         let folder = pom::scratch_dir(root);
         std::fs::create_dir_all(&folder).unwrap();
 

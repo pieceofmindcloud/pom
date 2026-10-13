@@ -333,11 +333,12 @@ where
         Err(error) => return refusal(&envelope.id, 400, error.to_string()),
     };
     let status = response.status().as_u16();
-    let bytes =
-        match axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES).await {
-            Ok(bytes) => bytes,
-            Err(error) => return refusal(&envelope.id, 500, format!("unreadable response: {error}")),
-        };
+    let bytes = match axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => return refusal(&envelope.id, 500, format!("unreadable response: {error}")),
+    };
     match encode_envelope(status, &envelope.id, &bytes) {
         Ok(frame) => frame,
         Err(error) => refusal(&envelope.id, 500, error.to_string()),
@@ -508,7 +509,9 @@ async fn channel_for(
         }
     }
     if quarantined(&key) {
-        return Err(anyhow!("channel with {node_id} quarantined after a failure"));
+        return Err(anyhow!(
+            "channel with {node_id} quarantined after a failure"
+        ));
     }
 
     // The guard is per edge. Two traversals of the same edge share the
@@ -526,7 +529,9 @@ async fn channel_for(
     }
 
     if quarantined(&key) {
-        return Err(anyhow!("channel with {node_id} quarantined after a failure"));
+        return Err(anyhow!(
+            "channel with {node_id} quarantined after a failure"
+        ));
     }
 
     match open(clients, node_id, base_url, session_id).await {

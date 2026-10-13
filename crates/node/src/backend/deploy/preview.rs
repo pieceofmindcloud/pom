@@ -72,10 +72,18 @@ pub(super) async fn plan_endpoint(
     }
     if p.blocked.is_none() {
         if let Some(service) = req.params.inference_service.as_deref() {
-            let targets: Vec<String> = p.steps.iter().map(|step| step.target_node_id.clone()).collect();
-            p.blocked =
-                crate::plugin_engine::deploy_block(&state, service, req.kind == DeployKind::Whole, &targets)
-                    .await;
+            let targets: Vec<String> = p
+                .steps
+                .iter()
+                .map(|step| step.target_node_id.clone())
+                .collect();
+            p.blocked = crate::plugin_engine::deploy_block(
+                &state,
+                service,
+                req.kind == DeployKind::Whole,
+                &targets,
+            )
+            .await;
         }
     }
     // A plan already refused gains nothing from knowing whether it would fit

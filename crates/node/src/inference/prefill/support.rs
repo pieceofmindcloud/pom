@@ -131,9 +131,7 @@ pub fn failure_cause(error: &anyhow::Error) -> String {
     let parts: Vec<String> = error
         .chain()
         .map(|cause| cause.to_string())
-        .filter(|text| {
-            text != PARTIAL_TRACE_TEXT && !text.starts_with(RESUMABLE_TEXT_PREFIX)
-        })
+        .filter(|text| text != PARTIAL_TRACE_TEXT && !text.starts_with(RESUMABLE_TEXT_PREFIX))
         .collect();
     if parts.is_empty() {
         error.to_string()

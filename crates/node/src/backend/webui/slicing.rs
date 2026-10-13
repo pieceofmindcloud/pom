@@ -1001,9 +1001,7 @@ pub(crate) async fn materialize_slice_ranges(
         Ok(hash) => hash,
         Err(error) => {
             set_job(&job_id, "failed", "error", &format!("{error:#}")).await;
-            return Err(format!(
-                "could not identify the whole model: {error:#}"
-            ));
+            return Err(format!("could not identify the whole model: {error:#}"));
         }
     };
     let ranges = req
@@ -1029,9 +1027,7 @@ pub(crate) async fn materialize_slice_ranges(
         Ok(manifest) => manifest,
         Err(error) => {
             set_job(&job_id, "failed", "error", &format!("{error:#}")).await;
-            return Err(format!(
-                "could not slice the whole model: {error:#}"
-            ));
+            return Err(format!("could not slice the whole model: {error:#}"));
         }
     };
     let directory = crate::pom::dir_for(&shard_dir, &manifest);
@@ -1046,19 +1042,14 @@ pub(crate) async fn materialize_slice_ranges(
                     path: path.to_string_lossy().into_owned(),
                     sha256: part.sha256.clone(),
                 })
-                .map_err(|error| {
-                    format!("could not locate the materialized slice: {error}")
-                })
+                .map_err(|error| format!("could not locate the materialized slice: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     set_job(
         &job_id,
         "done",
         "pronto",
-        &format!(
-            "{} slice(s) materialized for the deployment",
-            slices.len()
-        ),
+        &format!("{} slice(s) materialized for the deployment", slices.len()),
     )
     .await;
     Ok(SliceRangesResponse { slices })

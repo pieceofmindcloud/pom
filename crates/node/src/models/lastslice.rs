@@ -118,9 +118,8 @@ fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
         #[cfg(windows)]
         {
             let _ = std::fs::remove_file(p);
-            std::fs::rename(&tmp, p).with_context(|| {
-                format!("could not replace {} after {error}", p.display())
-            })?;
+            std::fs::rename(&tmp, p)
+                .with_context(|| format!("could not replace {} after {error}", p.display()))?;
         }
         #[cfg(not(windows))]
         {
@@ -158,12 +157,8 @@ pub fn force_disable() -> Result<()> {
 
 fn force_disable_at(p: &Path) -> Result<()> {
     let _ = std::fs::remove_file(p);
-    std::fs::write(disable_path(p), "manual\n").with_context(|| {
-        format!(
-            "could not create the lock {}",
-            disable_path(p).display()
-        )
-    })
+    std::fs::write(disable_path(p), "manual\n")
+        .with_context(|| format!("could not create the lock {}", disable_path(p).display()))
 }
 
 pub fn auto_resume_disabled() -> bool {
@@ -358,12 +353,11 @@ mod tests {
             }
             LastSlice::Serving(_) => panic!("a slice that never loaded cannot be resumed"),
             LastSlice::Idle(_) => panic!("a pending slice cannot be idle"),
-            LastSlice::Nothing => panic!("the reason of the failure was lost: the operator is left not knowing"),
+            LastSlice::Nothing => {
+                panic!("the reason of the failure was lost: the operator is left not knowing")
+            }
         }
-        assert!(
-            f.exists(),
-            "the journal must survive the next startup"
-        );
+        assert!(f.exists(), "the journal must survive the next startup");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -427,10 +421,7 @@ mod tests {
         assert!(
             matches!(inspect_at(&f), LastSlice::Pending { attempts, .. } if attempts == MAX_AUTOMATIC_ATTEMPTS)
         );
-        assert!(
-            f.exists(),
-            "the block must survive the next startup"
-        );
+        assert!(f.exists(), "the block must survive the next startup");
 
         clear_at(&f);
         assert!(matches!(inspect_at(&f), LastSlice::Nothing));

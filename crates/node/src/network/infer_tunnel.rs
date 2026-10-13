@@ -876,7 +876,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(decoded.target, TunnelTarget::Gateway);
-        assert_eq!(decoded.headers, vec![("range".to_string(), "bytes=0-99".to_string())]);
+        assert_eq!(
+            decoded.headers,
+            vec![("range".to_string(), "bytes=0-99".to_string())]
+        );
         assert_eq!(decoded.body, body);
     }
 

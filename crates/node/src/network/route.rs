@@ -666,7 +666,10 @@ mod tests {
             },
             m("b:1", 50.0),
         ];
-        assert_eq!(choose_route(&measurements, Some("a:1")).unwrap().addr, "b:1");
+        assert_eq!(
+            choose_route(&measurements, Some("a:1")).unwrap().addr,
+            "b:1"
+        );
     }
 
     #[test]
@@ -847,17 +850,11 @@ mod tests {
         ];
         assert_eq!(table.usable("n1", &candidates), candidates);
         table.mark_failure("n1", &candidates[0]);
-        assert_eq!(
-            table.usable("n1", &candidates),
-            vec![candidates[1].clone()]
-        );
+        assert_eq!(table.usable("n1", &candidates), vec![candidates[1].clone()]);
         table.mark_failure("n1", &candidates[1]);
         assert!(table.usable("n1", &candidates).is_empty());
         table.mark_success("n1", &candidates[0]);
-        assert_eq!(
-            table.usable("n1", &candidates),
-            vec![candidates[0].clone()]
-        );
+        assert_eq!(table.usable("n1", &candidates), vec![candidates[0].clone()]);
     }
 
     #[tokio::test]
@@ -918,7 +915,10 @@ mod tests {
     async fn a_freshly_measured_peer_is_not_measured_again() {
         let alive = tests_support::health_server(0).await;
         let table = RouteTable::new();
-        assert!(table.needs_measuring("n1"), "never measured needs measuring");
+        assert!(
+            table.needs_measuring("n1"),
+            "never measured needs measuring"
+        );
         table
             .measure_peer(
                 &crate::peer_client::PeerClients::new(Duration::from_secs(10)),

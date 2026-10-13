@@ -597,8 +597,8 @@ impl InferState {
         }
         let raw = std::fs::read(slot_json_path(dir, name))
             .with_context(|| format!("read the sidecar of {name}"))?;
-        let sidecar: SlotSidecar =
-            serde_json::from_slice(&raw).with_context(|| format!("sidecar of {name} unreadable"))?;
+        let sidecar: SlotSidecar = serde_json::from_slice(&raw)
+            .with_context(|| format!("sidecar of {name} unreadable"))?;
         self.check_slot_compatible(&sidecar)?;
 
         let seq = self.alloc_seq().ok_or_else(|| {
@@ -733,9 +733,9 @@ impl InferState {
             })?;
             self.sessions.insert(sid.to_string(), Session::new(seq));
         }
-        self.sessions.get_mut(sid).ok_or_else(|| {
-            anyhow::anyhow!("unknown session '{}' — send reset=true first", sid)
-        })
+        self.sessions
+            .get_mut(sid)
+            .ok_or_else(|| anyhow::anyhow!("unknown session '{}' — send reset=true first", sid))
     }
 
     /// Ends the session for good: both sequences are erased and the slot returns
@@ -836,9 +836,8 @@ pub async fn run(
     // see the doc of `EngineConfig::rs_seq_window`.
     let moe_plan = if inference_path.is_moe() {
         Some(
-            crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path).map_err(
-                |error| anyhow::anyhow!("MoE ownership planning failed: {error}"),
-            )?,
+            crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path)
+                .map_err(|error| anyhow::anyhow!("MoE ownership planning failed: {error}"))?,
         )
     } else {
         None

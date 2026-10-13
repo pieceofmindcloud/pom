@@ -451,7 +451,12 @@ impl ClusterLogs {
         if self.plugins.set(plugins.clone()).is_err() {
             return;
         }
-        let Some(mut queue) = self.plugin_queue.lock().ok().and_then(|mut slot| slot.take()) else {
+        let Some(mut queue) = self
+            .plugin_queue
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+        else {
             return;
         };
         let service = self.clone();
@@ -605,7 +610,6 @@ impl ClusterLogs {
                 service.capture.set_deploy_id(deploy_id);
             }
         });
-
     }
 
     pub fn try_send_dropped(&self, count: u64) {
@@ -643,7 +647,6 @@ impl ClusterLogs {
     pub fn subscribe(&self) -> broadcast::Receiver<StoredLogEntry> {
         self.live.subscribe()
     }
-
 }
 
 async fn flush_local(
@@ -854,7 +857,12 @@ mod tests {
             entries: vec![entry("segundo")],
             dropped: 0,
         }));
-        let mut queue = service.plugin_queue.lock().unwrap().take().expect("plugin queue");
+        let mut queue = service
+            .plugin_queue
+            .lock()
+            .unwrap()
+            .take()
+            .expect("plugin queue");
         assert_eq!(queue.recv().await.unwrap().entries[0].message, "first");
         assert_eq!(queue.recv().await.unwrap().entries[0].message, "segundo");
     }
@@ -921,7 +929,10 @@ mod tests {
         let mut pending = vec![entry("replicar")];
         flush_local(&logs, &network, &mut pending, &outbound).await;
 
-        let message = received.recv().await.expect("batch for the secondary admin");
+        let message = received
+            .recv()
+            .await
+            .expect("batch for the secondary admin");
         assert_eq!(message.request.entries[0].message, "replicar");
         assert_eq!(message.request.source_node_id, "worker");
     }

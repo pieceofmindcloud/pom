@@ -522,7 +522,11 @@ async fn plugin_lifecycle(
     open: bool,
 ) -> Response {
     if !crate::plugin_proxy::same_origin(headers) {
-        return (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "cross-origin plugin call" }))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({ "error": "cross-origin plugin call" })),
+        )
+            .into_response();
     }
     let status = state.plugins.status(code).await;
     if !status.as_ref().is_some_and(|status| status.on_demand) {
@@ -573,13 +577,25 @@ pub(crate) async fn plugin_rpc(
     body: axum::body::Bytes,
 ) -> Response {
     if !crate::plugin_proxy::same_origin(&headers) {
-        return (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "cross-origin plugin call" }))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({ "error": "cross-origin plugin call" })),
+        )
+            .into_response();
     }
     if !valid_rpc_op(&op) {
-        return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "invalid operation" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "invalid operation" })),
+        )
+            .into_response();
     }
     if body.len() > MAX_RPC_BODY {
-        return (StatusCode::PAYLOAD_TOO_LARGE, axum::Json(json!({ "error": "body too large" }))).into_response();
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(json!({ "error": "body too large" })),
+        )
+            .into_response();
     }
     let params: Value = if body.is_empty() {
         Value::Null
@@ -587,7 +603,11 @@ pub(crate) async fn plugin_rpc(
         match serde_json::from_slice(&body) {
             Ok(value) => value,
             Err(_) => {
-                return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "body is not JSON" }))).into_response()
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(json!({ "error": "body is not JSON" })),
+                )
+                    .into_response()
             }
         }
     };

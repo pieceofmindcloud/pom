@@ -67,7 +67,10 @@ impl fmt::Display for HfError {
             Self::HfFileNotFound => write!(f, "Hugging Face file not found"),
             Self::HfAccessDenied => write!(f, "access to the Hugging Face repository denied"),
             Self::HfRateLimited => {
-                write!(f, "Hugging Face refused the request because of a usage limit")
+                write!(
+                    f,
+                    "Hugging Face refused the request because of a usage limit"
+                )
             }
             Self::HfDownloadFailed { message } => write!(
                 f,
@@ -387,7 +390,10 @@ pub fn validate_repo_id(value: &str) -> Result<String, HfError> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     }) {
-        return Err(invalid("repo_id", "contains a character that is not allowed"));
+        return Err(invalid(
+            "repo_id",
+            "contains a character that is not allowed",
+        ));
     }
     Ok(value.to_string())
 }

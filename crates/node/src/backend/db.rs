@@ -192,7 +192,8 @@ impl PomDb {
         action: impl FnOnce(&Connection) -> Result<T>,
     ) -> Result<T> {
         let connection = self.lock_connection()?;
-        action(&connection).with_context(|| format!("database operation not completed: {operation}"))
+        action(&connection)
+            .with_context(|| format!("database operation not completed: {operation}"))
     }
 
     pub(crate) fn with_write<T>(
@@ -618,8 +619,14 @@ impl PomDb {
     /// Insert or replace one link (one model, one kind).
     pub fn save_model_sidecar_link(&self, link: &crate::catalog::SidecarLink) -> Result<()> {
         link.validate().map_err(anyhow::Error::msg)?;
-        let kind = serde_json::to_value(link.kind)?.as_str().unwrap_or_default().to_string();
-        let mode = serde_json::to_value(link.mode)?.as_str().unwrap_or_default().to_string();
+        let kind = serde_json::to_value(link.kind)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let mode = serde_json::to_value(link.mode)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         self.with_write("save vision or MTP link", |connection| {
             connection.execute(
                 "INSERT INTO model_sidecar_links
@@ -873,7 +880,10 @@ impl PomDb {
             let words: Vec<String> = search
                 .split_whitespace()
                 .map(|word| {
-                    let escaped = word.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+                    let escaped = word
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_");
                     format!("%{escaped}%")
                 })
                 .collect();
@@ -1555,7 +1565,8 @@ fn optional_json_string(value: Option<&JsonValue>) -> Result<Option<String>> {
 fn parse_optional_json(value: Option<String>, field: &str) -> Result<Option<JsonValue>> {
     value
         .map(|value| {
-            serde_json::from_str(&value).with_context(|| format!("parse {field} of the conversation"))
+            serde_json::from_str(&value)
+                .with_context(|| format!("parse {field} of the conversation"))
         })
         .transpose()
 }
@@ -1854,8 +1865,12 @@ fn restrict_permissions(path: &Path) -> Result<()> {
             .with_context(|| format!("read the permissions of the database {}", path.display()))?
             .permissions();
         permissions.set_mode(0o600);
-        std::fs::set_permissions(path, permissions)
-            .with_context(|| format!("restrict the permissions of the database {}", path.display()))?;
+        std::fs::set_permissions(path, permissions).with_context(|| {
+            format!(
+                "restrict the permissions of the database {}",
+                path.display()
+            )
+        })?;
     }
     Ok(())
 }

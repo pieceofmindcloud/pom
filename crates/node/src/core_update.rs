@@ -54,8 +54,8 @@ pub(crate) fn validate_manifest(
     if manifest.release_id.trim().is_empty() || manifest.signature.trim().is_empty() {
         return Err("pom_core manifest without release_id or signature".into());
     }
-    let current = Version::parse(current_version)
-        .map_err(|_| "invalid running pom version".to_string())?;
+    let current =
+        Version::parse(current_version).map_err(|_| "invalid running pom version".to_string())?;
     Version::parse(&manifest.version).map_err(|_| "invalid pom_core version".to_string())?;
     let minimum = Version::parse(&manifest.min_host_version)
         .map_err(|_| "invalid pom_core min_host_version".to_string())?;

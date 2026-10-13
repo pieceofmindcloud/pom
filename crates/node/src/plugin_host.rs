@@ -227,7 +227,9 @@ impl PluginHost {
             .spawn()
             .with_context(|| format!("start pom-plugin-host in {}", host.display()))?;
         #[cfg(windows)]
-        let tree = child.raw_handle().and_then(crate::process_tree::ProcessTree::adopt);
+        let tree = child
+            .raw_handle()
+            .and_then(crate::process_tree::ProcessTree::adopt);
         if let Some(stderr) = child.stderr.take() {
             let code = plugin_code.to_owned();
             tokio::spawn(async move {
@@ -396,10 +398,7 @@ fn host_executable() -> Result<PathBuf> {
     if sibling.is_file() {
         return Ok(sibling);
     }
-    anyhow::bail!(
-        "pom-plugin-host not found next to {}",
-        current.display()
-    )
+    anyhow::bail!("pom-plugin-host not found next to {}", current.display())
 }
 
 #[cfg(test)]

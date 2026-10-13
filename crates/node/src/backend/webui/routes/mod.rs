@@ -656,12 +656,12 @@ mod policy_tests {
             let scope = route_scope(&Method::POST, path);
             assert_eq!(scope, RouteScope::InferNodeAdmin, "rota={path}");
             assert!(profile_can_access(crate::profile::NodeProfile::Node, scope));
-            assert!(profile_can_access(crate::profile::NodeProfile::Infer, scope));
+            assert!(profile_can_access(
+                crate::profile::NodeProfile::Infer,
+                scope
+            ));
         }
-        for path in [
-            "/api/ui/pom-update/check",
-            "/api/ui/pom-update/apply",
-        ] {
+        for path in ["/api/ui/pom-update/check", "/api/ui/pom-update/apply"] {
             assert_eq!(
                 route_scope(&Method::POST, path),
                 RouteScope::AdminOnly,
@@ -734,10 +734,19 @@ mod policy_tests {
         );
         // Deploying is the one admin scope a secondary admin shares; what
         // governs the network stays with the principal.
-        for path in ["/api/ui/deploy", "/api/ui/undeploy", "/api/ui/apply", "/api/ui/unload"] {
+        for path in [
+            "/api/ui/deploy",
+            "/api/ui/undeploy",
+            "/api/ui/apply",
+            "/api/ui/unload",
+        ] {
             assert_eq!(scope_of(path), RouteScope::DeployAdmin, "{path}");
         }
-        for path in ["/api/ui/network/admissions", "/admin/authority/resign", "/api/ui/release"] {
+        for path in [
+            "/api/ui/network/admissions",
+            "/admin/authority/resign",
+            "/api/ui/release",
+        ] {
             assert_eq!(scope_of(path), RouteScope::AdminOnly, "{path}");
         }
         assert!(profile_can_access(

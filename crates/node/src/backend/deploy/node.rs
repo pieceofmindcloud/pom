@@ -87,8 +87,7 @@ pub struct RemoveNodeRequest {
     pub deploy_id: String,
 }
 
-const ADD_NODE_ADMIN_ONLY: &str =
-    "only the administrator can add a machine to the deployment";
+const ADD_NODE_ADMIN_ONLY: &str = "only the administrator can add a machine to the deployment";
 const UNDEPLOY_ADMIN_ONLY: &str = "only the administrator can undeploy the deployment";
 
 pub(super) fn deployment_authority(
@@ -367,12 +366,9 @@ pub(super) async fn add_node_endpoint(
             .into_response();
     }
 
-    if state
-        .all_peers()
-        .await
-        .iter()
-        .any(|peer| peer.node_id == req.target_node_id && crate::gateway::peer_is_infer(&state, peer))
-    {
+    if state.all_peers().await.iter().any(|peer| {
+        peer.node_id == req.target_node_id && crate::gateway::peer_is_infer(&state, peer)
+    }) {
         return bad(json!({
             "reason": "infer_target",
             "error": "this machine was admitted for inference only and cannot serve a model",

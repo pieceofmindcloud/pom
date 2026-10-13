@@ -450,8 +450,18 @@ mod profile_network_tests {
         middle.total_layers = 32;
         middle.inference_port = Some(8181);
 
-        let state = state_with("eu", vec![slow, fast, middle]).await;
+        // a head still loading its model (no capacity published yet): never offered
+        let mut loading = peer("loading", "ksia2", 8094);
+        loading.model = "qwen35".into();
+        loading.start_layer = 0;
+        loading.end_layer = 31;
+        loading.total_layers = 32;
+        loading.inference_port = Some(8181);
+        loading.runtime_capacity = None;
+
+        let state = state_with("eu", vec![slow, fast, middle, loading]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.network.rtts.remember("loading", 1.0, "direct-health");
         state.network.rtts.remember("slow", 80.0, "direct-health");
         state.network.rtts.remember("fast", 12.0, "libp2p");
 
@@ -476,7 +486,7 @@ mod profile_network_tests {
             .as_array()
             .unwrap()
             .iter()
-            .all(|candidate| candidate["node_id"] != "middle"));
+            .all(|candidate| candidate["node_id"] != "middle" && candidate["node_id"] != "loading"));
         assert_eq!(
             body["candidates"]
                 .as_array()

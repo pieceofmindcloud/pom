@@ -324,10 +324,7 @@ impl RelayPolicy {
             .find(|(_, ids)| ids.contains(&listener))
             .map(|(peer, _)| *peer);
         if let Some(peer) = owner {
-            let ids = self
-                .listeners
-                .get_mut(&peer)
-                .expect("owner found above");
+            let ids = self.listeners.get_mut(&peer).expect("owner found above");
             ids.retain(|id| *id != listener);
             if ids.is_empty() {
                 self.listeners.remove(&peer);
@@ -1535,7 +1532,11 @@ async fn handle_event(
                             } else if infer_tunnel::is_transfer_data_path(&request.path)
                                 && !infer_tunnel::transfer_chunk_is_bounded(&request.headers)
                             {
-                                Err((416u16, "a file chunk over the tunnel needs a bounded range".to_string()))
+                                Err((
+                                    416u16,
+                                    "a file chunk over the tunnel needs a bounded range"
+                                        .to_string(),
+                                ))
                             } else if infer_tunnel::gateway_path_is_allowed(&request.path) {
                                 network
                                     .gateway_port
@@ -1857,14 +1858,14 @@ async fn lobby_admission_view(
         Some(record) => {
             let grant = if record.status == crate::network_lobby::AdmissionStatus::Approved {
                 let (connection_key, relay_peers, settings) = chat.grant_secrets().await;
-                network
-                    .trust_document_json()
-                    .map(|trust_document| crate::network_lobby::AdmissionGrant {
+                network.trust_document_json().map(|trust_document| {
+                    crate::network_lobby::AdmissionGrant {
                         trust_document,
                         connection_key,
                         relay_peers,
                         network: Some(settings),
-                    })
+                    }
+                })
             } else {
                 None
             };
@@ -1908,15 +1909,18 @@ async fn answer_lobby_request(
     // A principal telling a relay about its own network. The relay keeps it
     // only when the node key that signed for this transport is the primary
     // of the trust document being published.
-    if let LobbyRequest::Publish { identity, network: listed } = &request {
+    if let LobbyRequest::Publish {
+        identity,
+        network: listed,
+    } = &request
+    {
         if !chat.directory_board().allow(&caller) {
             return LobbyResponse::rejected("rate_limited");
         }
         if identity.verified_node_id(&peer).is_none() {
             return LobbyResponse::rejected("identity_invalid");
         }
-        let Some(listed) =
-            crate::gateway::validated_publication(listed.clone(), &identity.pubkey)
+        let Some(listed) = crate::gateway::validated_publication(listed.clone(), &identity.pubkey)
         else {
             return LobbyResponse::rejected("publication_invalid");
         };
@@ -2010,9 +2014,7 @@ async fn answer_lobby_request(
     // The published stats answer under their own switch and leave no
     // presence: asking what a network runs is not entering its lobby.
     if matches!(request, LobbyRequest::Info) {
-        if !network.is_principal()
-            || !chat.public_stats_enabled().await
-        {
+        if !network.is_principal() || !chat.public_stats_enabled().await {
             return LobbyResponse::rejected("stats_disabled");
         }
         if !chat.public_stats().allow(&caller) {
@@ -2097,7 +2099,10 @@ async fn answer_lobby_request(
         }
         match chat.request_admission(&node_id, card.clone(), *role) {
             Ok(crate::network_lobby::AdmissionStatus::Pending) if chat.auto_approves().await => {
-                chat.decide_admission(&node_id, Some(crate::network_lobby::AdmissionStatus::Approved));
+                chat.decide_admission(
+                    &node_id,
+                    Some(crate::network_lobby::AdmissionStatus::Approved),
+                );
             }
             Ok(_) => {}
             Err(error) => return LobbyResponse::rejected(error),
@@ -2117,7 +2122,9 @@ async fn answer_lobby_request(
         }
         if message_id.is_empty()
             || message_id.len() > LobbyLimits::MESSAGE_ID_BYTES
-            || !message_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || !message_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         {
             return LobbyResponse::rejected("message_id_invalid");
         }
@@ -2209,10 +2216,7 @@ async fn relay_chat(
             if let Err(error) =
                 ensure_tunnel_peer_address(swarm, network, peer_id, &addresses).await
             {
-                debug!(
-                    "network-chat: peer {} unavailable: {}",
-                    peer.node_id, error
-                );
+                debug!("network-chat: peer {} unavailable: {}", peer.node_id, error);
                 continue;
             }
         }

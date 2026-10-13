@@ -357,11 +357,18 @@ mod tests {
         );
         let refused = app.clone().oneshot(key_only).await.unwrap();
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-        assert_eq!(testkit::body_of(refused).await["reason"], "signature_required");
+        assert_eq!(
+            testkit::body_of(refused).await["reason"],
+            "signature_required"
+        );
 
         // Signed by the principal of the trust chain.
         let mut signed = Request::get(path);
-        for (name, value) in state.signed_control_headers("GET", path, b"").unwrap().iter() {
+        for (name, value) in state
+            .signed_control_headers("GET", path, b"")
+            .unwrap()
+            .iter()
+        {
             signed = signed.header(name, value);
         }
         let signed = from_peer(signed.body(axum::body::Body::empty()).unwrap());
@@ -386,8 +393,14 @@ mod tests {
         let admin = state.authority_principal.clone();
 
         // Routes that govern the network: the principal's signature, nothing less.
-        assert_eq!(caller_may_ask(&state, AdminOnly, None).await, Err("signature_required"));
-        assert_eq!(caller_may_ask(&state, AdminOnly, Some(&admin)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, None).await,
+            Err("signature_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, AdminOnly, Some(&admin)).await,
+            Ok(())
+        );
         assert_eq!(
             caller_may_ask(&state, AdminOnly, Some(&principal_of("worker"))).await,
             Err("principal_required")
@@ -397,16 +410,28 @@ mod tests {
             Err("principal_required")
         );
         // Deploy routes: an admin's signature, and a plain member is not one.
-        assert_eq!(caller_may_ask(&state, DeployAdmin, None).await, Err("signature_required"));
-        assert_eq!(caller_may_ask(&state, DeployAdmin, Some(&admin)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&state, DeployAdmin, None).await,
+            Err("signature_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, DeployAdmin, Some(&admin)).await,
+            Ok(())
+        );
         assert_eq!(
             caller_may_ask(&state, DeployAdmin, Some(&principal_of("worker"))).await,
             Err("admin_required")
         );
 
         // Routes of a serving node: a peer that is not an inference node.
-        assert_eq!(caller_may_ask(&state, NodeAdmin, None).await, Err("signature_required"));
-        assert_eq!(caller_may_ask(&state, NodeAdmin, Some(&admin)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, None).await,
+            Err("signature_required")
+        );
+        assert_eq!(
+            caller_may_ask(&state, NodeAdmin, Some(&admin)).await,
+            Ok(())
+        );
         assert_eq!(
             caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
             Ok(())
@@ -424,7 +449,11 @@ mod tests {
         // whatever it announces: the role is granted at admission.
         state
             .network_chat
-            .request_admission("worker", Default::default(), crate::config::EnrollmentRole::Infer)
+            .request_admission(
+                "worker",
+                Default::default(),
+                crate::config::EnrollmentRole::Infer,
+            )
             .unwrap();
         assert_eq!(
             caller_may_ask(&state, NodeAdmin, Some(&principal_of("worker"))).await,
@@ -452,34 +481,63 @@ mod tests {
         let secondary = secondary_node.authority_principal.clone();
         let principal = chain.primary.clone();
         let mut member = testkit::state_with("member", vec![]).await;
-        member.admin_trust =
-            Arc::new(crate::admin_trust::AdminTrust::in_memory(chain).unwrap());
+        member.admin_trust = Arc::new(crate::admin_trust::AdminTrust::in_memory(chain).unwrap());
 
         // Between nodes: the secondary's signature opens the deploy routes
         // and a node's routes, and none of the routes that govern the network.
-        assert_eq!(caller_may_ask(&member, DeployAdmin, Some(&secondary)).await, Ok(()));
-        assert_eq!(caller_may_ask(&member, NodeAdmin, Some(&secondary)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&member, DeployAdmin, Some(&secondary)).await,
+            Ok(())
+        );
+        assert_eq!(
+            caller_may_ask(&member, NodeAdmin, Some(&secondary)).await,
+            Ok(())
+        );
         assert_eq!(
             caller_may_ask(&member, AdminOnly, Some(&secondary)).await,
             Err("principal_required")
         );
-        assert_eq!(caller_may_ask(&member, AdminOnly, Some(&principal)).await, Ok(()));
+        assert_eq!(
+            caller_may_ask(&member, AdminOnly, Some(&principal)).await,
+            Ok(())
+        );
         assert!(issuer_is_principal(&member, &principal));
         assert!(!issuer_is_principal(&member, &secondary));
 
         // On its own screen: the same split.
         let app = Router::new()
-            .route("/api/ui/undeploy", axum::routing::post(|| async { StatusCode::OK }))
-            .route("/api/ui/deploy", axum::routing::post(|| async { StatusCode::OK }))
+            .route(
+                "/api/ui/undeploy",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/ui/deploy",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
             .route(
                 "/api/ui/network/admissions",
                 get(|| async { StatusCode::OK }),
             )
-            .route("/api/ui/network/settings", axum::routing::post(|| async { StatusCode::OK }))
-            .route("/admin/nodes/x/promote-admin", axum::routing::post(|| async { StatusCode::OK }))
-            .route("/admin/nodes/x/block", axum::routing::post(|| async { StatusCode::OK }))
-            .route("/admin/authority/secondaries/secondary/demote", axum::routing::post(|| async { StatusCode::OK }))
-            .route("/admin/regenerate-key", axum::routing::post(|| async { StatusCode::OK }))
+            .route(
+                "/api/ui/network/settings",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/nodes/x/promote-admin",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/nodes/x/block",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/authority/secondaries/secondary/demote",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/admin/regenerate-key",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
             .with_state(secondary_node.clone())
             .layer(middleware::from_fn_with_state(
                 secondary_node.clone(),
@@ -507,7 +565,10 @@ mod tests {
             (Method::POST, "/admin/nodes/x/promote-admin"),
             (Method::POST, "/admin/nodes/x/block"),
             // Not even its own demotion: the chain changes by the principal's hand.
-            (Method::POST, "/admin/authority/secondaries/secondary/demote"),
+            (
+                Method::POST,
+                "/admin/authority/secondaries/secondary/demote",
+            ),
             (Method::POST, "/admin/regenerate-key"),
         ] {
             assert_eq!(ask(method, path).await, StatusCode::FORBIDDEN, "{path}");
@@ -523,9 +584,18 @@ mod tests {
             auth.profile = crate::profile::NodeProfile::Infer;
         }
         let app = Router::new()
-            .route("/api/ui/apply", axum::routing::post(|| async { StatusCode::OK }))
-            .route("/api/transfer/offer", axum::routing::post(|| async { StatusCode::OK }))
-            .route("/api/ui/unload", axum::routing::post(|| async { StatusCode::OK }))
+            .route(
+                "/api/ui/apply",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/transfer/offer",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/ui/unload",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -533,7 +603,11 @@ mod tests {
             ));
         let signed_post = |path: &'static str| {
             let mut request = Request::post(path);
-            for (name, value) in state.signed_control_headers("POST", path, b"").unwrap().iter() {
+            for (name, value) in state
+                .signed_control_headers("POST", path, b"")
+                .unwrap()
+                .iter()
+            {
                 request = request.header(name, value);
             }
             let mut request = request.body(axum::body::Body::empty()).unwrap();
@@ -547,11 +621,18 @@ mod tests {
         for path in ["/api/ui/apply", "/api/transfer/offer"] {
             let refused = app.clone().oneshot(signed_post(path)).await.unwrap();
             assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{path}");
-            assert_eq!(testkit::body_of(refused).await["reason"], "infer_profile", "{path}");
+            assert_eq!(
+                testkit::body_of(refused).await["reason"],
+                "infer_profile",
+                "{path}"
+            );
         }
         // Nothing to hold means nothing to refuse about letting go.
         assert_eq!(
-            app.oneshot(signed_post("/api/ui/unload")).await.unwrap().status(),
+            app.oneshot(signed_post("/api/ui/unload"))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::OK
         );
     }
@@ -1837,7 +1918,10 @@ mod budget_tests {
         let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.deployment, Some(1_000));
-        assert_eq!(limit.effective, 4_000, "the client receives what it asked for");
+        assert_eq!(
+            limit.effective, 4_000,
+            "the client receives what it asked for"
+        );
         assert_eq!(limit.leg, 1_000, "one backend generation stays at 1000");
         assert!(!limit.was_clamped());
         assert!(limit.continuation_possible());
@@ -1966,11 +2050,65 @@ mod budget_tests {
         alternative.runtime_capacity = None;
 
         let state = crate::gateway::testkit::state_with("self", vec![ready, alternative]).await;
-        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen"), None).await;
 
         assert!(
             !pending,
             "a route not selected by the planner cannot block the request"
+        );
+    }
+
+    /// Two machines serve the whole model and one is still loading: the route
+    /// is the ready one, and a request is not held until the other finishes -
+    /// unless it chose the loading machine as its head.
+    #[tokio::test]
+    async fn a_replica_still_loading_does_not_hold_the_ready_one() {
+        let replica = |id: &str, port: u16, ready: bool| {
+            let mut peer = crate::gateway::testkit::peer(id, id, port);
+            peer.model = "qwen".into();
+            peer.inference_port = Some(port + 100);
+            peer.start_layer = 0;
+            peer.end_layer = 31;
+            peer.total_layers = 32;
+            peer.runtime_capacity = ready.then_some(RuntimeCapacity {
+                n_ctx: 8_192,
+                max_new_tokens: 256,
+            });
+            peer
+        };
+        // the loading one sorts first, so it would win every tie
+        let loading = replica("a-loading", 8080, false);
+        let ready = replica("z-ready", 8081, true);
+        let loading_id = loading.node_id.clone();
+        let ready_id = ready.node_id.clone();
+        let state = crate::gateway::testkit::state_with("self", vec![loading, ready]).await;
+
+        let peers = state.all_peers().await;
+        let planned = state
+            .planned_peers_for_model(&peers, "qwen", None)
+            .await
+            .unwrap();
+        assert_eq!(planned.len(), 1);
+        assert_eq!(
+            planned[0].node_id, ready_id,
+            "the ready replica is the route"
+        );
+        let (capacity, pending) = state.runtime_capacity_for_model(Some("qwen"), None).await;
+        assert!(!pending && capacity.is_some());
+        let chose_ready = state
+            .request_output_limit_for_head(Some("qwen"), Some(&ready_id), 32, "oi")
+            .await;
+        assert!(!chose_ready.capacity_pending());
+        // a request that named the loading machine still waits for it
+        let (_, pending) = state
+            .runtime_capacity_for_model(Some("qwen"), Some(&loading_id))
+            .await;
+        assert!(
+            pending
+                || state
+                    .planned_peers_for_model(&peers, "qwen", Some(&loading_id))
+                    .await
+                    .is_none()
         );
     }
 
@@ -1997,7 +2135,7 @@ mod budget_tests {
         tail.runtime_capacity = None;
 
         let state = crate::gateway::testkit::state_with("self", vec![head, tail]).await;
-        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen"), None).await;
 
         assert!(
             !pending,
@@ -2631,10 +2769,7 @@ mod peer_visibility_tests {
             &crate::pipeline::LoadTracker::new(),
         )
         .await;
-        assert!(
-            plan.is_some(),
-            "the coverage confirmed by health must plan"
-        );
+        assert!(plan.is_some(), "the coverage confirmed by health must plan");
     }
 
     #[tokio::test]
@@ -2814,10 +2949,7 @@ mod replicated_admin_logs_tests {
             .expect("logs plugin entry");
         assert_eq!(logs["active"], false);
         assert_eq!(logs["state"], "needs_activation");
-        assert_eq!(
-            logs["manage_url"],
-            "https://pieceofmind.cloud/plugins/"
-        );
+        assert_eq!(logs["manage_url"], "https://pieceofmind.cloud/plugins/");
 
         let check = app
             .clone()
@@ -2987,11 +3119,9 @@ mod replicated_admin_logs_tests {
 
         assert!(super::validated_listed_network(view("not-the-fingerprint".into(), "")).is_none());
         // A relay keeps a publication only from the network's own principal.
-        let published = super::validated_publication(
-            view(fingerprint.clone(), ""),
-            &document.primary.pubkey,
-        )
-        .unwrap();
+        let published =
+            super::validated_publication(view(fingerprint.clone(), ""), &document.primary.pubkey)
+                .unwrap();
         assert_eq!(published.discovered_via, "published");
         assert_eq!(published.publisher_key, expected_key);
         let stranger = crate::identity::Identity::generate().public_key_hex();

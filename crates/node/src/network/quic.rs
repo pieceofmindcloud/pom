@@ -566,8 +566,8 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     let socket = bind_quic_socket(format!("[::]:{port}").parse()?)?;
-    let runtime = quinn::default_runtime()
-        .ok_or_else(|| anyhow!("async QUIC runtime is not available"))?;
+    let runtime =
+        quinn::default_runtime().ok_or_else(|| anyhow!("async QUIC runtime is not available"))?;
     let endpoint = quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         Some(config.as_ref().clone()),
@@ -665,7 +665,9 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
 
 fn authority(base_url: &str) -> Result<String> {
     let parsed = url::Url::parse(base_url)?;
-    let host = parsed.host().ok_or_else(|| anyhow!("QUIC URL without a host"))?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| anyhow!("QUIC URL without a host"))?;
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| anyhow!("QUIC URL without a port"))?;
@@ -702,9 +704,7 @@ fn ensure_local_route(addr: SocketAddr) -> Result<()> {
 
 async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {
     if advertised.contains("://") {
-        return Err(anyhow!(
-            "QUIC address must be host:port, not an HTTP URL"
-        ));
+        return Err(anyhow!("QUIC address must be host:port, not an HTTP URL"));
     }
     if let Ok(addr) = advertised.parse::<SocketAddr>() {
         return quic_socket_addr(advertised, addr.port());
@@ -858,10 +858,7 @@ mod tests {
             remaining = remaining.saturating_sub(timeout);
         }
 
-        assert_eq!(
-            attempts, 1,
-            "a dead endpoint must not serialize timeouts"
-        );
+        assert_eq!(attempts, 1, "a dead endpoint must not serialize timeouts");
         assert_eq!(spent, QUIC_FALLBACK_BUDGET);
         assert!(spent < Duration::from_secs(1));
     }

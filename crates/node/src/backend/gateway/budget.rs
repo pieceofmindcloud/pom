@@ -334,8 +334,13 @@ mod adaptive_chunk_tests {
             stage.add(32.0, 3.2);
             stage.add(512.0, 51.2);
         }
-        assert_eq!(choose_from_profile(512, &profile, 4000, 8, MIN_CHUNK), MIN_CHUNK);
-        assert!(choose_from_profile(512, &profile, 4000, 8, MOE_CACHE_MIN_CHUNK) >= MOE_CACHE_MIN_CHUNK);
+        assert_eq!(
+            choose_from_profile(512, &profile, 4000, 8, MIN_CHUNK),
+            MIN_CHUNK
+        );
+        assert!(
+            choose_from_profile(512, &profile, 4000, 8, MOE_CACHE_MIN_CHUNK) >= MOE_CACHE_MIN_CHUNK
+        );
     }
 
     fn fitted(points: &[(f64, f64)]) -> StageFit {
@@ -421,7 +426,10 @@ mod adaptive_chunk_tests {
     #[test]
     fn unmeasured_route_uses_configured_limit_without_waiting() {
         let tuner = AdaptiveChunkTuner::default_arc();
-        assert_eq!(tuner.choose("model|head|tail", 512, 256, 1000, 8, MIN_CHUNK), 256);
+        assert_eq!(
+            tuner.choose("model|head|tail", 512, 256, 1000, 8, MIN_CHUNK),
+            256
+        );
     }
 }
 
@@ -629,8 +637,24 @@ impl GatewayState {
         requested: u32,
         prompt: &str,
     ) -> OutputTokenLimit {
+        self.request_output_limit_for_head(model, None, requested, prompt)
+            .await
+    }
+
+    /// [`Self::request_output_limit_for_model`] for a request that chose the
+    /// machine of its first stage (`inference_head`): the capacity is that of
+    /// the route generation will plan from that head, not of the route the
+    /// planner would pick without it.
+    pub async fn request_output_limit_for_head(
+        &self,
+        model: Option<&str>,
+        preferred_head: Option<&str>,
+        requested: u32,
+        prompt: &str,
+    ) -> OutputTokenLimit {
         let runtime = self.runtime.config().await;
-        let (capacity, capacity_pending) = self.runtime_capacity_for_model(model).await;
+        let (capacity, capacity_pending) =
+            self.runtime_capacity_for_model(model, preferred_head).await;
         if capacity_pending {
             return OutputTokenLimit {
                 requested: requested.max(1),

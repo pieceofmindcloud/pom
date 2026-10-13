@@ -50,9 +50,13 @@ pub(crate) fn network_from_trust_document(content: &str) -> anyhow::Result<Pinne
             name,
             fingerprint: crate::admin_trust::anchor_fingerprint(&document),
             publisher_key,
-            relay_hints: setup.map(|setup| setup.relay_hints.clone()).unwrap_or_default(),
+            relay_hints: setup
+                .map(|setup| setup.relay_hints.clone())
+                .unwrap_or_default(),
             trust_document: serde_json::to_string_pretty(&document)?,
-            organization: setup.map(|setup| setup.organization.clone()).unwrap_or_default(),
+            organization: setup
+                .map(|setup| setup.organization.clone())
+                .unwrap_or_default(),
             description: String::new(),
             rules: String::new(),
             channels: String::new(),
@@ -87,7 +91,9 @@ pub(super) fn custom_networks(database: &crate::db::PomDb) -> Vec<PinnedNetwork>
                     networks.push(entry);
                 }
             }
-            Err(error) => warn!("an imported network no longer validates and is not listed: {error:#}"),
+            Err(error) => {
+                warn!("an imported network no longer validates and is not listed: {error:#}")
+            }
         }
     }
     networks
@@ -110,7 +116,10 @@ pub(super) async fn pinned_networks(
     let visibility = state.auth.read().await.network.visibility;
     let own = crate::gateway::local_network_view(&state)
         .await
-        .map(|network| PinnedNetwork { network, visibility });
+        .map(|network| PinnedNetwork {
+            network,
+            visibility,
+        });
     let own_fingerprint = own.as_ref().map(|own| own.network.fingerprint.clone());
     let mut custom = custom_networks(&state.database);
     custom.retain(|entry| Some(&entry.network.fingerprint) != own_fingerprint.as_ref());
@@ -204,7 +213,11 @@ pub(super) async fn remove_custom_network(
         .map(|entry| entry.network.trust_document.clone())
         .collect();
     if documents.len() == known.len() {
-        return refusal(StatusCode::NOT_FOUND, "unknown_network", "no imported network has that fingerprint");
+        return refusal(
+            StatusCode::NOT_FOUND,
+            "unknown_network",
+            "no imported network has that fingerprint",
+        );
     }
     if let Err(error) = state.database.save_custom_networks(&documents) {
         return refusal(
@@ -250,11 +263,21 @@ mod tests {
         let fingerprint = crate::admin_trust::anchor_fingerprint(&here.admin_trust.document());
 
         let refused = import_document(&here.database, Some(&fingerprint), &own).unwrap_err();
-        assert_eq!((refused.0, refused.1), (StatusCode::CONFLICT, "own_network"));
+        assert_eq!(
+            (refused.0, refused.1),
+            (StatusCode::CONFLICT, "own_network")
+        );
         let refused = import_document(&here.database, None, "{\"anchor\": 1}").unwrap_err();
-        assert_eq!((refused.0, refused.1), (StatusCode::BAD_REQUEST, "invalid_document"));
+        assert_eq!(
+            (refused.0, refused.1),
+            (StatusCode::BAD_REQUEST, "invalid_document")
+        );
         // A document edited after it was signed no longer validates.
-        let tampered = own.replacen(&here.admin_trust.document().anchor.cluster_id, "another-name", 1);
+        let tampered = own.replacen(
+            &here.admin_trust.document().anchor.cluster_id,
+            "another-name",
+            1,
+        );
         assert!(import_document(&here.database, None, &tampered).is_err());
         assert!(custom_networks(&here.database).is_empty());
     }

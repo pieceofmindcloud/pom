@@ -465,7 +465,9 @@ pub async fn start_setup_auto_discovery(
         .set_admin_material(true, request.trust_document, request.connection_key)
         .await
     {
-        Ok(()) => get_setup_auto_discovery_status(State(state)).await.into_response(),
+        Ok(()) => get_setup_auto_discovery_status(State(state))
+            .await
+            .into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": format!("could not start local discovery: {error:#}") })),
@@ -626,7 +628,10 @@ pub async fn bootstrap_local_network(
     }
     config.save()?;
     for (dir, error) in config.create_default_storage_dirs() {
-        warn!("could not create the default folder {}: {error}", dir.display());
+        warn!(
+            "could not create the default folder {}: {error}",
+            dir.display()
+        );
     }
     if let Err(error) = database.save_network_settings(&config.network) {
         warn!("could not save the network details in the database: {error:#}");
@@ -748,27 +753,28 @@ pub async fn save_setup(
     }
     // `bootstrap` and `advertise_addr` are local hints typed by the operator
     // (they may be DNS names), never read from the trust document.
-    let (mut network, directory_inputs, relay_hints) =
-        if profile == crate::profile::NodeProfile::Admin {
-            (
-                req.network.clone(),
-                req.public_directory.clone(),
-                Vec::new(),
+    let (mut network, directory_inputs, relay_hints) = if profile
+        == crate::profile::NodeProfile::Admin
+    {
+        (
+            req.network.clone(),
+            req.public_directory.clone(),
+            Vec::new(),
+        )
+    } else {
+        let Some(metadata) = trust_document.setup.as_ref() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "the root does not contain the initial network settings" })),
             )
-        } else {
-            let Some(metadata) = trust_document.setup.as_ref() else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "the root does not contain the initial network settings" })),
-                )
-                    .into_response();
-            };
-            (
-                network_from_trust_metadata(metadata),
-                metadata.directory_replicas.clone(),
-                metadata.relay_hints.clone(),
-            )
+                .into_response();
         };
+        (
+            network_from_trust_metadata(metadata),
+            metadata.directory_replicas.clone(),
+            metadata.relay_hints.clone(),
+        )
+    };
     let bootstrap = req.bootstrap.trim().to_string();
     let advertise_addr = req.advertise_addr.clone();
     network.public_name = network.public_name.trim().to_string();
@@ -777,29 +783,25 @@ pub async fn save_setup(
     // adopts the rest of the settings from the principal after its first
     // authenticated announce.
     if profile == crate::profile::NodeProfile::Admin {
-        if let Err(error) = crate::geo::apply_location(&mut network)
-            .and_then(|()| {
-                crate::config::validate_network_settings(&network)
-                    .map_err(|error| error.to_string())
-            })
-        {
+        if let Err(error) = crate::geo::apply_location(&mut network).and_then(|()| {
+            crate::config::validate_network_settings(&network).map_err(|error| error.to_string())
+        }) {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
         }
     }
-    let public_directory = match crate::public_directory::PublicDirectorySettings::from_urls(
-        directory_inputs.iter(),
-    )
-    .and_then(|settings| settings.effective_with_env())
-    {
-        Ok(settings) => settings,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("invalid public directory ticket: {error:#}") })),
-            )
-                .into_response();
-        }
-    };
+    let public_directory =
+        match crate::public_directory::PublicDirectorySettings::from_urls(directory_inputs.iter())
+            .and_then(|settings| settings.effective_with_env())
+        {
+            Ok(settings) => settings,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("invalid public directory ticket: {error:#}") })),
+                )
+                    .into_response();
+            }
+        };
     network.geo_label = if network.country_code.is_empty() || network.city.is_empty() {
         String::new()
     } else {
@@ -939,7 +941,10 @@ pub async fn save_setup(
     let save_result = cfg.save();
     if save_result.is_ok() {
         for (dir, error) in cfg.create_default_storage_dirs() {
-            warn!("could not create the default folder {}: {error}", dir.display());
+            warn!(
+                "could not create the default folder {}: {error}",
+                dir.display()
+            );
         }
     }
     drop(cfg);

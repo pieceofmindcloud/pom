@@ -214,7 +214,10 @@ mod tests {
         assert_eq!(leaving.profile, crate::profile::NodeProfile::Admin);
         assert_eq!(leaving.connection_key, "chave-da-minha-rede");
         assert_eq!(leaving.network.public_name, "Minha Rede");
-        assert_eq!(leaving.network.visibility, crate::config::NetworkVisibility::Public);
+        assert_eq!(
+            leaving.network.visibility,
+            crate::config::NetworkVisibility::Public
+        );
         assert!(leaving.network.public_stats);
         assert_eq!(leaving.blocked_nodes, vec!["alguem".to_string()]);
         assert!(leaving.network_chat_enabled);

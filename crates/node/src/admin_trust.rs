@@ -2270,10 +2270,7 @@ mod tests {
 
         assert!(error.to_string().contains("fingerprint"));
         assert!(!no.is_anchored());
-        assert!(
-            !path.exists(),
-            "a refusal cannot leave a trust file behind"
-        );
+        assert!(!path.exists(), "a refusal cannot leave a trust file behind");
     }
 
     /// Replacing the root is manual re-anchoring. Neither the chain in memory nor a

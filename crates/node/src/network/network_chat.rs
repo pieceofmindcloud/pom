@@ -242,9 +242,7 @@ impl ChatAction {
                     Ok(())
                 }
             }
-            Self::LobbyPresence { room_id, .. }
-                if room_id != crate::network_lobby::LOBBY_ROOM =>
-            {
+            Self::LobbyPresence { room_id, .. } if room_id != crate::network_lobby::LOBBY_ROOM => {
                 Err("lobby_room_invalid")
             }
             Self::Text { .. }

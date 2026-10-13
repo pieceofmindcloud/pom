@@ -123,7 +123,10 @@ pub(super) async fn run(
     // loads them does not have them yet. They go by path, like any file outside
     // a manifest, and land in the target's `recebidos/` folder, which its
     // catalog scans: the post-copy survey finds them there by name and size.
-    for slot in [&plan.sidecars.vision, &plan.sidecars.mtp].into_iter().flatten() {
+    for slot in [&plan.sidecars.vision, &plan.sidecars.mtp]
+        .into_iter()
+        .flatten()
+    {
         if !slot.needs_copy() {
             continue;
         }
@@ -154,7 +157,10 @@ pub(super) async fn run(
                     pull.source_node_id.clone(),
                     pull.source_path.clone(),
                     plan.total_layers.ok_or_else(|| {
-                        format!("the slices of {} do not state the total number of layers", plan.group)
+                        format!(
+                            "the slices of {} do not state the total number of layers",
+                            plan.group
+                        )
                     })?,
                     plan.group.clone(),
                 ))
@@ -256,7 +262,12 @@ pub(super) async fn run(
             let body: serde_json::Value = state
                 .control_post_json(&target, "/api/transfer/pull", &pull_body, PEER_TIMEOUT * 4)
                 .await
-                .map_err(|e| format!("{} did not accept pulling the slice: {e:#}", pull.target_host))?
+                .map_err(|e| {
+                    format!(
+                        "{} did not accept pulling the slice: {e:#}",
+                        pull.target_host
+                    )
+                })?
                 .json()
                 .await
                 .unwrap_or(json!({}));
@@ -285,7 +296,13 @@ pub(super) async fn run(
     }
 
     // ── Phase 2: bind every peer to its range ────────────────────────────────
-    set_job(job_id, "running", "starting the nodes", "assigning the ranges").await;
+    set_job(
+        job_id,
+        "running",
+        "starting the nodes",
+        "assigning the ranges",
+    )
+    .await;
     set_job_progress(job_id, 92.0).await;
 
     // Where each file ended up is the target's own business, so ask it rather
@@ -328,7 +345,11 @@ pub(super) async fn run(
         head.use_mmproj = true;
         head.mmproj_path = plan.mmproj_path.clone();
         if let Some(slot) = plan.sidecars.vision.as_ref() {
-            if let Some(file) = slot.file.as_ref().filter(|_| slot.mode == crate::catalog::SidecarMode::File) {
+            if let Some(file) = slot
+                .file
+                .as_ref()
+                .filter(|_| slot.mode == crate::catalog::SidecarMode::File)
+            {
                 // Known path when the survey already sees it; otherwise the
                 // head finds the copy on its own disk by name and size.
                 head.mmproj_path = local_sidecar_path(
@@ -342,13 +363,21 @@ pub(super) async fn run(
         }
     }
     if let Some(slot) = plan.sidecars.mtp.as_ref() {
-        if let Some(file) = slot.file.as_ref().filter(|_| slot.mode == crate::catalog::SidecarMode::File) {
-            let path = local_sidecar_path(&fresh.sidecars, &slot.target_node_id, crate::catalog::SidecarKind::Mtp, file);
+        if let Some(file) = slot
+            .file
+            .as_ref()
+            .filter(|_| slot.mode == crate::catalog::SidecarMode::File)
+        {
+            let path = local_sidecar_path(
+                &fresh.sidecars,
+                &slot.target_node_id,
+                crate::catalog::SidecarKind::Mtp,
+                file,
+            );
             let tail_end = plan.total_layers.map(|total| total.saturating_sub(1));
-            for target in targets
-                .iter_mut()
-                .filter(|target| target.node_id == slot.target_node_id && Some(target.end_layer) == tail_end)
-            {
+            for target in targets.iter_mut().filter(|target| {
+                target.node_id == slot.target_node_id && Some(target.end_layer) == tail_end
+            }) {
                 target.mtp_draft_path = path.clone();
                 target.mtp_draft_file = Some(file.clone());
             }
@@ -373,9 +402,12 @@ pub(super) async fn run(
 
     // `plan` refuses an unknown size before anything is copied, so this is a
     // fact by the time we get here rather than a default worth inventing.
-    let total_layers = plan
-        .total_layers
-        .ok_or_else(|| format!("the slices of {} do not state the total number of layers", plan.group))?;
+    let total_layers = plan.total_layers.ok_or_else(|| {
+        format!(
+            "the slices of {} do not state the total number of layers",
+            plan.group
+        )
+    })?;
 
     // The deployment record is born here, with the targets already resolved: it is the
     // last point where it is known, all at once, who received which range and with

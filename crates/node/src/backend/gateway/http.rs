@@ -405,7 +405,10 @@ pub(crate) async fn listed_public_networks(
         let client = client.clone();
         async move {
             let response = client
-                .get(format!("{}/api/public/networks", base.trim_end_matches('/')))
+                .get(format!(
+                    "{}/api/public/networks",
+                    base.trim_end_matches('/')
+                ))
                 .timeout(Duration::from_secs(8))
                 .send()
                 .await
@@ -976,7 +979,10 @@ pub(crate) async fn relay_directory(key: &str) -> Vec<PublicNetworkView> {
     let Ok(client) = crate::network_lobby::client().await else {
         return Vec::new();
     };
-    let mut response = match client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+    let mut response = match client
+        .request(key, crate::network_lobby::LobbyRequest::Directory)
+        .await
+    {
         Ok(response) => response,
         Err(error) => {
             debug!("lobby: relay {key} did not answer the directory: {error:#}");
@@ -985,7 +991,10 @@ pub(crate) async fn relay_directory(key: &str) -> Vec<PublicNetworkView> {
     };
     if response.accepted && response.pending {
         tokio::time::sleep(Duration::from_secs(3)).await;
-        if let Ok(again) = client.request(key, crate::network_lobby::LobbyRequest::Directory).await {
+        if let Ok(again) = client
+            .request(key, crate::network_lobby::LobbyRequest::Directory)
+            .await
+        {
             response = again;
         }
     }
@@ -1098,10 +1107,8 @@ async fn collect_public_networks(
     };
     // Admitted peers are this node's own cluster: asking one of them by key
     // can only describe the network this node is already in.
-    let members: std::collections::HashSet<String> = candidates
-        .iter()
-        .map(|peer| peer.node_id.clone())
-        .collect();
+    let members: std::collections::HashSet<String> =
+        candidates.iter().map(|peer| peer.node_id.clone()).collect();
     if gathers {
         for peer in state.network.public_discovered_peers().await {
             if !candidates.iter().any(|known| known.node_id == peer.node_id) {
@@ -1261,7 +1268,9 @@ pub(crate) fn spawn_directory_publisher(state: GatewayState) {
                         "lobby: relay {key} did not list the network: {:?}",
                         response.error
                     ),
-                    Err(error) => debug!("lobby: relay {key} unreachable for publishing: {error:#}"),
+                    Err(error) => {
+                        debug!("lobby: relay {key} unreachable for publishing: {error:#}")
+                    }
                 }
             }
         }
@@ -1325,9 +1334,7 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
     }
     crate::infer_server::listener_dual_stack(port)
         .map(|_| ())
-        .map_err(|error| {
-            anyhow::anyhow!("the interface port {port} is not available: {error}")
-        })
+        .map_err(|error| anyhow::anyhow!("the interface port {port} is not available: {error}"))
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────
@@ -1389,9 +1396,7 @@ pub(super) async fn handle_remote_stream_link(
                 .await
                 .map_err(|_| anyhow::anyhow!("invalid peer credential"))?;
             if path != crate::direct::REMOTE_STREAM_RESULT_PATH {
-                return Err(anyhow::anyhow!(
-                    "unknown remote return route: {path}"
-                ));
+                return Err(anyhow::anyhow!("unknown remote return route: {path}"));
             }
             Ok(crate::direct::handle_remote_stream_link(&inbox, bytes).await)
         }

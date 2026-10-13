@@ -828,7 +828,7 @@ pub(super) async fn run_direct(
                 ticket.id(),
                 &prefill_sequence_id,
                 trace_id,
-            probe,
+                probe,
             )
             .await
             {
@@ -877,8 +877,7 @@ pub(super) async fn run_direct(
                         let failure = error.context(PrefillRebuildRequired {
                             from_chunk: idx,
                             start_pos: start_pos.unwrap_or(0),
-                            reason:
-                                "the direct head response did not report the next KV position",
+                            reason: "the direct head response did not report the next KV position",
                         });
                         let _ = tx.send(HeadPumpMessageDirect::Failure(failure)).await;
                         return Ok::<(), anyhow::Error>(());

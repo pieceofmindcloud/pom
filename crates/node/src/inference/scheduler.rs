@@ -319,7 +319,11 @@ mod tests {
         // capacity, so `new_session_slots` returned zero.
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 0);
         assert!(batch.items.is_empty(), "the small request is not admitted");
-        assert_eq!(q.len(), 1, "and it stays in the queue, without being refused");
+        assert_eq!(
+            q.len(),
+            1,
+            "and it stays in the queue, without being refused"
+        );
 
         // The wait is observable, which is the clock of the reclaim grace period.
         let waited = q.oldest_new_session_wait(Instant::now(), |_| false);

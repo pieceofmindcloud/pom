@@ -199,7 +199,9 @@ boundary.
   visibility and metadata, after the first authenticated `Announce`.
   `GET /api/ui/infer/heads?model=...` is the only dedicated read of the layer-zero
   heads: it delivers the candidates and the planner's choice, without general peers or control
-  actions. The route is `InferNodeAdmin`, so admin and infer can read it. Each candidate's load
+  actions. A head still loading its model (`is_warming`) is never a candidate. The capacity gate
+  (`request_output_limit_for_head`) plans the route from the head the request chose
+  (`inference_head`), as generation does. The route is `InferNodeAdmin`, so admin and infer can read it. Each candidate's load
   comes from its own `/api/ui/node` and stays `null` when the report does not arrive, so the UI
   shows it unavailable instead of zero. The RTT's validity is five minutes; expired values
   appear as a diagnostic, but they do not enter the generation's selection.

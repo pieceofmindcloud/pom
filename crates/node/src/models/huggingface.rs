@@ -397,10 +397,7 @@ impl HuggingFaceProvider {
         revision: Option<&str>,
     ) -> Result<ModelInfo, HfError> {
         let value = self
-            .request_json(
-                self.model_url(repo_id, revision, true)?,
-                "model details",
-            )
+            .request_json(self.model_url(repo_id, revision, true)?, "model details")
             .await?;
         parse_model_info_value(&value, repo_id)
     }

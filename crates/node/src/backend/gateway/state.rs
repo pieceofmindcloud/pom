@@ -901,8 +901,7 @@ pub(crate) fn issuer_is_principal(
     issuer: &crate::admin_trust::AuthorityPrincipal,
 ) -> bool {
     let document = state.admin_trust.document();
-    issuer == &document.primary
-        && crate::admin_trust::control_issuer_is_admin(&document, issuer)
+    issuer == &document.primary && crate::admin_trust::control_issuer_is_admin(&document, issuer)
 }
 
 pub(crate) async fn require_admin_for_surface(
@@ -1295,7 +1294,8 @@ pub(crate) async fn ready_for_pipeline(
                 let peer_id = peer.node_id.as_str();
                 Box::pin(async move {
                     let url = format!("{base}/health");
-                    let Ok(Ok(response)) = tokio::time::timeout(timeout, client.get(url).send()).await
+                    let Ok(Ok(response)) =
+                        tokio::time::timeout(timeout, client.get(url).send()).await
                     else {
                         return Err(());
                     };
@@ -1305,7 +1305,8 @@ pub(crate) async fn ready_for_pipeline(
                     {
                         return Err(());
                     }
-                    match tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await {
+                    match tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
+                    {
                         Ok(Ok(value)) => Ok((base, value)),
                         _ => Err(()),
                     }
@@ -1548,12 +1549,16 @@ impl GatewayState {
     pub(super) async fn runtime_capacity_for_model(
         &self,
         model: Option<&str>,
+        preferred_head: Option<&str>,
     ) -> (Option<RuntimeCapacity>, bool) {
         let Some(model) = model else {
             return (self.local_runtime_capacity().await, false);
         };
         let peers = self.all_peers().await;
-        let Some(planned) = self.planned_peers_for_model(&peers, model).await else {
+        let Some(planned) = self
+            .planned_peers_for_model(&peers, model, preferred_head)
+            .await
+        else {
             return (None, false);
         };
         let (capacity, pending) = runtime_capacity_from_peers(&planned, model);
@@ -1571,6 +1576,7 @@ impl GatewayState {
         &self,
         peers: &[PeerInfo],
         model: &str,
+        preferred_head: Option<&str>,
     ) -> Option<Vec<PeerInfo>> {
         let (model_name, deploy_id) = crate::deployment::split_selector(model);
         let candidates = crate::pipeline::model_pipeline_candidates(peers, model_name, deploy_id);
@@ -1586,13 +1592,14 @@ impl GatewayState {
             .into_iter()
             .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
             .collect::<std::collections::HashMap<_, _>>();
-        let plan = crate::pipeline::plan_pipeline_with_rtt(
+        let plan = crate::pipeline::plan_pipeline_with_rtt_from_head(
             peers,
             model_name,
             deploy_id,
             total_layers,
             &self.loads,
             &rtts,
+            preferred_head,
         )
         .await?;
         let planned_ids = plan

@@ -124,7 +124,10 @@ mod tests {
         // "smartphone size" means, and the width at which the chat was checked.
         let (width, height) = POPOVER_SIZE;
         assert_eq!(width, 390.0);
-        assert!(height > width, "the status bar panel is portrait, not landscape");
+        assert!(
+            height > width,
+            "the status bar panel is portrait, not landscape"
+        );
         assert!(
             WINDOW_SIZE.0 > width && WINDOW_SIZE.1 > height,
             "the larger window must be larger than the panel on both axes"

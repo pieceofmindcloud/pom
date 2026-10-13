@@ -384,8 +384,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                     {
                         Ok(request) => request,
                         Err(error) => {
-                            last_error =
-                                Some(format!("control signature unavailable: {error}"));
+                            last_error = Some(format!("control signature unavailable: {error}"));
                             continue;
                         }
                     };
@@ -695,7 +694,9 @@ pub(super) async fn chat_capabilities(
     State(state): State<GatewayState>,
     Query(query): Query<ChatCapabilitiesQuery>,
 ) -> impl IntoResponse {
-    let requested = crate::deployment::split_selector(query.model.trim()).0.to_string();
+    let requested = crate::deployment::split_selector(query.model.trim())
+        .0
+        .to_string();
     let active_model = if requested.is_empty() {
         state.displayed_model().await
     } else {
@@ -959,8 +960,7 @@ pub(super) async fn peer_runtime(
     let Some(base) = peer.inference_url() else {
         // The peer exists and does not serve inference: it is not a network
         // error, it is the normal state of a machine with no slice deployed.
-        return Json(json!({ "loaded": false, "reason": "no inference server" }))
-            .into_response();
+        return Json(json!({ "loaded": false, "reason": "no inference server" })).into_response();
     };
 
     let http = match state.peer_http.for_peer(&node_id) {

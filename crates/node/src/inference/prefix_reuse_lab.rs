@@ -271,9 +271,7 @@ fn ingest(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingested, String> {
     {
         engine.unknown_session_failures_remaining -= 1;
         engine.sessions.remove(sid);
-        return Err(format!(
-            "unknown session '{sid}' - send reset=true first"
-        ));
+        return Err(format!("unknown session '{sid}' - send reset=true first"));
     }
 
     let mut reused = false;
@@ -336,7 +334,9 @@ fn ingest(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingested, String> {
         engine.partial_removals.push(format!(
             "chunk {chunk_index} asked for position {expected} with the session at {n_past}"
         ));
-        return Err("this model does not accept discarding positions from the middle of the cache".into());
+        return Err(
+            "this model does not accept discarding positions from the middle of the cache".into(),
+        );
     }
     if expected > n_past {
         return Err(format!(
@@ -354,7 +354,9 @@ fn ingest(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingested, String> {
         let new_items = target[expected as usize..expected as usize + n].to_vec();
         let session = engine.sessions.get_mut(sid).unwrap();
         let stable = session.stable_len as usize;
-        let retained = new_items.len().min(stable.saturating_sub(expected as usize));
+        let retained = new_items
+            .len()
+            .min(stable.saturating_sub(expected as usize));
         session.prompt_kv.extend_from_slice(&new_items[..retained]);
         session.gen_len += new_items.len().saturating_sub(retained) as u32;
         (n, expected as usize + n < target.len(), target.len() as u32)
@@ -363,7 +365,9 @@ fn ingest(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingested, String> {
         let n = inc.tensor.as_ref().map(|(_, s)| s[0]).unwrap_or(1);
         let session = engine.sessions.get_mut(sid).unwrap();
         let retained = n.min(session.stable_len.saturating_sub(expected) as usize);
-        session.prompt_kv.extend(std::iter::repeat_n(0i32, retained));
+        session
+            .prompt_kv
+            .extend(std::iter::repeat_n(0i32, retained));
         session.gen_len += (n - retained) as u32;
         (n, false, 0)
     };
@@ -1238,7 +1242,8 @@ async fn a_multi_chunk_prefill_fills_the_pipeline() {
 #[tokio::test]
 async fn unknown_session_during_prefill_is_recovered() {
     for transport in Transport::all() {
-        let measurement = conversation_with_hops_fault(transport, 1, true, 2, Some((1, 1, 1))).await;
+        let measurement =
+            conversation_with_hops_fault(transport, 1, true, 2, Some((1, 1, 1))).await;
         let turn = &measurement.turns[0];
         assert!(
             turn.failed.is_none(),

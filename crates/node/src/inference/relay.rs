@@ -1094,11 +1094,10 @@ fn received_hidden_state_bytes(
     let Some(tensor) = tensor else {
         return Ok(0);
     };
-    let actual_dtype = WireDtype::parse(
-        meta.get("dtype")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("{peer_label}: response with a hidden state without a dtype"))?,
-    )?;
+    let actual_dtype =
+        WireDtype::parse(meta.get("dtype").and_then(Value::as_str).ok_or_else(|| {
+            anyhow!("{peer_label}: response with a hidden state without a dtype")
+        })?)?;
     if actual_dtype != expected_dtype {
         return Err(anyhow!(
             "{peer_label}: hidden state response uses {}, but the negotiated format is {}",
@@ -1380,9 +1379,7 @@ async fn send_frame_with_protocol(
                             attempt,
                             message: format!("QUIC: {error}"),
                         });
-                        warn!(
-                            "QUIC call to {peer_label} at {base} failed ({error}), using TCP"
-                        );
+                        warn!("QUIC call to {peer_label} at {base} failed ({error}), using TCP");
                     }
                 }
             }
@@ -1865,7 +1862,9 @@ async fn send_batch_body(
             Err(error) => {
                 transport_fallback = true;
                 transport_fallback_reason = Some(format!("https-link: {error}"));
-                warn!("{peer_label}: persistent channel failed ({error}), using the per-request path")
+                warn!(
+                    "{peer_label}: persistent channel failed ({error}), using the per-request path"
+                )
             }
         }
     }
@@ -2412,15 +2411,21 @@ async fn send_bytes_via_tunnel(
             reply: reply_tx,
         })
         .await
-        .map_err(|_| {
-            anyhow!("{peer_label}: libp2p swarm is not available (channel closed)")
-        })?;
+        .map_err(|_| anyhow!("{peer_label}: libp2p swarm is not available (channel closed)"))?;
 
     let response = match tokio::time::timeout(TUNNEL_BYTES_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: libp2p tunnel failure: {error}")),
-        Ok(Err(_)) => return Err(anyhow!("{peer_label}: libp2p tunnel closed without answering")),
-        Err(_) => return Err(anyhow!("{peer_label}: libp2p tunnel did not answer in time")),
+        Ok(Err(_)) => {
+            return Err(anyhow!(
+                "{peer_label}: libp2p tunnel closed without answering"
+            ))
+        }
+        Err(_) => {
+            return Err(anyhow!(
+                "{peer_label}: libp2p tunnel did not answer in time"
+            ))
+        }
     };
 
     if !(200..300).contains(&response.status) {

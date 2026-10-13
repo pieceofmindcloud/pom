@@ -366,13 +366,12 @@ pub(super) async fn handle_prefill(
     let mut reply = match result {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
-            let code = if e.to_string().contains("unknown")
-                || e.to_string().contains("out of order")
-            {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
+            let code =
+                if e.to_string().contains("unknown") || e.to_string().contains("out of order") {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
             return (code, e.to_string()).into_response();
         }
         Err(e) => return err500(e),

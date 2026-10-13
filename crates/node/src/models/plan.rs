@@ -1026,10 +1026,7 @@ mod tests {
         assert_eq!(plan.covered_layers, 9);
         assert_eq!(plan.missing_range, Some((9, 31)));
         assert!(plan.missing_mb > 0.0);
-        assert!(plan
-            .warnings
-            .iter()
-            .any(|w| w.contains("missing layers")));
+        assert!(plan.warnings.iter().any(|w| w.contains("missing layers")));
     }
 
     #[test]
@@ -1078,7 +1075,10 @@ mod tests {
         let mut b = budget("b", 99000.0);
         b.has_model = false;
         let plan = plan_split("/m/qwen.gguf", &l, &[b], 0.0).unwrap();
-        assert!(plan.warnings.iter().any(|w| w.contains("does not have the chosen model")));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.contains("does not have the chosen model")));
     }
 
     #[test]
@@ -1287,7 +1287,10 @@ mod tests {
             &[SizedSlice::of_mb(99_000.0), SizedSlice::of_mb(1000.0)],
         )
         .unwrap();
-        assert_eq!(plan.ranges[0].layers, 8, "the first already covers the model");
+        assert_eq!(
+            plan.ranges[0].layers, 8,
+            "the first already covers the model"
+        );
         assert!(plan.ranges[1].empty);
         assert!(plan.blocked);
         assert!(plan

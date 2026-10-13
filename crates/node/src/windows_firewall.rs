@@ -150,14 +150,10 @@ pub fn spawn_startup_check(database: Arc<PomDb>, p2p_port: u16) {
         let result = tokio::task::spawn_blocking(move || startup_check(&database, p2p_port)).await;
         match result {
             Ok(Ok(())) => tracing::debug!(p2p_port, "Windows firewall check completed"),
-            Ok(Err(error)) => tracing::warn!(
-                p2p_port,
-                "could not check the Windows firewall: {error:#}"
-            ),
-            Err(error) => tracing::warn!(
-                p2p_port,
-                "Windows firewall check cancelled: {error}"
-            ),
+            Ok(Err(error)) => {
+                tracing::warn!(p2p_port, "could not check the Windows firewall: {error:#}")
+            }
+            Err(error) => tracing::warn!(p2p_port, "Windows firewall check cancelled: {error}"),
         }
     });
 
@@ -358,8 +354,7 @@ mod platform {
             };
             configure_rule(&rule, &spec, &executable)?;
             if unsafe { rules.Item(&BSTR::from(name.as_str())) }.is_err() {
-                unsafe { rules.Add(&rule) }
-                    .map_err(|error| anyhow!("add rule {name}: {error}"))?;
+                unsafe { rules.Add(&rule) }.map_err(|error| anyhow!("add rule {name}: {error}"))?;
             }
         }
         Ok(())

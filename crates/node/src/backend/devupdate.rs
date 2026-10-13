@@ -196,7 +196,8 @@ async fn update_endpoint(
     // button from the **target's** `dev_update`, so the button appeared and this
     // node answered 403. Whoever forwards does not need the permission; whoever executes
     // does, and it is the destination that checks it.
-    if let Some(target) = requested_node_id.filter(|id| should_forward(Some(id), &state.network.node_id))
+    if let Some(target) =
+        requested_node_id.filter(|id| should_forward(Some(id), &state.network.node_id))
     {
         let peers = state.network.alive_peers().await;
         let Some(base) = peers
@@ -413,8 +414,7 @@ async fn update_endpoint(
             if let Some(j) = jobs.get_mut(&job_id) {
                 j.state = "done";
                 j.step = "pronto".into();
-                j.message =
-                    format!("code updated; this machine is restarting.{siblings_msg}");
+                j.message = format!("code updated; this machine is restarting.{siblings_msg}");
                 j.finished_at = Some(chrono::Utc::now().to_rfc3339());
             }
         }
@@ -562,10 +562,7 @@ mod tests {
             preflight("HEAD", ""),
             Preflight::DetachedOrNoBranch
         ));
-        assert!(matches!(
-            preflight("", ""),
-            Preflight::DetachedOrNoBranch
-        ));
+        assert!(matches!(preflight("", ""), Preflight::DetachedOrNoBranch));
     }
 
     /// A dirty tree stops before touching anything, and says which files.
@@ -618,7 +615,10 @@ mod tests {
     /// answers that decide between executing here and forwarding.
     #[test]
     fn should_forward_only_with_another_peer_node_id() {
-        assert!(!should_forward(None, "meu-id"), "without node_id, runs here");
+        assert!(
+            !should_forward(None, "meu-id"),
+            "without node_id, runs here"
+        );
         assert!(
             !should_forward(Some("meu-id"), "meu-id"),
             "node_id equal to mine, runs here"

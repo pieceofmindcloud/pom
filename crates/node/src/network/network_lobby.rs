@@ -691,9 +691,8 @@ impl PublicStats {
         let now = Instant::now();
         let mut callers = self.callers.lock().expect("public stats callers lock");
         if callers.len() >= LobbyLimits::INFO_CALLERS {
-            callers.retain(|_, (started, _)| {
-                now.duration_since(*started) < LobbyLimits::INFO_WINDOW
-            });
+            callers
+                .retain(|_, (started, _)| now.duration_since(*started) < LobbyLimits::INFO_WINDOW);
             if callers.len() >= LobbyLimits::INFO_CALLERS {
                 return false;
             }
@@ -774,9 +773,8 @@ impl DirectoryBoard {
         let now = Instant::now();
         let mut callers = self.callers.lock().expect("directory board callers lock");
         if callers.len() >= LobbyLimits::INFO_CALLERS {
-            callers.retain(|_, (started, _)| {
-                now.duration_since(*started) < LobbyLimits::INFO_WINDOW
-            });
+            callers
+                .retain(|_, (started, _)| now.duration_since(*started) < LobbyLimits::INFO_WINDOW);
             if callers.len() >= LobbyLimits::INFO_CALLERS {
                 return false;
             }
@@ -811,7 +809,10 @@ impl DirectoryBoard {
     /// by a node that does not answer directory queries, or when full.
     pub fn accept_publication(&self, network: crate::gateway::PublicNetworkView) -> bool {
         let gathers = matches!(
-            self.known.lock().expect("directory board known lock").as_ref(),
+            self.known
+                .lock()
+                .expect("directory board known lock")
+                .as_ref(),
             Some((_, Some(_)))
         );
         if !gathers {
@@ -821,7 +822,10 @@ impl DirectoryBoard {
             return false;
         }
         let now = Instant::now();
-        let mut published = self.published.lock().expect("directory board published lock");
+        let mut published = self
+            .published
+            .lock()
+            .expect("directory board published lock");
         published.retain(|_, (at, _)| now.duration_since(*at) < PUBLICATION_TTL);
         if !published.contains_key(&network.fingerprint)
             && published.len() >= LobbyLimits::PUBLICATIONS
@@ -834,7 +838,10 @@ impl DirectoryBoard {
 
     fn publications(&self) -> Listed {
         let now = Instant::now();
-        let mut published = self.published.lock().expect("directory board published lock");
+        let mut published = self
+            .published
+            .lock()
+            .expect("directory board published lock");
         published.retain(|_, (at, _)| now.duration_since(*at) < PUBLICATION_TTL);
         let mut listed: Listed = published.values().map(|(_, view)| view.clone()).collect();
         listed.sort_by(|left, right| left.fingerprint.cmp(&right.fingerprint));
@@ -842,7 +849,11 @@ impl DirectoryBoard {
     }
 
     pub fn known(&self) -> BoardAnswer {
-        let slot = self.known.lock().expect("directory board known lock").clone();
+        let slot = self
+            .known
+            .lock()
+            .expect("directory board known lock")
+            .clone();
         if Self::stale(slot.as_ref().map(|(at, _)| *at)) {
             self.wanted.notify_one();
         }
@@ -893,7 +904,9 @@ fn fit_directory_answer(mut listed: Listed) -> Listed {
     let mut used = 0_usize;
     let mut kept = 0_usize;
     for network in &listed {
-        used += serde_json::to_vec(network).map(|bytes| bytes.len()).unwrap_or(budget);
+        used += serde_json::to_vec(network)
+            .map(|bytes| bytes.len())
+            .unwrap_or(budget);
         if used > budget {
             break;
         }
@@ -1170,8 +1183,8 @@ impl LobbyClient {
     /// Sends one request to the principal whose key is `key` (`pk:...`). The
     /// address is resolved through pkarr at dial time and never stored.
     pub async fn request(&self, key: &str, request: LobbyRequest) -> Result<LobbyResponse> {
-        let peer_id = crate::pkarr_node::peer_id_from_uri(key)
-            .context("the publisher key is invalid")?;
+        let peer_id =
+            crate::pkarr_node::peer_id_from_uri(key).context("the publisher key is invalid")?;
         let addresses = self.dial_addresses(key).await;
         if addresses.is_empty() {
             anyhow::bail!("publisher_unresolved");
@@ -1271,9 +1284,18 @@ mod tests {
     #[test]
     fn presence_announces_once_then_only_on_change() {
         let guests = LobbyGuests::default();
-        assert_eq!(guests.admit("a", &card("alpha"), false), Ok(GuestSeen::Announce));
-        assert_eq!(guests.admit("a", &card("alpha"), false), Ok(GuestSeen::Known));
-        assert_eq!(guests.admit("a", &card("renamed"), false), Ok(GuestSeen::Announce));
+        assert_eq!(
+            guests.admit("a", &card("alpha"), false),
+            Ok(GuestSeen::Announce)
+        );
+        assert_eq!(
+            guests.admit("a", &card("alpha"), false),
+            Ok(GuestSeen::Known)
+        );
+        assert_eq!(
+            guests.admit("a", &card("renamed"), false),
+            Ok(GuestSeen::Announce)
+        );
         assert_eq!(guests.hostname("a").as_deref(), Some("renamed"));
         assert_eq!(guests.snapshot().len(), 1);
     }
@@ -1316,9 +1338,14 @@ mod tests {
     fn the_lobby_refuses_candidates_beyond_its_capacity() {
         let guests = LobbyGuests::default();
         for index in 0..LobbyLimits::GUESTS {
-            assert!(guests.admit(&format!("n{index}"), &card("x"), false).is_ok());
+            assert!(guests
+                .admit(&format!("n{index}"), &card("x"), false)
+                .is_ok());
         }
-        assert_eq!(guests.admit("one-more", &card("x"), false), Err("lobby_full"));
+        assert_eq!(
+            guests.admit("one-more", &card("x"), false),
+            Err("lobby_full")
+        );
     }
 
     /// The candidate's swarm against a swarm that only speaks the lobby
@@ -1351,7 +1378,10 @@ mod tests {
             loop {
                 if let SwarmEvent::Behaviour(request_response::Event::Message {
                     peer,
-                    message: request_response::Message::Request { request, channel, .. },
+                    message:
+                        request_response::Message::Request {
+                            request, channel, ..
+                        },
                     ..
                 }) = swarm.select_next_some().await
                 {
@@ -1439,9 +1469,11 @@ mod tests {
         assert_eq!(served.node_count, 3);
         assert_eq!(served.models.len(), LobbyLimits::INFO_MODELS);
         // Fresh stats do not ask again.
-        assert!(tokio::time::timeout(Duration::from_millis(50), stats.wanted())
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stats.wanted())
+                .await
+                .is_err()
+        );
 
         stats.clear();
         assert_eq!(stats.current(), None);
@@ -1476,7 +1508,9 @@ mod tests {
 
     #[test]
     fn a_directory_answer_is_cut_to_what_one_frame_carries() {
-        let many: Vec<_> = (0..200).map(|i| listed(&format!("n{i}"), String::new())).collect();
+        let many: Vec<_> = (0..200)
+            .map(|i| listed(&format!("n{i}"), String::new()))
+            .collect();
         assert_eq!(
             fit_directory_answer(many).len(),
             LobbyLimits::DIRECTORY_NETWORKS
@@ -1575,9 +1609,11 @@ mod tests {
         board.publish(Vec::new(), Some(Vec::new()));
         assert_eq!(board.known(), BoardAnswer::Ready(Vec::new()));
         // A fresh board does not ask again.
-        assert!(tokio::time::timeout(Duration::from_millis(50), board.wanted())
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), board.wanted())
+                .await
+                .is_err()
+        );
 
         for _ in 0..LobbyLimits::INFO_PER_WINDOW {
             assert!(board.allow("asker"));
@@ -1596,7 +1632,10 @@ mod tests {
 
         let mut gathered = listed("both", "gathered".into());
         gathered.fingerprint = "fp-both".into();
-        board.publish(Vec::new(), Some(vec![gathered, listed("only-gathered", String::new())]));
+        board.publish(
+            Vec::new(),
+            Some(vec![gathered, listed("only-gathered", String::new())]),
+        );
         assert!(board.accept_publication(listed("both", "published".into())));
         assert!(board.accept_publication(listed("only-published", String::new())));
         // Publishing again replaces, it does not duplicate.
@@ -1643,7 +1682,13 @@ mod tests {
         );
         // Asking again while pending only refreshes what the admin will read.
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("renamed"), EnrollmentRole::Infer, now),
+            apply_admission_request(
+                &mut records,
+                "a",
+                card("renamed"),
+                EnrollmentRole::Infer,
+                now
+            ),
             Ok(AdmissionStatus::Pending)
         );
         assert_eq!(records.len(), 1);
@@ -1675,7 +1720,13 @@ mod tests {
         );
         let later = now + chrono::Duration::seconds(ADMISSION_RETRY_AFTER_SECS + 1);
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Node, later),
+            apply_admission_request(
+                &mut records,
+                "a",
+                card("alpha"),
+                EnrollmentRole::Node,
+                later
+            ),
             Ok(AdmissionStatus::Pending)
         );
 
@@ -1690,14 +1741,24 @@ mod tests {
         // Full of pending requests, a new one is refused rather than evicting.
         let mut full: Vec<AdmissionRecord> = Vec::new();
         for index in 0..ADMISSION_RECORDS {
-            apply_admission_request(&mut full, &format!("n{index}"), card("x"), EnrollmentRole::Node, now).unwrap();
+            apply_admission_request(
+                &mut full,
+                &format!("n{index}"),
+                card("x"),
+                EnrollmentRole::Node,
+                now,
+            )
+            .unwrap();
         }
         assert_eq!(
             apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now),
             Err("admissions_full")
         );
         full[3].status = AdmissionStatus::Rejected;
-        assert!(apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now).is_ok());
+        assert!(
+            apply_admission_request(&mut full, "late", card("x"), EnrollmentRole::Node, now)
+                .is_ok()
+        );
         assert!(full.iter().all(|record| record.node_id != "n3"));
     }
 
@@ -1709,7 +1770,10 @@ mod tests {
         // Two connections under one PeerId would split the cluster's requests.
         assert_ne!(transport, node_peer);
         // Stable across restarts, and different for another node.
-        assert_eq!(transport, transport_keypair(&identity).public().to_peer_id());
+        assert_eq!(
+            transport,
+            transport_keypair(&identity).public().to_peer_id()
+        );
         let other = crate::identity::Identity::generate();
         assert_ne!(transport, transport_keypair(&other).public().to_peer_id());
     }

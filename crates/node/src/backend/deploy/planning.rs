@@ -1351,10 +1351,7 @@ pub(super) fn plan_with_rtt_options(
         let message = if m[0] == m[1] {
             format!("layer L{} is in no chosen slice", m[0])
         } else {
-            format!(
-                "layers L{}-{} are in no chosen slice",
-                m[0], m[1]
-            )
+            format!("layers L{}-{} are in no chosen slice", m[0], m[1])
         };
         blocked.get_or_insert(message.clone());
         warnings.push(message);
@@ -1502,7 +1499,10 @@ pub(super) fn plan_with_rtt_options(
                         gb(mem_need)
                     ));
                 } else if !ready {
-                    note = Some(format!("{} GB over the network before starting", gb(mem_need)));
+                    note = Some(format!(
+                        "{} GB over the network before starting",
+                        gb(mem_need)
+                    ));
                 }
             }
 
@@ -2014,10 +2014,7 @@ pub(super) async fn tp_shardability_check(
         .into_iter()
         .find(|peer| peer.node_id == primary.node_id)
     else {
-        return Some(format!(
-            "could not reach the primary {}",
-            primary.label()
-        ));
+        return Some(format!("could not reach the primary {}", primary.label()));
     };
 
     // `/api/ui/tp/check` is authenticated like every operator `/api/ui/*`: without the

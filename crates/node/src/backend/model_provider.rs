@@ -604,10 +604,7 @@ async fn cancel_download(
             )
     });
     if !active {
-        return conflict(
-            "download_not_active",
-            "download is not in progress".into(),
-        );
+        return conflict("download_not_active", "download is not in progress".into());
     }
     let Some(token) = state
         .model_service
@@ -617,10 +614,7 @@ async fn cancel_download(
         .get(&id)
         .cloned()
     else {
-        return conflict(
-            "download_not_active",
-            "download is not in progress".into(),
-        );
+        return conflict("download_not_active", "download is not in progress".into());
     };
     token.cancel();
     Json(json!({ "download_id": id, "status": "cancelling" })).into_response()
@@ -1191,9 +1185,7 @@ fn public_error_message_code(code: &str) -> &'static str {
         "download_in_progress" => "this model is already being downloaded",
         "model_installed" => "this model is already installed",
         "destination_unavailable" => "no models folder is available",
-        "download_failed" => {
-            "could not complete the download; check the connection and try again"
-        }
+        "download_failed" => "could not complete the download; check the connection and try again",
         "invalid_response" => {
             "Hugging Face did not answer correctly; check the connection and try again"
         }

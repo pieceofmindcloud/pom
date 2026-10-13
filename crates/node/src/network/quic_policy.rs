@@ -59,9 +59,7 @@ pub(crate) async fn fetch_from_principal(
         )
         .await
         .context("could not reach the principal to confirm QUIC")?;
-    let body: QuicReply = resp
-        .json()
-        .context("QUIC policy response did not parse")?;
+    let body: QuicReply = resp.json().context("QUIC policy response did not parse")?;
     info!(
         quic_enabled = body.quic_enabled,
         announced_tls, "QUIC policy confirmed by the principal"

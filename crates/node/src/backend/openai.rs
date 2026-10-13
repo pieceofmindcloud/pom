@@ -689,7 +689,12 @@ async fn chat_completions(
     let prompt_tokens = approx_tokens(&prompt);
 
     let output_limit = state
-        .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
+        .request_output_limit_for_head(
+            Some(&model),
+            preferred_head.as_deref(),
+            requested_max_tokens,
+            &prompt,
+        )
         .await;
     log_output_limit("/v1/chat/completions", output_limit);
     if let Some(error) = output_limit.rejection_reason() {

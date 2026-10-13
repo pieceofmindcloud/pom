@@ -86,7 +86,11 @@ pub(crate) struct GeoNearestQuery {
 }
 
 fn geo_unavailable(error: String) -> Response {
-    network_error(StatusCode::INTERNAL_SERVER_ERROR, "geo_database_failed", &error)
+    network_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "geo_database_failed",
+        &error,
+    )
 }
 
 pub(super) fn geo_countries_response() -> Response {
@@ -342,7 +346,9 @@ pub(crate) async fn notify_principal_of_departure(state: &GatewayState) {
                 "leaving the network: the principal answered {} to the notice",
                 response.status()
             ),
-            Err(error) => warn!("leaving the network: the principal did not receive the notice: {error:#}"),
+            Err(error) => {
+                warn!("leaving the network: the principal did not receive the notice: {error:#}")
+            }
         }
     }
     // Otherwise by the principal's key, over the lobby connection. That one
@@ -542,8 +548,7 @@ pub(crate) fn spawn_key_reclaimer(state: GatewayState) {
             {
                 continue;
             }
-            let Some(key) =
-                crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey)
+            let Some(key) = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&primary.pubkey)
             else {
                 continue;
             };

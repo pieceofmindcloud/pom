@@ -50,7 +50,9 @@ level entry consumed by `backend/gateway/` (`generate_stream_with_stops`).
   in the telemetry.
 - `plan_pipeline` - calls the variant above with no RTT measurements.
 - `model_pipeline_candidates` and `model_head_candidates` - the first applies the
-  model, deployment and liveness filter; the second keeps only the ranges that
+  model, deployment and liveness filter, and leaves out a replica still loading
+  (`PeerInfo::is_warming`: not idle, no `runtime_capacity` yet) when a ready peer
+  serves the same range, so a request is not held by it; the second keeps only the ranges that
   start at L0, for the limited view of the infer profile. A mixed deployment can
   therefore expose the head of the whole GGUF and the head of slices at the same
   time. Neither one publishes the full topology.

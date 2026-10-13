@@ -117,7 +117,9 @@ pub(super) async fn clear_kv_cache(
             Ok(response) if response.status().is_success() => {
                 match response.json::<serde_json::Value>().await {
                     Ok(body) => Json(body).into_response(),
-                    Err(error) => bad_request(format!("unreadable response from the machine: {error}")),
+                    Err(error) => {
+                        bad_request(format!("unreadable response from the machine: {error}"))
+                    }
                 }
             }
             Ok(response) => bad_request(format!("the machine refused: HTTP {}", response.status())),

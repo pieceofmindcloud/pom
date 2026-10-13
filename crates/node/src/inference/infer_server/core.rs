@@ -1527,7 +1527,8 @@ mod tests {
             executor: crate::moe::runtime::MoeExecutorKind::CpuReference,
             dtypes: vec![21, 22, 23],
             reason: Some(
-                "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected".into(),
+                "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected"
+                    .into(),
             ),
             diagnostics: None,
         });
@@ -1659,7 +1660,10 @@ mod tests {
         let connected = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
 
         assert!(connected, "an IPv4 client could not connect on [::]");
-        assert!(accepted.join().unwrap(), "the IPv4 connection was not accepted");
+        assert!(
+            accepted.join().unwrap(),
+            "the IPv4 connection was not accepted"
+        );
     }
 
     #[test]
@@ -1676,7 +1680,10 @@ mod tests {
         let connected = std::net::TcpStream::connect(("::1", port)).is_ok();
 
         assert!(connected, "an IPv6 client could not connect on [::]");
-        assert!(accepted.join().unwrap(), "the IPv6 connection was not accepted");
+        assert!(
+            accepted.join().unwrap(),
+            "the IPv6 connection was not accepted"
+        );
     }
 
     /// The socket has to ask for `SO_REUSEADDR`, as std's `TcpListener::bind`
@@ -1821,7 +1828,8 @@ mod tests {
         .expect_err("a busy port should fail");
 
         assert!(
-            error.to_string().to_lowercase().contains("address") || error.to_string().contains("use"),
+            error.to_string().to_lowercase().contains("address")
+                || error.to_string().contains("use"),
             "the error had to be the port one, and it was: {error}"
         );
         assert!(

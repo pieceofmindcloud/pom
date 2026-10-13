@@ -133,11 +133,11 @@ mod network;
 mod network_chat;
 #[path = "network/network_chat_policy.rs"]
 mod network_chat_policy;
-#[path = "network/network_lobby.rs"]
-mod network_lobby;
 #[cfg(test)]
 #[path = "network/network_chat_tests.rs"]
 mod network_chat_tests;
+#[path = "network/network_lobby.rs"]
+mod network_lobby;
 #[path = "models/ollama.rs"]
 mod ollama;
 #[path = "backend/openai.rs"]
@@ -151,11 +151,15 @@ mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
 mod plugin_dev;
+#[path = "inference/plugin_engine.rs"]
+mod plugin_engine;
 mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_proxy;
 mod plugin_services;
+#[path = "inference/plugin_stage_link.rs"]
+mod plugin_stage_link;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
@@ -163,10 +167,6 @@ mod plugins;
 mod pom;
 #[path = "pom_core_update.rs"]
 mod pom_core_update;
-#[path = "inference/plugin_engine.rs"]
-mod plugin_engine;
-#[path = "inference/plugin_stage_link.rs"]
-mod plugin_stage_link;
 #[path = "inference/prefill/mod.rs"]
 mod prefill;
 #[path = "inference/prefix_cache.rs"]
@@ -177,6 +177,7 @@ mod prefix_cache_lab;
 #[cfg(test)]
 #[path = "inference/prefix_reuse_lab.rs"]
 mod prefix_reuse_lab;
+mod process_tree;
 #[path = "profile.rs"]
 pub(crate) mod profile;
 #[cfg(test)]
@@ -193,7 +194,6 @@ mod rag;
 mod relay;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
-mod process_tree;
 #[path = "utils/respawn.rs"]
 mod respawn;
 #[path = "network/route.rs"]
@@ -645,7 +645,9 @@ fn anchor_admin(
     } else {
         let cluster_id = cluster_id
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("--cluster-id is required when creating the local root"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("--cluster-id is required when creating the local root")
+            })?;
         let (_signing_key, principal) = crate::admin_trust::local_authority_identity()?;
         let anchor =
             crate::admin_trust::TrustAnchor::for_principal(cluster_id.to_string(), principal);
@@ -676,9 +678,7 @@ fn anchor_admin(
         );
     }
     if !confirm {
-        bail!(
-            "the fingerprint needs explicit confirmation; run again with --confirm"
-        );
+        bail!("the fingerprint needs explicit confirmation; run again with --confirm");
     }
 
     if local_root {
@@ -794,7 +794,10 @@ async fn async_main(
         info!("Generated a local admin credential for the configured node");
     }
     for (dir, error) in app_config.create_default_storage_dirs() {
-        warn!("could not create the default folder {}: {error}", dir.display());
+        warn!(
+            "could not create the default folder {}: {error}",
+            dir.display()
+        );
     }
     log_capture.set_min_level(app_config.cluster_logs_min_level);
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver);
@@ -983,53 +986,53 @@ fn force_setup_mode() -> anyhow::Result<()> {
 fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
-    profile: crate::profile::NodeProfile::Admin,
-    setup_pending: true,
-    local_auto_discovery: false,
-    tls_required: false,
-    // On from the start: a new network uses QUIC between its nodes and has
-    // its Chat, and the principal can turn either off in the preferences.
-    quic_enabled: true,
-    cluster_logs_enabled: false,
-    network_chat_enabled: true,
-    cluster_logs_min_level: Default::default(),
-    // Setup mode does not load a model: the GPU choice only takes effect
-    // once `pom.json` exists.
-    gpus: None,
-    thermal: Default::default(),
-    cache_type_k: config::KvCacheType::F16,
-    cache_type_v: config::KvCacheType::F16,
-    connection_key: String::new(),
-    gateway_port,
-    admin_exposure: config::AdminExposure::Localhost,
-    admin_access_token: None,
-    admin_password_default: false,
-    p2p_port,
-    inference_port: None,
-    bootstrap_nodes: vec![],
-    relay_peers: vec![],
-    relay: Default::default(),
-    advertise_addr: None,
-    network: Default::default(),
-    api_keys: vec![],
-    blocked_nodes: vec![],
-    // A freshly configured node comes up with the detected libraries; the
-    // Models screen is where that list stops being a guess.
-    model_dirs: None,
-    shard_dir: None,
-    workspace_root: None,
-    shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
-    resources: Default::default(),
-    setup_model: None,
-    first_run_guide: None,
-    node_name: None,
-    huggingface_token: None,
-    slot_save_path: None,
-    slot_persist_prefix_cache: true,
-    slot_auto_max_bytes: None,
-    slot_auto_ttl_secs: None,
-    cache_ram_mib: None,
-}
+        profile: crate::profile::NodeProfile::Admin,
+        setup_pending: true,
+        local_auto_discovery: false,
+        tls_required: false,
+        // On from the start: a new network uses QUIC between its nodes and has
+        // its Chat, and the principal can turn either off in the preferences.
+        quic_enabled: true,
+        cluster_logs_enabled: false,
+        network_chat_enabled: true,
+        cluster_logs_min_level: Default::default(),
+        // Setup mode does not load a model: the GPU choice only takes effect
+        // once `pom.json` exists.
+        gpus: None,
+        thermal: Default::default(),
+        cache_type_k: config::KvCacheType::F16,
+        cache_type_v: config::KvCacheType::F16,
+        connection_key: String::new(),
+        gateway_port,
+        admin_exposure: config::AdminExposure::Localhost,
+        admin_access_token: None,
+        admin_password_default: false,
+        p2p_port,
+        inference_port: None,
+        bootstrap_nodes: vec![],
+        relay_peers: vec![],
+        relay: Default::default(),
+        advertise_addr: None,
+        network: Default::default(),
+        api_keys: vec![],
+        blocked_nodes: vec![],
+        // A freshly configured node comes up with the detected libraries; the
+        // Models screen is where that list stops being a guess.
+        model_dirs: None,
+        shard_dir: None,
+        workspace_root: None,
+        shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+        resources: Default::default(),
+        setup_model: None,
+        first_run_guide: None,
+        node_name: None,
+        huggingface_token: None,
+        slot_save_path: None,
+        slot_persist_prefix_cache: true,
+        slot_auto_max_bytes: None,
+        slot_auto_ttl_secs: None,
+        cache_ram_mib: None,
+    }
 }
 
 /// Part of the deprecated wizard (see `start_setup_mode`): nothing sets it.
@@ -1065,9 +1068,7 @@ async fn start_setup_mode(
     let setup_socket =
         tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], setup_p2p_port)))
             .await
-            .with_context(|| {
-                format!("could not open local discovery on port {setup_p2p_port}")
-            })?;
+            .with_context(|| format!("could not open local discovery on port {setup_p2p_port}"))?;
     setup_socket.set_broadcast(true)?;
     let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
         Arc::new(setup_socket),
@@ -1086,7 +1087,10 @@ async fn start_setup_mode(
     let app = Router::new()
         .route("/api/setup/hardware", get(webui::get_setup_hardware))
         .route("/api/setup/models", get(webui::get_setup_models))
-        .route("/api/setup/geo/countries", get(webui::get_setup_geo_countries))
+        .route(
+            "/api/setup/geo/countries",
+            get(webui::get_setup_geo_countries),
+        )
         .route("/api/setup/geo/cities", get(webui::get_setup_geo_cities))
         .route("/api/setup/geo/nearest", get(webui::get_setup_geo_nearest))
         .route(
@@ -2160,10 +2164,7 @@ mod main_tests {
 
     #[test]
     fn runtime_build_commit_overrides_the_compiled_fallback() {
-        assert_eq!(
-            build_commit_from(Some(" 97ec1e4 "), "unknown"),
-            "97ec1e4"
-        );
+        assert_eq!(build_commit_from(Some(" 97ec1e4 "), "unknown"), "97ec1e4");
         assert_eq!(build_commit_from(Some("  "), "2a456c8"), "2a456c8");
         assert_eq!(build_commit_from(None, "2a456c8"), "2a456c8");
     }
@@ -2222,6 +2223,9 @@ mod llama_engine_contract {
     #[test]
     fn gguf_prefix_matches_the_brand_slug() {
         assert_eq!(llama_engine::GGUF_PREFIX, brand::slug());
-        assert_eq!(llama_engine::gguf_key("tp_size"), brand::gguf_key("tp_size"));
+        assert_eq!(
+            llama_engine::gguf_key("tp_size"),
+            brand::gguf_key("tp_size")
+        );
     }
 }

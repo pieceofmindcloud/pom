@@ -226,14 +226,16 @@ pub(crate) fn known_networks_page(
             })
         }),
         // Whatever has no distance goes last.
-        KnownNetworksSort::Distance if viewer.is_some() => rows.sort_by(|left, right| {
-            match (distance(&left.network), distance(&right.network)) {
-                (Some(left), Some(right)) => left.total_cmp(&right),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-        }),
+        KnownNetworksSort::Distance if viewer.is_some() => {
+            rows.sort_by(
+                |left, right| match (distance(&left.network), distance(&right.network)) {
+                    (Some(left), Some(right)) => left.total_cmp(&right),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
+            )
+        }
         KnownNetworksSort::Distance => {}
     }
 
@@ -267,21 +269,27 @@ pub(super) async fn known_networks(
     State(state): State<GatewayState>,
     Query(query): Query<KnownNetworksQuery>,
 ) -> Response {
-    let mut excluded: std::collections::HashSet<String> = super::networks::custom_networks(&state.database)
-        .into_iter()
-        .map(|entry| entry.network.fingerprint)
-        .collect();
+    let mut excluded: std::collections::HashSet<String> =
+        super::networks::custom_networks(&state.database)
+            .into_iter()
+            .map(|entry| entry.network.fingerprint)
+            .collect();
     if let Some(own) = crate::gateway::local_network_view(&state).await {
         excluded.insert(own.fingerprint);
     }
     let database = state.database.clone();
-    let page = tokio::task::spawn_blocking(move || known_networks_page(&database, &query, &excluded)).await;
+    let page =
+        tokio::task::spawn_blocking(move || known_networks_page(&database, &query, &excluded))
+            .await;
     match page {
         Ok(Ok(page)) => {
             // The reachability column asks about these keys, and the locate
             // route only answers for publishers this node lists.
-            let listed: Vec<PublicNetworkView> =
-                page.networks.iter().map(|known| known.network.clone()).collect();
+            let listed: Vec<PublicNetworkView> = page
+                .networks
+                .iter()
+                .map(|known| known.network.clone())
+                .collect();
             crate::gateway::remember_listed_publishers(&listed);
             Json(page).into_response()
         }
@@ -392,7 +400,14 @@ mod tests {
     fn pages_are_cut_after_filtering_and_sorting_and_leave_out_pinned_rows() {
         let database = temporary_db("pages");
         let networks: Vec<PublicNetworkView> = (0..7)
-            .map(|index| network(&format!("n{index}"), &format!("Rede {index}"), "Curitiba", -20.0 - index as f64))
+            .map(|index| {
+                network(
+                    &format!("n{index}"),
+                    &format!("Rede {index}"),
+                    "Curitiba",
+                    -20.0 - index as f64,
+                )
+            })
             .collect();
         remember_public_networks(&database, &networks);
         let excluded = std::collections::HashSet::from(["n0".to_string()]);
@@ -409,7 +424,11 @@ mod tests {
         };
         let first = page(1);
         assert_eq!(first.total, 6);
-        let names: Vec<_> = first.networks.iter().map(|known| known.network.fingerprint.clone()).collect();
+        let names: Vec<_> = first
+            .networks
+            .iter()
+            .map(|known| known.network.fingerprint.clone())
+            .collect();
         assert_eq!(names, vec!["n6", "n5", "n4", "n3"]);
         let second = page(2);
         assert_eq!(second.networks.len(), 2);
@@ -422,7 +441,10 @@ mod tests {
         let database = temporary_db("radius");
         remember_public_networks(
             &database,
-            &[network("near", "Perto", "A", -25.0), network("far", "Longe", "B", -5.0)],
+            &[
+                network("near", "Perto", "A", -25.0),
+                network("far", "Longe", "B", -5.0),
+            ],
         );
         let query = KnownNetworksQuery {
             latitude: Some(-25.1),
@@ -440,17 +462,28 @@ mod tests {
         let database = temporary_db("evict");
         let entry = |fingerprint: &str| KnownNetworkEntry {
             fingerprint: fingerprint.to_string(),
-            view_json: serde_json::to_string(&network(fingerprint, fingerprint, "C", -25.0)).unwrap(),
+            view_json: serde_json::to_string(&network(fingerprint, fingerprint, "C", -25.0))
+                .unwrap(),
             search_text: fingerprint.to_string(),
         };
-        database.remember_public_networks(&[entry("old")], 1_000, 100, 10).unwrap();
-        database.remember_public_networks(&[entry("a"), entry("b")], 2_000, 100, 10).unwrap();
-        database.remember_public_networks(&[entry("c")], 2_001, 100, 2).unwrap();
+        database
+            .remember_public_networks(&[entry("old")], 1_000, 100, 10)
+            .unwrap();
+        database
+            .remember_public_networks(&[entry("a"), entry("b")], 2_000, 100, 10)
+            .unwrap();
+        database
+            .remember_public_networks(&[entry("c")], 2_001, 100, 2)
+            .unwrap();
         let rows: Vec<String> = database
             .known_public_networks("")
             .unwrap()
             .into_iter()
-            .map(|row| serde_json::from_str::<PublicNetworkView>(&row.view_json).unwrap().fingerprint)
+            .map(|row| {
+                serde_json::from_str::<PublicNetworkView>(&row.view_json)
+                    .unwrap()
+                    .fingerprint
+            })
             .collect();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0], "c");

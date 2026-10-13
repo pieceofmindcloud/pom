@@ -243,7 +243,10 @@ async fn lobby_presence_is_kept_in_memory_and_never_vouched_for_by_an_api_key() 
         guests[0].1.hostname.len(),
         crate::network_lobby::LobbyLimits::CARD_TEXT_BYTES
     );
-    assert!(database.network_chat_messages("lobby", 10).unwrap().is_empty());
+    assert!(database
+        .network_chat_messages("lobby", 10)
+        .unwrap()
+        .is_empty());
 
     // A member cannot originate a presence, whatever its key.
     let error = chat
@@ -297,7 +300,8 @@ async fn the_member_list_takes_admitted_peers_and_keeps_out_one_that_just_left()
     // Recording again changes nothing, and never overrides a decision.
     assert!(!chat.record_member("old-member", "outro-nome", Infer));
     assert_eq!(chat.admission_of("old-member").unwrap().role, Node);
-    chat.request_admission("candidate", Default::default(), Infer).unwrap();
+    chat.request_admission("candidate", Default::default(), Infer)
+        .unwrap();
     assert!(!chat.record_member("candidate", "x", Node));
     assert_eq!(
         chat.admission_of("candidate").unwrap().status,

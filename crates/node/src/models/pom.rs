@@ -399,10 +399,7 @@ fn acquire_pom_lock(shard_dir: &Path, source_sha256: &str) -> Result<PomLock> {
             Err(e) => return Err(e).with_context(|| format!("create lock {}", path.display())),
         }
     }
-    bail!(
-        "timed out waiting for the manifest lock {}",
-        source_sha256
-    )
+    bail!("timed out waiting for the manifest lock {}", source_sha256)
 }
 
 /// Merges the manifest into the local inventory of the same original model.
@@ -436,7 +433,8 @@ pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<Pa
     m.validate()?;
     let destination = locate_source_dir(shard_dir, &m.pom_id)
         .unwrap_or_else(|| source_run_dir(shard_dir, &m.model.name, &m.pom_id));
-    std::fs::create_dir_all(&destination).with_context(|| format!("create {}", destination.display()))?;
+    std::fs::create_dir_all(&destination)
+        .with_context(|| format!("create {}", destination.display()))?;
 
     for part in m.parts.iter().chain(m.tp_parts.iter()) {
         let from = part_path(temp, &part.sha256)?;
@@ -494,7 +492,8 @@ pub fn sanitize_name(name: &str) -> String {
 /// atomic and a truncated `.pom` would be read as "model without parts".
 pub fn write_atomic(model_dir: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
-    std::fs::create_dir_all(model_dir).with_context(|| format!("create {}", model_dir.display()))?;
+    std::fs::create_dir_all(model_dir)
+        .with_context(|| format!("create {}", model_dir.display()))?;
 
     let destination = manifest_path(model_dir, m);
     let temp = model_dir.join(format!(".{}.{}.tmp", m.pom_id, std::process::id()));

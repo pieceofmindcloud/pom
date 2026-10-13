@@ -440,8 +440,8 @@ mod speculative_tests {
     /// written.
     #[test]
     fn a_frame_without_a_draft_source_still_means_lookup() {
-        let spec =
-            Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}})).expect("k and m are enough");
+        let spec = Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}}))
+            .expect("k and m are enough");
         assert_eq!(spec.source, DraftSource::Lookup);
         assert_eq!((spec.k, spec.m), (4, 3));
     }

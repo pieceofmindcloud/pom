@@ -203,7 +203,10 @@ async fn fake_release() -> impl IntoResponse {
 /// the requested `n_past` counts as a session tidied up for the next turn.
 async fn fake_rewind(body: Bytes) -> impl IntoResponse {
     let request: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
-    let n = request.get("n_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let n = request
+        .get("n_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     Json(json!({"rewound": true, "n_past": n}))
 }
 
@@ -734,8 +737,7 @@ async fn post_sse(no: &No, body: Value) -> Flow {
                 if payload == "[DONE]" {
                     flow.done_sentinels += 1;
                 } else {
-                    flow
-                        .chunks
+                    flow.chunks
                         .push(serde_json::from_str(payload).expect("chunk JSON"));
                     flow.instants.push(now);
                 }
@@ -793,7 +795,10 @@ async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
         vec!["stop".to_string()],
         "the seam leaked an end of response to the client"
     );
-    assert_eq!(flow.done_sentinels, 1, "more than one [DONE] is another stream");
+    assert_eq!(
+        flow.done_sentinels, 1,
+        "more than one [DONE] is another stream"
+    );
     assert_eq!(flow.text(), expected);
     assert_eq!(
         flow.last_with_x_pom()["x_pom"]["continuation_legs"],
@@ -1870,11 +1875,7 @@ async fn without_a_task_budget_the_generation_is_untouched() {
     let prompt = no.generation_prompt();
     assert!(!prompt.contains("task_budget"), "{prompt:?}");
     assert_eq!(prompt, "User: escreva o arquivo");
-    assert!(
-        body["x_pom"]["task_budget"].is_null(),
-        "{}",
-        body["x_pom"]
-    );
+    assert!(body["x_pom"]["task_budget"].is_null(), "{}", body["x_pom"]);
 }
 
 /// The minimum is the providers': below it the API answers 400, because a

@@ -69,10 +69,7 @@ fn embed_windows_icon(root: &Path) {
     let icon = root.join("assets/brand/pom.ico");
     println!("cargo:rerun-if-changed={}", icon.display());
     if !icon.exists() {
-        println!(
-            "cargo:warning=Windows icon not found in {}",
-            icon.display()
-        );
+        println!("cargo:warning=Windows icon not found in {}", icon.display());
         return;
     }
     let mut res = winresource::WindowsResource::new();

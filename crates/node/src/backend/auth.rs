@@ -620,9 +620,7 @@ pub(crate) fn hash_admin_password(password: &str) -> anyhow::Result<String> {
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
-        .map_err(|error| {
-            anyhow::anyhow!("could not protect the administrative password: {error}")
-        })
+        .map_err(|error| anyhow::anyhow!("could not protect the administrative password: {error}"))
 }
 
 /// Verify a password against the PHC-encoded Argon2id hash. Malformed or
@@ -1464,12 +1462,30 @@ mod tests {
         begin_key_transition("transition-old-key", "transition-new-key", 1_000);
 
         // Before the switch: still sending the old key, accepting both.
-        assert_eq!(outbound_connection_key_at(&rotated, 990), "transition-old-key");
-        assert!(connection_key_accepted_at(&rotated, "transition-old-key", 990));
-        assert!(connection_key_accepted_at(&rotated, "transition-new-key", 990));
+        assert_eq!(
+            outbound_connection_key_at(&rotated, 990),
+            "transition-old-key"
+        );
+        assert!(connection_key_accepted_at(
+            &rotated,
+            "transition-old-key",
+            990
+        ));
+        assert!(connection_key_accepted_at(
+            &rotated,
+            "transition-new-key",
+            990
+        ));
         // From the switch: sending the new key, the old one still accepted.
-        assert_eq!(outbound_connection_key_at(&rotated, 1_000), "transition-new-key");
-        assert!(connection_key_accepted_at(&rotated, "transition-old-key", 1_010));
+        assert_eq!(
+            outbound_connection_key_at(&rotated, 1_000),
+            "transition-new-key"
+        );
+        assert!(connection_key_accepted_at(
+            &rotated,
+            "transition-old-key",
+            1_010
+        ));
         // A node whose clock is behind still sends the old key at that time.
         assert!(connection_key_accepted_at(
             &rotated,
@@ -1478,13 +1494,32 @@ mod tests {
         ));
         // A config holding another key is not part of this rotation.
         let other = config("some-other-network-key");
-        assert_eq!(outbound_connection_key_at(&other, 990), "some-other-network-key");
-        assert!(!connection_key_accepted_at(&other, "transition-old-key", 990));
+        assert_eq!(
+            outbound_connection_key_at(&other, 990),
+            "some-other-network-key"
+        );
+        assert!(!connection_key_accepted_at(
+            &other,
+            "transition-old-key",
+            990
+        ));
         // After the grace the old key opens nothing, here or ever again.
         let after = 1_000 + KEY_TRANSITION_GRACE_SECS;
-        assert!(!connection_key_accepted_at(&rotated, "transition-old-key", after));
-        assert!(connection_key_accepted_at(&rotated, "transition-new-key", after));
-        assert!(!connection_key_accepted_at(&rotated, "transition-old-key", 990));
+        assert!(!connection_key_accepted_at(
+            &rotated,
+            "transition-old-key",
+            after
+        ));
+        assert!(connection_key_accepted_at(
+            &rotated,
+            "transition-new-key",
+            after
+        ));
+        assert!(!connection_key_accepted_at(
+            &rotated,
+            "transition-old-key",
+            990
+        ));
         assert!(!connection_key_accepted_at(&rotated, "", after));
     }
 }

@@ -914,15 +914,19 @@ pub(super) async fn run_apply(
         roots.extend(config.model_dir_paths());
         roots
     };
-    let local_sidecar = |kind, file: Option<&crate::catalog::SidecarFile>| -> anyhow::Result<Option<String>> {
-        let Some(file) = file else { return Ok(None) };
-        crate::catalog::find_local_sidecar(&sidecar_roots, kind, file)
-            .map(Some)
-            .ok_or_else(|| anyhow::anyhow!("{} is not on this machine", file.file_name))
-    };
+    let local_sidecar =
+        |kind, file: Option<&crate::catalog::SidecarFile>| -> anyhow::Result<Option<String>> {
+            let Some(file) = file else { return Ok(None) };
+            crate::catalog::find_local_sidecar(&sidecar_roots, kind, file)
+                .map(Some)
+                .ok_or_else(|| anyhow::anyhow!("{} is not on this machine", file.file_name))
+        };
     let requested_mmproj = match req.mmproj_path.clone().filter(|path| !path.is_empty()) {
         Some(path) => Some(path),
-        None if req.use_mmproj => local_sidecar(crate::catalog::SidecarKind::Mmproj, req.mmproj_file.as_ref())?,
+        None if req.use_mmproj => local_sidecar(
+            crate::catalog::SidecarKind::Mmproj,
+            req.mmproj_file.as_ref(),
+        )?,
         None => None,
     };
     let mmproj_path = if req.use_mmproj {
@@ -939,7 +943,10 @@ pub(super) async fn run_apply(
     // it was requested. See `models::catalog::find_mtp_draft_sibling`.
     let requested_mtp = match req.mtp_draft_path.clone().filter(|path| !path.is_empty()) {
         Some(path) => Some(path),
-        None => local_sidecar(crate::catalog::SidecarKind::Mtp, req.mtp_draft_file.as_ref())?,
+        None => local_sidecar(
+            crate::catalog::SidecarKind::Mtp,
+            req.mtp_draft_file.as_ref(),
+        )?,
     };
     let mtp_draft_path = match requested_mtp.as_deref() {
         // A deployment that resolved the draft from the model's sidecar link
@@ -1081,10 +1088,7 @@ pub(super) async fn merge_parts(
         .as_deref()
         .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
     {
-        info!(
-            "merged model already exists, reusing: {}",
-            path.display()
-        );
+        info!("merged model already exists, reusing: {}", path.display());
         crate::gguf::read_layout(&path)
             .with_context(|| format!("validate the existing merged GGUF {}", path.display()))?;
         return Ok(path.to_string_lossy().into_owned());

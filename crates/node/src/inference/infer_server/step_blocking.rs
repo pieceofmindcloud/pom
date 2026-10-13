@@ -76,9 +76,10 @@ pub(crate) fn step_blocking(
     // nothing else writes to the prompt sequence, and that is what leaves it
     // reusable on the next turn without removing anything from the cache.
     s.open_generation(&sid_key)?;
-    let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
-        anyhow::anyhow!("unknown session '{}' — run the prefill first", sid_key)
-    })?;
+    let session = s
+        .sessions
+        .get_mut(&sid_key)
+        .ok_or_else(|| anyhow::anyhow!("unknown session '{}' — run the prefill first", sid_key))?;
     session.last_used = Instant::now();
     let n_past = session.n_past;
     let seq_id = session.seq_id();
@@ -133,10 +134,10 @@ pub(crate) fn step_blocking(
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
-    // handling here beyond what chunked prefill already exercises. The tail
-    // of a sliced pipeline has the `nextn` block: `decode_hidden` feeds
-    // `observe` with the batch composition (`batch_tokens`, coming from the
-    // head via `tokens` on the wire); without it, it turns MTP off with a warning.
+        // handling here beyond what chunked prefill already exercises. The tail
+        // of a sliced pipeline has the `nextn` block: `decode_hidden` feeds
+        // `observe` with the batch composition (`batch_tokens`, coming from the
+        // head via `tokens` on the wire); without it, it turns MTP off with a warning.
         n_tokens = shape[0];
         let logits_all = incoming_draft.is_some() || !is_last;
         // A round with neither `mtp_k` nor an MTP draft will not draft: the tail

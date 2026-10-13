@@ -542,8 +542,11 @@ pub fn self_reply_urls(
         // The scheme follows the cluster policy: these URLs are the ones the tail
         // will dial back, and in a TLS cluster this node's `/relay/result`
         // refuses cleartext coming from outside.
-        let url =
-            crate::peer_client::peer_base_url(&host, gateway_port, crate::peer_client::tls_enabled());
+        let url = crate::peer_client::peer_base_url(
+            &host,
+            gateway_port,
+            crate::peer_client::tls_enabled(),
+        );
         if !urls.contains(&url) {
             urls.push(url);
         }
@@ -580,9 +583,7 @@ fn is_unroutable_host(host: &str) -> bool {
 pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     let (mut meta, _tensor) = match crate::wire::decode(&body) {
         Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("invalid frame: {e}")).into_response()
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("invalid frame: {e}")).into_response(),
     };
     let Some(ticket) = meta
         .get("ticket")
@@ -620,9 +621,7 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
 pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     let (mut meta, _tensor) = match crate::wire::decode(&body) {
         Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("invalid frame: {e}")).into_response()
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("invalid frame: {e}")).into_response(),
     };
     let Some(ticket) = meta
         .get("ticket")
@@ -1862,9 +1861,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), notify.notified())
             .await
             .expect("late ACK processed");
-        let snapshot = inbox
-            .trace_snapshot(&ticket_id)
-            .expect("snapshot updated");
+        let snapshot = inbox.trace_snapshot(&ticket_id).expect("snapshot updated");
         assert_eq!(snapshot["transport_trace_complete"], true);
         assert_eq!(snapshot["transport_traversals"][0]["round_trip_ms"], 17);
     }

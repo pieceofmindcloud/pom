@@ -1576,10 +1576,7 @@ mod tests {
             .expect("the content went out");
         assert!(large.contains("linha_0 = 0 * 2"), "{large:?}");
         let whole = frags.concat();
-        assert!(
-            whole.starts_with(r#"{"path":"/tmp/calc.py""#),
-            "{whole:?}"
-        );
+        assert!(whole.starts_with(r#"{"path":"/tmp/calc.py""#), "{whole:?}");
         let json: serde_json::Value = serde_json::from_str(&whole).expect("valid JSON");
         assert!(json["content"]
             .as_str()

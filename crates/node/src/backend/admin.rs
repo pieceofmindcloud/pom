@@ -1125,7 +1125,8 @@ async fn promote_node_to_admin(
             (body["profile"] != "admin").then(|| {
                 (
                     StatusCode::CONFLICT,
-                    json!({ "error": "the node did not accept the administrator role" }).to_string(),
+                    json!({ "error": "the node did not accept the administrator role" })
+                        .to_string(),
                 )
             })
         }
@@ -1311,7 +1312,9 @@ const TRUST_CHAIN_SOURCES: usize = 3;
 /// ahead of this node by the counters, and the principal whenever its copy
 /// differs at the same counters. The announced version is only a hint of
 /// where to look - what is fetched is verified signature by signature.
-async fn chain_sources(state: &crate::gateway::GatewayState) -> Vec<(crate::network::PeerInfo, bool)> {
+async fn chain_sources(
+    state: &crate::gateway::GatewayState,
+) -> Vec<(crate::network::PeerInfo, bool)> {
     let mine = state.admin_trust.chain_version();
     let Some(my_counters) = crate::admin_trust::version_counters(&mine) else {
         return Vec::new();
@@ -1329,8 +1332,11 @@ async fn chain_sources(state: &crate::gateway::GatewayState) -> Vec<(crate::netw
             }
             let counters = crate::admin_trust::version_counters(theirs)?;
             let is_principal = peer.pubkey == primary.pubkey;
-            (counters > my_counters || (counters == my_counters && is_principal))
-                .then_some((counters, is_principal, peer))
+            (counters > my_counters || (counters == my_counters && is_principal)).then_some((
+                counters,
+                is_principal,
+                peer,
+            ))
         })
         .collect::<Vec<_>>();
     sources.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
@@ -2491,7 +2497,6 @@ mod tests {
         ));
     }
 
-
     /// A principal with its chain, and the keys of two other machines.
     struct ChainLab {
         principal_key: ed25519_dalek::SigningKey,
@@ -2533,8 +2538,7 @@ mod tests {
             identity: &(ed25519_dalek::SigningKey, AuthorityPrincipal),
             profile: NodeProfile,
         ) -> crate::gateway::GatewayState {
-            let mut state =
-                crate::gateway::testkit::state_with(&identity.1.node_id, vec![]).await;
+            let mut state = crate::gateway::testkit::state_with(&identity.1.node_id, vec![]).await;
             state.auth.write().await.profile = profile;
             state.network.set_profile(profile);
             state.admin_trust = std::sync::Arc::new(
@@ -2574,13 +2578,17 @@ mod tests {
 
         let chain = lab.trust.document();
         assert_eq!(
-            adopt_trust_chain(&promoted, chain.clone(), true).await.unwrap(),
+            adopt_trust_chain(&promoted, chain.clone(), true)
+                .await
+                .unwrap(),
             NodeProfile::Admin
         );
         assert_eq!(promoted.network.profile(), NodeProfile::Admin);
         // The bystander keeps its role and now accepts the new admin.
         assert_eq!(
-            adopt_trust_chain(&bystander, chain.clone(), false).await.unwrap(),
+            adopt_trust_chain(&bystander, chain.clone(), false)
+                .await
+                .unwrap(),
             NodeProfile::Node
         );
         assert!(crate::admin_trust::control_issuer_is_admin(
@@ -2588,7 +2596,9 @@ mod tests {
             &lab.member.1
         ));
         assert_eq!(
-            adopt_trust_chain(&infer_bystander, chain.clone(), false).await.unwrap(),
+            adopt_trust_chain(&infer_bystander, chain.clone(), false)
+                .await
+                .unwrap(),
             NodeProfile::Infer
         );
 
@@ -2598,7 +2608,9 @@ mod tests {
             .unwrap();
         let demoted = lab.trust.document();
         assert_eq!(
-            adopt_trust_chain(&promoted, demoted.clone(), true).await.unwrap(),
+            adopt_trust_chain(&promoted, demoted.clone(), true)
+                .await
+                .unwrap(),
             NodeProfile::Node
         );
         adopt_trust_chain(&bystander, demoted, false).await.unwrap();
@@ -2607,14 +2619,18 @@ mod tests {
             &lab.member.1
         ));
         // The copy from before the demotion is older and cannot undo it.
-        let (status, _) = adopt_trust_chain(&bystander, chain, false).await.unwrap_err();
+        let (status, _) = adopt_trust_chain(&bystander, chain, false)
+            .await
+            .unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
 
         // Promoting the same node again is a new grant every member adopts.
         lab.promote(&lab.member.1);
         let again = lab.trust.document();
         assert_eq!(
-            adopt_trust_chain(&promoted, again.clone(), true).await.unwrap(),
+            adopt_trust_chain(&promoted, again.clone(), true)
+                .await
+                .unwrap(),
             NodeProfile::Admin
         );
         adopt_trust_chain(&bystander, again, false).await.unwrap();
@@ -2633,7 +2649,9 @@ mod tests {
         let infer = lab.node(&lab.member, NodeProfile::Infer).await;
         lab.promote(&lab.member.1);
         assert_eq!(
-            adopt_trust_chain(&infer, lab.trust.document(), false).await.unwrap(),
+            adopt_trust_chain(&infer, lab.trust.document(), false)
+                .await
+                .unwrap(),
             NodeProfile::Infer
         );
         assert_eq!(infer.auth.read().await.profile, NodeProfile::Infer);
@@ -2670,7 +2688,12 @@ mod tests {
     #[tokio::test]
     async fn a_member_is_only_sent_the_chain_when_its_copy_differs() {
         let lab = chain_lab();
-        let principal = lab.node(&(lab.principal_key.clone(), lab.principal.clone()), NodeProfile::Admin).await;
+        let principal = lab
+            .node(
+                &(lab.principal_key.clone(), lab.principal.clone()),
+                NodeProfile::Admin,
+            )
+            .await;
         let ask = |have: String| {
             let principal = principal.clone();
             async move {
@@ -2737,7 +2760,10 @@ mod tests {
         assert_eq!(status["outdated"], true);
         assert_eq!(status["newer_on"][0], "member");
         // A peer at the same version, or behind, is nobody to ask.
-        assert_eq!(chain_status(&seen(announcing(&old)).await).await["outdated"], false);
+        assert_eq!(
+            chain_status(&seen(announcing(&old)).await).await["outdated"],
+            false
+        );
         assert_eq!(
             chain_status(&seen(announcing("not-a-version")).await).await["outdated"],
             false
@@ -2769,7 +2795,9 @@ mod tests {
             let grant = trust
                 .signed_secondary_grant(&lab.principal_key, subject.clone(), "principal")
                 .unwrap();
-            trust.record_secondary_grant(grant, &lab.principal_key).unwrap();
+            trust
+                .record_secondary_grant(grant, &lab.principal_key)
+                .unwrap();
         }
         assert_ne!(lab.trust.chain_version(), fork.chain_version());
         assert_eq!(

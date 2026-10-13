@@ -1245,10 +1245,7 @@ impl NodeRuntime {
 
         if persist_attempt {
             let attempt = crate::lastslice::begin_new_attempt(&cfg)?;
-            info!(
-                attempt,
-                "deployment persisted before starting the server"
-            );
+            info!(attempt, "deployment persisted before starting the server");
         }
 
         let profile = ModelProfile::guess_from_name(&cfg.model_path);
@@ -1632,22 +1629,22 @@ impl NodeRuntime {
                     .await
                 } else {
                     crate::infer_server::run(
-                    cfg.clone(),
-                    gen_rx.clone(),
-                    generation,
-                    mtp_ready.clone(),
-                    batching_ready.clone(),
-                    tls.clone(),
-                    quic.clone(),
-                    quic_port,
-                    auth.clone(),
-                    model_cache.clone(),
-                    reuse_weights,
-                    loads.clone(),
-                    load_node_id.clone(),
-                    request_activity.clone(),
-                )
-                .await
+                        cfg.clone(),
+                        gen_rx.clone(),
+                        generation,
+                        mtp_ready.clone(),
+                        batching_ready.clone(),
+                        tls.clone(),
+                        quic.clone(),
+                        quic_port,
+                        auth.clone(),
+                        model_cache.clone(),
+                        reuse_weights,
+                        loads.clone(),
+                        load_node_id.clone(),
+                        request_activity.clone(),
+                    )
+                    .await
                 };
                 if *gen_rx.borrow() != generation {
                     return;
@@ -1992,8 +1989,7 @@ async fn free_port(port: u16) -> Result<(), String> {
 
     let pids = pids_holding_port(port).await;
     if pids.is_empty() {
-        let reason =
-            format!("port {port} busy and the process holding it could not be identified");
+        let reason = format!("port {port} busy and the process holding it could not be identified");
         warn!("{reason}");
         return Err(reason);
     }
@@ -2606,7 +2602,10 @@ mod tests {
         c.total_layers = 32;
         c.peer_count = 1;
         c.peer_index = 0;
-        assert!(c.mtp_effective(), "0-31 of 32, alone: it is the whole model");
+        assert!(
+            c.mtp_effective(),
+            "0-31 of 32, alone: it is the whole model"
+        );
     }
 
     #[test]

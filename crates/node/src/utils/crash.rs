@@ -61,7 +61,11 @@ mod imp {
             .find(|(number, _)| *number == signal)
             .map(|(_, name)| *name)
             .unwrap_or("fatal signal");
-        let address = if info.is_null() { 0 } else { unsafe { (*info).si_addr() as usize } };
+        let address = if info.is_null() {
+            0
+        } else {
+            unsafe { (*info).si_addr() as usize }
+        };
         let mut buffer = [0u8; 18];
         write_stderr(b"\n=== pom: native crash: ");
         write_stderr(name.as_bytes());
@@ -69,7 +73,11 @@ mod imp {
         write_stderr(hex(address, &mut buffer));
         let mut thread_name = [0u8; 32];
         unsafe {
-            libc::pthread_getname_np(libc::pthread_self(), thread_name.as_mut_ptr().cast(), thread_name.len())
+            libc::pthread_getname_np(
+                libc::pthread_self(),
+                thread_name.as_mut_ptr().cast(),
+                thread_name.len(),
+            )
         };
         let thread_len = thread_name.iter().position(|byte| *byte == 0).unwrap_or(0);
         write_stderr(b" in thread ");
@@ -144,9 +152,15 @@ mod tests {
             output.extend_from_slice(&chunk[..read as usize]);
         }
         let text = String::from_utf8_lossy(&output);
-        assert!(libc::WIFSIGNALED(status), "the child should have died from the signal: {text}");
+        assert!(
+            libc::WIFSIGNALED(status),
+            "the child should have died from the signal: {text}"
+        );
         assert_eq!(libc::WTERMSIG(status), libc::SIGSEGV);
-        assert!(text.contains("native crash: SIGSEGV at address 0x0"), "{text}");
+        assert!(
+            text.contains("native crash: SIGSEGV at address 0x0"),
+            "{text}"
+        );
         assert!(text.contains("end of native crash report"), "{text}");
     }
 }

@@ -940,6 +940,12 @@ impl PeerInfo {
         self.tp.as_ref().is_some_and(|t| t.role == "worker")
     }
 
+    /// Alive with its model in memory being loaded: not idle, and no
+    /// capacity proven yet (`runtime_capacity` comes once it is ready).
+    pub fn is_warming(&self) -> bool {
+        !self.idle && self.runtime_capacity.is_none()
+    }
+
     pub fn is_alive(&self) -> bool {
         let now = Utc::now();
         let diff = now.signed_duration_since(self.last_seen);
@@ -1657,7 +1663,9 @@ impl Network {
         broadcast_addr: SocketAddr,
     ) -> Result<Self> {
         if !broadcast_addr.ip().is_loopback() {
-            return Err(anyhow::anyhow!("the UDP testkit only accepts loopback destinations"));
+            return Err(anyhow::anyhow!(
+                "the UDP testkit only accepts loopback destinations"
+            ));
         }
         let socket = UdpSocket::bind("127.0.0.1:0").await?;
         let bind_addr = socket.local_addr()?;
@@ -1854,7 +1862,10 @@ impl Network {
     }
 
     pub fn trust_version(&self) -> Option<String> {
-        self.trust_version.read().ok().and_then(|current| current.clone())
+        self.trust_version
+            .read()
+            .ok()
+            .and_then(|current| current.clone())
     }
 
     /// Whether this node is the network's principal, as opposed to any
@@ -3664,8 +3675,7 @@ impl Network {
         };
         // The key this node presents now: during a rotation that is still
         // the old one until every member switches together.
-        let connection_key =
-            crate::auth::outbound_connection_key(&*admission.auth.read().await);
+        let connection_key = crate::auth::outbound_connection_key(&*admission.auth.read().await);
         let cache_key = self.admission_cache_key(peer, &connection_key);
         let probe = self.private_peer_is_admitted(peer, &connection_key).await;
         let Ok(mut cache) = self.admission_cache.write() else {
@@ -3957,7 +3967,11 @@ impl Network {
         // probe, which falls back to a relay circuit for a peer behind NAT -
         // and it was those circuits, never going to be useful, that used up
         // the relay. A peer that announces no network is still probed.
-        if let Some(theirs) = peer.cluster_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        if let Some(theirs) = peer
+            .cluster_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+        {
             if admission.trust.is_anchored() && !admission.trust.anchors_cluster(theirs) {
                 return Some(false);
             }
@@ -5128,7 +5142,9 @@ mod tests {
         .await;
 
         let peers = net.peers.read().await;
-        let peer = peers.get("peer").expect("the announce must create the peer");
+        let peer = peers
+            .get("peer")
+            .expect("the announce must create the peer");
         assert_eq!(peer.addr_candidates, vec![stale]);
     }
 
@@ -5294,8 +5310,7 @@ mod tests {
         let old = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z"}"#;
-        let msg: P2PMessage =
-            serde_json::from_str(old).expect("an old Announce must parse");
+        let msg: P2PMessage = serde_json::from_str(old).expect("an old Announce must parse");
         match msg {
             P2PMessage::Announce {
                 addr_candidates, ..
@@ -5947,7 +5962,11 @@ mod tests {
 
         let kept = admission_verdict(AdmissionProbe::Unreachable, Some(recent), now);
         assert!(kept.allowed);
-        assert_eq!(kept.proven_at, Some(recent), "the slack does not renew the proof");
+        assert_eq!(
+            kept.proven_at,
+            Some(recent),
+            "the slack does not renew the proof"
+        );
         assert_eq!(kept.expires_at, now + REJECTED_ADMISSION_CACHE_TTL);
 
         assert!(!admission_verdict(AdmissionProbe::Unreachable, Some(stale), now).allowed);
@@ -6140,8 +6159,8 @@ mod tests {
         // The same anchored peer on a listed network that requires approval:
         // the anchor is not enough, the connection key decides, and with no
         // key in common the peer stays out.
-        let path = std::env::temp_dir()
-            .join(format!("pom-admission-gated-{}.json", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pom-admission-gated-{}.json", uuid::Uuid::new_v4()));
         let gated_trust = crate::admin_trust::AdminTrust::bootstrap_primary(
             &path,
             "cluster",
@@ -6387,7 +6406,9 @@ mod tests {
         // A tick that falls on a discovery sweep.
         net.discovery_sweep(DISCOVERY_SWEEP_TICKS).await.unwrap();
 
-        let msg = recv_msg(&sock, 500).await.expect("nothing arrived at the peer");
+        let msg = recv_msg(&sock, 500)
+            .await
+            .expect("nothing arrived at the peer");
         assert!(
             matches!(msg, P2PMessage::PeerRequest { .. }),
             "expected PeerRequest, got {msg:?}"

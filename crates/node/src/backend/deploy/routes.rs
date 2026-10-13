@@ -103,9 +103,9 @@ pub(super) async fn list_deployments(
     let mut stored_by: HashMap<String, Vec<String>> = HashMap::new();
 
     let absorb = |who: &str,
-                   records: Vec<crate::deployment::Deployment>,
-                   by_id: &mut HashMap<String, crate::deployment::Deployment>,
-                   stored_by: &mut HashMap<String, Vec<String>>| {
+                  records: Vec<crate::deployment::Deployment>,
+                  by_id: &mut HashMap<String, crate::deployment::Deployment>,
+                  stored_by: &mut HashMap<String, Vec<String>>| {
         for mut d in records {
             d.ensure_versions();
             stored_by

@@ -889,7 +889,10 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
         legs(&direct_tail) < legs(&ring_tail) - 1.0,
         "the direct reply must be cheaper than the ring in the case that hurt"
     );
-    assert_eq!(ring_tail.deliveries, 0, "the ring does not use the direct delivery");
+    assert_eq!(
+        ring_tail.deliveries, 0,
+        "the ring does not use the direct delivery"
+    );
 }
 
 /// The long prompt needs to carry the absolute position the head published

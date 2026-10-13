@@ -139,7 +139,11 @@ pub(super) struct ModelShape {
 
 /// The selected model's shape in one machine's `/api/ui/models` answer: the
 /// whole model with this name, or the shards of the set with this group.
-pub(super) fn model_shape_in(body: &serde_json::Value, group: &str, kind: DeployKind) -> Option<ModelShape> {
+pub(super) fn model_shape_in(
+    body: &serde_json::Value,
+    group: &str,
+    kind: DeployKind,
+) -> Option<ModelShape> {
     let mut model_key = group.to_string();
     let entries: Vec<&serde_json::Value> = if kind.whole() {
         body.get("models")
@@ -167,12 +171,20 @@ pub(super) fn model_shape_in(body: &serde_json::Value, group: &str, kind: Deploy
             model_key = label.to_string();
         }
         sets.into_iter()
-            .flat_map(|set| set.get("shards").and_then(|value| value.as_array()).into_iter().flatten())
+            .flat_map(|set| {
+                set.get("shards")
+                    .and_then(|value| value.as_array())
+                    .into_iter()
+                    .flatten()
+            })
             .collect()
     };
-    let described = entries
-        .iter()
-        .find(|entry| entry.get("embedding_length").and_then(|value| value.as_u64()).is_some())?;
+    let described = entries.iter().find(|entry| {
+        entry
+            .get("embedding_length")
+            .and_then(|value| value.as_u64())
+            .is_some()
+    })?;
     Some(ModelShape {
         model_key,
         architecture: described
@@ -183,9 +195,12 @@ pub(super) fn model_shape_in(body: &serde_json::Value, group: &str, kind: Deploy
             .get("embedding_length")
             .and_then(|value| value.as_u64())
             .and_then(|value| u32::try_from(value).ok()),
-        embedded_mtp: entries
-            .iter()
-            .any(|entry| entry.pointer("/capabilities/mtp").and_then(|value| value.as_bool()) == Some(true)),
+        embedded_mtp: entries.iter().any(|entry| {
+            entry
+                .pointer("/capabilities/mtp")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        }),
     })
 }
 
@@ -814,7 +829,9 @@ pub(super) async fn survey(
                 metadata_pending_candidate,
                 body.get("sidecars")
                     .cloned()
-                    .and_then(|value| serde_json::from_value::<Vec<crate::catalog::Sidecar>>(value).ok())
+                    .and_then(|value| {
+                        serde_json::from_value::<Vec<crate::catalog::Sidecar>>(value).ok()
+                    })
                     .unwrap_or_default(),
                 model_shape_in(&body, &group, kind),
             ))

@@ -40,8 +40,8 @@ impl PublicDirectorySettings {
             if raw.is_empty() {
                 continue;
             }
-            let parsed = url::Url::parse(raw)
-                .with_context(|| format!("invalid directory ticket: {raw}"))?;
+            let parsed =
+                url::Url::parse(raw).with_context(|| format!("invalid directory ticket: {raw}"))?;
             if !matches!(parsed.scheme(), "http" | "https")
                 || parsed.host_str().is_none()
                 || !parsed.username().is_empty()

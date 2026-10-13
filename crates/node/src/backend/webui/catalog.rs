@@ -194,8 +194,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         p2p_port: state.network.bind_addr.port(),
         addr_candidates: state.network.self_addr_candidates(),
         libp2p_peer_id: state.network.libp2p_peer_id.clone(),
-        inference_frame_capabilities: if let Some(caps) =
-            state.network.plugin_engine_capabilities()
+        inference_frame_capabilities: if let Some(caps) = state.network.plugin_engine_capabilities()
         {
             caps
         } else {
@@ -388,9 +387,7 @@ pub(super) async fn save_admin_access(
         let next = match result {
             Ok(Ok(next)) => next,
             Ok(Err(error)) => return bad_request(error.to_string()),
-            Err(error) => {
-                return bad_request(format!("could not protect the password: {error}"))
-            }
+            Err(error) => return bad_request(format!("could not protect the password: {error}")),
         };
         if next.is_none() {
             return bad_request(
@@ -621,17 +618,17 @@ pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
         catalog
     })
     .await
-        .unwrap_or_else(|e| {
-            warn!("model scan failed: {e}");
-            Catalog {
-                models: Vec::new(),
-                shard_sets: Vec::new(),
-                scanned: Vec::new(),
-                metadata_complete: false,
-                sidecars: Vec::new(),
-                sidecar_roots: Vec::new(),
-            }
-        })
+    .unwrap_or_else(|e| {
+        warn!("model scan failed: {e}");
+        Catalog {
+            models: Vec::new(),
+            shard_sets: Vec::new(),
+            scanned: Vec::new(),
+            metadata_complete: false,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
+        }
+    })
 }
 
 /// Read GGUF headers off the reactor and return a complete catalog.
@@ -646,9 +643,7 @@ pub(super) async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
             catalog.metadata_complete = true;
             for model in &mut catalog.models {
                 model.metadata_identity = catalog::current_metadata_identity(model);
-                model.metadata_error = Some(format!(
-                    "the catalog enrichment task failed: {e}"
-                ));
+                model.metadata_error = Some(format!("the catalog enrichment task failed: {e}"));
             }
             Arc::new(catalog)
         }
@@ -1182,9 +1177,9 @@ pub(super) fn reject_workspace_overlap(
         );
     }
     for model in model_dirs {
-        let model = std::path::Path::new(model).canonicalize().map_err(|e| {
-            format!("Whole models folder: could not resolve {model}: {e}")
-        })?;
+        let model = std::path::Path::new(model)
+            .canonicalize()
+            .map_err(|e| format!("Whole models folder: could not resolve {model}: {e}"))?;
         if paths_overlap(&workspace, &model) {
             return Err(
                 "the workspace cannot be the same as a whole models folder, nor sit inside or contain it"
@@ -1232,9 +1227,9 @@ pub(super) fn reject_nested_shard_dir(
         .canonicalize()
         .map_err(|e| format!("Sliced models folder: could not resolve the path: {e}"))?;
     for model in model_dirs {
-        let model = std::path::Path::new(model).canonicalize().map_err(|e| {
-            format!("Whole models folder: could not resolve {model}: {e}")
-        })?;
+        let model = std::path::Path::new(model)
+            .canonicalize()
+            .map_err(|e| format!("Whole models folder: could not resolve {model}: {e}"))?;
         if shard == model || shard.starts_with(&model) {
             return Err(
                 "the sliced models folder cannot be the same as or sit inside a whole models folder".to_string(),
@@ -1340,7 +1335,10 @@ pub(super) async fn save_paths(
         }
         // An emptied field returns to a default that may not exist yet.
         for (dir, error) in cfg.create_default_storage_dirs() {
-            tracing::warn!("could not create the default folder {}: {error}", dir.display());
+            tracing::warn!(
+                "could not create the default folder {}: {error}",
+                dir.display()
+            );
         }
     }
 
@@ -1452,7 +1450,10 @@ pub(super) async fn save_node_name(
 }
 
 /// The relay options of this machine and what it does with them.
-pub(super) async fn get_relay(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn get_relay(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     Json(state.network.relay_gate().status()).into_response()
 }
 
@@ -1513,11 +1514,7 @@ pub(super) async fn save_quic(
     crate::peer_client::set_quic_enabled(req.quic_enabled);
     info!(
         "QUIC between peers {} from the interface",
-        if req.quic_enabled {
-            "on"
-        } else {
-            "off"
-        }
+        if req.quic_enabled { "on" } else { "off" }
     );
     Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
 }
@@ -1565,11 +1562,7 @@ pub(super) async fn save_tls(
     }
     info!(
         "TLS between peers {} from the interface",
-        if req.tls_required {
-            "on"
-        } else {
-            "off"
-        }
+        if req.tls_required { "on" } else { "off" }
     );
 
     Json(json!({ "tls_required": req.tls_required })).into_response()
@@ -1629,11 +1622,7 @@ pub(super) async fn save_cluster_logs(
     state.cluster_logs.set_enabled(req.logs_enabled);
     info!(
         "cluster process logs {} from the interface",
-        if req.logs_enabled {
-            "on"
-        } else {
-            "off"
-        }
+        if req.logs_enabled { "on" } else { "off" }
     );
     Json(json!({ "logs_enabled": req.logs_enabled })).into_response()
 }
@@ -1850,7 +1839,10 @@ mod tests {
         let new_hash = next_admin_password_hash(Some(&old_hash), "old password", "new password")
             .expect("change the password")
             .expect("hash of the new password");
-        assert!(crate::auth::verify_admin_password(&new_hash, "new password"));
+        assert!(crate::auth::verify_admin_password(
+            &new_hash,
+            "new password"
+        ));
         assert!(!crate::auth::verify_admin_password(
             &new_hash,
             "old password"
@@ -1909,6 +1901,8 @@ pub(super) async fn inference_heads(
 
     let peers = state.all_peers().await;
     let mut heads = crate::pipeline::model_head_candidates(&peers, model, deploy_id);
+    // a head still loading its model is not a choice: a request sent to it waits until it is ready
+    heads.retain(|peer| !peer.is_warming());
     heads.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     let rtt_snapshots = state.network.rtts.snapshot_with_age();
     let rtts = rtt_snapshots

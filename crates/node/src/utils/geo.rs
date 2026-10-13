@@ -241,7 +241,10 @@ impl GeoDatabase {
             return Vec::new();
         };
         let query = fold(query.trim());
-        let cities = country.cities.iter().map(|index| &self.cities[*index as usize]);
+        let cities = country
+            .cities
+            .iter()
+            .map(|index| &self.cities[*index as usize]);
         let mut matches: Vec<&City> = cities
             .clone()
             .filter(|city| city.folded.starts_with(&query))
@@ -255,7 +258,10 @@ impl GeoDatabase {
                     .take(rest),
             );
         }
-        matches.into_iter().map(|city| self.view(city, None)).collect()
+        matches
+            .into_iter()
+            .map(|city| self.view(city, None))
+            .collect()
     }
 
     /// The cities closest to a coordinate, nearest first. The distance is to
@@ -343,7 +349,8 @@ pub fn distance_km(lat_a: f64, lon_a: f64, lat_b: f64, lon_b: f64) -> f64 {
     let (phi_a, phi_b) = (lat_a.to_radians(), lat_b.to_radians());
     let d_phi = (lat_b - lat_a).to_radians();
     let d_lambda = (lon_b - lon_a).to_radians();
-    let a = (d_phi / 2.0).sin().powi(2) + phi_a.cos() * phi_b.cos() * (d_lambda / 2.0).sin().powi(2);
+    let a =
+        (d_phi / 2.0).sin().powi(2) + phi_a.cos() * phi_b.cos() * (d_lambda / 2.0).sin().powi(2);
     2.0 * EARTH_RADIUS_KM * a.sqrt().min(1.0).asin()
 }
 
@@ -442,7 +449,10 @@ pub fn apply_location(settings: &mut NetworkSettings) -> Result<(), String> {
 /// A city of the embedded database, for tests that need a valid location.
 #[cfg(test)]
 pub fn test_city_id() -> u32 {
-    database().expect("embedded database").nearest(-25.43, -49.27, Some(1))[0].id
+    database()
+        .expect("embedded database")
+        .nearest(-25.43, -49.27, Some(1))[0]
+        .id
 }
 
 fn snap(degrees: f64) -> f64 {
@@ -550,7 +560,9 @@ mod tests {
         assert_eq!(nearest[0].country_code, "BR");
         assert_eq!(nearest[0].state, "Paraná");
         assert!(nearest[0].distance_km.unwrap() < 5.0);
-        assert!(nearest.windows(2).all(|pair| pair[0].distance_km <= pair[1].distance_km));
+        assert!(nearest
+            .windows(2)
+            .all(|pair| pair[0].distance_km <= pair[1].distance_km));
         assert_eq!(database.city(nearest[0].id).unwrap().name, "Curitiba");
     }
 
@@ -624,7 +636,11 @@ mod tests {
         apply_location(&mut city).unwrap();
         let published = city.location.unwrap();
         assert_eq!(
-            (published.latitude, published.longitude, published.accuracy_m),
+            (
+                published.latitude,
+                published.longitude,
+                published.accuracy_m
+            ),
             (curitiba.latitude, curitiba.longitude, None)
         );
     }

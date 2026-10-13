@@ -258,10 +258,7 @@ pub(super) async fn capacity_preview_endpoint(
 ) -> Response {
     let path = std::path::PathBuf::from(&req.model_path);
     if !path.is_file() {
-        return bad_request(format!(
-            "file not found locally: {}",
-            req.model_path
-        ));
+        return bad_request(format!("file not found locally: {}", req.model_path));
     }
     let Some(_preview_slot) = try_capacity_preview_slot() else {
         return (
@@ -355,11 +352,7 @@ pub(super) async fn capacity_preview_endpoint(
             is_last,
         ) {
             Ok((weight_bytes, kv_bytes, _total)) => (weight_bytes, kv_bytes),
-            Err(e) => {
-                return bad_request(format!(
-                    "could not compute the memory projection: {e}"
-                ))
-            }
+            Err(e) => return bad_request(format!("could not compute the memory projection: {e}")),
         }
     };
     // The KV cache only weighs on VRAM when it stays on the GPU (`offload_kqv`).

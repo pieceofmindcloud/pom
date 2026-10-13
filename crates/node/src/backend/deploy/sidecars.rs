@@ -109,7 +109,11 @@ pub(super) fn compatible_options(
                     && option.size_bytes == sidecar.size_bytes
             }) {
                 Some(option) => {
-                    if !option.holders.iter().any(|existing| existing.node_id == holder.node_id) {
+                    if !option
+                        .holders
+                        .iter()
+                        .any(|existing| existing.node_id == holder.node_id)
+                    {
                         option.holders.push(holder);
                     }
                 }
@@ -124,7 +128,9 @@ pub(super) fn compatible_options(
             }
         }
     }
-    options.sort_by(|a, b| (a.kind, &a.file_name, a.size_bytes).cmp(&(b.kind, &b.file_name, b.size_bytes)));
+    options.sort_by(|a, b| {
+        (a.kind, &a.file_name, a.size_bytes).cmp(&(b.kind, &b.file_name, b.size_bytes))
+    });
     options
 }
 
@@ -154,7 +160,9 @@ fn resolve_slot(
         return slot;
     };
     let Some(option) = options.iter().find(|option| {
-        option.kind == kind && option.file_name == file.file_name && option.size_bytes == file.size_bytes
+        option.kind == kind
+            && option.file_name == file.file_name
+            && option.size_bytes == file.size_bytes
     }) else {
         slot.problem = Some(format!(
             "no machine on the network has {} ({}) compatible with this model",
@@ -163,7 +171,11 @@ fn resolve_slot(
         ));
         return slot;
     };
-    if let Some(local) = option.holders.iter().find(|holder| holder.node_id == target.target_node_id) {
+    if let Some(local) = option
+        .holders
+        .iter()
+        .find(|holder| holder.node_id == target.target_node_id)
+    {
         slot.target_path = Some(local.path.clone());
         return slot;
     }
@@ -192,11 +204,14 @@ fn choice_or_link(
         .iter()
         .find(|link| link.model_key == model_key && link.kind == kind)
         .map(|link| {
-            let file = link
-                .file_name
-                .clone()
-                .zip(link.size_bytes)
-                .map(|(file_name, size_bytes)| SidecarRef { file_name, size_bytes });
+            let file =
+                link.file_name
+                    .clone()
+                    .zip(link.size_bytes)
+                    .map(|(file_name, size_bytes)| SidecarRef {
+                        file_name,
+                        size_bytes,
+                    });
             (link.mode, file, true)
         })
 }
@@ -223,7 +238,10 @@ pub(super) fn attach_sidecars(
     mtp: Option<&SidecarChoice>,
 ) {
     let Some(shape) = shape else {
-        plan.sidecars = SidecarsPlan { links_stale, ..SidecarsPlan::default() };
+        plan.sidecars = SidecarsPlan {
+            links_stale,
+            ..SidecarsPlan::default()
+        };
         return;
     };
     let options = compatible_options(sidecars, machines, shape);
@@ -239,14 +257,22 @@ pub(super) fn attach_sidecars(
     // draft. The capability read from the file alone says "unsupported" and
     // hides the toggle; a compatible draft anywhere in the network says yes.
     if plan.capabilities.mtp.state == crate::capabilities::CapabilityState::Unsupported {
-        if let Some(draft) = out.options.iter().find(|option| option.kind == SidecarKind::Mtp) {
+        if let Some(draft) = out
+            .options
+            .iter()
+            .find(|option| option.kind == SidecarKind::Mtp)
+        {
             plan.capabilities.mtp = crate::capabilities::supported(
                 "sidecar",
                 format!("compatible external MTP available: {}", draft.file_name),
             );
         }
     }
-    let head = plan.steps.iter().find(|step| step.start_layer == 0).cloned();
+    let head = plan
+        .steps
+        .iter()
+        .find(|step| step.start_layer == 0)
+        .cloned();
     let tail = plan
         .total_layers
         .and_then(|total| plan.steps.iter().find(|step| step.end_layer + 1 == total))
@@ -258,7 +284,14 @@ pub(super) fn attach_sidecars(
             choice_or_link(vision, links, &shape.model_key, SidecarKind::Mmproj),
         ) {
             if mode == SidecarMode::File {
-                let slot = resolve_slot(SidecarKind::Mmproj, mode, file, from_link, head, &out.options);
+                let slot = resolve_slot(
+                    SidecarKind::Mmproj,
+                    mode,
+                    file,
+                    from_link,
+                    head,
+                    &out.options,
+                );
                 if let Some(path) = &slot.target_path {
                     plan.mmproj_path = Some(path.clone());
                     plan.mmproj_reason = None;
@@ -273,7 +306,14 @@ pub(super) fn attach_sidecars(
             tail.as_ref(),
             choice_or_link(mtp, links, &shape.model_key, SidecarKind::Mtp),
         ) {
-            out.mtp = Some(resolve_slot(SidecarKind::Mtp, mode, file, from_link, tail, &out.options));
+            out.mtp = Some(resolve_slot(
+                SidecarKind::Mtp,
+                mode,
+                file,
+                from_link,
+                tail,
+                &out.options,
+            ));
         }
     }
 
@@ -306,7 +346,9 @@ pub(super) fn local_sidecar_path(
     file: &SidecarRef,
 ) -> Option<String> {
     sidecars.get(node_id)?.iter().find_map(|sidecar| {
-        (sidecar.kind == kind && sidecar.file_name == file.file_name && sidecar.size_bytes == file.size_bytes)
+        (sidecar.kind == kind
+            && sidecar.file_name == file.file_name
+            && sidecar.size_bytes == file.size_bytes)
             .then(|| sidecar.path.clone())
     })
 }

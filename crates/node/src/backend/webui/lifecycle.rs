@@ -32,8 +32,7 @@ pub(super) async fn unload_model(
 ) -> Response {
     let unloaded = state.runtime.config().await;
     if unloaded.is_none() {
-        return Json(json!({ "unloaded": false, "reason": "no model loaded" }))
-            .into_response();
+        return Json(json!({ "unloaded": false, "reason": "no model loaded" })).into_response();
     }
     state.runtime.stop().await;
     info!("model unloaded from the interface");
@@ -347,15 +346,16 @@ pub(super) async fn leave_network_and_reset(
         }
     }
 
-    let mut config =
-        match crate::config::Config::load() {
-            Ok(config) => config,
-            Err(error) => return (
+    let mut config = match crate::config::Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": format!("could not read the configuration: {error:#}") })),
             )
-                .into_response(),
-        };
+                .into_response()
+        }
+    };
     // The connection key of the network being left goes with it: after the
     // principal rotates it, it opens nothing. Then this machine's own
     // network comes back from standby as it was; only a node that never had
@@ -378,9 +378,7 @@ pub(super) async fn leave_network_and_reset(
     if let Err(error) = config.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                json!({ "error": format!("could not prepare the next setup: {error:#}") }),
-            ),
+            Json(json!({ "error": format!("could not prepare the next setup: {error:#}") })),
         )
             .into_response();
     }
@@ -688,7 +686,10 @@ pub(super) async fn release_slice(
         Ok(r) => {
             let code = r.status();
             let text = r.text().await.unwrap_or_default();
-            warn!("{} refused to take over the slice: HTTP {code}", candidate.node_id);
+            warn!(
+                "{} refused to take over the slice: HTTP {code}",
+                candidate.node_id
+            );
             Json(json!({
                 "released": true, "slice": released,
                 "reassigned_to": null, "uncovered": true,

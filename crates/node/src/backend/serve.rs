@@ -341,10 +341,7 @@ pub async fn serve_with_quic(
     // the one that was holding the memory.
     debug!("{reason}: draining {} connections", conns.len());
     let drain = async { while conns.join_next().await.is_some() {} };
-    if tokio::time::timeout(DRAIN_DEADLINE, drain)
-        .await
-        .is_err()
-    {
+    if tokio::time::timeout(DRAIN_DEADLINE, drain).await.is_err() {
         warn!("connections still alive after {DRAIN_DEADLINE:?}; closing");
         conns.shutdown().await;
     }
@@ -1048,7 +1045,10 @@ mod tests {
         // With slack over `DRAIN_DEADLINE`, and far below the "forever" that
         // was the old behavior.
         let output = tokio::time::timeout(DRAIN_DEADLINE * 3, server).await;
-        assert!(output.is_ok(), "serve did not stop with a stalled connection");
+        assert!(
+            output.is_ok(),
+            "serve did not stop with a stalled connection"
+        );
         assert!(output.unwrap().unwrap().is_ok());
     }
 }

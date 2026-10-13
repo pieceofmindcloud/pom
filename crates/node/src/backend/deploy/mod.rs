@@ -95,9 +95,9 @@ pub use node::*;
 pub use planning::*;
 use preview::*;
 pub use routes_impl::*;
+pub use sidecars::*;
 #[cfg(test)]
 pub(crate) use survey::survey_for_tests;
-pub use sidecars::*;
 use survey::*;
 pub use types::*;
 

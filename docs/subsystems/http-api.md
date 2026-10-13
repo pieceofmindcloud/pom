@@ -701,6 +701,9 @@ The limits come from the effective runtime and the network: `context_length`,
 `max_input_tokens`, `max_tokens` and `top_provider.max_completion_tokens` are
 the smallest `n_ctx` among the peers of the planned pipeline that serve the
 model/deployment, the capacity of the **request**, not the ceiling of a leg.
+The planned pipeline starts at the head the request chose (`inference_head`),
+and a replica still loading is not planned while a ready one serves the same
+range: a ready machine answers while another of the deployment loads.
 Announcing the deployment's `max_new_tokens` here would make the client ask
 for less than the node delivers. The same peer minimum is used by each
 request's validation. A peer only enters that capacity after its `/health`
@@ -1091,7 +1094,8 @@ controls. When `inference_mode` does not exist, `RuntimeParams` uses `dense`
 
 `GET /api/ui/infer/heads?model=<id>` is the dedicated read of the inference
 heads, allowed for the `infer` and `admin` profiles: it returns only the live
-machines announcing a range starting at L0 for the requested model, plus the
+machines announcing a range starting at L0 for the requested model and already
+serving it (a machine still loading its model is left out), plus the
 chosen head, in-flight load and the RTT/age of each candidate. The planner
 requires full coverage; coverage comes first and, among equivalent ranges, a
 score weighs fresh RTT and in-flight load before the `node_id` tie-break. The

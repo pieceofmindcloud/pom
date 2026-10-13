@@ -39,7 +39,9 @@ fn prefill_rebuild_reason(error: &anyhow::Error) -> Option<&'static str> {
         return Some("the remote session no longer exists");
     }
     if crate::relay::is_delivery_ambiguous(error) {
-        return Some("the response was lost after sending and the peer may have processed the chunk");
+        return Some(
+            "the response was lost after sending and the peer may have processed the chunk",
+        );
     }
     if crate::relay::is_prefill_state_error(error) {
         return Some("the remote KV positions do not match the next chunk");
@@ -204,7 +206,9 @@ async fn reload_idle_pipeline_with_timeout(
                     .reload_from_idle()
                     .await
                     .map(|_| ())
-                    .map_err(|error| anyhow::anyhow!("reload_model failed for {node_id}: {error}"));
+                    .map_err(|error| {
+                        anyhow::anyhow!("reload_model failed for {node_id}: {error}")
+                    });
             }
             wake_remote_peer(state, peer, last_error).await
         }
@@ -237,9 +241,11 @@ async fn wait_for_woken_announcements(state: &GatewayState, woken: &[String]) {
     let deadline = Instant::now() + IDLE_ANNOUNCE_WAIT;
     loop {
         let peers = state.all_peers().await;
-        let pending = woken
-            .iter()
-            .any(|node_id| peers.iter().any(|peer| &peer.node_id == node_id && peer.idle));
+        let pending = woken.iter().any(|node_id| {
+            peers
+                .iter()
+                .any(|peer| &peer.node_id == node_id && peer.idle)
+        });
         if !pending || Instant::now() >= deadline {
             return;
         }
@@ -384,7 +390,11 @@ mod reload_tests {
                 Json(serde_json::json!({ "event": "reload_model", "error": reason })),
             );
         }
-        let state = if call >= peer.ready_at { "ready" } else { "loading" };
+        let state = if call >= peer.ready_at {
+            "ready"
+        } else {
+            "loading"
+        };
         (
             StatusCode::OK,
             Json(serde_json::json!({ "event": "reload_model", "state": state })),
@@ -698,7 +708,9 @@ pub(super) async fn generate_stream_inner(
         // `/v1/models` publishes, and it counts as the ceiling here. It sits before any
         // health probe on purpose: an already inadmissible request does not
         // justify a round trip on the network, much less a prefill.
-        let (capacity, capacity_pending) = state.runtime_capacity_for_model(Some(&model)).await;
+        let (capacity, capacity_pending) = state
+            .runtime_capacity_for_model(Some(&model), preferred_head.as_deref())
+            .await;
         // Pending capacity is an absence of information, not permission: whoever
         // decides in that case is still the peer.
         if let Some(capacity) = capacity.filter(|_| !capacity_pending) {
@@ -713,7 +725,10 @@ pub(super) async fn generate_stream_inner(
     // One session's window (`n_ctx_per_session`): the same capacity the
     // admission above uses, applied again to the total after prefill, with the
     // real prompt size (`OutputBudget::within_session_window`).
-    let session_window = match state.runtime_capacity_for_model(Some(&model)).await {
+    let session_window = match state
+        .runtime_capacity_for_model(Some(&model), preferred_head.as_deref())
+        .await
+    {
         (Some(capacity), false) => Some(capacity.n_ctx),
         _ => state.runtime.config().await.map(|cfg| cfg.n_ctx),
     };
@@ -851,7 +866,10 @@ pub(super) async fn generate_stream_inner(
                     "pipeline_wake",
                 );
                 if cancellation.is_cancelled() {
-                    log_early_outcome("cancelado", "the client gave up while the pipeline was waking");
+                    log_early_outcome(
+                        "cancelado",
+                        "the client gave up while the pipeline was waking",
+                    );
                     return;
                 }
                 woke_idle = true;
@@ -865,7 +883,10 @@ pub(super) async fn generate_stream_inner(
     };
     // The window read before the wake came from peers with no loaded runtime.
     let session_window = if woke_idle {
-        match state.runtime_capacity_for_model(Some(model)).await {
+        match state
+            .runtime_capacity_for_model(Some(model), preferred_head.as_deref())
+            .await
+        {
             (Some(capacity), false) => Some(capacity.n_ctx),
             _ => session_window,
         }
@@ -3212,10 +3233,7 @@ pub(crate) fn record_rejected(
         {
             audit.replicate_event(begin_event);
             if plugins
-                .ingest_audit_event(
-                    crate::plugins::LOGS_PLUGIN_CODE,
-                    complete_event.clone(),
-                )
+                .ingest_audit_event(crate::plugins::LOGS_PLUGIN_CODE, complete_event.clone())
                 .await
             {
                 audit.replicate_event(complete_event);

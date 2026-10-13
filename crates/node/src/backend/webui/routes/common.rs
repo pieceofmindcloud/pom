@@ -65,7 +65,8 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster/models", get(cluster_models))
         .route(
             "/api/ui/model-sidecar-links",
-            get(super::super::sidecars::sidecar_links).post(super::super::sidecars::save_sidecar_link),
+            get(super::super::sidecars::sidecar_links)
+                .post(super::super::sidecars::save_sidecar_link),
         )
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
@@ -103,7 +104,10 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/ui/network-chat/lobby/info", get(lobby_info))
         .route("/api/ui/network-chat/lobby/latency", get(lobby_latency))
-        .route("/api/ui/network-chat/lobby/admission", post(lobby_admission))
+        .route(
+            "/api/ui/network-chat/lobby/admission",
+            post(lobby_admission),
+        )
         .route("/api/ui/network-chat/lobby/requests", get(lobby_requests))
         .route(
             "/api/ui/network-chat/lobby/requests/forget",

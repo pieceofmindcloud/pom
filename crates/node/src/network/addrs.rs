@@ -423,10 +423,7 @@ mod tests {
                 temporary: false,
             },
         ];
-        assert_eq!(
-            preferred_advertise_ip(raw),
-            Some("192.168.1.8".to_string())
-        );
+        assert_eq!(preferred_advertise_ip(raw), Some("192.168.1.8".to_string()));
     }
 
     #[test]
@@ -537,10 +534,7 @@ mod tests {
         let found = filter_candidates(local_addrs(), None);
         // Without this line the test would pass vacuously on a machine where the
         // enumeration did not work, which is exactly what it should catch.
-        assert!(
-            !found.is_empty(),
-            "the enumeration found no address at all"
-        );
+        assert!(!found.is_empty(), "the enumeration found no address at all");
         assert!(found.len() <= 4, "cap of 2 per family: {found:?}");
         for ip in found {
             assert!(!disposable(&ip), "{ip} should not have passed");

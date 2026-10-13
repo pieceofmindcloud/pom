@@ -70,7 +70,7 @@ pub(super) use direct::*;
 pub(super) use prefill::*;
 pub(super) use prefix::*;
 use ram_cache::*;
-pub(crate) use server::{bind_dual_stack, http_client};
 pub(super) use server::*;
+pub(crate) use server::{bind_dual_stack, http_client};
 pub(super) use step::*;
 pub(super) use step_blocking::*;

@@ -266,8 +266,8 @@ fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -
 }
 
 fn encode_kv_array(key: &str, element_type: u32, payload: &[u8]) -> Vec<u8> {
-    let element_size = scalar_size(element_type)
-        .expect("rebuilt metadata arrays need scalar elements");
+    let element_size =
+        scalar_size(element_type).expect("rebuilt metadata arrays need scalar elements");
     assert_eq!(payload.len() % element_size, 0);
     let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + payload.len());
     let kb = key.as_bytes();
@@ -442,9 +442,7 @@ fn layer_slice_bounds(
         );
     }
     if array_count < original_block_count as u64 {
-        bail!(
-            "per-layer array has length {array_count}; expected at least {original_block_count}"
-        );
+        bail!("per-layer array has length {array_count}; expected at least {original_block_count}");
     }
     Ok((start_layer as usize, end_layer as usize))
 }
@@ -1427,7 +1425,9 @@ pub fn shard_tensor_parallel(
                     // Unexpected type for a numeric hyperparameter: refusing is
                     // the only honest way out. Passing it on would produce a shard
                     // that loads and answers wrong.
-                    bail!("'{key}' is not an integer in the GGUF; it cannot be divided by {tp_size}");
+                    bail!(
+                        "'{key}' is not an integer in the GGUF; it cannot be divided by {tp_size}"
+                    );
                 }
             };
             if full % tp_size != 0 {
@@ -1922,7 +1922,9 @@ fn merge_layer_array(
             .end_layer
             .checked_sub(part.start_layer)
             .and_then(|count| count.checked_add(1))
-            .ok_or_else(|| anyhow::anyhow!("overflow while counting the layers of slice {index}"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("overflow while counting the layers of slice {index}")
+            })?;
         if let Some(block_count) = parsed[index].block_count {
             if block_count != local_count {
                 bail!(
@@ -2045,8 +2047,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     let mut mmaps: Vec<Mmap> = Vec::with_capacity(parts.len());
     let mut parsed: Vec<MergedSrc> = Vec::with_capacity(parts.len());
     for p in parts {
-        let src_file =
-            File::open(&p.path).with_context(|| format!("open {}", p.path.display()))?;
+        let src_file = File::open(&p.path).with_context(|| format!("open {}", p.path.display()))?;
         let mm = unsafe { Mmap::map(&src_file) }
             .with_context(|| format!("mmap {}", p.path.display()))?;
         parsed.push(parse_merged_src(&mm)?);
@@ -3914,7 +3915,10 @@ mod tests {
         ] {
             assert!(message.contains(required), "missing {required}: {message}");
         }
-        assert!(!output.exists(), "a preflight refusal does not create the output");
+        assert!(
+            !output.exists(),
+            "a preflight refusal does not create the output"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3938,7 +3942,10 @@ mod tests {
         ] {
             assert!(message.contains(required), "missing {required}: {message}");
         }
-        assert!(!output.exists(), "a preflight refusal does not create the output");
+        assert!(
+            !output.exists(),
+            "a preflight refusal does not create the output"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -4160,7 +4167,10 @@ mod tests {
 
         let out = dir.join("rank0.gguf");
         assert!(shard_tensor_parallel(&whole, &out, 4, 0, |_| {}).is_err());
-        assert!(!out.exists(), "a refusal must not leave a half-written file");
+        assert!(
+            !out.exists(),
+            "a refusal must not leave a half-written file"
+        );
     }
 
     #[test]
@@ -4173,7 +4183,10 @@ mod tests {
 
         assert!(shard_tensor_parallel(&whole, &out, 1, 0, |_| {}).is_err());
         assert!(shard_tensor_parallel(&whole, &out, 2, 2, |_| {}).is_err());
-        assert!(!out.exists(), "a refusal must not leave a half-written file");
+        assert!(
+            !out.exists(),
+            "a refusal must not leave a half-written file"
+        );
     }
 
     #[test]
@@ -4458,10 +4471,7 @@ mod tests {
         let out = dir.join("deepseek4-15-28.gguf");
 
         let layout = crate::gguf::read_layout(source).unwrap();
-        assert!(
-            layout.layer_count() > 28,
-            "the real GGUF needs layer 28"
-        );
+        assert!(layout.layer_count() > 28, "the real GGUF needs layer 28");
         assert!(
             layout.required_head_bytes() > 0,
             "the DeepSeek4 head must be in the source"
@@ -4543,8 +4553,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            split_error.contains("llama.future_layer_metadata")
-                && split_error.contains("length 3")
+            split_error.contains("llama.future_layer_metadata") && split_error.contains("length 3")
         );
         let _ = std::fs::remove_dir_all(dir);
     }

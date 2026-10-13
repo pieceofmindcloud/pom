@@ -44,9 +44,7 @@ async fn local_card() -> LobbyCard {
 enum Ask {
     Fetch,
     Post { message_id: String, text: String },
-    Admission {
-        role: crate::config::EnrollmentRole,
-    },
+    Admission { role: crate::config::EnrollmentRole },
 }
 
 /// An admission request this node made to another network. `grant` is what an
@@ -115,16 +113,19 @@ fn sync_requests(database: &crate::db::PomDb, changed: bool) {
             ) else {
                 continue;
             };
-            state.requests.entry(key.to_string()).or_insert(CandidateRequest {
-                key: key.to_string(),
-                name: value["name"].as_str().unwrap_or_default().to_string(),
-                role,
-                status,
-                grant: None,
-                // A request kept before this field existed was asked for.
-                asked: value["asked"].as_bool().unwrap_or(true),
-                retry_at: value["retry_at"].as_i64(),
-            });
+            state
+                .requests
+                .entry(key.to_string())
+                .or_insert(CandidateRequest {
+                    key: key.to_string(),
+                    name: value["name"].as_str().unwrap_or_default().to_string(),
+                    role,
+                    status,
+                    grant: None,
+                    // A request kept before this field existed was asked for.
+                    asked: value["asked"].as_bool().unwrap_or(true),
+                    retry_at: value["retry_at"].as_i64(),
+                });
         }
     }
     if changed {
@@ -200,17 +201,18 @@ async fn exchange(
                 if response.accepted {
                     match &response.admission {
                         Some(view) => {
-                            let entry = state.requests.entry(key.to_string()).or_insert_with(|| {
-                                CandidateRequest {
-                                    key: key.to_string(),
-                                    name: String::new(),
-                                    role: view.role,
-                                    status: view.status,
-                                    grant: None,
-                                    asked: asking,
-                                    retry_at: None,
-                                }
-                            });
+                            let entry =
+                                state.requests.entry(key.to_string()).or_insert_with(|| {
+                                    CandidateRequest {
+                                        key: key.to_string(),
+                                        name: String::new(),
+                                        role: view.role,
+                                        status: view.status,
+                                        grant: None,
+                                        asked: asking,
+                                        retry_at: None,
+                                    }
+                                });
                             if asking {
                                 entry.asked = true;
                             }
@@ -400,7 +402,11 @@ pub(super) async fn join_network(
         .requests
         .get(&key)
         .cloned();
-    if request.as_ref().is_some_and(|request| request.grant.is_none()) || request.is_none() {
+    if request
+        .as_ref()
+        .is_some_and(|request| request.grant.is_none())
+        || request.is_none()
+    {
         let _ = exchange(&key, Ask::Fetch, None, Some(&state.database)).await;
         request = candidate_state()
             .lock()
@@ -447,11 +453,11 @@ pub(super) async fn join_network(
     let metadata = document.setup.clone();
     // The settings in the grant are the network's current ones; the copy in
     // the trust document dates from when the network was created.
-    let Some(mut network) = grant
-        .network
-        .clone()
-        .or_else(|| metadata.as_ref().map(super::setup::network_from_trust_metadata))
-    else {
+    let Some(mut network) = grant.network.clone().or_else(|| {
+        metadata
+            .as_ref()
+            .map(super::setup::network_from_trust_metadata)
+    }) else {
         return refuse(
             StatusCode::BAD_GATEWAY,
             "grant_invalid",
@@ -529,7 +535,9 @@ pub(super) async fn join_network(
     };
     config.connection_key = grant.connection_key.trim().to_string();
     config.network = network;
-    let relay_hints = metadata.map(|metadata| metadata.relay_hints).unwrap_or_default();
+    let relay_hints = metadata
+        .map(|metadata| metadata.relay_hints)
+        .unwrap_or_default();
     for relay in relay_hints.iter().chain(grant.relay_peers.iter()) {
         if !config.relay_peers.contains(relay) {
             config.relay_peers.push(relay.clone());
@@ -567,7 +575,10 @@ pub(super) async fn join_network(
 /// received, for its admin to decide. Each carries the candidate's declared
 /// hardware, the latency it measured and whether it reaches the principal
 /// directly or through a relay.
-pub(super) async fn admissions(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn admissions(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     Json(state.network_chat.admissions()).into_response()
 }
 
@@ -683,7 +694,10 @@ const LATENCY_CACHE_MAX: usize = 1024;
 /// first exchange pays for resolving the key and opening the connection, so
 /// the smaller of the two is the round trip. Any answer counts, a refusal
 /// included; only silence is `502`.
-pub(super) async fn lobby_latency(_auth: ConnectionAuth, Query(query): Query<LobbyQuery>) -> Response {
+pub(super) async fn lobby_latency(
+    _auth: ConnectionAuth,
+    Query(query): Query<LobbyQuery>,
+) -> Response {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (Instant, u32)>>> =
         std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
@@ -755,7 +769,11 @@ pub(crate) fn network_info_from_cluster(cluster: &serde_json::Value) -> network_
     add(&cluster["active_model"]);
     let mut vram_total_mb = None;
     for peer in &peers {
-        for gpu in peer["node"]["system"]["gpus"].as_array().into_iter().flatten() {
+        for gpu in peer["node"]["system"]["gpus"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
             if let Some(total) = gpu["vram_total_mb"].as_f64().filter(|mb| *mb > 0.0) {
                 *vram_total_mb.get_or_insert(0_u64) += total as u64;
             }
@@ -839,18 +857,19 @@ pub async fn setup_public_networks(
     }
     relay_keys.sort();
     relay_keys.dedup();
-    let replicas = match crate::public_directory::PublicDirectorySettings::from_urls(replicas.iter())
-        .and_then(|settings| settings.effective_with_env())
-    {
-        Ok(settings) => settings.replicas,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": error.to_string() })),
-            )
-                .into_response()
-        }
-    };
+    let replicas =
+        match crate::public_directory::PublicDirectorySettings::from_urls(replicas.iter())
+            .and_then(|settings| settings.effective_with_env())
+        {
+            Ok(settings) => settings.replicas,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": error.to_string() })),
+                )
+                    .into_response()
+            }
+        };
     // A node with cluster TLS presents a certificate derived from its own
     // key, which no public authority signs. Accepting it here is safe for this
     // read only: every entry is checked against its own trust document.
@@ -859,8 +878,7 @@ pub async fn setup_public_networks(
         .build()
         .unwrap_or_default();
     let mut networks =
-        crate::gateway::directory_public_networks(&state.database, &client, replicas.clone())
-            .await;
+        crate::gateway::directory_public_networks(&state.database, &client, replicas.clone()).await;
     for network in crate::gateway::listed_public_networks(&client, replicas).await {
         if !networks
             .iter()
@@ -869,8 +887,12 @@ pub async fn setup_public_networks(
             networks.push(network);
         }
     }
-    let from_relays =
-        futures::future::join_all(relay_keys.iter().map(|key| crate::gateway::relay_directory(key))).await;
+    let from_relays = futures::future::join_all(
+        relay_keys
+            .iter()
+            .map(|key| crate::gateway::relay_directory(key)),
+    )
+    .await;
     for network in from_relays.into_iter().flatten() {
         if !networks
             .iter()

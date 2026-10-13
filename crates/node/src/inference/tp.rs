@@ -705,7 +705,9 @@ async fn post_reduce(
         let started = std::time::Instant::now();
         let receiver = barrier
             .contribute(barrier_id, state.rank, size, data)
-            .map_err(|error| format!("local barrier of the primary refused the partial: {error}"))?;
+            .map_err(|error| {
+                format!("local barrier of the primary refused the partial: {error}")
+            })?;
         let sum = receiver
             .await
             .map_err(|_| "local barrier of the primary was closed".to_string())?;
@@ -889,14 +891,14 @@ mod tests {
         assert!(!is_replica(), "rank 0 decides for itself");
 
         begin_replica_decode("do-rank-0");
-        assert!(is_replica(), "whoever received the id of rank 0 is a replica");
+        assert!(
+            is_replica(),
+            "whoever received the id of rank 0 is a replica"
+        );
         assert_eq!(next_barrier_id().unwrap(), "do-rank-0#0");
 
         begin_decode("outro");
-        assert!(
-            !is_replica(),
-            "an own decode after a replica is own again"
-        );
+        assert!(!is_replica(), "an own decode after a replica is own again");
     }
 
     /// The collective's failure is stored, consumed once, and the **first**

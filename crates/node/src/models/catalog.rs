@@ -268,7 +268,11 @@ impl Sidecar {
     /// Whether this sidecar can serve a model with this architecture and
     /// embedding width. A projector only has to match the width; an MTP draft
     /// also has to share the architecture, because its blocks run inside it.
-    pub fn compatible_with(&self, architecture: Option<&str>, embedding_length: Option<u32>) -> bool {
+    pub fn compatible_with(
+        &self,
+        architecture: Option<&str>,
+        embedding_length: Option<u32>,
+    ) -> bool {
         let Some(width) = embedding_length else {
             return false;
         };
@@ -277,7 +281,9 @@ impl Sidecar {
         }
         match self.kind {
             SidecarKind::Mmproj => true,
-            SidecarKind::Mtp => architecture.is_some() && self.architecture.as_deref() == architecture,
+            SidecarKind::Mtp => {
+                architecture.is_some() && self.architecture.as_deref() == architecture
+            }
         }
     }
 }
@@ -324,7 +330,10 @@ impl SidecarLink {
         }
         match self.mode {
             SidecarMode::File
-                if self.file_name.as_deref().is_none_or(|name| name.trim().is_empty())
+                if self
+                    .file_name
+                    .as_deref()
+                    .is_none_or(|name| name.trim().is_empty())
                     || self.size_bytes.is_none() =>
             {
                 Err("file link without a name or size".into())
@@ -347,9 +356,15 @@ pub struct SidecarFile {
 
 /// This machine's copy of a sidecar, read from disk now rather than from the
 /// catalog cache: a file copied a moment ago has to be found.
-pub(crate) fn find_local_sidecar(roots: &[PathBuf], kind: SidecarKind, file: &SidecarFile) -> Option<String> {
+pub(crate) fn find_local_sidecar(
+    roots: &[PathBuf],
+    kind: SidecarKind,
+    file: &SidecarFile,
+) -> Option<String> {
     discover_sidecars(roots).into_iter().find_map(|sidecar| {
-        (sidecar.kind == kind && sidecar.file_name == file.file_name && sidecar.size_bytes == file.size_bytes)
+        (sidecar.kind == kind
+            && sidecar.file_name == file.file_name
+            && sidecar.size_bytes == file.size_bytes)
             .then_some(sidecar.path)
     })
 }
@@ -653,7 +668,8 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             }
             find_gguf(&path, depth + 1, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("gguf")
-            || (is_extensionless_name(&entry.file_name().to_string_lossy()) && has_gguf_magic(&path))
+            || (is_extensionless_name(&entry.file_name().to_string_lossy())
+                && has_gguf_magic(&path))
         {
             if is_secondary_part(&path) {
                 continue;
@@ -822,7 +838,9 @@ fn describe(
         path: path.to_string_lossy().into_owned(),
         mmproj_path: None,
         mmproj_candidates: Vec::new(),
-        mmproj_reason: Some("waiting for the GGUF metadata to be read to validate the projector".into()),
+        mmproj_reason: Some(
+            "waiting for the GGUF metadata to be read to validate the projector".into(),
+        ),
         identity_names: Vec::new(),
         size_bytes,
         multipart: false,
@@ -1260,10 +1278,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     model.metadata_identity = Some(identity);
     model.size_bytes = meta.len();
     if model.size_bytes < 1024 {
-        model.metadata_error = Some(format!(
-            "GGUF file too small: {} bytes",
-            model.size_bytes
-        ));
+        model.metadata_error = Some(format!("GGUF file too small: {} bytes", model.size_bytes));
         return EnrichResult::Failed;
     }
     let filename = path
@@ -1301,9 +1316,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
             // refuse to present a false byte count until the set is complete.
             model.size_bytes = 0;
         } else {
-            model.metadata_error = Some(format!(
-                "could not describe the GGUF source: {error:#}"
-            ));
+            model.metadata_error = Some(format!("could not describe the GGUF source: {error:#}"));
             return EnrichResult::Failed;
         }
     } else {
@@ -2113,12 +2126,22 @@ pub(crate) mod tests {
 
     /// An MTP draft as the observed one: the model architecture, `nextn`,
     /// a few dozen tensors and a name that says nothing about the model.
-    pub(crate) fn mtp_draft_fixture(architecture: &str, embedding_length: u32, tensors: u64) -> Vec<u8> {
+    pub(crate) fn mtp_draft_fixture(
+        architecture: &str,
+        embedding_length: u32,
+        tensors: u64,
+    ) -> Vec<u8> {
         let embedding_key = format!("{architecture}.embedding_length");
         let nextn_key = format!("{architecture}.nextn_predict_layers");
         let mut bytes = gguf_header_fixture(
-            &[(embedding_key.as_str(), embedding_length), (nextn_key.as_str(), 1)],
-            &[("general.architecture", architecture), ("general.name", "Ckpt_Q38")],
+            &[
+                (embedding_key.as_str(), embedding_length),
+                (nextn_key.as_str(), 1),
+            ],
+            &[
+                ("general.architecture", architecture),
+                ("general.name", "Ckpt_Q38"),
+            ],
         );
         bytes[8..16].copy_from_slice(&tensors.to_le_bytes());
         bytes
@@ -2130,25 +2153,57 @@ pub(crate) mod tests {
         let library = root.join("library");
         let other_quant = library.join("other-quant");
         std::fs::create_dir_all(&other_quant).unwrap();
-        std::fs::write(library.join("Model-Q2.gguf"), text_model_fixture("Model", "llama", 3072)).unwrap();
-        std::fs::write(library.join("mmproj-Model-BF16.gguf"), projector_fixture("Model", 3072)).unwrap();
+        std::fs::write(
+            library.join("Model-Q2.gguf"),
+            text_model_fixture("Model", "llama", 3072),
+        )
+        .unwrap();
+        std::fs::write(
+            library.join("mmproj-Model-BF16.gguf"),
+            projector_fixture("Model", 3072),
+        )
+        .unwrap();
         // No `mtp-` prefix: only the header says what it is.
-        std::fs::write(other_quant.join("draft.gguf"), mtp_draft_fixture("llama", 3072, 34)).unwrap();
-        std::fs::write(other_quant.join("mmproj-other.gguf"), projector_fixture("Other", 1024)).unwrap();
+        std::fs::write(
+            other_quant.join("draft.gguf"),
+            mtp_draft_fixture("llama", 3072, 34),
+        )
+        .unwrap();
+        std::fs::write(
+            other_quant.join("mmproj-other.gguf"),
+            projector_fixture("Other", 1024),
+        )
+        .unwrap();
         // As Hugging Face publishes it: no extension, so only the content
         // says it is a GGUF. The same content under names that are not the
         // operator's files stays out.
         std::fs::write(library.join("MTP"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
-        std::fs::write(library.join("Model3.8-MTP"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
+        std::fs::write(
+            library.join("Model3.8-MTP"),
+            mtp_draft_fixture("llama", 3072, 18),
+        )
+        .unwrap();
         std::fs::write(library.join("notes"), b"not a model").unwrap();
-        std::fs::write(library.join("draft.part"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
+        std::fs::write(
+            library.join("draft.part"),
+            mtp_draft_fixture("llama", 3072, 18),
+        )
+        .unwrap();
         std::fs::write(library.join(".draft"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
-        std::fs::write(library.join("sha256-abc123"), mtp_draft_fixture("llama", 3072, 18)).unwrap();
+        std::fs::write(
+            library.join("sha256-abc123"),
+            mtp_draft_fixture("llama", 3072, 18),
+        )
+        .unwrap();
 
         let catalog = discover(&[library.clone()], &root.join("shards"));
 
         assert_eq!(
-            catalog.models.iter().map(|model| model.name.as_str()).collect::<Vec<_>>(),
+            catalog
+                .models
+                .iter()
+                .map(|model| model.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["Model-Q2.gguf"]
         );
         let model = &catalog.models[0];
@@ -2172,7 +2227,9 @@ pub(crate) mod tests {
         let compatible = catalog
             .sidecars
             .iter()
-            .filter(|sidecar| sidecar.compatible_with(model.architecture.as_deref(), model.embedding_length))
+            .filter(|sidecar| {
+                sidecar.compatible_with(model.architecture.as_deref(), model.embedding_length)
+            })
             .map(|sidecar| sidecar.file_name.as_str())
             .collect::<Vec<_>>();
         assert!(compatible.contains(&"draft.gguf"));
@@ -2525,11 +2582,7 @@ pub(crate) mod tests {
         std::fs::write(&draft, vec![0u8; 4096]).unwrap();
 
         let catalog = discover_fast(std::slice::from_ref(&models), &shards);
-        assert_eq!(
-            catalog.models.len(),
-            1,
-            "the draft sidecar is not a model"
-        );
+        assert_eq!(catalog.models.len(), 1, "the draft sidecar is not a model");
         assert_eq!(catalog.models[0].path, model.to_string_lossy());
 
         std::fs::remove_dir_all(root).ok();
@@ -3128,17 +3181,16 @@ mod part_naming_tests {
                 "the name cannot be the hash: {}",
                 m.name
             );
-            assert!(
-                m.name.contains("qwen3:8b"),
-                "the model label: {}",
-                m.name
-            );
+            assert!(m.name.contains("qwen3:8b"), "the model label: {}", m.name);
             // And the hash stays available, as side information.
             assert!(m
                 .sha256
                 .as_deref()
                 .is_some_and(|h| hashes.contains(&h.to_string())));
-            assert!(m.is_shard(), "with a manifest, it is a slice - not a whole model");
+            assert!(
+                m.is_shard(),
+                "with a manifest, it is a slice - not a whole model"
+            );
             assert_eq!(m.total_layers, Some(32));
             assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
         }
@@ -3189,7 +3241,10 @@ mod part_naming_tests {
             &[(0, 19, 20), (20, 31, 9)],
         );
 
-        assert_eq!(one.pom_id, other.pom_id, "the source is the identity of the model");
+        assert_eq!(
+            one.pom_id, other.pom_id,
+            "the source is the identity of the model"
+        );
         let one_folder = crate::pom::dir_for(&root, &one);
         let other_folder = crate::pom::dir_for(&root, &other);
         assert_eq!(one_folder, other_folder, "a single manifest per source");

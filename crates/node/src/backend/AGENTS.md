@@ -445,7 +445,7 @@ boundary.
   download invalidates the receiver's catalog.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
-  `POST /api/ui/kv-cache/clear` (AdminOnly, forwarded by `node_id` like
+  `POST /api/ui/kv-cache/clear` (AdminOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
   `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
   `GatewayState.prefix_disk` and clears the inference server's host-memory
   cache. See `http-api.md`.

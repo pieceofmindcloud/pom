@@ -658,6 +658,9 @@ UI.
   the rendered prompt to its last step's generation route (locally through `engine.upstream`, remotely
   through `POST /api/internal/plugins/:code/engine/generate`, which
   `engine_generate_route` serves) and turns its NDJSON stream into `GenEvent`s.
+  `plugin_session.rs` keeps named conversations in step across the whole-model
+  machines: the turn's saved delta (or the whole session) goes to each peer
+  after the turn's `done` reports the save, and the session routes apply it.
   `deploy_block` is the deployment check: a whole model on one machine, or
   slices on distinct machines for a service that publishes `stages`, each
   running the plugin's `inference` service. A slice's `engine.load` also gets

@@ -41,6 +41,16 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_engine::engine_generate_route),
         )
         .route(
+            "/api/internal/plugins/:code/engine/session/file",
+            post(crate::plugin_session::engine_session_file_route).layer(
+                axum::extract::DefaultBodyLimit::max(crate::plugin_session::MAX_SESSION_FILE),
+            ),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/session/apply",
+            post(crate::plugin_session::engine_session_apply_route),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/link/:deploy",
             get(crate::plugin_stage_link::link_secret_route),
         )

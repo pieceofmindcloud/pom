@@ -155,6 +155,8 @@ mod plugin_dev;
 mod engine_telemetry;
 #[path = "inference/plugin_engine.rs"]
 mod plugin_engine;
+#[path = "inference/plugin_session.rs"]
+mod plugin_session;
 mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;

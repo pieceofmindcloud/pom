@@ -241,6 +241,10 @@ pub struct ChatRequest {
     /// thinking off globally.
     #[serde(default)]
     pub thinking_enabled: Option<bool>,
+    /// Names the conversation this turn belongs to, for a plugin engine's K/V sessions: the next turn with the same
+    /// name finds the session this one saved (`plugin_session`, `docs/subsystems/inference.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// `false` keeps retrieved context (`crate::rag`) out of this request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rag: Option<bool>,
@@ -1880,6 +1884,7 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
@@ -2019,6 +2024,7 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
@@ -2174,6 +2180,7 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state.clone()),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
@@ -2198,6 +2205,7 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,
@@ -2249,6 +2257,7 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                session: None,
                 // Retrieval is not what this test is about.
                 rag: Some(false),
                 rag_collection: None,

@@ -922,6 +922,7 @@ pub(super) async fn generate_stream_inner(
                 thinking_enabled,
                 max_tokens: budget.total,
                 stops,
+                session: crate::plugin_session::session_of(&request_details),
                 request_details,
             },
             &tx,

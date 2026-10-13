@@ -177,6 +177,13 @@ pub(crate) fn load_params(
     if let Some(link) = link {
         params["link"] = link.clone();
     }
+    // the sessions live with the KV snapshots, so the clear of the KV cache empties them too
+    if let Some(dir) = cfg.slot_save_path.as_deref().filter(|dir| !dir.trim().is_empty()) {
+        params["session_dir"] = json!(std::path::Path::new(dir)
+            .join(super::plugin_session::SESSIONS_SUBDIR)
+            .display()
+            .to_string());
+    }
     params
 }
 
@@ -403,6 +410,8 @@ pub(crate) struct EngineRequest {
     pub thinking_enabled: bool,
     pub max_tokens: u32,
     pub stops: Vec<String>,
+    /// The conversation the turn belongs to (`plugin_session`), when the client named one.
+    pub session: Option<String>,
     /// The client's request, for its sampling fields.
     pub request_details: Value,
 }
@@ -415,6 +424,9 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
         "max_tokens": request.max_tokens,
         "stop": request.stops,
     });
+    if let Some(session) = &request.session {
+        body["session"] = json!(session);
+    }
     for key in SAMPLING_KEYS {
         let value = &request.request_details[key];
         if value.is_number() {
@@ -425,7 +437,7 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
 }
 
 /// `(port, token)` of this node's plugin generation server, while ready.
-async fn local_upstream(
+pub(crate) async fn local_upstream(
     plugins: &crate::plugins::PluginManager,
     code: &str,
 ) -> Result<(u16, String), String> {
@@ -455,7 +467,7 @@ async fn local_upstream(
     Ok((port, token.to_owned()))
 }
 
-fn loopback_client() -> &'static reqwest::Client {
+pub(crate) fn loopback_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -712,6 +724,12 @@ pub(crate) async fn generate(
             } else if let Some(done) = event.get("done") {
                 let total_ms = request_started.elapsed().as_millis() as u64;
                 // The plugin's basic data; everything else about the generation is measured here.
+                // The turn ran on this machine: its saved conversation goes on to the peers (a remote head does this itself).
+                if node_id == state.network.node_id {
+                    if let Some(key) = super::plugin_session::saved_session(done) {
+                        super::plugin_session::spawn_sync(state.clone(), code.to_owned(), key);
+                    }
+                }
                 let report = super::engine_telemetry::EngineReport::from_done(done, pieces);
                 let first = first_token_at.unwrap_or_else(Instant::now);
                 let ttft_ms = first.saturating_duration_since(request_started).as_millis() as u64;
@@ -813,7 +831,7 @@ pub(crate) async fn generate(
 // ── Deployment ───────────────────────────────────────────────────────────────
 
 /// The plugin services a machine of the network publishes.
-async fn services_of(state: &GatewayState, node_id: &str) -> Option<Vec<Value>> {
+pub(crate) async fn services_of(state: &GatewayState, node_id: &str) -> Option<Vec<Value>> {
     if node_id == state.network.node_id {
         let services = crate::plugin_services::node_services(&state.plugins).await;
         return serde_json::to_value(services).ok()?.as_array().cloned();
@@ -909,20 +927,18 @@ fn refuse(status: StatusCode, error: &str) -> Response {
 /// `POST /api/internal/plugins/:code/engine/generate`: a gateway of this
 /// network runs one generation on this node's plugin engine. Only a signed
 /// call from a live peer gets through.
-pub(crate) async fn engine_generate_route(
-    auth: crate::auth::InternalNodeAuth,
-    State(state): State<GatewayState>,
-    Path(code): Path<String>,
-    body: Bytes,
-) -> Response {
+/// The checks every internal plugin-engine route makes: a signed call from a live peer, for a plugin this machine
+/// serves as its inference service. The refusal is the response.
+pub(crate) async fn check_peer_call(
+    auth: &crate::auth::InternalNodeAuth,
+    state: &GatewayState,
+    code: &str,
+) -> Result<(), Response> {
     let Some(principal) = auth.principal() else {
-        return refuse(StatusCode::FORBIDDEN, "a signed peer call is required");
+        return Err(refuse(StatusCode::FORBIDDEN, "a signed peer call is required"));
     };
-    if !valid_code(&code) {
-        return refuse(StatusCode::BAD_REQUEST, "invalid plugin");
-    }
-    if body.len() > MAX_GENERATION_BODY {
-        return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
+    if !valid_code(code) {
+        return Err(refuse(StatusCode::BAD_REQUEST, "invalid plugin"));
     }
     if !state
         .network
@@ -931,7 +947,7 @@ pub(crate) async fn engine_generate_route(
         .iter()
         .any(|peer| peer.node_id == principal.node_id)
     {
-        return refuse(StatusCode::FORBIDDEN, "the caller is not a live peer");
+        return Err(refuse(StatusCode::FORBIDDEN, "the caller is not a live peer"));
     }
     let served = state
         .runtime
@@ -940,10 +956,25 @@ pub(crate) async fn engine_generate_route(
         .and_then(|cfg| cfg.inference_service)
         .is_some_and(|service| service == code);
     if !served {
-        return refuse(
+        return Err(refuse(
             StatusCode::CONFLICT,
             "this machine does not serve a model with that inference service",
-        );
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn engine_generate_route(
+    auth: crate::auth::InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Path(code): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = check_peer_call(&auth, &state, &code).await {
+        return response;
+    }
+    if body.len() > MAX_GENERATION_BODY {
+        return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
     }
     // This machine's stage links of the generation start from nothing; its prompt phase begins now.
     let _ = super::plugin_stage_link::take_link_stats(&code);
@@ -961,6 +992,24 @@ pub(crate) async fn engine_generate_route(
         code.clone(),
         Box::pin(super::engine_telemetry::track(&code, response.bytes_stream())),
     );
+    // This machine ran the turn: when its bridge reports the conversation saved, the turn goes on to the peers.
+    let (watch_state, watch_code) = (state.clone(), code.clone());
+    let mut pending: Vec<u8> = Vec::new();
+    let stream = stream.inspect(move |item| {
+        let Ok(bytes) = item else {
+            return;
+        };
+        pending.extend_from_slice(bytes);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            if let Some(key) = serde_json::from_slice::<Value>(&line)
+                .ok()
+                .and_then(|value| super::plugin_session::saved_session(&value["done"]))
+            {
+                super::plugin_session::spawn_sync(watch_state.clone(), watch_code.clone(), key);
+            }
+        }
+    });
     Response::builder()
         .status(status)
         .header("content-type", "application/x-ndjson")
@@ -1178,6 +1227,7 @@ mod tests {
             thinking_enabled: false,
             max_tokens: 128,
             stops: vec!["</s>".into()],
+            session: None,
             request_details: json!({"temperature": 0.2, "top_k": 20, "messages": [], "seed": "x"}),
         });
         assert_eq!(body["prompt"], "User: oi");

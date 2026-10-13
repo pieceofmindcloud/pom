@@ -37,10 +37,22 @@ fn cache_files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    entries
+    let mut files: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| is_cache_file(path))
+        .collect();
+    // the plugin engines' sessions: one folder of their own, every file in it
+    if let Ok(sessions) = std::fs::read_dir(dir.join(crate::plugin_session::SESSIONS_SUBDIR)) {
+        files.extend(
+            sessions
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file()),
+        );
+    }
+    files
+        .into_iter()
         .map(|path| {
             let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
             (path, bytes)
@@ -242,6 +254,23 @@ mod kv_cache_tests {
         let usage = kv_cache_disk(Some(&missing));
         assert!(usage.enabled);
         assert_eq!((usage.snapshots, usage.bytes), (0, 0));
+    }
+
+    #[test]
+    fn the_sessions_folder_is_counted_and_cleared_with_the_snapshots() {
+        let dir = temp_dir("sessions");
+        std::fs::write(dir.join("a.bin"), vec![0u8; 100]).unwrap();
+        let sessions = dir.join(crate::plugin_session::SESSIONS_SUBDIR);
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(sessions.join("conv.strsess"), vec![0u8; 50]).unwrap();
+        std::fs::write(sessions.join("conv.ids.json"), vec![0u8; 7]).unwrap();
+
+        let usage = kv_cache_disk(Some(&dir));
+        assert_eq!((usage.snapshots, usage.bytes), (1, 157));
+        let removed = clear_kv_cache_dir(&dir).unwrap();
+        assert_eq!(removed, (3, 157));
+        assert!(!sessions.join("conv.strsess").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -2581,6 +2581,19 @@ runs it through that plugin or fails.
   generation server from `engine.upstream` (`{status, port, token}`) and
   streams the answer back unchanged. The plugin's server never listens beyond
   loopback.
+- **Conversation sessions.** A chat request may name its conversation
+  (`session`, a file-name stem of up to 96 characters). The machine that ran the
+  turn saves the conversation in the engine's K/V sessions before the turn's
+  `done` line, and that line carries `session: {key, saved: {ids, delta}}`. The
+  node then sends the turn to every other machine that serves the whole model
+  (`POST .../engine/session/file` with the delta and its tokens, then
+  `POST .../engine/session/apply`); a peer without the delta's base gets the
+  whole session (`kind=full`, `full_ids`). Each machine restores the longest
+  saved start of a prompt into a free batch slot itself, so the gateway's choice
+  of machine does not change. The files live in `<slot_save_path>/strata-sessions/`,
+  next to the KV snapshots, and the KV cache clear empties them
+  (`crates/node/src/inference/plugin_session.rs`). Only turns that ran in a batch
+  slot are saved: the plugin keeps a named turn in a slot, not on the solo path.
 
 **Split across machines.** A service that publishes `stages: true` also runs
 POM layer slices, one per machine (`crates/node/src/inference/plugin_stage_link.rs`).

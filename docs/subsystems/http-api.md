@@ -714,7 +714,11 @@ woken in parallel, with a 15-minute ceiling for the barrier.
 A model served by a plugin's inference service (`inference.md`, section 7.1)
 runs through `POST /api/internal/plugins/:code/engine/generate` on the machine
 that serves it: a signed call from a live peer, whose NDJSON answer streams
-back from the plugin's loopback generation server. When the model is split
+back from the plugin's loopback generation server. Its conversation sessions
+travel the same way: `POST /api/internal/plugins/:code/engine/session/file?key=&kind=`
+(one raw file, up to 1 GiB, `kind` = `full`, `delta`, `full_ids` or `delta_meta`)
+and `POST /api/internal/plugins/:code/engine/session/apply` (`{key}`), with the
+same checks. When the model is split
 across machines on such a service, the machine of a later slice reaches the
 earlier one through `GET /api/internal/plugins/:code/engine/link/:deploy`
 (the stage's link secret) and
@@ -930,7 +934,8 @@ prefix cache (`slot_persist_prefix_cache`) is on in this gateway.
 `POST /api/ui/kv-cache/clear` (AdminOnly) empties the KV cache of **one**
 machine. The body is `{node_id?}`: absent or the node's own id acts locally,
 another id is forwarded to that machine, since only the owner of a disk deletes
-from it. Locally it removes every `.bin` and `.json` of the snapshot directory,
+from it. Locally it removes every `.bin` and `.json` of the snapshot directory
+and every file of its `strata-sessions/` subfolder (the plugin engines' conversation sessions),
 resets this gateway's automatic prefix index and calls
 `POST /v1/session/cache/clear` on the local inference server. Sessions that are
 live in the model context are untouched. The answer is `{cleared, node_id,

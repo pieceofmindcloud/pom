@@ -112,6 +112,62 @@ pub(crate) fn perf_for(code: &str) -> EnginePerf {
         .unwrap_or_default()
 }
 
+fn in_flight_counts() -> &'static Mutex<HashMap<String, u32>> {
+    static COUNTS: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The generations this machine is serving for `code` right now: the `active_generations` its `/health` publishes.
+pub(crate) fn in_flight(code: &str) -> u32 {
+    in_flight_counts()
+        .lock()
+        .ok()
+        .and_then(|counts| counts.get(code).copied())
+        .unwrap_or(0)
+}
+
+/// One generation this machine serves, counted from its start until its stream ends or is dropped.
+struct InFlight {
+    code: String,
+}
+
+impl InFlight {
+    fn start(code: &str) -> Self {
+        if let Ok(mut counts) = in_flight_counts().lock() {
+            *counts.entry(code.to_owned()).or_insert(0) += 1;
+        }
+        Self {
+            code: code.to_owned(),
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Ok(mut counts) = in_flight_counts().lock() {
+            if let Some(count) = counts.get_mut(&self.code) {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+}
+
+/// The stream of a generation this machine serves, counted as in flight until it ends (or the reader drops it).
+pub(crate) fn track<S>(
+    code: &str,
+    upstream: S,
+) -> impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin + Send + 'static,
+{
+    use futures::StreamExt;
+    let guard = InFlight::start(code);
+    futures::stream::unfold((upstream, guard), |(mut upstream, guard)| async move {
+        let next = upstream.next().await?;
+        Some((next, (upstream, guard)))
+    })
+}
+
 /// The gateway side: the stage links the head reported in its `done` event join this machine's totals.
 pub(crate) fn merge_reported_links(code: &str, done: &Value) {
     let Some(links) = done.get("links") else {
@@ -299,5 +355,17 @@ mod speed_tests {
         assert_eq!((llama.prompt_n, llama.decode_n), (64, 40));
         assert_eq!((llama.draft_proposed, llama.draft_accepted), (5, 2));
         assert_eq!(llama.generated, 40, "the pieces count when the engine does not count its tokens");
+    }
+
+    #[test]
+    fn a_served_generation_is_in_flight_until_its_stream_ends_or_is_dropped() {
+        let code = "strata-flight-test";
+        let chunks = futures::stream::iter(vec![Ok::<bytes::Bytes, reqwest::Error>(
+            bytes::Bytes::from_static(b"a"),
+        )]);
+        let tracked = track(code, chunks);
+        assert_eq!(in_flight(code), 1);
+        drop(tracked);
+        assert_eq!(in_flight(code), 0);
     }
 }

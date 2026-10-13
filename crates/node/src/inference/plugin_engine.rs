@@ -219,6 +219,7 @@ pub(crate) fn health_body(cfg: &crate::runtime::NodeConfig, code: &str, status: 
     body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
     body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
     body["relayed_peers"] = json!(book.relayed_nodes());
+    body["active_generations"] = json!(super::engine_telemetry::in_flight(code));
     let measured = super::engine_telemetry::perf_for(code);
     body["perf"] = json!({
         "prefill_ms_per_token": measured.prefill_ms_per_token,
@@ -588,6 +589,11 @@ fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool) -> Vec<u8> {
     let Some(done) = value.get_mut("done") else {
         return line.to_vec();
     };
+    // The machine that runs the engine measured its speed: its /health publishes it, the card reads it there.
+    super::engine_telemetry::record_perf(
+        code,
+        &super::engine_telemetry::EngineReport::from_done(done, 0),
+    );
     done["links"] = json!(super::plugin_stage_link::drain_reported_links(code));
     let mut out = serde_json::to_vec(&value).unwrap_or_else(|_| text.to_vec());
     if line.ends_with(b"\n") {
@@ -649,7 +655,13 @@ pub(crate) async fn generate(
         0,
         channel,
     );
-    let mut stream = response.bytes_stream();
+    // A generation this machine serves is in flight here; the head's stream is counted on the head.
+    let mut stream = if node_id == state.network.node_id {
+        Box::pin(super::engine_telemetry::track(code, response.bytes_stream()))
+            as std::pin::Pin<Box<dyn futures::Stream<Item = Result<Bytes, reqwest::Error>> + Send>>
+    } else {
+        Box::pin(response.bytes_stream())
+    };
     let mut pending: Vec<u8> = Vec::new();
     let mut received_bytes = 0u64;
     let mut first_token_at: Option<Instant> = None;
@@ -743,7 +755,10 @@ pub(crate) async fn generate(
                 }
                 super::engine_telemetry::merge_reported_links(code, done);
                 super::engine_telemetry::apply_stage_links(&mut trace, code, prefill_ms);
-                super::engine_telemetry::record_perf(code, &report);
+                // The speed belongs to the machine that runs the engine; a remote head records it on its own /health.
+                if node_id == state.network.node_id {
+                    super::engine_telemetry::record_perf(code, &report);
+                }
                 trace.input_tokens = prompt_tokens;
                 trace.cached_tokens = cached_tokens;
                 trace.prefix_match_tokens = cached_tokens;
@@ -937,7 +952,10 @@ pub(crate) async fn engine_generate_route(
     };
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let stream = relay_with_links(code.clone(), response.bytes_stream());
+    let stream = relay_with_links(
+        code.clone(),
+        Box::pin(super::engine_telemetry::track(&code, response.bytes_stream())),
+    );
     Response::builder()
         .status(status)
         .header("content-type", "application/x-ndjson")

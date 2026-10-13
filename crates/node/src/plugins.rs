@@ -53,6 +53,13 @@ use tokio::sync::{Mutex, RwLock};
 /// concrete `plugin_code`, not the dynamic code of another instance.
 pub(crate) const LOGS_PLUGIN_CODE: &str = "logs";
 
+/// Pauses between the attempts to hand an audit event to its plugin (one more attempt follows the last).
+const AUDIT_RETRY_PAUSES: [std::time::Duration; 3] = [
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(3),
+    std::time::Duration::from_secs(8),
+];
+
 const PERSISTED_SETTING_PREFIX: &str = "plugin_license:";
 const PUBLIC_INSTALL_SETTING_PREFIX: &str = "plugin_public_install:";
 const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
@@ -1974,11 +1981,30 @@ impl PluginRuntime {
                 serde_json::json!({"type": "complete", "id": id, "completion": completion})
             }
         };
-        if let Err(error) = host.ingest(event).await {
-            tracing::warn!(plugin_code = %self.code, error = %error, "audit event did not enter the plugin");
-            return false;
+        // The plugin answers late when it is busy, and an answer that comes after the host's timeout is lost. Both
+        // events are idempotent in the plugin (`begin` upserts the row, `complete` updates it), so sending again is
+        // safe; a completion lost for good leaves the request `incomplete` forever.
+        for (attempt, pause) in AUDIT_RETRY_PAUSES.iter().enumerate() {
+            match host.ingest(event.clone()).await {
+                Ok(()) => return true,
+                Err(error) => {
+                    tracing::warn!(
+                        plugin_code = %self.code,
+                        attempt = attempt + 1,
+                        error = %error,
+                        "audit event did not enter the plugin; trying again"
+                    );
+                    tokio::time::sleep(*pause).await;
+                }
+            }
         }
-        true
+        match host.ingest(event).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(plugin_code = %self.code, error = %error, "audit event did not enter the plugin");
+                false
+            }
+        }
     }
 
     /// Hands the plugin one event of its own kind (`{"type": ...}`). The
@@ -2055,9 +2081,15 @@ impl PluginRuntime {
             let raw = self.ui_manifest_raw.lock().await.clone()?;
             return crate::plugin_ui::PluginUiManifest::parse(&self.code, raw).ok();
         }
-        let value = self
+        // A query that times out (the plugin is busy) must not hide an installed plugin's menu: the last valid
+        // manifest, kept in memory and in the database, stands in until the next answer.
+        let Some(value) = self
             .query_audit("ui.manifest", serde_json::json!({}))
-            .await?;
+            .await
+        else {
+            let raw = self.ui_manifest_raw.lock().await.clone()?;
+            return crate::plugin_ui::PluginUiManifest::parse(&self.code, raw).ok();
+        };
         match crate::plugin_ui::PluginUiManifest::parse(&self.code, value.clone()) {
             Ok(manifest) => {
                 self.remember_ui_manifest(value, manifest.lifecycle.is_on_demand())

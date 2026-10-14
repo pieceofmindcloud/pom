@@ -20,7 +20,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 
 /// Subfolder of the node's KV snapshot directory where the conversation sessions are kept. The KV cache clear empties
@@ -82,11 +86,43 @@ pub(crate) fn offers_model(services: &[Value], code: &str) -> bool {
 /// Syncs a saved turn to the other whole-model machines in the background. The bridge saved the files before it wrote
 /// the turn's `done` line, so they are complete when this runs.
 pub(crate) fn spawn_sync(state: GatewayState, code: String, key: String) {
+    // one sync of a conversation at a time, and only the newest turn is sent: a sync that a newer turn has overtaken
+    // is dropped (the newer one carries the older turns), so two syncs never write the same file at one peer
+    let (lock, generation) = {
+        let slot = key_sync(&code, &key);
+        let generation = slot.latest.fetch_add(1, Ordering::SeqCst) + 1;
+        (slot, generation)
+    };
     tokio::spawn(async move {
+        let _turn = lock.turns.lock().await;
+        if lock.latest.load(Ordering::SeqCst) != generation {
+            info!(plugin = %code, session = %key, "session sync: a newer turn of the conversation takes its place");
+            return;
+        }
         if let Err(error) = sync(&state, &code, &key).await {
             warn!("plugin {code}: session {key} not synced to every machine: {error}");
         }
     });
+}
+
+/// The sync state of one conversation: the turns' lock and the newest turn requested.
+struct KeySync {
+    turns: AsyncMutex<()>,
+    latest: AtomicU64,
+}
+
+fn key_sync(code: &str, key: &str) -> Arc<KeySync> {
+    static SYNCS: OnceLock<StdMutex<HashMap<String, Arc<KeySync>>>> = OnceLock::new();
+    let map = SYNCS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(format!("{code}/{key}"))
+        .or_insert_with(|| {
+            Arc::new(KeySync {
+                turns: AsyncMutex::new(()),
+                latest: AtomicU64::new(0),
+            })
+        })
+        .clone()
 }
 
 async fn sync(state: &GatewayState, code: &str, key: &str) -> Result<(), String> {

@@ -472,7 +472,13 @@ pub(super) async fn add_node_endpoint(
     let overlapping = overlapping_layers(&others, (req.start_layer, req.end_layer));
 
     let candidates = candidates(&machines);
-    let Some(total_layers) = model_size(&candidates).value() else {
+    // The slices may not carry their model's layer count (it is read from each GGUF header, which the catalog reads
+    // later). A deployment in service already knows it: that is the record's count.
+    let known = existing_record
+        .as_ref()
+        .map(|record| record.model.total_layers)
+        .filter(|total| *total > 0);
+    let Some(total_layers) = model_size(&candidates).value().or(known) else {
         return bad(json!({
             "error": format!("the slices of {} do not state the total number of layers", req.group)
         }));

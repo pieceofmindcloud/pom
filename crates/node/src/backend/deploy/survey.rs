@@ -1010,12 +1010,32 @@ pub(super) fn parse_shard(
 ///   the number every peer is configured with, and `runtime::NodeConfig::validate`
 ///   refuses a zero at the far end — after `launch` has already stopped
 ///   inference on the target machine.
+/// The model's name without what the files add around it: `.gguf`, a `-00001-of-00002` split, and the `-xxxxxxxx` tag
+/// the slicing run gives a group. A whole GGUF and the slices of the same model compare equal by this.
+pub(super) fn model_stem(name: &str) -> String {
+    let mut stem = name.strip_suffix(".gguf").unwrap_or(name).to_string();
+    let is_tag = |t: &str| t.len() == 8 && t.chars().all(|c| c.is_ascii_hexdigit());
+    if let Some(at) = stem.rfind('-') {
+        if is_tag(&stem[at + 1..]) {
+            stem.truncate(at);
+        }
+    }
+    let split = stem.len().checked_sub(15).map(|at| &stem[at..]);
+    if let Some(part) = split {
+        let digits = |t: &str| t.len() == 5 && t.chars().all(|c| c.is_ascii_digit());
+        if part.starts_with('-') && digits(&part[1..6]) && &part[6..10] == "-of-" && digits(&part[10..]) {
+            stem.truncate(stem.len() - 15);
+        }
+    }
+    stem
+}
+
 pub(super) fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
     if !v.get("shard_range").map(|r| r.is_null()).unwrap_or(true) {
         return None;
     }
     let name = v.get("name")?.as_str()?;
-    if name != group {
+    if name != group && model_stem(name) != model_stem(group) {
         return None;
     }
     let total = v
@@ -1071,5 +1091,20 @@ mod tests {
     fn deployment_load_stays_unknown_when_the_peer_did_not_report_it() {
         assert_eq!(reported_peer_load(&json!({ "load": 2 })), Some(2));
         assert_eq!(reported_peer_load(&json!({})), None);
+    }
+}
+
+#[cfg(test)]
+mod model_stem_tests {
+    use super::model_stem;
+
+    #[test]
+    fn a_whole_gguf_and_the_slices_of_the_same_model_share_a_stem() {
+        let whole = "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf";
+        let group = "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002-552ac6c0";
+        assert_eq!(model_stem(whole), "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS");
+        assert_eq!(model_stem(whole), model_stem(group));
+        assert_ne!(model_stem("Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XXS.gguf"), model_stem(whole));
+        assert_eq!(model_stem("plain.gguf"), "plain");
     }
 }

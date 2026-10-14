@@ -419,21 +419,38 @@ pub(super) async fn add_node_endpoint(
 
     // Re-surveys instead of trusting the screen: the preview may be a minute old, and a
     // machine that left in the meantime would receive a slice.
+    // The slice is looked up in the same surveys the options were built from (`add_node_option_survey_kinds`): a slice
+    // the dialog offers is the one this checks, whichever survey found it.
+    let requested_kind = match req.kind {
+        DeployKind::Whole => HeldKind::Whole,
+        _ => HeldKind::Shard,
+    };
+    let mut target_label = String::new();
+    let mut held_shard = None;
+    for survey_kind in add_node_option_survey_kinds(req.kind) {
+        let machines = survey(&state, &req.group, survey_kind, None, None)
+            .await
+            .machines;
+        if let Some(machine) = machines.iter().find(|m| m.node_id == req.target_node_id) {
+            target_label = machine.label();
+            if held_shard.is_none() {
+                held_shard = machine
+                    .holds_kind(req.start_layer, req.end_layer, Some(requested_kind))
+                    .cloned();
+            }
+        }
+    }
+    if target_label.is_empty() {
+        return bad(json!({ "error": "the chosen machine is not in the cluster" }));
+    }
     let machines = survey(&state, &req.group, req.kind, None, None)
         .await
         .machines;
-    let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
-        return bad(json!({ "error": "the chosen machine is not in the cluster" }));
-    };
-    let requested_kind = match req.kind {
-        DeployKind::Whole => Some(HeldKind::Whole),
-        _ => Some(HeldKind::Shard),
-    };
-    let Some(shard) = target.holds_kind(req.start_layer, req.end_layer, requested_kind) else {
+    let Some(shard) = held_shard else {
         return bad(json!({
             "error": format!(
                 "{} does not have {}; send it there first",
-                target.label(),
+                target_label,
                 req.kind.unit(&req.group, req.start_layer, req.end_layer)
             )
         }));

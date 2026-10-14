@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Subfolder of the node's KV snapshot directory where the conversation sessions are kept. The KV cache clear empties
 /// it with the snapshots (`backend/webui/kv_cache.rs`), so both are cleared by the same action.
@@ -93,14 +93,18 @@ async fn sync(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
     };
     let mut whole = None;
     let mut failures = Vec::new();
-    for peer in state.all_peers().await {
+    let peers = state.all_peers().await;
+    info!(plugin = %code, session = %key, peers = peers.len(), delta = delta.is_some(), "session sync starts");
+    for peer in peers {
         if peer.node_id == state.network.node_id {
             continue;
         }
         let Some(services) = services_of(state, &peer.node_id).await else {
+            info!(plugin = %code, session = %key, peer = %peer.node_id, "session sync: the peer did not answer its services");
             continue;
         };
         if !offers_whole_model(&services, code) {
+            info!(plugin = %code, session = %key, peer = %peer.node_id, "session sync: the peer does not serve the whole model");
             continue;
         }
         if let Some((meta, bytes)) = &delta {

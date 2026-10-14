@@ -62,12 +62,14 @@ pub(crate) fn saved_session(done: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Whether a machine's services offer the whole model of `code` and are not in an error or waiting state.
-pub(crate) fn offers_whole_model(services: &[Value], code: &str) -> bool {
+/// Whether a machine's services offer the inference service `code` and are not in an error or waiting state. The
+/// service reports `stages: true` on every machine that runs the plugin (a stage can run anywhere), so it does not say
+/// whether the machine holds the whole model: a peer that holds a layer range refuses the session (its layers differ),
+/// and the refusal is logged.
+pub(crate) fn offers_model(services: &[Value], code: &str) -> bool {
     services.iter().any(|entry| {
         entry["plugin_code"] == code
             && entry["kind"] == "inference"
-            && entry["stages"] != true
             && entry["status"] != "error"
             && entry["status"] != "waiting"
     })
@@ -103,8 +105,8 @@ async fn sync(state: &GatewayState, code: &str, key: &str) -> Result<(), String>
             info!(plugin = %code, session = %key, peer = %peer.node_id, "session sync: the peer did not answer its services");
             continue;
         };
-        if !offers_whole_model(&services, code) {
-            info!(plugin = %code, session = %key, peer = %peer.node_id, "session sync: the peer does not serve the whole model");
+        if !offers_model(&services, code) {
+            info!(plugin = %code, session = %key, peer = %peer.node_id, "session sync: the peer does not offer this inference service");
             continue;
         }
         if let Some((meta, bytes)) = &delta {
@@ -357,13 +359,13 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_model_is_offered_by_a_ready_machine_only() {
+    fn the_inference_service_is_offered_by_a_ready_machine_only() {
         let whole = json!({"plugin_code": "strata", "kind": "inference", "status": "ready"});
         let stage = json!({"plugin_code": "strata", "kind": "inference", "status": "ready", "stages": true});
         let failing = json!({"plugin_code": "strata", "kind": "inference", "status": "error"});
-        assert!(offers_whole_model(&[whole.clone()], "strata"));
-        assert!(!offers_whole_model(&[stage], "strata"));
-        assert!(!offers_whole_model(&[failing], "strata"));
-        assert!(!offers_whole_model(&[whole], "other"));
+        assert!(offers_model(&[whole.clone()], "strata"));
+        assert!(offers_model(&[stage], "strata"));
+        assert!(!offers_model(&[failing], "strata"));
+        assert!(!offers_model(&[whole], "other"));
     }
 }

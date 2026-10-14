@@ -150,6 +150,8 @@ mod pipeline;
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
+#[path = "payments/mod.rs"]
+mod payments;
 mod plugin_dev;
 #[path = "inference/engine_telemetry.rs"]
 mod engine_telemetry;

@@ -110,6 +110,11 @@ The permanent runtime guides. Beyond what their titles say:
   release notice, applied only after explicit authorization in the UI; that
   notice is not a plugin and lives in `crates/node/src/pom_core_update.rs`
   with its own routes and screen (`/api/ui/pom-update/*`, `/config/about`).
+- `payments.md` - the optional prepaid credit (x402): the funding-boundary-only
+  gate, the micro-credit hold/settle math, the principal-only merchant with a
+  gateway allowance lease, the fail-closed posture and the phase-1 internal
+  credit rail. Phase A (the `crates/node/src/payments/` core) landed; the
+  gateway wiring and the rest are the dated plan it cites.
 
 ## superpowers/specs/ and superpowers/plans/
 

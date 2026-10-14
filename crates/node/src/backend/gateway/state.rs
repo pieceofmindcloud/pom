@@ -1044,7 +1044,7 @@ pub(crate) async fn verify_control_request(
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let (parts, body) = request.into_parts();
-    let bytes = match axum::body::to_bytes(body, 16 * 1024 * 1024).await {
+    let bytes = match axum::body::to_bytes(body, crate::plugin_session::CONTROL_BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(_) => {
             return (

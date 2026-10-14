@@ -8,7 +8,7 @@
 //! itself, so the gateway's choice of machine does not change.
 //!
 //! Routes (signed peer calls, the same checks as the generation route):
-//! - `POST /api/internal/plugins/:code/engine/session/file?key=..&kind=full|delta|full_ids|delta_meta`, the raw file
+//! - `POST /api/internal/plugins/:code/engine/session/chunk?key=..&kind=..&offset=..&total=..`, one piece of a file
 //! - `POST /api/internal/plugins/:code/engine/session/apply`, `{"key": ..}`: apply a received delta here
 
 use crate::auth::InternalNodeAuth;
@@ -29,6 +29,10 @@ pub(crate) const SESSIONS_SUBDIR: &str = "strata-sessions";
 
 /// The largest session file a peer accepts: a whole session of a long conversation is a few hundred MB.
 pub(crate) const MAX_SESSION_FILE: usize = 1 << 30;
+/// A piece of a session file on the wire (the signed control channel takes bodies up to CONTROL_BODY_LIMIT).
+pub(crate) const SESSION_PIECE: usize = 64 << 20;
+/// The largest signed control body: a piece and its envelope. Every signed control call is read up to this size.
+pub(crate) const CONTROL_BODY_LIMIT: usize = 128 << 20;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(900);
 const KINDS: [&str; 4] = ["full", "delta", "full_ids", "delta_meta"];
 
@@ -206,6 +210,7 @@ async fn push_whole(
     post_file(state, code, key, peer, "full_ids", full_ids).await
 }
 
+/// One file of the session, in pieces of SESSION_PIECE: the peer publishes it when the last piece is in.
 async fn post_file(
     state: &GatewayState,
     code: &str,
@@ -214,16 +219,27 @@ async fn post_file(
     kind: &str,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let response = state
-        .control_post_bytes_routed(
-            peer,
-            &format!("/api/internal/plugins/{code}/engine/session/file?key={key}&kind={kind}"),
-            bytes,
-            SESSION_TIMEOUT,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    answer(response).await
+    let total = bytes.len();
+    let mut offset = 0;
+    loop {
+        let end = (offset + SESSION_PIECE).min(total);
+        let response = state
+            .control_post_bytes_routed(
+                peer,
+                &format!(
+                    "/api/internal/plugins/{code}/engine/session/chunk?key={key}&kind={kind}&offset={offset}&total={total}"
+                ),
+                bytes[offset..end].to_vec(),
+                SESSION_TIMEOUT,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        answer(response).await?;
+        offset = end;
+        if offset >= total {
+            return Ok(());
+        }
+    }
 }
 
 async fn answer(response: reqwest::Response) -> Result<(), String> {
@@ -240,9 +256,11 @@ async fn answer(response: reqwest::Response) -> Result<(), String> {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct SessionFileQuery {
+pub(crate) struct SessionChunkQuery {
     key: String,
     kind: String,
+    offset: u64,
+    total: u64,
 }
 
 fn refuse(status: StatusCode, error: &str) -> Response {
@@ -258,13 +276,13 @@ async fn relay(response: reqwest::Response) -> Response {
     }
 }
 
-/// `POST /api/internal/plugins/:code/engine/session/file`: one file of a peer's session, written by this machine's
-/// bridge. Only a signed call from a live peer that serves this model gets through.
-pub(crate) async fn engine_session_file_route(
+/// `POST /api/internal/plugins/:code/engine/session/chunk`: one piece of a peer's session file, written by this
+/// machine's bridge. Only a signed call from a live peer that serves this model gets through.
+pub(crate) async fn engine_session_chunk_route(
     auth: InternalNodeAuth,
     State(state): State<GatewayState>,
     Path(code): Path<String>,
-    Query(query): Query<SessionFileQuery>,
+    Query(query): Query<SessionChunkQuery>,
     body: Bytes,
 ) -> Response {
     if let Err(response) = check_peer_call(&auth, &state, &code).await {
@@ -273,14 +291,17 @@ pub(crate) async fn engine_session_file_route(
     if !valid_key(&query.key) || !KINDS.contains(&query.kind.as_str()) {
         return refuse(StatusCode::BAD_REQUEST, "invalid session file");
     }
+    if query.total > MAX_SESSION_FILE as u64 || query.offset + body.len() as u64 > query.total {
+        return refuse(StatusCode::BAD_REQUEST, "the piece does not fit the file");
+    }
     let (port, token) = match local_upstream(&state.plugins, &code).await {
         Ok(upstream) => upstream,
         Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
     };
     match loopback_client()
         .put(format!(
-            "http://127.0.0.1:{port}/pom/session/file?key={}&kind={}",
-            query.key, query.kind
+            "http://127.0.0.1:{port}/pom/session/chunk?key={}&kind={}&offset={}&total={}",
+            query.key, query.kind, query.offset, query.total
         ))
         .bearer_auth(token)
         .body(body)

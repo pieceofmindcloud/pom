@@ -416,6 +416,8 @@ pub(crate) struct EngineRequest {
     pub request_details: Value,
     /// Labels of a typed decision (`/v1/systemone`): the engine answers with their probabilities for the first token.
     pub probe_labels: Vec<String>,
+    /// Bytes of the prompt that a typed decision asks again and again (its question): the engine pins the prefix there.
+    pub probe_prefix_bytes: Option<usize>,
 }
 
 pub(crate) fn generation_body(request: &EngineRequest) -> Value {
@@ -431,6 +433,9 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
     }
     if !request.probe_labels.is_empty() {
         body["probe"] = json!({"labels": request.probe_labels});
+        if let Some(bytes) = request.probe_prefix_bytes {
+            body["probe"]["prefix_bytes"] = json!(bytes);
+        }
     }
     for key in SAMPLING_KEYS {
         let value = &request.request_details[key];
@@ -1237,9 +1242,11 @@ mod tests {
             session: None,
             request_details: json!({"temperature": 0.2, "top_k": 20, "messages": [], "seed": "x"}),
             probe_labels: vec!["Yes".into(), "No".into()],
+            probe_prefix_bytes: Some(12),
         });
         assert_eq!(body["prompt"], "User: oi");
         assert_eq!(body["probe"]["labels"], json!(["Yes", "No"]));
+        assert_eq!(body["probe"]["prefix_bytes"], 12);
         assert_eq!(body["thinking"], false);
         assert_eq!(body["max_tokens"], 128);
         assert_eq!(body["temperature"], 0.2);

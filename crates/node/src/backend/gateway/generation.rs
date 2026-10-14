@@ -926,6 +926,7 @@ pub(super) async fn generate_stream_inner(
                     .as_ref()
                     .map(|probe| probe.labels.clone())
                     .unwrap_or_default(),
+                probe_prefix_bytes: probe.as_ref().and_then(|probe| probe.retain_prefix_bytes),
             },
             &tx,
             &cancellation,

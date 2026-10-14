@@ -598,9 +598,11 @@ export function DeployModel() {
     ?? slicedGroup?.mmprojReason
     ?? null;
   const planSidecars = currentPlan?.sidecars;
-  const visionAvailable = mmprojCandidates.length > 0
+  // A plugin's engine offers vision only when it declares it; llama.cpp (no service) reads the projector itself.
+  const visionAvailable = (mmprojCandidates.length > 0
     || Boolean(mmprojPath)
-    || Boolean(planSidecars?.options.some((option) => option.kind === "mmproj"));
+    || Boolean(planSidecars?.options.some((option) => option.kind === "mmproj")))
+    && (service == null || service.vision);
   const linkFor = (kind: "mmproj" | "mtp") => sidecarLinks.data?.links.find(
     (link) => link.model_key === planSidecars?.model_key && link.kind === kind,
   );

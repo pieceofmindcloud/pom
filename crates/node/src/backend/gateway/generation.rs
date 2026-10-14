@@ -962,11 +962,7 @@ pub(super) async fn generate_stream_inner(
     // this gateway rendered, not hidden states. There is no fallback to the
     // pipeline: the plan said who serves this model. See `plugin_engine`.
     if let Some(code) = crate::plugin_engine::plugin_of_plan(&plan) {
-        let refusal = if !images.is_empty() {
-            Some("this inference service does not accept images")
-        } else {
-            None
-        };
+        let refusal: Option<&str> = None;
         if let Some(error) = refusal {
             log_early_outcome("refused", error);
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
@@ -991,6 +987,10 @@ pub(super) async fn generate_stream_inner(
                     .map(|probe| probe.labels.clone())
                     .unwrap_or_default(),
                 probe_prefix_bytes: probe.as_ref().and_then(|probe| probe.retain_prefix_bytes),
+                images: images
+                    .iter()
+                    .map(|bytes| crate::plugin_engine::image_data_url(bytes))
+                    .collect(),
             },
             &tx,
             &cancellation,

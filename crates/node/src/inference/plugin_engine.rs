@@ -177,6 +177,10 @@ pub(crate) fn load_params(
     if let Some(link) = link {
         params["link"] = link.clone();
     }
+    // The vision projector the deployment chose: the engine reads images with it.
+    if let Some(mmproj) = cfg.mmproj_path.as_deref().filter(|path| !path.trim().is_empty()) {
+        params["mmproj_path"] = json!(mmproj);
+    }
     // the sessions live with the KV snapshots, so the clear of the KV cache empties them too
     if let Some(dir) = cfg.slot_save_path.as_deref().filter(|dir| !dir.trim().is_empty()) {
         params["session_dir"] = json!(std::path::Path::new(dir)
@@ -418,6 +422,25 @@ pub(crate) struct EngineRequest {
     pub probe_labels: Vec<String>,
     /// Bytes of the prompt that a typed decision asks again and again (its question): the engine pins the prefix there.
     pub probe_prefix_bytes: Option<usize>,
+    /// The turn's images, as `data:image/...;base64,` URLs (see `image_data_url`).
+    pub images: Vec<String>,
+}
+
+/// An image as a `data:` URL, its type read from the first bytes (JPEG when none is recognized).
+pub(crate) fn image_data_url(bytes: &[u8]) -> String {
+    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else {
+        "image/jpeg"
+    };
+    use base64::Engine as _;
+    format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 pub(crate) fn generation_body(request: &EngineRequest) -> Value {
@@ -430,6 +453,9 @@ pub(crate) fn generation_body(request: &EngineRequest) -> Value {
     });
     if let Some(session) = &request.session {
         body["session"] = json!(session);
+    }
+    if !request.images.is_empty() {
+        body["images"] = json!(request.images);
     }
     if !request.probe_labels.is_empty() {
         body["probe"] = json!({"labels": request.probe_labels});
@@ -1246,10 +1272,13 @@ mod tests {
             request_details: json!({"temperature": 0.2, "top_k": 20, "messages": [], "seed": "x"}),
             probe_labels: vec!["Yes".into(), "No".into()],
             probe_prefix_bytes: Some(12),
+            images: vec!["data:image/png;base64,AAAA".into()],
         });
         assert_eq!(body["prompt"], "User: oi");
         assert_eq!(body["probe"]["labels"], json!(["Yes", "No"]));
         assert_eq!(body["probe"]["prefix_bytes"], 12);
+        assert_eq!(body["images"][0], "data:image/png;base64,AAAA");
+        assert!(image_data_url(&[0xff, 0xd8, 0xff, 0xe0]).starts_with("data:image/jpeg;base64,"));
         assert_eq!(body["thinking"], false);
         assert_eq!(body["max_tokens"], 128);
         assert_eq!(body["temperature"], 0.2);

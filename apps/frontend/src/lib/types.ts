@@ -747,6 +747,8 @@ export interface PluginService {
   stages?: boolean;
   /** Kind `inference`: the POM deployment settings that apply to its engine. */
   pom_settings?: PomSetting[];
+  /** Kind `inference`: its engine reads images through the deployment's vision projector (`mmproj`). */
+  vision?: boolean;
 }
 
 /** A POM deployment setting an inference service can declare, by its `RuntimeParams` name. */

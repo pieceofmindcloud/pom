@@ -24,6 +24,8 @@ export interface InferenceServiceEntry {
   nodeIds: string[];
   /** Its engine also runs layer slices across machines. */
   stages: boolean;
+  /** Its engine reads images through the deployment's vision projector, as the plugin declares. */
+  vision: boolean;
 }
 
 const USABLE: PluginService["status"][] = ["ready", "starting", "installing"];
@@ -50,8 +52,10 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
         pomSettings: [],
         nodeIds: [],
         stages: false,
+        vision: false,
       };
       if (service.stages) entry.stages = true;
+      if (service.vision) entry.vision = true;
       if (entry.settings.length === 0 && service.settings?.length) entry.settings = service.settings;
       for (const setting of service.pom_settings ?? []) {
         if (!entry.pomSettings.includes(setting)) entry.pomSettings.push(setting);

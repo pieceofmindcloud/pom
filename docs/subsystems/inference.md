@@ -2594,6 +2594,10 @@ runs it through that plugin or fails.
   next to the KV snapshots, and the KV cache clear empties them
   (`crates/node/src/inference/plugin_session.rs`). Only turns that ran in a batch
   slot are saved: the plugin keeps a named turn in a slot, not on the solo path.
+  The name is the request's `session` (the Chat sends its conversation id); a request
+  without one - an agent that sends no session id - is named `auto-<24 hex>`, a hash of
+  its first user message, so its turns share it. Two conversations that open with the same
+  message share a name, and the later save replaces the earlier one (`session_of`).
 
 **Split across machines.** A service that publishes `stages: true` also runs
 POM layer slices, one per machine (`crates/node/src/inference/plugin_stage_link.rs`).

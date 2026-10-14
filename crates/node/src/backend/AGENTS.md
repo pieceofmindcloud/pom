@@ -500,7 +500,10 @@ boundary.
   produce, and the transmitted prefix only grows - there is no un-sending an SSE fragment.
   The Chat may send an `inference_head` with a layer-0 `node_id`; the gateway
   validates the live candidate, pins that head in the planner and repeats it in
-  `x_pom.source`/trace, without re-choosing by RTT or load.
+  `x_pom.source`/trace, without re-choosing by RTT or load. The Chat sends it only when the
+  user picks a head in the Chat (`headChoice`); the screen's default is not sent. Without a
+  pin the planner chooses among the layer-0 heads by estimated cost, where each head's
+  queue (`active_generations`, or this gateway's count) weighs in.
   The capacity published in `/v1/models` and used by
   `request_output_limit_for_model` is the smallest `RuntimeCapacity` among the peers
   of the pipeline chosen for the model/deployment. An idle peer in that

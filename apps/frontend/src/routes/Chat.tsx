@@ -1093,7 +1093,9 @@ function ChatScreen() {
       // and as the total it cut a reasoning model off before it answered.
       maxTokens:
         models.data?.find((entry) => entry.id === model)?.max_tokens ?? node.data?.config?.max_new_tokens,
-      inferenceHead: selectedInferenceHead ?? undefined,
+      // Sent only when the user picked a head: the default shown above is not a pin, so the planner
+      // chooses among the heads by their cost and queue.
+      inferenceHead: headChoice.model === model ? headChoice.nodeId ?? undefined : undefined,
       thinkingEnabled,
       ragEnabled: ragAvailable ? ragEnabled : undefined,
       ragCollection: ragAvailable && ragCollection ? ragCollection : undefined,

@@ -20,6 +20,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -50,12 +51,36 @@ pub(crate) fn valid_key(key: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-/// The conversation a chat request names, when it names a valid one.
+/// The conversation a chat request belongs to. A request that names one (`session`) is that conversation. One that
+/// names none - an agent that sends no session id - is named by a hash of its first user message: every turn of a
+/// conversation carries that message unchanged, so its turns share the name. Two conversations that open with the
+/// same message share it too, and the later one's save replaces the earlier's; a restore still takes only a session
+/// that starts the prompt, so the replacement costs cache, never correctness.
 pub(crate) fn session_of(request: &Value) -> Option<String> {
-    request["session"]
-        .as_str()
-        .filter(|key| valid_key(key))
-        .map(str::to_owned)
+    if let Some(key) = request["session"].as_str().filter(|key| valid_key(key)) {
+        return Some(key.to_owned());
+    }
+    let first = first_user_text(request)?;
+    let digest = sha2::Sha256::digest(first.as_bytes());
+    Some(format!("auto-{}", &hex::encode(digest)[..24]))
+}
+
+/// The text of the first user message of a chat request (its text parts, when the content is a list).
+fn first_user_text(request: &Value) -> Option<String> {
+    let message = request["messages"]
+        .as_array()?
+        .iter()
+        .find(|message| message["role"] == "user")?;
+    let text = match &message["content"] {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// The conversation a turn saved, from the `done` object of its answer (the bridge writes `session` only when it saved).
@@ -398,10 +423,26 @@ mod tests {
     }
 
     #[test]
-    fn a_request_names_a_valid_session_only() {
-        assert_eq!(session_of(&json!({"session": "c1"})), Some("c1".into()));
-        assert_eq!(session_of(&json!({"session": "../x"})), None);
-        assert_eq!(session_of(&json!({"model": "m"})), None);
+    fn a_request_names_its_session_or_takes_its_first_message_as_the_name() {
+        let named = json!({"session": "c1", "messages": [{"role": "user", "content": "hi"}]});
+        assert_eq!(session_of(&named), Some("c1".into()));
+        let turn_one = json!({"messages": [{"role": "user", "content": "fix the bug"}]});
+        let turn_two = json!({"messages": [
+            {"role": "user", "content": "fix the bug"},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "now test it"},
+        ]});
+        let other = json!({"messages": [{"role": "user", "content": "write a poem"}]});
+        let name = session_of(&turn_one).expect("a named first message");
+        assert!(valid_key(&name));
+        assert_eq!(session_of(&turn_two), Some(name));
+        assert_ne!(session_of(&other), session_of(&turn_one));
+        // an invalid name is not a name, and a request with no user text has none
+        assert!(session_of(&json!({"session": "../x", "messages": []})).is_none());
+        assert_eq!(
+            session_of(&json!({"messages": [{"role": "system", "content": "s"}]})),
+            None
+        );
     }
 
     #[test]

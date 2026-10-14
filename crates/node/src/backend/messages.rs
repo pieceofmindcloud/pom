@@ -205,6 +205,9 @@ pub struct MessagesRequest {
     pub tools: Vec<ToolDef>,
     #[serde(default)]
     pub stop_sequences: Vec<String>,
+    /// The conversation this turn belongs to, for a plugin engine's K/V sessions (see `plugin_session::session_of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// `output_config`, where the task budget comes from. See [`OutputConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,

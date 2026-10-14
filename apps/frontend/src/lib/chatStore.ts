@@ -390,6 +390,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           {
             model: options.model,
             ...(options.inferenceHead ? { inference_head: options.inferenceHead } : {}),
+            // The conversation's id: a plugin engine keeps and restores the K/V state of a named conversation
+            session: options.session.id,
             stream: true,
             ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
             thinking_enabled: options.thinkingEnabled,

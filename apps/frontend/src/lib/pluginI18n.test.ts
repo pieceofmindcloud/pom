@@ -34,6 +34,18 @@ describe("plugin i18n catalogs", () => {
     vi.restoreAllMocks();
   });
 
+  it("retries a plugin whose catalogs were unavailable: an on-demand plugin serves them only once it runs", async () => {
+    // the plugin is listed but not running yet: its assets answer 404 and nothing is installed
+    const down = vi.fn(async () => {
+      throw new Error("HTTP 404");
+    });
+    await syncPluginCatalogs([plugin(both)], "pt-BR", down);
+    expect(formatMessage("pt-BR", "acme.title")).toBe("acme.title");
+    // the same plugin, same version and language, now running: it is synchronized again and installs its texts
+    await syncPluginCatalogs([plugin(both)], "pt-BR", fetcher);
+    expect(formatMessage("pt-BR", "acme.title")).toBe("Auditoria");
+  });
+
   it("installs the plugin's own texts for the active locale, without the POM owning them", async () => {
     await syncPluginCatalogs([plugin(both)], "pt-BR", fetcher);
     expect(formatMessage("pt-BR", "acme.title")).toBe("Auditoria");

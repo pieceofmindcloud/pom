@@ -65,19 +65,27 @@ export async function syncPluginCatalogs(
     const stamp = `${plugin.version ?? ""}|${active}`;
     if (loadedFor.get(plugin.code) === stamp) continue;
     const catalogs: Partial<Record<Locale, Record<string, string>>> = {};
+    // An on-demand plugin serves its texts only while its process runs: a catalog that failed is retried on the next
+    // sync (the plugin turning `running`), so the stamp is kept only when every selected catalog arrived.
+    let complete = true;
     for (const locale of selectedLocales(plugin, active)) {
       const asset = plugin.manifest.i18n?.[locale];
       if (!asset) continue;
       try {
         const catalog = validateCatalog(plugin.code, await fetcher(pluginAssetUrl(plugin.code, asset)));
         if (catalog) catalogs[locale] = catalog;
-        else console.warn(`The ${locale} catalog of plugin ${plugin.code} is invalid and was ignored`);
+        else {
+          complete = false;
+          console.warn(`The ${locale} catalog of plugin ${plugin.code} is invalid and was ignored`);
+        }
       } catch (error) {
+        complete = false;
         console.warn(`The ${locale} catalog of plugin ${plugin.code} is unavailable`, error);
       }
     }
     setPluginMessages(plugin.code, catalogs);
-    loadedFor.set(plugin.code, stamp);
+    if (complete) loadedFor.set(plugin.code, stamp);
+    else loadedFor.delete(plugin.code);
   }
 }
 

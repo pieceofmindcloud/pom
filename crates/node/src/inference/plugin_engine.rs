@@ -651,6 +651,9 @@ pub(crate) async fn generate(
         return;
     };
     let node_id = step.node_id.as_str();
+    // In flight on the serving node until the stream ends: the dashboard's load and the planner's queue read it,
+    // as they read the llama.cpp path's (`infer_server`).
+    let _in_flight = state.loads.acquire(node_id).await;
     let body = generation_body(&request);
     // Totals left by an earlier generation that never reached its end belong to nobody now: drop them, and the
     // frames of this one are the prompt's until the first token.

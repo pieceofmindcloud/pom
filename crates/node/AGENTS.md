@@ -260,8 +260,10 @@ troubled deployment.
   `reqlog.rs`, `session.rs`, `tool_call.rs`.
 - `payments/` - the optional prepaid credit (x402) core: fixed-point hold/bill
   math, the in-memory balance/reservation/allowance book, the gate and the 402
-  envelope. Phase A landed unwired: the gateway gate and the ledger are the
-  remaining phases of `docs/superpowers/plans/2026-10-13-x402-prepaid-credit.md`.
+  envelope, the bounded ledger writer (`LedgerWriter`, mirroring `reqlog.rs`) and
+  the startup balance/lease load. Phases A and B landed unwired: the gateway gate
+  is the remaining wiring in
+  `docs/superpowers/plans/2026-10-13-x402-prepaid-credit.md`.
   See `docs/subsystems/payments.md`.
 
 - `macos_status.rs` and `macos_status.m` - the macOS-specific bridge for the bar

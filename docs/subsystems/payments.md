@@ -5,12 +5,13 @@ an infer node's chat key) pre-funds a balance; generation runs against that
 balance with **no payment call in the inference path**. The x402 402-challenge
 shape appears only at the funding boundary, never per generation.
 
-**Status (2026-10-14):** Phase A landed - the core module
-`crates/node/src/payments/` (pricing math, balance book, gate, 402 envelope)
-with 22 unit tests. It is **not wired yet**: no route charges, no toggle in
-`pom.json`, no persistence, no screen. The remaining phases (gateway gate,
-ledger, per-deployment pricing, grants/leases, admin UI, the `pom-plugin-x402`
-facilitator) are the plan
+**Status (2026-10-14):** Phases A and B landed - the core module
+`crates/node/src/payments/` (pricing math, balance book, gate, 402 envelope,
+durable ledger writer) with 26 unit tests, and the `x402_accounts`,
+`x402_grants`, `x402_ledger` tables in `pom.db`. It is **not wired yet**: no
+route charges, no toggle in `pom.json`, no screen. The remaining phases (gateway
+gate, per-deployment pricing, settlement, grants/leases, admin UI, the
+`pom-plugin-x402` facilitator) are the plan
 `docs/superpowers/plans/2026-10-13-x402-prepaid-credit.md`. Until Phase D puts
 the gate in the gateway, the module is complete but inert, and
 `payments/mod.rs` carries a module-level `#![allow(dead_code, unused_imports)]`
@@ -104,16 +105,35 @@ limit is computed and before generation; `GateError::Unavailable` becomes 503
 - `crates/node/src/payments/pricing.rs` - `DeploymentPricing`, `hold_micro`,
   `bill_micro`, `min_funding_micro`.
 - `crates/node/src/payments/book.rs` - `AccountState`, `BalanceBook`.
+- `crates/node/src/payments/ledger.rs` - `PaymentWrite`, `LedgerWriter` (the
+  bounded writer mirroring `reqlog.rs`), `load_balances`, `load_grant`.
 - `crates/node/src/payments/x402.rs` - `PriceTable`, `Reservation`,
   `Challenge402`, `GateError`, `PaymentState`.
 - `crates/node/src/payments/tests.rs` - the unit proofs, including the poisoned
-  book failing closed.
+  book failing closed and the ledger surviving a reopen.
+
+## Persistence
+
+The three tables live in `pom.db` (`ensure_schema` in `backend/db.rs`):
+`x402_accounts` (the durable balance mirror), `x402_grants` (the
+principal-granted allowance leases, keyed `(key_id, gateway_node_id)` with an
+`expires_at`), and `x402_ledger` (the append-only audit trail the principal
+reconciles against). Money is fixed-point micro units (`INTEGER`).
+
+`LedgerWriter` is the only writer: the request path enqueues a `PaymentWrite`
+(grant, settle or refund) on a bounded channel and never blocks; the dedicated
+thread batches the queue into one transaction per burst, and each write appends
+the ledger row **and** moves `x402_accounts.balance_micro` together. A full
+queue logs the loss, it does not stall a generation. Reserved holds are never
+persisted: a restart ends every live generation, so `load_balances` rebuilds the
+book from settled balances with nothing reserved, and `load_grant` reads only an
+unexpired lease.
 
 ## What is not in the runtime yet
 
-The gateway gate (Phase D), the `x402_*` ledger tables and the bounded writer
-(Phase B), `Deployment.pricing` (Phase C), settlement at `GenSummary` (Phase E),
-grants/leases/reconciliation (Phase F), the toggle and the Payments screen
-(Phase G), and `pom-plugin-x402` (Phase H). The design decisions behind them -
-principal-only merchant, internal credit, per-deployment pricing, consumer pays -
-are locked in the plan.
+The gateway gate (Phase D), `Deployment.pricing` (Phase C), settlement at
+`GenSummary` (Phase E), grants/leases/reconciliation (Phase F), the toggle and
+the Payments screen (Phase G), and `pom-plugin-x402` (Phase H). The startup call
+of `load_balances`/`load_grant` waits for the Phase D wiring. The design
+decisions behind them - principal-only merchant, internal credit,
+per-deployment pricing, consumer pays - are locked in the plan.

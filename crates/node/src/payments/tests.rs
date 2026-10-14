@@ -229,3 +229,177 @@ fn payment_state_gate_unavailable_when_book_poisoned() {
         .expect_err("a poisoned book must fail closed");
     assert!(matches!(err, GateError::Unavailable));
 }
+
+fn temporary_database(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "pom-payments-{label}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
+fn remove_database(path: &std::path::Path) {
+    // Only this test's own directory: the parent is the shared temp folder,
+    // and removing it would delete the other tests' databases mid-run.
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+    }
+}
+
+#[test]
+fn ledger_writer_batches_writes_and_moves_balances() {
+    let path = temporary_database("ledger");
+    let database = std::sync::Arc::new(crate::db::PomDb::open(&path).expect("open a database"));
+    let writer = LedgerWriter::new(database.clone());
+
+    writer.enqueue(PaymentWrite::Grant {
+        key_id: "k1".into(),
+        delta_micro: 5000,
+        detail_json: None,
+    });
+    writer.enqueue(PaymentWrite::Settle {
+        key_id: "k1".into(),
+        amount_micro: 1200,
+        deploy_id: Some("d1".into()),
+        detail_json: Some("{\"prompt_tokens\":1000}".into()),
+    });
+    writer.flush();
+
+    let rows = database
+        .with_write("read ledger", |connection| {
+            let mut statement = connection
+                .prepare("SELECT kind, amount_micro, deploy_id FROM x402_ledger ORDER BY id")?;
+            let mapped = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .expect("read the ledger");
+
+    assert_eq!(
+        rows,
+        vec![
+            ("grant".to_string(), 5000, None),
+            ("settle".to_string(), 1200, Some("d1".to_string())),
+        ]
+    );
+
+    let balance = database
+        .with_write("read balance", |connection| {
+            Ok(connection.query_row(
+                "SELECT balance_micro FROM x402_accounts WHERE key_id = 'k1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .expect("read the balance");
+    assert_eq!(balance, 3800);
+
+    remove_database(&path);
+}
+
+#[test]
+fn ledger_settle_larger_than_the_grant_records_a_negative_balance() {
+    let path = temporary_database("negative");
+    let database = std::sync::Arc::new(crate::db::PomDb::open(&path).expect("open a database"));
+    let writer = LedgerWriter::new(database.clone());
+
+    writer.enqueue(PaymentWrite::Grant {
+        key_id: "k1".into(),
+        delta_micro: 1000,
+        detail_json: None,
+    });
+    writer.enqueue(PaymentWrite::Settle {
+        key_id: "k1".into(),
+        amount_micro: 1200,
+        deploy_id: None,
+        detail_json: None,
+    });
+    writer.flush();
+
+    let balance = database
+        .with_write("read balance", |connection| {
+            Ok(connection.query_row(
+                "SELECT balance_micro FROM x402_accounts WHERE key_id = 'k1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .expect("read the balance");
+    assert_eq!(balance, -200);
+
+    remove_database(&path);
+}
+
+#[test]
+fn load_balances_restores_the_book_after_a_restart() {
+    let path = temporary_database("restart");
+    let database = std::sync::Arc::new(crate::db::PomDb::open(&path).expect("open a database"));
+    let writer = LedgerWriter::new(database.clone());
+    writer.enqueue(PaymentWrite::Grant {
+        key_id: "k1".into(),
+        delta_micro: 5000,
+        detail_json: None,
+    });
+    writer.enqueue(PaymentWrite::Settle {
+        key_id: "k1".into(),
+        amount_micro: 1200,
+        deploy_id: None,
+        detail_json: None,
+    });
+    writer.flush();
+    drop(database);
+
+    // A fresh process: a new connection and a new book, loaded from the file.
+    let reopened = crate::db::PomDb::open(&path).expect("reopen the database");
+    let book = BalanceBook::default();
+    let loaded = ledger::load_balances(&reopened, &book).expect("load balances");
+    assert_eq!(loaded, 1);
+    assert_eq!(book.balance("k1"), 3800);
+    // A restart ends every live generation, so nothing stays reserved.
+    assert_eq!(book.reserved("k1"), 0);
+
+    remove_database(&path);
+}
+
+#[test]
+fn load_grant_reads_only_an_unexpired_lease() {
+    let path = temporary_database("grant");
+    let database = crate::db::PomDb::open(&path).expect("open a database");
+
+    database
+        .with_write("seed grants", |connection| {
+            connection.execute(
+                "INSERT INTO x402_grants (key_id, gateway_node_id, allowance_micro, granted_at, expires_at)
+                 VALUES ('k1', 'gw', 4000, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 hour')),
+                        ('k1', 'other', 9000, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 hour')),
+                        ('k1', 'expired', 7000, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hour'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour'))",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed grants");
+
+    assert_eq!(
+        ledger::load_grant(&database, "k1", "gw").expect("read the lease"),
+        Some(4000)
+    );
+    assert_eq!(
+        ledger::load_grant(&database, "k1", "expired").expect("read the lease"),
+        None
+    );
+    assert_eq!(
+        ledger::load_grant(&database, "k1", "absent").expect("read the lease"),
+        None
+    );
+
+    remove_database(&path);
+}

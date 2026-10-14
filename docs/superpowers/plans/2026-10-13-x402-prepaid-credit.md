@@ -217,7 +217,7 @@ The module landed with four deliberate differences from the sketches above:
 
 ### B1. Ledger tables in `backend/db.rs`
 
-- [ ] Add to `ensure_schema` (beside `api_keys`):
+- [x] Add to `ensure_schema` (beside `api_keys`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS x402_accounts (
@@ -245,20 +245,43 @@ CREATE TABLE IF NOT EXISTS x402_ledger (
 CREATE INDEX IF NOT EXISTS x402_ledger_key_idx ON x402_ledger(key_id, created_at DESC);
 ```
 
-- [ ] Test: schema is idempotent (`ensure_schema` twice). Commit.
+- [x] Test: schema is idempotent (`ensure_schema` twice). Commit.
 
 ### B2. Bounded writer for ledger writes
 
-- [ ] Mirror the `reqlog.rs` pattern: an `mpsc::UnboundedSender<PaymentWrite>`
+- [x] Mirror the `reqlog.rs` pattern: an `mpsc::UnboundedSender<PaymentWrite>`
   handed to a dedicated writer thread that owns the `PomDb` connection and
   batches inserts. Settlement and grants enqueue; nothing blocks the request.
-- [ ] Test: enqueue N writes, drain, assert rows. Commit.
+- [x] Test: enqueue N writes, drain, assert rows. Commit.
 
 ### B3. Load balances at startup
 
-- [ ] On gateway start (payments enabled), read `x402_accounts` into the
+- [x] On gateway start (payments enabled), read `x402_accounts` into the
   `BalanceBook` and the gateway's own `x402_grants` row into
   `allowance_remaining_micro`. Commit.
+
+**Phase B delivered (2026-10-14).** Deviations from the sketches above:
+
+- B1 landed as written, with one hardening: `kind` carries
+  `CHECK (kind IN ('grant', 'settle', 'refund'))`. The idempotency proof is the
+  `db.rs` schema test extended with the three tables plus the existing reopen
+  tests (a reopen runs `ensure_schema` a second time on a file that already has
+  rows).
+- B2 used the **actual** `reqlog.rs` pattern, not the sketch: a bounded
+  `mpsc::sync_channel(4096)` with `try_send` and a logged loss (an unbounded
+  queue would let a stalled writer grow memory without bound), the named thread
+  `pom-payments-writer`, a batch drain so a burst of settles becomes one
+  transaction, and the `#[cfg(test)] Flush` barrier. Every write appends the
+  `x402_ledger` row **and** moves `x402_accounts.balance_micro` in the same
+  transaction, so the durable mirror survives a restart (the reason B3 can load
+  it). A settle larger than the hold records a negative balance; the next
+  admission refuses.
+- B3 landed as the load functions `payments::ledger::load_balances` and
+  `load_grant` (lease read filters `expires_at`), tested against a reopened
+  database. The **call** from gateway startup waits for Phase D: there is no
+  `PaymentState` in `GatewayState` and no toggle yet. Reserved holds are never
+  persisted - a restart ends every live generation, so the loaded book starts
+  with settled balances and nothing reserved.
 
 ---
 

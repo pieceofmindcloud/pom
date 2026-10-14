@@ -80,7 +80,10 @@ boundary.
   test scaffold (peer/state_with/body_of).
 - `db.rs` - the only local SQLite store, internal to the crate: schema created at startup,
   WAL/timeout, deployments, API keys and revocations, thermal preferences,
-  the Hugging Face secret, the catalog's durable history and the conversation history. Each
+  the Hugging Face secret, the catalog's durable history, the conversation history
+  and the `x402_*` prepaid-credit tables (`x402_accounts`, `x402_grants`,
+  `x402_ledger`; written only by `payments::LedgerWriter`, see
+  `docs/subsystems/payments.md`). Each
   effective admin keeps its own replica of the audit. The
   cluster process log is not here: the logs plugin keeps it in its own
   database, and the schema drops the old `cluster_logs` tables. The history identifies

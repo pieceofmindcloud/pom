@@ -5,10 +5,12 @@
 #![allow(dead_code, unused_imports)]
 
 mod book;
+mod ledger;
 mod pricing;
 mod x402;
 
 pub use book::{AccountState, BalanceBook};
+pub use ledger::{LedgerWriter, PaymentWrite};
 pub use pricing::{bill_micro, hold_micro, min_funding_micro, DeploymentPricing};
 pub use x402::{Challenge402, GateError, PaymentState, Reservation};
 

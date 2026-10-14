@@ -1776,6 +1776,30 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             prompt,
             tokenize = 'unicode61'
         );
+        CREATE TABLE IF NOT EXISTS x402_accounts (
+            key_id TEXT PRIMARY KEY,
+            balance_micro INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS x402_grants (
+            key_id TEXT NOT NULL,
+            gateway_node_id TEXT NOT NULL,
+            allowance_micro INTEGER NOT NULL,
+            granted_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY (key_id, gateway_node_id)
+        );
+        CREATE TABLE IF NOT EXISTS x402_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('grant', 'settle', 'refund')),
+            amount_micro INTEGER NOT NULL,
+            deploy_id TEXT,
+            detail_json TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS x402_ledger_key_idx
+            ON x402_ledger(key_id, created_at DESC);
         -- Process logs belong to the logs plugin's own database now.
         DROP TABLE IF EXISTS cluster_logs;
         DROP TABLE IF EXISTS cluster_log_counters;
@@ -2009,6 +2033,9 @@ mod tests {
             "audit_requests",
             "audit_request_hops",
             "audit_prompt_fts",
+            "x402_accounts",
+            "x402_grants",
+            "x402_ledger",
         ] {
             assert!(
                 tables.contains(&table.to_string()),

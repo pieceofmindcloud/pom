@@ -933,3 +933,20 @@ body {
     animation: none;
   }
 }
+
+/*
+ * A plugin screen mounted under the loading animation: laid out for real, so its
+ * own charts and tables measure a real box, but invisible and unreachable until
+ * the plugin says it finished rendering. `.pom-plugin-open` is layout-neutral, so
+ * the screen ends up exactly where it would be without the wrapper.
+ */
+.pom-plugin-pending {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pom-plugin-open {
+  display: contents;
+}

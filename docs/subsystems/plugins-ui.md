@@ -154,8 +154,44 @@ renders that basic line. Version 4 added `plugin(code).rpc`. Version 5 added
 `ui.Tabs`, the panel's tab row: folder tabs over the content below, the chosen
 one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
 (`--tab-bar`, `--tab-ink`, `--tab-ink-on`, `--tab-line`, `--tab-card`,
-`--tab-accent`, `--tab-icon`, full colours in both themes). The plugin's CSS
+`--tab-accent`, `--tab-icon`, full colours in both themes). Version 6 added
+`ready()`, the screen's "finished rendering" signal described below. The plugin's CSS
 uses the same color tokens (CSS variables) as POM.
+
+## Opening a plugin screen
+
+Importing the module and mounting it is not having the screen on screen: the
+first page of the audit or the first insights answer is still on its way, and
+showing the screen that early is a page that fills in front of the person. So
+`PluginScreen` keeps the puzzle animation of `components/PluginLoading.tsx` -
+the same three pieces the Chat draws when the network serves no model
+(`MissingPiece`, `variant="loading"`, its fourth piece hovering over the slot)
+- and takes it away on the first of two things:
+
+- the plugin calls `__POM_HOST__.ready()` (host version 6) once its own content
+  is on screen; or
+- `PLUGIN_READY_GRACE_MS` (2 s, `lib/pluginReady.ts`) ends.
+
+The screen is mounted from the moment its module arrives, under the animation
+and out of sight (`.pom-plugin-pending` in `index.css`: laid out for real, so
+its charts and tables measure a real box, but invisible, `aria-hidden` and
+unreachable). It has to be mounted to be able to give the signal. When the gate
+opens the wrapper becomes `.pom-plugin-open` (`display: contents`), so the
+screen sits exactly where it would without the wrapper and is never remounted.
+
+The gate is armed by the mount and disarmed when it goes away, so a `ready()`
+from a component the host is not waiting on - a slot inside a native screen,
+for example - resolves nothing. **The signal is never required**: a plugin that
+does not know it is opened by the wait, and a plugin built for an older host
+simply has no `ready` to call. POM owns no plugin's decision about when its own
+content is complete.
+
+The same animation also covers the moment before the node answers
+`GET /api/ui/plugins/ui`: while that answer is on its way the registry cannot
+know whether a plugin claims `/logs` or `/statistics`, so `App.tsx` draws the
+pieces instead of the advertising card of `EnterpriseFeatureShowcase` - the
+fallback would otherwise flash in front of the plugin that is about to take the
+screen.
 
 ## On-demand processes
 
@@ -642,7 +678,11 @@ the catalogs of every active plugin in the selected locales.
 - Frontend: `lib/pluginUi.test.ts` (registry, namespaces, collisions, paths,
   profiles, menu and submenus), `lib/pluginEvents.test.ts` (envelope, SDK, DOM
   and iframe channels, replay, commands and refusals), `lib/pluginI18n.test.ts`
-  (install, selected languages, missing/invalid), `routes/Plugins.test.tsx`
+  (install, selected languages, missing/invalid), `lib/pluginReady.test.ts`
+  (the gate: signal, wait, no gate without a mount, re-arm),
+  `components/PluginScreen.test.tsx` (the pieces while the screen opens, the
+  screen mounted out of sight under them, the signal opening it early, the wait
+  opening a plugin that never signals), `routes/Plugins.test.tsx`
   (immediate manifest invalidation after lifecycle actions, GitHub card above
   activation, compatible releases with the latest preselected, preferences
   through the gear and the refusal reason), `App.test.tsx` (fallback, screen by

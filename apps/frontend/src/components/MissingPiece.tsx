@@ -65,24 +65,35 @@ export function piecePath(piece: Pick<Piece, "col" | "row" | "edges">): string {
  * Three pieces of a puzzle fly in and lock together around the fourth.
  * `missing` (the Chat with no model served) leaves its slot empty with a "?";
  * `paused` (a plugin whose process is stopped) has the fourth piece in place
- * but grey, dashed and marked with a pause sign, breathing slowly. The words
- * under it say what that piece is.
+ * but grey, dashed and marked with a pause sign, breathing slowly; `loading`
+ * (a plugin screen still opening) has the fourth piece hovering over its slot,
+ * about to drop, and assembles faster because the host opens the screen after a
+ * short wait. The words under it say what that piece is.
  */
+const TIMING = {
+  /** The slow set: the piece is not coming, so there is no hurry. */
+  still_waiting: { piece: 0.35, gap: 0.35, duration: 0.9, slot: 1.9, text: 1.8, breathe: 2.2 },
+  /** The loading set: the host reveals the screen within a couple of seconds. */
+  arriving: { piece: 0.1, gap: 0.18, duration: 0.7, slot: 0.45, text: 0.55, breathe: 1.6 },
+};
+
 export function MissingPiece({ title, detail, variant = "missing", children }: {
   title: string;
   detail: string;
-  variant?: "missing" | "paused";
+  variant?: "missing" | "paused" | "loading";
   children?: React.ReactNode;
 }) {
   const still = useReducedMotion() ?? false;
   const paused = variant === "paused";
+  const loading = variant === "loading";
+  const timing = loading ? TIMING.arriving : TIMING.still_waiting;
   const centre = PAD + CELL * 1.5;
   const { theme } = useTheme();
   const glow = useId().replace(/:/g, "");
   return (
     <motion.div
       className="flex flex-col items-center text-center"
-      data-testid={paused ? "paused-piece" : "chat-missing-piece"}
+      data-testid={paused ? "paused-piece" : loading ? "plugin-loading-piece" : "chat-missing-piece"}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
@@ -115,7 +126,7 @@ export function MissingPiece({ title, detail, variant = "missing", children }: {
           data-variant={variant}
           initial={still ? false : { opacity: 0 }}
           animate={still ? { opacity: 0.9 } : { opacity: paused ? [0.55, 0.9, 0.55] : [0.35, 0.95, 0.35] }}
-          transition={still ? undefined : { delay: 1.9, duration: paused ? 3.2 : 2.2, repeat: Infinity, ease: "easeInOut" }}
+          transition={still ? undefined : { delay: timing.slot, duration: paused ? 3.2 : timing.breathe, repeat: Infinity, ease: "easeInOut" }}
         />
         {paused ? (
           <motion.g
@@ -128,6 +139,22 @@ export function MissingPiece({ title, detail, variant = "missing", children }: {
           >
             <rect x={centre - 10} y={centre - 12} width={7} height={24} rx={2} />
             <rect x={centre + 3} y={centre - 12} width={7} height={24} rx={2} />
+          </motion.g>
+        ) : loading ? (
+          /* The fourth piece, hovering over its slot: it is on its way. */
+          <motion.g
+            data-testid="loading-piece"
+            fill="rgb(var(--iris))"
+            fillOpacity={0.5}
+            stroke="rgb(var(--surface))"
+            strokeWidth={2}
+            filter={`url(#glow-${glow})`}
+            initial={still ? false : { opacity: 0, y: -14, rotate: -5 }}
+            animate={still ? { opacity: 0.7 } : { opacity: [0.4, 0.8, 0.4], y: [0, -7, 0], rotate: [-4, 4, -4] }}
+            transition={still ? undefined : { delay: timing.slot, duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+            style={{ transformBox: "fill-box", transformOrigin: "center" }}
+          >
+            <path d={piecePath(MISSING)} />
           </motion.g>
         ) : (
           <motion.text
@@ -157,7 +184,7 @@ export function MissingPiece({ title, detail, variant = "missing", children }: {
             data-testid="puzzle-piece"
             initial={still ? false : { x: piece.from.x * CELL, y: piece.from.y * CELL, rotate: piece.from.rotate, opacity: 0 }}
             animate={{ x: 0, y: 0, rotate: 0, opacity: 1 }}
-            transition={{ delay: 0.35 + index * 0.35, duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ delay: timing.piece + index * timing.gap, duration: timing.duration, ease: [0.16, 1, 0.3, 1] }}
             style={{ transformBox: "fill-box", transformOrigin: "center" }}
           />
         ))}
@@ -165,7 +192,7 @@ export function MissingPiece({ title, detail, variant = "missing", children }: {
       <motion.div
         initial={still ? false : { opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 1.8, duration: 0.5 }}
+        transition={{ delay: timing.text, duration: 0.5 }}
         className="mt-4 max-w-md"
       >
         <p className="font-display text-lg font-semibold text-fg">{title}</p>

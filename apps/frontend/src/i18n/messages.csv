@@ -1973,6 +1973,9 @@ plugins.licenseKeyLabel,License key,Chave de licença
 plugins.licenseKeyPlaceholder,PM-...,PM-...
 plugins.licenseStatusError,Could not read this node's plugin license status.,Não foi possível ler o estado das licenças deste nó.
 plugins.licenseUnknown,License status unavailable,Estado da licença indisponível
+plugins.loading,Opening the plugin,Abrindo o plugin
+plugins.loadingHint,"The plugin's piece is on its way: its screens and texts are loading on this machine.","A peça do plugin está a caminho: as telas e os textos dele estão carregando nesta máquina."
+plugins.loadingNamed,Opening {name},Abrindo {name}
 plugins.manage,Manage,Gerenciar
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível
 plugins.monthlyPrice,{price}/month,{price}/mês

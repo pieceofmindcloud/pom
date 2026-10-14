@@ -72,6 +72,9 @@ as raw text at build time and interprets the messages synchronously with
   language is unavailable. License expiration, last installation/application
   and last update check are distinct timestamps in the node contract and are
   formatted using the selected locale.
+  `plugins.loading`, `plugins.loadingNamed` and `plugins.loadingHint` are the
+  words of the puzzle drawn while a plugin screen opens (the plugin's own texts
+  may not have arrived yet, so they are POM's keys, not the plugin's).
 - `locales.ts` - a small CSV parser, synchronous loading of the `?raw`, an
   `IntlMessageFormat` cache and the public locale API. Do not put new
   translations here. The fallback stays: requested locale, then English, then

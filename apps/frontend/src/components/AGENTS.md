@@ -104,7 +104,16 @@ Per-file list:
   by the node) and mounts it in POM's tree, with the plugin's styles and an error card
   if the loading or the rendering fails. The normalized route is part of the
   mount's identity so switching between screens of the same plugin does not keep the previous
-  component. See `docs/subsystems/plugins-ui.md`.
+  component. The screen is mounted under `PluginLoading` and stays out of sight
+  (`.pom-plugin-pending`) until the plugin signals it finished rendering -
+  `__POM_HOST__.ready()`, `lib/pluginReady.ts` - or the short wait ends; the
+  wrapper then becomes layout-neutral, so the screen is never remounted. A plugin
+  without the signal is opened by the wait. See `docs/subsystems/plugins-ui.md`.
+- `PluginLoading.tsx` - the puzzle drawn in place of a plugin screen that is
+  still opening (`MissingPiece variant="loading"`, named with `plugins.loadingNamed`),
+  and in place of the advertising card while the node has not answered
+  `GET /api/ui/plugins/ui` yet (`App.tsx`), so a plugin's screen never flashes
+  behind a fallback.
 - `TelemetryLine.tsx` - the open-source telemetry of a Chat answer: one compact
   line with generation speed and tokens, TTFT, end-to-end total, prompt tokens
   and their processing speed, and the pipeline (`source`). `basicTelemetry`
@@ -315,11 +324,13 @@ Per-file list:
   the "starting our engines" set while the deployment wakes from idle. It is
   not drawn while the model is thinking, which has its own line.
 - `MissingPiece.tsx` - the puzzle screen, `variant="paused"` for a stopped
-  on-demand plugin (fourth piece grey, dashed, with a pause sign) and, by
-  default, the Chat's screen while the network serves no model:
+  on-demand plugin (fourth piece grey, dashed, with a pause sign), `variant="loading"`
+  for a plugin screen still opening (fourth piece hovering over its slot, and the
+  whole assembly faster because the host opens the screen within a couple of
+  seconds) and, by default, the Chat's screen while the network serves no model:
   an SVG 2x2 puzzle whose three pieces (`piecePath`, knobs that agree on
   shared edges) fly in and lock, leaving the bottom-right slot empty and
-  pulsing with a "?", under the POM mark (art per theme), over a title, a
+  pulsing, under the POM mark (art per theme), over a title, a
   detail and the caller's actions (the Chat's next steps and links).
 - `ChatHero.tsx` - the Chat's opening screen over an empty conversation: the
   site's POM mark for the active theme (`assets/pom-mark-dark.png` /

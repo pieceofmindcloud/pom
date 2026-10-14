@@ -5,6 +5,13 @@
  * `/api/ui/plugins/<code>/assets/...`, same origin, so the session applies) and
  * mounts its `default` as a React component of the tree itself. A load or
  * render failure becomes an error card; it never brings down the shell.
+ *
+ * The screen is not shown the moment its module arrives: the pieces animation
+ * (`PluginLoading`) covers it until the plugin says it finished rendering -
+ * `__POM_HOST__.ready()`, see `lib/pluginReady.ts` - or until the short wait
+ * ends, whichever comes first. The screen is mounted under that animation from
+ * the start, because only a mounted screen can give the signal. A plugin
+ * without the signal is opened anyway.
  */
 import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -17,6 +24,8 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Button, Panel, PanelHeader } from "./ui";
 import { MissingPiece } from "./MissingPiece";
+import { PluginLoading } from "./PluginLoading";
+import { usePluginReady } from "../lib/pluginReady";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 const loaded = new Map<string, Promise<ComponentType>>();
@@ -119,6 +128,12 @@ export function PluginScreen({ resolved }: { resolved: ResolvedPluginRoute }) {
   const entry = data?.plugins.find((plugin) => plugin.code === resolved.code);
   // On demand and stopped: there is nothing to load; the module is requested again when the process starts.
   const stopped = entry?.on_demand === true && entry.running !== true;
+  /*
+   * The gate the plugin opens with `__POM_HOST__.ready()` once its first content
+   * is on screen. A plugin that does not know the signal is opened at the end of
+   * the short wait, so the animation is never a wall in front of a screen.
+   */
+  const open = usePluginReady(!stopped);
   useEffect(() => {
     let cancelled = false;
     setState({});
@@ -133,11 +148,19 @@ export function PluginScreen({ resolved }: { resolved: ResolvedPluginRoute }) {
   }, [resolved.code, resolved.route.path, resolved.screen.module, resolved.screen.export, resolved.version, stopped]);
   if (stopped) return <StoppedPlugin code={resolved.code} />;
   if (state.error) return <PluginError message={state.error} />;
-  if (!state.Screen) return null;
+  if (!state.Screen) return <PluginLoading code={resolved.code} />;
   const { Screen } = state;
+  /*
+   * The screen is mounted from the moment its module arrives - its own data,
+   * its own effects - but stays out of sight under the animation until it opens.
+   * It has to be mounted to be able to say it finished rendering.
+   */
   return (
     <Boundary>
-      <Screen />
+      <div className={open ? "pom-plugin-open" : "pom-plugin-pending"} aria-hidden={open ? undefined : "true"}>
+        <Screen />
+      </div>
+      {open ? null : <PluginLoading code={resolved.code} />}
     </Boundary>
   );
 }

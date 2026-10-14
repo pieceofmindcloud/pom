@@ -13,6 +13,7 @@ import { ChatSessionProvider } from "./lib/chatStore";
 import { useAdminSurface, usePluginUi } from "./lib/queries";
 import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
+import { PluginLoading } from "./components/PluginLoading";
 import { PluginBridge } from "./components/PluginBridge";
 import { syncPluginCatalogs } from "./lib/pluginI18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -275,6 +276,14 @@ export default function App() {
    * when there is no other plugin with the same claim.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
+  /*
+   * `/logs` and `/statistics` are also POM's advertising fallbacks. Until the node
+   * answers `GET /api/ui/plugins/ui` the registry cannot know whether a plugin
+   * claims them, so the advertising card would flash in front of a plugin that is
+   * about to take the screen: the pieces animation is drawn while that answer is
+   * still on its way.
+   */
+  const pluginUiPending = pluginUi.isPending === true;
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
@@ -419,7 +428,11 @@ export default function App() {
                     />
                   </div>
                 ) : enterprisePath ? (
-                  <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
+                  pluginUiPending ? (
+                    <PluginLoading />
+                  ) : (
+                    <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
+                  )
                 ) : isChat ? (
                   <Chat />
                 ) : (

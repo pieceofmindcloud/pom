@@ -682,6 +682,9 @@ The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that
 - `pluginHost.ts` - the SDK on `globalThis.__POM_HOST__` (React, React Query, the design kit, i18n,
   theme, `api.get`...) that plugin screens use instead of packaging their own copies. Its version
   history is in `plugins-ui.md`.
+- `pluginReady.ts` - the "finished rendering" signal of a plugin screen: `usePluginReady` arms the
+  gate on the host mount and opens it on `__POM_HOST__.ready()` or after `PLUGIN_READY_GRACE_MS`,
+  whichever comes first. The signal is never required to use a plugin.
 - `pluginEvents.ts` - the `pom-plugin-events/v1` protocol: envelope, bus, delivery to
   `iframe[data-pom-plugin]`, the `notification.notify`/`confirm` commands, `forwardNodeEvent` for
   the node's own envelopes, and `scopedPluginApi(code).rpc`. The one that executes is the

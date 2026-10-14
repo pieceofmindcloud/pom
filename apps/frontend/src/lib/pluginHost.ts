@@ -13,7 +13,9 @@
  * `TelemetryLine` and the `chat.telemetry` slot contract (`lib/chatTelemetry.ts`);
  * `ExecutionTelemetry` now renders that basic line. Version 4 adds
  * `plugin(code).rpc(op, params)`, the plugin's own read/write API. Version 5
- * adds `ui.Tabs`, the panel's tab row (theme tokens `--tab-*`).
+ * adds `ui.Tabs`, the panel's tab row (theme tokens `--tab-*`). Version 6 adds
+ * `ready()`, the screen's "finished rendering" signal: until a plugin screen gives
+ * it, POM keeps the pieces animation in place of the screen (`lib/pluginReady.ts`).
  */
 import * as React from "react";
 import * as ReactDOM from "react-dom";
@@ -38,8 +40,9 @@ import {
   scopedPluginApi,
   subscribePluginEvents,
 } from "./pluginEvents";
+import { signalPluginReady } from "./pluginReady";
 
-export const PLUGIN_HOST_VERSION = 5;
+export const PLUGIN_HOST_VERSION = 6;
 
 /**
  * Compatibility for plugins built against host version 2, which rendered the
@@ -77,6 +80,13 @@ export function buildPluginHost() {
     events: { subscribe: subscribePluginEvents, last: lastPluginEvent },
     /** Plugin-scoped API: filtered events and commands signed by the code. */
     plugin: scopedPluginApi,
+    /**
+     * "My screen finished rendering": POM takes the pieces animation away and
+     * shows the screen. Call it once the first content is really on screen (after
+     * the first data settles, not on the first render). A screen that never calls
+     * it is shown anyway, after a short wait.
+     */
+    ready: signalPluginReady,
   };
 }
 

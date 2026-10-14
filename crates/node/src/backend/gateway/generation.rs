@@ -568,6 +568,61 @@ mod generation_pump_tests {
     }
 }
 
+/// The first stage an unpinned request starts from. A pin (the Chat's explicit head) stays as it is. Without one, and with
+/// more than one layer-0 head of the model, the heads take turns in round robin, and a busy head is passed over for the
+/// next free one (`fastest::rotate_head`). `None` when there is nothing to choose between.
+async fn auto_head(
+    state: &GatewayState,
+    peers: &[crate::network::PeerInfo],
+    model: &str,
+    deploy_id: Option<&str>,
+    pinned: Option<&str>,
+    prefix: (&str, &str, bool),
+) -> Option<String> {
+    if let Some(pinned) = pinned {
+        return Some(pinned.to_owned());
+    }
+    let heads: Vec<String> = crate::fastest::candidates(peers, model, deploy_id)
+        .into_iter()
+        .filter(|peer| peer.start_layer == 0)
+        .map(|peer| peer.node_id.clone())
+        .collect();
+    if heads.len() < 2 {
+        return None;
+    }
+    // A session already in service for this prompt goes back to the head that holds it: its cache is reused there.
+    // Only a new session takes the rotation below.
+    let (prefix_model, cache_prompt, prefix_eligible) = prefix;
+    if prefix_eligible {
+        let held = state
+            .prefix_cache
+            .snapshots()
+            .into_iter()
+            .filter(|snapshot| {
+                !snapshot.busy
+                    && snapshot.key.model == prefix_model
+                    && cache_prompt.starts_with(&snapshot.prompt)
+            })
+            .max_by_key(|snapshot| snapshot.prompt.len())
+            .and_then(|snapshot| snapshot.key.hops.first().and_then(|hop| hop.split('@').next().map(str::to_owned)));
+        if let Some(head) = held.filter(|head| heads.contains(head)) {
+            info!("first stage: the session is already on {head}");
+            return Some(head);
+        }
+    }
+    let perf = state.admission_health.perf_snapshot();
+    let mut queue = std::collections::HashMap::new();
+    for head in &heads {
+        let live = state.loads.load(head).await;
+        let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
+        queue.insert(head.clone(), live.max(reported));
+    }
+    let turn = crate::pipeline::next_head_turn(model);
+    let chosen = crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
+    info!("first stage by rotation over {} heads: {chosen}", heads.len());
+    Some(chosen)
+}
+
 /// Picks the pipeline with the lowest estimated delivery time. `None` when there
 /// is no viable path: then the greedy planner (coverage, RTT and local load)
 /// decides as before.
@@ -797,6 +852,15 @@ pub(super) async fn generate_stream_inner(
             .collect::<std::collections::HashMap<_, _>>();
         let selection_started = Instant::now();
         let selection_wall = wall_clock_ms();
+        let head = auto_head(
+            &state,
+            &peers,
+            model,
+            deploy_id,
+            preferred_head.as_deref(),
+            (&prefix_model, &cache_prompt, images.is_empty()),
+        )
+        .await;
         // Planning by delivery time (`fastest`): measured speed of each
         // peer, queue of the whole network, RTT of each edge and the prefix already retained.
         // With no viable path through it, the earlier greedy planner decides.
@@ -807,7 +871,7 @@ pub(super) async fn generate_stream_inner(
             deploy_id,
             total_layers,
             &route_rtt,
-            preferred_head.as_deref(),
+            head.as_deref(),
             &prefix_model,
             &cache_prompt,
             budget.total,
@@ -824,7 +888,7 @@ pub(super) async fn generate_stream_inner(
                     total_layers,
                     &state.loads,
                     &route_rtt,
-                    preferred_head.as_deref(),
+                    head.as_deref(),
                 )
                 .await,
                 None,

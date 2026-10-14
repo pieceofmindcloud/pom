@@ -502,8 +502,11 @@ boundary.
   validates the live candidate, pins that head in the planner and repeats it in
   `x_pom.source`/trace, without re-choosing by RTT or load. The Chat sends it only when the
   user picks a head in the Chat (`headChoice`); the screen's default is not sent. Without a
-  pin the planner chooses among the layer-0 heads by estimated cost, where each head's
-  queue (`active_generations`, or this gateway's count) weighs in.
+  pin and with more than one layer-0 head of the model (`generation.rs::auto_head`): a request
+  whose session is already held by a live head goes back to that head, reusing its cache;
+  otherwise the heads take turns round robin (`routing::fastest::rotate_head`, per-model turn in
+  `pipeline::next_head_turn`), and a head with generations in flight is passed over for the next
+  free one, or the least loaded when all are busy.
   The capacity published in `/v1/models` and used by
   `request_output_limit_for_model` is the smallest `RuntimeCapacity` among the peers
   of the pipeline chosen for the model/deployment. An idle peer in that

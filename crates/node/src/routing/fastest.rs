@@ -682,6 +682,21 @@ pub fn candidates<'a>(
     model_pipeline_candidates(peers, model_name, deploy_id)
 }
 
+/// The first stage of an unpinned request: round robin over the layer-0 `heads` (in the order given), starting at `turn`,
+/// so requests that arrive together land on different heads. A head with generations in flight (`queue`) is passed
+/// over for the next one; when every head is busy, the least loaded wins, the earliest in the rotation on a tie.
+pub fn rotate_head(heads: &[String], turn: usize, queue: impl Fn(&str) -> u32) -> Option<String> {
+    if heads.is_empty() {
+        return None;
+    }
+    let n = heads.len();
+    let order: Vec<&String> = (0..n).map(|i| &heads[(turn + i) % n]).collect();
+    if let Some(free) = order.iter().find(|head| queue(head) == 0) {
+        return Some((*free).clone());
+    }
+    order.into_iter().min_by_key(|head| queue(head)).cloned()
+}
+
 /// Resolves a chain of `node_id`s (for example, that of a cached prefix)
 /// against the live candidates. `None` if any is gone or if the chain does not cover
 /// `0..total_layers` in contiguous ranges.
@@ -723,6 +738,26 @@ pub fn plan_for_chain(chain: &[&PeerInfo]) -> Option<PipelinePlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_spreads_requests_that_arrive_together() {
+        let heads: Vec<String> = ["a", "b", "c"].iter().map(|h| h.to_string()).collect();
+        let idle = |_: &str| 0;
+        assert_eq!(rotate_head(&heads, 0, idle).as_deref(), Some("a"));
+        assert_eq!(rotate_head(&heads, 1, idle).as_deref(), Some("b"));
+        assert_eq!(rotate_head(&heads, 2, idle).as_deref(), Some("c"));
+        assert_eq!(rotate_head(&heads, 3, idle).as_deref(), Some("a"));
+        assert_eq!(rotate_head(&[], 0, idle), None);
+    }
+
+    #[test]
+    fn a_busy_head_is_passed_over_for_the_next_free_one() {
+        let heads: Vec<String> = ["a", "b", "c"].iter().map(|h| h.to_string()).collect();
+        let load = |h: &str| if h == "b" { 2 } else { 0 };
+        assert_eq!(rotate_head(&heads, 1, load).as_deref(), Some("c"), "b is busy: the next one in the rotation");
+        let all_busy = |h: &str| match h { "a" => 3, "b" => 1, _ => 2 };
+        assert_eq!(rotate_head(&heads, 0, all_busy).as_deref(), Some("b"), "all busy: the least loaded");
+    }
 
     fn peer(node_id: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {

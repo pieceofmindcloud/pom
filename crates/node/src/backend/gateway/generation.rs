@@ -900,8 +900,6 @@ pub(super) async fn generate_stream_inner(
     if let Some(code) = crate::plugin_engine::plugin_of_plan(&plan) {
         let refusal = if !images.is_empty() {
             Some("this inference service does not accept images")
-        } else if probe.as_ref().is_some_and(|probe| !probe.labels.is_empty()) {
-            Some("this inference service does not answer typed decisions")
         } else {
             None
         };
@@ -924,6 +922,10 @@ pub(super) async fn generate_stream_inner(
                 stops,
                 session: crate::plugin_session::session_of(&request_details),
                 request_details,
+                probe_labels: probe
+                    .as_ref()
+                    .map(|probe| probe.labels.clone())
+                    .unwrap_or_default(),
             },
             &tx,
             &cancellation,

@@ -219,7 +219,18 @@ pub(super) async fn deploy_endpoint(
     );
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, identity, record_plan, req.vision, &id).await {
+        match run(
+            state,
+            plan,
+            params,
+            identity,
+            record_plan,
+            req.vision,
+            req.keep_existing,
+            &id,
+        )
+        .await
+        {
             Ok(()) => set_job(&id, "done", "pronto", "the model is serving on the network").await,
             Err(e) => {
                 warn!("deployment failed: {e}");
@@ -1301,6 +1312,9 @@ pub(super) async fn prepare_existing_model(
     state: &GatewayState,
     group: &str,
     desired: &RequestedModelIdentity,
+    // `Some`: only these machines are released; the others that serve the
+    // same model keep their deployment.
+    only: Option<&[String]>,
     job_id: &str,
 ) -> Result<(), String> {
     let peers = state.all_peers().await;
@@ -1314,6 +1328,9 @@ pub(super) async fn prepare_existing_model(
             ));
         }
         if peer.model != group {
+            continue;
+        }
+        if only.is_some_and(|ids| !ids.contains(&peer.node_id)) {
             continue;
         }
 

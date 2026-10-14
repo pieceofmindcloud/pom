@@ -17,7 +17,7 @@ describe("inferenceServicesOf", () => {
       peer("d", []),
     ]);
     expect(services).toEqual([
-      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], nodeIds: ["a", "c"], stages: false },
+      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], pomSettings: [], nodeIds: ["a", "c"], stages: false },
     ]);
     expect(serviceRunsModel(services[0], "qwen4exp")).toBe(true);
     expect(serviceRunsModel(services[0], "llama")).toBe(false);
@@ -27,9 +27,10 @@ describe("inferenceServicesOf", () => {
   it("marks a service whose engine runs slices", () => {
     const services = inferenceServicesOf([
       peer("a", [{ plugin_code: "strata", id: "strata", kind: "inference", name: "Strata", status: "ready" }]),
-      peer("b", [{ plugin_code: "strata", id: "strata", kind: "inference", name: "Strata", status: "ready", stages: true }]),
+      peer("b", [{ plugin_code: "strata", id: "strata", kind: "inference", name: "Strata", status: "ready", stages: true, pom_settings: ["hidden_state_dtype"] }]),
     ]);
     expect(services[0].stages).toBe(true);
+    expect(services[0].pomSettings).toEqual(["hidden_state_dtype"]);
     expect(services[0].nodeIds).toEqual(["a", "b"]);
   });
 

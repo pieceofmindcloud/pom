@@ -1241,7 +1241,9 @@ a size; vision cannot be `embedded`. `DeployRequest` accepts `vision_choice`
 and `mtp_choice` (`{ mode, file: { file_name, size_bytes } }`) and
 `DeployPlan.sidecars` answers with the compatible files of the network (each
 with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
-slots and whether each is already there or will be copied.
+slots and whether each is already there or will be copied. `DeployRequest.keep_existing`
+(default `false`) keeps in service the machines outside the plan that already
+serve the same model (`deployment.md`, section 1).
 `/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine.
 
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and

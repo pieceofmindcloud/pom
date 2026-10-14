@@ -173,6 +173,12 @@ pub struct DeployRequest {
     /// MTP draft chosen on the screen (file, embedded or none). Same rules.
     #[serde(default)]
     pub mtp_choice: Option<SidecarChoice>,
+    /// Keep the machines outside this plan that already serve the same model:
+    /// their deployment stays in service beside the new one. `false` releases
+    /// them before the deploy. A machine of the plan is always taken over,
+    /// because a node serves one model at a time.
+    #[serde(default)]
+    pub keep_existing: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

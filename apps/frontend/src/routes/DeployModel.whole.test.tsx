@@ -21,6 +21,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeployPlan, PeerCatalog, RuntimeParams } from "../lib/types";
 
 const post = vi.fn();
+/** What the live cluster answers; a test fills it to put machines in service. */
+let livePeers: Array<Record<string, unknown>> = [];
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((url: string) =>
@@ -184,6 +186,7 @@ function mount(
   });
   client.setQueryData(keys.jobs, { jobs: [] });
   client.setQueryData(keys.node, { connection_key: "", pom_dev_mode: true });
+  if (livePeers.length > 0) client.setQueryData(keys.cluster, { peers: livePeers });
   client.setQueryData(keys.clusterModels, {
     peers: [
       {
@@ -617,7 +620,7 @@ describe("DeployModel · whole model", () => {
     });
   });
 
-  it("refuses adding a second machine to the whole model map", async () => {
+  it("adds a second machine to the whole model map, without a range", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -628,12 +631,74 @@ describe("DeployModel · whole model", () => {
     const ksia = await screen.findByRole("button", { name: /ksia RTT/ });
     fireEvent.click(ksia);
     await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
-    const mac = await screen.findByRole("button", { name: /mac RTT/ });
-    fireEvent.click(mac);
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
 
-    expect(screen.getByText(/Retire uma máquina do mapa antes de trocar para modelo inteiro ou adicionar outra/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /mac RTT/ })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover mac da implantação/ })).toBeTruthy());
+    expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy();
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as { preferred_node_ids?: string[] };
+      expect(last.preferred_node_ids).toEqual(["ksia", "mac"]);
+    });
+    // The new machine only gets layers when the operator assigns a range.
     expect(planCalls().some(([, body]) => (body as { selection?: Array<{ target_node_id: string }> }).selection?.some((row) => row.target_node_id === "mac"))).toBe(false);
+  });
+
+  describe("with machines already in service", () => {
+    const serving = (nodeId: string, model: string) => ({
+      node_id: nodeId,
+      model,
+      start_layer: 0,
+      end_layer: 31,
+      total_layers: 32,
+      load: 0,
+      node: null,
+    });
+    afterEach(() => {
+      livePeers = [];
+    });
+
+    async function pressDeploy() {
+      answerPlans();
+      mount();
+      chooseWhole();
+      await ensureWholeMachine();
+      const button = await screen.findByRole("button", { name: /^Implantar$/ });
+      await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(button);
+    }
+    const deploys = () => post.mock.calls.filter(([url]) => url === "/api/ui/deploy");
+
+    it("asks before taking over a machine of the plan", async () => {
+      livePeers = [serving("ksia", "llama-3-8b")];
+      await pressDeploy();
+
+      const dialog = await screen.findByRole("dialog", { name: "Já existe modelo em serviço" });
+      expect(dialog.textContent).toContain("llama-3-8b");
+      expect(deploys()).toHaveLength(0);
+      expect(screen.queryByRole("button", { name: "Manter em paralelo" })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Substituir e implantar" }));
+      await waitFor(() => expect(deploys()).toHaveLength(1));
+      expect(deploys()[0][1]).not.toHaveProperty("keep_existing");
+    });
+
+    it("keeps in parallel a machine outside the plan that serves the same model", async () => {
+      livePeers = [serving("mac", "qwen3.5-9b")];
+      await pressDeploy();
+
+      await screen.findByRole("dialog", { name: "Já existe modelo em serviço" });
+      expect(screen.getByRole("button", { name: "Desimplantar e implantar" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Manter em paralelo" }));
+      await waitFor(() => expect(deploys()).toHaveLength(1));
+      expect(deploys()[0][1]).toMatchObject({ kind: "whole", keep_existing: true });
+    });
+
+    it("does not ask about a machine outside the plan that serves another model", async () => {
+      livePeers = [serving("mac", "llama-3-8b")];
+      await pressDeploy();
+      await waitFor(() => expect(deploys()).toHaveLength(1));
+      expect(screen.queryByRole("dialog", { name: "Já existe modelo em serviço" })).toBeNull();
+    });
   });
 
   it("deploys sending the same `kind` it planned", async () => {

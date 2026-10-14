@@ -50,7 +50,7 @@ import {
   seedText,
   withLlamaCppName,
 } from "../lib/llamaCppNames";
-import type { EngineSetting, MtpPlacement, SidecarOption, SidecarSlot } from "../lib/types";
+import type { EngineSetting, MtpPlacement, PomSetting, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -389,12 +389,12 @@ export function DeploymentInspector({
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
   pomDevMode?: boolean;
-  /** A plugin's inference service runs the model (Strata): only the settings
-   *  that engine reads are shown - the context, the concurrent requests and
-   *  idle unloading - and, when its slices cross machines, the POM's own
-   *  transfer between them (pieces in flight, hidden-state precision). The
-   *  llama.cpp knobs do not reach it. */
-  inferenceService?: { name: string; settings?: EngineSetting[] };
+  /** A plugin's inference service runs the model (Strata): its card holds only
+   *  what that engine reads - the context, the concurrent requests, idle
+   *  unloading and the engine's own settings. The llama.cpp knobs do not
+   *  reach it. The POM settings the service declares (`pomSettings`) get their
+   *  own card, shown when its slices cross machines. */
+  inferenceService?: { name: string; settings?: EngineSetting[]; pomSettings?: PomSetting[] };
 }) {
   const { t } = useI18n();
   /*
@@ -581,35 +581,42 @@ export function DeploymentInspector({
   );
 
   if (inferenceService) {
+    // The POM carries the hidden state between the plugin's stages, so its own
+    // settings only exist when the slices cross machines.
+    const pomSettings = showHiddenStateDtype ? (inferenceService.pomSettings ?? []) : [];
     return (
-      <Section title={t("inspector.sectionInferenceService", { name: inferenceService.name })} tone="iris">
-        <p className="px-0.5 pb-1 text-[0.6rem] leading-relaxed text-muted">
-          {t("inspector.inferenceServiceNote", { name: inferenceService.name })}
-        </p>
-        {numeric("n_ctx")}
-        {numeric("max_sessions")}
-        {toggle({
-          key: "unload_if_idle",
-          label: t("deploy.unloadIfIdle"),
-          alwaysVisible: true,
-          checked: value.unload_if_idle ?? false,
-          onToggle: (next) => set({ unload_if_idle: next }),
-          tip: t("deploy.unloadIfIdleHint"),
-        })}
-        {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
-        {/* A model split across machines: the POM carries the hidden state between the plugin's stages,
-            with its own micro-pipelining and precision. */}
-        {showHiddenStateDtype && numeric("prefill_max_inflight_chunks")}
-        {showHiddenStateDtype && hiddenStateField()}
-        {(inferenceService.settings?.length ?? 0) > 0 && (
-          <EngineSettingsFields
-            settings={inferenceService.settings ?? []}
-            values={value.engine_settings}
-            onChange={(next) => set({ engine_settings: next })}
-            readOnly={readOnly}
-          />
+      <>
+        <Section title={t("inspector.sectionInferenceService", { name: inferenceService.name })} tone="iris">
+          <p className="px-0.5 pb-1 text-[0.6rem] leading-relaxed text-muted">
+            {t("inspector.inferenceServiceNote", { name: inferenceService.name })}
+          </p>
+          {numeric("n_ctx")}
+          {numeric("max_sessions")}
+          {toggle({
+            key: "unload_if_idle",
+            label: t("deploy.unloadIfIdle"),
+            alwaysVisible: true,
+            checked: value.unload_if_idle ?? false,
+            onToggle: (next) => set({ unload_if_idle: next }),
+            tip: t("deploy.unloadIfIdleHint"),
+          })}
+          {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
+          {(inferenceService.settings?.length ?? 0) > 0 && (
+            <EngineSettingsFields
+              settings={inferenceService.settings ?? []}
+              values={value.engine_settings}
+              onChange={(next) => set({ engine_settings: next })}
+              readOnly={readOnly}
+            />
+          )}
+        </Section>
+        {pomSettings.length > 0 && (
+          <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
+            {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
+            {pomSettings.includes("hidden_state_dtype") && hiddenStateField()}
+          </Section>
         )}
-      </Section>
+      </>
     );
   }
 

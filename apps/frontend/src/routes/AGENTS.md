@@ -481,13 +481,13 @@ Per-file list:
   screen has: the TP group, tensor parallel and the machine tab. Three shapes, chosen by the
   mode bar at the top and carried to the node as `kind`: **a set of shards**
   (below), **a whole model** (one model picker from `../lib/wholeModels`, with
-  the deployment map as its only machine choice and no coverage
-  ribbon/"included"/merge), or **tensor parallel** (`tensor_parallel`): when the catalog
+  the deployment map as its machine choice and no "included"/merge; the
+  coverage ribbon shows once a second machine is on the map), or **tensor parallel** (`tensor_parallel`): when the catalog
   has `tp_parts`, the picker groups the round by TP width and the inspector
   shows one-based ranks such as `1of2` and `2of2`; otherwise it uses the
   whole-model runtime path. Canvas membership is canonical: rows plus preferred
   peers, with every live peer added by the Complete strategy except in whole
-  mode, which remains limited to one machine. Tensor selectors
+  mode, where the operator adds each machine. Tensor selectors
   reuse those map cards; pre-sliced TP accepts any mapped peer because the node
   can transfer the needed rank, while whole-model TP filters mapped cards to
   peers that hold the local GGUF. Eligible Tensor cards expose the accessible
@@ -502,9 +502,13 @@ Per-file list:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
   In whole-model mode, the inspector does not repeat the GGUF's facts nor offer a
   machine selector: the map is the only choice. When switching from slices to that
-  mode, the screen clears the map and lets the operator add the machine they want;
-  after that, trying to include a second machine shows the warning and preserves
-  the single choice.
+  mode, the screen clears the map and lets the operator add the machine they want.
+  The first machine takes the whole file. A second one enters without a range
+  and gets one in the Machine tab, among the ranges it holds: the whole file
+  again (a replica) or a slice of the same model. The node accepts the map while
+  the ranges cover every layer, and with two distinct ranges the plan is a
+  pipeline (hidden-state precision included). Under an inference service the
+  whole model stays on one machine: a second one is refused with a warning.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
   The model list may appear before the reading of the GGUF headers finishes.
@@ -526,7 +530,9 @@ Per-file list:
   keeps only the machines running it in the peer strip, sends
   `params.inference_service` with the plan and the deploy, and reduces the
   Globais inspector to the settings the engine reads
-  (`DeploymentInspector.inferenceService`). Deploy memory is keyed per
+  (`DeploymentInspector.inferenceService`) plus, in a separate card, the POM
+  settings the service declares (`pomSettings`). The Machine tab leaves out
+  GPU layers and KV cache on the GPU, which only llama.cpp reads. Deploy memory is keyed per
   service. Test: `DeployModel.service.test.tsx`.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
@@ -564,6 +570,12 @@ Per-file list:
   pink open a `Confirm` (`capacityAsked`, separate from the partial-coverage one)
   naming the machines and the reason, with a title/text per case;
   `canDeploy` does not change - it is a warning, not a block.
+  A third window (`inServiceAsked`, a `Modal`) comes last, when the live
+  cluster shows machines this deploy touches: the machines of the plan that
+  serve any model are listed as taken over ("Replace and deploy"), and the
+  machines outside the plan that serve this same model get the choice between
+  "Undeploy and deploy" and "Keep in parallel", which sends
+  `keep_existing: true`. The three confirms chain through `attemptDeploy`.
   Topology edits are debounced 260 ms and validated by
   `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
   and the operational name stay local while editing: their changes do not
@@ -584,8 +596,8 @@ Per-file list:
   map is explanatory: capacity/load come from the live
   cluster and RTT comes from the directional survey in the plan;
   adding a peer without a range only adds its card and keeps existing positions;
-  in whole-model mode, the map has one machine only and adding another peer is
-  refused with a warning;
+  in whole-model mode, another peer joins the map without a range, except under
+  an inference service, where it is refused with a warning;
   in pre-sliced tensor mode, adding a peer makes it eligible for a rank even
   without a local rank file, while whole-model tensor mode still requires the
   local GGUF; neither path adds an off-map peer implicitly;

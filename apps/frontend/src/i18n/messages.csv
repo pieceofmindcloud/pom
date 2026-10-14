@@ -550,6 +550,12 @@ deploy.happens,What happens,O que acontece
 deploy.heldOn,on {machines},em {machines}
 deploy.heldOnMachines,on {count} machines,em {count} máquinas
 deploy.heldShards,Shards already present,Fatias que já tem
+deploy.inServiceElsewhere,"These machines are outside this plan and already serve {model}. Undeploy them, or keep that deployment in service beside the new one?","Estas máquinas estão fora deste plano e já servem {model}. Desimplantar, ou manter essa implantação em serviço ao lado da nova?"
+deploy.inServiceKeep,Keep in parallel,Manter em paralelo
+deploy.inServiceReplace,Replace and deploy,Substituir e implantar
+deploy.inServiceReplaced,"These machines of the plan stop what they serve now and take the new deployment. A machine serves one model at a time.","Estas máquinas do plano param o que servem agora e recebem a nova implantação. Uma máquina serve um modelo por vez."
+deploy.inServiceTitle,A model is already in service,Já existe modelo em serviço
+deploy.inServiceUndeploy,Undeploy and deploy,Desimplantar e implantar
 deploy.include,Include {range},Incluir {range}
 deploy.included,Included,Entra
 deploy.incomplete,The selected shards do not cover the full model,As fatias escolhidas não cobrem o modelo inteiro
@@ -698,6 +704,8 @@ deploy.removeReplica,Another machine serves this range. The network loses one pa
 deploy.response,response,resposta
 deploy.restore,Return to node plan,Voltar ao plano do nó
 deploy.selectedShards,{count} of {total} selected,{count} de {total} selecionadas
+deploy.serviceSingleMachineDetail,Remove the machine on the map before adding another one.,Retire a máquina do mapa antes de adicionar outra.
+deploy.serviceSingleMachineTitle,{name} runs the whole model on one machine,O {name} roda o modelo inteiro em uma máquina
 deploy.shard,Shard,Fatia
 deploy.shardCount,"{count}{count, plural, =1 { shard} other { shards}}","{count}{count, plural, =1 { fatia} other { fatias}}"
 deploy.shardSelection,"Which shards take part, and on which machine","Quais fatias entram, e em qual máquina"
@@ -737,8 +745,6 @@ deploy.wholeDetail,Un-sliced models that a cluster machine already has.,Modelos 
 deploy.wholeEmpty,No whole model on the network,Nenhum modelo inteiro na rede
 deploy.wholeEmptyDetail,No cluster machine has an un-sliced .gguf. Add the folder holding them under Settings › Folders.,Nenhuma máquina do cluster tem um .gguf não fatiado. Aponte a pasta onde eles estão em Configurar › Pastas.
 deploy.wholeNoLayers,unreadable header,cabeçalho ilegível
-deploy.wholeSingleMachineDetail,Remove a machine from the deployment map before switching to whole model or adding another one.,Retire uma máquina do mapa antes de trocar para modelo inteiro ou adicionar outra.
-deploy.wholeSingleMachineTitle,Whole model uses one machine,Modelo inteiro usa uma máquina
 deploy.whyNotBlocked,see the reason above,veja o motivo acima
 deploy.whyNotChecking,checking with the node…,conferindo com o nó…
 deploy.whyNotEmpty,select at least one shard,marque ao menos uma fatia

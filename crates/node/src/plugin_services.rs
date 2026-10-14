@@ -60,6 +60,34 @@ pub(crate) struct PluginService {
     /// (`plugin_engine`, the stage link).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stages: bool,
+    /// For a service of kind `inference`: the POM deployment settings that
+    /// apply to its engine (`POM_SETTINGS`), which the deploy inspector draws
+    /// in their own card, apart from the engine's settings.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pom_settings: Vec<String>,
+}
+
+/// The POM deployment settings an inference service may declare, by their
+/// `RuntimeParams` name. Both act on the hidden state the nodes carry between
+/// the stages of a model split across machines.
+const POM_SETTINGS: [&str; 2] = ["prefill_max_inflight_chunks", "hidden_state_dtype"];
+
+fn parse_pom_settings(kind: &str, value: &Value) -> Vec<String> {
+    let mut settings: Vec<String> = Vec::new();
+    if kind != "inference" {
+        return settings;
+    }
+    for name in value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if POM_SETTINGS.contains(&name) && !settings.iter().any(|known| known == name) {
+            settings.push(name.to_owned());
+        }
+    }
+    settings
 }
 
 const MAX_SETTINGS: usize = 32;
@@ -220,6 +248,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             continue;
         }
         let stages = kind == "inference" && entry["stages"] == true;
+        let pom_settings = parse_pom_settings(&kind, &entry["pom_settings"]);
         services.push(PluginService {
             plugin_code: plugin_code.to_owned(),
             id,
@@ -239,6 +268,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
                 .unwrap_or_default(),
             settings: parse_settings(&entry["settings"]),
             stages,
+            pom_settings,
         });
     }
     services
@@ -398,6 +428,22 @@ mod tests {
         );
         assert!(staged[0].stages && !staged[1].stages);
         assert_eq!(serde_json::to_value(&staged[0]).unwrap()["stages"], true);
+
+        // Only known POM settings, once each, and only for an inference service.
+        let declared = parse_services(
+            "p",
+            &json!({"services": [
+                {"id": "s", "kind": "inference", "name": "S", "status": "ready",
+                 "pom_settings": ["hidden_state_dtype", "n_gpu_layers", "hidden_state_dtype", 7]},
+                {"id": "r", "kind": "rag", "name": "R", "status": "ready",
+                 "pom_settings": ["hidden_state_dtype"]}]}),
+        );
+        assert_eq!(declared[0].pom_settings, ["hidden_state_dtype"]);
+        assert!(declared[1].pom_settings.is_empty());
+        assert!(serde_json::to_value(&declared[1])
+            .unwrap()
+            .get("pom_settings")
+            .is_none());
         assert_eq!(
             serde_json::to_value(&services[0]).unwrap()["architectures"],
             json!(["qwen4exp"])

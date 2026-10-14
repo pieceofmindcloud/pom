@@ -6,12 +6,13 @@
  * * **A set of slices** — the original case, described in detail below: many
  *   machines, one range each, and every question about coverage and order is
  *   real.
- * * **A whole model** — one un-sliced GGUF on one machine. The node reads it as
- *   a single range covering every layer, so the plan that comes back has the
- *   same shape and the same route validates it; nothing here recomputes it.
- *   What the screen drops is the questions that have only one answer. There is
- *   no order to choose in a pipeline of one, no per-layer checklist, and the
- *   deployment map is the sole machine choice.
+ * * **A whole model** - one un-sliced GGUF. The node reads it as a single
+ *   range covering every layer, so the plan that comes back has the same shape
+ *   and the same route validates it; nothing here recomputes it. The first
+ *   machine added takes the whole file. More machines can join: each takes a
+ *   range it holds (the whole file again, as a replica, or a slice of the same
+ *   model), and the node accepts the map while the ranges cover every layer.
+ *   An inference service that runs the whole model stays on one machine.
  *
  * The rest of this comment is about the slice case, which is the one with
  * decisions in it.
@@ -57,7 +58,7 @@ import type { SidecarPick } from "../components/SidecarPicker";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
 import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
-import { Confirm } from "../components/Confirm";
+import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
@@ -330,6 +331,9 @@ export function DeployModel() {
    *  exceeds the capacity of some machine. It warns, it does not block - the
    *  operator can reduce context/sessions or deploy anyway. */
   const [capacityAsked, setCapacityAsked] = useState(false);
+  /** Third confirm: machines that already serve a model would be taken over
+   *  or undeployed by this deploy. */
+  const [inServiceAsked, setInServiceAsked] = useState(false);
   const [running, setRunning] = useState(false);
   const [cacheTypeK, setCacheTypeK] = useState<KvCacheType>("f16");
   const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
@@ -549,9 +553,8 @@ export function DeployModel() {
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
-        // A whole model is one machine, so there is nothing to join and the
-        // toggle is not on screen. Sending it anyway would be sending a value
-        // the operator was never shown.
+        // The merge toggle is not on screen for a whole model. Sending it
+        // anyway would be sending a value the operator was never shown.
         ...(merge != null && !isWhole ? { merge } : {}),
         vision: useVision,
         ...sidecarChoices(),
@@ -733,7 +736,7 @@ export function DeployModel() {
   );
   /** The canvas, TP selectors and card actions all use this same membership.
    *  Complete strategy puts every live machine on the map except in whole mode,
-   *  where the map is intentionally limited to one machine. */
+   *  where the operator adds each machine. */
   const mapNodeIds = useMemo(
     () => {
       const ids = new Set([...rows.map((row) => row.target_node_id), ...preferredNodeIds]);
@@ -905,14 +908,15 @@ export function DeployModel() {
   const effMerge = merge ?? p?.merge ?? false;
   /**
    * `hidden_state_dtype` only does something when the hidden state crosses a
-   * peer's boundary - that is, in a slice pipeline with distinct adjacent
-   * ranges. A whole model (one machine), Tensor Parallelism (exchange by
-   * collective, not by frame) and a slice plan that landed on a single machine
-   * never serialize the state, so the selector would be a control with no
-   * effect. Two machines on the same range are replicas, not a hop.
+   * peer's boundary - that is, in a pipeline with distinct adjacent ranges,
+   * which a whole model spread over slices of itself also is. A whole model on
+   * one range, Tensor Parallelism (exchange by collective, not by frame) and a
+   * slice plan that landed on a single machine never serialize the state, so
+   * the selector would be a control with no effect. Two machines on the same
+   * range are replicas, not a hop.
    */
   const crossesPeerBoundary =
-    kind === "shards" &&
+    !isTp &&
     new Set(rows.map((r) => `${r.start_layer}-${r.end_layer}`)).size >= 2;
 
   function edit(next: (base: DeploySelection[]) => DeploySelection[]) {
@@ -1027,10 +1031,11 @@ export function DeployModel() {
     };
   }
 
-  async function deploy() {
+  async function deploy(keepExisting = false) {
     setRunning(true);
     setAsked(false);
     setCapacityAsked(false);
+    setInServiceAsked(false);
     try {
       const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
         group: chosen,
@@ -1050,6 +1055,7 @@ export function DeployModel() {
           ? { mmproj_path: selectedMmprojPath }
           : {}),
         ...sidecarChoices(),
+        ...(keepExisting ? { keep_existing: true } : {}),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -1113,10 +1119,12 @@ export function DeployModel() {
   }
 
   function addPeerToDeployment(nodeId: string) {
-    if (isWhole && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
+    // An inference service runs a whole model on a single machine; the node
+    // refuses a second one, so the map does not take it.
+    if (isWhole && service && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
       toast.warning(
-        t("deploy.wholeSingleMachineTitle"),
-        t("deploy.wholeSingleMachineDetail"),
+        t("deploy.serviceSingleMachineTitle", { name: service.name }),
+        t("deploy.serviceSingleMachineDetail"),
       );
       return;
     }
@@ -1181,15 +1189,38 @@ export function DeployModel() {
   );
   const anyOverCapacity = capacityWarnMachines.some((m) => !m.capacity?.fits);
 
-  /** The deploy gesture, with the possible confirms on the way: partial coverage
-   *  (the model is not wholly in service) and the capacity projection (it
-   *  overflows the VRAM, or the fit would trim the request). The first is more
-   *  fundamental, so it comes first. */
-  function attemptDeploy() {
-    if (!p?.complete) {
+  /**
+   * Machines that serve a model now and that this deploy touches. A node
+   * serves one model at a time, so a machine of the plan is taken over
+   * (`replaced`). The node also undeploys the machines outside the plan that
+   * serve this same model (`elsewhere`), unless asked to keep them. This is
+   * the screen's reading of the live cluster; the node decides on its own
+   * fresh survey.
+   */
+  const planNodeIds = new Set(
+    isTp ? [tp.primary_node_id, ...tp.worker_node_ids] : rows.map((row) => row.target_node_id),
+  );
+  const servingPeers = (liveCluster.data?.peers ?? []).filter(
+    (peer) => peer.model !== "" && peer.total_layers > 0,
+  );
+  const replacedPeers = servingPeers.filter((peer) => planNodeIds.has(peer.node_id));
+  const elsewherePeers = servingPeers.filter(
+    (peer) => !planNodeIds.has(peer.node_id) && peer.model === chosen,
+  );
+
+  /** The deploy gesture, with the possible confirms on the way, each one
+   *  leading to the next: partial coverage (the model is not wholly in
+   *  service), the capacity projection (it overflows the VRAM, or the fit
+   *  would trim the request) and the machines already in service. */
+  function attemptDeploy(from: "coverage" | "capacity" | "inService" = "coverage") {
+    setAsked(false);
+    setCapacityAsked(false);
+    if (from === "coverage" && !p?.complete) {
       setAsked(true);
-    } else if (capacityWarnMachines.length > 0) {
+    } else if (from !== "inService" && capacityWarnMachines.length > 0) {
       setCapacityAsked(true);
+    } else if (replacedPeers.length > 0 || elsewherePeers.length > 0) {
+      setInServiceAsked(true);
     } else {
       void deploy();
     }
@@ -1381,7 +1412,7 @@ export function DeployModel() {
               loading={running}
               disabled={!canDeploy}
               data-guide={running ? "deploy-running" : canDeploy ? "deploy-run" : undefined}
-              onClick={attemptDeploy}
+              onClick={() => attemptDeploy()}
             >
               {t("deployStudio.deploy")}
             </Button>
@@ -1473,7 +1504,7 @@ export function DeployModel() {
             <DeploymentInspector
               value={eff}
               onChange={setParams}
-              inferenceService={service ? { name: service.name, settings: service.settings } : undefined}
+              inferenceService={service ? { name: service.name, settings: service.settings, pomSettings: service.pomSettings } : undefined}
               capabilities={p?.capabilities}
               cacheTypes={{
                 k: cacheTypeK,
@@ -1677,8 +1708,9 @@ export function DeployModel() {
                       global ones: the `[i]` before the name, in the same column, and
                       the control on the right. The KV cache explanation was a fixed
                       paragraph under the switch; now it is in the `[i]`,
-                      like all the others. */}
-                  {first && (
+                      like all the others. Both are llama.cpp's: a plugin's
+                      engine does not read them. */}
+                  {first && !service && (
                     <div className="mt-3 space-y-1 border-t border-line pt-2">
                       <InspectorRow label={t("deployStudio.gpuLayers")} tip={t("deploy.knob.n_gpu_layersHint")}>
                         <Input aria-label={t("deployStudio.gpuLayers")} name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" />
@@ -1728,7 +1760,7 @@ export function DeployModel() {
                 <span className="min-w-0"><span className="block truncate text-[0.62rem] text-fg">{machine.label}</span><span className="block font-mono text-[0.54rem] text-faint">{machine.rtt_ms == null ? "RTT -" : `${machine.rtt_ms.toFixed(1)} ms`} · {machine.load == null ? t("dashboard.inFlightUnavailable") : t("canvas.inFlight", { count: machine.load })}</span></span>
               </button>
             ))}
-            {p && !isWhole && (
+            {p && (!isWhole || mapMachineIds.length > 1) && (
               <div className="ml-auto min-w-[12rem] max-w-[24rem] shrink-0 border-l border-line pl-3">
                 <Coverage label={t("deployStudio.modelCoverage")} total={p.total_layers} rows={rows} />
               </div>
@@ -1752,7 +1784,7 @@ export function DeployModel() {
         }
         confirmLabel={t("deploy.deploy")}
         busy={running}
-        onConfirm={() => void deploy()}
+        onConfirm={() => attemptDeploy("capacity")}
         onCancel={() => setAsked(false)}
       />
 
@@ -1780,9 +1812,55 @@ export function DeployModel() {
         }
         confirmLabel={t("deploy.deploy")}
         busy={running}
-        onConfirm={() => void deploy()}
+        onConfirm={() => attemptDeploy("inService")}
         onCancel={() => setCapacityAsked(false)}
       />
+
+      <Modal
+        open={inServiceAsked}
+        title={t("deploy.inServiceTitle")}
+        onClose={() => setInServiceAsked(false)}
+        footer={
+          <>
+            <Button variant="ghost" disabled={running} onClick={() => setInServiceAsked(false)}>
+              {t("common.cancel")}
+            </Button>
+            {elsewherePeers.length > 0 ? (
+              <>
+                <Button variant="outline" disabled={running} onClick={() => void deploy(true)}>
+                  {t("deploy.inServiceKeep")}
+                </Button>
+                <Button variant="primary" loading={running} onClick={() => void deploy()}>
+                  {t("deploy.inServiceUndeploy")}
+                </Button>
+              </>
+            ) : (
+              <Button variant="primary" loading={running} onClick={() => void deploy()}>
+                {t("deploy.inServiceReplace")}
+              </Button>
+            )}
+          </>
+        }
+      >
+        {([
+          ["replaced", replacedPeers, t("deploy.inServiceReplaced")],
+          ["elsewhere", elsewherePeers, t("deploy.inServiceElsewhere", { model: deployModelDisplayName(chosen) })],
+        ] as const).map(([kindOfList, peers, text]) => peers.length > 0 && (
+          <div key={kindOfList} className="mt-3 text-[0.8rem] leading-relaxed text-muted">
+            <p>{text}</p>
+            <ul className="mt-2 divide-y divide-line overflow-hidden rounded-lg border border-line">
+              {peers.map((peer) => (
+                <li key={peer.node_id} className="flex items-baseline justify-between gap-3 px-3 py-2">
+                  <span className="truncate text-fg">{peer.node?.hostname ?? labelOf(peer.node_id)}</span>
+                  <span className="shrink-0 font-mono text-xs">
+                    {deployModelDisplayName(peer.model)} · {layerRange(peer.start_layer, peer.end_layer)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </Modal>
     </>
   );
 }

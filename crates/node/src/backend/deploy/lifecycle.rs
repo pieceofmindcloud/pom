@@ -9,6 +9,7 @@ impl RecordPlan {
 }
 
 /// Copy what has to be copied, then bind every peer to its range.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
     state: GatewayState,
     plan: Plan,
@@ -16,11 +17,29 @@ pub(super) async fn run(
     identity: RequestedModelIdentity,
     record_plan: RecordPlan,
     use_mmproj: bool,
+    keep_existing: bool,
     job_id: &str,
 ) -> Result<(), String> {
     let deploy_id = record_plan.deploy_id().to_string();
     let deploy_id = deploy_id.as_str();
-    prepare_existing_model(&state, &plan.group, &identity, job_id).await?;
+    let plan_nodes: Vec<String> = plan
+        .steps
+        .iter()
+        .map(|step| step.target_node_id.clone())
+        .chain(
+            plan.tp_targets
+                .iter()
+                .map(|target| target.target_node_id.clone()),
+        )
+        .collect();
+    prepare_existing_model(
+        &state,
+        &plan.group,
+        &identity,
+        keep_existing.then_some(plan_nodes.as_slice()),
+        job_id,
+    )
+    .await?;
     let key = state.auth.read().await.connection_key.clone();
 
     // One unit of movement: a slice that has to reach a target. A merged step

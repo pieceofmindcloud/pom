@@ -1450,7 +1450,8 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   globals - `[i]`, name, control); when a machine is selected, the inspector also
   shows the layers it will run. The hidden-state precision
   (f32/f16/f8/i4g64/i4g128) only shows up when the state crosses a peer boundary
-  - a slice pipeline with distinct adjacent ranges; for a whole model, Tensor or
+  - a pipeline with distinct adjacent ranges, of slices or of a whole model spread
+  over its own slices; for a whole model on one range, Tensor or
   slices on a single machine, the state is never serialized and the selector
   would be inert. f16 is still the default; f32 is a lossless option with four
   bytes per value, while f8 and i4 are lossy. In the globals, the whole model
@@ -1512,9 +1513,12 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   "Remove from deployment". Peers already on the map no longer show up in the
   bottom bar; dragging or double-clicking an available peer adds the card
   without redrawing the topology until a range is assigned. For a whole model,
-  the map accepts one machine. When switching from slices to that mode, the map
-  is left empty so the operator picks the machine; after a choice, trying to add
-  a second one shows a warning and keeps the chosen machine. In Tensor, only
+  the map is left empty when switching from slices, so the operator picks the
+  machine, which takes the whole file. More machines can be added: each gets a
+  range it holds in the Machine tab (the whole file as a replica, or a slice of
+  the same model), the coverage ribbon appears, and the node accepts the map
+  while the ranges cover every layer. Under an inference service the whole
+  model stays on one machine and a second one is refused with a warning. In Tensor, only
   peers on the map enter as primary/worker, even if others have the model.
   GPU, RAM and load are updated by the cluster view every 5 seconds; the
   Dashboard map shows the last effective RTT and transport observed in the

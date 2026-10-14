@@ -745,7 +745,12 @@ export interface PluginService {
   settings?: EngineSetting[];
   /** Kind `inference`: its engine also runs layer slices, one stage per machine. */
   stages?: boolean;
+  /** Kind `inference`: the POM deployment settings that apply to its engine. */
+  pom_settings?: PomSetting[];
 }
+
+/** A POM deployment setting an inference service can declare, by its `RuntimeParams` name. */
+export type PomSetting = "prefill_max_inflight_chunks" | "hidden_state_dtype";
 
 /** One setting an inference service's engine publishes (`host.services`). */
 export interface EngineSetting {

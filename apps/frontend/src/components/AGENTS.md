@@ -707,8 +707,8 @@ Key logic carriers:
   and returns it to the bottom strip. If the backend does not publish an edge, the canvas
   leaves that edge's RTT absent instead of copying the measurement of the destination node; the
   card can still show the local RTT announced by the machine itself. Exact replicas may appear stacked in
-  the same column. In whole-model mode, the map accepts a single machine and refuses a
-  second one with a warning; in Tensor mode, the map limits the available ranks. The in-flight load
+  the same column. In whole-model mode, the first machine takes the whole file and the others enter without a range
+  (an inference service keeps the map to one machine); in Tensor mode, the map limits the available ranks. The in-flight load
   of the card comes from the machine's own live report; when that report
   does not arrive, the meter shows unavailable and does not invent zero.
   `DeployModel` computes `mapNodeIds` once and passes that same population
@@ -749,10 +749,12 @@ Key logic carriers:
   publishes (`PluginService.settings`) in the interface's language: one row
   per setting, an empty field or "Engine default" keeps the engine's default,
   and the values go to `RuntimeParams.engine_settings`. Mounted by
-  `DeploymentInspector` when a plugin's inference service is chosen. When that
-  service's slices cross machines (`showHiddenStateDtype`), the same section
-  also shows the POM's own transfer between them - `prefill_max_inflight_chunks`
-  and the hidden-state precision, the same field the llama.cpp pipeline uses.
+  `DeploymentInspector` when a plugin's inference service is chosen. The POM
+  settings that service declares (`PluginService.pom_settings`:
+  `prefill_max_inflight_chunks`, `hidden_state_dtype`) are not in that card:
+  the inspector draws them in a separate "POM settings" card below it, like
+  under llama.cpp, when the slices cross machines (`showHiddenStateDtype`). A
+  service that declares none has no such card.
 - `DeploymentInspector.tsx` - the inspector of a deployment's properties, and
   **one single** one for the two screens: the deploy screen uses it editable, the History
   uses it with `readOnly` to show with which parameters a version came up. In

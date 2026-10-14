@@ -147,9 +147,48 @@ mod redeploy_preflight_tests {
         let state = state_with("coordinator", vec![serving_peer(port)]).await;
         install_job(&state, "preflight-same").await;
 
-        prepare_existing_model(&state, "qwen", &desired('a'), "preflight-same")
+        prepare_existing_model(&state, "qwen", &desired('a'), None, "preflight-same")
             .await
             .expect("the equal deployment must be released");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_machine_outside_the_plan_is_kept_when_asked() {
+        let (port, hits) = peer_with_deployment(
+            Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            axum::http::StatusCode::OK,
+            "/models/active.gguf",
+        )
+        .await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-keep").await;
+
+        let plan_nodes = vec!["peer-b".to_string()];
+        prepare_existing_model(
+            &state,
+            "qwen",
+            &desired('a'),
+            Some(&plan_nodes),
+            "preflight-keep",
+        )
+        .await
+        .expect("a kept deployment does not block the new one");
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        // The same machine inside the plan is still released.
+        let plan_nodes = vec!["peer-a".to_string()];
+        prepare_existing_model(
+            &state,
+            "qwen",
+            &desired('a'),
+            Some(&plan_nodes),
+            "preflight-keep",
+        )
+        .await
+        .expect("a machine of the plan is released");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
@@ -170,6 +209,7 @@ mod redeploy_preflight_tests {
                     .into_iter()
                     .collect(),
             },
+            None,
             "preflight-unknown",
         )
         .await
@@ -190,7 +230,7 @@ mod redeploy_preflight_tests {
         .await;
         let state = state_with("coordinator", vec![serving_peer(port)]).await;
         install_job(&state, "preflight-failed").await;
-        let error = prepare_existing_model(&state, "qwen", &desired('a'), "preflight-failed")
+        let error = prepare_existing_model(&state, "qwen", &desired('a'), None, "preflight-failed")
             .await
             .expect_err("an unload failure blocks the deploy");
         assert!(error.contains("undeploy failed"), "{error}");
@@ -220,10 +260,7 @@ mod redeploy_preflight_tests {
             wait_for_peer_idle_with_timeout(&state, &serving_peer(port), Duration::from_millis(10))
                 .await
                 .expect_err("a busy peer must exceed the limit");
-        assert!(
-            error.contains("ksia") && error.contains("busy"),
-            "{error}"
-        );
+        assert!(error.contains("ksia") && error.contains("busy"), "{error}");
     }
 
     /// A node (`peer-a`) that is serving nothing: `/api/ui/node` says
@@ -344,8 +381,14 @@ mod redeploy_preflight_tests {
         .await
         .expect("the redeploy must not fail outright");
 
-        assert_eq!(failures, 0, "the machine that was not serving must be started, not counted as a failure");
-        assert!(reconfigured_at.load(Ordering::SeqCst) > 0, "/api/ui/reconfigure must be called");
+        assert_eq!(
+            failures, 0,
+            "the machine that was not serving must be started, not counted as a failure"
+        );
+        assert!(
+            reconfigured_at.load(Ordering::SeqCst) > 0,
+            "/api/ui/reconfigure must be called"
+        );
         assert!(
             unloaded_at.load(Ordering::SeqCst) < reconfigured_at.load(Ordering::SeqCst),
             "the unload comes before the start (unload={}, reconfigure={})",
@@ -354,4 +397,3 @@ mod redeploy_preflight_tests {
         );
     }
 }
-

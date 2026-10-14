@@ -12,7 +12,7 @@ config keep the `pom` name; the brand is UI-only.
 dev proxy setup, routing on the axum side). Its deployment section mirrors the
 current planner contract: one machine may own several valid ranges, while a
 global gap or overlap blocks the plan. The whole-model mode starts empty when
-chosen from slices, so the operator explicitly adds its single machine.
+chosen from slices, so the operator explicitly adds its machines.
 Topology edits query the planner after the 260 ms debounce; runtime settings
 remain local until the deploy preflight.
 
@@ -143,7 +143,8 @@ a choice.
   renders it). See `src/routes/AGENTS.md`.
 - `/deploy` -> DeployModel (first-level entry for putting models in service,
   full-bleed Deploy Studio with central cluster map, property inspector and
-  draggable peer strip; whole-model mode accepts exactly one map machine)
+  draggable peer strip; whole-model mode takes more machines while their
+  ranges cover every layer, one machine only under an inference service)
 - `/deployments` -> Deployments, full-bleed like Logs: the same
   `DeploymentInspector` from the deploy screen opens on the right, in read-only
   mode, with the parameters of the chosen version

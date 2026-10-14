@@ -9,7 +9,7 @@
  * deploy screen offers it next to llama.cpp, limited to the machines that run
  * it and to the models of those architectures.
  */
-import type { EngineSetting, PeerView, PluginService } from "./types";
+import type { EngineSetting, PeerView, PluginService, PomSetting } from "./types";
 
 export interface InferenceServiceEntry {
   /** The plugin code, what `RuntimeParams.inference_service` carries. */
@@ -18,6 +18,8 @@ export interface InferenceServiceEntry {
   architectures: string[];
   /** The settings its engine takes (the first machine that publishes them). */
   settings: EngineSetting[];
+  /** The POM deployment settings that apply to its engine, as it declares them. */
+  pomSettings: PomSetting[];
   /** Machines that run it and can take a model (not in error). */
   nodeIds: string[];
   /** Its engine also runs layer slices across machines. */
@@ -45,11 +47,15 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
         name: service.name,
         architectures: [],
         settings: [],
+        pomSettings: [],
         nodeIds: [],
         stages: false,
       };
       if (service.stages) entry.stages = true;
       if (entry.settings.length === 0 && service.settings?.length) entry.settings = service.settings;
+      for (const setting of service.pom_settings ?? []) {
+        if (!entry.pomSettings.includes(setting)) entry.pomSettings.push(setting);
+      }
       for (const architecture of service.architectures ?? []) {
         if (!entry.architectures.includes(architecture)) entry.architectures.push(architecture);
       }
@@ -74,8 +80,13 @@ export function serviceRunsModel(service: InferenceServiceEntry, architecture: s
 export function engineOfParams(
   inferenceService: string | null | undefined,
   catalog: InferenceServiceEntry[],
-): { code: string; name: string; settings: EngineSetting[] } | null {
+): { code: string; name: string; settings: EngineSetting[]; pomSettings: PomSetting[] } | null {
   if (!inferenceService) return null;
   const entry = catalog.find((service) => service.code === inferenceService);
-  return { code: inferenceService, name: entry?.name ?? inferenceService, settings: entry?.settings ?? [] };
+  return {
+    code: inferenceService,
+    name: entry?.name ?? inferenceService,
+    settings: entry?.settings ?? [],
+    pomSettings: entry?.pomSettings ?? [],
+  };
 }

@@ -403,7 +403,10 @@ that shape; the deploy inspector draws them, an empty field keeps the
 engine's default, and the values travel in `RuntimeParams.engine_settings` to
 `engine.load` (`params.settings`), where the plugin validates them. A service
 that also runs POM layer slices, one stage per machine, publishes
-`stages: true`. Such a
+`stages: true`, and lists in `pom_settings` the POM deployment settings that
+apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks` and
+`hidden_state_dtype` are the known ones, any other name is dropped. The deploy
+inspector draws only the declared ones, in their own card. Such a
 plugin implements four operations the node calls through its own local host,
 never from another machine or a browser: `engine.load` (`params`:
 `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus`,

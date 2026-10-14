@@ -265,6 +265,10 @@ describe("DeployModel · plugin inference service", () => {
     const add = await screen.findByRole("button", { name: /ksia RTT/ });
     fireEvent.click(add);
     expect(screen.queryByRole("button", { name: /salem RTT/ })).toBeNull();
+    // GPU layers and the KV cache on the GPU are llama.cpp's: not offered for the plugin's engine.
+    await screen.findByRole("button", { name: /Remover ksia da implantação/ });
+    expect(screen.queryByRole("spinbutton", { name: "Camadas na GPU" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "KV cache na GPU" })).toBeNull();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
     expect(await screen.findByText("Configurações do Strata")).toBeTruthy();

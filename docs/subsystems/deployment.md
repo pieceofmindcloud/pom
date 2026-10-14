@@ -32,6 +32,14 @@ adjacent slices on one machine). `selection` travels in the request because
 if it no longer holds - the screen's copy can be a minute old, and a machine
 that left the cluster cannot receive a slice.
 
+Before copying anything, the deploy releases the machines that already serve
+the same model, proven by identity (`prepare_existing_model`), and waits for
+them to become idle. `keep_existing: true` limits that release to the machines
+of the plan: the others keep their deployment, which stays in service beside
+the new one. A machine of the plan is always taken over, whatever it serves,
+because a node holds one model at a time. The deploy screen asks the operator
+about both cases before sending the request.
+
 The request also accepts `deployment_name` (an operational name separate from
 `group`), `strategy: "simple" | "complete"` and `preferred_node_ids`. An empty
 name uses the model name and names longer than 128 characters are refused.
@@ -318,6 +326,10 @@ only the machines that run it in the peer strip. Its
 inspector shows the settings the engine reads (context, concurrent requests,
 idle unloading) and the engine's own settings, as the service publishes them
 (`components/EngineSettings.tsx`); those go in `RuntimeParams.engine_settings`.
+The POM settings the service declares in `pom_settings` (in-flight prefill
+chunks, hidden-state precision) are shown in a separate "POM settings" card
+when its slices cross machines. The per-machine GPU layers and KV cache on the
+GPU are llama.cpp's and are not offered.
 
 `POST /api/ui/deploy` (and the preview, when the screen sends the service in
 `params`) refuses such a deployment unless it is a whole model on exactly one

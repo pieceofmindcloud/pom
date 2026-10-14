@@ -1081,12 +1081,22 @@ export interface DeploymentNode {
  * deployment (`params`). Per-machine adjustments go into the `nodes` snapshot
  * but do not fork a version.
  */
+/** One machine's own values for the fields it may set (`src/models/deployment.rs`, `NodeOverrides`). Absent = inherited. */
+export interface NodeOverrides {
+  n_ctx?: number;
+  max_sessions?: number;
+  n_gpu_layers?: number;
+  offload_kqv?: boolean;
+}
+
 export interface DeploymentVersion {
   version: number;
   created_at: string;
   created_by: string;
   params: RuntimeParams;
   nodes: DeploymentNode[];
+  /** The active version's per-machine overrides, by `node_id`. */
+  overrides?: Record<string, NodeOverrides>;
 }
 
 /**

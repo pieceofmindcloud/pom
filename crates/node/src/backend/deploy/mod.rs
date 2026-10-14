@@ -80,6 +80,7 @@ const MIB: u64 = 1024 * 1024;
 
 mod launch;
 mod lifecycle;
+mod overrides;
 mod node;
 mod planning;
 mod preview;

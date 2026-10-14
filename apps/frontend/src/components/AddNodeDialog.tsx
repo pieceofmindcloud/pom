@@ -57,6 +57,9 @@ export function AddNodeDialog({
   const [cacheTypes, setCacheTypes] = useState<CacheTypesResponse | null>(null);
   const [nGpuLayers, setNGpuLayers] = useState(99);
   const [offloadKqv, setOffloadKqv] = useState(true);
+  // Optional: empty = the deployment's value, which the new machine inherits.
+  const [nCtx, setNCtx] = useState("");
+  const [maxSessions, setMaxSessions] = useState("");
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +77,8 @@ export function AddNodeDialog({
       setCacheTypes(null);
       setNGpuLayers(99);
       setOffloadKqv(true);
+      setNCtx("");
+      setMaxSessions("");
       setError(null);
     }
     wasOpen.current = open;
@@ -145,6 +150,14 @@ export function AddNodeDialog({
         end_layer: option.end_layer,
         n_gpu_layers: nGpuLayers,
         offload_kqv: offloadKqv,
+        ...(nCtx.trim() !== "" || maxSessions.trim() !== ""
+          ? {
+              overrides: {
+                ...(nCtx.trim() !== "" ? { n_ctx: Number(nCtx) } : {}),
+                ...(maxSessions.trim() !== "" ? { max_sessions: Number(maxSessions) } : {}),
+              },
+            }
+          : {}),
         ...(cacheTypes
           ? {
               cache_type_k: cacheTypes.cache_type_k,
@@ -226,6 +239,26 @@ export function AddNodeDialog({
                   <option value="gpu">{t("deploy.kvOnGpu")}</option>
                   <option value="cpu">{t("deploy.kvInRam")}</option>
                 </select>
+              </label>
+              <label className="flex items-center justify-between gap-3 text-xs text-muted">
+                <span>{t("deploy.addNodeCtx")}</span>
+                <input
+                  className="w-24 rounded-md border border-line bg-surface px-2 py-1 text-right font-mono text-xs text-fg"
+                  type="number"
+                  min={1}
+                  value={nCtx}
+                  onChange={(event) => setNCtx(event.target.value)}
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 text-xs text-muted">
+                <span>{t("deploy.addNodeSessions")}</span>
+                <input
+                  className="w-24 rounded-md border border-line bg-surface px-2 py-1 text-right font-mono text-xs text-fg"
+                  type="number"
+                  min={1}
+                  value={maxSessions}
+                  onChange={(event) => setMaxSessions(event.target.value)}
+                />
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <label className="flex flex-col gap-1 text-xs text-muted">

@@ -501,6 +501,8 @@ deploy.addNodeCacheK,KV cache K,Cache KV K
 deploy.addNodeCacheV,KV cache V,Cache KV V
 deploy.addNodeKvPlacement,KV cache location,Local do cache KV
 deploy.addNodeLoading,Loading this machine catalog…,Carregando o catálogo desta máquina…
+deploy.addNodeCtx,Context (empty = the deployment's),Contexto (vazio = o da implantação)
+deploy.addNodeSessions,Sessions (empty = the deployment's),Sessões (vazio = o da implantação)
 deploy.addNodeMachine,Machine,Máquina
 deploy.addNodeMachineOptions,Machine options,Opções da máquina
 deploy.addNodeSlice,Slice,Fatia
@@ -896,6 +898,19 @@ deployments.version,v{n},v{n}
 deployments.versionCount,"{count, plural, =1 {1 version} other {{count} versions}}","{count, plural, =1 {1 versão} other {{count} versões}}"
 deployments.versionPick,See the properties of version {n},Ver as propriedades da versão {n}
 deployments.versionProperties,Version {n} properties,Propriedades da versão {n}
+deployments.nodesTitle,Machines,Máquinas
+deployments.nodeOwn,own values,valores próprios
+deployments.nodeInherited,inherited,herdado
+deployments.nodeInheritChoice,Inherit from the version,Herdar da versão
+deployments.nodeOverridesHint,Changing {machine}'s own values reloads only this machine. The other machines keep the version's values.,Mudar os valores próprios de {machine} recarrega só esta máquina. As outras mantêm os valores da versão.
+deployments.nodeOverrideCtx,Context (n_ctx),Contexto (n_ctx)
+deployments.nodeOverrideSessions,Sessions (max_sessions),Sessões (max_sessions)
+deployments.nodeOverrideGpuLayers,GPU layers (n_gpu_layers),Camadas na GPU (n_gpu_layers)
+deployments.nodeOverrideKv,KV cache placement,Colocação do cache KV
+deployments.nodeOverrideReset,Back to the version's values,Voltar aos valores da versão
+deployments.nodeOverrideSave,Apply to this machine,Aplicar a esta máquina
+deployments.nodeOverrideDone,The machine reloaded with its own values.,A máquina recarregou com os valores próprios.
+deployments.nodeOverrideFailed,The machine did not accept the change: {error},A máquina não aceitou a mudança: {error}
 deployments.versionPropertiesHint,"The parameters this version was deployed with. To change them, redeploy with new parameters.","Os parâmetros com que esta versão foi implantada. Para mudá-los, reimplante com novos parâmetros."
 deployments.versionRedeployStarted,Re-deploying v{n},Reimplantando a v{n}
 deployments.versions,Versions,Versões

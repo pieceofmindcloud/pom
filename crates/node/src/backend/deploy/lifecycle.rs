@@ -1025,6 +1025,11 @@ pub(super) async fn run_redeploy(
         // a version redeploy gives each machine back exactly what
         // it was running. `req.per_node` re-applies on top what the screen changed.
         let mut params = no.config.clone();
+        // This machine's own overrides (the version keeps them) apply on top of what it runs with.
+        let own = record.node_overrides(&no.node_id);
+        if !own.is_empty() {
+            params = own.apply(&params);
+        }
         if let Some(adjustment) = req.per_node.get(&no.node_id) {
             if let Some(g) = adjustment.n_gpu_layers {
                 params.n_gpu_layers = g;
@@ -1214,6 +1219,11 @@ pub(super) async fn run_redeploy_in_place(
 
         // See `run_redeploy`: `no.config` is the effective configuration of the version.
         let mut params = no.config.clone();
+        // This machine's own overrides (the version keeps them) apply on top of what it runs with.
+        let own = record.node_overrides(&no.node_id);
+        if !own.is_empty() {
+            params = own.apply(&params);
+        }
         if let Some(adjustment) = req.per_node.get(&no.node_id) {
             if let Some(g) = adjustment.n_gpu_layers {
                 params.n_gpu_layers = g;

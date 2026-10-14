@@ -31,6 +31,7 @@ import { engineOfParams, inferenceServiceCatalog } from "../lib/inferenceService
 import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
 import { DeploymentInspector } from "../components/DeploymentInspector";
+import { NodeOverridesPanel } from "../components/NodeOverridesPanel";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import {
   Badge,
@@ -47,6 +48,17 @@ import { useI18n } from "../i18n/provider";
 
 /** Which version of which deployment is open in the inspector on the right. */
 type Inspected = { deployId: string; version: DeploymentVersion };
+
+/** A version as the list holds it now (the record of a version does not change, but its overrides do). */
+function findVersion(
+  deployments: { deployment: { deploy_id: string; versions: DeploymentVersion[] } }[],
+  deployId: string,
+  version: number,
+): DeploymentVersion | undefined {
+  return deployments
+    .find((row) => row.deployment.deploy_id === deployId)
+    ?.deployment.versions.find((v) => v.version === version);
+}
 
 /** The redeploy being edited on the right: of which deployment, starting from which values. */
 type Editing = { deployId: string; seed: RuntimeParams; fromVersion: number };
@@ -480,6 +492,68 @@ function Row({
   );
 }
 
+/**
+ * The machines of the version on the right: one button per machine, and the selected one's own values
+ * (`NodeOverridesPanel`). A machine with its own values is marked.
+ */
+function MachinesSection({
+  deployId,
+  version,
+  selected,
+  onSelect,
+  onSaved,
+}: {
+  deployId: string;
+  version: DeploymentVersion;
+  selected: string | null;
+  onSelect: (nodeId: string | null) => void;
+  onSaved: () => void;
+}) {
+  const { t } = useI18n();
+  const node = version.nodes.find((n) => n.node_id === selected);
+  return (
+    <div className="grid gap-2 border-t border-line px-2 py-2">
+      <p className="eyebrow">{t("deployments.nodesTitle")}</p>
+      <div className="grid gap-1">
+        {version.nodes.map((n) => {
+          const active = selected === n.node_id;
+          const own = Object.keys(version.overrides?.[n.node_id] ?? {}).length > 0;
+          return (
+            <button
+              key={n.node_id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onSelect(active ? null : n.node_id)}
+              className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1 text-left text-xs ${
+                active ? "border-iris text-fg" : "border-line text-muted"
+              }`}
+            >
+              <span className="truncate">
+                {n.hostname || n.node_id.slice(0, 12)}{" "}
+                <span className="font-mono text-faint">
+                  {n.start_layer}-{n.end_layer}
+                </span>
+              </span>
+              {own && <span className="shrink-0 text-[0.6rem] text-amber">{t("deployments.nodeOwn")}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {node && (
+        <NodeOverridesPanel
+          key={node.node_id}
+          deployId={deployId}
+          nodeId={node.node_id}
+          hostname={node.hostname}
+          versionParams={version.params}
+          overrides={version.overrides?.[node.node_id] ?? {}}
+          onSaved={onSaved}
+        />
+      )}
+    </div>
+  );
+}
+
 export function Deployments() {
   const { t } = useI18n();
   const { data, isLoading } = useDeployments();
@@ -492,18 +566,26 @@ export function Deployments() {
    * again on every refresh of the list.
    */
   const [inspected, setInspected] = useState<Inspected | null>(null);
+  const invalidate = useInvalidate();
   const engineCatalog = useEngineCatalog();
   const inspectedEngine = engineOfParams(inspected?.version.params.inference_service, engineCatalog);
   // The right side shows one thing at a time: the version being read or the redeploy.
   const [editing, setEditing] = useState<Editing | null>(null);
+  // The machine whose own values the properties panel shows (`NodeOverridesPanel`).
+  const [machine, setMachine] = useState<string | null>(null);
   const inspect = (next: Inspected | null) => {
     setEditing(null);
+    setMachine(null);
     setInspected(next);
   };
   const edit = (deployId: string, version: DeploymentVersion | undefined, fallback: RuntimeParams, fromVersion: number) => {
     setInspected(null);
     setEditing({ deployId, seed: version?.params ?? fallback, fromVersion: version?.version ?? fromVersion });
   };
+  // The copy taken when the panel opened goes stale once a machine's values change: read the version from the list.
+  const liveVersion = inspected
+    ? findVersion(data?.deployments ?? [], inspected.deployId, inspected.version.version) ?? inspected.version
+    : null;
   const rows = [...(data?.deployments ?? [])].sort((a, b) => {
     const aTime = Date.parse(a.deployment.activated_at);
     const bTime = Date.parse(b.deployment.activated_at);
@@ -615,12 +697,19 @@ export function Deployments() {
               inventing a record nobody kept.
             */}
             <DeploymentInspector
-              value={inspected.version.params}
+              value={liveVersion?.params ?? inspected.version.params}
               readOnly
               showInferenceMode
               pomDevMode={pomDevMode}
-              showHiddenStateDtype={inspected.version.params.hidden_state_dtype != null}
+              showHiddenStateDtype={(liveVersion?.params ?? inspected.version.params).hidden_state_dtype != null}
               inferenceService={inspectedEngine ?? undefined}
+            />
+            <MachinesSection
+              deployId={inspected.deployId}
+              version={liveVersion ?? inspected.version}
+              selected={machine}
+              onSelect={setMachine}
+              onSaved={() => invalidate()}
             />
             <div className="sticky bottom-0 flex justify-end border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
               <Button

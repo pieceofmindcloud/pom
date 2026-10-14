@@ -70,6 +70,10 @@ pub struct AddNodeRequest {
     pub n_gpu_layers: Option<u32>,
     #[serde(default)]
     pub offload_kqv: Option<bool>,
+    /// The new machine's own parameters (context, sessions, GPU layers, KV placement). They launch this machine only;
+    /// the deployment's version keeps its parameters.
+    #[serde(default)]
+    pub overrides: Option<crate::deployment::NodeOverrides>,
     /// Install values of the target, applied before the new process
     /// comes up. They are optional for old clients, which keep the config
     /// already persisted on the peer.
@@ -406,6 +410,12 @@ pub(super) async fn add_node_endpoint(
                 .and_then(|record| record.active().map(|version| version.params.clone()))
         })
         .unwrap_or_default();
+    let overrides = req.overrides.clone().unwrap_or_default();
+    if let Err(message) = overrides.validate() {
+        return bad(json!({ "error": message }));
+    }
+    // The new machine launches with its own parameters; the deployment's version keeps the base ones.
+    let node_params = overrides.apply(&params);
 
     // Re-surveys instead of trusting the screen: the preview may be a minute old, and a
     // machine that left in the meantime would receive a slice.
@@ -524,7 +534,7 @@ pub(super) async fn add_node_endpoint(
             } else {
                 None
             },
-            params: params.clone(),
+            params: node_params.clone(),
         }),
     )
     .await;
@@ -581,9 +591,14 @@ pub(super) async fn add_node_endpoint(
             source_model_path: (!target.source_model_path.is_empty())
                 .then(|| target.source_model_path.clone()),
             tp_rank: None,
-            config: crate::webui::params_for(&params, &target),
+            config: crate::webui::params_for(&node_params, &target),
         });
         let version = record.append_version(params, nodes, state.network.node_id.as_str());
+        if !overrides.is_empty() {
+            if let Err(e) = record.set_node_overrides(&target_node_id, overrides.clone()) {
+                warn!("add node: the overrides of {target_node_id} were not recorded: {e}");
+            }
+        }
         publish_record(&state, &record).await;
         (Some(version), record.kind)
     } else {

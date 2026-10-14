@@ -167,6 +167,60 @@ pub struct DeploymentVersion {
     pub params: crate::webui::RuntimeParams,
     /// Who received which range and with what effective configuration, in this version.
     pub nodes: Vec<DeploymentNode>,
+    /// One machine's changes to `params` (by `node_id`): a field set here wins over the version's value for that machine
+    /// only. Changing one edits this version in place; a version that starts from another one keeps the overrides of
+    /// the machines it still has.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub overrides: std::collections::BTreeMap<String, NodeOverrides>,
+}
+
+/// The fields of a deployment's parameters that one machine may set for itself. A field left out inherits the version's
+/// value. Changing one reloads that machine with the merged parameters (`reconfigure`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NodeOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_ctx: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_sessions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_gpu_layers: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload_kqv: Option<bool>,
+}
+
+impl NodeOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.n_ctx.is_none() && self.max_sessions.is_none() && self.n_gpu_layers.is_none() && self.offload_kqv.is_none()
+    }
+
+    /// The parameters this machine runs with: `params` with its own fields in place.
+    pub fn apply(&self, params: &crate::webui::RuntimeParams) -> crate::webui::RuntimeParams {
+        let mut merged = params.clone();
+        if let Some(v) = self.n_ctx {
+            merged.n_ctx = v;
+        }
+        if let Some(v) = self.max_sessions {
+            merged.max_sessions = v;
+        }
+        if let Some(v) = self.n_gpu_layers {
+            merged.n_gpu_layers = v;
+        }
+        if let Some(v) = self.offload_kqv {
+            merged.offload_kqv = v;
+        }
+        merged
+    }
+
+    /// Refuses values the engine cannot run with, before anything is reloaded.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.n_ctx == Some(0) {
+            return Err("n_ctx must be at least 1".into());
+        }
+        if self.max_sessions == Some(0) {
+            return Err("max_sessions must be at least 1".into());
+        }
+        Ok(())
+    }
 }
 
 /// The record of a deployment.
@@ -228,6 +282,7 @@ impl Deployment {
                 created_by,
                 params: crate::webui::RuntimeParams::default(),
                 nodes: nodes.clone(),
+                overrides: Default::default(),
             }],
             active_version: 1,
             nodes,
@@ -252,6 +307,53 @@ impl Deployment {
         self.versions
             .iter()
             .find(|v| v.version == self.active_version)
+    }
+
+    /// The overrides of the machines that `nodes` still holds, from the active version.
+    fn carried_overrides(
+        &self,
+        nodes: &[DeploymentNode],
+    ) -> std::collections::BTreeMap<String, NodeOverrides> {
+        let active = self.active_version;
+        self.versions
+            .iter()
+            .find(|v| v.version == active)
+            .map(|v| {
+                v.overrides
+                    .iter()
+                    .filter(|(node_id, _)| nodes.iter().any(|n| &n.node_id == *node_id))
+                    .map(|(node_id, o)| (node_id.clone(), o.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// One machine's overrides in the active version (empty when it has none).
+    pub fn node_overrides(&self, node_id: &str) -> NodeOverrides {
+        let active = self.active_version;
+        self.versions
+            .iter()
+            .find(|v| v.version == active)
+            .and_then(|v| v.overrides.get(node_id).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Sets one machine's overrides in the active version. Empty removes them. It edits the version in place: a change
+    /// of overrides is not a new version. Error if the machine is not in the deployment.
+    pub fn set_node_overrides(&mut self, node_id: &str, overrides: NodeOverrides) -> Result<()> {
+        self.ensure_versions();
+        if !self.nodes.iter().any(|n| n.node_id == node_id) {
+            bail!("the machine {node_id} is not in this deployment");
+        }
+        let active = self.active_version;
+        if let Some(v) = self.versions.iter_mut().find(|v| v.version == active) {
+            if overrides.is_empty() {
+                v.overrides.remove(node_id);
+            } else {
+                v.overrides.insert(node_id.to_owned(), overrides);
+            }
+        }
+        Ok(())
     }
 
     /// Writes `self.nodes` back into the active version's snapshot. Used after
@@ -292,6 +394,7 @@ impl Deployment {
                 .map(|n| n.config.clone())
                 .unwrap_or_default(),
             nodes: self.nodes.clone(),
+            overrides: Default::default(),
         });
         self.active_version = 1;
     }
@@ -330,12 +433,14 @@ impl Deployment {
             }
             None => {
                 let number = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
+                let overrides = self.carried_overrides(&nodes);
                 self.versions.push(DeploymentVersion {
                     version: number,
                     created_at: now.clone(),
                     created_by: created_by.into(),
                     params,
                     nodes,
+                    overrides,
                 });
                 number
             }
@@ -361,12 +466,14 @@ impl Deployment {
         self.ensure_versions();
         let now = chrono::Utc::now().to_rfc3339();
         let number = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
+        let overrides = self.carried_overrides(&nodes);
         self.versions.push(DeploymentVersion {
             version: number,
             created_at: now.clone(),
             created_by: created_by.into(),
             params,
             nodes,
+            overrides,
         });
         self.active_version = number;
         self.activated_at = now;
@@ -798,6 +905,44 @@ mod tests {
         // Idempotent.
         d.ensure_versions();
         assert_eq!(d.versions.len(), 1);
+    }
+
+    #[test]
+    fn node_overrides_apply_only_the_fields_they_set() {
+        let base = params_with_ctx(8192);
+        let merged = NodeOverrides { n_ctx: Some(4096), offload_kqv: Some(false), ..Default::default() }.apply(&base);
+        assert_eq!(merged.n_ctx, 4096);
+        assert!(!merged.offload_kqv);
+        assert_eq!(merged.max_sessions, base.max_sessions, "a field left out inherits the version's value");
+        assert!(NodeOverrides::default().is_empty());
+        assert!(NodeOverrides { n_ctx: Some(0), ..Default::default() }.validate().is_err());
+        assert!(NodeOverrides { max_sessions: Some(0), ..Default::default() }.validate().is_err());
+    }
+
+    #[test]
+    fn a_machine_override_edits_the_active_version_without_forking_it() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1), no("n2", 32, 47, 1, 1)]);
+        d.set_node_overrides("n1", NodeOverrides { n_ctx: Some(2048), ..Default::default() }).unwrap();
+        assert_eq!(d.versions.len(), 1, "a change of overrides is not a new version");
+        assert_eq!(d.node_overrides("n1").n_ctx, Some(2048));
+        assert!(d.node_overrides("n2").is_empty());
+        // clearing removes them
+        d.set_node_overrides("n1", NodeOverrides::default()).unwrap();
+        assert!(d.node_overrides("n1").is_empty());
+        // a machine that is not in the deployment is refused
+        assert!(d.set_node_overrides("ghost", NodeOverrides { n_ctx: Some(1), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn a_new_version_keeps_the_overrides_of_the_machines_it_still_has() {
+        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.set_node_overrides("n1", NodeOverrides { max_sessions: Some(4), ..Default::default() }).unwrap();
+        let params = d.active().unwrap().params.clone();
+        let nodes = vec![no("n1", 0, 31, 0, 1), no("n2", 0, 31, 0, 1)];
+        let v = d.append_version(params, nodes, "operador");
+        assert_eq!(v, 2);
+        assert_eq!(d.node_overrides("n1").max_sessions, Some(4), "the machine kept its override");
+        assert!(d.node_overrides("n2").is_empty());
     }
 
     #[test]

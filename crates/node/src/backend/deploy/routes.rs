@@ -19,6 +19,10 @@ pub fn routes() -> Router<GatewayState> {
             post(activate_deployment),
         )
         .route("/api/ui/deployments/:id/redeploy", post(redeploy_endpoint))
+        .route(
+            "/api/ui/deployments/:id/nodes/:node_id/overrides",
+            post(super::overrides::node_overrides_endpoint),
+        )
 }
 
 // ── The deployment record ────────────────────────────────────────────────────

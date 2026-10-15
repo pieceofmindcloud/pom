@@ -195,9 +195,13 @@ last):
     regenerate the key, slots), admissions, network settings and their
     fan-out, TLS/QUIC/logs policy, the trust share, slice release, the KV
     cache, sidecar links, the cluster log. A secondary cannot demote itself:
-    demotion is a principal route. API keys of other nodes are synced only
-    under the principal's signature (`require_signed_principal`); a node's
-    own chat key is unchanged. The one signature a secondary still gives is
+    demotion is a principal route. API keys of other nodes are minted and
+    revoked only under the principal's signature (`require_signed_principal`);
+    what a node keeps for itself is the key **bound to its own machine** -
+    `node_id` and `origin_node_id` both naming the signer, whatever the label.
+    That is the class the route `/admin/api-keys` opened to every profile
+    (`f74b4a01`): the token the machine's own `/v1` demands, and the same
+    class it may take back. The one signature a secondary still gives is
     its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
@@ -252,6 +256,14 @@ last):
   node-to-node calls authenticated by the `connection_key` and the internal
   marker. The central registry keeps `origin_node_id`; create and revoke
   notifications are idempotent and have three attempts with a bounded timeout.
+  `upsert` and `revoke` accept the principal's signature or a key **bound to
+  the signer itself** (`is_self_owned_key`, and the same class on the revoke:
+  the registry answers by id or by the hash presented, so the ownership
+  question is answerable for a key already inactive). A revoke asks the
+  principal **before** touching the local replica: revoking first let a node
+  that is not the principal empty its own copy, get refused there, and answer
+  a failure while the key stayed active on the principal - two registries
+  disagreeing about the same token.
 - **UI** (`webapp.rs`): `GET /` redirects to `/admin-ui/`, which serves the
   bundle from disk (`config::ui_dist_dir()`); assets and SPA routes live under
   that mount. `API_PREFIXES` is the list of path prefixes that are never handed

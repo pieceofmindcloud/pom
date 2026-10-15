@@ -215,8 +215,9 @@ breaks the whole product.
   of the trust chain, routes of a serving node take a peer that is not an
   inference node, and the connection key alone opens none of them - every member
   holds it. **A secondary admin deploys and undeploys models and nothing else**:
-  members, admissions, settings, keys and every change to the trust chain come
-  from the principal, on the screen and between nodes. The role is granted at
+  members, admissions, settings, the keys of **other** machines and every change to
+  the trust chain come from the principal, on the screen and between nodes; what each
+  machine keeps for itself is the key bound to its own node. The role is granted at
   admission; on the principal a machine admitted as an inference node stays one
   whatever it announces. → `http-api.md`
 - **Plugins are independent of each other and are a process boundary.** POM no

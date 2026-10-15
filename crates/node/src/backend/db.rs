@@ -412,6 +412,23 @@ impl PomDb {
         })
     }
 
+    /// The key a revoke names, by id or by the hash of the token presented.
+    /// Inactive rows count: revoking is idempotent, and the question "whose key
+    /// is this?" must be answerable for a key that is already gone.
+    pub fn api_key_by_id_or_hash(&self, key_or_id: &str) -> Result<Option<ApiKey>> {
+        let presented_hash = crate::auth::api_key_hash(key_or_id);
+        self.with_read("look up the key a revoke names", |connection| {
+            connection
+                .query_row(
+                    &format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE id = ? OR key_hash = ?"),
+                    params![key_or_id, presented_hash],
+                    api_key_from_row,
+                )
+                .optional()
+                .context("look up the key a revoke names")
+        })
+    }
+
     pub fn active_api_key_named(&self, label: &str, node_id: &str) -> Result<Option<ApiKey>> {
         self.with_read("look up named API key", |connection| {
             connection

@@ -459,17 +459,40 @@ async fn require_signed_principal(
         .is_some_and(|issuer| crate::gateway::issuer_is_principal(state, issuer))
 }
 
-/// A public-network node may mint exactly one class of key without being an
-/// administrator: its own browser/chat key. The key is still carried over a
-/// signed control request, so the primary can bind it to the authenticated
-/// node identity without granting that node any administrative mutation.
-fn is_self_owned_chat_key(key: &ApiKey, issuer: &AuthorityPrincipal) -> bool {
+/// A node mints exactly one class of key without being the principal: a key
+/// bound to itself. The key travels over a signed control request, so the
+/// principal can bind it to the authenticated node identity without granting
+/// that node any administrative mutation. Keys of **other** machines are the
+/// principal's to issue.
+///
+/// The label is not part of the judgement: `pom-<node_id>` is the internal
+/// chat key, and a harness token the node issues for itself is the same
+/// class. What makes a key self-owned is that both ends name the issuer.
+fn is_self_owned_key(key: &ApiKey, issuer: &AuthorityPrincipal) -> bool {
     key.active
         && !key.id.trim().is_empty()
         && !key.key_hash.trim().is_empty()
         && key.node_id == issuer.node_id
         && key.origin_node_id == issuer.node_id
-        && key.label == format!("pom-{}", issuer.node_id)
+}
+
+/// Whose key a revoke names. The registry answers by id or by the hash of the
+/// token presented, and the ownership question must be answerable for a key
+/// that is already inactive: revoking is idempotent.
+fn revoke_names_self_owned_key(
+    state: &crate::gateway::GatewayState,
+    request: &RevokeRequest,
+    issuer: &AuthorityPrincipal,
+) -> bool {
+    state
+        .database
+        .api_key_by_id_or_hash(&request.key_or_id)
+        .ok()
+        .flatten()
+        .is_some_and(|key| {
+            key.node_id == issuer.node_id
+                && (key.origin_node_id.is_empty() || key.origin_node_id == issuer.node_id)
+        })
 }
 
 #[derive(Debug, Serialize)]
@@ -700,10 +723,10 @@ async fn internal_upsert_api_key(
     Json(key): Json<ApiKey>,
 ) -> impl IntoResponse {
     let admin = require_signed_principal(&state, &auth).await;
-    let self_owned_chat_key = auth
+    let self_owned_key = auth
         .principal()
-        .is_some_and(|issuer| is_self_owned_chat_key(&key, issuer));
-    if !(admin || self_owned_chat_key) || key.key_hash.is_empty() || key.id.is_empty() {
+        .is_some_and(|issuer| is_self_owned_key(&key, issuer));
+    if !(admin || self_owned_key) || key.key_hash.is_empty() || key.id.is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
     if let Err(error) = state.database.insert_api_key(&key) {
@@ -729,7 +752,14 @@ async fn internal_revoke_api_key(
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeRequest>,
 ) -> impl IntoResponse {
-    if !require_signed_principal(&state, &auth).await {
+    let principal = require_signed_principal(&state, &auth).await;
+    // A node takes back the same class of key it may mint: one bound to itself.
+    // Without this a machine could issue a token for its own `/v1` and never
+    // remove it.
+    let own_key = auth
+        .principal()
+        .is_some_and(|issuer| revoke_names_self_owned_key(&state, &request, issuer));
+    if !(principal || own_key) {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
@@ -1890,9 +1920,9 @@ pub(crate) async fn chat_key(
 }
 
 /// The API key this node uses to call its own `/v1`: the interface's Chat one
-/// and the one handed to plugins (`host.configure`). It is the only class of
-/// key that a node without administrative authority can register on the principal
-/// (`is_self_owned_chat_key`), which is why plugins do not get one of their own.
+/// and the one handed to plugins (`host.configure`). It belongs to the class of
+/// key a node may register on the principal without administrative authority
+/// (`is_self_owned_key`), which is why plugins do not get one of their own.
 /// Returns the key and whether it was just created.
 ///
 /// The secret stays in the node's local vault (`PomDb::node_api_key`); the record
@@ -1946,6 +1976,14 @@ async fn revoke_api_key(
     // A connection key identifies an operator role, not a human account. The
     // node id is the honest actor identity available at this boundary.
     let revoked_by = state.network.node_id.clone();
+    // The principal first. Revoking locally before the registry answers let a
+    // node that is not the principal empty its own replica, get refused there,
+    // and report a failure while the key stayed active on the principal - the
+    // two registries disagreeing about the same token.
+    if let Err(error) = notify_key_revoked(&state, &key, &revoked_by).await {
+        tracing::warn!("central revocation of the API key failed: {error:#}");
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let existed = match state.database.revoke_api_key(&key, &revoked_by) {
         Ok(existed) => existed,
         Err(error) => {
@@ -1957,10 +1995,6 @@ async fn revoke_api_key(
                 .into_response();
         }
     };
-    if let Err(error) = notify_key_revoked(&state, &key, &revoked_by).await {
-        tracing::warn!("central revocation of the API key failed: {error:#}");
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
     let _ = refresh_api_key_snapshot(&state).await;
     Json(json!({ "revoked": existed })).into_response()
 }
@@ -2113,7 +2147,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_can_register_only_its_own_chat_key() {
+    fn a_node_can_register_only_a_key_bound_to_itself() {
         let issuer = AuthorityPrincipal {
             node_id: "worker".into(),
             peer_id: "peer-worker".into(),
@@ -2129,17 +2163,31 @@ mod tests {
             active: true,
             created_at: String::new(),
         };
-        assert!(is_self_owned_chat_key(&own, &issuer));
+        assert!(is_self_owned_key(&own, &issuer));
+
+        // The label is not the boundary: a harness token the node issues for
+        // its own `/v1` is the same class as its chat key.
+        let mut harness = own.clone();
+        harness.id = "harness-id".into();
+        harness.label = "para o harness".into();
+        assert!(is_self_owned_key(&harness, &issuer));
 
         let mut other_node = own.clone();
         other_node.node_id = "other".into();
         other_node.origin_node_id = "other".into();
         other_node.label = "pom-other".into();
-        assert!(!is_self_owned_chat_key(&other_node, &issuer));
+        assert!(!is_self_owned_key(&other_node, &issuer));
+
+        // Minting on behalf of another machine while naming oneself as the
+        // origin is the same forgery in the other direction.
+        let mut borrowed = own.clone();
+        borrowed.id = "borrowed-id".into();
+        borrowed.node_id = "other".into();
+        assert!(!is_self_owned_key(&borrowed, &issuer));
 
         let mut inactive = own;
         inactive.active = false;
-        assert!(!is_self_owned_chat_key(&inactive, &issuer));
+        assert!(!is_self_owned_key(&inactive, &issuer));
     }
 
     #[tokio::test]
@@ -2194,6 +2242,133 @@ mod tests {
         .await
         .into_response();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A secondary admin is not the principal, so its mint travels to the
+    /// principal signed by itself. The principal accepts the key because it is
+    /// bound to the secondary's own machine, not because of the label: this is
+    /// the token that machine's `/v1` demands, and `f74b4a01` opened the route
+    /// precisely so every profile could issue it.
+    #[tokio::test]
+    async fn a_secondary_admin_registers_a_key_for_its_own_machine() {
+        let state = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        assert_eq!(state.admin_trust.current_primary().node_id, "primary");
+        let issuer = state.authority_principal.clone();
+
+        let harness = ApiKey {
+            id: "harness-id".into(),
+            key_hash: crate::auth::api_key_hash("sk-harness"),
+            key_hint: crate::auth::api_key_hint("sk-harness"),
+            label: "harness".into(),
+            node_id: "secondary".into(),
+            origin_node_id: "secondary".into(),
+            active: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let response = internal_upsert_api_key(
+            InternalNodeAuth {
+                principal: Some(issuer.clone()),
+            },
+            State(state.clone()),
+            Json(harness.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(state
+            .database
+            .api_key_for_hash(&harness.key_hash)
+            .unwrap()
+            .is_some());
+
+        // A key of another machine is still the principal's to issue.
+        let mut for_another = harness;
+        for_another.id = "other-id".into();
+        for_another.key_hash = crate::auth::api_key_hash("sk-other");
+        for_another.node_id = "another".into();
+        for_another.origin_node_id = "secondary".into();
+        let response = internal_upsert_api_key(
+            InternalNodeAuth {
+                principal: Some(issuer),
+            },
+            State(state),
+            Json(for_another),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The revoke accepts the same class the mint does. Without it a machine
+    /// could issue a token for its own `/v1` and never take it back.
+    #[tokio::test]
+    async fn a_secondary_admin_revokes_a_key_of_its_own_machine() {
+        let state = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let issuer = state.authority_principal.clone();
+        state
+            .database
+            .insert_api_key(&ApiKey {
+                id: "own-key".into(),
+                key_hash: crate::auth::api_key_hash("sk-own"),
+                key_hint: String::new(),
+                label: "harness".into(),
+                node_id: "secondary".into(),
+                origin_node_id: "secondary".into(),
+                active: true,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            })
+            .unwrap();
+        state
+            .database
+            .insert_api_key(&ApiKey {
+                id: "foreign-key".into(),
+                key_hash: crate::auth::api_key_hash("sk-foreign"),
+                key_hint: String::new(),
+                label: "harness".into(),
+                node_id: "another".into(),
+                origin_node_id: "another".into(),
+                active: true,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            })
+            .unwrap();
+
+        let response = internal_revoke_api_key(
+            InternalNodeAuth {
+                principal: Some(issuer.clone()),
+            },
+            State(state.clone()),
+            Json(RevokeRequest {
+                key_or_id: "foreign-key".into(),
+                revoked_by: "secondary".into(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(state
+            .database
+            .api_key_for_hash(&crate::auth::api_key_hash("sk-foreign"))
+            .unwrap()
+            .is_some());
+
+        let response = internal_revoke_api_key(
+            InternalNodeAuth {
+                principal: Some(issuer),
+            },
+            State(state.clone()),
+            Json(RevokeRequest {
+                key_or_id: "own-key".into(),
+                revoked_by: "secondary".into(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(state
+            .database
+            .api_key_for_hash(&crate::auth::api_key_hash("sk-own"))
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

@@ -196,7 +196,9 @@ boundary.
   key `pom-<node_id>` and registers it on the principal through the signed internal route
   (only the hash goes; the secret stays in `local_secrets`, `PomDb::node_api_key`, and
   it is swapped when it no longer matches an active key);
-  the exception does not allow creating, revoking or validating other people's keys.
+  the exception is the key **bound to the signer** - `node_id` and
+  `origin_node_id` both naming it, whatever the label (`is_self_owned_key`) -
+  and it never reaches another machine's keys, minted or revoked.
   The read `/api/cluster/network-settings` is internal and read-only: a
   node adopts the complete `NetworkSettings` document from the principal, including
   visibility and metadata, after the first authenticated `Announce`.
@@ -750,7 +752,15 @@ change lands in the right place.
   appends blocked-but-disconnected nodes so the panel is not empty, and gives each remote peer a
   `route` (`Network::peer_route`): the path this node actually uses to reach it - direct HTTP,
   direct libp2p (maybe hole punched) or relayed - as opposed to `addr`, which is only what it
-  advertises. **The wizard is deprecated and unreachable**: nothing starts its router, so none of
+  advertises. **API keys**: minting or revoking a key of *another* machine takes the
+  principal (`require_signed_principal`); what every member keeps is the key bound to
+  itself - `node_id` and `origin_node_id` both naming the signer, whatever the label
+  (`is_self_owned_key`, and `revoke_names_self_owned_key` on the revoke, which answers
+  by id or by the hash presented so the ownership question survives an inactive row).
+  `revoke_api_key` asks the principal **before** touching the local replica: revoking
+  first let a node that is not the principal empty its own copy, get refused there, and
+  answer a failure while the key stayed active on the principal. **The wizard is
+  deprecated and unreachable**: nothing starts its router, so none of
   the `/api/setup/*` handlers below is served; they are kept until the wizard is removed for good.
   Setup mode exposed `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/geo/{countries,cities,nearest}`, `/api/setup/admin-anchor/preview`,

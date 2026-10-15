@@ -137,9 +137,11 @@ Per-file list:
   uses the wide variant; the `infer` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
   delete action and localized new-conversation button.
-- `ApiKeysTable.tsx` - the full-bleed API keys table. The administrator picks the
-  node at creation, sees their own tokens in full and the others masked;
-  `node` and `infer` stay restricted to their own node's keys.
+- `ApiKeysTable.tsx` - the full-bleed API keys table. The **principal** administrator
+  (`isAdmin` is `admin` and not `secondary`) picks the node at creation, sees their own
+  tokens in full and the others masked; a secondary admin, `node` and `infer` stay
+  restricted to their own node's keys, and the key they mint names their own machine -
+  the class the node's internal route accepts from any member.
 - `DeploymentLogDock.tsx` - the Dashboard's collapsed bar for the admin, which
   expands upwards to half the area and follows the deployment log in
   real time with auto-scroll.

@@ -693,7 +693,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
         eager_tools: _,
         task_budget_report,
     } = params;
-    match crate::gateway::generate_blocking_with_stops(
+    match crate::gateway::generate_blocking_output_with_stops(
         "/v1/messages",
         caller,
         GenerationInput {
@@ -715,17 +715,27 @@ async fn blocking_response(params: ResponseParams) -> Response {
     )
     .await
     {
-        Ok((text, summary)) => {
+        Ok((output, summary)) => {
             // Same rule as the OpenAI adapter: an exhausted cap with an open
             // call returns the call structured and incomplete, never raw
             // markup and never a discard.
             let truncated = summary.finish_reason.as_deref() == Some("length");
             let (parts, truncated_tool_call) = if truncated {
-                parse_output_truncated(&text)
+                parse_output_truncated(&output.text)
             } else {
-                (parse_output(&text), false)
+                (parse_output(&output.text), false)
             };
-            let (content, saw_tool_call) = content_blocks(&parts);
+            let (mut content, saw_tool_call) = content_blocks(&parts);
+            if !output.reasoning.is_empty() {
+                content.insert(
+                    0,
+                    json!({
+                        "type": "thinking",
+                        "thinking": output.reasoning,
+                        "signature": "",
+                    }),
+                );
+            }
             let reason = stop_reason(&summary, budget.total, saw_tool_call);
             (
                 cors_headers(),
@@ -1114,6 +1124,8 @@ fn sse_stream(
         scanner: TagScanner,
         /// Index of the currently open text block, if any.
         text_open: Option<u32>,
+        /// Index of the currently open thinking block, if any.
+        thinking_open: Option<u32>,
         next_index: u32,
         saw_tool_call: bool,
         /// See `blocking_response`.
@@ -1139,6 +1151,7 @@ fn sse_stream(
         queue: VecDeque::new(),
         scanner: TagScanner::new(),
         text_open: None,
+        thinking_open: None,
         next_index: 0,
         saw_tool_call: false,
         task_budget_report,
@@ -1172,20 +1185,16 @@ fn sse_stream(
                             }
                         }),
                     ));
-                    s.queue.push_back(ev(
-                        "content_block_start",
-                        json!({
-                            "type": "content_block_start",
-                            "index": 0,
-                            "content_block": { "type": "text", "text": "" },
-                        }),
-                    ));
-                    s.text_open = Some(0);
-                    s.next_index = 1;
                     continue;
                 }
                 Phase::Streaming => match s.rx.recv().await {
                     Some(GenEvent::Token(text)) => {
+                        if let Some(idx) = s.thinking_open.take() {
+                            s.queue.push_back(ev(
+                                "content_block_stop",
+                                json!({ "type": "content_block_stop", "index": idx }),
+                            ));
+                        }
                         let events = s.scanner.feed(&text);
                         let mut pairs = Vec::new();
                         apply_scan_events(
@@ -1202,7 +1211,51 @@ fn sse_stream(
                         }
                         continue;
                     }
+                    Some(GenEvent::Reasoning(text)) => {
+                        if let Some(idx) = s.text_open.take() {
+                            s.queue.push_back(ev(
+                                "content_block_stop",
+                                json!({ "type": "content_block_stop", "index": idx }),
+                            ));
+                        }
+                        let idx = match s.thinking_open {
+                            Some(idx) => idx,
+                            None => {
+                                let idx = s.next_index;
+                                s.next_index += 1;
+                                s.thinking_open = Some(idx);
+                                s.queue.push_back(ev(
+                                    "content_block_start",
+                                    json!({
+                                        "type": "content_block_start",
+                                        "index": idx,
+                                        "content_block": {
+                                            "type": "thinking",
+                                            "thinking": "",
+                                            "signature": "",
+                                        },
+                                    }),
+                                ));
+                                idx
+                            }
+                        };
+                        s.queue.push_back(ev(
+                            "content_block_delta",
+                            json!({
+                                "type": "content_block_delta",
+                                "index": idx,
+                                "delta": { "type": "thinking_delta", "thinking": text },
+                            }),
+                        ));
+                        continue;
+                    }
                     Some(GenEvent::Done(summary)) => {
+                        if let Some(idx) = s.thinking_open.take() {
+                            s.queue.push_back(ev(
+                                "content_block_stop",
+                                json!({ "type": "content_block_stop", "index": idx }),
+                            ));
+                        }
                         let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
                         let (finish_events, truncated_tool_call) =
                             if summary.finish_reason.as_deref() == Some("length") {
@@ -1521,6 +1574,7 @@ mod tests {
         let summary = |n: u32| GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: n,
+            reasoning_tokens: 0,
             tokens_per_sec: 1.0,
             duration_ms: 10,
             timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),

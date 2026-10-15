@@ -37,6 +37,12 @@
 //! `CallKind::BareFunction`), recovering a name with **no arguments**, since
 //! none are ever present in it — a real, accepted limit, not an oversight.
 //!
+//! Some Qwen turns also fall back to the older
+//! `<function_calls><invoke name="…"><parameter name="…">` dialect after a
+//! tool validation error. That recovery form is accepted as one container
+//! holding one or more calls, but the canonical format emitted into prompts
+//! and replayed history remains `<tool_call><function=…>`.
+//!
 //! See `crate::messages`'s module doc comment for why this is
 //! prompt-engineered and text-parsed rather than protocol-level: this
 //! backend has no grammar-constrained decoding anywhere.
@@ -152,6 +158,8 @@ pub(crate) fn render_tool_call(name: &str, arguments: &serde_json::Value) -> Str
 
 const TOOL_CALL_OPEN: &str = "<tool_call>";
 const TOOL_CALL_CLOSE: &str = "</tool_call>";
+const FUNCTION_CALLS_OPEN: &str = "<function_calls>";
+const FUNCTION_CALLS_CLOSE: &str = "</function_calls>";
 /// No `=`, deliberately — `<function=NAME>` stays exclusively the *inner*
 /// content of an already-`<tool_call>`-wrapped span (see `parse_call_body`'s
 /// `Wrapped` arm). This is the unwrapped fallback shape, and only that shape.
@@ -164,6 +172,9 @@ const BARE_FUNCTION_CLOSE: &str = "</function>";
 enum CallKind {
     /// `<tool_call>...</tool_call>` — the normal case.
     Wrapped,
+    /// `<function_calls><invoke name="…">...</invoke></function_calls>` — a
+    /// compatibility dialect observed while a model tried to repair a call.
+    FunctionCalls,
     /// `<function>NAME</function>` with no wrapper at all — a tolerated
     /// fallback for output that doesn't even attempt the real convention;
     /// see the module doc comment.
@@ -202,6 +213,11 @@ const CALL_FORMATS: &[CallFormat] = &[
         kind: CallKind::Wrapped,
         open: TOOL_CALL_OPEN,
         close: TOOL_CALL_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::FunctionCalls,
+        open: FUNCTION_CALLS_OPEN,
+        close: FUNCTION_CALLS_CLOSE,
     },
     CallFormat {
         kind: CallKind::BareFunction,
@@ -347,7 +363,7 @@ impl TagScanner {
                                 raw.push_str(&head);
                                 events.push(ScanEvent::ToolCallChunk(head));
                             }
-                            events.push(ScanEvent::ToolCallClose(parse_call_body(&raw, kind)));
+                            events.extend(complete_call_events(&raw, kind));
                         }
                         None => {
                             let hold = longest_prefix_overlap(&self.pending, close_tag);
@@ -411,10 +427,15 @@ impl TagScanner {
         match self.state {
             ScanState::Inside(raw, kind) => {
                 let body = format!("{raw}{}", self.pending);
-                match parse_partial_call_body(&body, kind) {
-                    Some(partial) => (vec![ScanEvent::ToolCallTruncated(partial)], true),
-                    None => (Vec::new(), true),
-                }
+                let events = if kind == CallKind::FunctionCalls {
+                    partial_function_call_events(&body)
+                } else {
+                    parse_partial_call_body(&body, kind)
+                        .map(ScanEvent::ToolCallTruncated)
+                        .into_iter()
+                        .collect()
+                };
+                (events, true)
             }
             _ => (self.finish(), false),
         }
@@ -430,7 +451,7 @@ fn parse_partial_call_body(raw: &str, kind: CallKind) -> Option<PartialCall> {
     match kind {
         // `<function>NAME` with no closing: `NAME` may be half written, and
         // half a name identifies no tool at all.
-        CallKind::BareFunction => None,
+        CallKind::BareFunction | CallKind::FunctionCalls => None,
         CallKind::Wrapped => {
             let trimmed = raw.trim_start();
             if trimmed.starts_with("<function=") {
@@ -597,17 +618,49 @@ fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Resolves the close of one scanner span. The compatibility
+/// `<function_calls>` container may hold several `<invoke>` calls; each one
+/// becomes its own open/close pair so streaming adapters allocate distinct
+/// tool-call indexes without ever exposing the container markup as content.
+fn complete_call_events(raw: &str, kind: CallKind) -> Vec<ScanEvent> {
+    if kind != CallKind::FunctionCalls {
+        return vec![ScanEvent::ToolCallClose(parse_call_body(raw, kind))];
+    }
+    let fallback = || format!("{}{raw}{}", kind.open(), kind.close());
+    match parse_function_calls_xml(raw) {
+        Some(calls) if !calls.is_empty() => calls
+            .into_iter()
+            .enumerate()
+            .flat_map(|(index, call)| {
+                let mut events = Vec::with_capacity(2);
+                if index > 0 {
+                    events.push(ScanEvent::ToolCallOpen);
+                }
+                events.push(ScanEvent::ToolCallClose(Ok(call)));
+                events
+            })
+            .collect(),
+        _ => vec![ScanEvent::ToolCallClose(Err(fallback()))],
+    }
+}
+
 /// `Wrapped`: two inner formats are accepted, tried in this order — the
 /// nested `<function=NAME><parameter=P>...` form (`Qwen3.6-35B-A3B`,
 /// `Ornith-1.0-35B`) and the legacy Hermes JSON-object form
 /// (`Qwen3.5-9B-DeepSeek-V4-Flash`) — see the module doc comment for why
 /// both matter on a cluster that swaps models. `BareFunction`: just a name,
-/// see `parse_bare_function_call`. Either failing to parse degrades to the
-/// literal tagged text, never a crash or a dropped response.
+/// see `parse_bare_function_call`. `FunctionCalls` is handled by
+/// [`complete_call_events`] because one container may contain several calls.
+/// Any failure degrades to the literal tagged text, never a crash or a dropped
+/// response.
 fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Value), String> {
     let fallback = || format!("{}{raw}{}", kind.open(), kind.close());
     match kind {
         CallKind::BareFunction => parse_bare_function_call(raw).ok_or_else(fallback),
+        CallKind::FunctionCalls => parse_function_calls_xml(raw)
+            .filter(|calls| calls.len() == 1)
+            .and_then(|mut calls| calls.pop())
+            .ok_or_else(fallback),
         CallKind::Wrapped => {
             if raw.trim_start().starts_with("<function=") {
                 return parse_function_call_xml(raw).ok_or_else(fallback);
@@ -639,6 +692,30 @@ fn decode_json_arguments(arguments: serde_json::Value) -> serde_json::Value {
             serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw))
         }
         other => other,
+    }
+}
+
+/// Some model turns put the complete arguments object inside one parameter
+/// literally named `arguments`, yielding `{"arguments": {…}}`. Providers
+/// expect the inner object. Only the unambiguous single-key/object shape is
+/// unwrapped; a scalar or a real call with other parameters is left intact.
+fn normalize_arguments_wrapper(arguments: serde_json::Value) -> serde_json::Value {
+    let mut object = match arguments {
+        serde_json::Value::Object(object) => object,
+        other => return other,
+    };
+    if object.len() != 1 {
+        return serde_json::Value::Object(object);
+    }
+    let Some(wrapped) = object.remove("arguments") else {
+        return serde_json::Value::Object(object);
+    };
+    let decoded = decode_json_arguments(wrapped);
+    if decoded.is_object() {
+        decoded
+    } else {
+        object.insert("arguments".to_string(), decoded);
+        serde_json::Value::Object(object)
     }
 }
 
@@ -705,7 +782,219 @@ fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
         args.insert(pname.to_string(), decode_parameter_value(value_raw));
         cursor = &after_name[close_idx + PARAM_CLOSE.len()..];
     }
-    Some((name.to_string(), serde_json::Value::Object(args)))
+    Some((
+        name.to_string(),
+        normalize_arguments_wrapper(serde_json::Value::Object(args)),
+    ))
+}
+
+/// Reads one quoted XML-like attribute from an opening tag. The compatibility
+/// dialect uses only simple names, so entities and namespace syntax are not
+/// interpreted here.
+fn quoted_attribute<'a>(tag: &'a str, attribute: &str) -> Option<&'a str> {
+    for quote in ['"', '\''] {
+        let marker = format!("{attribute}={quote}");
+        let mut from = 0;
+        while let Some(relative) = tag[from..].find(&marker) {
+            let at = from + relative;
+            let boundary = at == 0
+                || tag[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace);
+            if boundary {
+                let value = &tag[at + marker.len()..];
+                let end = value.find(quote)?;
+                return Some(&value[..end]);
+            }
+            from = at + marker.len();
+        }
+    }
+    None
+}
+
+fn parse_invoke_parameters(body: &str) -> Option<serde_json::Value> {
+    let mut args = serde_json::Map::new();
+    let mut cursor = body;
+    loop {
+        let trimmed = cursor.trim_start();
+        if trimmed.is_empty() {
+            break;
+        }
+        if !trimmed.starts_with("<parameter") {
+            return None;
+        }
+        let open_end = trimmed.find('>')?;
+        let opening = &trimmed[..=open_end];
+        let name = quoted_attribute(opening, "name")?.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let after_open = &trimmed[open_end + 1..];
+        let close = after_open.find(PARAM_CLOSE)?;
+        args.insert(
+            name.to_string(),
+            decode_parameter_value(after_open[..close].trim()),
+        );
+        cursor = &after_open[close + PARAM_CLOSE.len()..];
+    }
+    Some(normalize_arguments_wrapper(serde_json::Value::Object(args)))
+}
+
+/// Parses the older repair dialect, including several calls in one outer
+/// `<function_calls>` container.
+fn parse_function_calls_xml(raw: &str) -> Option<Vec<(String, serde_json::Value)>> {
+    let mut calls = Vec::new();
+    let mut cursor = raw;
+    loop {
+        let trimmed = cursor.trim_start();
+        if trimmed.is_empty() {
+            break;
+        }
+        if !trimmed.starts_with("<invoke") {
+            return None;
+        }
+        let open_end = trimmed.find('>')?;
+        let opening = &trimmed[..=open_end];
+        let name = quoted_attribute(opening, "name")?.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let after_open = &trimmed[open_end + 1..];
+        let close = after_open.find("</invoke>")?;
+        let arguments = parse_invoke_parameters(&after_open[..close])?;
+        calls.push((name.to_string(), arguments));
+        cursor = &after_open[close + "</invoke>".len()..];
+    }
+    (!calls.is_empty()).then_some(calls)
+}
+
+/// A cut `<invoke>` has the same provider shape as a cut canonical call: a
+/// complete name and an unfinished JSON argument string. Closed parameters
+/// retain their decoded types; the last open parameter is a string fragment.
+fn parse_partial_invoke(opening: &str, body: &str) -> Option<PartialCall> {
+    let name = quoted_attribute(opening, "name")?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut complete: Vec<(String, serde_json::Value)> = Vec::new();
+    let mut partial: Option<(String, String)> = None;
+    let mut cursor = body;
+    loop {
+        let trimmed = cursor.trim_start();
+        let Some(after_marker) = trimmed.strip_prefix("<parameter") else {
+            break;
+        };
+        let Some(open_end) = after_marker.find('>') else {
+            break;
+        };
+        let opening = &trimmed[.."<parameter".len() + open_end + 1];
+        let Some(parameter) = quoted_attribute(opening, "name") else {
+            break;
+        };
+        let parameter = parameter.trim().to_string();
+        if parameter.is_empty() {
+            break;
+        }
+        let after_open = &after_marker[open_end + 1..];
+        match after_open.find(PARAM_CLOSE) {
+            Some(close) => {
+                complete.push((
+                    parameter,
+                    decode_parameter_value(after_open[..close].trim()),
+                ));
+                cursor = &after_open[close + PARAM_CLOSE.len()..];
+            }
+            None => {
+                let hold = [PARAM_CLOSE, "</invoke>"]
+                    .iter()
+                    .map(|tag| longest_prefix_overlap(after_open, tag))
+                    .max()
+                    .unwrap_or(0);
+                let visible = &after_open[..after_open.len() - hold];
+                partial = Some((parameter, visible.trim_start().to_string()));
+                break;
+            }
+        }
+    }
+    let mut recovered = serde_json::Map::new();
+    for (parameter, value) in &complete {
+        recovered.insert(parameter.clone(), value.clone());
+    }
+    if let Some((parameter, value)) = &partial {
+        recovered.insert(parameter.clone(), serde_json::Value::String(value.clone()));
+    }
+    Some(PartialCall {
+        name: name.to_string(),
+        arguments: unterminated_arguments(
+            &complete,
+            partial
+                .as_ref()
+                .map(|(parameter, value)| (parameter.as_str(), value.as_str())),
+        ),
+        recovered: serde_json::Value::Object(recovered),
+    })
+}
+
+/// Recovers every complete invoke before the cut and, when its name is whole,
+/// the final incomplete invoke. The scanner already emitted one outer open;
+/// subsequent recovered calls therefore receive synthetic opens.
+fn partial_function_call_events(raw: &str) -> Vec<ScanEvent> {
+    enum Recovered {
+        Complete((String, serde_json::Value)),
+        Partial(PartialCall),
+    }
+
+    let mut recovered = Vec::new();
+    let mut cursor = raw;
+    loop {
+        let trimmed = cursor.trim_start();
+        if !trimmed.starts_with("<invoke") {
+            break;
+        }
+        let Some(open_end) = trimmed.find('>') else {
+            break;
+        };
+        let opening = &trimmed[..=open_end];
+        let after_open = &trimmed[open_end + 1..];
+        match after_open.find("</invoke>") {
+            Some(close) => {
+                let Some(name) = quoted_attribute(opening, "name")
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                else {
+                    break;
+                };
+                let Some(arguments) = parse_invoke_parameters(&after_open[..close]) else {
+                    break;
+                };
+                recovered.push(Recovered::Complete((name.to_string(), arguments)));
+                cursor = &after_open[close + "</invoke>".len()..];
+            }
+            None => {
+                if let Some(partial) = parse_partial_invoke(opening, after_open) {
+                    recovered.push(Recovered::Partial(partial));
+                }
+                break;
+            }
+        }
+    }
+
+    recovered
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, call)| {
+            let mut events = Vec::with_capacity(2);
+            if index > 0 {
+                events.push(ScanEvent::ToolCallOpen);
+            }
+            events.push(match call {
+                Recovered::Complete(call) => ScanEvent::ToolCallClose(Ok(call)),
+                Recovered::Partial(partial) => ScanEvent::ToolCallTruncated(partial),
+            });
+            events
+        })
+        .collect()
 }
 
 // ── Incremental streaming of the arguments ───────────────────────────────────
@@ -782,6 +1071,8 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
 
     let mut out = String::from("{");
     let mut first = true;
+    let mut parameters = 0usize;
+    let mut sole_arguments_object = false;
     loop {
         let t = cursor.trim_start();
         let Some(after_open) = t.strip_prefix("<parameter=") else {
@@ -794,6 +1085,13 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
         match after_name.find("</parameter>") {
             Some(close) => {
                 let value_raw = after_name[..close].trim();
+                parameters += 1;
+                sole_arguments_object = parameters == 1
+                    && pname == "arguments"
+                    && decode_json_arguments(decode_parameter_value(value_raw)).is_object();
+                if parameters > 1 {
+                    sole_arguments_object = false;
+                }
                 if !first {
                     out.push(',');
                 }
@@ -828,7 +1126,14 @@ fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
             }
         }
     }
-    Some(out)
+    // Do not stream a sole `arguments` object under its redundant outer key:
+    // the complete parser unwraps it. Holding it here keeps the streaming and
+    // blocking provider payloads identical.
+    if parameters == 1 && sole_arguments_object {
+        Some("{".to_string())
+    } else {
+        Some(out)
+    }
 }
 
 /// The already transmittable piece of a parameter that has not closed yet,
@@ -944,7 +1249,16 @@ impl CallArgsStreamer {
         match streamable_arguments_prefix(raw_body, self.eager) {
             Some(mut prefix) => {
                 prefix.push('}');
-                self.take_delta(prefix)
+                // A redundant sole `arguments` object is intentionally held
+                // back and unwrapped by the complete parser. No fragment can
+                // have gone out in that case, so emit the normalized object.
+                let normalized_differs = serde_json::from_str::<serde_json::Value>(&prefix)
+                    .is_ok_and(|streamed| &streamed != parsed);
+                if self.emitted.is_empty() && normalized_differs {
+                    self.take_delta(parsed.to_string())
+                } else {
+                    self.take_delta(prefix)
+                }
             }
             None => self.take_delta(parsed.to_string()),
         }
@@ -1171,6 +1485,129 @@ mod tests {
     fn parse_output_falls_back_to_text_on_malformed_xml() {
         let raw = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</tool_call>";
         assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    #[test]
+    fn a_single_arguments_object_parameter_is_unwrapped() {
+        let raw = "<tool_call><function=bash><parameter=arguments>\n{\"command\":\"pwd\"}\n</parameter></function></tool_call>";
+        assert_eq!(
+            parse_output(raw),
+            vec![OutputPart::ToolCall {
+                name: "bash".into(),
+                arguments: json!({"command": "pwd"}),
+            }]
+        );
+
+        // The OpenAI streaming transcoder must produce the same normalized
+        // JSON, not the rejected {"arguments": {...}} shape.
+        let body =
+            "<function=bash><parameter=arguments>\n{\"command\":\"pwd\"}\n</parameter></function>";
+        let mut streamer = CallArgsStreamer::new(true);
+        assert_eq!(streamer.advance(body), None);
+        assert_eq!(
+            streamer.finish_complete(body, &json!({"command": "pwd"})),
+            Some(r#"{"command":"pwd"}"#.into())
+        );
+
+        let encoded = r#"<tool_call><function=bash><parameter=arguments>"{\"command\":\"pwd\"}"</parameter></function></tool_call>"#;
+        assert_eq!(
+            parse_output(encoded),
+            vec![OutputPart::ToolCall {
+                name: "bash".into(),
+                arguments: json!({"command": "pwd"}),
+            }]
+        );
+        let encoded_body =
+            r#"<function=bash><parameter=arguments>"{\"command\":\"pwd\"}"</parameter></function>"#;
+        let mut streamer = CallArgsStreamer::new(true);
+        assert_eq!(streamer.advance(encoded_body), None);
+        assert_eq!(
+            streamer.finish_complete(encoded_body, &json!({"command": "pwd"})),
+            Some(r#"{"command":"pwd"}"#.into())
+        );
+    }
+
+    #[test]
+    fn an_arguments_scalar_or_an_additional_parameter_is_not_unwrapped() {
+        let scalar =
+            "<tool_call><function=f><parameter=arguments>raw</parameter></function></tool_call>";
+        let extra = "<tool_call><function=f><parameter=arguments>{\"x\":1}</parameter><parameter=mode>safe</parameter></function></tool_call>";
+        assert!(matches!(
+            &parse_output(scalar)[0],
+            OutputPart::ToolCall { arguments, .. } if arguments == &json!({"arguments": "raw"})
+        ));
+        assert!(matches!(
+            &parse_output(extra)[0],
+            OutputPart::ToolCall { arguments, .. }
+                if arguments == &json!({"arguments": {"x": 1}, "mode": "safe"})
+        ));
+    }
+
+    // ── `<function_calls><invoke …>` compatibility dialect ─────────────────
+
+    #[test]
+    fn parse_output_recovers_the_invoke_dialect_without_leaking_markup() {
+        let raw = "before <function_calls><invoke name=\"bash\"><parameter name=\"command\">pwd</parameter></invoke></function_calls>";
+        assert_eq!(
+            parse_output(raw),
+            vec![
+                OutputPart::Text("before ".into()),
+                OutputPart::ToolCall {
+                    name: "bash".into(),
+                    arguments: json!({"command": "pwd"}),
+                },
+            ]
+        );
+        assert_eq!(feed_in_chunks(raw, 1), parse_output(raw));
+        assert_eq!(feed_in_chunks(raw, 7), parse_output(raw));
+    }
+
+    #[test]
+    fn one_function_calls_container_can_hold_multiple_invokes() {
+        let raw = "<function_calls>\n<invoke name=\"read\"><parameter name=\"path\">a</parameter></invoke>\n<invoke name='glob'><parameter name='pattern'>*.rs</parameter></invoke>\n</function_calls>";
+        assert_eq!(
+            parse_output(raw),
+            vec![
+                OutputPart::ToolCall {
+                    name: "read".into(),
+                    arguments: json!({"path": "a"}),
+                },
+                OutputPart::ToolCall {
+                    name: "glob".into(),
+                    arguments: json!({"pattern": "*.rs"}),
+                },
+            ]
+        );
+        assert_eq!(feed_in_chunks(raw, 1), parse_output(raw));
+    }
+
+    #[test]
+    fn a_truncated_invoke_is_structured_and_never_becomes_raw_content() {
+        let raw = "intro <function_calls><invoke name=\"write\"><parameter name=\"path\">/tmp/a</parameter><parameter name=\"content\">line 1";
+        let (parts, cut_inside) = parse_output_truncated(raw);
+        assert!(cut_inside);
+        assert_eq!(parts[0], OutputPart::Text("intro ".into()));
+        let OutputPart::ToolCallTruncated(partial) = &parts[1] else {
+            panic!("expected a truncated invoke: {parts:?}");
+        };
+        assert_eq!(partial.name, "write");
+        assert_eq!(
+            partial.recovered,
+            json!({"path": "/tmp/a", "content": "line 1"})
+        );
+        assert_eq!(partial.arguments, r#"{"path":"/tmp/a","content":"line 1"#);
+        assert!(parts.iter().all(|part| !matches!(part, OutputPart::Text(text) if text.contains("function_calls") || text.contains("invoke"))));
+    }
+
+    #[test]
+    fn complete_invokes_before_a_truncated_one_are_all_recovered() {
+        let raw = "<function_calls><invoke name=\"read\"><parameter name=\"path\">a</parameter></invoke><invoke name=\"write\"><parameter name=\"path\">b";
+        let (parts, cut_inside) = parse_output_truncated(raw);
+        assert!(cut_inside);
+        assert!(matches!(&parts[0], OutputPart::ToolCall { name, .. } if name == "read"));
+        assert!(
+            matches!(&parts[1], OutputPart::ToolCallTruncated(partial) if partial.name == "write")
+        );
     }
 
     // ── bare `<function>NAME</function>`, no wrapper ─────────────────────────

@@ -852,8 +852,11 @@ pub struct HealthResponse {
 /// One event from a running generation.
 #[derive(Debug, Clone)]
 pub enum GenEvent {
-    /// A newly decoded token's text.
+    /// A newly decoded answer token's text.
     Token(String),
+    /// A newly decoded reasoning token's text. Protocol adapters keep this
+    /// separate from visible answer content (`reasoning_content`/thinking).
+    Reasoning(String),
     /// Generation finished (possibly early — see `partial`).
     Done(GenSummary),
     /// Generation produced nothing usable.
@@ -915,6 +918,9 @@ pub struct GenSummary {
     /// "pipeline:<hop-chain>", with " (partial)" when it stopped early.
     pub source: String,
     pub tokens_generated: u32,
+    /// Tokens generated while the model was reasoning. This is a subset of
+    /// `tokens_generated`, following OpenAI completion-token semantics.
+    pub reasoning_tokens: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
     pub timings: GenerationTimings,
@@ -1190,6 +1196,7 @@ pub(super) fn summary_for(
             if partial { " (partial)" } else { "" }
         ),
         tokens_generated,
+        reasoning_tokens: 0,
         tokens_per_sec: timings.total_tokens_per_sec,
         duration_ms: timings.total_ms,
         timings,

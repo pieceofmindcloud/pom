@@ -25,6 +25,7 @@ import { getActiveLocale } from "../i18n/locales";
 import {
   consumeChatDelta,
   consumeChatError,
+  consumeReasoningDelta,
   emptyChatStream,
   finishChatStream,
   streamErrorMessage,
@@ -431,6 +432,10 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             if (typeof delta === "string" && delta) {
               streamed = consumeChatDelta(streamed, delta);
               patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined, reasoningTokens: streamed.reasoningTokens || undefined });
+            }
+            if (typeof reasoningDelta === "string" && reasoningDelta) {
+              streamed = consumeReasoningDelta(streamed, reasoningDelta);
+              patchReply({ content: streamed.content, reasoning: streamed.reasoning, reasoningTokens: streamed.reasoningTokens });
             }
             const metrics = chunk?.x_pom;
             if (metrics && typeof metrics === "object") finalMetrics = metrics;

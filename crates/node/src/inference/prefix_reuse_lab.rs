@@ -1009,6 +1009,13 @@ async fn conversation_with_hops_fault_kind(
                     response.push_str(&t);
                     false
                 }
+                crate::gateway::GenEvent::Reasoning(t) => {
+                    if !saw_first_word && !t.is_empty() {
+                        measured.first_word_us = started.elapsed().as_micros();
+                        saw_first_word = true;
+                    }
+                    false
+                }
                 crate::gateway::GenEvent::Done(s) => {
                     if let Some(trace) = &s.trace {
                         measured.cached_tokens = trace.cached_tokens;

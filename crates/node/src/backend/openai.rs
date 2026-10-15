@@ -927,7 +927,7 @@ async fn blocking_response(
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
-    match crate::gateway::generate_blocking_with_stops(
+    match crate::gateway::generate_blocking_output_with_stops(
         route,
         caller,
         GenerationInput {
@@ -949,7 +949,7 @@ async fn blocking_response(
     )
     .await
     {
-        Ok((text, summary)) => {
+        Ok((output, summary)) => {
             // It was the ceiling that ended it, not the model. A call still open
             // here was cut in half, and this is how it comes back: structured and
             // incomplete, with `finish_reason: "length"` - what OpenAI does.
@@ -962,14 +962,17 @@ async fn blocking_response(
             ) = match mode {
                 Mode::Chat => {
                     let (parts, cut_inside_call) = if truncated {
-                        parse_output_truncated(&text)
+                        parse_output_truncated(&output.text)
                     } else {
-                        (parse_output(&text), false)
+                        (parse_output(&output.text), false)
                     };
-                    let (message, saw) = chat_message_json(&parts);
+                    let (mut message, saw) = chat_message_json(&parts);
+                    if !output.reasoning.is_empty() {
+                        message["reasoning_content"] = json!(output.reasoning);
+                    }
                     (message, saw, cut_inside_call)
                 }
-                Mode::Completion => (json!(text), false, false),
+                Mode::Completion => (json!(output.text), false, false),
             };
             let finish = finish_reason(&summary, budget.total, saw_tool_call);
             let choice = match mode {
@@ -995,6 +998,9 @@ async fn blocking_response(
                     "usage": {
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": summary.tokens_generated,
+                        "completion_tokens_details": {
+                            "reasoning_tokens": summary.reasoning_tokens,
+                        },
                         "total_tokens": prompt_tokens + summary.tokens_generated,
                         // How many prompt tokens the pipeline did **not**
                         // reprocess, measured on the side that executes. Same name and
@@ -1013,6 +1019,7 @@ async fn blocking_response(
                     "x_pom": {
                         "source": summary.source,
                         "tokens_per_sec": summary.tokens_per_sec,
+                        "reasoning_tokens": summary.reasoning_tokens,
                         "duration_ms": summary.duration_ms,
                         "timings": summary.timings,
                         // `partial` is `true` whenever the response is not what
@@ -1322,6 +1329,17 @@ fn apply_scan_events_openai(
 /// literal `[DONE]` sentinel. `Mode::Completion` never touches the scanner —
 /// the real API has no tool-calling concept there either — so that path
 /// stays byte-for-byte what it was before tool support existed.
+fn reasoning_delta(mode: Mode, text: String) -> serde_json::Value {
+    match mode {
+        // Chat clients such as Pi recognize this llama.cpp-compatible field
+        // as a thinking delta.
+        Mode::Chat => json!({ "reasoning_content": text }),
+        // The legacy completions schema has no distinct reasoning field, so
+        // preserve the generated text.
+        Mode::Completion => json!(text),
+    }
+}
+
 fn sse_stream(
     rx: mpsc::Receiver<GenEvent>,
     id: String,
@@ -1433,6 +1451,13 @@ fn sse_stream(
                                 }
                             }
                         }
+                        continue;
+                    }
+                    Some(GenEvent::Reasoning(text)) => {
+                        let delta = reasoning_delta(s.mode, text);
+                        let chunk =
+                            chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None, None);
+                        s.queue.push_back(Event::default().data(chunk));
                         continue;
                     }
                     Some(GenEvent::Done(summary)) => {
@@ -1558,10 +1583,31 @@ fn chunk_json_final(
         "choices": [choice],
     });
     if let Some(summary) = summary {
+        let prompt_tokens = summary
+            .trace
+            .as_ref()
+            .map(|trace| trace.input_tokens)
+            .unwrap_or(0);
+        payload["usage"] = json!({
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": summary.tokens_generated,
+            "total_tokens": prompt_tokens + summary.tokens_generated,
+            "prompt_tokens_details": {
+                "cached_tokens": summary
+                    .trace
+                    .as_ref()
+                    .map(|trace| trace.cached_tokens)
+                    .unwrap_or(0),
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": summary.reasoning_tokens,
+            },
+        });
         payload["x_pom"] = json!({
             "source": summary.source,
             "tokens_per_sec": summary.tokens_per_sec,
             "tokens_generated": summary.tokens_generated,
+            "reasoning_tokens": summary.reasoning_tokens,
             "duration_ms": summary.duration_ms,
             "timings": summary.timings,
             // See the same field on the non-streaming path: a call
@@ -1596,6 +1642,13 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reasoning_uses_the_structured_chat_delta_instead_of_visible_content() {
+        let delta = reasoning_delta(Mode::Chat, "checking".into());
+        assert_eq!(delta["reasoning_content"], "checking");
+        assert!(delta.get("content").is_none());
+    }
 
     #[test]
     fn retrieval_searches_for_what_the_person_last_wrote() {
@@ -2604,6 +2657,7 @@ mod tests {
         let summary = |n: u32| crate::gateway::GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: n,
+            reasoning_tokens: 0,
             tokens_per_sec: 1.0,
             duration_ms: 10,
             timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
@@ -2856,6 +2910,7 @@ mod tests {
         let summary = crate::gateway::GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: 12,
+            reasoning_tokens: 5,
             tokens_per_sec: 4.5,
             duration_ms: 2666,
             timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
@@ -2882,6 +2937,12 @@ mod tests {
 
         assert_eq!(payload["x_pom"]["tokens_per_sec"], 4.5);
         assert_eq!(payload["x_pom"]["tokens_generated"], 12);
+        assert_eq!(payload["x_pom"]["reasoning_tokens"], 5);
+        assert_eq!(payload["usage"]["completion_tokens"], 12);
+        assert_eq!(
+            payload["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            5
+        );
         assert_eq!(payload["x_pom"]["timings"]["ttft_ms"], 900);
         assert!(payload["x_pom"]["timings"]["generation_tokens_per_sec"].is_number());
         assert_eq!(payload["x_pom"]["trace"]["model"], "qwen35");

@@ -1193,8 +1193,9 @@ up in the browser history.
 - **The title is edited by clicking it** and is saved (`titled` keeps the first
   message from overwriting the chosen name).
 
-`chatStream` separates `<think>` from the visible content without leaking the
-delimiter between chunks; `finishChatStream` records the summary of TTFT,
+`chatStream` appends structured `reasoning_content` directly and keeps the
+`<think>` splitter as a legacy fallback without leaking delimiters between
+chunks; `finishChatStream` records the summary of TTFT,
 prompt preprocessing speed, output generation speed and end-to-end total, plus
 the per-hop trace. The Chat shows the basic numbers in the telemetry line; the
 remaining fields (`server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms`, network

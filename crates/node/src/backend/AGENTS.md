@@ -490,7 +490,10 @@ boundary.
   `context_length` and the `top_provider.max_completion_tokens` compatible with
   OpenRouter, which is the **request's** capacity derived from the `n_ctx`, not the
   size of one leg. The available context shrinks the budget when the prompt already occupies
-  part of the window.
+  part of the window. `GenEvent::Reasoning` is never fed to the visible-content
+  scanner: OpenAI chat emits it as `reasoning_content` (streaming and blocking),
+  which Pi renders as a thinking block; completion-token accounting still uses
+  the engine's total generated-token count.
   `messages.rs` accepts `output_config.task_budget` (advisory, it never cuts) and
   injects the countdown marker into the prompt; see `http-api.md`.
   **A call's arguments come out in fragments** (`CallArgsStreamer`),
@@ -789,11 +792,15 @@ change lands in the right place.
   token stream into text / tool-call spans tolerating tags split across chunk
   boundaries (`CALL_FORMATS` + `longest_prefix_overlap`); the registry is
   extended only with markers verified in the active GGUF's
-  `tokenizer.chat_template`. `CallKind::Wrapped` (the real `<tool_call>`
-  convention) vs `CallKind::BareFunction` (a tolerated wrapper-less
+  `tokenizer.chat_template`, except explicit compatibility recovery for output
+  observed in audited sessions. `CallKind::Wrapped` (the real `<tool_call>`
+  convention), `CallKind::FunctionCalls` (the older
+  `<function_calls><invoke name=...>` repair dialect, including multiple
+  invokes) and `CallKind::BareFunction` (a tolerated wrapper-less
   `<function>NAME</function>` fallback, name-only, whitespace guard).
   `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
   Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
+  a sole object parameter named `arguments` is unwrapped for provider schemas;
   malformed spans and incomplete calls degrade to literal text. `parse_output`
   is the scanner over the whole text -> `Vec<OutputPart>` (`Text` |
   `ToolCall { name, arguments }`), with adjacent text merged. The same scanner

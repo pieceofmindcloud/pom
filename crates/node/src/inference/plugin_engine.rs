@@ -30,8 +30,9 @@
 //! The generation route of a plugin takes `{prompt, chat_template, thinking,
 //! max_tokens, stop, temperature, top_p, top_k, min_p, presence_penalty,
 //! frequency_penalty, seed}` and answers one JSON object per line:
-//! `{"t": text}`, `{"p": [read, total]}`, `{"done": {finish, prompt_tokens,
-//! completion_tokens, cached_tokens}}` or `{"error": message}`.
+//! `{"t": answer_text}`, `{"r": reasoning_text}`, `{"p": [read, total]}`,
+//! `{"done": {finish, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens}}` or
+//! `{"error": message}`.
 
 use crate::gateway::{GatewayState, GenEvent, GenSummary};
 use axum::body::Bytes;
@@ -630,7 +631,7 @@ fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool) -> Vec<u8> {
     let Ok(mut value) = serde_json::from_slice::<Value>(text) else {
         return line.to_vec();
     };
-    if value.get("t").is_some() && !*first_token {
+    if (value.get("t").is_some() || value.get("r").is_some()) && !*first_token {
         *first_token = true;
         super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Decode);
     }
@@ -655,6 +656,18 @@ fn finish_reason(finish: &str) -> &'static str {
         "length" => "length",
         _ => "stop",
     }
+}
+
+/// One generated-text NDJSON object from a plugin engine. Answer text (`t`)
+/// and reasoning (`r`) remain distinct from this boundary onward.
+fn generated_text_event(event: &Value) -> Option<GenEvent> {
+    if let Some(text) = event["t"].as_str().filter(|text| !text.is_empty()) {
+        return Some(GenEvent::Token(text.to_owned()));
+    }
+    event["r"]
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .map(|text| GenEvent::Reasoning(text.to_owned()))
 }
 
 /// Runs one generation on the plugin engine of `node_id` and reports it as
@@ -747,17 +760,14 @@ pub(crate) async fn generate(
             let Ok(event) = serde_json::from_slice::<Value>(&line[..line.len() - 1]) else {
                 continue;
             };
-            if let Some(text) = event["t"].as_str() {
-                if text.is_empty() {
-                    continue;
-                }
+            if let Some(output) = generated_text_event(&event) {
                 if first_token_at.is_none() {
                     super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Decode);
                 }
                 first_token_at.get_or_insert_with(Instant::now);
                 streamed_any = true;
                 pieces += 1;
-                if tx.send(GenEvent::Token(text.to_owned())).await.is_err() {
+                if tx.send(output).await.is_err() {
                     return;
                 }
             } else if let Some(done) = event.get("done") {
@@ -775,6 +785,10 @@ pub(crate) async fn generate(
                 let ttft_ms = first.saturating_duration_since(request_started).as_millis() as u64;
                 let engine_prefill_ms = report.prefill_ms.map(|ms| ms.round() as u64);
                 let generated = report.generated;
+                let reasoning_tokens = done["reasoning_tokens"]
+                    .as_u64()
+                    .map(|tokens| tokens.min(u64::from(generated)) as u32)
+                    .unwrap_or(0);
                 let prompt_tokens = report.prompt_tokens;
                 let cached_tokens = report.cached_tokens;
                 let prefill_ms = engine_prefill_ms.unwrap_or(ttft_ms);
@@ -844,6 +858,7 @@ pub(crate) async fn generate(
                 let summary = GenSummary {
                     source: format!("pipeline:{}", plan.hop_chain()),
                     tokens_generated: generated,
+                    reasoning_tokens,
                     tokens_per_sec: timings.generation_tokens_per_sec.unwrap_or(0.0),
                     duration_ms: total_ms,
                     timings,
@@ -1063,6 +1078,19 @@ pub(crate) async fn engine_generate_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_reasoning_ndjson_stays_distinct_from_answer_text() {
+        assert!(matches!(
+            generated_text_event(&json!({"r": "checking"})),
+            Some(GenEvent::Reasoning(text)) if text == "checking"
+        ));
+        assert!(matches!(
+            generated_text_event(&json!({"t": "done"})),
+            Some(GenEvent::Token(text)) if text == "done"
+        ));
+        assert!(generated_text_event(&json!({"r": ""})).is_none());
+    }
 
     #[test]
     fn plugin_codes_and_capabilities_round_trip() {

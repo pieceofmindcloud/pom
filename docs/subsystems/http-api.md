@@ -656,10 +656,20 @@ both providers' shape: the client reads the terminal stop reason and repeats
 the request with a higher ceiling, without executing anything. The shared
 scanner recognizes the markers declared in `CALL_FORMATS`, keeps text before
 the call, turns every complete call into `tool_calls` and, in SSE, into
-indexed deltas. An incomplete marker the **model** left half-done comes back as
+indexed deltas. The canonical prompt/replay format remains
+`<tool_call><function=…><parameter=…>`, while recovery also accepts a sole
+object parameter named `arguments` and the older
+`<function_calls><invoke name="…"><parameter name="…">` dialect (including
+multiple invokes in one container). An incomplete marker the **model** left half-done comes back as
 literal content so it does not disappear; one the **ceiling** cut comes back
 structured, and that is the difference between `TagScanner::finish` and
-`finish_truncated`. Every valid answer carries the `x_pom` extension (outside
+`finish_truncated`. Plugin engines can also send reasoning as a distinct `GenEvent::Reasoning`.
+For OpenAI chat responses it is serialized as `reasoning_content`, never
+`content`; this is the llama.cpp-compatible field Pi turns into its thinking
+block and “Thinking…” state. Completion-token usage still comes from the
+engine's generated-token count and therefore includes reasoning tokens, as the
+provider APIs do, but reasoning is not user-visible answer text.
+Every valid answer carries the `x_pom` extension (outside
 the schema) with the proof of distributed execution and its own `timings`
 object; the OpenAI `stop` field (string or list) goes through the gateway's
 incremental matcher: a suffix that may still be the prefix of a stop is held

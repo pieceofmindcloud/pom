@@ -1633,6 +1633,7 @@ mod tests {
         let summary = |finish_reason: Option<&str>, partial: bool| GenSummary {
             source: "pipeline:node-a".into(),
             tokens_generated: 4000,
+            reasoning_tokens: 0,
             tokens_per_sec: 1.0,
             duration_ms: 1,
             timings: timing_metrics(1, 1, 1, 1, 4000),

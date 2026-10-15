@@ -3137,6 +3137,7 @@ pub fn spawn_logged_generation_with_stops(
     tokio::spawn(async move {
         let mut generated: u32 = 0;
         let mut result = String::new();
+        let mut reasoning_open = false;
         // `None` means the client hung up before the generation ended, which is
         // its own outcome and worth seeing in the log.
         let mut outcome: Option<Result<GenSummary, String>> = None;
@@ -3146,6 +3147,19 @@ pub fn spawn_logged_generation_with_stops(
             let terminal = match &event {
                 GenEvent::Token(text) => {
                     generated += 1;
+                    if reasoning_open {
+                        result.push_str("</think>");
+                        reasoning_open = false;
+                    }
+                    result.push_str(text);
+                    None
+                }
+                GenEvent::Reasoning(text) => {
+                    generated += 1;
+                    if !reasoning_open {
+                        result.push_str("<think>");
+                        reasoning_open = true;
+                    }
                     result.push_str(text);
                     None
                 }
@@ -3163,6 +3177,10 @@ pub fn spawn_logged_generation_with_stops(
                 outcome = terminal;
                 break;
             }
+        }
+
+        if reasoning_open {
+            result.push_str("</think>");
         }
 
         let summary_trace = outcome.as_ref().and_then(|outcome| {
@@ -3315,23 +3333,43 @@ pub(crate) fn record_rejected(
     });
 }
 
-/// Run a generation to completion and return the whole text.
-pub async fn generate_blocking_with_stops(
+/// The two semantic streams of one completed generation.
+#[derive(Debug, Default)]
+pub struct GeneratedOutput {
+    pub text: String,
+    pub reasoning: String,
+}
+
+/// Run a generation to completion while preserving reasoning separately from
+/// visible answer text.
+pub async fn generate_blocking_output_with_stops(
     route: &'static str,
     caller: crate::reqlog::Caller,
     input: GenerationInput,
-) -> std::result::Result<(String, GenSummary), String> {
+) -> std::result::Result<(GeneratedOutput, GenSummary), String> {
     let (tx, mut rx) = mpsc::channel(64);
     spawn_logged_generation_with_stops(route, caller, input, tx);
 
-    let mut text = String::new();
+    let mut output = GeneratedOutput::default();
     while let Some(event) = rx.recv().await {
         match event {
-            GenEvent::Token(t) => text.push_str(&t),
-            GenEvent::Done(summary) => return Ok((text, summary)),
+            GenEvent::Token(t) => output.text.push_str(&t),
+            GenEvent::Reasoning(t) => output.reasoning.push_str(&t),
+            GenEvent::Done(summary) => return Ok((output, summary)),
             GenEvent::Failed(e) => return Err(e),
             GenEvent::FailedWithTelemetry { error, .. } => return Err(error),
         }
     }
     Err("generation ended without a response".to_string())
+}
+
+/// Run a generation to completion and return only visible answer text.
+pub async fn generate_blocking_with_stops(
+    route: &'static str,
+    caller: crate::reqlog::Caller,
+    input: GenerationInput,
+) -> std::result::Result<(String, GenSummary), String> {
+    generate_blocking_output_with_stops(route, caller, input)
+        .await
+        .map(|(output, summary)| (output.text, summary))
 }

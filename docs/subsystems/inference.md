@@ -2555,13 +2555,17 @@ runs it through that plugin or fails.
   llama.cpp head receives, plus the client's `max_tokens`, stop sequences and
   numeric sampling fields (`temperature`, `top_p`, `top_k`, `min_p`,
   `presence_penalty`, `frequency_penalty`). The generation route answers one
-  JSON object per line - `{"t"}` text, `{"p"}` prompt progress, `{"done"}`
-  with finish, prompt, completion and cached tokens, the engine's llama.cpp-style
-  `timings` (with the MTP drafts, `draft_n` and `draft_n_accepted`) and the
-  `stop_sequence` that ended it, or `{"error"}` - and the text becomes
-  `GenEvent::Token`; reasoning comes back inside `<think>` tags and tool calls
-  in the model's own template form, as a llama.cpp pipeline returns them, so
-  the gateway's tool-call parser reads them. The summary is the one a
+  JSON object per line - `{"t"}` answer text, `{"r"}` reasoning, `{"p"}`
+  prompt progress, `{"done"}` with finish, prompt, completion, reasoning and
+  cached token counts, the engine's llama.cpp-style `timings` (with the MTP drafts,
+  `draft_n` and `draft_n_accepted`) and the `stop_sequence` that ended it, or
+  `{"error"}`. Answer and reasoning become `GenEvent::Token` and
+  `GenEvent::Reasoning`, respectively. The OpenAI chat adapter emits reasoning
+  as `delta.reasoning_content` (and `message.reasoning_content` when blocking),
+  so clients such as Pi create a thinking block instead of displaying literal
+  `<think>` markup as answer content. Tool calls remain in the answer text in
+  the model's own template form, so the gateway's tool-call parser reads them.
+  The summary is the one a
   pipeline leaves: `source` is `pipeline:<chain>` and its `RequestTrace`
   (`plugin_engine::engine_trace`) has a hop per stage, each executed by the
   `plugin` engine on path `plugin/<code>`, with the request's prompt call and

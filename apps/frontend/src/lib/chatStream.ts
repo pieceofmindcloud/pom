@@ -6,6 +6,7 @@ export type { GenerationTimings } from "./types";
 export interface StreamMetrics {
   tokens_per_sec?: number;
   tokens_generated?: number;
+  reasoning_tokens?: number;
   duration_ms?: number;
   timings?: GenerationTimings;
   /** TTFT measured by the browser from request dispatch to first token. */
@@ -541,6 +542,16 @@ export function consumeChatDelta(previous: ChatStreamState, delta: string): Chat
     : next;
 }
 
+/** Appends an OpenAI-compatible structured `reasoning_content` delta. */
+export function consumeReasoningDelta(previous: ChatStreamState, delta: string): ChatStreamState {
+  if (!delta) return previous;
+  return {
+    ...previous,
+    reasoning: previous.reasoning + delta,
+    reasoningTokens: (previous.reasoningTokens ?? 0) + 1,
+  };
+}
+
 function splitThinking(previous: ChatStreamState, delta: string): ChatStreamState {
   let state = { ...previous, pending: "" };
   let buffer = previous.pending + delta;
@@ -583,6 +594,7 @@ export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetr
   let state = append({ ...previous, pending: "" }, previous.pending);
   if (metrics?.tokens_per_sec != null) state = { ...state, tokensPerSecond: metrics.tokens_per_sec };
   if (metrics?.tokens_generated != null) state = { ...state, tokensGenerated: metrics.tokens_generated };
+  if (metrics?.reasoning_tokens != null) state = { ...state, reasoningTokens: metrics.reasoning_tokens };
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
   if (metrics?.timings) {
     state = {

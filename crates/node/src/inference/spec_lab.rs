@@ -566,6 +566,7 @@ async fn generate(direct: bool, max_tokens: u32, n_batch: u32) -> Seen {
     while let Some(ev) = rx.recv().await {
         match ev {
             crate::gateway::GenEvent::Token(t) => seen.text.push_str(&t),
+            crate::gateway::GenEvent::Reasoning(_) => {}
             crate::gateway::GenEvent::Done(sum) => {
                 seen.tokens = sum.tokens_generated;
                 seen.partial = sum.partial;

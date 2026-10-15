@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   consumeChatDelta,
   consumeChatError,
+  consumeReasoningDelta,
   emptyChatStream,
   finishChatStream,
   withClientStreamTiming,
@@ -17,6 +18,15 @@ describe("chat stream parsing", () => {
 
     expect(state.reasoning).toBe("calculo");
     expect(state.content).toBe("Resposta");
+  });
+
+  it("appends structured reasoning deltas without adding them to visible content", () => {
+    let state = consumeReasoningDelta(emptyChatStream(), "cal");
+    state = consumeReasoningDelta(state, "culo");
+
+    expect(state.reasoning).toBe("calculo");
+    expect(state.content).toBe("");
+    expect(state.reasoningTokens).toBe(2);
   });
 
   it("counts one thinking token per delta that adds to the reasoning", () => {
@@ -54,11 +64,13 @@ describe("chat stream parsing", () => {
     const state = finishChatStream(emptyChatStream(), {
       tokens_per_sec: 18.4,
       tokens_generated: 312,
+      reasoning_tokens: 205,
       duration_ms: 16956,
     });
 
     expect(state.tokensPerSecond).toBe(18.4);
     expect(state.tokensGenerated).toBe(312);
+    expect(state.reasoningTokens).toBe(205);
     expect(state.durationMs).toBe(16956);
   });
 

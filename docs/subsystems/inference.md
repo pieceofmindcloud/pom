@@ -2583,11 +2583,16 @@ runs it through that plugin or fails.
   loopback.
 - **Conversation sessions.** A chat request may name its conversation
   (`session`, a file-name stem of up to 96 characters). The machine that ran the
-  turn saves the conversation in the engine's K/V sessions before the turn's
-  `done` line, and that line carries `session: {key, saved: {ids, delta}}`. The
+  turn saves the conversation in the engine's K/V sessions, and its `done` line
+  says so: `session: {key, saved: {ids, delta}}` when the save ran before the
+  line, or `session: {key, saved: null, deferred: true}` when the bridge defers
+  the save to an idle engine (the turn's answer does not wait for the disk). The
   node then sends the turn to every other machine that serves the whole model
-  (`POST .../engine/session/file` with the delta and its tokens, then
-  `POST .../engine/session/apply`); a peer without the delta's base gets the
+  from a background task of its own, which first waits until the bridge reports
+  the conversation's save written (`GET /pom/session/pending?key=`; 501 when the
+  deployment's `session_save` setting is off, and then nothing is synced). The
+  sends are `POST .../engine/session/file` with the delta and its tokens, then
+  `POST .../engine/session/apply`; a peer without the delta's base gets the
   whole session (`kind=full`, `full_ids`). Each machine restores the longest
   saved start of a prompt into a free batch slot itself, so the gateway's choice
   of machine does not change. The files live in `<slot_save_path>/strata-sessions/`,

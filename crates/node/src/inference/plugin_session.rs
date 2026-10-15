@@ -1,11 +1,12 @@
 //! The conversation sessions of a plugin engine across the machines that serve a whole model.
 //!
 //! A turn names its conversation (`session` in the chat request). The machine that ran the turn saves the
-//! conversation in its own engine (the plugin's bridge does, before it writes the turn's `done` line) and reports the
-//! save there. That machine then sends the turn to every other machine that serves the whole model: the turn's delta
-//! and its tokens, which the peer applies to the whole session it holds for the conversation. A peer that no longer
-//! holds the delta's base gets the whole session instead. Each machine restores the longest saved start of a prompt
-//! itself, so the gateway's choice of machine does not change.
+//! conversation in its own engine: the plugin's bridge either saves it before the turn's `done` line (`saved`) or
+//! defers the save to an idle engine (`deferred`). Either way that machine then sends the turn, in a background task
+//! of its own (`spawn_sync`, which waits for a deferred save to be written), to every other machine that serves the
+//! whole model: the turn's delta and its tokens, which the peer applies to the whole session it holds for the
+//! conversation. A peer that no longer holds the delta's base gets the whole session instead. Each machine restores
+//! the longest saved start of a prompt itself, so the gateway's choice of machine does not change.
 //!
 //! Routes (signed peer calls, the same checks as the generation route):
 //! - `POST /api/internal/plugins/:code/engine/session/chunk?key=..&kind=..&offset=..&total=..`, one piece of a file
@@ -39,6 +40,8 @@ pub(crate) const SESSION_PIECE: usize = 64 << 20;
 /// The largest signed control body: a piece and its envelope. Every signed control call is read up to this size.
 pub(crate) const CONTROL_BODY_LIMIT: usize = 128 << 20;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(900);
+/// How often the sync asks its bridge whether a deferred save is still pending.
+const SAVE_POLL: Duration = Duration::from_millis(250);
 const KINDS: [&str; 4] = ["full", "delta", "full_ids", "delta_meta"];
 
 /// Whether `key` can name a conversation: letters, digits, '-', '_' and '.', not starting with '.', at most 96 bytes.
@@ -83,10 +86,11 @@ fn first_user_text(request: &Value) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// The conversation a turn saved, from the `done` object of its answer (the bridge writes `session` only when it saved).
+/// The conversation a turn left for the other machines, from the `done` object of its answer: a turn whose save ran
+/// (`saved`), or whose save the bridge defers to an idle engine (`deferred`, see `spawn_sync`, which waits for it).
 pub(crate) fn saved_session(done: &Value) -> Option<String> {
     let session = done.get("session")?;
-    if session["saved"].is_null() {
+    if session["saved"].is_null() && session["deferred"].as_bool() != Some(true) {
         return None;
     }
     session["key"]
@@ -124,6 +128,20 @@ pub(crate) fn spawn_sync(state: GatewayState, code: String, key: String) {
             info!(plugin = %code, session = %key, "session sync: a newer turn of the conversation takes its place");
             return;
         }
+        // the bridge may still be writing the turn's save (it writes when its engine is idle): this task waits for
+        // it, so the turn's answer never does
+        match wait_saved(&state, &code, &key).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                warn!("plugin {code}: session {key} not synced to every machine: {error}");
+                return;
+            }
+        }
+        if lock.latest.load(Ordering::SeqCst) != generation {
+            info!(plugin = %code, session = %key, "session sync: a newer turn of the conversation takes its place");
+            return;
+        }
         if let Err(error) = sync(&state, &code, &key).await {
             warn!("plugin {code}: session {key} not synced to every machine: {error}");
         }
@@ -148,6 +166,46 @@ fn key_sync(code: &str, key: &str) -> Arc<KeySync> {
             })
         })
         .clone()
+}
+
+/// Waits until this machine's bridge has written the conversation's deferred save (`GET /pom/session/pending`).
+/// `Ok(false)`: the sessions are off on this deployment, so there is nothing to sync.
+async fn wait_saved(state: &GatewayState, code: &str, key: &str) -> Result<bool, String> {
+    let (port, token) = local_upstream(&state.plugins, code).await?;
+    let started = std::time::Instant::now();
+    loop {
+        let response = loopback_client()
+            .get(format!(
+                "http://127.0.0.1:{port}/pom/session/pending?key={key}"
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|error| format!("the plugin did not answer: {error}"))?;
+        if response.status() == StatusCode::NOT_IMPLEMENTED {
+            return Ok(false);
+        }
+        if !response.status().is_success() {
+            return Err(format!(
+                "the plugin refused the pending check: {}",
+                response.status()
+            ));
+        }
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|error| format!("the plugin's pending answer broke: {error}"))?;
+        if body["pending"].as_bool() != Some(true) {
+            return Ok(true);
+        }
+        if started.elapsed() > SESSION_TIMEOUT {
+            return Err(format!(
+                "its save was still pending after {} s",
+                SESSION_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(SAVE_POLL).await;
+    }
 }
 
 async fn sync(state: &GatewayState, code: &str, key: &str) -> Result<(), String> {
@@ -446,9 +504,11 @@ mod tests {
     }
 
     #[test]
-    fn only_a_saved_turn_names_its_session() {
+    fn only_a_saved_or_deferred_turn_names_its_session() {
         let saved = json!({"session": {"key": "c1", "saved": {"ids": [1, 2], "delta": true}}});
         assert_eq!(saved_session(&saved), Some("c1".into()));
+        let deferred = json!({"session": {"key": "c1", "saved": null, "deferred": true}});
+        assert_eq!(saved_session(&deferred), Some("c1".into()));
         assert_eq!(
             saved_session(&json!({"session": {"key": "c1", "saved": null}})),
             None

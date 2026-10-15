@@ -763,7 +763,8 @@ pub(crate) async fn generate(
             } else if let Some(done) = event.get("done") {
                 let total_ms = request_started.elapsed().as_millis() as u64;
                 // The plugin's basic data; everything else about the generation is measured here.
-                // The turn ran on this machine: its saved conversation goes on to the peers (a remote head does this itself).
+                // The turn ran on this machine: its conversation goes on to the peers from a background task
+                // that waits for a deferred save (a remote head does this itself).
                 if node_id == state.network.node_id {
                     if let Some(key) = super::plugin_session::saved_session(done) {
                         super::plugin_session::spawn_sync(state.clone(), code.to_owned(), key);

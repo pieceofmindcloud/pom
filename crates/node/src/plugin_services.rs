@@ -113,6 +113,9 @@ pub(crate) struct EngineSetting {
     pub max: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// `pom`: the deployment's POM settings card draws it, whatever the slices; absent: the engine's card.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<String>,
 }
 
 fn setting_key(value: &Value) -> Option<String> {
@@ -181,6 +184,7 @@ fn parse_setting(entry: &Value) -> Option<EngineSetting> {
         min: bound("min"),
         max: bound("max"),
         options,
+        placement: (entry["placement"].as_str() == Some("pom")).then(|| "pom".to_owned()),
     })
 }
 
@@ -386,6 +390,25 @@ pub(crate) async fn plugin_peer_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setting_placed_in_the_pom_card_keeps_its_placement() {
+        let answer = json!({"services": [
+            {"id": "e", "kind": "inference", "name": "Engine", "status": "ready", "settings": [
+                {"key": "sampling.top_k", "type": "integer", "label": {"en": "Top k"}},
+                {"key": "session_save", "type": "boolean", "placement": "pom", "label": {"en": "Save the KV cache"}},
+                {"key": "other", "type": "boolean", "placement": "engine", "label": {"en": "Other"}}
+            ]}
+        ]});
+        let services = parse_services("engine", &answer);
+        let settings = &services[0].settings;
+        assert_eq!(settings[0].placement, None);
+        assert_eq!(settings[1].placement.as_deref(), Some("pom"));
+        assert_eq!(settings[2].placement, None);
+        let published = serde_json::to_value(&services[0]).unwrap();
+        assert!(published["settings"][0].get("placement").is_none());
+        assert_eq!(published["settings"][1]["placement"], "pom");
+    }
 
     #[test]
     fn a_service_answer_is_validated_entry_by_entry() {

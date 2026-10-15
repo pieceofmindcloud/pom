@@ -765,7 +765,9 @@ Key logic carriers:
   `prefill_max_inflight_chunks`, `hidden_state_dtype`) are not in that card:
   the inspector draws them in a separate "POM settings" card below it, like
   under llama.cpp, when the slices cross machines (`showHiddenStateDtype`). A
-  service that declares none has no such card.
+  setting the service publishes with `placement: "pom"` (the Strata's
+  `session_save`) goes to that same card in both modes, whole model and slices,
+  and is not in the engine's card. A service that declares none has no such card.
 - `DeploymentInspector.tsx` - the inspector of a deployment's properties, and
   **one single** one for the two screens: the deploy screen uses it editable, the History
   uses it with `readOnly` to show with which parameters a version came up. In

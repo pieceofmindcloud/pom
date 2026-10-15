@@ -584,6 +584,9 @@ export function DeploymentInspector({
     // The POM carries the hidden state between the plugin's stages, so its own
     // settings only exist when the slices cross machines.
     const pomSettings = showHiddenStateDtype ? (inferenceService.pomSettings ?? []) : [];
+    // The engine's own settings, and the ones the service places in the POM card (whatever the slices).
+    const engineSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement !== "pom");
+    const pomCardSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement === "pom");
     return (
       <>
         <Section title={t("inspector.sectionInferenceService", { name: inferenceService.name })} tone="iris">
@@ -601,19 +604,27 @@ export function DeploymentInspector({
             tip: t("deploy.unloadIfIdleHint"),
           })}
           {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
-          {(inferenceService.settings?.length ?? 0) > 0 && (
+          {engineSettings.length > 0 && (
             <EngineSettingsFields
-              settings={inferenceService.settings ?? []}
+              settings={engineSettings}
               values={value.engine_settings}
               onChange={(next) => set({ engine_settings: next })}
               readOnly={readOnly}
             />
           )}
         </Section>
-        {pomSettings.length > 0 && (
+        {(pomSettings.length > 0 || pomCardSettings.length > 0) && (
           <Section title={t("inspector.sectionPom")} tone="aqua" guide={DEPLOY_SETTINGS_GUIDES.pom}>
             {pomSettings.includes("prefill_max_inflight_chunks") && numeric("prefill_max_inflight_chunks")}
             {pomSettings.includes("hidden_state_dtype") && hiddenStateField()}
+            {pomCardSettings.length > 0 && (
+              <EngineSettingsFields
+                settings={pomCardSettings}
+                values={value.engine_settings}
+                onChange={(next) => set({ engine_settings: next })}
+                readOnly={readOnly}
+              />
+            )}
           </Section>
         )}
       </>

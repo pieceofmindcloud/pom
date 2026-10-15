@@ -437,7 +437,10 @@ entries of `{key, type, label, description?, min?, max?, options?}`, where
 `description` are texts per language with `en` required. The node checks only
 that shape; the deploy inspector draws them, an empty field keeps the
 engine's default, and the values travel in `RuntimeParams.engine_settings` to
-`engine.load` (`params.settings`), where the plugin validates them. A service
+`engine.load` (`params.settings`), where the plugin validates them. A setting
+may carry `placement: "pom"`: the deploy inspector then draws it in the POM
+settings card, whatever the slices (whole model or slices), not in the engine's
+card; the node passes the field on unchanged. A service
 that also runs POM layer slices, one stage per machine, publishes
 `stages: true`, and lists in `pom_settings` the POM deployment settings that
 apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks` and

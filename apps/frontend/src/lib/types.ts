@@ -764,6 +764,8 @@ export interface EngineSetting {
   min?: number;
   max?: number;
   options?: string[];
+  /** `pom`: drawn in the deployment's POM settings card, whatever the slices; absent: the engine's card. */
+  placement?: "pom";
 }
 
 /** Values by setting key; an absent key keeps the engine's default. */

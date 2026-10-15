@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import type { PomSetting, RuntimeParams } from "../lib/types";
+import type { EngineSetting, PomSetting, RuntimeParams } from "../lib/types";
 import { DeploymentInspector } from "./DeploymentInspector";
 
 afterEach(cleanup);
@@ -20,6 +20,7 @@ function mount(
   showHiddenStateDtype: boolean,
   onChange = vi.fn(),
   pomSettings: PomSetting[] = ["prefill_max_inflight_chunks", "hidden_state_dtype"],
+  settings: EngineSetting[] = [],
 ) {
   render(
     <LocaleProvider initialLocale="en">
@@ -27,7 +28,7 @@ function mount(
         value={params}
         onChange={onChange}
         showHiddenStateDtype={showHiddenStateDtype}
-        inferenceService={{ name: "Strata", settings: [], pomSettings }}
+        inferenceService={{ name: "Strata", settings, pomSettings }}
       />
     </LocaleProvider>,
   );
@@ -53,6 +54,21 @@ describe("DeploymentInspector with a plugin's inference service", () => {
     mount(true, vi.fn(), ["hidden_state_dtype"]);
     expect(screen.getByRole("combobox", { name: "Hidden-state precision" })).toBeTruthy();
     expect(document.querySelector('input[name="prefill_max_inflight_chunks"]')).toBeNull();
+  });
+
+  it("draws a setting placed in the POM card in it, in both the slices and the whole model", () => {
+    const settings: EngineSetting[] = [
+      { key: "session_save", type: "boolean", placement: "pom", label: { en: "Save the KV cache" } },
+      { key: "vram_reserve_mib", type: "integer", label: { en: "VRAM reserve" } },
+    ];
+    for (const slices of [true, false]) {
+      cleanup();
+      mount(slices, vi.fn(), [], settings);
+      const save = screen.getByText("Save the KV cache").closest("section");
+      expect(save?.textContent).toContain("POM settings");
+      const reserve = screen.getByText("VRAM reserve").closest("section");
+      expect(reserve?.textContent).not.toContain("POM settings");
+    }
   });
 
   it("has no POM card for a service that declares none", () => {

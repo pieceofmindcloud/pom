@@ -84,34 +84,38 @@ jobs:
       - name: Compile
         run: cargo build --release --locked -p node -p pom-plugin-host --features metal
 
+      # The installer window is laid out by create-dmg (Finder positions the icons), so the
+      # DMG is built here, on the runner, and not on a developer machine.
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Assemble the package
         run: |
           nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
           # The workspace persists between runs on this runner: clearing the leftovers from
           # the previous release avoids packaging the old package along with it.
-          rm -rf pacote pom-*.zip "$nome.zip"
+          rm -rf pacote pom-*.dmg "$nome.dmg"
 
           # The app is the whole program: the binary, the plugin host (Contents/MacOS, where
           # the binary looks for it) and the interface (Contents/Resources/apps/frontend/dist,
-          # found by `bundled_ui_dist`) all live inside the bundle. The README beside it
-          # explains the first launch on macOS.
-          ./scripts/make-macos-app.sh target/release/pom "pacote/$nome/POM.app"
-          mkdir -p "pacote/$nome/POM.app/Contents/Resources/apps/frontend"
-          cp -R apps/frontend/dist "pacote/$nome/POM.app/Contents/Resources/apps/frontend/"
-          cp packaging/macos/README.md "pacote/$nome/README.md"
+          # found by `bundled_ui_dist`) all live inside the bundle.
+          ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
+          mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
+          cp -R apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
 
           # The ad-hoc signature must be made last: the copies above change the sealed
           # resources. Signed before them, Gatekeeper reports the app as "damaged".
-          codesign --force --deep --sign - "pacote/$nome/POM.app"
-          codesign --verify --deep --strict "pacote/$nome/POM.app"
+          codesign --force --deep --sign - "pacote/POM.app"
+          codesign --verify --deep --strict "pacote/POM.app"
 
-          # ditto keeps the bundle's metadata and signature intact, unlike a plain zip.
-          ditto -c -k --sequesterRsrc --keepParent "pacote/$nome" "$nome.zip"
+          # The disk image holds POM.app, an Applications shortcut and the README that
+          # explains the first launch. make-dmg.sh lays out the window with create-dmg.
+          packaging/macos/make-dmg.sh "pacote/POM.app" packaging/macos/README.md "$nome.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: pacote-macos
-          path: pom-*.zip
+          path: pom-*.dmg
           if-no-files-found: error
           # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 2
@@ -123,4 +127,4 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
-          files: pom-*.zip
+          files: pom-*.dmg

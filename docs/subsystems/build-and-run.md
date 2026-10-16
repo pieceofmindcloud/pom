@@ -979,9 +979,11 @@ icon** (`embed_windows_icon` depends on the host's `cfg(windows)`).
 
 ### The package
 
-The macOS package is the `POM.app` bundle plus `README.md` (installation steps:
-Gatekeeper, Applications, Local Network), zipped with `ditto` as
-`pom-<v>-aarch64-apple-darwin.zip`. The bundle's `Info.plist` declares
+The macOS package is a disk image, `pom-<v>-aarch64-apple-darwin.dmg`, built on
+the runner by `packaging/macos/make-dmg.sh` with `create-dmg`. It holds the
+`POM.app` bundle, an Applications shortcut (the window background, from
+`make-dmg-background.py`, shows the arrow between them) and `README.md`
+(installation steps: Gatekeeper, Applications, Local Network). The bundle's `Info.plist` declares
 `NSLocalNetworkUsageDescription`, the text macOS shows in the Local Network prompt.
 The binary is `Contents/MacOS/pom`, the
 plugin host sits beside it in the same folder, and the interface is in

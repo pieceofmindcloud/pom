@@ -158,6 +158,10 @@ jobs:
             # "Missing cubin file output" on every CUDA compile test); nvcc runs directly.
             # C and C++ keep the cache.
             unset CMAKE_CUDA_COMPILER_LAUNCHER
+            # Every nvcc of the llama.cpp build takes gigabytes; with all 16 cores the kernel
+            # ran out of memory on ksia (exit 137) and killed a process of the running node.
+            # cargo passes this count to the CMake build as well.
+            export CARGO_BUILD_JOBS=4
             cargo build --release --locked -p node -p pom-plugin-host --features ${{ matrix.variante.features }}
           else
             cargo build --release --locked -p node -p pom-plugin-host

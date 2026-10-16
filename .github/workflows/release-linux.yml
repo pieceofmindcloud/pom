@@ -154,6 +154,10 @@ jobs:
           CUDAARCHS: ''
         run: |
           if [ -n "${{ matrix.variante.features }}" ]; then
+            # sccache cannot wrap nvcc for the wide list of architectures (it fails with
+            # "Missing cubin file output" on every CUDA compile test); nvcc runs directly.
+            # C and C++ keep the cache.
+            unset CMAKE_CUDA_COMPILER_LAUNCHER
             cargo build --release --locked -p node -p pom-plugin-host --features ${{ matrix.variante.features }}
           else
             cargo build --release --locked -p node -p pom-plugin-host

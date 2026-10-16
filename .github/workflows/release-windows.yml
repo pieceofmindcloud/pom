@@ -275,6 +275,9 @@ jobs:
         run: |
           set -euo pipefail
           nome="pom-${{ inputs.version }}-x86_64-pc-windows-msvc"
+          # The package folder is built from scratch: nothing else in the workspace goes in it.
+          rm -rf pacote
+          mkdir pacote
           llama="$(cygpath -u "$RUNNER_TEMP")/llama"
           # The llama.cpp DLLs from the fork's release: llama, ggml, the loadable
           # backends (ggml-cpu-*, and on the gpu ggml-cuda and ggml-vulkan) and

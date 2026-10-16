@@ -417,6 +417,39 @@ pub(super) async fn add_node_endpoint(
     // The new machine launches with its own parameters; the deployment's version keeps the base ones.
     let node_params = overrides.apply(&params);
 
+    // The machine's engine: an inference service of a plugin (its own `inference_service`), or llama.cpp when none.
+    // The same rules as a deployment (`deploy_block`): the machine offers it and it is ready; a service that does not
+    // run layer slices takes the whole model on this machine.
+    if let Some(service) = node_params.inference_service.as_deref() {
+        let whole = req.kind == DeployKind::Whole;
+        if let Some(reason) = crate::plugin_engine::deploy_block(
+            &state,
+            service,
+            whole,
+            std::slice::from_ref(&req.target_node_id),
+        )
+        .await
+        {
+            return bad(json!({ "error": reason }));
+        }
+        if !whole {
+            let stages = crate::plugin_engine::services_of(&state, &req.target_node_id)
+                .await
+                .and_then(|services| {
+                    services
+                        .into_iter()
+                        .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
+                })
+                .and_then(|entry| entry["stages"].as_bool())
+                .unwrap_or(false);
+            if !stages {
+                return bad(json!({
+                    "error": format!("the inference service {service} runs the whole model on one machine: add the whole model here"),
+                }));
+            }
+        }
+    }
+
     // Re-surveys instead of trusting the screen: the preview may be a minute old, and a
     // machine that left in the meantime would receive a slice.
     // The slice is looked up in the same surveys the options were built from (`add_node_option_survey_kinds`): a slice

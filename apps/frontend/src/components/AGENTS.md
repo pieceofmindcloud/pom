@@ -530,7 +530,13 @@ Per-file list:
   `DeploymentInspector` as the deploy screen, starting from the active version of
   the deployment (`listDeployments`); it is sent as the machine's own `overrides.params`
   and the version keeps its parameters. The K/V cache choices come from the target's
-  options (`cache_types`) and are sent as the install values.
+  options (`cache_types`) and are sent as the install values. The machine's engine is
+  chosen among the inference services it runs (`services`, from `inferenceServicesOf`):
+  llama.cpp, or a plugin's service, which goes as `inference_service` in the same params.
+  A service that does not run layer slices offers the whole model only. The inspector
+  shows that service's engine settings and its POM settings for this machine, which land in
+  `engine_settings` (the values the plugin receives). The node validates the engine with
+  `deploy_block` and refuses a slice on a whole-model service (`deploy/node.rs`).
   Overlap is the point - it creates a parallel route - so it is flagged, not
   blocked. The dialog can add a whole-model head to a sliced deployment and
   vice versa. Exports `rangeOverlap` (shared layers between a chosen range and

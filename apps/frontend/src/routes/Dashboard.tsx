@@ -18,7 +18,7 @@ import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../components/ui";
 import { canSeePeerDetails } from "../lib/access";
-import { engineOfParams, inferenceServiceCatalog } from "../lib/inferenceServices";
+import { engineOfParams, inferenceServiceCatalog, inferenceServicesOf } from "../lib/inferenceServices";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
 import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
@@ -364,6 +364,7 @@ export function Dashboard() {
         // to add; the node refuses the request as well.
         peers={c.peers.filter((p) => p.node?.profile !== "infer").map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
         slices={[]}
+        services={inferenceServicesOf(c.peers)}
         existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
         onClose={() => setAdding(false)}
         onDone={() => invalidateAll()}

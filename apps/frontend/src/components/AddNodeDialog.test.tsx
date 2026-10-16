@@ -285,4 +285,87 @@ describe("AddNodeDialog", () => {
       post.mockRestore();
     }
   });
+
+  it("offers the engines of the chosen machine and sends the chosen one with its machine", async () => {
+    const get = vi.spyOn(api, "get").mockImplementation(async () => ({
+      node_id: "n1",
+      deployments: [
+        {
+          deployment: {
+            deploy_id: "d1",
+            active_version: 1,
+            versions: [{ version: 1, params: { n_ctx: 8192 } }],
+          },
+          serving: true,
+          is_default: true,
+          holders: [],
+        },
+      ],
+    }) as never);
+    const post = vi.spyOn(api, "post").mockImplementation(async (path, body) => {
+      if (path === "/api/ui/deploy/node") return { overlapping_layers: [] } as never;
+      return {
+        options: [
+          { kind: "whole", start_layer: 0, end_layer: 39, label: "whole" },
+          { kind: "shards", start_layer: 20, end_layer: 39, label: "20-39" },
+        ],
+        cache_types: { cache_type_k: "f16", cache_type_v: "f16", choices: ["f16"] },
+        defaults: { n_gpu_layers: 99, offload_kqv: true },
+      } as never;
+    });
+    const strata = {
+      code: "strata",
+      name: "Strata",
+      architectures: ["qwen35moe"],
+      settings: [],
+      pomSettings: [],
+      nodeIds: ["n2"],
+      stages: false,
+      vision: false,
+    };
+    try {
+      render(
+        <LocaleProvider initialLocale="pt-BR">
+          <AddNodeDialog
+            open
+            group="modelo"
+            deployId="d1"
+            services={[strata]}
+            peers={[
+              { node_id: "n1", short_id: "n1", hostname: "maq1" },
+              { node_id: "n2", short_id: "n2", hostname: "maq2" },
+            ]}
+            slices={[]}
+            existingRanges={[]}
+            onClose={() => {}}
+          />
+        </LocaleProvider>,
+      );
+      // the first machine does not run Strata: no engine choice there
+      await waitFor(() => expect(get).toHaveBeenCalledWith("/api/ui/deployments"));
+      expect(screen.queryByRole("option", { name: "Strata" })).toBeNull();
+
+      fireEvent.change(screen.getByDisplayValue("maq1"), { target: { value: "n2" } });
+      await waitFor(() => expect(screen.getByRole("option", { name: "Strata" })).toBeTruthy());
+      fireEvent.change(screen.getByRole("option", { name: "Strata" }).closest("select") as HTMLSelectElement, {
+        target: { value: "strata" },
+      });
+      // a service that runs no layer slices takes the whole model only
+      await waitFor(() => expect(screen.queryByRole("option", { name: "20-39" })).toBeNull());
+      fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
+      await waitFor(() => {
+        expect(post).toHaveBeenLastCalledWith(
+          "/api/ui/deploy/node",
+          expect.objectContaining({
+            target_node_id: "n2",
+            kind: "whole",
+            overrides: { params: expect.objectContaining({ inference_service: "strata", n_ctx: 8192 }) },
+          }),
+        );
+      });
+    } finally {
+      post.mockRestore();
+      get.mockRestore();
+    }
+  });
 });

@@ -11,6 +11,8 @@ import { addNodeOptions, api, listDeployments } from "../lib/api";
 import type { AddNodeOption, AddNodeOptionsResponse, CacheTypesResponse, KvCacheType, RuntimeParams } from "../lib/types";
 import { Confirm } from "./Confirm";
 import { DeploymentInspector } from "./DeploymentInspector";
+import type { InferenceServiceEntry } from "../lib/inferenceServices";
+import { Select } from "./ui";
 import { useI18n } from "../i18n/provider";
 
 export interface AddNodePeer {
@@ -34,6 +36,7 @@ export function AddNodeDialog({
   deployId,
   peers,
   slices,
+  services = [],
   existingRanges,
   onClose,
   onDone,
@@ -48,6 +51,8 @@ export function AddNodeDialog({
   slices: AddNodeSlice[];
   /** Ranges that are already live, to know what the choice overlaps. */
   existingRanges: [number, number][];
+  /** The inference services plugins offer (any machine); the machine picks among those it runs. */
+  services?: InferenceServiceEntry[];
   onClose: () => void;
   onDone?: (overlapping: number[]) => void;
 }) {
@@ -59,6 +64,8 @@ export function AddNodeDialog({
   // This machine's whole configuration, edited with the deployment inspector. It starts as the deployment's
   // active version, and it is sent to the node as this machine's own override (the version keeps its parameters).
   const [draft, setDraft] = useState<RuntimeParams | null>(null);
+  // The machine's engine: "" is llama.cpp, otherwise the code of an inference service the machine runs.
+  const [engineCode, setEngineCode] = useState("");
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +82,7 @@ export function AddNodeDialog({
       setOptionKey(keyOf(fallback[0]));
       setCacheTypes(null);
       setDraft(null);
+      setEngineCode("");
       setError(null);
     }
     wasOpen.current = open;
@@ -136,13 +144,25 @@ export function AddNodeDialog({
     return () => controller.abort();
   }, [open, group, nodeId, locale]);
 
-  useEffect(() => {
-    if (options.length > 0 && !options.some((option) => keyOf(option) === optionKey)) {
-      setOptionKey(keyOf(options[0]));
-    }
-  }, [options, optionKey]);
+  // The engines this machine runs, and the chosen one (llama.cpp when none).
+  const engines = services.filter((service) => service.nodeIds.includes(nodeId));
+  const engine = engines.find((service) => service.code === engineCode) ?? null;
+  // A service that does not run layer slices takes the whole model on this machine; one that runs slices keeps both.
+  const shownOptions = engine && !engine.stages ? options.filter((candidate) => candidate.kind === "whole") : options;
+  const option = shownOptions.find((candidate) => keyOf(candidate) === optionKey);
+  // The machine's whole configuration, with its engine: what the deployment inspector shows and what is sent.
+  const machine: RuntimeParams | null = draft ? { ...draft, inference_service: engine?.code ?? null } : null;
 
-  const option = options.find((candidate) => keyOf(candidate) === optionKey);
+  useEffect(() => {
+    if (shownOptions.length > 0 && !shownOptions.some((option) => keyOf(option) === optionKey)) {
+      setOptionKey(keyOf(shownOptions[0]));
+    }
+  }, [shownOptions, optionKey]);
+
+  // A machine that no longer runs the chosen engine goes back to llama.cpp.
+  useEffect(() => {
+    if (engineCode && !engines.some((service) => service.code === engineCode)) setEngineCode("");
+  }, [engines, engineCode]);
   const overlapping = option
     ? rangeOverlap(existingRanges, [option.start_layer, option.end_layer])
     : [];
@@ -162,7 +182,7 @@ export function AddNodeDialog({
         target_node_id: nodeId,
         start_layer: option.start_layer,
         end_layer: option.end_layer,
-        ...(draft ? { overrides: { params: draft } } : {}),
+        ...(machine ? { overrides: { params: machine } } : {}),
         ...(cacheTypes
           ? {
               cache_type_k: cacheTypes.cache_type_k,
@@ -204,15 +224,34 @@ export function AddNodeDialog({
             </select>
           </label>
 
+          {engines.length > 0 && (
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted" title={t("deploy.inferenceServiceHint")}>
+                {t("deploy.inferenceService")}
+              </span>
+              <Select
+                name="add_node_engine"
+                value={engineCode}
+                onChange={(event) => setEngineCode(event.target.value)}
+                className="h-9 text-sm"
+              >
+                <option value="">{t("deploy.inferenceServiceLlama")}</option>
+                {engines.map((service) => (
+                  <option key={service.code} value={service.code}>{service.name}</option>
+                ))}
+              </Select>
+            </label>
+          )}
+
           <label className="flex flex-col gap-1">
             <span className="text-xs text-muted">{t("deploy.addNodeSlice")}</span>
             <select
               className="rounded-md border border-line bg-raised px-2 py-1.5 font-mono text-sm"
               value={optionKey}
-              disabled={loadingOptions || options.length === 0}
+              disabled={loadingOptions || shownOptions.length === 0}
               onChange={(event) => setOptionKey(event.target.value)}
             >
-              {options.map((candidate) => (
+              {shownOptions.map((candidate) => (
                 <option key={keyOf(candidate)} value={keyOf(candidate)}>
                   {candidate.kind === "whole" ? t("deploy.addNodeWhole") : candidate.label}
                 </option>
@@ -221,11 +260,16 @@ export function AddNodeDialog({
             {loadingOptions && <span className="text-xs text-muted">{t("deploy.addNodeLoading")}</span>}
           </label>
 
-          {draft && (
+          {machine && (
             <div className="max-h-[55vh] overflow-y-auto pr-1">
               <DeploymentInspector
-                value={draft}
+                value={machine}
                 onChange={setDraft}
+                inferenceService={
+                  engine
+                    ? { name: engine.name, settings: engine.settings, pomSettings: engine.pomSettings }
+                    : undefined
+                }
                 showHiddenStateDtype
                 cacheTypes={
                   cacheTypes

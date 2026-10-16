@@ -994,6 +994,13 @@ goes in (`codesign --force --deep --sign -`): any change to the bundle after
 that breaks the seal, and Gatekeeper then reports it as "damaged". Without
 `POM_HOME` it keeps its state in `~/.pom`. The Windows package works the same way, but its default home is the folder that contains `pom.exe`, so the package keeps its own data.
 
+To test a change in the packaged app, `packaging/macos/build-local-dmg.sh
+[output.dmg]` builds the same disk image on a developer Mac: UI, release build
+with Metal and `MACOSX_DEPLOYMENT_TARGET=11.0`, bundle, ad hoc signature and
+`make-dmg.sh`, for the host architecture only (no `lipo`). It needs
+Rust >= 1.88 (`RUSTUP_TOOLCHAIN` picks a non-default one), `create-dmg`, Node >= 20 on PATH and the `llama.cpp` fork at the root; the
+default output is `dist-release/pom-local-<arch>-apple-darwin.dmg`.
+
 Linux packages put the binary at the package root with `apps/` next to it, so
 `project_root()` finds the UI from the executable's directory - the unpacked
 folder works anywhere, without `POM_HOME`. The Windows package has no `apps/`

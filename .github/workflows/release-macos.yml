@@ -43,6 +43,8 @@ jobs:
         uses: ./.github/actions/llama-cache
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
 
       - name: Enable the build cache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -81,8 +83,22 @@ jobs:
           # job's global git config, which lives only as long as this hosted runner.
           git config --global url."https://x-access-token:${ENGINE_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
 
-      - name: Compile
-        run: cargo build --release --locked -p node -p pom-plugin-host --features metal
+      # One binary for Apple silicon and Intel: each slice is compiled for its own target
+      # and lipo joins them. MACOSX_DEPLOYMENT_TARGET makes both slices run from macOS 11
+      # (Big Sur) on, so Monterey and Big Sur get the same binary as the newer Macs.
+      - name: "Compile (universal, arm64 and x86_64)"
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin -p node -p pom-plugin-host --features metal
+          cargo build --release --locked --target x86_64-apple-darwin -p node -p pom-plugin-host --features metal
+          mkdir -p target/universal/release
+          for bin in pom pom-plugin-host; do
+            lipo -create -output "target/universal/release/$bin" \
+              "target/aarch64-apple-darwin/release/$bin" \
+              "target/x86_64-apple-darwin/release/$bin"
+          done
+          lipo -info target/universal/release/pom target/universal/release/pom-plugin-host
 
       # The installer window is laid out by create-dmg (Finder positions the icons), so the
       # DMG is built here, on the runner, and not on a developer machine.
@@ -99,7 +115,7 @@ jobs:
           # The app is the whole program: the binary, the plugin host (Contents/MacOS, where
           # the binary looks for it) and the interface (Contents/Resources/apps/frontend/dist,
           # found by `bundled_ui_dist`) all live inside the bundle.
-          ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
+          ./scripts/make-macos-app.sh target/universal/release/pom "pacote/POM.app"
           mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
           cp -R apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
 

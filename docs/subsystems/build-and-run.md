@@ -983,7 +983,9 @@ The macOS package is a disk image, `pom-<v>-aarch64-apple-darwin.dmg`, built on
 the runner by `packaging/macos/make-dmg.sh` with `create-dmg`. It holds the
 `POM.app` bundle, an Applications shortcut (the window background, from
 `make-dmg-background.py`, shows the arrow between them) and `README.md`
-(installation steps: Gatekeeper, Applications, Local Network). The bundle's `Info.plist` declares
+(installation steps: Gatekeeper, Applications, Local Network).
+The binaries are universal (arm64 and x86_64, `lipo`), built with
+`MACOSX_DEPLOYMENT_TARGET=11.0`, so the app runs on macOS 11 (Big Sur) and later. The bundle's `Info.plist` declares
 `NSLocalNetworkUsageDescription`, the text macOS shows in the Local Network prompt.
 The binary is `Contents/MacOS/pom`, the
 plugin host sits beside it in the same folder, and the interface is in

@@ -25,7 +25,7 @@ use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 
@@ -465,6 +465,391 @@ pub(crate) async fn engine_session_apply_route(
     }
 }
 
+// ---- pulling a conversation's session from a peer ---------------------------------------------------------------
+//
+// The head that runs a turn fetches the conversation's saved session from a peer when it lacks it: before the turn
+// starts, `prepare_for_body` asks this machine's bridge and every peer that serves the model what each holds for the
+// conversation (`engine/session/offer`). A peer is only used when it has the same layer split (the engine refuses a
+// session of another split), its save is written, and it holds more tokens than this machine. The fetch happens when
+// the transfer is faster than reading those tokens again (`fetch_pays`), with the rates measured here. The turn then
+// restores the longest saved start of its prompt as it always does.
+
+/// How long a head is remembered as holding a conversation: its slot and its file stay there until the conversation
+/// moves, and a head that answers nothing for this long is not a source of affinity.
+const HOLDER_TTL: Duration = Duration::from_secs(6 * 3600);
+
+/// The head that last ran each conversation (`model/session` -> node id, when). The conversation's KV session lives in
+/// that head's batch slot, so its next turn goes back there (`gateway::generation::auto_head`).
+static HOLDERS: StdMutex<Option<HashMap<String, (String, Instant)>>> = StdMutex::new(None);
+
+/// Records that `node_id` ran a turn of the conversation `key` of `model`.
+pub(crate) fn note_holder(model: &str, key: &str, node_id: &str) {
+    let mut holders = HOLDERS.lock().unwrap_or_else(|e| e.into_inner());
+    holders
+        .get_or_insert_with(HashMap::new)
+        .insert(format!("{model}/{key}"), (node_id.to_owned(), Instant::now()));
+}
+
+/// The head that holds the conversation `key` of `model`, when it was recorded recently. (The plugin's code is only
+/// known once the head is chosen, so the holder is keyed by the model.)
+pub(crate) fn holder_of(model: &str, key: &str) -> Option<String> {
+    let holders = HOLDERS.lock().unwrap_or_else(|e| e.into_inner());
+    let (node, since) = holders.as_ref()?.get(&format!("{model}/{key}"))?;
+    (since.elapsed() < HOLDER_TTL).then(|| node.clone())
+}
+
+/// Whether a turn is still pushed to the peers (`spawn_sync`). Off: the peers pull the session when they need it
+/// (`prepare_for_body`), so nothing is sent unless no one asks. Kept, not deleted, until the pull is proven on the cluster.
+pub(crate) const PUSH_SYNC: bool = false;
+
+/// Rates until a measurement exists: a 1 GbE-class link and a prefill speed of a mid-range card.
+const DEFAULT_LINK_BYTES_PER_S: f64 = 100.0 * 1024.0 * 1024.0;
+const DEFAULT_PREFILL_TOKENS_PER_S: f64 = 1000.0;
+/// Round trips and the restore's fixed cost, added to every fetch.
+const FETCH_OVERHEAD_S: f64 = 0.5;
+/// The weight of a new measurement in its running average.
+const RATE_WEIGHT: f64 = 0.3;
+const FETCH_TIMEOUT: Duration = Duration::from_secs(900);
+
+static LINK_RATE: StdMutex<Option<f64>> = StdMutex::new(None);
+static PREFILL_RATE: StdMutex<Option<f64>> = StdMutex::new(None);
+
+fn fold_rate(cell: &StdMutex<Option<f64>>, sample: f64) {
+    if !sample.is_finite() || sample <= 0.0 {
+        return;
+    }
+    let mut rate = cell.lock().unwrap_or_else(|e| e.into_inner());
+    *rate = Some(match *rate {
+        Some(old) => old + RATE_WEIGHT * (sample - old),
+        None => sample,
+    });
+}
+
+fn measured(cell: &StdMutex<Option<f64>>, default: f64) -> f64 {
+    cell.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or(default)
+}
+
+/// A turn's prefill speed on this machine (its timings), which the pull weighs against a fetch.
+pub(crate) fn note_prefill_rate(tokens_per_s: f64) {
+    fold_rate(&PREFILL_RATE, tokens_per_s);
+}
+
+/// What a machine can give for a conversation: the tokens and bytes of its file on disk, the tokens its slot holds in
+/// RAM (not fetchable), the layer split it runs, and whether its save is still being written.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Offer {
+    pub tokens: u64,
+    pub bytes: u64,
+    pub ram_tokens: u64,
+    pub layers: String,
+    pub pending: bool,
+}
+
+impl Offer {
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            tokens: value["tokens"].as_u64()?,
+            bytes: value["bytes"].as_u64()?,
+            ram_tokens: value["ram_tokens"].as_u64().unwrap_or(0),
+            layers: value["layers"].as_str()?.to_owned(),
+            pending: value["pending"].as_bool().unwrap_or(false),
+        })
+    }
+
+    /// The tokens this machine already has for the conversation, on disk or in a slot.
+    fn have(&self) -> u64 {
+        self.tokens.max(self.ram_tokens)
+    }
+}
+
+/// The peer whose session gains this machine the most tokens: the same layer split, the save written, more tokens than
+/// this machine has. Ties keep the first peer.
+pub(crate) fn best_source<'a>(local: &Offer, peers: &'a [(String, Offer)]) -> Option<&'a (String, Offer)> {
+    peers
+        .iter()
+        .filter(|(_, offer)| {
+            offer.layers == local.layers
+                && !offer.pending
+                && offer.bytes > 0
+                && offer.tokens > local.have()
+        })
+        .fold(None, |best: Option<&(String, Offer)>, candidate| match best {
+            Some(best) if best.1.tokens >= candidate.1.tokens => Some(best),
+            _ => Some(candidate),
+        })
+}
+
+/// Whether fetching `bytes` to gain `gained` tokens is faster than reading those tokens again on this machine.
+pub(crate) fn fetch_pays(bytes: u64, gained: u64, link_bytes_per_s: f64, prefill_tokens_per_s: f64) -> bool {
+    if gained == 0 || link_bytes_per_s <= 0.0 || prefill_tokens_per_s <= 0.0 {
+        return false;
+    }
+    let fetch = bytes as f64 / link_bytes_per_s + FETCH_OVERHEAD_S;
+    let reread = gained as f64 / prefill_tokens_per_s;
+    fetch < reread
+}
+
+/// Before a turn runs on this machine: fetches the conversation's session from a peer when that is faster than
+/// reading the prompt again. Never fails the turn: any problem leaves the turn to read its prompt.
+pub(crate) async fn prepare_for_body(state: &GatewayState, code: &str, body: &Value) {
+    let Some(key) = body["session"].as_str().filter(|key| valid_key(key)) else {
+        return;
+    };
+    if let Err(error) = pull(state, code, key).await {
+        info!(plugin = %code, session = %key, "session not fetched from a peer: {error}");
+    }
+}
+
+async fn pull(state: &GatewayState, code: &str, key: &str) -> Result<(), String> {
+    let (port, token) = local_upstream(&state.plugins, code).await?;
+    let local = offer_here(port, &token, key).await?;
+    let mut offers = Vec::new();
+    for peer in state.all_peers().await {
+        if peer.node_id == state.network.node_id {
+            continue;
+        }
+        let Some(services) = services_of(state, &peer.node_id).await else {
+            continue;
+        };
+        if !offers_model(&services, code) {
+            continue;
+        }
+        match offer_of_peer(state, code, key, &peer).await {
+            Ok(offer) => offers.push((peer.node_id.clone(), offer)),
+            Err(error) => info!(plugin = %code, session = %key, peer = %peer.node_id, "no offer: {error}"),
+        }
+    }
+    info!(plugin = %code, session = %key, local_tokens = local.tokens, local_ram_tokens = local.ram_tokens,
+          layers = %local.layers, peers = offers.len(), "session pull: offers collected");
+    for (node, offer) in &offers {
+        info!(plugin = %code, session = %key, peer = %node, tokens = offer.tokens, bytes = offer.bytes,
+              layers = %offer.layers, pending = offer.pending, "session pull: peer offer");
+    }
+    let Some((node, offer)) = best_source(&local, &offers).cloned() else {
+        info!(plugin = %code, session = %key, "session pull: no peer holds more of it on this split; the prompt is read here");
+        return Ok(());
+    };
+    let gained = offer.tokens - local.have();
+    let link = measured(&LINK_RATE, DEFAULT_LINK_BYTES_PER_S);
+    let prefill = measured(&PREFILL_RATE, DEFAULT_PREFILL_TOKENS_PER_S);
+    // the integration test forces the fetch to exercise the transfer (POM_SESSION_FORCE_FETCH=1)
+    let forced = std::env::var("POM_SESSION_FORCE_FETCH").is_ok_and(|value| value == "1");
+    if !forced && !fetch_pays(offer.bytes, gained, link, prefill) {
+        info!(
+            plugin = %code, session = %key, peer = %node, gained, bytes = offer.bytes,
+            "session not fetched: reading the prompt again is faster ({:.0} MiB/s link, {:.0} tok/s prefill)",
+            link / (1024.0 * 1024.0), prefill
+        );
+        return Ok(());
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == node)
+        .ok_or_else(|| format!("{node} left the network"))?;
+    let started = Instant::now();
+    fetch_session(state, code, key, &peer, port, &token).await?;
+    let seconds = started.elapsed().as_secs_f64().max(1e-3);
+    fold_rate(&LINK_RATE, offer.bytes as f64 / seconds);
+    info!(plugin = %code, session = %key, peer = %node, gained, bytes = offer.bytes, seconds,
+          forced, "session pull: fetched from a peer; the turn restores it from this machine's disk");
+    Ok(())
+}
+
+async fn offer_here(port: u16, token: &str, key: &str) -> Result<Offer, String> {
+    let response = loopback_client()
+        .get(format!("http://127.0.0.1:{port}/pom/session/offer?key={key}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|error| format!("the plugin did not answer: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("the plugin refused the offer: {}", response.status()));
+    }
+    let value: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("the plugin's offer broke: {error}"))?;
+    Offer::from_json(&value).ok_or_else(|| "the plugin's offer is not readable".to_owned())
+}
+
+async fn offer_of_peer(
+    state: &GatewayState,
+    code: &str,
+    key: &str,
+    peer: &crate::network::PeerInfo,
+) -> Result<Offer, String> {
+    let response = state
+        .control_get(
+            peer,
+            &format!("/api/internal/plugins/{code}/engine/session/offer?key={key}"),
+            Duration::from_secs(5),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("status {}", response.status()));
+    }
+    let value: Value = response.json().await.map_err(|error| error.to_string())?;
+    Offer::from_json(&value).ok_or_else(|| "its offer is not readable".to_owned())
+}
+
+/// Copies the peer's session files (the token list, then the K/V) into this machine's session folder, a piece at a
+/// time, through the bridge's chunk route: the bridge publishes each file when its last piece is in.
+async fn fetch_session(
+    state: &GatewayState,
+    code: &str,
+    key: &str,
+    peer: &crate::network::PeerInfo,
+    port: u16,
+    token: &str,
+) -> Result<(), String> {
+    for kind in ["full_ids", "full"] {
+        let mut offset = 0u64;
+        let mut total: Option<u64> = None;
+        loop {
+            if total.is_some_and(|total| offset >= total) {
+                break;
+            }
+            let response = state
+                .control_get(
+                    peer,
+                    &format!(
+                        "/api/internal/plugins/{code}/engine/session/file?key={key}&kind={kind}&offset={offset}&len={SESSION_PIECE}"
+                    ),
+                    FETCH_TIMEOUT,
+                )
+                .await
+                .map_err(|error| format!("{kind}: {error}"))?;
+            if !response.status().is_success() {
+                return Err(format!("{kind}: the peer refused a piece: {}", response.status()));
+            }
+            let size = response
+                .headers()
+                .get("x-file-size")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| format!("{kind}: the peer did not say the file's size"))?;
+            if size > MAX_SESSION_FILE as u64 {
+                return Err(format!("{kind}: the file is larger than a session may be"));
+            }
+            match total {
+                Some(known) if known != size => return Err(format!("{kind}: the file changed while it was fetched")),
+                _ => total = Some(size),
+            }
+            let piece = response.bytes().await.map_err(|error| format!("{kind}: {error}"))?;
+            if piece.is_empty() {
+                return Err(format!("{kind}: the peer sent an empty piece before the end"));
+            }
+            let put = loopback_client()
+                .put(format!(
+                    "http://127.0.0.1:{port}/pom/session/chunk?key={key}&kind={kind}&offset={offset}&total={size}"
+                ))
+                .bearer_auth(token)
+                .body(piece.to_vec())
+                .timeout(FETCH_TIMEOUT)
+                .send()
+                .await
+                .map_err(|error| format!("{kind}: this machine did not take the piece: {error}"))?;
+            if !put.status().is_success() {
+                return Err(format!("{kind}: this machine refused the piece: {}", put.status()));
+            }
+            offset += piece.len() as u64;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SessionOfferQuery {
+    key: String,
+}
+
+/// `GET /api/internal/plugins/:code/engine/session/offer?key=`: what this machine offers a peer for the conversation.
+pub(crate) async fn engine_session_offer_route(
+    auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Path(code): Path<String>,
+    Query(query): Query<SessionOfferQuery>,
+) -> Response {
+    if let Err(response) = check_peer_call(&auth, &state, &code).await {
+        return response;
+    }
+    if !valid_key(&query.key) {
+        return refuse(StatusCode::BAD_REQUEST, "invalid session key");
+    }
+    let (port, token) = match local_upstream(&state.plugins, &code).await {
+        Ok(upstream) => upstream,
+        Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
+    };
+    match loopback_client()
+        .get(format!("http://127.0.0.1:{port}/pom/session/offer?key={}", query.key))
+        .bearer_auth(token)
+        .send()
+        .await
+    {
+        Ok(response) => relay(response).await,
+        Err(error) => refuse(StatusCode::SERVICE_UNAVAILABLE, &error.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SessionFileQuery {
+    key: String,
+    kind: String,
+    offset: u64,
+    len: u64,
+}
+
+/// `GET /api/internal/plugins/:code/engine/session/file?key=&kind=&offset=&len=`: one piece of a session file here, with
+/// the whole file's size in `x-file-size`.
+pub(crate) async fn engine_session_file_route(
+    auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Path(code): Path<String>,
+    Query(query): Query<SessionFileQuery>,
+) -> Response {
+    if let Err(response) = check_peer_call(&auth, &state, &code).await {
+        return response;
+    }
+    if !valid_key(&query.key) || !KINDS.contains(&query.kind.as_str()) {
+        return refuse(StatusCode::BAD_REQUEST, "invalid session file");
+    }
+    if query.len == 0 || query.len > SESSION_PIECE as u64 {
+        return refuse(StatusCode::BAD_REQUEST, "a piece is 1 byte to 64 MiB");
+    }
+    let (port, token) = match local_upstream(&state.plugins, &code).await {
+        Ok(upstream) => upstream,
+        Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
+    };
+    let response = match loopback_client()
+        .get(format!(
+            "http://127.0.0.1:{port}/pom/session/file?key={}&kind={}&offset={}&len={}",
+            query.key, query.kind, query.offset, query.len
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error.to_string()),
+    };
+    let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let size = response.headers().get("x-file-size").cloned();
+    let Ok(bytes) = response.bytes().await else {
+        return refuse(StatusCode::BAD_GATEWAY, "the piece broke");
+    };
+    let mut answer = (status, bytes).into_response();
+    answer
+        .headers_mut()
+        .insert("content-type", "application/octet-stream".parse().expect("a static header value"));
+    if let Some(size) = size {
+        answer.headers_mut().insert("x-file-size", size);
+    }
+    answer
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +910,82 @@ mod tests {
         assert!(offers_model(&[stage], "strata"));
         assert!(!offers_model(&[failing], "strata"));
         assert!(!offers_model(&[whole], "other"));
+    }
+}
+
+#[cfg(test)]
+mod pull_tests {
+    use super::*;
+
+    fn offer(tokens: u64, bytes: u64, layers: &str) -> Offer {
+        Offer {
+            tokens,
+            bytes,
+            ram_tokens: 0,
+            layers: layers.to_owned(),
+            pending: false,
+        }
+    }
+
+    const GIB: u64 = 1 << 30;
+    const MIB: f64 = (1 << 20) as f64;
+
+    #[test]
+    fn a_large_session_on_a_fast_link_is_fetched_instead_of_read_again() {
+        // 2 GiB for 124k tokens: ~19 s over 110 MiB/s, against ~99 s of prefill at 1250 tok/s
+        assert!(fetch_pays(2 * GIB, 124_000, 110.0 * MIB, 1250.0));
+    }
+
+    #[test]
+    fn a_session_over_a_slow_link_is_read_again() {
+        // the same 2 GiB over 5 MiB/s: ~410 s, far more than the prefill
+        assert!(!fetch_pays(2 * GIB, 124_000, 5.0 * MIB, 1250.0));
+    }
+
+    #[test]
+    fn a_few_tokens_are_never_worth_a_big_file() {
+        assert!(!fetch_pays(2 * GIB, 1_000, 110.0 * MIB, 1250.0));
+        assert!(!fetch_pays(2 * GIB, 0, 110.0 * MIB, 1250.0));
+    }
+
+    #[test]
+    fn the_peer_with_the_most_tokens_on_the_same_split_is_the_source() {
+        let local = offer(2_000, 0, "0-35|36-47");
+        let peers = vec![
+            ("a".to_owned(), offer(120_000, GIB, "0-35|36-47")),
+            ("b".to_owned(), offer(124_000, GIB, "0-35|36-47")),
+            ("c".to_owned(), offer(200_000, GIB, "0-47")),
+        ];
+        assert_eq!(best_source(&local, &peers).map(|(node, _)| node.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn a_session_of_another_split_or_still_being_written_is_never_a_source() {
+        let local = offer(2_000, 0, "0-35|36-47");
+        let mut pending = offer(120_000, GIB, "0-35|36-47");
+        pending.pending = true;
+        let peers = vec![
+            ("other-split".to_owned(), offer(120_000, GIB, "0-47")),
+            ("pending".to_owned(), pending),
+        ];
+        assert!(best_source(&local, &peers).is_none());
+    }
+
+    #[test]
+    fn a_peer_that_gains_nothing_is_no_source() {
+        let mut local = offer(120_000, 0, "whole");
+        local.ram_tokens = 124_000;
+        assert!(best_source(&local, &[("a".to_owned(), offer(124_000, GIB, "whole"))]).is_none());
+    }
+
+    #[test]
+    fn an_offer_reads_the_bridge_answer() {
+        let value = json!({"tokens": 5, "bytes": 9, "ram_tokens": 4, "layers": "0-35|36-47", "pending": false});
+        let expected = Offer {
+            ram_tokens: 4,
+            ..offer(5, 9, "0-35|36-47")
+        };
+        assert_eq!(Offer::from_json(&value), Some(expected));
+        assert!(Offer::from_json(&json!({"tokens": 5})).is_none());
     }
 }

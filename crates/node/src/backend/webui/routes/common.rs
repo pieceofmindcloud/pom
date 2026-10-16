@@ -51,6 +51,14 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_session::engine_session_apply_route),
         )
         .route(
+            "/api/internal/plugins/:code/engine/session/offer",
+            get(crate::plugin_session::engine_session_offer_route),
+        )
+        .route(
+            "/api/internal/plugins/:code/engine/session/file",
+            get(crate::plugin_session::engine_session_file_route),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/link/:deploy",
             get(crate::plugin_stage_link::link_secret_route),
         )

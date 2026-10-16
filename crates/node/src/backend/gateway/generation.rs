@@ -568,6 +568,10 @@ mod generation_pump_tests {
     }
 }
 
+/// How many more requests in flight the head holding a conversation may carry than the least busy head before the
+/// conversation moves (its session is then fetched by the new head only if that transfer pays, see `plugin_session`).
+const SESSION_MOVE_LOAD_GAP: u32 = 2;
+
 /// The first stage an unpinned request starts from. A pin (the Chat's explicit head) stays as it is. Without one, and with
 /// more than one layer-0 head of the model, the heads take turns in round robin, and a busy head is passed over for the
 /// next free one (`fastest::rotate_head`). `None` when there is nothing to choose between.
@@ -578,6 +582,7 @@ async fn auto_head(
     deploy_id: Option<&str>,
     pinned: Option<&str>,
     prefix: (&str, &str, bool),
+    conversation: Option<(&str, &str)>,
 ) -> Option<String> {
     if let Some(pinned) = pinned {
         return Some(pinned.to_owned());
@@ -589,6 +594,29 @@ async fn auto_head(
         .collect();
     if heads.len() < 2 {
         return None;
+    }
+    // A conversation of a plugin engine goes back to the head that ran its last turn: its KV session is in that head's
+    // batch slot. Only a conversation that is new here, or whose head is gone, takes the rotation below.
+    if let Some((model, key)) = conversation {
+        if let Some(holder) = crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head)) {
+            let perf = state.admission_health.perf_snapshot();
+            let mut busy = Vec::with_capacity(heads.len());
+            for head in &heads {
+                let live = state.loads.load(head).await;
+                let reported = perf.get(head).map(|p| p.active_generations).unwrap_or(0);
+                busy.push((head.clone(), live.max(reported)));
+            }
+            let least = busy.iter().map(|(_, load)| *load).min().unwrap_or(0);
+            let holder_load = busy.iter().find(|(head, _)| *head == holder).map(|(_, load)| *load).unwrap_or(0);
+            // the conversation stays on its head unless that head is clearly busier than the least busy one; then the
+            // rotation below picks a free head, and that head fetches the session only when the transfer pays
+            if holder_load <= least + SESSION_MOVE_LOAD_GAP {
+                info!("first stage: the conversation {key} is already on {holder}");
+                return Some(holder);
+            }
+            info!("first stage: {holder} has {holder_load} in flight against {least} on the least busy head; \
+                   the conversation may move");
+        }
     }
     // A session already in service for this prompt goes back to the head that holds it: its cache is reused there.
     // Only a new session takes the rotation below.
@@ -810,6 +838,8 @@ pub(super) async fn generate_stream_inner(
     // them, the second plans again over the pipeline that is now loaded. The
     // plan of the first pass is not used for inference - an idle peer
     // announces no runtime capabilities, so that plan would run degraded.
+    // the conversation a plugin engine keeps in a batch slot, for the head that ran its last turn
+    let conversation = crate::plugin_session::session_of(&request_details);
     let mut woke_idle = false;
     let (mut plan, planned_return) = loop {
         let orchestration_started = Instant::now();
@@ -859,6 +889,7 @@ pub(super) async fn generate_stream_inner(
             deploy_id,
             preferred_head.as_deref(),
             (&prefix_model, &cache_prompt, images.is_empty()),
+            conversation.as_ref().map(|key| (model, key.as_str())),
         )
         .await;
         // Planning by delivery time (`fastest`): measured speed of each

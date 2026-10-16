@@ -539,6 +539,7 @@ async fn open_stream(
     body: &Value,
 ) -> Result<reqwest::Response, String> {
     let response = if node_id == state.network.node_id {
+        super::plugin_session::prepare_for_body(state, code, body).await;
         let bytes = serde_json::to_vec(body).map_err(|error| error.to_string())?;
         post_local(&state.plugins, code, bytes).await?
     } else {
@@ -694,6 +695,7 @@ pub(crate) async fn generate(
     // as they read the llama.cpp path's (`infer_server`).
     let _in_flight = state.loads.acquire(node_id).await;
     let body = generation_body(&request);
+    let session_key = request.session.clone();
     // Totals left by an earlier generation that never reached its end belong to nobody now: drop them, and the
     // frames of this one are the prompt's until the first token.
     let _ = super::plugin_stage_link::take_link_stats(code);
@@ -775,7 +777,11 @@ pub(crate) async fn generate(
                 // The plugin's basic data; everything else about the generation is measured here.
                 // The turn ran on this machine: its conversation goes on to the peers from a background task
                 // that waits for a deferred save (a remote head does this itself).
-                if node_id == state.network.node_id {
+                // the head that ran the turn holds the conversation's slot: its next turn goes back there
+                if let Some(key) = &session_key {
+                    super::plugin_session::note_holder(model, key, node_id);
+                }
+                if super::plugin_session::PUSH_SYNC && node_id == state.network.node_id {
                     if let Some(key) = super::plugin_session::saved_session(done) {
                         super::plugin_session::spawn_sync(state.clone(), code.to_owned(), key);
                     }
@@ -800,6 +806,9 @@ pub(crate) async fn generate(
                     generated,
                 );
                 timings.server_ttft_ms = Some(ttft_ms);
+                if let Some(rate) = timings.prefill_tokens_per_sec {
+                    super::plugin_session::note_prefill_rate(rate);
+                }
                 timings.engine_ttft_ms = engine_prefill_ms;
                 let finish = report.finish.clone();
                 // The same record a one-hop llama.cpp pipeline leaves: the request audit, the statistics and the
@@ -1039,6 +1048,9 @@ pub(crate) async fn engine_generate_route(
     let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Prefill);
     let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Decode);
     super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
+    // a remote head's turn: the session it lacks is fetched from a peer here, before the turn reads its prompt
+    let turn = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    super::plugin_session::prepare_for_body(&state, &code, &turn).await;
     let response = match post_local(&state.plugins, &code, body.to_vec()).await {
         Ok(response) => response,
         Err(error) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &error),
@@ -1063,7 +1075,9 @@ pub(crate) async fn engine_generate_route(
                 .ok()
                 .and_then(|value| super::plugin_session::saved_session(&value["done"]))
             {
-                super::plugin_session::spawn_sync(watch_state.clone(), watch_code.clone(), key);
+                if super::plugin_session::PUSH_SYNC {
+                    super::plugin_session::spawn_sync(watch_state.clone(), watch_code.clone(), key);
+                }
             }
         }
     });

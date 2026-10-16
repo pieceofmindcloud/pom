@@ -560,7 +560,11 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   document's `relay_hints` into `relay_peers`. `--no-default-relays` is still
   accepted and has no practical effect today. The relay server always has
   capacity (128 slots, 4 per peer, 1 h reservation) and circuits of up to 24 h
-  with no byte ceiling (`max_circuit_bytes: 0`); who gets a reservation is
+  with no byte ceiling (`max_circuit_bytes: 0`); the circuit-source rate limits are
+  raised from libp2p's defaults to a burst of 60 per source peer (one more every
+  5 s) and 512 per source IP (one more per second), because every node behind
+  the same NAT shares the IP bucket and the defaults made the relay answer
+  "resource limit exceeded" to the whole site, lobby included; who gets a reservation is
   decided per request (see "Who relays for whom"). Both libp2p limits apply to the whole circuit, not per
   request: bytes in both directions add up since opening. The old ceiling, the
   size of a prefill frame, and the 120 s deadline dropped the circuit within

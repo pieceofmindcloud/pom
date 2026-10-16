@@ -1,7 +1,7 @@
 name: Release · macOS
 
 # It only runs when you ask for it, on a GitHub-hosted macOS (Apple Silicon) runner. The
-# private engine repository is reached with the PLUGIN_REPO_SSH_KEY secret. See
+# private engine repository is reached over HTTPS with the POM_LLAMACPP_TOKEN secret. See
 # `docs/subsystems/build-and-run.md`, "Release through GitHub Actions".
 on:
   workflow_dispatch:
@@ -71,16 +71,15 @@ jobs:
           npm run build
         working-directory: apps/frontend
 
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
+      - name: Access to the engine repository (pom-plugin-llama.cpp)
         shell: bash
+        env:
+          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
+          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It goes to the
+          # job's global git config, which lives only as long as this hosted runner.
+          git config --global url."https://x-access-token:${ENGINE_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
 
       - name: Compile
         run: cargo build --release --locked -p node -p pom-plugin-host --features metal

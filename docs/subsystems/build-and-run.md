@@ -717,7 +717,7 @@ Three workflows, one per system, all manual only (`workflow_dispatch`):
 
 | File | Target | Runs on | Inputs |
 |---|---|---|---|
-| `.github/workflows/release-linux.yml` | Linux x86_64 (CPU, and optional CUDA) | self-hosted Linux runner (label `ksia`) | `version`, `cuda`, `prerelease` |
+| `.github/workflows/release-linux.yml` | Linux x86_64 AppImage (CUDA + Vulkan, one file, embedded interface) | self-hosted Linux runner (label `ksia`) | `version`, `prerelease` |
 | `.github/workflows/release-macos.yml` | macOS arm64, Metal | self-hosted macOS runner (label `macbook`) | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CUDA + Vulkan and/or CPU | hosted (`windows-2022`) | `version`, `variantes` (`gpu`/`cpu`/`ambos` - "both"), `prerelease` |
 

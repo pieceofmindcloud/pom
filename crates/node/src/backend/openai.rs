@@ -513,6 +513,20 @@ fn model_object(
 /// memory, but it is still a servable deployment: generation wakes it up
 /// after planning the route. Only a peer that is not idle and has not yet
 /// confirmed `/health` should hide the model from the catalog.
+/// A machine that serves the whole model by itself (layers 0 to the end): it can answer any request alone.
+fn covers_whole_model(p: &crate::network::PeerInfo) -> bool {
+    p.total_layers > 0 && p.start_layer == 0 && p.end_layer.saturating_add(1) >= p.total_layers
+}
+
+/// Whether a group of peers that serve one model can answer: each of them is ready (a pipeline needs all of its
+/// stages), or one of them is ready and serves the whole model alone (replicas do not wait for each other: a machine
+/// that is loading must not hide the one that serves).
+fn group_ready(group: &[&crate::network::PeerInfo]) -> bool {
+    let ready = |p: &crate::network::PeerInfo| p.runtime_capacity.is_some() || p.idle;
+    group.iter().all(|p| ready(p))
+        || group.iter().any(|p| ready(p) && covers_whole_model(p))
+}
+
 pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
     let alive_models: std::collections::BTreeSet<String> = peers
         .iter()
@@ -522,10 +536,9 @@ pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<St
     let mut ids: Vec<String> = alive_models
         .into_iter()
         .filter(|model| {
-            peers
-                .iter()
-                .filter(|p| p.is_alive() && p.model == *model)
-                .all(|p| p.runtime_capacity.is_some() || p.idle)
+            let group: Vec<&crate::network::PeerInfo> =
+                peers.iter().filter(|p| p.is_alive() && p.model == *model).collect();
+            group_ready(&group)
         })
         .collect();
     let deployments: std::collections::BTreeSet<(String, String)> = peers
@@ -534,10 +547,11 @@ pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<St
         .map(|p| (p.model.clone(), p.deploy_id.clone()))
         .collect();
     for (model, deploy_id) in deployments {
-        let ready = peers
+        let group: Vec<&crate::network::PeerInfo> = peers
             .iter()
             .filter(|p| p.is_alive() && p.model == model && p.deploy_id == deploy_id)
-            .all(|p| p.runtime_capacity.is_some() || p.idle);
+            .collect();
+        let ready = group_ready(&group);
         if ready {
             ids.push(format!("{model}@{deploy_id}"));
         }
@@ -1755,6 +1769,62 @@ mod tests {
         assert!(ids.contains(&"qwen3:8b".to_string()), "{ids:?}");
         assert!(ids.contains(&"qwen3:8b@d-aaaaaaaa".to_string()), "{ids:?}");
         assert!(ids.contains(&"qwen3:8b@d-bbbbbbbb".to_string()), "{ids:?}");
+    }
+
+    /// Replicas of the whole model: one that serves answers for the name even while another is still loading. The
+    /// loading one must not hide the model from the list (it did, because every peer had to be ready).
+    #[tokio::test]
+    async fn a_loading_replica_does_not_hide_a_model_another_replica_serves() {
+        let mut serving = crate::gateway::testkit::peer("n1", "n1", 8080);
+        serving.model = "qwen3:8b".into();
+        serving.start_layer = 0;
+        serving.end_layer = 47;
+        serving.total_layers = 48;
+        let mut loading = crate::gateway::testkit::peer("n2", "n2", 8080);
+        loading.model = "qwen3:8b".into();
+        loading.start_layer = 0;
+        loading.end_layer = 47;
+        loading.total_layers = 48;
+        loading.runtime_capacity = None;
+        loading.idle = false;
+
+        let state = crate::gateway::testkit::state_with("eu", vec![serving, loading]).await;
+        assert!(model_ids(&state).await.contains(&"qwen3:8b".to_string()));
+    }
+
+    /// A pipeline still waits for every stage: a loading stage keeps the model out of the list.
+    #[tokio::test]
+    async fn a_loading_pipeline_stage_still_hides_the_model() {
+        let mut head = crate::gateway::testkit::peer("n1", "n1", 8080);
+        head.model = "qwen3:8b".into();
+        head.start_layer = 0;
+        head.end_layer = 23;
+        head.total_layers = 48;
+        let mut tail = crate::gateway::testkit::peer("n2", "n2", 8080);
+        tail.model = "qwen3:8b".into();
+        tail.start_layer = 24;
+        tail.end_layer = 47;
+        tail.total_layers = 48;
+        tail.runtime_capacity = None;
+        tail.idle = false;
+
+        let state = crate::gateway::testkit::state_with("eu", vec![head, tail]).await;
+        assert!(!model_ids(&state).await.contains(&"qwen3:8b".to_string()));
+    }
+
+    /// A whole-model peer that is loading answers for nothing: with no ready replica the model stays hidden.
+    #[tokio::test]
+    async fn a_loading_whole_model_peer_alone_is_not_listed() {
+        let mut loading = crate::gateway::testkit::peer("n1", "n1", 8080);
+        loading.model = "qwen3:8b".into();
+        loading.start_layer = 0;
+        loading.end_layer = 47;
+        loading.total_layers = 48;
+        loading.runtime_capacity = None;
+        loading.idle = false;
+
+        let state = crate::gateway::testkit::state_with("eu", vec![loading]).await;
+        assert!(!model_ids(&state).await.contains(&"qwen3:8b".to_string()));
     }
 
     /// A CLI default is only a selector for the inference path. After an

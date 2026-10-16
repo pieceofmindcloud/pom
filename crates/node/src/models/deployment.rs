@@ -186,16 +186,25 @@ pub struct NodeOverrides {
     pub n_gpu_layers: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offload_kqv: Option<bool>,
+    /// The machine's whole configuration, as its inspector set it when it joined. It replaces the version's parameters
+    /// for this machine only (the version keeps its own); the scalar fields above still apply on top of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<crate::webui::RuntimeParams>,
 }
 
 impl NodeOverrides {
     pub fn is_empty(&self) -> bool {
-        self.n_ctx.is_none() && self.max_sessions.is_none() && self.n_gpu_layers.is_none() && self.offload_kqv.is_none()
+        self.n_ctx.is_none()
+            && self.max_sessions.is_none()
+            && self.n_gpu_layers.is_none()
+            && self.offload_kqv.is_none()
+            && self.params.is_none()
     }
 
-    /// The parameters this machine runs with: `params` with its own fields in place.
+    /// The parameters this machine runs with: its own whole configuration when it has one (else `params`), with its own
+    /// scalar fields in place.
     pub fn apply(&self, params: &crate::webui::RuntimeParams) -> crate::webui::RuntimeParams {
-        let mut merged = params.clone();
+        let mut merged = self.params.clone().unwrap_or_else(|| params.clone());
         if let Some(v) = self.n_ctx {
             merged.n_ctx = v;
         }
@@ -1109,3 +1118,24 @@ mod tests {
         assert_eq!(loaded.active_version, 2);
     }
 }
+
+#[cfg(test)]
+mod node_overrides_tests {
+    use super::*;
+
+    #[test]
+    fn a_machine_whole_configuration_replaces_the_versions_for_that_machine_only() {
+        let version: crate::webui::RuntimeParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        let mut machine = version.clone();
+        machine.n_ctx = 4096;
+        machine.offload_kqv = false;
+        let overrides = NodeOverrides { params: Some(machine.clone()), ..Default::default() };
+        assert!(!overrides.is_empty());
+        assert_eq!(overrides.apply(&version), machine);
+        // the scalar fields still win over the machine's whole configuration
+        let scalar = NodeOverrides { params: Some(machine.clone()), n_ctx: Some(2048), ..Default::default() };
+        assert_eq!(scalar.apply(&version).n_ctx, 2048);
+        assert!(NodeOverrides::default().is_empty());
+    }
+}
+

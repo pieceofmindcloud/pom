@@ -526,8 +526,11 @@ Per-file list:
   `POST /api/ui/deploy/node` applies to the target only (no redeploy of the
   cluster). `POST /api/ui/deploy/node/options` is re-read for the selected
   target, so its own slices and whole GGUF are offered instead of a fixed
-  cluster plan. The same response supplies that machine's GPU layers, KV
-  placement and K/V cache choices, which are sent with the add request.
+  cluster plan. The machine's whole configuration is edited with the same
+  `DeploymentInspector` as the deploy screen, starting from the active version of
+  the deployment (`listDeployments`); it is sent as the machine's own `overrides.params`
+  and the version keeps its parameters. The K/V cache choices come from the target's
+  options (`cache_types`) and are sent as the install values.
   Overlap is the point - it creates a parallel route - so it is flagged, not
   blocked. The dialog can add a whole-model head to a sliced deployment and
   vice versa. Exports `rangeOverlap` (shared layers between a chosen range and

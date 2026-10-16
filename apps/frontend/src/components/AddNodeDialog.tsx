@@ -7,9 +7,10 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Route } from "lucide-react";
-import { addNodeOptions, api } from "../lib/api";
-import type { AddNodeOption, AddNodeOptionsResponse, CacheTypesResponse, KvCacheType } from "../lib/types";
+import { addNodeOptions, api, listDeployments } from "../lib/api";
+import type { AddNodeOption, AddNodeOptionsResponse, CacheTypesResponse, KvCacheType, RuntimeParams } from "../lib/types";
 import { Confirm } from "./Confirm";
+import { DeploymentInspector } from "./DeploymentInspector";
 import { useI18n } from "../i18n/provider";
 
 export interface AddNodePeer {
@@ -55,11 +56,9 @@ export function AddNodeDialog({
   const [options, setOptions] = useState<AddNodeOption[]>(group ? [] : toShardOptions(slices));
   const [optionKey, setOptionKey] = useState(() => keyOf(options[0]));
   const [cacheTypes, setCacheTypes] = useState<CacheTypesResponse | null>(null);
-  const [nGpuLayers, setNGpuLayers] = useState(99);
-  const [offloadKqv, setOffloadKqv] = useState(true);
-  // Optional: empty = the deployment's value, which the new machine inherits.
-  const [nCtx, setNCtx] = useState("");
-  const [maxSessions, setMaxSessions] = useState("");
+  // This machine's whole configuration, edited with the deployment inspector. It starts as the deployment's
+  // active version, and it is sent to the node as this machine's own override (the version keeps its parameters).
+  const [draft, setDraft] = useState<RuntimeParams | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,14 +74,31 @@ export function AddNodeDialog({
       setOptions(fallback);
       setOptionKey(keyOf(fallback[0]));
       setCacheTypes(null);
-      setNGpuLayers(99);
-      setOffloadKqv(true);
-      setNCtx("");
-      setMaxSessions("");
+      setDraft(null);
       setError(null);
     }
     wasOpen.current = open;
   }, [open, peers, slices]);
+
+  // The machine starts with the deployment's configuration; a change of machine starts it over from that same
+  // configuration, so one machine's edits never reach another machine.
+  useEffect(() => {
+    if (!open || !deployId || !nodeId) return;
+    let cancelled = false;
+    void listDeployments()
+      .then((result) => {
+        if (cancelled) return;
+        const row = result.deployments.find((candidate) => candidate.deployment.deploy_id === deployId);
+        const version = row?.deployment.versions.find((candidate) => candidate.version === row.deployment.active_version);
+        if (version) setDraft(version.params);
+      })
+      .catch((reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, deployId, nodeId]);
 
   // The choice is only changed when it disappears. New arrays from polling
   // must not send the operator back to the first machine.
@@ -108,8 +124,6 @@ export function AddNodeDialog({
       .then((result) => {
         setOptions(result.options);
         setCacheTypes(result.cache_types);
-        setNGpuLayers(result.defaults.n_gpu_layers);
-        setOffloadKqv(result.defaults.offload_kqv);
       })
       .catch((reason) => {
         if (!controller.signal.aborted) {
@@ -148,16 +162,7 @@ export function AddNodeDialog({
         target_node_id: nodeId,
         start_layer: option.start_layer,
         end_layer: option.end_layer,
-        n_gpu_layers: nGpuLayers,
-        offload_kqv: offloadKqv,
-        ...(nCtx.trim() !== "" || maxSessions.trim() !== ""
-          ? {
-              overrides: {
-                ...(nCtx.trim() !== "" ? { n_ctx: Number(nCtx) } : {}),
-                ...(maxSessions.trim() !== "" ? { max_sessions: Number(maxSessions) } : {}),
-              },
-            }
-          : {}),
+        ...(draft ? { overrides: { params: draft } } : {}),
         ...(cacheTypes
           ? {
               cache_type_k: cacheTypes.cache_type_k,
@@ -216,76 +221,28 @@ export function AddNodeDialog({
             {loadingOptions && <span className="text-xs text-muted">{t("deploy.addNodeLoading")}</span>}
           </label>
 
-          {cacheTypes && (
-            <div className="grid gap-2 rounded-lg border border-line bg-raised/40 p-3">
-              <div className="eyebrow">{t("deploy.addNodeMachineOptions")}</div>
-              <label className="flex items-center justify-between gap-3 text-xs text-muted">
-                <span>{t("deploy.knob.n_gpu_layers")}</span>
-                <input
-                  className="w-24 rounded-md border border-line bg-surface px-2 py-1 text-right font-mono text-xs text-fg"
-                  type="number"
-                  min={0}
-                  value={nGpuLayers}
-                  onChange={(event) => setNGpuLayers(Math.max(0, Number(event.target.value) || 0))}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-3 text-xs text-muted">
-                <span>{t("deploy.addNodeKvPlacement")}</span>
-                <select
-                  className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg"
-                  value={offloadKqv ? "gpu" : "cpu"}
-                  onChange={(event) => setOffloadKqv(event.target.value === "gpu")}
-                >
-                  <option value="gpu">{t("deploy.kvOnGpu")}</option>
-                  <option value="cpu">{t("deploy.kvInRam")}</option>
-                </select>
-              </label>
-              <label className="flex items-center justify-between gap-3 text-xs text-muted">
-                <span>{t("deploy.addNodeCtx")}</span>
-                <input
-                  className="w-24 rounded-md border border-line bg-surface px-2 py-1 text-right font-mono text-xs text-fg"
-                  type="number"
-                  min={1}
-                  value={nCtx}
-                  onChange={(event) => setNCtx(event.target.value)}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-3 text-xs text-muted">
-                <span>{t("deploy.addNodeSessions")}</span>
-                <input
-                  className="w-24 rounded-md border border-line bg-surface px-2 py-1 text-right font-mono text-xs text-fg"
-                  type="number"
-                  min={1}
-                  value={maxSessions}
-                  onChange={(event) => setMaxSessions(event.target.value)}
-                />
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="flex flex-col gap-1 text-xs text-muted">
-                  <span>{t("deploy.addNodeCacheK")}</span>
-                  <select
-                    className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg"
-                    value={cacheTypes.cache_type_k}
-                    onChange={(event) => setCacheTypes({ ...cacheTypes, cache_type_k: event.target.value as KvCacheType })}
-                  >
-                    {(choices.length > 0 ? choices : [DEFAULT_CACHE_TYPE]).map((choice) => (
-                      <option key={choice} value={choice}>{choice}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-muted">
-                  <span>{t("deploy.addNodeCacheV")}</span>
-                  <select
-                    className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg"
-                    value={cacheTypes.cache_type_v}
-                    onChange={(event) => setCacheTypes({ ...cacheTypes, cache_type_v: event.target.value as KvCacheType })}
-                  >
-                    {(choices.length > 0 ? choices : [DEFAULT_CACHE_TYPE]).map((choice) => (
-                      <option key={choice} value={choice}>{choice}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+          {draft && (
+            <div className="max-h-[55vh] overflow-y-auto pr-1">
+              <DeploymentInspector
+                value={draft}
+                onChange={setDraft}
+                showHiddenStateDtype
+                cacheTypes={
+                  cacheTypes
+                    ? {
+                        k: cacheTypes.cache_type_k,
+                        v: cacheTypes.cache_type_v,
+                        choices: choices.length > 0 ? choices : [DEFAULT_CACHE_TYPE],
+                        onChange: (part, value) =>
+                          setCacheTypes(
+                            part === "k"
+                              ? { ...cacheTypes, cache_type_k: value }
+                              : { ...cacheTypes, cache_type_v: value },
+                          ),
+                      }
+                    : undefined
+                }
+              />
             </div>
           )}
 

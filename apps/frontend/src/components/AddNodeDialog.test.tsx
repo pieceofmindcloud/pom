@@ -160,6 +160,26 @@ describe("AddNodeDialog", () => {
   });
 
   it("offers again the slices and the whole model of the chosen machine", async () => {
+    const get = vi.spyOn(api, "get").mockImplementation(async (path) => {
+      if (path !== "/api/ui/deployments") {
+        throw new Error(`rota inesperada: ${path}`);
+      }
+      return {
+        node_id: "n1",
+        deployments: [
+          {
+            deployment: {
+              deploy_id: "d1",
+              active_version: 1,
+              versions: [{ version: 1, params: { n_ctx: 8192, offload_kqv: true } }],
+            },
+            serving: true,
+            is_default: true,
+            holders: [],
+          },
+        ],
+      } as never;
+    });
     const post = vi.spyOn(api, "post").mockImplementation(async (path, body) => {
       if (path === "/api/ui/deploy/node") {
         return { overlapping_layers: [] } as never;
@@ -190,6 +210,7 @@ describe("AddNodeDialog", () => {
           <AddNodeDialog
             open
             group="modelo"
+            deployId="d1"
             peers={[
               { node_id: "n1", short_id: "n1", hostname: "maq1" },
               { node_id: "n2", short_id: "n2", hostname: "maq2" },
@@ -209,12 +230,10 @@ describe("AddNodeDialog", () => {
         expect(screen.getByRole("option", { name: /modelo inteiro/i })).toBeTruthy();
         expect(screen.getByRole("option", { name: "20-39" })).toBeTruthy();
       });
-      expect(screen.getByText("Opções da máquina")).toBeTruthy();
-      const comboboxes = screen.getAllByRole("combobox");
-      fireEvent.change(comboboxes[1], { target: { value: "whole:0-39" } });
-      fireEvent.change(comboboxes[2], { target: { value: "cpu" } });
-      fireEvent.change(comboboxes[3], { target: { value: "q8_0" } });
-      fireEvent.change(comboboxes[4], { target: { value: "bf16" } });
+      // the machine's configuration is the deployment's active version, edited with the deployment inspector
+      await waitFor(() => expect(get).toHaveBeenCalledWith("/api/ui/deployments"));
+      await waitFor(() => expect(screen.getAllByRole("combobox").length).toBeGreaterThan(5));
+      fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "whole:0-39" } });
       fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
       await waitFor(() => {
         expect(post).toHaveBeenLastCalledWith(
@@ -223,9 +242,9 @@ describe("AddNodeDialog", () => {
             kind: "whole",
             start_layer: 0,
             end_layer: 39,
-            offload_kqv: false,
             cache_type_k: "q8_0",
             cache_type_v: "bf16",
+            overrides: { params: expect.objectContaining({ n_ctx: 8192, offload_kqv: true }) },
           }),
         );
       });
@@ -235,6 +254,7 @@ describe("AddNodeDialog", () => {
       );
     } finally {
       post.mockRestore();
+      get.mockRestore();
     }
   });
 

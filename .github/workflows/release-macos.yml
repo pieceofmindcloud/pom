@@ -89,29 +89,28 @@ jobs:
           nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
           # The workspace persists between runs on this runner: clearing the leftovers from
           # the previous release avoids packaging the old package along with it.
-          rm -rf pacote pom-*.tar.gz "$nome"
-          mkdir -p pacote/apps/frontend
-          cp -R apps/frontend/dist pacote/apps/frontend/dist
-          cp target/release/pom pacote/
-          # Without the host beside the pom no plugin installs.
-          cp target/release/pom-plugin-host pacote/
-          cp README.md pacote/ 2>/dev/null || true
+          rm -rf pacote pom-*.zip "$nome.zip"
 
-          # A Unix executable does not carry an icon: on macOS the one that shows it is the
-          # .app bundle. The interface goes **also** inside the bundle,
-          # beside the real binary, so the .app keeps working after being
-          # dragged to /Applications.
+          # The package is the .app and nothing else. The binary, the plugin host
+          # (Contents/MacOS, where the binary looks for it) and the interface
+          # (Contents/Resources/apps/frontend/dist, found by `bundled_ui_dist`) all live
+          # inside the bundle, so it runs from Finder or from a terminal with no loose files.
           ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
           mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
-          cp -R pacote/apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
+          cp -R apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
 
-          mv pacote "$nome"
-          tar czf "$nome.tar.gz" "$nome"
+          # The ad-hoc signature must be made last: the copies above change the sealed
+          # resources. Signed before them, Gatekeeper reports the app as "damaged".
+          codesign --force --deep --sign - "pacote/POM.app"
+          codesign --verify --deep --strict "pacote/POM.app"
+
+          # ditto keeps the bundle's metadata and signature intact, unlike a plain zip.
+          ditto -c -k --sequesterRsrc --keepParent "pacote/POM.app" "$nome.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: pacote-macos
-          path: pom-*.tar.gz
+          path: pom-*.zip
           if-no-files-found: error
           # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 2
@@ -123,4 +122,4 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
-          files: pom-*.tar.gz
+          files: pom-*.zip

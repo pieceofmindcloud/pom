@@ -177,7 +177,7 @@ check the offload, watch VRAM during loading.
 - **Never just launch the binary by absolute path.** `models/` and `pom.json`
   come from the project root (`utils/config.rs`: `$POM_HOME` -> cwd if it
   looks like the project -> the executable's directory, walking up from
-  `target/release`). An `ssh host '/path/pom'` runs in `$HOME`, reads another
+  `target/release` -> `~/.pom`). An `ssh host '/path/pom'` runs in `$HOME`, reads another
   config and finds no slice. The `Project root: ...` line at startup says which
   one was chosen; check it before suspecting the catalog.
 - **Clocks out of sync break control between nodes.** The signed control

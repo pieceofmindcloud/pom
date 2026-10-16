@@ -4,7 +4,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-[ -f "$HERE/config.local.env" ] && source "$HERE/config.local.env" || source "$HERE/config.env"
+source "$HERE/config.env"
+[ -f "$HERE/config.local.env" ] && source "$HERE/config.local.env"
 RUN_DIR="${RUN_DIR:-$HERE/runs/latest}"
 mkdir -p "$RUN_DIR"
 STATE="$RUN_DIR/state.env"
@@ -37,30 +38,62 @@ load_state() {
   source "$STATE"
 }
 
-log_size() {  # log_size PATH: the byte offset of a log now, so a step reads only what it writes
-  local path="$1"
-  case "$path" in
-    ssh:*) local rest="${path#ssh:}"; ssh "${rest%%:*}" "wc -c < ${rest#*:}" 2>/dev/null || echo 0 ;;
-    "") echo 0 ;;
-    *) wc -c < "$path" 2>/dev/null || echo 0 ;;
-  esac
+# Where a head runs: HEAD_<A|B>_SSH is the ssh command that reaches its host (empty: this machine) and
+# HEAD_<A|B>_CONTAINER the container the POM node and its engine run in (empty: the host itself).
+at() {  # at LOC COMMAND: runs a shell command where the head's files and engine are (container when set)
+  local loc="$1"; shift
+  local ssh_var="HEAD_${loc}_SSH" cont_var="HEAD_${loc}_CONTAINER"
+  local ssh_cmd="${!ssh_var:-}" cont="${!cont_var:-}"
+  if [ -n "$cont" ]; then
+    if [ -n "$ssh_cmd" ]; then
+      $ssh_cmd "docker exec -i $cont sh -c $(printf %q "$*")"
+    else
+      docker exec -i "$cont" sh -c "$*"
+    fi
+  else
+    if [ -n "$ssh_cmd" ]; then
+      $ssh_cmd "sh -c $(printf %q "$*")"
+    else
+      sh -c "$*"
+    fi
+  fi
 }
 
-log_since() {  # log_since PATH OFFSET: the lines a log got after OFFSET
-  local path="$1" offset="$2"
-  case "$path" in
-    ssh:*) local rest="${path#ssh:}"; ssh "${rest%%:*}" "tail -c +$((offset + 1)) ${rest#*:}" 2>/dev/null || true ;;
-    "") ;;
-    *) tail -c +$((offset + 1)) "$path" 2>/dev/null || true ;;
-  esac
+at_host() {  # at_host LOC COMMAND: runs on the head's host, outside its container (for docker logs)
+  local loc="$1"; shift
+  local ssh_var="HEAD_${loc}_SSH" ssh_cmd
+  ssh_cmd="${!ssh_var:-}"
+  if [ -n "$ssh_cmd" ]; then $ssh_cmd "sh -c $(printf %q "$*")"; else sh -c "$*"; fi
 }
 
-chat() {  # chat HEAD_NODE_ID JSON_MESSAGES: one blocking turn pinned to a head; prints the answer JSON
-  local gateway="$1" head="$2" messages="$3" body
+# The two logs a step reads, per head: the POM node's log (its docker logs: the Rust session pull lines) and the
+# plugin's Strata server log inside the container (the bridge's restore lines). A mark is a line count for the node's
+# log and a byte count for the Strata log; `since` prints what came after a mark.
+cont_of() { local v="HEAD_${1}_CONTAINER"; echo "${!v:-}"; }
+
+mark() {  # mark LOC SOURCE(node|session): the position of the log now
+  local loc="$1" src="$2"
+  if [ "$src" = node ]; then
+    at_host "$loc" "docker logs $(cont_of "$loc") 2>&1 | wc -l" | tr -d ' '
+  else
+    at "$loc" "wc -c < $SESSION_LOG_PATH" | tr -d ' '
+  fi
+}
+
+since() {  # since LOC SOURCE MARK: the log lines written after the mark
+  local loc="$1" src="$2" pos="$3"
+  if [ "$src" = node ]; then
+    at_host "$loc" "docker logs $(cont_of "$loc") 2>&1 | tail -n +$((pos + 1))"
+  else
+    at "$loc" "tail -c +$((pos + 1)) $SESSION_LOG_PATH"
+  fi
+}
+
+chat() {  # chat WHERE HEAD_NODE_ID JSON_MESSAGES: WHERE is the place the request leaves from (A, B or LOCAL): one blocking turn pinned to a head; prints the answer JSON
+  local loc="$1" head="$2" messages="$3" body
   body="$(jq -n --arg model "$MODEL" --arg session "$SESSION_KEY" --arg head "$head" --argjson messages "$messages" \
-    '{model: $model, messages: $messages, session: $session, inference_head: $head, max_tokens: 64, stream: false}')"
-  curl -sS --max-time 900 "$gateway/v1/chat/completions" \
-    -H "authorization: Bearer $API_KEY" -H "content-type: application/json" -d "$body"
+    '{model: $model, messages: $messages, session: $session, inference_head: $head, max_tokens: 64, stream: false, thinking_enabled: false}')"
+  printf '%s' "$body" | at "$loc" "curl -sS --max-time 900 $GATEWAY_URL/v1/chat/completions -H 'authorization: Bearer $API_KEY' -H 'content-type: application/json' -d @-"
 }
 
 check() {  # check STEP NAME CONDITION_RESULT(0|1) DETAIL: records one verdict line

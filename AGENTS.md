@@ -176,7 +176,7 @@ breaks the whole product.
 
 - **Project root.** `models/`, `pom.json`, keys and the UI come from
   `config::project_root()` (`$POM_HOME` → a cwd that looks like the project →
-  the executable's directory → `~/.pom`). Launching the binary from another cwd reads another
+  the executable's directory → the default home: `~/.pom`, or the executable's folder on Windows). Launching the binary from another cwd reads another
   config. Two nodes on the same machine need distinct `POM_HOME`s, because the
   identity (`.pom-node.key`) lives there. → `operations.md`
 - **`node_id` is the machine's name in the cluster** and the key of

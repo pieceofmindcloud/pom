@@ -295,7 +295,8 @@ jobs:
           # Without the host beside pom.exe no plugin installs
           # (`plugin_host::host_executable`).
           cp target/release/pom-plugin-host.exe pacote/
-          cp README.md pacote/ 2>/dev/null || true
+          # The install guide for this package (SmartScreen, firewall, data folder).
+          cp packaging/windows/README.md pacote/README.md
           mv pacote "$nome"
           7z a -tzip "$nome.zip" "$nome"
 

@@ -711,9 +711,9 @@ pub const DEFAULT_INFERENCE_PORT: u16 = 8181;
 ///  1. `$POM_HOME`, for anyone who wants to be explicit;
 ///  2. the working directory, when it actually looks like the project;
 ///  3. the directory holding the executable, climbing out of `target/release`;
-///  4. `~/.pom`, the default home of a node started anywhere else. A `.app`
-///     opened from Finder runs with `/` as its working directory, where nothing
-///     can be written.
+///  4. the default home (see [`default_home`]), for a node started anywhere else.
+///     A `.app` opened from Finder runs with `/` as its working directory, where
+///     nothing can be written.
 pub fn project_root() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let exe = std::env::current_exe().ok();
@@ -721,8 +721,19 @@ pub fn project_root() -> PathBuf {
         crate::brand::env("HOME").ok().map(PathBuf::from),
         &cwd,
         exe.as_deref(),
-        crate::catalog::home_dir(),
+        default_home(exe.as_deref()),
     )
+}
+
+/// The home used when nothing else identifies a project. On Windows the package
+/// is a folder the user unzips and runs, so the state sits beside `pom.exe`.
+/// Elsewhere it is `~/.pom`.
+fn default_home(exe: Option<&Path>) -> Option<PathBuf> {
+    if cfg!(windows) {
+        exe.and_then(Path::parent).map(Path::to_path_buf)
+    } else {
+        crate::catalog::home_dir().map(|home| home.join(".pom"))
+    }
 }
 
 /// The order of [`project_root`] with every input passed in, so it can be tested
@@ -731,7 +742,7 @@ fn resolve_project_root(
     explicit: Option<PathBuf>,
     cwd: &Path,
     exe: Option<&Path>,
-    user_home: Option<PathBuf>,
+    default_home: Option<PathBuf>,
 ) -> PathBuf {
     if let Some(home) = explicit {
         return home;
@@ -756,9 +767,7 @@ fn resolve_project_root(
         }
     }
 
-    user_home
-        .map(|home| home.join(".pom"))
-        .unwrap_or_else(|| cwd.to_path_buf())
+    default_home.unwrap_or_else(|| cwd.to_path_buf())
 }
 
 /// Directory that contains the runtime SQLite database.
@@ -1239,7 +1248,7 @@ fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_project_root_prefers_the_explicit_home_then_the_project_then_the_user_home() {
+    fn the_project_root_prefers_the_explicit_home_then_the_project_then_the_default_home() {
         use super::resolve_project_root;
         use std::path::PathBuf;
 
@@ -1248,19 +1257,20 @@ mod tests {
         let elsewhere = tempfile::tempdir().unwrap();
         let user_home = tempfile::tempdir().unwrap();
         let user_home_path = user_home.path().to_path_buf();
+        let default_home = user_home_path.join(".pom");
 
         assert_eq!(
             resolve_project_root(
                 Some(PathBuf::from("/explicit")),
                 project.path(),
                 None,
-                Some(user_home_path.clone()),
+                Some(default_home.clone()),
             ),
             PathBuf::from("/explicit"),
             "POM_HOME wins over everything"
         );
         assert_eq!(
-            resolve_project_root(None, project.path(), None, Some(user_home_path.clone())),
+            resolve_project_root(None, project.path(), None, Some(default_home.clone())),
             project.path(),
             "a working directory that is the project is used before ~/.pom"
         );
@@ -1269,7 +1279,7 @@ mod tests {
                 None,
                 elsewhere.path(),
                 Some(&project.path().join("target/release/pom")),
-                Some(user_home_path.clone()),
+                Some(default_home.clone()),
             ),
             project.path(),
             "the executable is searched for the project a few levels up"
@@ -1281,7 +1291,7 @@ mod tests {
                 Some(std::path::Path::new(
                     "/Applications/POM.app/Contents/MacOS/pom"
                 )),
-                Some(user_home_path.clone()),
+                Some(default_home.clone()),
             ),
             user_home_path.join(".pom"),
             "launched from Finder (cwd /) with no project around, the default home is ~/.pom"

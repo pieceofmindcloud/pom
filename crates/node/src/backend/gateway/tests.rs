@@ -1282,12 +1282,12 @@ mod tests {
             ),
             (
                 crate::profile::NodeProfile::Node,
-                "/api/ui/models",
                 "/api/ui/access",
+                "/api/ui/network/tls",
             ),
             (
                 crate::profile::NodeProfile::Admin,
-                "/api/ui/access",
+                "/api/ui/network/tls",
                 "/api/setup/save",
             ),
         ];

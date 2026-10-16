@@ -434,7 +434,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/access",
         method: None,
-        scope: RouteScope::PrimaryAdmin,
+        scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
         prefix: "/api/ui/network/tls",

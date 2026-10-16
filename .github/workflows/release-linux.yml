@@ -68,6 +68,16 @@ jobs:
       # `target/` is already there, and restoring over it would only spend time and disk -
       # which on this machine is exactly the scarce resource.
 
+      # The toolkit is installed on ksia under /usr/local/cuda, but the runner's PATH does
+      # not include it. Only the CUDA variant needs nvcc, so only it gets the directory.
+      - name: Put the CUDA toolkit on PATH
+        if: matrix.variante.features == 'cuda'
+        shell: bash
+        run: |
+          if [ -x /usr/local/cuda/bin/nvcc ]; then
+            echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Check the machine's dependencies
         run: |
           # On a self-hosted runner the dependencies are provisioned once on the
@@ -115,16 +125,20 @@ jobs:
           npm run build
         working-directory: apps/frontend
 
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
+      - name: Access to the engine repository (pom-plugin-llama.cpp)
         shell: bash
+        env:
+          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
+          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It is passed as
+          # environment variables of the job, not written to ~/.gitconfig: this machine is
+          # self-hosted, and the token must not outlive the job.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${ENGINE_TOKEN}@github.com/.insteadOf"
+            echo "GIT_CONFIG_VALUE_0=ssh://git@github.com/"
+          } >> "$GITHUB_ENV"
 
       - name: Compile
         # `CUDAARCHS` empty on purpose, and not by oversight: without it the llama.cpp CMake

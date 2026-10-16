@@ -1091,6 +1091,8 @@ export interface NodeOverrides {
   max_sessions?: number;
   n_gpu_layers?: number;
   offload_kqv?: boolean;
+  /** The machine's whole configuration (engine, settings, POM settings), which replaces the version's for it. */
+  params?: RuntimeParams;
 }
 
 export interface DeploymentVersion {

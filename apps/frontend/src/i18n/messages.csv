@@ -493,6 +493,7 @@ dashboard.updateTitle,Update this machine?,Atualizar esta máquina?
 dashboard.updateWarning,It stops if there are uncommitted changes or the repository is on another branch. An open cargo build is serialized with this one and the binary is replaced.,"Para se houver alterações não commitadas ou se o repositório estiver em outro branch. Um cargo build aberto é serializado com este, e o binário é substituído."
 dashboard.usedOf,{used} of {total},{used} de {total}
 dashboard.versionProperties,Deployment version properties,Propriedades da versão da implantação
+dashboard.machineProperties,Machine: {host},Máquina: {host}
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
 deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
@@ -912,6 +913,9 @@ deployments.nodeOverrideSave,Apply to this machine,Aplicar a esta máquina
 deployments.nodeOverrideDone,The machine reloaded with its own values.,A máquina recarregou com os valores próprios.
 deployments.nodeOverrideFailed,The machine did not accept the change: {error},A máquina não aceitou a mudança: {error}
 deployments.versionPropertiesHint,"The parameters this version was deployed with. To change them, redeploy with new parameters.","Os parâmetros com que esta versão foi implantada. Para mudá-los, reimplante com novos parâmetros."
+deployments.machineProperties,Machine: {host},Máquina: {host}
+deployments.backToVersion,Back to the version,Voltar à versão
+deployments.machineEngine,Engine: {engine},Motor: {engine}
 deployments.versionRedeployStarted,Re-deploying v{n},Reimplantando a v{n}
 deployments.versions,Versions,Versões
 deployments.versionsHint,"Every settings change under this deployment id, newest first.","Cada mudança de parâmetros sob este id de implantação, da mais nova para a mais antiga."

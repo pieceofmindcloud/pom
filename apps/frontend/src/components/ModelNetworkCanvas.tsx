@@ -168,11 +168,12 @@ type NetworkNodeProps = {
   onPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
   onPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
   onOpen?: () => void;
+  onSelect?: () => void;
 };
 
 const UNRATED = { decode: { tone: "unknown", ratio: null }, prefill: { tone: "unknown", ratio: null } } as const satisfies PeerSpeed;
 
-function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, services, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen }: NetworkNodeProps) {
+function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, services, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen, onSelect }: NetworkNodeProps) {
   const system = range.node?.system;
   /*
    * A machine may have more than one card, and the miniature card showed only
@@ -210,6 +211,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
     onPointerUp,
     onPointerCancel: onPointerUp,
     onDoubleClick: (event: React.MouseEvent) => { if (onOpen && !isControlTarget(event.target)) onOpen(); },
+    onClick: (event: React.MouseEvent) => { if (onSelect && !isControlTarget(event.target)) onSelect(); },
   };
   if (compact) {
     /*
@@ -250,6 +252,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
     onPointerUp={onPointerUp}
     onPointerCancel={onPointerUp}
     onDoubleClick={(event) => { if (onOpen && !isControlTarget(event.target)) onOpen(); }}
+    onClick={(event) => { if (onSelect && !isControlTarget(event.target)) onSelect(); }}
     /* Without a detail to open, the card does not announce a double click that does not happen. */
     title={onOpen ? t("canvas.openDetails") : undefined}
     className={clsx("absolute select-none rounded-xl border bg-ink/95 p-3 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unread && "opacity-75")}
@@ -306,6 +309,7 @@ export function ModelNetworkCanvas({
   peerPerf,
   propertiesOpen = false,
   onToggleProperties,
+  onSelectNode,
 }: {
   cluster: ClusterView;
   rttMeasurements?: ChatTelemetryRtt[];
@@ -314,6 +318,8 @@ export function ModelNetworkCanvas({
   peerPerf?: Record<string, ChatTelemetryPeerPerf>;
   propertiesOpen?: boolean;
   onToggleProperties?: () => void;
+  /** A single click on a machine's card selects it (its configuration shows in the properties panel). */
+  onSelectNode?: (nodeId: string) => void;
 }) {
   const { t } = useI18n();
   const graph = useMemo(() => graphFromCluster(cluster), [cluster]);
@@ -552,7 +558,7 @@ export function ModelNetworkCanvas({
       })}
       {ranges.map((range, index) => {
         const id = keyFor(range);
-        return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} services={ranges.findIndex((other) => other.node_id === range.node_id) === index ? range.node?.plugin_services : undefined} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />;
+        return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} services={ranges.findIndex((other) => other.node_id === range.node_id) === index ? range.node?.plugin_services : undefined} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} onSelect={onSelectNode ? () => onSelectNode(range.node_id) : undefined} />;
       })}
       {/* What each machine's plugins serve to the network (Qdrant as a RAG
           database, for example), attached to its card. A machine with several

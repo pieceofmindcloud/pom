@@ -23,7 +23,8 @@ import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
 import { useCluster, useDeployments, useEnterpriseStatus, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
-import type { PeerView } from "../lib/types";
+import type { PeerView, RuntimeParams } from "../lib/types";
+import { machineParamsOf } from "../lib/machineParams";
 import { useI18n } from "../i18n/provider";
 
 type View = "minima" | "estendida";
@@ -138,6 +139,8 @@ export function Dashboard() {
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [showProperties, setShowProperties] = useState(true);
+  // The machine picked on the map: its own configuration shows in the properties panel (null: the version's).
+  const [propertiesMachine, setPropertiesMachine] = useState<string | null>(null);
   const cluster = useCluster();
   const node = useNode();
   const deployments = useDeployments();
@@ -178,7 +181,10 @@ export function Dashboard() {
   ) ?? activeDeployment?.versions.at(-1);
   // A plugin's engine (Strata, ...) shows its own section, not llama.cpp's numbers.
   const engineCatalog = useMemo(() => inferenceServiceCatalog(cluster.data?.peers), [cluster.data]);
-  const activeEngine = engineOfParams(activeVersion?.params.inference_service, engineCatalog);
+  // A machine picked on the map shows its own configuration in the properties panel; none picked, the version's.
+  const propertiesNode = propertiesMachine && activeVersion ? activeVersion.nodes.find((candidate) => candidate.node_id === propertiesMachine) ?? null : null;
+  const propertiesParams = activeVersion ? (propertiesNode ? machineParamsOf(propertiesNode, activeVersion) : activeVersion.params) : ({} as RuntimeParams);
+  const propertiesEngine = engineOfParams(propertiesParams.inference_service, engineCatalog);
   const activeDeployId =
     activeDeployment?.deploy_id
     ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
@@ -306,7 +312,7 @@ export function Dashboard() {
     <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {!detailed || view === "minima" ? (
-          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: route.compute_ms ?? null, rttMs: route.rtt_ms, networkMs: route.network_ms ?? null, totalMs: route.total_ms ?? null, returnMode: route.return_mode ?? null, relayed: route.relayed ?? false, relayedLegs: route.relayed_legs ?? [], relayBypassedByRing: route.relay_bypassed_by_ring ?? false }))} peerPerf={networkRtt.data?.peer_perf} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} /></div>
+          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: route.compute_ms ?? null, rttMs: route.rtt_ms, networkMs: route.network_ms ?? null, totalMs: route.total_ms ?? null, returnMode: route.return_mode ?? null, relayed: route.relayed ?? false, relayedLegs: route.relayed_legs ?? [], relayBypassedByRing: route.relay_bypassed_by_ring ?? false }))} peerPerf={networkRtt.data?.peer_perf} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} onSelectNode={activeVersion ? (nodeId) => setPropertiesMachine(nodeId) : undefined} /></div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (
@@ -352,7 +358,7 @@ export function Dashboard() {
         {isPrincipal && logsPluginActive && <DeploymentLogDock />}
       </div>
 
-      {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div><DeploymentInspector value={activeVersion.params} readOnly showInferenceMode pomDevMode={node.data?.pom_dev_mode === true} showHiddenStateDtype={activeVersion.params.hidden_state_dtype != null} inferenceService={activeEngine ?? undefined} /></aside>}
+      {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div>{propertiesMachine && propertiesNode && <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-1.5 text-[0.68rem] text-iris"><span className="min-w-0 truncate">{t("dashboard.machineProperties", { host: propertiesNode.hostname || propertiesNode.node_id.slice(0, 12) })} · {t("deployments.machineEngine", { engine: propertiesEngine?.name ?? t("deploy.inferenceServiceLlama") })}</span><button type="button" onClick={() => setPropertiesMachine(null)} className="shrink-0 underline">{t("deployments.backToVersion")}</button></div>}<DeploymentInspector value={propertiesParams} readOnly showInferenceMode pomDevMode={node.data?.pom_dev_mode === true} showHiddenStateDtype={propertiesParams.hidden_state_dtype != null} inferenceService={propertiesEngine ?? undefined} /></aside>}
     </div>
 
     {isAdmin && (

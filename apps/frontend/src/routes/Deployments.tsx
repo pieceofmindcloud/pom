@@ -44,6 +44,8 @@ import {
   Skeleton,
 } from "../components/ui";
 import type { DeploymentKind, DeploymentVersion, RuntimeParams } from "../lib/types";
+import type { InferenceServiceEntry } from "../lib/inferenceServices";
+import { machineParamsOf } from "../lib/machineParams";
 import { useI18n } from "../i18n/provider";
 
 /** Which version of which deployment is open in the inspector on the right. */
@@ -502,12 +504,14 @@ function MachinesSection({
   selected,
   onSelect,
   onSaved,
+  engineCatalog,
 }: {
   deployId: string;
   version: DeploymentVersion;
   selected: string | null;
   onSelect: (nodeId: string | null) => void;
   onSaved: () => void;
+  engineCatalog: InferenceServiceEntry[];
 }) {
   const { t } = useI18n();
   const node = version.nodes.find((n) => n.node_id === selected);
@@ -528,10 +532,14 @@ function MachinesSection({
                 active ? "border-iris text-fg" : "border-line text-muted"
               }`}
             >
-              <span className="truncate">
+              <span className="min-w-0 truncate">
                 {n.hostname || n.node_id.slice(0, 12)}{" "}
                 <span className="font-mono text-faint">
                   {n.start_layer}-{n.end_layer}
+                </span>
+                <span className="block truncate text-[0.6rem] text-faint">
+                  {engineOfParams(machineParamsOf(n, version).inference_service, engineCatalog)?.name ??
+                    t("deploy.inferenceServiceLlama")}
                 </span>
               </span>
               {own && <span className="shrink-0 text-[0.6rem] text-amber">{t("deployments.nodeOwn")}</span>}
@@ -568,7 +576,6 @@ export function Deployments() {
   const [inspected, setInspected] = useState<Inspected | null>(null);
   const invalidate = useInvalidate();
   const engineCatalog = useEngineCatalog();
-  const inspectedEngine = engineOfParams(inspected?.version.params.inference_service, engineCatalog);
   // The right side shows one thing at a time: the version being read or the redeploy.
   const [editing, setEditing] = useState<Editing | null>(null);
   // The machine whose own values the properties panel shows (`NodeOverridesPanel`).
@@ -586,6 +593,11 @@ export function Deployments() {
   const liveVersion = inspected
     ? findVersion(data?.deployments ?? [], inspected.deployId, inspected.version.version) ?? inspected.version
     : null;
+  // The panel shows the version's parameters, or, once a machine is picked, that machine's own configuration.
+  const shownMachine =
+    liveVersion && machine ? liveVersion.nodes.find((candidate) => candidate.node_id === machine) ?? null : null;
+  const shownParams = liveVersion ? (shownMachine ? machineParamsOf(shownMachine, liveVersion) : liveVersion.params) : null;
+  const shownEngine = engineOfParams(shownParams?.inference_service, engineCatalog);
   const rows = [...(data?.deployments ?? [])].sort((a, b) => {
     const aTime = Date.parse(a.deployment.activated_at);
     const bTime = Date.parse(b.deployment.activated_at);
@@ -677,6 +689,21 @@ export function Deployments() {
                 <p className="truncate font-mono text-[0.6rem] text-faint">
                   {inspected.deployId}
                 </p>
+                {shownMachine && (
+                  <p className="truncate text-[0.65rem] text-iris">
+                    {t("deployments.machineProperties", {
+                      host: shownMachine.hostname || shownMachine.node_id.slice(0, 12),
+                    })}
+                    {" · "}
+                    {t("deployments.machineEngine", {
+                      engine: shownEngine?.name ?? t("deploy.inferenceServiceLlama"),
+                    })}
+                    {" · "}
+                    <button type="button" onClick={() => setMachine(null)} className="underline">
+                      {t("deployments.backToVersion")}
+                    </button>
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -697,12 +724,12 @@ export function Deployments() {
               inventing a record nobody kept.
             */}
             <DeploymentInspector
-              value={liveVersion?.params ?? inspected.version.params}
+              value={shownParams ?? inspected.version.params}
               readOnly
               showInferenceMode
               pomDevMode={pomDevMode}
-              showHiddenStateDtype={(liveVersion?.params ?? inspected.version.params).hidden_state_dtype != null}
-              inferenceService={inspectedEngine ?? undefined}
+              showHiddenStateDtype={(shownParams ?? inspected.version.params).hidden_state_dtype != null}
+              inferenceService={shownEngine ?? undefined}
             />
             <MachinesSection
               deployId={inspected.deployId}
@@ -710,6 +737,7 @@ export function Deployments() {
               selected={machine}
               onSelect={setMachine}
               onSaved={() => invalidate()}
+              engineCatalog={engineCatalog}
             />
             <div className="sticky bottom-0 flex justify-end border-t border-line bg-surface/95 px-2 py-2 backdrop-blur-sm">
               <Button

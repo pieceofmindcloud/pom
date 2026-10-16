@@ -153,16 +153,15 @@ jobs:
         with:
           key: ${{ matrix.variante }}-llama-${{ steps.llama.outputs.tag }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
+      - name: Access to the engine repository (pom-plugin-llama.cpp)
         shell: bash
+        env:
+          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
+          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It goes to the
+          # job's global git config, which lives only as long as this hosted runner.
+          git config --global url."https://x-access-token:${ENGINE_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
 
       - name: Validate the autoclone destination on Windows
         shell: pwsh
@@ -241,27 +240,28 @@ jobs:
 
       # pwsh, not bash: in Git Bash the MSYS /usr/bin/link.exe shows up before
       # the MSVC linker on PATH.
+      # The web interface is compiled into pom.exe (feature `embed-ui`), so it has to be
+      # on disk before the build. The `ui` job built it.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist-windows
+          path: apps/frontend/dist
+
       - name: Compile (${{ matrix.variante }})
         shell: pwsh
         run: |
           if ('${{ matrix.variante }}' -eq 'gpu') {
             $env:CUDAARCHS = $env:POM_WINDOWS_CUDAARCHS
             Remove-Item Env:CMAKE_CUDA_ARCHITECTURES -ErrorAction SilentlyContinue
-            cargo build --release --locked -p node -p pom-plugin-host --features cuda,vulkan
+            cargo build --release --locked -p node -p pom-plugin-host --features cuda,vulkan,embed-ui
           } else {
-            cargo build --release --locked -p node -p pom-plugin-host
+            cargo build --release --locked -p node -p pom-plugin-host --features embed-ui
           }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: ui-dist-windows
-          path: pacote/apps/frontend/dist
-
-      # The binary sits at the package root with `apps/` beside it: `project_root()`
-      # walks up from the executable's directory, so the unpacked folder
-      # works anywhere, with no `POM_HOME`. The icon already travels inside the
-      # .exe (`crates/node/build.rs`), so there is nothing to copy here.
+      # The interface is inside pom.exe, so there is no `apps/` folder in the package. The
+      # state (pom.json, the database, models) is written beside pom.exe (`default_home`).
+      # The icon already travels inside the .exe (`crates/node/build.rs`).
       #
       # `pom-plugin-host.exe` goes beside `pom.exe`: that is how pom
       # starts each plugin.
@@ -295,7 +295,8 @@ jobs:
           # Without the host beside pom.exe no plugin installs
           # (`plugin_host::host_executable`).
           cp target/release/pom-plugin-host.exe pacote/
-          cp README.md pacote/ 2>/dev/null || true
+          # The install guide for this package (SmartScreen, firewall, data folder).
+          cp packaging/windows/README.md pacote/README.md
           mv pacote "$nome"
           7z a -tzip "$nome.zip" "$nome"
 

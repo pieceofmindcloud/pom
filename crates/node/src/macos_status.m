@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 
 static NSString *POMChatURL;
+static NSString *POMWindowURL;
 static NSString *POMIconPath;
 static NSString *POMApplicationName;
 static NSStatusItem *POMStatusItem;
@@ -33,6 +34,7 @@ static NSString *POMLocalized(NSString *key, NSString *fallback) {
 }
 
 static void POMOpenWindow(void);
+static void POMWaitForGateway(WKWebView *webView);
 static void POMShowUnavailable(WKWebView *webView);
 static WKWebView *POMMakeWebView(NSRect frame);
 static NSImage *POMStatusImage(void);
@@ -79,6 +81,7 @@ static void POMOpenPopover(void) {
 
         NSViewController *viewController = [[NSViewController alloc] init];
         POMPopoverWebView = POMMakeWebView(NSMakeRect(0, 0, POMPopoverWidth, height));
+        POMWaitForGateway(POMPopoverWebView);
         viewController.view = POMPopoverWebView;
         POMPopover.contentViewController = viewController;
     }
@@ -115,18 +118,18 @@ static void POMOpenWindow(void) {
                           defer:NO];
         POMWindow.title = POMApplicationName;
         POMWindow.minSize = NSMakeSize(640, 480);
+        // The green button, and View > Enter Full Screen, make the window full screen
+        // like any native macOS app.
+        POMWindow.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
         // Closing hides the window; the app keeps running in the menu bar.
         POMWindow.releasedWhenClosed = NO;
         POMWindow.delegate = POMStatusControllerInstance;
         POMWindowWebView = POMMakeWebView(NSMakeRect(0, 0, POMWindowWidth, POMWindowHeight));
+        POMWaitForGateway(POMWindowWebView);
         POMWindow.contentView = POMWindowWebView;
         [POMWindow center];
     }
 
-    // While the larger window is open the app is a regular one: it shows in
-    // the Dock and gets its menu bar, with "Quit POM" and Cmd+Q. An accessory
-    // app has no visible menu, so the window used to offer no way to quit.
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [POMWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
@@ -158,14 +161,6 @@ static void POMShowStatusMenu(void) {
     }
 }
 
-static void POMRetryGateway(WKWebView *webView) {
-    NSURL *url = [NSURL URLWithString:POMChatURL];
-    if (!url) {
-        POMShowUnavailable(webView);
-        return;
-    }
-    [webView loadRequest:[NSURLRequest requestWithURL:url]];
-}
 
 static NSString *POMUnavailableHTML(void) {
     NSString *title = POMLocalized(
@@ -201,6 +196,94 @@ static NSString *POMUnavailableHTML(void) {
 
 static void POMShowUnavailable(WKWebView *webView) {
     [webView loadHTMLString:POMUnavailableHTML() baseURL:[NSURL URLWithString:POMChatURL]];
+}
+
+/// The web views that are waiting for the gateway to answer.
+static NSMutableSet *POMWaitingWebViews;
+/// 120 probes, half a second apart: a minute for the node to start.
+static const int POMGatewayProbeLimit = 120;
+
+static NSString *POMLoadingHTML(void) {
+    NSString *message = POMLocalized(@"status.gatewayStarting", @"Starting POM…");
+    return [NSString stringWithFormat:
+        @"<!doctype html><html><head><meta charset='utf-8'>"
+         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+         "<style>"
+         "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;"
+         "place-items:center;background:#090a10;color:#8a90a6;font-family:-apple-system,"
+         "BlinkMacSystemFont,'Helvetica Neue',sans-serif;text-align:center}"
+         ".spin{width:28px;height:28px;margin:0 auto 16px;border-radius:50%%;"
+         "border:3px solid #2a2d3d;border-top-color:#8a7cff;animation:spin .9s linear infinite}"
+         "@keyframes spin{to{transform:rotate(360deg)}}p{font-size:14px;margin:0}"
+         "</style></head><body><main><div class='spin'></div><p>%@</p></main></body></html>",
+        message];
+}
+
+static NSString *POMAddressOf(WKWebView *webView) {
+    return webView == POMWindowWebView ? POMWindowURL : POMChatURL;
+}
+
+static void POMProbeGateway(WKWebView *webView, int attempt);
+
+static void POMScheduleGatewayProbe(WKWebView *webView, int attempt) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        POMProbeGateway(webView, attempt);
+    });
+}
+
+/// Asks the node for the page. Any HTTP answer below 500 means the gateway is up;
+/// a refused connection or a timeout means it is still starting.
+static void POMProbeGateway(WKWebView *webView, int attempt) {
+    if (![POMWaitingWebViews containsObject:webView]) {
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:POMAddressOf(webView)];
+    if (!url) {
+        [POMWaitingWebViews removeObject:webView];
+        POMShowUnavailable(webView);
+        return;
+    }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.timeoutInterval = 2.0;
+    [[NSURLSession.sharedSession dataTaskWithRequest:request
+                                   completionHandler:^(NSData *data, NSURLResponse *response,
+                                                       NSError *error) {
+        (void)data;
+        NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
+            ? ((NSHTTPURLResponse *)response).statusCode
+            : 0;
+        BOOL up = error == nil && status > 0 && status < 500;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (![POMWaitingWebViews containsObject:webView]) {
+                return;
+            }
+            if (up) {
+                [POMWaitingWebViews removeObject:webView];
+                [webView loadRequest:[NSURLRequest requestWithURL:url]];
+            } else if (attempt + 1 >= POMGatewayProbeLimit) {
+                [POMWaitingWebViews removeObject:webView];
+                POMShowUnavailable(webView);
+            } else {
+                POMScheduleGatewayProbe(webView, attempt + 1);
+            }
+        });
+    }] resume];
+}
+
+/// Shows the loading screen and loads the page once the gateway answers. Used at
+/// launch, when the page fails, and by the "Try again" button.
+static void POMWaitForGateway(WKWebView *webView) {
+    if (!POMWaitingWebViews) {
+        POMWaitingWebViews = [NSMutableSet set];
+    }
+    if ([POMWaitingWebViews containsObject:webView]) {
+        return;
+    }
+    [POMWaitingWebViews addObject:webView];
+    NSURL *base = [NSURL URLWithString:POMAddressOf(webView)];
+    [webView loadHTMLString:POMLoadingHTML() baseURL:base];
+    POMScheduleGatewayProbe(webView, 0);
 }
 
 /// Builds the bar item image with the three resolutions of the template.
@@ -254,7 +337,6 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     WKWebView *webView = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     webView.navigationDelegate = POMNavigationDelegateInstance;
     webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    POMRetryGateway(webView);
     return webView;
 }
 
@@ -281,7 +363,7 @@ static WKWebView *POMMakeWebView(NSRect frame) {
         [NSApp terminate:nil];
     } else if ([message.name isEqualToString:@"pomRetryGateway"] &&
                [message.webView isKindOfClass:[WKWebView class]]) {
-        POMRetryGateway((WKWebView *)message.webView);
+        POMWaitForGateway((WKWebView *)message.webView);
     }
 }
 
@@ -309,8 +391,6 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 - (void)windowWillClose:(NSNotification *)notification {
     if (notification.object == POMWindow) {
-        // Back to a menu-bar app: no Dock icon once the window is gone.
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     }
 }
 
@@ -330,7 +410,9 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    // A regular app: Dock icon, menu bar and full screen, as any native macOS app. The
+    // status item stays in the menu bar while the process runs.
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
     POMNavigationDelegateInstance = [[POMNavigationDelegate alloc] init];
     POMScriptHandlerInstance = [[POMScriptHandler alloc] init];
@@ -353,6 +435,29 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     POMStatusItem.button.target = POMStatusControllerInstance;
     POMStatusItem.button.action = @selector(togglePopover:);
     [POMStatusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
+
+    POMOpenWindow();
+}
+
+// Clicking the Dock icon brings the window back after it was closed.
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    (void)sender;
+    if (!flag) {
+        POMOpenWindow();
+    }
+    return YES;
+}
+
+// Right-clicking the Dock icon offers Quit, so the app can be closed from the Dock
+// as well as from the status bar item.
+- (NSMenu *)applicationDockMenu:(NSApplication *)sender {
+    (void)sender;
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:POMApplicationName];
+    [menu addItem:[[NSMenuItem alloc]
+        initWithTitle:POMLocalized(@"status.quit", @"Quit POM")
+               action:@selector(terminate:)
+        keyEquivalent:@""]];
+    return menu;
 }
 
 @end
@@ -382,6 +487,7 @@ static void POMInstallApplicationMenu(void) {
 }
 
 int pom_macos_status_run(const char *url,
+                         const char *window_url,
                          const char *icon_path,
                          const char *app_name,
                          double popover_width,
@@ -398,6 +504,7 @@ int pom_macos_status_run(const char *url,
         }
         atomic_store(&POMUserQuitRequested, false);
         POMChatURL = [NSString stringWithUTF8String:url ?: ""];
+        POMWindowURL = [NSString stringWithUTF8String:window_url ?: ""];
         POMIconPath = [NSString stringWithUTF8String:icon_path ?: ""];
         POMApplicationName = [NSString stringWithUTF8String:app_name ?: ""];
         if (popover_width > 0 && popover_height > 0) {

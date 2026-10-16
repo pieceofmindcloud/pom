@@ -710,33 +710,64 @@ pub const DEFAULT_INFERENCE_PORT: u16 = 8181;
 /// Resolution order, first hit wins:
 ///  1. `$POM_HOME`, for anyone who wants to be explicit;
 ///  2. the working directory, when it actually looks like the project;
-///  3. the directory holding the executable, climbing out of `target/release`.
+///  3. the directory holding the executable, climbing out of `target/release`;
+///  4. the default home (see [`default_home`]), for a node started anywhere else.
+///     A `.app` opened from Finder runs with `/` as its working directory, where
+///     nothing can be written.
 pub fn project_root() -> PathBuf {
-    if let Ok(home) = crate::brand::env("HOME") {
-        return PathBuf::from(home);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let exe = std::env::current_exe().ok();
+    resolve_project_root(
+        crate::brand::env("HOME").ok().map(PathBuf::from),
+        &cwd,
+        exe.as_deref(),
+        default_home(exe.as_deref()),
+    )
+}
+
+/// The home used when nothing else identifies a project. On Windows the package
+/// is a folder the user unzips and runs, so the state sits beside `pom.exe`.
+/// Elsewhere it is `~/.pom`.
+fn default_home(exe: Option<&Path>) -> Option<PathBuf> {
+    if cfg!(windows) {
+        exe.and_then(Path::parent).map(Path::to_path_buf)
+    } else {
+        crate::catalog::home_dir().map(|home| home.join(".pom"))
+    }
+}
+
+/// The order of [`project_root`] with every input passed in, so it can be tested
+/// without touching the process environment.
+fn resolve_project_root(
+    explicit: Option<PathBuf>,
+    cwd: &Path,
+    exe: Option<&Path>,
+    default_home: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(home) = explicit {
+        return home;
     }
 
     let looks_like_project =
-        |d: &std::path::Path| d.join(config_filename()).exists() || d.join("models").is_dir();
+        |d: &Path| d.join(config_filename()).exists() || d.join("models").is_dir();
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if looks_like_project(&cwd) {
-        return cwd;
+    if looks_like_project(cwd) {
+        return cwd.to_path_buf();
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent().map(PathBuf::from);
+    if let Some(exe) = exe {
+        let mut dir = exe.parent();
         // …/target/release/pom → climb to the project directory.
         for _ in 0..3 {
             let Some(d) = dir else { break };
-            if looks_like_project(&d) {
-                return d;
+            if looks_like_project(d) {
+                return d.to_path_buf();
             }
-            dir = d.parent().map(PathBuf::from);
+            dir = d.parent();
         }
     }
 
-    cwd
+    default_home.unwrap_or_else(|| cwd.to_path_buf())
 }
 
 /// Directory that contains the runtime SQLite database.
@@ -1143,9 +1174,13 @@ pub fn default_model_dir() -> PathBuf {
 /// runtime. `$POM_UI_DIST` overrides it — the runtime Docker image sets
 /// it explicitly rather than relying on `project_root()` detection, and a dev
 /// setup that keeps the bundle elsewhere can point straight at it.
+pub fn ui_dist_override() -> Option<PathBuf> {
+    crate::brand::env("UI_DIST").ok().map(PathBuf::from)
+}
+
 pub fn ui_dist_dir() -> PathBuf {
-    if let Ok(dir) = crate::brand::env("UI_DIST") {
-        return PathBuf::from(dir);
+    if let Some(dir) = ui_dist_override() {
+        return dir;
     }
     if let Some(dir) = bundled_ui_dist() {
         return dir;
@@ -1216,6 +1251,62 @@ fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_project_root_prefers_the_explicit_home_then_the_project_then_the_default_home() {
+        use super::resolve_project_root;
+        use std::path::PathBuf;
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("pom.json"), "{}").unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let user_home = tempfile::tempdir().unwrap();
+        let user_home_path = user_home.path().to_path_buf();
+        let default_home = user_home_path.join(".pom");
+
+        assert_eq!(
+            resolve_project_root(
+                Some(PathBuf::from("/explicit")),
+                project.path(),
+                None,
+                Some(default_home.clone()),
+            ),
+            PathBuf::from("/explicit"),
+            "POM_HOME wins over everything"
+        );
+        assert_eq!(
+            resolve_project_root(None, project.path(), None, Some(default_home.clone())),
+            project.path(),
+            "a working directory that is the project is used before ~/.pom"
+        );
+        assert_eq!(
+            resolve_project_root(
+                None,
+                elsewhere.path(),
+                Some(&project.path().join("target/release/pom")),
+                Some(default_home.clone()),
+            ),
+            project.path(),
+            "the executable is searched for the project a few levels up"
+        );
+        assert_eq!(
+            resolve_project_root(
+                None,
+                std::path::Path::new("/"),
+                Some(std::path::Path::new(
+                    "/Applications/POM.app/Contents/MacOS/pom"
+                )),
+                Some(default_home.clone()),
+            ),
+            user_home_path.join(".pom"),
+            "launched from Finder (cwd /) with no project around, the default home is ~/.pom"
+        );
+        assert_eq!(
+            resolve_project_root(None, elsewhere.path(), None, None),
+            elsewhere.path(),
+            "without any home at all the working directory is the last resort"
+        );
+    }
+
     #[test]
     fn the_default_inference_port_follows_the_gateway_port() {
         let mut config: Config = serde_json::from_value(

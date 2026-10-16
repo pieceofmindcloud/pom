@@ -363,9 +363,9 @@ three come from the same `brand.json` (`app_icons`):
 | Linux | `assets/brand/linux/hicolor/**` + `pom.desktop` | `hicolor` tree from 16 to 512 and the `.desktop` entry, packaged in `share/` in the tarball. Installing means copying to `~/.local/share/{icons,applications}`. |
 
 **The `.app` must find the UI.** Inside the bundle the binary sits in
-`Contents/MacOS/`, and from there `project_root()` would fall back to the cwd of
-whoever opened it (Finder opens at `/`), with the screen answering 500.
-`config::bundled_ui_dist()` resolves `Contents/Resources/apps/frontend/dist`
+`Contents/MacOS/`, where walking up from the executable never reaches a project,
+so `project_root()` would fall back to `~/.pom` and the interface would not be
+there. `config::bundled_ui_dist()` resolves `Contents/Resources/apps/frontend/dist`
 before trying the project root; the release script copies `dist` there.
 
 To rename the product again: edit `brand.json`, change the `[[bin]]`, produce
@@ -685,7 +685,7 @@ repository (not even in git history).
 
 | Variable | Effect |
 |---|---|
-| `POM_HOME` | First step of `project_root()` resolution: config, `models/`, UI. Without it: a cwd that looks like the project, then walking up from the executable's directory. Two nodes on the same machine need distinct homes (the `node_id` identity also lives in the project root). |
+| `POM_HOME` | First step of `project_root()` resolution: config, `models/`, UI. Without it: a cwd that looks like the project, then walking up from the executable's directory, then the default home: `~/.pom` (created on the first database open), or on Windows the folder of `pom.exe`. Two nodes on the same machine need distinct homes (the `node_id` identity also lives in the project root). |
 | `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_CLUSTER_RELAY`, `POM_NO_RELAY_TRANSFERS`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply while there is no `pom.json`; `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
 | `POM_RETURN_MODE` | `direct` or `ring` forces the gateway's reply return mode (planner and decision), to test a path the planner would not pick - for example direct delivery to a gateway behind NAT, which the ring would hide. Absent or `auto`, the planner picks. With `direct`, a missing return path becomes an inference failure. See `parallelism.md`. |
 | `POM_SLICE_BENCH` | `0` turns off the slice speed test when the model loads (`infer_server/perf.rs`). |
@@ -979,18 +979,36 @@ icon** (`embed_windows_icon` depends on the host's `cfg(windows)`).
 
 ### The package
 
-The binary sits at the package root with `apps/` next to it, so
+The macOS package is a disk image, `pom-<v>-aarch64-apple-darwin.dmg`, built on
+the runner by `packaging/macos/make-dmg.sh` with `create-dmg`. It holds the
+`POM.app` bundle, an Applications shortcut (the window background, from
+`make-dmg-background.py`, shows the arrow between them) and `README.md`
+(installation steps: Gatekeeper, Applications, Local Network).
+The binaries are universal (arm64 and x86_64, `lipo`), built with
+`MACOSX_DEPLOYMENT_TARGET=11.0`, so the app runs on macOS 11 (Big Sur) and later. The bundle's `Info.plist` declares
+`NSLocalNetworkUsageDescription`, the text macOS shows in the Local Network prompt.
+The binary is `Contents/MacOS/pom`, the
+plugin host sits beside it in the same folder, and the interface is in
+`Contents/Resources/apps/frontend/dist`. It is signed ad hoc after the last file
+goes in (`codesign --force --deep --sign -`): any change to the bundle after
+that breaks the seal, and Gatekeeper then reports it as "damaged". Without
+`POM_HOME` it keeps its state in `~/.pom`. The Windows package works the same way, but its default home is the folder that contains `pom.exe`, so the package keeps its own data.
+
+Linux packages put the binary at the package root with `apps/` next to it, so
 `project_root()` finds the UI from the executable's directory - the unpacked
-folder works anywhere, without `POM_HOME`. `pom-plugin-host`
+folder works anywhere, without `POM_HOME`. The Windows package has no `apps/`
+folder: the build enables the `embed-ui` feature, which compiles
+`apps/frontend/dist` into `pom.exe`, so the `ui` job has to finish before the
+`build` job compiles (the workflow downloads its artifact first). `pom-plugin-host`
 (`pom-plugin-host.exe` on Windows) goes **next to the binary** in every package:
 the workspace's `default-members` is only `crates/node`, so every release build
 asks for `-p node -p pom-plugin-host` explicitly, and pom only starts plugins
 through that sibling (`plugin_host::host_executable`, or `$POM_PLUGIN_HOST`). A
 package without it refuses to install any plugin with "pom-plugin-host not
-found next to ...". On top of that, per system: macOS ships the `POM.app` bundle
-(with a second copy of `dist` inside, so the `.app` survives being dragged into
+found next to ...". On top of that, per system: macOS ships only the `POM.app`
+bundle (the interface is inside it, so it survives being dragged into
 `/Applications`), Linux ships `share/hicolor` and the `.desktop`, and Windows
-ships nothing extra because the icon is already inside the `.exe`. Unix packs
+ships nothing extra because the icon is already inside the `.exe`. Linux packs
 with `tar czf`, Windows with `7z`.
 
 **Windows is the least exercised target.** It fails on its own, without

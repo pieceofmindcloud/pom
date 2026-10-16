@@ -2,10 +2,11 @@
 //!
 //! The bundle lives wherever `config::ui_dist_dir()` points - by default
 //! `<project_root>/apps/frontend/dist`, built independently with
-//! `npm run build` in `apps/frontend`. Nothing here is compiled into the
-//! binary, so editing the interface no longer touches the Rust build: run
-//! `npm run build` (or point `POM_UI_DIST` at a Vite watch build) and
-//! reload the browser.
+//! `npm run build` in `apps/frontend`. Nothing is compiled into the binary by
+//! default, so editing the interface needs no Rust build: run `npm run build`
+//! (or point `POM_UI_DIST` at a Vite watch build) and reload the browser. The
+//! `embed-ui` feature compiles the bundle into the executable instead; the
+//! Windows release uses it, so its package has no `apps/` folder.
 //!
 //! The routing rule is the part worth reading. The single-page app is mounted
 //! at `/admin-ui/`, while the root redirects there without exposing a bundle
@@ -52,10 +53,9 @@ async fn root() -> Redirect {
 }
 
 async fn index() -> Response {
-    let base = crate::config::ui_dist_dir();
-    serve(&base, "index.html")
+    serve_file("index.html")
         .await
-        .unwrap_or_else(|| missing_bundle(&base))
+        .unwrap_or_else(|| missing_bundle(&crate::config::ui_dist_dir()))
 }
 
 async fn asset(AxumPath(path): AxumPath<String>, uri: Uri, method: axum::http::Method) -> Response {
@@ -63,13 +63,12 @@ async fn asset(AxumPath(path): AxumPath<String>, uri: Uri, method: axum::http::M
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let base = crate::config::ui_dist_dir();
     let trimmed = path
         .strip_prefix("admin-ui/")
         .unwrap_or(path.as_str())
         .trim_start_matches('/');
 
-    if let Some(hit) = serve(&base, trimmed).await {
+    if let Some(hit) = serve_file(trimmed).await {
         return hit;
     }
 
@@ -95,9 +94,9 @@ async fn asset(AxumPath(path): AxumPath<String>, uri: Uri, method: axum::http::M
         return (StatusCode::NOT_FOUND, "asset not found").into_response();
     }
 
-    serve(&base, "index.html")
+    serve_file("index.html")
         .await
-        .unwrap_or_else(|| missing_bundle(&base))
+        .unwrap_or_else(|| missing_bundle(&crate::config::ui_dist_dir()))
 }
 
 /// Serve the SPA only after no concrete API or UI route matched. Keeping this
@@ -126,16 +125,55 @@ fn resolve(base: &Path, path: &str) -> Option<PathBuf> {
     Some(full)
 }
 
+/// The bundle compiled into the executable, in a build with `embed-ui`. The path is
+/// relative to this crate, so it names the repository's `apps/frontend/dist`.
+#[cfg(feature = "embed-ui")]
+static EMBEDDED_UI: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/../../apps/frontend/dist");
+
+/// Serves one file of the interface. It comes from disk, or in an `embed-ui` build
+/// from the executable. `POM_UI_DIST` always means a bundle on disk, so a developer
+/// pointing at a Vite watch build still sees it.
+async fn serve_file(path: &str) -> Option<Response> {
+    #[cfg(feature = "embed-ui")]
+    if crate::config::ui_dist_override().is_none() {
+        return serve_embedded(path);
+    }
+    serve(&crate::config::ui_dist_dir(), path).await
+}
+
+#[cfg(feature = "embed-ui")]
+fn serve_embedded(path: &str) -> Option<Response> {
+    // Same rule as `resolve`: a `..` or an absolute path never leaves the bundle.
+    let mut key = PathBuf::new();
+    for part in Path::new(path).components() {
+        match part {
+            Component::Normal(seg) => key.push(seg),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    let file = EMBEDDED_UI.get_file(&key)?;
+    let mime = mime_guess::from_path(&key).first_or_octet_stream();
+    Some(bundle_response(
+        Body::from(axum::body::Bytes::from_static(file.contents())),
+        path,
+        mime.as_ref(),
+    ))
+}
+
 async fn serve(base: &Path, path: &str) -> Option<Response> {
     let file_path = resolve(base, path)?;
     let bytes = tokio::fs::read(&file_path).await.ok()?;
     let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
+    Some(bundle_response(Body::from(bytes), path, mime.as_ref()))
+}
 
-    let mut res = Response::new(Body::from(bytes));
+fn bundle_response(body: Body, path: &str, mime: &str) -> Response {
+    let mut res = Response::new(body);
     res.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_str(mime.as_ref())
-            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+        HeaderValue::from_str(mime).unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
 
     // Vite puts a content hash in every asset name, so those are immutable and
@@ -150,7 +188,7 @@ async fn serve(base: &Path, path: &str) -> Option<Response> {
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
 
-    Some(res)
+    res
 }
 
 /// The bundle is read from disk, so a miss here means it was never built —

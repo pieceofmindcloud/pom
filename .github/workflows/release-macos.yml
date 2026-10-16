@@ -1,9 +1,8 @@
 name: Release · macOS
 
-# It only runs when you ask for it, and it runs on the **self-hosted runner `macbook`** - it
-# consumes no quota at all. If the MacBook is switched off the job waits in the queue instead
-# of failing. See `docs/subsystems/build-and-run.md`, "Release through GitHub
-# Actions".
+# It only runs when you ask for it, on a GitHub-hosted macOS (Apple Silicon) runner. The
+# private engine repository is reached over HTTPS with the POM_LLAMACPP_TOKEN secret. See
+# `docs/subsystems/build-and-run.md`, "Release through GitHub Actions".
 on:
   workflow_dispatch:
     inputs:
@@ -27,7 +26,7 @@ jobs:
   # would run on the same machine anyway - the runner serves one job at a time.
   build:
     name: macOS arm64 (Metal)
-    runs-on: [self-hosted, macOS, ARM64, macbook]
+    runs-on: macos-14
     env:
       LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
       SCCACHE_GHA_ENABLED: "true"
@@ -44,6 +43,8 @@ jobs:
         uses: ./.github/actions/llama-cache
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
 
       - name: Enable the build cache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -52,23 +53,14 @@ jobs:
       # runner that starts empty. Here the workspace is the same between runs, the
       # `target/` is already there, and restoring over it would only spend time and disk.
 
-      - name: Check the machine's dependencies
+      - name: Check the build tools
         run: |
-          # On a self-hosted runner the dependencies are provisioned once on the
-          # machine, not installed on every run. Failing here, naming what
-          # is missing, is better than dying deep inside the llama.cpp build.
-          faltou=""
-          for p in cmake git; do command -v "$p" >/dev/null || faltou="$faltou $p"; done
-          if [ -n "$faltou" ]; then
-            echo "missing on the machine:$faltou (install with: brew install$faltou)" >&2
-            exit 1
-          fi
+          # The hosted image brings git and cmake; install whatever is missing with Homebrew.
+          for p in cmake git; do command -v "$p" >/dev/null || brew install "$p"; done
           cmake --version | head -1
 
-      # Pins Node instead of trusting what the machine has on PATH: the self-hosted
-      # runner stores a snapshot of the PATH of whoever configured it, and that snapshot
-      # brings Node 18. Here the version is the same one the project uses in development,
-      # downloaded into the runner's tool cache.
+      # Pins the Node version the project uses in development, instead of whatever the
+      # runner image has on PATH.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -81,48 +73,65 @@ jobs:
           npm run build
         working-directory: apps/frontend
 
-      - name: SSH access to the engine repository (pom-plugin-llama.cpp)
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PLUGIN_REPO_SSH_KEY }}
-
-      - name: github.com key in known_hosts
+      - name: Access to the engine repository (pom-plugin-llama.cpp)
         shell: bash
+        env:
+          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
+          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It goes to the
+          # job's global git config, which lives only as long as this hosted runner.
+          git config --global url."https://x-access-token:${ENGINE_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
 
-      - name: Compile
-        run: cargo build --release --locked -p node -p pom-plugin-host --features metal
+      # One binary for Apple silicon and Intel: each slice is compiled for its own target
+      # and lipo joins them. MACOSX_DEPLOYMENT_TARGET makes both slices run from macOS 11
+      # (Big Sur) on, so Monterey and Big Sur get the same binary as the newer Macs.
+      - name: "Compile (universal, arm64 and x86_64)"
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin -p node -p pom-plugin-host --features metal
+          cargo build --release --locked --target x86_64-apple-darwin -p node -p pom-plugin-host --features metal
+          mkdir -p target/universal/release
+          for bin in pom pom-plugin-host; do
+            lipo -create -output "target/universal/release/$bin" \
+              "target/aarch64-apple-darwin/release/$bin" \
+              "target/x86_64-apple-darwin/release/$bin"
+          done
+          lipo -info target/universal/release/pom target/universal/release/pom-plugin-host
+
+      # The installer window is laid out by create-dmg (Finder positions the icons), so the
+      # DMG is built here, on the runner, and not on a developer machine.
+      - name: Install create-dmg
+        run: brew install create-dmg
 
       - name: Assemble the package
         run: |
           nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
           # The workspace persists between runs on this runner: clearing the leftovers from
           # the previous release avoids packaging the old package along with it.
-          rm -rf pacote pom-*.tar.gz "$nome"
-          mkdir -p pacote/apps/frontend
-          cp -R apps/frontend/dist pacote/apps/frontend/dist
-          cp target/release/pom pacote/
-          # Without the host beside the pom no plugin installs.
-          cp target/release/pom-plugin-host pacote/
-          cp README.md pacote/ 2>/dev/null || true
+          rm -rf pacote pom-*.dmg "$nome.dmg"
 
-          # A Unix executable does not carry an icon: on macOS the one that shows it is the
-          # .app bundle. The interface goes **also** inside the bundle,
-          # beside the real binary, so the .app keeps working after being
-          # dragged to /Applications.
-          ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
+          # The app is the whole program: the binary, the plugin host (Contents/MacOS, where
+          # the binary looks for it) and the interface (Contents/Resources/apps/frontend/dist,
+          # found by `bundled_ui_dist`) all live inside the bundle.
+          ./scripts/make-macos-app.sh target/universal/release/pom "pacote/POM.app"
           mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
-          cp -R pacote/apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
+          cp -R apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
 
-          mv pacote "$nome"
-          tar czf "$nome.tar.gz" "$nome"
+          # The ad-hoc signature must be made last: the copies above change the sealed
+          # resources. Signed before them, Gatekeeper reports the app as "damaged".
+          codesign --force --deep --sign - "pacote/POM.app"
+          codesign --verify --deep --strict "pacote/POM.app"
+
+          # The disk image holds POM.app, an Applications shortcut and the README that
+          # explains the first launch. make-dmg.sh lays out the window with create-dmg.
+          packaging/macos/make-dmg.sh "pacote/POM.app" packaging/macos/README.md "$nome.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: pacote-macos
-          path: pom-*.tar.gz
+          path: pom-*.dmg
           if-no-files-found: error
           # Only they pass between the jobs of this run; the release keeps the packages.
           retention-days: 2
@@ -134,4 +143,4 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
-          files: pom-*.tar.gz
+          files: pom-*.dmg

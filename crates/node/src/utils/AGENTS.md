@@ -72,7 +72,7 @@ Nothing here talks to peers; everything is used by `main.rs` and
   about the name.
 
 - `project_root` - `$POM_HOME` → a cwd that "looks like the project" → upward
-  from the executable's directory. This is where `models/`, `venv/` and the config
+  from the executable's directory → the default home (`~/.pom`; on Windows, the folder of `pom.exe`). This is where `models/`, `venv/` and the config
   come from; without it, an `ssh host '/path/pom'` read another config and found
   no slice at all.
 - `Config::load`/`save`/`config_path` - `$POM_CONFIG` or

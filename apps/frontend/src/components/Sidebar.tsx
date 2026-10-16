@@ -714,8 +714,13 @@ function InferenceMainMenu({
         collapsed ? "overflow-visible px-2" : "px-3",
       )}
     >
-      {/* No conversation yet: the menu is only the network and the rest. */}
-      {hasConversations(sessions) && <ChatSessionList
+      {/*
+       * No conversation yet: on the chat's opening screen the menu is only the
+       * network and the rest, since that screen already is a new chat. On any
+       * other route New chat stays, or deleting every conversation left the
+       * infer menu with no way back to the chat.
+       */}
+      {(hasConversations(sessions) || pathname !== "/chat") && <ChatSessionList
         sessions={sessions}
         activeId={session?.id ?? ""}
         compact

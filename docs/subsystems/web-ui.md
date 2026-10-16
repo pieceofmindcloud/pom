@@ -1157,8 +1157,10 @@ besides the turns:
   `chat.prompt.*` lines, in the tone of the waiting lines, chosen from the
   conversation id (`promptPlaceholderKey`) so it does not change while typing;
   the network Chat keeps "Write to the network". While no conversation has
-  messages, the conversation list and its New chat are not drawn, beside the
-  Chat or in the infer menu.
+  messages, the conversation list and its New chat are not drawn beside the
+  Chat, nor in the infer menu while the route is `/chat`. On any other route the
+  infer menu keeps New chat (with the empty list), since that menu has no other
+  way back to the chat once every conversation was deleted.
 - Text files are still refused before sending when the estimated size exceeds
   the model's effective context: first `context_length` from `/v1/models`, then
   the active node's `n_ctx`. Images use the same budget, but are reduced before

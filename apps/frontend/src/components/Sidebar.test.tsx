@@ -366,6 +366,23 @@ describe("Sidebar", () => {
     expect(screen.getByText("Rede")).toBeTruthy();
   });
 
+  it("keeps New chat in the infer menu outside the chat when there is no conversation", () => {
+    render(
+      <MemoryRouter initialEntries={["/documentation"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="infer">
+            <ChatSessionProvider>
+              <Sidebar />
+              <RouteProbe />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Conversa nova" }));
+    expect(screen.getByTestId("route").textContent).toBe("/chat");
+  });
+
   it("goes to the chat when a new conversation is started from the documentation", () => {
     window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
       { id: "older", title: "Conversa antiga", model: "qwen", messages: SPOKEN, updatedAt: "2026-09-06T10:00:00.000Z" },

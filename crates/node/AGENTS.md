@@ -192,7 +192,11 @@ background thread, and gives the main thread to the status item (`macos_status.r
 Rust passes dimensions, URL, and `brand::name()` through the ABI instead of
 hardcoding them in Objective-C. Both WebViews use WebKit's default data store
 and therefore share the frontend session.
-The AppKit application menu contains About and Quit. Quit uses the standard
+The AppKit application menu contains About and Quit, plus an Edit menu (Undo,
+Redo, Cut, Copy, Paste, Select All - without it the web view ignores Cmd+C/V)
+and a View menu with Reload (Cmd+R); the status item's context menu also offers Reload. Reload
+re-fetches the current screen, or goes back to waiting for the gateway when a
+native loading/unavailable page is showing. Quit uses the standard
 `terminate:` action and ends the process after the event loop returns, because
 the long-running Tokio service does not yet have a cooperative cancellation
 channel. When the service ends on its own, the bridge only stops the event loop

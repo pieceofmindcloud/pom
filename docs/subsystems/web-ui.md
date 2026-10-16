@@ -49,16 +49,32 @@ panel on both axes. In a regular browser that button is not rendered.
 
 The larger window title and its menu-bar tooltip use the display name from
 `brand.json`; the packaged app's Dock label uses the same name. The bundle also
-installs the regular macOS application menu in AppKit, with About and Quit. The
-app runs as an accessory (no Dock icon), and an accessory
-shows no menu bar, so Quit is also reachable three other ways:
+installs the macOS menu bar in AppKit: the application menu with About and Quit
+(Cmd+Q), an Edit menu (Undo, Redo, Cut, Copy, Paste, Select All) and a View
+menu with Reload (Cmd+R). The Edit menu is what makes Cmd+C/Cmd+V work: AppKit
+delivers those shortcuts through the menu bar's key equivalents to the first
+responder, the focused web view, and without the menu they do nothing. The app is a regular one (Dock
+icon, menu bar, full screen); closing the window only hides it and the app stays
+in the menu bar. Besides the menu bar:
 - a right click (or Control-click) on the status item opens a menu with
-  "Open in a larger window" and "Quit POM";
-- while the larger window is open the app switches to a regular one, with a
-  Dock icon, its menu bar and Cmd+Q, and goes back to an accessory when the
-  window closes (closing only hides it; the app stays in the menu bar);
+  "Open POM", "Reload" and "Quit POM";
+- right-clicking the Dock icon offers Quit;
 - the `pomQuit` WebKit bridge, behind a power button in the top bar
   (`QuitNativeAppButton`), rendered only inside the macOS app.
+
+Reload exists because a WebKit window has no browser reload button, and a
+screen that stopped working had no way back. On the interface it reloads the
+current page from the origin, fetching its code again; while a native loading or
+"could not reach the gateway" page is showing, it goes back to waiting for the
+gateway instead. The menu bar's Reload acts on the open panel, else the window;
+the status item's acts on both.
+
+The window renders in the system WebKit, so the interface must parse on the
+oldest macOS the app supports: macOS 11/12 ship Safari 14/15, which has no regex
+lookbehind (`(?<=`, `(?<!`). One in any chunk is a `SyntaxError` that kills the
+whole screen importing it ("Invalid regular expression: invalid group specifier
+name"). The `noRegexLookbehind` plugin in `apps/frontend/vite.config.ts` fails
+the build when a shipped chunk carries one.
 Quit calls the standard application termination and ends the whole process,
 including the Tokio service on the background thread.
 

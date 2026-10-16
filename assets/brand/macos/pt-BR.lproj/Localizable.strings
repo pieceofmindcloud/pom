@@ -6,3 +6,12 @@
 "status.quit" = "Sair do POM";
 "status.openWindow" = "Abrir o POM";
 "status.gatewayStarting" = "Iniciando o POM…";
+"status.reload" = "Recarregar";
+"status.viewMenu" = "Visualizar";
+"status.editMenu" = "Editar";
+"status.undo" = "Desfazer";
+"status.redo" = "Refazer";
+"status.cut" = "Recortar";
+"status.copy" = "Copiar";
+"status.paste" = "Colar";
+"status.selectAll" = "Selecionar Tudo";

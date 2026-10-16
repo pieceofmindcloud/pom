@@ -645,8 +645,10 @@ Per-file list:
   separate and keeps the per-machine button available to every profile.
 - `ErrorBoundary.tsx` - Class boundary placed around the routed page in
   `App.tsx` (the chrome survives a broken screen). Clears on `resetKey` change
-  (the route path); `fallback` lets the chrome collapse to a line; retry button
-  plus the error message in a `<pre>`.
+  (the route path); `fallback` lets the chrome collapse to a line; retry button,
+  a reload-the-page button (the only cure for a lazy screen whose module failed
+  to load: `lazy` rethrows the cached rejection) and the error message in a
+  `<pre>`.
 ## Brand and machine marks
 
 - `Logo.tsx` - `LogoFull` draws the lockup from `brand.logo[theme]`: two arts,

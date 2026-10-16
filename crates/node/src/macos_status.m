@@ -49,6 +49,8 @@ static void POMInstallApplicationMenu(void);
 @interface POMStatusController : NSObject <NSWindowDelegate>
 - (void)togglePopover:(id)sender;
 - (void)openWindow:(id)sender;
+- (void)reload:(id)sender;
+- (void)reloadAll:(id)sender;
 @end
 
 @interface POMApplicationDelegate : NSObject <NSApplicationDelegate>
@@ -145,6 +147,12 @@ static void POMShowStatusMenu(void) {
         keyEquivalent:@""];
     open.target = POMStatusControllerInstance;
     [menu addItem:open];
+    NSMenuItem *reload = [[NSMenuItem alloc]
+        initWithTitle:POMLocalized(@"status.reload", @"Reload")
+               action:@selector(reloadAll:)
+        keyEquivalent:@""];
+    reload.target = POMStatusControllerInstance;
+    [menu addItem:reload];
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItem:[[NSMenuItem alloc]
         initWithTitle:POMLocalized(@"status.quit", @"Quit POM")
@@ -194,12 +202,27 @@ static NSString *POMUnavailableHTML(void) {
         retry];
 }
 
-static void POMShowUnavailable(WKWebView *webView) {
-    [webView loadHTMLString:POMUnavailableHTML() baseURL:[NSURL URLWithString:POMChatURL]];
-}
-
 /// The web views that are waiting for the gateway to answer.
 static NSMutableSet *POMWaitingWebViews;
+/// The web views showing one of the native pages (loading or unavailable) instead
+/// of the interface. Their URL is the gateway's base, so the URL cannot tell.
+static NSMutableSet *POMPlaceholderWebViews;
+
+static void POMMarkPlaceholder(WKWebView *webView, BOOL placeholder) {
+    if (!POMPlaceholderWebViews) {
+        POMPlaceholderWebViews = [NSMutableSet set];
+    }
+    if (placeholder) {
+        [POMPlaceholderWebViews addObject:webView];
+    } else {
+        [POMPlaceholderWebViews removeObject:webView];
+    }
+}
+
+static void POMShowUnavailable(WKWebView *webView) {
+    POMMarkPlaceholder(webView, YES);
+    [webView loadHTMLString:POMUnavailableHTML() baseURL:[NSURL URLWithString:POMChatURL]];
+}
 /// 120 probes, half a second apart: a minute for the node to start.
 static const int POMGatewayProbeLimit = 120;
 
@@ -260,6 +283,7 @@ static void POMProbeGateway(WKWebView *webView, int attempt) {
             }
             if (up) {
                 [POMWaitingWebViews removeObject:webView];
+                POMMarkPlaceholder(webView, NO);
                 [webView loadRequest:[NSURLRequest requestWithURL:url]];
             } else if (attempt + 1 >= POMGatewayProbeLimit) {
                 [POMWaitingWebViews removeObject:webView];
@@ -281,9 +305,34 @@ static void POMWaitForGateway(WKWebView *webView) {
         return;
     }
     [POMWaitingWebViews addObject:webView];
+    POMMarkPlaceholder(webView, YES);
     NSURL *base = [NSURL URLWithString:POMAddressOf(webView)];
     [webView loadHTMLString:POMLoadingHTML() baseURL:base];
     POMScheduleGatewayProbe(webView, 0);
+}
+
+/// The browser's reload, which a WebKit window lacks: View > Reload (Cmd-R) and the
+/// status item's menu. On the interface it reloads the current screen, fetching its
+/// code again - the way out of a screen that stopped working. On a native page it
+/// goes back to waiting for the gateway, since reloading that HTML would only show
+/// it again.
+static void POMReload(WKWebView *webView) {
+    if (!webView || [POMWaitingWebViews containsObject:webView]) {
+        return;
+    }
+    if ([POMPlaceholderWebViews containsObject:webView] || !webView.URL) {
+        POMWaitForGateway(webView);
+    } else {
+        [webView reloadFromOrigin];
+    }
+}
+
+/// The web view the user is looking at: the open panel, else the window.
+static WKWebView *POMFrontWebView(void) {
+    if (POMPopover.isShown) {
+        return POMPopoverWebView;
+    }
+    return POMWindowWebView;
 }
 
 /// Builds the bar item image with the three resolutions of the template.
@@ -389,6 +438,19 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     POMOpenWindow();
 }
 
+- (void)reload:(id)sender {
+    (void)sender;
+    POMReload(POMFrontWebView());
+}
+
+- (void)reloadAll:(id)sender {
+    (void)sender;
+    // The status item's menu closes the popover, so there is no front view to
+    // pick: both are reloaded, and whichever the user opens next is fresh.
+    POMReload(POMWindowWebView);
+    POMReload(POMPopoverWebView);
+}
+
 - (void)windowWillClose:(NSNotification *)notification {
     if (notification.object == POMWindow) {
     }
@@ -483,6 +545,54 @@ static void POMInstallApplicationMenu(void) {
          keyEquivalent:@"q"]];
     appMenuItem.submenu = appMenu;
     [mainMenu addItem:appMenuItem];
+
+    // An Edit menu. Without it Cmd+C, Cmd+V and the rest do nothing in the web view:
+    // AppKit routes those shortcuts through the menu bar's key equivalents. The
+    // actions target the first responder, which is the focused WKWebView.
+    NSString *editTitle = POMLocalized(@"status.editMenu", @"Edit");
+    NSMenuItem *editMenuItem = [[NSMenuItem alloc] initWithTitle:editTitle
+                                                           action:nil
+                                                    keyEquivalent:@""];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:editTitle];
+    [editMenu addItemWithTitle:POMLocalized(@"status.undo", @"Undo")
+                        action:@selector(undo:)
+                 keyEquivalent:@"z"];
+    NSMenuItem *redo = [editMenu addItemWithTitle:POMLocalized(@"status.redo", @"Redo")
+                                           action:@selector(redo:)
+                                    keyEquivalent:@"z"];
+    redo.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    [editMenu addItemWithTitle:POMLocalized(@"status.cut", @"Cut")
+                        action:@selector(cut:)
+                 keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:POMLocalized(@"status.copy", @"Copy")
+                        action:@selector(copy:)
+                 keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:POMLocalized(@"status.paste", @"Paste")
+                        action:@selector(paste:)
+                 keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:POMLocalized(@"status.selectAll", @"Select All")
+                        action:@selector(selectAll:)
+                 keyEquivalent:@"a"];
+    editMenuItem.submenu = editMenu;
+    [mainMenu addItem:editMenuItem];
+
+    // A View menu with the browser's Reload: a WebKit window has no reload button,
+    // and without one a screen that stopped working has no way back.
+    NSString *viewTitle = POMLocalized(@"status.viewMenu", @"View");
+    NSMenuItem *viewMenuItem = [[NSMenuItem alloc] initWithTitle:viewTitle
+                                                           action:nil
+                                                    keyEquivalent:@""];
+    NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:viewTitle];
+    NSMenuItem *reload = [[NSMenuItem alloc]
+        initWithTitle:POMLocalized(@"status.reload", @"Reload")
+               action:@selector(reload:)
+        keyEquivalent:@"r"];
+    reload.target = POMStatusControllerInstance;
+    [viewMenu addItem:reload];
+    viewMenuItem.submenu = viewMenu;
+    [mainMenu addItem:viewMenuItem];
+
     NSApp.mainMenu = mainMenu;
 }
 

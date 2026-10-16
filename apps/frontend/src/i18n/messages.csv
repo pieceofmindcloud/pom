@@ -1026,6 +1026,7 @@ enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
 enterprise.store.stepsLabel,How it works,Como funciona
 enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
+errorBoundary.reload,Reload the page,Recarregar a página
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar
 firstRun.adminDetail,Creates a new network and invites other machines.,Cria uma rede nova e convida outras máquinas.

@@ -76,6 +76,7 @@ cat > "$destination/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSLocalNetworkUsageDescription</key><string>O POM usa a rede local para encontrar outros nós e a internet para se conectar a nós remotos e relays.</string>
 </dict>
 </plist>
 PLIST

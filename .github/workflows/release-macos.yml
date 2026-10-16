@@ -91,21 +91,22 @@ jobs:
           # the previous release avoids packaging the old package along with it.
           rm -rf pacote pom-*.zip "$nome.zip"
 
-          # The package is the .app and nothing else. The binary, the plugin host
-          # (Contents/MacOS, where the binary looks for it) and the interface
-          # (Contents/Resources/apps/frontend/dist, found by `bundled_ui_dist`) all live
-          # inside the bundle, so it runs from Finder or from a terminal with no loose files.
-          ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
-          mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
-          cp -R apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
+          # The app is the whole program: the binary, the plugin host (Contents/MacOS, where
+          # the binary looks for it) and the interface (Contents/Resources/apps/frontend/dist,
+          # found by `bundled_ui_dist`) all live inside the bundle. The README beside it
+          # explains the first launch on macOS.
+          ./scripts/make-macos-app.sh target/release/pom "pacote/$nome/POM.app"
+          mkdir -p "pacote/$nome/POM.app/Contents/Resources/apps/frontend"
+          cp -R apps/frontend/dist "pacote/$nome/POM.app/Contents/Resources/apps/frontend/"
+          cp packaging/macos/README.md "pacote/$nome/README.md"
 
           # The ad-hoc signature must be made last: the copies above change the sealed
           # resources. Signed before them, Gatekeeper reports the app as "damaged".
-          codesign --force --deep --sign - "pacote/POM.app"
-          codesign --verify --deep --strict "pacote/POM.app"
+          codesign --force --deep --sign - "pacote/$nome/POM.app"
+          codesign --verify --deep --strict "pacote/$nome/POM.app"
 
           # ditto keeps the bundle's metadata and signature intact, unlike a plain zip.
-          ditto -c -k --sequesterRsrc --keepParent "pacote/POM.app" "$nome.zip"
+          ditto -c -k --sequesterRsrc --keepParent "pacote/$nome" "$nome.zip"
 
       - uses: actions/upload-artifact@v4
         with:

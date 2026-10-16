@@ -425,6 +425,7 @@ dashboard.mtpUnavailable,MTP unavailable,MTP indisponível
 dashboard.mtpUnavailableDetail,"This deployment requested MTP, but the runtime could not keep its nextn context active.","Esta implantação pediu MTP, mas o runtime não conseguiu manter o contexto nextn ativo."
 dashboard.noGpu,GPU,GPU
 dashboard.noMachines,No machines on the network,Nenhuma máquina na rede
+dashboard.mixedEngines,"The model {models} runs on more than one engine. Each pipeline uses a single engine: machines of another engine do not link to these and are not routed as hops.","O modelo {models} roda em mais de um motor. Cada pipeline usa um único motor: máquinas de outro motor não se ligam a estas e não entram no roteamento como saltos."
 dashboard.noMachinesDetail,"As soon as a peer is found, its memory, disk, and model appear here.","Assim que um peer for encontrado, a memória, o disco e o modelo dele aparecem aqui."
 dashboard.noModelAssigned,no model assigned,nenhum modelo atribuído
 dashboard.noSlice,no slice,sem fatia

@@ -623,6 +623,8 @@ export interface NetworkChatSnapshot {
 }
 
 export interface PeerView {
+  /** The plugin engine that runs this machine's model; null for llama.cpp. A pipeline is built on one engine. */
+  engine?: string | null;
   node_id: string;
   short_id: string;
   addr: string;

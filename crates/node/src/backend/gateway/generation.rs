@@ -895,25 +895,30 @@ pub(super) async fn generate_stream_inner(
         // Planning by delivery time (`fastest`): measured speed of each
         // peer, queue of the whole network, RTT of each edge and the prefix already retained.
         // With no viable path through it, the earlier greedy planner decides.
-        let fastest = plan_by_delivery_time(
-            &state,
-            &peers,
-            model,
-            deploy_id,
-            total_layers,
-            &route_rtt,
-            head.as_deref(),
-            &prefix_model,
-            &cache_prompt,
-            budget.total,
-            images.is_empty(),
-        )
-        .await;
-        let (planned, planned_return) = match fastest {
-            Some((plan, mode)) => (Some(plan), Some(mode)),
-            None => (
-                crate::pipeline::plan_pipeline_with_rtt_from_head(
-                    &peers,
+        // One engine per pipeline: a peer of another engine is not a hop of it. The planner tries the head's engine (or
+        // each engine, llama.cpp first) and keeps the first one that plans a path.
+        let mut planned = None;
+        let mut planned_return = None;
+        for engine in crate::plugin_engine::pipeline_engines(&peers, head.as_deref()) {
+            let group = crate::plugin_engine::peers_of_engine(&peers, engine.as_deref());
+            let fastest = plan_by_delivery_time(
+                &state,
+                &group,
+                model,
+                deploy_id,
+                total_layers,
+                &route_rtt,
+                head.as_deref(),
+                &prefix_model,
+                &cache_prompt,
+                budget.total,
+                images.is_empty(),
+            )
+            .await;
+            let picked = match fastest {
+                Some((plan, mode)) => Some((plan, Some(mode))),
+                None => crate::pipeline::plan_pipeline_with_rtt_from_head(
+                    &group,
                     model,
                     deploy_id,
                     total_layers,
@@ -921,10 +926,15 @@ pub(super) async fn generate_stream_inner(
                     &route_rtt,
                     head.as_deref(),
                 )
-                .await,
-                None,
-            ),
-        };
+                .await
+                .map(|plan| (plan, None)),
+            };
+            if let Some((plan, mode)) = picked {
+                planned = Some(plan);
+                planned_return = mode;
+                break;
+            }
+        }
         let Some(plan) = planned else {
             let error = format!(
                 "No valid pipeline for model '{model}' (check the layer coverage 0..{total_layers})"

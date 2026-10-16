@@ -185,6 +185,17 @@ export function Dashboard() {
   const propertiesNode = propertiesMachine && activeVersion ? activeVersion.nodes.find((candidate) => candidate.node_id === propertiesMachine) ?? null : null;
   const propertiesParams = activeVersion ? (propertiesNode ? machineParamsOf(propertiesNode, activeVersion) : activeVersion.params) : ({} as RuntimeParams);
   const propertiesEngine = engineOfParams(propertiesParams.inference_service, engineCatalog);
+  // A pipeline is built on one engine: a model served by two engines is noticed here (its machines do not link).
+  const mixedEngineModels = useMemo(() => {
+    const engines = new Map<string, Set<string>>();
+    for (const peer of cluster.data?.peers ?? []) {
+      if (!peer.model) continue;
+      const set = engines.get(peer.model) ?? new Set<string>();
+      set.add(peer.engine ?? "llama.cpp");
+      engines.set(peer.model, set);
+    }
+    return [...engines].filter(([, set]) => set.size > 1).map(([model]) => model);
+  }, [cluster.data]);
   const activeDeployId =
     activeDeployment?.deploy_id
     ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
@@ -312,7 +323,14 @@ export function Dashboard() {
     <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {!detailed || view === "minima" ? (
+          <>
+            {mixedEngineModels.length > 0 && (
+              <p role="status" className="mx-3 mt-2 rounded-md border border-amber/40 bg-amber/10 px-3 py-1.5 text-[0.7rem] text-amber">
+                {t("dashboard.mixedEngines", { models: mixedEngineModels.join(", ") })}
+              </p>
+            )}
           <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: route.compute_ms ?? null, rttMs: route.rtt_ms, networkMs: route.network_ms ?? null, totalMs: route.total_ms ?? null, returnMode: route.return_mode ?? null, relayed: route.relayed ?? false, relayedLegs: route.relayed_legs ?? [], relayBypassedByRing: route.relay_bypassed_by_ring ?? false }))} peerPerf={networkRtt.data?.peer_perf} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} onSelectNode={activeVersion ? (nodeId) => setPropertiesMachine(nodeId) : undefined} /></div>
+          </>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (

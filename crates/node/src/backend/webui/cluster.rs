@@ -3,6 +3,8 @@ use super::*;
 
 #[derive(Debug, Serialize)]
 pub(super) struct PeerView {
+    /// The plugin whose engine runs this machine's model, `None` for llama.cpp. A pipeline is built on one engine.
+    pub(super) engine: Option<String>,
     pub(super) node_id: String,
     pub(super) short_id: String,
     pub(super) addr: String,
@@ -72,6 +74,10 @@ pub(super) fn candidate_edges(views: &[PeerView]) -> Vec<RoutingEdgeView> {
             }
             for to in views {
                 if to.node_id == from.node_id {
+                    continue;
+                }
+                // a handoff is between two machines of one engine (the pipeline wire is that engine's own)
+                if to.engine != from.engine {
                     continue;
                 }
                 for to_capability in &to.capabilities {
@@ -451,6 +457,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             node.as_ref().and_then(reported_peer_load)
         };
         views.push(PeerView {
+            engine: crate::plugin_engine::engine_of_peer(p),
             short_id: p.node_id[..p.node_id.len().min(12)].to_string(),
             node_id: p.node_id.clone(),
             addr: p.addr.clone(),
@@ -626,8 +633,15 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     let routing_edges = if active.is_empty() || total == 0 {
         Vec::new()
     } else {
-        crate::pipeline::plan_pipeline(&peers, &active, None, total, &state.loads)
-            .await
+        let mut planned = None;
+        for engine in crate::plugin_engine::pipeline_engines(&peers, None) {
+            let group = crate::plugin_engine::peers_of_engine(&peers, engine.as_deref());
+            if let Some(plan) = crate::pipeline::plan_pipeline(&group, &active, None, total, &state.loads).await {
+                planned = Some(plan);
+                break;
+            }
+        }
+        planned
             .map(|plan| {
                 plan.edges
                     .into_iter()

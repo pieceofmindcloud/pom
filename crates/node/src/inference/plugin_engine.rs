@@ -93,6 +93,71 @@ pub(crate) fn plugin_of_capabilities(capabilities: &[String]) -> Option<&str> {
         .filter(|code| valid_code(code))
 }
 
+#[cfg(test)]
+mod engine_group_tests {
+    use super::*;
+
+    fn peer(id: &str, model: &str, caps: &[&str]) -> crate::network::PeerInfo {
+        let mut p = crate::gateway::testkit::peer(id, id, 8080);
+        p.model = model.into();
+        p.inference_frame_capabilities = caps.iter().map(|c| c.to_string()).collect();
+        p
+    }
+
+    #[test]
+    fn a_pipeline_is_built_on_one_engine_and_llama_comes_first() {
+        let plugin = capability("strata");
+        let peers = vec![
+            peer("gpu1", "m", &[plugin.as_str()]),
+            peer("gpu2", "m", &["inference/frame-v1-batch"]),
+        ];
+        assert_eq!(engine_of_peer(&peers[0]).as_deref(), Some("strata"));
+        assert_eq!(engine_of_peer(&peers[1]), None);
+        assert_eq!(pipeline_engines(&peers, None), vec![None, Some("strata".to_string())]);
+        // a chosen head keeps the pipeline on its own engine
+        assert_eq!(pipeline_engines(&peers, Some("gpu1")), vec![Some("strata".to_string())]);
+        let llama: Vec<String> = peers_of_engine(&peers, None).into_iter().map(|p| p.node_id).collect();
+        assert_eq!(llama, ["gpu2"]);
+    }
+}
+
+/// The engine a peer runs its models on: its plugin's code, or `None` for llama.cpp (the pipeline engine). A pipeline
+/// is built from one engine only: the wire between its stages is that engine's own, so peers of another engine are not
+/// hops of it (they can still serve the model whole, as an alternative route).
+pub(crate) fn engine_of_peer(peer: &crate::network::PeerInfo) -> Option<String> {
+    plugin_of_capabilities(&peer.inference_frame_capabilities).map(str::to_owned)
+}
+
+/// The peers of one engine (see [`engine_of_peer`]).
+pub(crate) fn peers_of_engine(peers: &[crate::network::PeerInfo], engine: Option<&str>) -> Vec<crate::network::PeerInfo> {
+    peers
+        .iter()
+        .filter(|peer| engine_of_peer(peer).as_deref() == engine)
+        .cloned()
+        .collect()
+}
+
+/// The engines a pipeline may be built on, in the order the planner tries them: the head's engine when a head is
+/// already chosen (its pipeline stays on that engine), else every engine that serves a model, llama.cpp first.
+pub(crate) fn pipeline_engines(peers: &[crate::network::PeerInfo], head: Option<&str>) -> Vec<Option<String>> {
+    if let Some(head) = head {
+        return peers
+            .iter()
+            .find(|peer| peer.node_id == head)
+            .map(|peer| vec![engine_of_peer(peer)])
+            .unwrap_or_default();
+    }
+    let mut engines: Vec<Option<String>> = Vec::new();
+    for peer in peers.iter().filter(|peer| !peer.model.is_empty()) {
+        let engine = engine_of_peer(peer);
+        if !engines.contains(&engine) {
+            engines.push(engine);
+        }
+    }
+    engines.sort_by_key(|engine| engine.is_some());
+    engines
+}
+
 /// The plugin engine a plan runs on: every step served by the same one, as
 /// whole slices in layer order - a single machine, or the stages of a model
 /// split across machines ([`crate::plugin_stage_link`]), whose last step

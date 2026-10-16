@@ -412,6 +412,19 @@ impl PomDb {
         })
     }
 
+    pub fn api_key_for_id(&self, id: &str) -> Result<Option<ApiKey>> {
+        self.with_read("look up API key by id", |connection| {
+            connection
+                .query_row(
+                    &format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE id = ?"),
+                    params![id],
+                    api_key_from_row,
+                )
+                .optional()
+                .context("look up the API key by id in the local database")
+        })
+    }
+
     pub fn active_api_key_named(&self, label: &str, node_id: &str) -> Result<Option<ApiKey>> {
         self.with_read("look up named API key", |connection| {
             connection

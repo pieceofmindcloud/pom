@@ -842,7 +842,7 @@ mod policy_tests {
         assert_eq!(scope_of("/api/ui"), RouteScope::PrimaryAdmin);
         assert_eq!(
             scope_of("/api/ui/requests/stats/today"),
-            RouteScope::PrimaryAdmin
+            RouteScope::AnyAdmin
         );
         assert_eq!(scope_of("/api/new-control"), RouteScope::PrimaryAdmin);
         assert_eq!(

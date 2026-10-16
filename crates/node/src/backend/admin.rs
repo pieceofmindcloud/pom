@@ -463,13 +463,14 @@ async fn require_signed_principal(
 /// administrator: its own browser/chat key. The key is still carried over a
 /// signed control request, so the primary can bind it to the authenticated
 /// node identity without granting that node any administrative mutation.
-fn is_self_owned_chat_key(key: &ApiKey, issuer: &AuthorityPrincipal) -> bool {
+/// The key was created by the requesting node itself: any node (including
+/// secondary admins and inference nodes) may register its own keys on the
+/// principal so they become cluster-wide credentials.
+fn is_self_originated_key(key: &ApiKey, issuer: &AuthorityPrincipal) -> bool {
     key.active
         && !key.id.trim().is_empty()
         && !key.key_hash.trim().is_empty()
-        && key.node_id == issuer.node_id
         && key.origin_node_id == issuer.node_id
-        && key.label == format!("pom-{}", issuer.node_id)
 }
 
 #[derive(Debug, Serialize)]
@@ -700,10 +701,10 @@ async fn internal_upsert_api_key(
     Json(key): Json<ApiKey>,
 ) -> impl IntoResponse {
     let admin = require_signed_principal(&state, &auth).await;
-    let self_owned_chat_key = auth
+    let self_originated = auth
         .principal()
-        .is_some_and(|issuer| is_self_owned_chat_key(&key, issuer));
-    if !(admin || self_owned_chat_key) || key.key_hash.is_empty() || key.id.is_empty() {
+        .is_some_and(|issuer| is_self_originated_key(&key, issuer));
+    if !(admin || self_originated) || key.key_hash.is_empty() || key.id.is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
     if let Err(error) = state.database.insert_api_key(&key) {
@@ -729,7 +730,24 @@ async fn internal_revoke_api_key(
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeRequest>,
 ) -> impl IntoResponse {
-    if !require_signed_principal(&state, &auth).await {
+    let is_principal = require_signed_principal(&state, &auth).await;
+    let is_self_revocation = !is_principal
+        && auth.principal().is_some_and(|issuer| {
+            state
+                .database
+                .api_key_for_id(&request.key_or_id)
+                .ok()
+                .flatten()
+                .is_some_and(|key| {
+                    let origin = if key.origin_node_id.is_empty() {
+                        &key.node_id
+                    } else {
+                        &key.origin_node_id
+                    };
+                    origin == &issuer.node_id
+                })
+        });
+    if !is_principal && !is_self_revocation {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
@@ -1890,9 +1908,9 @@ pub(crate) async fn chat_key(
 }
 
 /// The API key this node uses to call its own `/v1`: the interface's Chat one
-/// and the one handed to plugins (`host.configure`). It is the only class of
-/// key that a node without administrative authority can register on the principal
-/// (`is_self_owned_chat_key`), which is why plugins do not get one of their own.
+/// and the one handed to plugins (`host.configure`). Like user-created keys, it
+/// is registered on the principal as a self-originated key, which is why plugins
+/// do not get one of their own.
 /// Returns the key and whether it was just created.
 ///
 /// The secret stays in the node's local vault (`PomDb::node_api_key`); the record
@@ -2113,44 +2131,50 @@ mod tests {
     }
 
     #[test]
-    fn a_node_can_register_only_its_own_chat_key() {
+    fn a_node_can_register_only_its_own_originated_keys() {
         let issuer = AuthorityPrincipal {
             node_id: "worker".into(),
             peer_id: "peer-worker".into(),
             pubkey: "pub-worker".into(),
         };
         let own = ApiKey {
-            id: "chat-id".into(),
-            key_hash: crate::auth::api_key_hash("sk-chat"),
+            id: "key-id".into(),
+            key_hash: crate::auth::api_key_hash("sk-secret"),
             key_hint: String::new(),
-            label: "pom-worker".into(),
+            label: "my-key".into(),
             node_id: "worker".into(),
             origin_node_id: "worker".into(),
             active: true,
             created_at: String::new(),
         };
-        assert!(is_self_owned_chat_key(&own, &issuer));
+        assert!(is_self_originated_key(&own, &issuer));
 
+        // Chat keys (pom-<node_id> label) are also self-originated and accepted.
+        let mut chat_key = own.clone();
+        chat_key.label = "pom-worker".into();
+        assert!(is_self_originated_key(&chat_key, &issuer));
+
+        // A key originated by a different node is rejected.
         let mut other_node = own.clone();
-        other_node.node_id = "other".into();
         other_node.origin_node_id = "other".into();
-        other_node.label = "pom-other".into();
-        assert!(!is_self_owned_chat_key(&other_node, &issuer));
+        assert!(!is_self_originated_key(&other_node, &issuer));
 
+        // Inactive keys are rejected.
         let mut inactive = own;
         inactive.active = false;
-        assert!(!is_self_owned_chat_key(&inactive, &issuer));
+        assert!(!is_self_originated_key(&inactive, &issuer));
     }
 
     #[tokio::test]
-    async fn a_non_admin_chat_key_is_accepted_only_for_the_authenticated_node() {
+    async fn a_non_admin_node_can_register_its_own_keys_but_not_others() {
         let state = crate::gateway::testkit::state_with("admin", vec![]).await;
         let issuer = AuthorityPrincipal {
             node_id: "worker".into(),
             peer_id: "peer-worker".into(),
             pubkey: "pub-worker".into(),
         };
-        let key = ApiKey {
+        // Chat key (pom-<node_id> label) - accepted for self.
+        let chat_key = ApiKey {
             id: "chat-id".into(),
             key_hash: crate::auth::api_key_hash("sk-chat"),
             key_hint: String::new(),
@@ -2160,13 +2184,34 @@ mod tests {
             active: true,
             created_at: String::new(),
         };
-
         let response = internal_upsert_api_key(
             InternalNodeAuth {
                 principal: Some(issuer.clone()),
             },
             State(state.clone()),
-            Json(key.clone()),
+            Json(chat_key.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // User-created key with a custom label - also accepted for self.
+        let user_key = ApiKey {
+            id: "user-id".into(),
+            key_hash: crate::auth::api_key_hash("sk-user"),
+            key_hint: String::new(),
+            label: "my application".into(),
+            node_id: "worker".into(),
+            origin_node_id: "worker".into(),
+            active: true,
+            created_at: String::new(),
+        };
+        let response = internal_upsert_api_key(
+            InternalNodeAuth {
+                principal: Some(issuer.clone()),
+            },
+            State(state.clone()),
+            Json(user_key.clone()),
         )
         .await
         .into_response();
@@ -2174,16 +2219,16 @@ mod tests {
         assert_eq!(
             state
                 .database
-                .api_key_for_hash(&key.key_hash)
+                .api_key_for_hash(&user_key.key_hash)
                 .unwrap()
                 .map(|stored| stored.node_id),
             Some("worker".into())
         );
 
-        let mut forged = key;
-        forged.node_id = "other".into();
+        // A key whose origin is a different node is rejected.
+        let mut forged = user_key;
+        forged.id = "forged-id".into();
         forged.origin_node_id = "other".into();
-        forged.label = "pom-other".into();
         let response = internal_upsert_api_key(
             InternalNodeAuth {
                 principal: Some(issuer),

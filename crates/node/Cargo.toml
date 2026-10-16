@@ -29,6 +29,11 @@ vulkan = ["llama-engine/vulkan"]
 # before `cargo build` (`apps/frontend`: `npm run build`). Off by default: development
 # keeps reading the bundle from disk, so editing the interface needs no rebuild.
 embed-ui = ["dep:include_dir"]
+# The Linux window: the web interface in a native WebKitGTK view, the same screen the macOS
+# and Windows shells open. It needs the GTK 3 and WebKitGTK 4.1 development packages to
+# build, and WebKitGTK at run time. Off by default, so a Linux server or a Docker image
+# builds without any graphical library.
+desktop = ["dep:tao", "dep:wry"]
 
 [dependencies]
 # All the llama.cpp code (FFI, MTP, MoE, GGUF, sysmon) lives here, so that
@@ -119,6 +124,12 @@ wry = { version = "0.57", default-features = false }
 
 # It only compiles `src/macos_status.m`, the AppKit/WebKit bridge of the status bar
 # item. Like the `winresource` above, the `cfg` here is the host's.
+# The Linux window (feature `desktop`). Same crates as the Windows shell, with WebKitGTK
+# in place of WebView2. Optional: they are compiled only with the feature.
+[target.'cfg(target_os = "linux")'.dependencies]
+tao = { version = "0.37", default-features = false, features = ["rwh_06"], optional = true }
+wry = { version = "0.57", default-features = false, optional = true }
+
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1"
 

@@ -81,11 +81,15 @@ jobs:
             command -v "$p" >/dev/null || faltou="$faltou $p"
           done
           [ -f /usr/include/vulkan/vulkan.h ] || faltou="$faltou libvulkan-dev"
+          # The window of the desktop feature: GTK 3 and WebKitGTK 4.1 headers and libraries.
+          for m in gtk+-3.0 webkit2gtk-4.1 libsoup-3.0; do
+            pkg-config --exists "$m" || faltou="$faltou $m(pkg-config)"
+          done
           [ -n "$(ldconfig -p 2>/dev/null | grep libclang)" ] || faltou="$faltou libclang-dev"
           command -v nvcc >/dev/null || faltou="$faltou nvcc(cuda-toolkit)"
           if [ -n "$faltou" ]; then
             echo "missing on ksia:$faltou" >&2
-            echo "install as root: apt-get install -y cmake clang mold libclang-dev libvulkan-dev glslc" >&2
+            echo "install as root: apt-get install -y cmake clang mold libclang-dev libvulkan-dev glslc libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev pkg-config" >&2
             exit 1
           fi
 
@@ -150,7 +154,7 @@ jobs:
           # ran out of memory on ksia (exit 137) and killed a process of the running node.
           # cargo passes this count to the CMake build as well.
           export CARGO_BUILD_JOBS=4
-          cargo build --release --locked -p node -p pom-plugin-host --features cuda,vulkan,embed-ui
+          cargo build --release --locked -p node -p pom-plugin-host --features cuda,vulkan,embed-ui,desktop
 
       - name: Get appimagetool
         shell: bash

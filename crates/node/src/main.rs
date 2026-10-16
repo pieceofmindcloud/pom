@@ -113,6 +113,8 @@ mod link;
 #[path = "inference/link_lab.rs"]
 mod link_lab;
 #[path = "network/local_discovery.rs"]
+#[cfg(all(target_os = "linux", feature = "desktop"))]
+mod linux_window;
 mod local_discovery;
 #[cfg(test)]
 #[path = "network/local_discovery_tests.rs"]
@@ -561,7 +563,7 @@ fn main() -> Result<()> {
             args.port = selected.p2p;
         }
     }
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
     let gateway_port = configured_gateway_port(&args);
 
     let service = move |gateway_ready: Option<gateway::GatewayReadySender>| {
@@ -586,7 +588,17 @@ fn main() -> Result<()> {
         );
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    {
+        let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
+        return linux_window::run(
+            gateway_url(gateway_port),
+            move || service(Some(gateway_ready)),
+            gateway_ready_rx,
+        );
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop"))))]
     service(None)
 }
 
@@ -714,17 +726,17 @@ fn anchor_admin(
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn gateway_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/admin-ui/chat")
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
     config_port.unwrap_or(cli_port)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "desktop")))]
 fn configured_gateway_port(args: &Args) -> u16 {
     if args.gateway_port_from_env {
         return args.gateway_port;

@@ -24,6 +24,11 @@ metal = ["llama-engine/metal"]
 # Intel. It can be combined with `cuda` - ggml loads both backends and the
 # choice of which one to use is made at runtime.
 vulkan = ["llama-engine/vulkan"]
+# The web interface compiled into the executable (`include_dir`), so the release is a
+# single pom.exe with no `apps/frontend/dist` folder beside it. Needs the bundle built
+# before `cargo build` (`apps/frontend`: `npm run build`). Off by default: development
+# keeps reading the bundle from disk, so editing the interface needs no rebuild.
+embed-ui = ["dep:include_dir"]
 
 [dependencies]
 # All the llama.cpp code (FFI, MTP, MoE, GGUF, sysmon) lives here, so that
@@ -84,6 +89,7 @@ pkarr = "6"
 async-trait = "0.1"
 subtle = "2"
 mime_guess = "2"
+include_dir = { version = "0.7", optional = true }
 tower-http = { version = "0.5", features = ["compression-full"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 routing-contract = { path = "../routing-contract" }

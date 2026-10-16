@@ -1174,9 +1174,13 @@ pub fn default_model_dir() -> PathBuf {
 /// runtime. `$POM_UI_DIST` overrides it — the runtime Docker image sets
 /// it explicitly rather than relying on `project_root()` detection, and a dev
 /// setup that keeps the bundle elsewhere can point straight at it.
+pub fn ui_dist_override() -> Option<PathBuf> {
+    crate::brand::env("UI_DIST").ok().map(PathBuf::from)
+}
+
 pub fn ui_dist_dir() -> PathBuf {
-    if let Ok(dir) = crate::brand::env("UI_DIST") {
-        return PathBuf::from(dir);
+    if let Some(dir) = ui_dist_override() {
+        return dir;
     }
     if let Some(dir) = bundled_ui_dist() {
         return dir;

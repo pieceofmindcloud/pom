@@ -40,7 +40,7 @@ create-dmg \
     --background "$background" \
     --window-pos 200 120 \
     --window-size 660 400 \
-    --icon-size 128 \
+    --icon-size 96 \
     --text-size 14 \
     --icon "POM.app" 165 215 \
     --hide-extension "POM.app" \

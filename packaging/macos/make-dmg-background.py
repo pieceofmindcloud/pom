@@ -38,8 +38,8 @@ def draw(scale: int) -> Image.Image:
     ss = 4
     arrow = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
     d = ImageDraw.Draw(arrow)
-    x0 = (APP_X + 78) * scale * ss
-    x1 = (DROP_X - 78) * scale * ss
+    x0 = (APP_X + 60) * scale * ss
+    x1 = (DROP_X - 60) * scale * ss
     y = ICON_Y * scale * ss
     shaft = 7 * scale * ss
     head_len = 26 * scale * ss
